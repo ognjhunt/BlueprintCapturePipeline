@@ -97,17 +97,50 @@ def _footprint_overlap_counts(
     triangles = local[faces]
     minimum = triangles.min(axis=1)
     maximum = triangles.max(axis=1)
-    triangle_hits = int(
-        (
-            (maximum[:, 0] >= -half_x)
-            & (minimum[:, 0] <= half_x)
-            & (maximum[:, 1] >= -half_y)
-            & (minimum[:, 1] <= half_y)
-            & (maximum[:, 2] >= lower_z)
-            & (minimum[:, 2] <= upper_z)
-        ).sum()
+    vertical = (maximum[:, 2] >= lower_z) & (minimum[:, 2] <= upper_z)
+    triangle_hits = _triangle_footprint_overlap_count(
+        obstacle_triangles_xy=triangles[vertical, :, :2],
+        position=(0.0, 0.0),
+        yaw=0.0,
+        half_extent_xy=(half_x, half_y),
     )
     return vertex_hits, triangle_hits
+
+
+def _triangle_footprint_overlap_count(
+    *,
+    obstacle_triangles_xy: np.ndarray,
+    position: Sequence[float],
+    yaw: float,
+    half_extent_xy: tuple[float, float],
+) -> int:
+    """Conservatively count triangle bounds crossing an oriented footprint.
+
+    The same robot-local test is used while searching and while reporting the
+    selected pose. Keeping those two gates identical prevents a fast world-AABB
+    prefilter from selecting a pose that the final oriented-footprint check then
+    rejects.
+    """
+
+    triangles = np.asarray(obstacle_triangles_xy, dtype=np.float64)
+    if triangles.size == 0:
+        return 0
+    if triangles.ndim != 3 or triangles.shape[1:] != (3, 2):
+        raise ValueError("external_placement_obstacle_triangles_xy_invalid")
+    x, y = float(position[0]), float(position[1])
+    cosine, sine = math.cos(float(yaw)), math.sin(float(yaw))
+    delta = triangles - [x, y]
+    local_x = cosine * delta[:, :, 0] + sine * delta[:, :, 1]
+    local_y = -sine * delta[:, :, 0] + cosine * delta[:, :, 1]
+    half_x, half_y = (float(value) for value in half_extent_xy)
+    return int(
+        (
+            (local_x.max(axis=1) >= -half_x)
+            & (local_x.min(axis=1) <= half_x)
+            & (local_y.max(axis=1) >= -half_y)
+            & (local_y.min(axis=1) <= half_y)
+        ).sum()
+    )
 
 
 def build_external_scene_robot_placement_request(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -192,29 +225,23 @@ def propose_external_scene_robot_placement(
     triangle_stage_maximum = triangle_stage.max(axis=1)
     lower_obstacle_z = floor_z + 0.04
     upper_obstacle_z = floor_z + 2.0 * profile.footprint_half_extent_xyz[2]
-    vertical_obstacle_faces = (
-        (triangle_stage_maximum[:, 2] >= lower_obstacle_z)
-        & (triangle_stage_minimum[:, 2] <= upper_obstacle_z)
+    vertical_obstacle_faces = (triangle_stage_maximum[:, 2] >= lower_obstacle_z) & (
+        triangle_stage_minimum[:, 2] <= upper_obstacle_z
     )
+    obstacle_triangles_xy = triangle_stage[vertical_obstacle_faces, :, :2]
+
     def probe(pose, yaw) -> int:
-        # Reuse precomputed world-space triangle bounds across the full ring
-        # scan. The yawed footprint's enclosing AABB is conservative: it may
-        # reject an extra candidate, but cannot admit a crossing triangle on the
-        # basis of sparse vertices.
-        x, y = float(pose[0]), float(pose[1])
-        cosine, sine = abs(math.cos(float(yaw))), abs(math.sin(float(yaw)))
+        # Use the exact same robot-local conservative triangle test here and in
+        # the final report. A differently oriented world-AABB prefilter can
+        # disagree with the final OBB-aligned bounds even when each test is
+        # independently conservative.
         inflated_half_x = half_x + profile.probe_clearance_m
         inflated_half_y = half_y + profile.probe_clearance_m
-        world_half_x = cosine * inflated_half_x + sine * inflated_half_y
-        world_half_y = sine * inflated_half_x + cosine * inflated_half_y
-        return int(
-            (
-                vertical_obstacle_faces
-                & (triangle_stage_maximum[:, 0] >= x - world_half_x)
-                & (triangle_stage_minimum[:, 0] <= x + world_half_x)
-                & (triangle_stage_maximum[:, 1] >= y - world_half_y)
-                & (triangle_stage_minimum[:, 1] <= y + world_half_y)
-            ).sum()
+        return _triangle_footprint_overlap_count(
+            obstacle_triangles_xy=obstacle_triangles_xy,
+            position=pose,
+            yaw=yaw,
+            half_extent_xy=(inflated_half_x, inflated_half_y),
         )
 
     stance = ring_scan_stand_pose(
@@ -274,9 +301,10 @@ def propose_external_scene_robot_placement(
     )
     shoulder_distance_value = shoulder_distance(stance)
     analytic_reach_candidate = bool(shoulder_distance_value <= reach_limit)
+    footprint_clear = bool(stance.clear and triangle_hits == 0)
     placement = {
         "schema_version": RESULT_SCHEMA,
-        "status": "runtime_visualization_candidate_only" if stance.clear else "abstained",
+        "status": "runtime_visualization_candidate_only" if footprint_clear else "abstained",
         "request_digest": admitted["request_digest"],
         "robot_id": "franka_panda",
         "official_isaac_asset": profile.simulator_asset_refs["isaac_asset"],
@@ -293,7 +321,7 @@ def propose_external_scene_robot_placement(
         "mesh_vertex_overlap_probe_hits": vertex_hits,
         "mesh_vertex_overlap_probe_clear": bool(vertex_hits == 0),
         "mesh_triangle_aabb_overlap_probe_hits": triangle_hits,
-        "mesh_triangle_aabb_overlap_probe_clear": bool(stance.clear and triangle_hits == 0),
+        "mesh_triangle_aabb_overlap_probe_clear": footprint_clear,
         "standoff_stage_units": round(float(stance.standoff_m), 9),
         "placement_selection_strategy": placement_selection_strategy,
         "analytic_shoulder_to_target_distance_stage_units": round(shoulder_distance_value, 9),

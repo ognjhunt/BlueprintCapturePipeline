@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 
 import numpy as np
 import trimesh
@@ -8,6 +9,7 @@ import trimesh
 import blueprint_pipeline.external_scene_robot_placement as placement_module
 from blueprint_pipeline.external_scene_robot_placement import (
     _footprint_overlap_counts,
+    _triangle_footprint_overlap_count,
     propose_external_scene_robot_placement,
 )
 from blueprint_pipeline.scene_placement.types import StandPose
@@ -149,3 +151,26 @@ def test_triangle_crossing_footprint_is_not_missed_when_vertices_are_outside() -
 
     assert vertex_hits == 0
     assert triangle_hits == 1
+
+
+def test_oriented_triangle_probe_is_identical_for_search_and_final_gate() -> None:
+    triangles = np.asarray(
+        [
+            [
+                [-0.4, -0.4],
+                [0.4, -0.4],
+                [0.0, 0.4],
+            ]
+        ],
+        dtype=np.float64,
+    )
+
+    assert (
+        _triangle_footprint_overlap_count(
+            obstacle_triangles_xy=triangles,
+            position=(0.0, 0.0, 0.79),
+            yaw=math.pi / 3.0,
+            half_extent_xy=(0.1, 0.1),
+        )
+        == 1
+    )
