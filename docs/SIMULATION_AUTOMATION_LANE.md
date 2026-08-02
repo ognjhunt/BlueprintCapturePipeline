@@ -352,7 +352,7 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
   R2 and copy artifacts to local/file, GCS, S3, or R2. Object-storage secrets must
   come from runtime env/secret injection, not job manifests.
 - If `gpu_owner_system_proof.json` is supplied, the lane validates simulator
-  logs, scene load trace, spawn trace, default `walk_to_target` policy trace,
+  logs, scene load trace, spawn trace, robot-compatible default smoke-policy trace,
   simulator robot POV evidence, artifact manifest, pass/fail criteria, and owner
   attestation before writing `owner_gpu_simulator_execution_proof_manifest.json`.
   Owner commands that already loaded the scene, spawned the robot, and captured a
@@ -360,7 +360,7 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
   to write the default policy trace and simulator POV manifest. That helper does
   not write scene/spawn proof or real robot POV evidence. First-GPU run packets
   also generate `owner_default_smoke_command_binding.sh`, a fail-closed template
-  that binds owner-provided scene-load, spawn, and walk-to-target commands to the
+  that binds owner-provided scene-load, spawn, and task-smoke commands to the
   helper. The generated GPU VM command defaults to running this binding through
   `bash $OWNER_DEFAULT_SMOKE_COMMAND_BINDING`; set
   `BLUEPRINT_USE_DEFAULT_SMOKE_BINDING=false` only when an owner-maintained
@@ -391,7 +391,8 @@ MuJoCo compile/step. A passing local CPU smoke may be displayed only as
 `local CPU preflight smoke`; it is not owner-system simulator execution, robot
 readiness, policy success, physics/contact validation, or safety proof.
 
-For a local humanoid asset proof, `scripts/local_mujoco_g1_walk_to_target_smoke.py`
+The general unspecified robot default is Franka Panda. For a local explicitly
+selected humanoid asset proof, `scripts/local_mujoco_g1_walk_to_target_smoke.py`
 loads the staged World Labs GLB as a converted OBJ plus the official MuJoCo
 Menagerie Unitree G1 MJCF, then runs the repo default `walk_to_target` smoke.
 Its manifest lives at
@@ -401,9 +402,10 @@ set `owner_gpu_simulator_execution_proven`, `isaac_sim_execution_proven`,
 `isaac_robot_asset_execution_proven`, `real_robot_pov_evidence_proven`, or
 robot/contact/safety readiness booleans.
 
-For Isaac packets, `blueprint-build-first-gpu-run-packet` now emits
+For the historical/explicit G1 humanoid Isaac packets,
+`blueprint-build-first-gpu-run-packet` emits
 `isaac_unitree_g1_smoke.py` and `run_isaac_unitree_g1_smoke.sh`. The launcher is
-the default `OWNER_SIMULATOR_COMMAND` for `isaac_sim` packets. It must still run
+the configured `OWNER_SIMULATOR_COMMAND` for those packets. It must still run
 inside an Isaac Sim Python environment on an owner GPU VM before any Isaac proof
 booleans can change.
 

@@ -220,3 +220,13 @@ Do not overstate world-model quality beyond what capture, privacy, and runtime
 artifacts support.
 Do not move scientific routing or scoring into WebApp.
 <!-- SHARED_PLATFORM_CONTEXT_END -->
+
+## Pipeline Robot Embodiment Defaults
+
+Robot embodiment selection follows the same input-first rule. An explicit
+customer, task, or Scenario Card robot requirement always wins. When no robot is
+specified, Blueprint uses the Franka Panda as the general evaluation default;
+when the task explicitly requires a humanoid but does not name one, Blueprint
+uses the Unitree G1. These are configuration defaults, not claims that either
+robot, asset, controller, policy, site placement, or physical deployment has
+been qualified.

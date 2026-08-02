@@ -17,16 +17,16 @@ from .simulation_automation import SIMULATOR_FRAMEWORKS, validate_owner_gpu_syst
 OWNER_GPU_PROOF_SCHEMA_VERSION = "gpu_owner_system_proof.v1"
 OWNER_DEFAULT_SMOKE_POLICY_SCHEMA_VERSION = "owner_default_smoke_policy.v1"
 OWNER_SIM_ROBOT_POV_SCHEMA_VERSION = "owner_sim_robot_pov_evidence_manifest.v1"
-DEFAULT_ISAAC_ROBOT_ASSET_NAME = "Unitree G1"
-DEFAULT_ISAAC_ROBOT_ASSET_URI_OR_PATH = "Robots/Unitree/G1/g1.usd"
+DEFAULT_ISAAC_ROBOT_ASSET_NAME = "Franka Panda"
+DEFAULT_ISAAC_ROBOT_ASSET_URI_OR_PATH = "Robots/FrankaRobotics/FrankaPanda/franka.usd"
 DEFAULT_ISAAC_ROBOT_ASSET_SOURCE = "isaac_sim_robot_assets"
-DEFAULT_ISAAC_ROBOT_ASSET_CLASS = "humanoid"
-DEFAULT_MUJOCO_ROBOT_ASSET_NAME = "Unitree G1"
+DEFAULT_ISAAC_ROBOT_ASSET_CLASS = "fixed_base_single_arm_manipulator"
+DEFAULT_MUJOCO_ROBOT_ASSET_NAME = "Franka Panda"
 DEFAULT_MUJOCO_ROBOT_ASSET_URI_OR_PATH = (
-    "output/external_assets/mujoco_menagerie/unitree_g1/g1.xml"
+    "output/external_assets/mujoco_menagerie/franka_emika_panda/panda.xml"
 )
 DEFAULT_MUJOCO_ROBOT_ASSET_SOURCE = "google_deepmind_mujoco_menagerie"
-DEFAULT_MUJOCO_ROBOT_ASSET_CLASS = "humanoid_mjcf"
+DEFAULT_MUJOCO_ROBOT_ASSET_CLASS = "fixed_base_single_arm_manipulator_mjcf"
 ISAAC_SIMULATOR_BACKENDS = {"isaac_sim", "isaac_lab_arena"}
 
 
@@ -65,20 +65,26 @@ def _default_smoke_policy(
     scene_id: str,
     capture_id: str,
     target: str,
+    policy_kind: str,
     generated_at: str,
 ) -> Dict[str, Any]:
+    action_label = (
+        "walk_to_target"
+        if policy_kind == "walk_to_target"
+        else "move_end_effector_to_target"
+    )
     return {
         "schema_version": OWNER_DEFAULT_SMOKE_POLICY_SCHEMA_VERSION,
         "generated_at": generated_at,
         "scene_id": scene_id,
         "capture_id": capture_id,
-        "policy_id": "blueprint_default_walk_to_target_smoke_policy",
-        "policy_kind": "walk_to_target",
+        "policy_id": f"blueprint_default_{action_label}_smoke_policy",
+        "policy_kind": action_label,
         "target": target,
         "success_criteria": [
             "simulator command loads the scene",
             "robot spawn pose is valid",
-            "policy trace records at least one walk_to_target action",
+            f"policy trace records at least one {action_label} action",
             "simulator robot POV evidence manifest records camera/video/frame evidence",
         ],
         "required_owner_command_env": {
@@ -108,34 +114,34 @@ def _default_robot_asset(
     robot_asset_class: str = "",
 ) -> Dict[str, Any]:
     backend = _string(simulator_backend)
-    default_to_isaac_g1 = backend in ISAAC_SIMULATOR_BACKENDS
-    default_to_mujoco_g1 = backend == "mujoco"
+    default_to_isaac_robot = backend in ISAAC_SIMULATOR_BACKENDS
+    default_to_mujoco_robot = backend == "mujoco"
     name = _string(robot_asset_name) or (
         DEFAULT_ISAAC_ROBOT_ASSET_NAME
-        if default_to_isaac_g1
+        if default_to_isaac_robot
         else DEFAULT_MUJOCO_ROBOT_ASSET_NAME
-        if default_to_mujoco_g1
+        if default_to_mujoco_robot
         else ""
     )
     uri_or_path = _string(robot_asset_uri_or_path) or (
         DEFAULT_ISAAC_ROBOT_ASSET_URI_OR_PATH
-        if default_to_isaac_g1
+        if default_to_isaac_robot
         else DEFAULT_MUJOCO_ROBOT_ASSET_URI_OR_PATH
-        if default_to_mujoco_g1
+        if default_to_mujoco_robot
         else ""
     )
     source = _string(robot_asset_source) or (
         DEFAULT_ISAAC_ROBOT_ASSET_SOURCE
-        if default_to_isaac_g1
+        if default_to_isaac_robot
         else DEFAULT_MUJOCO_ROBOT_ASSET_SOURCE
-        if default_to_mujoco_g1
+        if default_to_mujoco_robot
         else "owner_command"
     )
     asset_class = _string(robot_asset_class) or (
         DEFAULT_ISAAC_ROBOT_ASSET_CLASS
-        if default_to_isaac_g1
+        if default_to_isaac_robot
         else DEFAULT_MUJOCO_ROBOT_ASSET_CLASS
-        if default_to_mujoco_g1
+        if default_to_mujoco_robot
         else "robot"
     )
     asset = {
@@ -143,11 +149,13 @@ def _default_robot_asset(
         "uri_or_path": uri_or_path,
         "source": source,
         "asset_class": asset_class,
-        "isaac_robot_asset_required": default_to_isaac_g1,
-        "default_isaac_asset_target": default_to_isaac_g1,
+        "isaac_robot_asset_required": default_to_isaac_robot,
+        "default_isaac_asset_target": default_to_isaac_robot,
     }
-    if default_to_isaac_g1:
-        asset["catalog_reference"] = "Isaac Sim Robot Assets: Robots/Unitree/G1/g1.usd"
+    if default_to_isaac_robot:
+        asset["catalog_reference"] = (
+            "Isaac Sim Robot Assets: Robots/FrankaRobotics/FrankaPanda/franka.usd"
+        )
         asset["expected_usd_path_suffix"] = DEFAULT_ISAAC_ROBOT_ASSET_URI_OR_PATH
     return asset
 
@@ -192,7 +200,6 @@ def run_owner_gpu_proof(
     )
 
     started_at = utc_now_iso()
-    policy_target = _string(default_policy_target) or "walk_to_target_pose"
     robot_asset = _default_robot_asset(
         simulator_backend=simulator_backend,
         robot_asset_name=robot_asset_name,
@@ -200,12 +207,18 @@ def run_owner_gpu_proof(
         robot_asset_source=robot_asset_source,
         robot_asset_class=robot_asset_class,
     )
+    humanoid_selected = "humanoid" in _string(robot_asset.get("asset_class")).lower()
+    policy_kind = "walk_to_target" if humanoid_selected else "move_end_effector_to_target"
+    policy_target = _string(default_policy_target) or (
+        "walk_to_target_pose" if humanoid_selected else "end_effector_target_pose"
+    )
     write_json(
         default_policy_path,
         _default_smoke_policy(
             scene_id=context.scene_id,
             capture_id=context.capture_id,
             target=policy_target,
+            policy_kind=policy_kind,
             generated_at=started_at,
         ),
     )
@@ -221,6 +234,7 @@ def run_owner_gpu_proof(
             "BLUEPRINT_ACTION_OR_POLICY_TRACE": str(action_trace_path),
             "BLUEPRINT_DEFAULT_SMOKE_POLICY": str(default_policy_path),
             "BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET": policy_target,
+            "BLUEPRINT_DEFAULT_SMOKE_POLICY_KIND": policy_kind,
             "BLUEPRINT_POLICY_EXECUTION_TRACE": str(action_trace_path),
             "BLUEPRINT_SIM_ROBOT_POV_EVIDENCE": str(sim_robot_pov_path),
             "BLUEPRINT_ARTIFACT_MANIFEST": str(artifact_manifest_path),
@@ -314,7 +328,7 @@ def run_owner_gpu_proof(
             base=proof_path.parent,
         ),
         "default_policy_target": policy_target,
-        "default_policy_execution_scope": "owner_gpu_default_walk_to_target_smoke_policy",
+        "default_policy_execution_scope": f"owner_gpu_default_{policy_kind}_smoke_policy",
         "pass_fail_criteria": pass_fail_criteria,
         "operator_attestation": _owner_attestation(
             operator_id=operator_id,
@@ -368,20 +382,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument(
         "--default-policy-target",
-        default="walk_to_target_pose",
-        help="Target label or pose id for the built-in walk-to-target smoke policy.",
+        default="",
+        help="Target label or pose id for the robot-compatible built-in smoke policy.",
     )
     parser.add_argument(
         "--robot-asset-name",
         default="",
-        help="Robot asset display name; defaults to Unitree G1 for Isaac backends.",
+        help="Robot asset display name; defaults to Franka Panda.",
     )
     parser.add_argument(
         "--robot-asset-uri-or-path",
         default="",
         help=(
             "Robot asset URI or content-browser path; defaults to "
-            "Robots/Unitree/G1/g1.usd for Isaac backends."
+            "Robots/FrankaRobotics/FrankaPanda/franka.usd for Isaac backends."
         ),
     )
     parser.add_argument(

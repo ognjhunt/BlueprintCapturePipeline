@@ -87,6 +87,7 @@ from .robot_eval_evaluation_run_adapter import (
     execute_robot_eval_cli_evaluation_run,
 )
 from .scene_asset_preflight import build_scene_asset_preflight
+from .scene_placement.robot_profile import DEFAULT_ROBOT_ID, get_robot_profile
 from .core.security_controls import contained_path, strict_identifier
 from .simulation_automation import build_simulation_automation
 from .site_eval_director import build_site_eval_director
@@ -187,7 +188,7 @@ DEFAULT_SIMULATOR_SELECTION_POLICY_MODE = "mujoco_first_unless_proof_requires_is
 DEFAULT_MUJOCO_FIRST_REASONS = [
     "cheapest_first_real_simulator_pass",
     "fast_cpu_or_low_cost_owner_runtime",
-    "compatible_mjcf_robot_asset_or_default_unitree_g1_smoke",
+    "compatible_mjcf_robot_asset_or_default_robot_smoke",
     "early_policy_and_spawn_smoke_before_gpu_spend",
 ]
 DEFAULT_ISAAC_ESCALATION_REASONS = [
@@ -1500,10 +1501,14 @@ def _default_robot_profile_from_cards(pipeline_dir: Path) -> Dict[str, Any]:
         if profile_id:
             break
     if not profile_id:
-        profile_id = "unitree_g1"
+        profile_id = DEFAULT_ROBOT_ID
+    try:
+        embodiment = get_robot_profile(profile_id).embodiment_type
+    except KeyError:
+        embodiment = "customer_supplied_robot"
     return {
         "robot_profile_id": profile_id,
-        "embodiment": "humanoid" if profile_id == "unitree_g1" else "mobile_robot",
+        "embodiment": embodiment,
         "sensors": ["rgb", "depth", "proprioception"],
         "source": "robot_eval_dataset/scenario_cards.json",
     }

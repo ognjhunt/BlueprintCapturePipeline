@@ -23,6 +23,7 @@ from .robot_eval_dataset_artifacts import (
     robot_eval_result_artifact_paths,
     validate_and_write_robot_eval_cards,
 )
+from .scene_placement.robot_profile import DEFAULT_ROBOT_ID, get_robot_profile
 
 ROBOT_EVAL_DATASET_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v1"
 ROBOT_EVAL_DATASET_V01_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v0.1"
@@ -1928,12 +1929,13 @@ def _robot_profiles(
     return sorted(profiles, key=lambda item: item["robot_profile_id"])
 
 
-def _default_unitree_g1_robot_profile() -> Dict[str, Any]:
+def _default_robot_profile() -> Dict[str, Any]:
+    profile = get_robot_profile(DEFAULT_ROBOT_ID)
     return {
-        "robot_profile_id": "unitree_g1",
-        "display_name": "Unitree G1",
-        "embodiment_type": "humanoid",
-        "action_space": {},
+        "robot_profile_id": profile.robot_id,
+        "display_name": "Franka Panda",
+        "embodiment_type": profile.embodiment_type,
+        "action_space": dict(profile.action_interface),
         "source": "blueprint_default_robot_profile",
         "claim_boundary": "default_robot_profile_is_eval_scope_not_generated_world_rank_fidelity",
     }
@@ -1982,7 +1984,7 @@ def _scenario_library(
 ) -> Dict[str, Any]:
     scenarios: List[Dict[str, Any]] = []
     tasks = [task for task in task_library.get("tasks", []) if isinstance(task, Mapping)]
-    profiles = list(robot_profiles) or [_default_unitree_g1_robot_profile()]
+    profiles = list(robot_profiles) or [_default_robot_profile()]
     for task in tasks:
         task_id = _string(task.get("task_id"))
         for profile in profiles:

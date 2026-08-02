@@ -89,9 +89,12 @@ from .semantic_geometry_benchmark import (
 )
 from .placement import compute_stand_pose, ring_scan_stand_pose
 from .robot_profile import (
+    DEFAULT_HUMANOID_ROBOT_ID,
     DEFAULT_ROBOT_ID,
+    FRANKA_PANDA_PROFILE,
     UNITREE_G1_PROFILE,
     RobotProfile,
+    default_robot_id_for_embodiment,
     get_robot_profile,
     known_robot_ids,
     register_robot_profile,
@@ -201,8 +204,11 @@ __all__ = [
     "compute_stand_pose",
     "ring_scan_stand_pose",
     "RobotProfile",
+    "FRANKA_PANDA_PROFILE",
     "UNITREE_G1_PROFILE",
+    "DEFAULT_HUMANOID_ROBOT_ID",
     "DEFAULT_ROBOT_ID",
+    "default_robot_id_for_embodiment",
     "get_robot_profile",
     "known_robot_ids",
     "register_robot_profile",

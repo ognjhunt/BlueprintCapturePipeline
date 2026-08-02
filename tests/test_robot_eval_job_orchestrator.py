@@ -1545,7 +1545,7 @@ def _webapp_execution_request() -> dict[str, object]:
                 "use_mujoco_when": [
                     "cheapest_first_real_simulator_pass",
                     "fast_cpu_or_low_cost_owner_runtime",
-                    "compatible_mjcf_robot_asset_or_default_unitree_g1_smoke",
+                    "compatible_mjcf_robot_asset_or_default_robot_smoke",
                     "early_policy_and_spawn_smoke_before_gpu_spend",
                 ],
                 "escalate_to_isaac_when": [

@@ -45,8 +45,9 @@ evidence requirements, metric confidence intervals, and optional external
 rank-fidelity inputs. SC3 remains one replaceable evaluator profile inside that
 protocol; it is not the benchmark contract itself.
 
-Unitree G1 remains a default/reference embodiment for local smoke and historical
-lanes. It is not required for customer robots. Cosmos3/SC3-style WAM remains a
+Franka Panda is the general unspecified robot default. Unitree G1 is the
+unspecified humanoid default and remains the explicit embodiment for historical
+G1 smoke lanes. Neither overrides a customer/task robot. Cosmos3/SC3-style WAM remains a
 preferred evaluator recipe candidate when configured and gated; it is not a
 hardwired backend or universal grading proof.
 

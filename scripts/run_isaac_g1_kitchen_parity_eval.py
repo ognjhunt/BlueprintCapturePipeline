@@ -220,7 +220,7 @@ def _robot_profile_module():
 
 
 def resolve_robot_profile_from_args(args):
-    """--robot-profile-json > --robot-id > registry default (unitree_g1).
+    """--robot-profile-json > --robot-id > humanoid default (unitree_g1).
 
     Returns None when scene_placement is not importable (degraded worker):
     apply_robot_profile(None) is a no-op and the built-in G1 constants stand.
@@ -231,7 +231,10 @@ def resolve_robot_profile_from_args(args):
     profile_json = getattr(args, "robot_profile_json", None)
     if profile_json:
         return rp.robot_profile_from_json_file(profile_json)
-    return rp.get_robot_profile(getattr(args, "robot_id", None) or rp.DEFAULT_ROBOT_ID)
+    default_humanoid_id = getattr(rp, "DEFAULT_HUMANOID_ROBOT_ID", "unitree_g1")
+    return rp.get_robot_profile(
+        getattr(args, "robot_id", None) or default_humanoid_id
+    )
 
 
 def apply_robot_profile(profile) -> None:

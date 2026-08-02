@@ -928,7 +928,7 @@ def _readme(context: Mapping[str, Any], paths: Mapping[str, str]) -> str:
 
 Status: external operator evidence required.
 
-This packet makes Unitree G1 the default robot for the live-product robot-eval proof path. It does not prove generated-world rank fidelity by itself.
+This packet explicitly selects Unitree G1 for the controlled humanoid proof lane. Blueprint's general robot default remains Franka Panda. The selection does not prove generated-world rank fidelity by itself.
 
 ## Order
 
