@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import importlib.metadata
 import json
 import math
@@ -40,6 +41,24 @@ def implementation_digest() -> str:
         hasher.update(path.read_bytes())
         hasher.update(b"\0")
     return "sha256:" + hasher.hexdigest()
+
+
+def _import_simulation_app() -> Any:
+    """Resolve a callable Isaac launcher across supported packaging layouts."""
+
+    for module_name in (
+        "isaacsim.simulation_app",
+        "isaacsim",
+        "omni.isaac.kit",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:  # noqa: BLE001 - try the next supported packaging layout
+            continue
+        simulation_app = getattr(module, "SimulationApp", None)
+        if callable(simulation_app):
+            return simulation_app
+    raise ImportError("isaac_physx_rigid_simulation_app_not_callable")
 
 
 def _observe_isaac_runtime_identity(
@@ -399,8 +418,7 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
     point = _operating_point(request)
     simulation_app: Any | None = None
     try:
-        from isaacsim import SimulationApp  # type: ignore
-
+        SimulationApp = _import_simulation_app()
         simulation_app = SimulationApp({"headless": True})
         try:
             runtime_identity = _observe_isaac_runtime_identity(simulation_app)
