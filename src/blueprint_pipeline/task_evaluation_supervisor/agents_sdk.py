@@ -322,18 +322,28 @@ class OpenAIAgentsSDKInvoker:
 
 
 _FALSE_ONLY_AGENT_KEYS = {
+    "admission_advanced",
+    "agent_may_approve",
+    "agent_may_promote",
+    "agent_may_retry",
+    "automatic_retry_authorized",
     "authoritative",
     "budget_mutation_allowed",
     "deployment_approval",
+    "execution_authorized",
     "hidden_labels_accessed",
     "physical_success",
+    "production_route_eligible",
     "proof_booleans_mutable",
     "rights_mutation_allowed",
+    "r7_catalog_admission",
     "safety_certification",
 }
 _FORBIDDEN_AGENT_KEYS = {
     "budget_override",
     "evaluator_threshold_override",
+    "catalog_mutated",
+    "qualification_created",
     "grant_rights",
     "proof_override",
     "success_threshold_override",
@@ -358,7 +368,13 @@ _SPECIALIST_INSTRUCTIONS: dict[CapabilityKind, str] = {
     CapabilityKind.CLAIM_TASK_INTERPRETER: (
         "Interpret capture and customer intent into provisional, independently evaluable claims. "
         "When a task, robot, operating condition, or success predicate is missing, request the "
-        "smallest clarification instead of inventing it."
+        "smallest clarification instead of inventing it. Distinguish 'can it reach the handle', "
+        "'can it open the drawer', 'will this policy succeed on the physical site', and 'is it "
+        "safe' — these are different claims with different C0-C8 ceilings. Map materials to the "
+        "controlled regime taxonomy; 'deformable' is never a scope, and an ambiguous word such "
+        "as 'bag' (thin plastic film versus rigid tote) is a clarification, not a guess. Your "
+        "proposed task-measurement requirements are non-authoritative and can only add to the "
+        "deterministic minimum, never below it."
     ),
     CapabilityKind.CAPTURE_TESTBED_SUPERVISOR: (
         "Inspect the redacted capture-build inventory and validated testbed facts. Distinguish "
@@ -367,11 +383,24 @@ _SPECIALIST_INSTRUCTIONS: dict[CapabilityKind, str] = {
         "a profile-specific reconstruction route. Use plan_capture_reconstruction_route when it "
         "is available; never guess a missing profile or treat 360, monocular video, and ARKit/LiDAR "
         "as interchangeable inputs. A 3DGS is an appearance layer until metric, semantic, collision, "
-        "and physics layers are independently validated."
+        "and physics layers are independently validated. When a site evidence profile exists, "
+        "surface the deterministic capture-evidence audit gaps with their smallest next actions "
+        "(metric-scale check, registration, collider validation, articulation measurement, "
+        "material identification, sensor calibration, force/tactile collection, targeted "
+        "recapture); never infer friction, mass, inertia, joints, or material behavior from "
+        "appearance."
     ),
     CapabilityKind.EVALUATION_METHOD_ROUTER: (
-        "Propose sequencing among registered evidence methods. Treat deterministic qualification, "
-        "eligibility, acceptance, and claim ceilings as immutable observations."
+        "Explain or propose sequencing around the deterministic measurement route. Distinguish "
+        "the task, site evidence, robot, material, sensors, controller, requested claim, and "
+        "constraints. A method feature is not task-scoped qualification. A splat is not a "
+        "collider; a mesh is not a validated collider; OpenUSD is not physics readiness. Treat "
+        "hard eligibility, exact signed qualification scope, composite coverage, rejected "
+        "alternatives, abstention, and claim ceilings as immutable observations. Never select "
+        "or qualify a final route yourself. Research adapter descriptors, availability probes, "
+        "development execution receipts, benchmark specifications, and monitor alerts are "
+        "proposal/review inputs only: they do not advance R0-R8, authorize or retry execution, "
+        "create a qualification, or mutate the catalog."
     ),
     CapabilityKind.RUNTIME_FAILURE_RECOVERY: (
         "Diagnose typed failures and propose bounded registered recovery actions. Preserve every "
@@ -379,7 +408,11 @@ _SPECIALIST_INSTRUCTIONS: dict[CapabilityKind, str] = {
     ),
     CapabilityKind.SCENARIO_ADVERSARIAL_PROPOSER: (
         "Propose task-relevant adversarial scenarios before held-out evaluation. Do not request "
-        "hidden labels, candidate results, or post-hoc tests."
+        "hidden labels, candidate results, or post-hoc tests. As qualification designer you may "
+        "recommend a frozen benchmark preregistration (splits, physical measurements, metrics, "
+        "acceptance thresholds, failure criteria) under the matching Q-protocols; you may never "
+        "approve your own experiment, reveal held-out labels or hidden material parameters, or "
+        "grade vendor-submitted results without independent execution."
     ),
     CapabilityKind.POST_RUN_DIAGNOSTICIAN: (
         "Explain an already deterministic verdict. Separate decisive evidence, supporting "
@@ -441,6 +474,16 @@ class OpenAIAgentsSDKCapability:
             "site_task_testbed": context.testbed,
             "method_profiles": list(context.method_profiles),
             "qualifications": list(context.qualifications),
+            "measurement_adapter_descriptors": list(
+                context.measurement_adapter_descriptors
+            ),
+            "measurement_adapter_execution_bundles": list(
+                context.measurement_adapter_execution_bundles
+            ),
+            "measurement_benchmark_specs": list(context.measurement_benchmark_specs),
+            "measurement_research_monitor_report": (
+                context.measurement_research_monitor_report
+            ),
             "evidence_plan": context.evidence_plan,
             "evidence_results": list(context.evidence_results),
             "decision_envelope": context.decision_envelope,
@@ -456,6 +499,10 @@ class OpenAIAgentsSDKCapability:
                 "agent_output_authoritative": False,
                 "agent_may_mutate_proof": False,
                 "hidden_labels_included": False,
+                "research_monitor_may_advance_admission": False,
+                "research_dossier_is_qualification": False,
+                "adapter_execution_receipt_is_qualification": False,
+                "agent_may_retry_adapter_execution": False,
             },
         }
         trusted_tool_observations: list[Mapping[str, Any]] = []

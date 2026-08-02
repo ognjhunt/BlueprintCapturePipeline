@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/world-model-action-fidelity-development-suite.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "corpus_id", "corpus_digest", "benchmark_spec_digest", "execution_requested", "status", "case_count", "all_cases_completed", "all_replays_deterministic", "cases", "aggregate_metrics", "execution_bundle_digests", "historical_policy_ranking_verdict", "development_only", "synthetic_fixture", "held_out", "physical_outcomes_included", "policy_ranking_labels_included", "provider_execution_included", "policy_ranking_scored", "physics_authority", "physical_success_established", "r5_evidence", "r6_decision", "r7_admission", "production_route_eligible", "agent_may_promote", "suite_digest"],
+  "properties": {
+    "schema_version": {"const": "world_model_action_fidelity_development_suite.v1"},
+    "corpus_id": {"type": "string", "minLength": 1},
+    "corpus_digest": {"$ref": "#/$defs/digest"},
+    "benchmark_spec_digest": {"$ref": "#/$defs/digest"},
+    "execution_requested": {"type": "boolean"},
+    "status": {"enum": ["planned_not_executed", "completed_development_only", "incomplete"]},
+    "case_count": {"type": "integer", "minimum": 2},
+    "all_cases_completed": {"type": "boolean"},
+    "all_replays_deterministic": {"type": "boolean"},
+    "cases": {"type": "array", "minItems": 2},
+    "aggregate_metrics": {"type": "object"},
+    "execution_bundle_digests": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/digest"}},
+    "historical_policy_ranking_verdict": {"const": "thesis_not_supported"},
+    "development_only": {"const": true}, "synthetic_fixture": {"const": true}, "held_out": {"const": false},
+    "physical_outcomes_included": {"const": false}, "policy_ranking_labels_included": {"const": false}, "provider_execution_included": {"const": false}, "policy_ranking_scored": {"const": false}, "physics_authority": {"const": false}, "physical_success_established": {"const": false}, "r5_evidence": {"const": false}, "r6_decision": {"const": false}, "r7_admission": {"const": false}, "production_route_eligible": {"const": false}, "agent_may_promote": {"const": false},
+    "suite_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

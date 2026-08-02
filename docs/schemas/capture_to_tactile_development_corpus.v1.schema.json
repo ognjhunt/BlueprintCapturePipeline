@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/capture-to-tactile-development-corpus.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "corpus_id", "description", "lane", "numpy_version", "development_only", "synthetic_fixture", "held_out", "physical_measurements_included", "real_sensor_calibration_included", "qualification_labels_included", "r5_evidence", "r6_decision", "r7_admission", "shared_operating_point", "metric_definitions", "cases"],
+  "properties": {
+    "schema_version": {"const": "capture_to_tactile_development_corpus.v1"},
+    "corpus_id": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "lane": {"const": "tactile"},
+    "numpy_version": {"type": "string", "minLength": 1},
+    "development_only": {"const": true},
+    "synthetic_fixture": {"const": true},
+    "held_out": {"const": false},
+    "physical_measurements_included": {"const": false},
+    "real_sensor_calibration_included": {"const": false},
+    "qualification_labels_included": {"const": false},
+    "r5_evidence": {"const": false},
+    "r6_decision": {"const": false},
+    "r7_admission": {"const": false},
+    "shared_operating_point": {"$ref": "#/$defs/shared"},
+    "metric_definitions": {
+      "type": "object",
+      "required": ["state_trajectory", "topology_contact", "force", "task_outcome"],
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "cases": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/case"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "shared": {
+      "type": "object",
+      "required": ["adapter_protocol", "sensor_class", "data_origin", "calibration_scope", "image_unit", "force_unit", "timestamp_unit", "frame_count", "marker_count", "contact_grid_width", "contact_grid_height", "timestamps_ns", "pixel_pitch_mm", "contact_intensity_threshold", "minimum_normal_force_for_slip_n", "slip_shear_to_normal_ratio", "slip_marker_displacement_px", "maximum_peak_shear_force_n"],
+      "properties": {
+        "adapter_protocol": {"const": "direct_tactile_sequence_reduction.v1"},
+        "sensor_class": {"const": "optical_tactile_with_synchronized_force"},
+        "data_origin": {"const": "synthetic_development_fixture"},
+        "calibration_scope": {"const": "synthetic_identity_only"},
+        "image_unit": {"const": "pixels"},
+        "force_unit": {"const": "newtons"},
+        "timestamp_unit": {"const": "nanoseconds"},
+        "frame_count": {"type": "integer", "minimum": 3, "maximum": 256},
+        "marker_count": {"type": "integer", "minimum": 3, "maximum": 1024},
+        "contact_grid_width": {"type": "integer", "minimum": 2, "maximum": 128},
+        "contact_grid_height": {"type": "integer", "minimum": 2, "maximum": 128},
+        "timestamps_ns": {"type": "array", "minItems": 3, "items": {"type": "integer", "minimum": 0}},
+        "pixel_pitch_mm": {"type": "number", "exclusiveMinimum": 0},
+        "contact_intensity_threshold": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_normal_force_for_slip_n": {"type": "number", "minimum": 0},
+        "slip_shear_to_normal_ratio": {"type": "number", "minimum": 0},
+        "slip_marker_displacement_px": {"type": "number", "minimum": 0},
+        "maximum_peak_shear_force_n": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "marker_vector": {
+      "type": "array",
+      "prefixItems": [{"type": "number"}, {"type": "number"}],
+      "items": false
+    },
+    "case": {
+      "type": "object",
+      "required": ["case_id", "marker_displacement_frames_px", "contact_intensity_frames", "normal_force_n", "shear_force_n"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1},
+        "marker_displacement_frames_px": {
+          "type": "array",
+          "minItems": 3,
+          "items": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/marker_vector"}}
+        },
+        "contact_intensity_frames": {
+          "type": "array",
+          "minItems": 3,
+          "items": {"type": "array", "minItems": 4, "items": {"type": "number", "minimum": 0, "maximum": 1}}
+        },
+        "normal_force_n": {"type": "array", "minItems": 3, "items": {"type": "number", "minimum": 0}},
+        "shear_force_n": {"type": "array", "minItems": 3, "items": {"type": "number", "minimum": 0}}
+      },
+      "additionalProperties": false
+    }
+  }
+}

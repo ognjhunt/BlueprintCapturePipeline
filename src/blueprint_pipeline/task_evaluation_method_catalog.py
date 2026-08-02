@@ -12,6 +12,7 @@ from .decision_evidence_contracts import (
     QualificationRecord,
     canonical_digest,
 )
+from .measurement_research_admission import validate_research_admission_record
 
 
 TASK_EVALUATION_METHOD_CATALOG_PATH_ENV = "BLUEPRINT_TASK_EVALUATION_METHOD_CATALOG_PATH"
@@ -58,7 +59,12 @@ def validate_task_evaluation_method_catalog(value: Mapping[str, Any]) -> dict[st
         raise TaskEvaluationMethodCatalogError("method_catalog_schema_version_invalid")
     raw_profiles = catalog.get("method_profiles")
     raw_qualifications = catalog.get("qualifications")
-    if not isinstance(raw_profiles, list) or not isinstance(raw_qualifications, list):
+    raw_admissions = catalog.get("measurement_admission_records", [])
+    if (
+        not isinstance(raw_profiles, list)
+        or not isinstance(raw_qualifications, list)
+        or not isinstance(raw_admissions, list)
+    ):
         raise TaskEvaluationMethodCatalogError("method_catalog_entries_invalid")
     if _secret_paths(catalog):
         raise TaskEvaluationMethodCatalogError("method_catalog_secret_value_forbidden")
@@ -72,9 +78,26 @@ def validate_task_evaluation_method_catalog(value: Mapping[str, Any]) -> dict[st
         for row in raw_qualifications
         if isinstance(row, Mapping)
     ]
-    if len(profiles) != len(raw_profiles) or len(qualifications) != len(raw_qualifications):
+    admissions = [
+        validate_research_admission_record(row)
+        for row in raw_admissions
+        if isinstance(row, Mapping)
+    ]
+    if (
+        len(profiles) != len(raw_profiles)
+        or len(qualifications) != len(raw_qualifications)
+        or len(admissions) != len(raw_admissions)
+    ):
         raise TaskEvaluationMethodCatalogError("method_catalog_entries_invalid")
     profile_by_digest = {row["method_profile_digest"]: row for row in profiles}
+    measurement_profile_by_digest = {
+        row["measurement_capability_profile"]["capability_profile_digest"]: row
+        for row in profiles
+        if isinstance(row.get("measurement_capability_profile"), Mapping)
+    }
+    admission_by_digest = {row["admission_record_digest"]: row for row in admissions}
+    if len(admission_by_digest) != len(admissions):
+        raise TaskEvaluationMethodCatalogError("method_catalog_duplicate_admission_record")
     if len(profile_by_digest) != len(profiles):
         raise TaskEvaluationMethodCatalogError("method_catalog_duplicate_profile_digest")
     qualification_ids: set[str] = set()
@@ -97,6 +120,34 @@ def validate_task_evaluation_method_catalog(value: Mapping[str, Any]) -> dict[st
             raise TaskEvaluationMethodCatalogError("method_catalog_qualification_profile_mismatch")
         if qualification["claim_type"] not in profile["supported_claim_types"]:
             raise TaskEvaluationMethodCatalogError("method_catalog_qualification_claim_mismatch")
+        measurement_qualification = qualification.get("measurement_qualification_record")
+        if isinstance(measurement_qualification, Mapping):
+            measurement_profile_owner = measurement_profile_by_digest.get(
+                measurement_qualification["capability_profile_digest"]
+            )
+            if measurement_profile_owner is None:
+                raise TaskEvaluationMethodCatalogError(
+                    "method_catalog_measurement_qualification_profile_missing"
+                )
+            if measurement_profile_owner["method_id"] != qualification["method_id"]:
+                raise TaskEvaluationMethodCatalogError(
+                    "method_catalog_measurement_qualification_profile_mismatch"
+                )
+            admission = admission_by_digest.get(
+                measurement_qualification["admission_record_digest"]
+            )
+            if admission is None:
+                raise TaskEvaluationMethodCatalogError(
+                    "method_catalog_measurement_admission_record_missing"
+                )
+            if (
+                admission["method_id"] != qualification["method_id"]
+                or admission["stage"] not in {"R7", "R8"}
+                or admission["production_eligible"] is not True
+            ):
+                raise TaskEvaluationMethodCatalogError(
+                    "method_catalog_measurement_admission_record_mismatch"
+                )
     normalized = {
         "schema_version": "task_evaluation_method_catalog.v1",
         "catalog_id": str(catalog.get("catalog_id") or "").strip(),
@@ -112,9 +163,16 @@ def validate_task_evaluation_method_catalog(value: Mapping[str, Any]) -> dict[st
                 row["qualification_id"],
             ),
         ),
+        "measurement_admission_records": sorted(
+            admissions,
+            key=lambda row: (row["method_id"], row["stage"], row["admission_record_digest"]),
+        ),
         "proof_boundary": {
             "catalog_entry_is_execution_authorization": False,
             "provider_availability_is_qualification": False,
+            "agent_interpretation_is_route_authorization": False,
+            "measurement_qualification_signature_required": True,
+            "unknown_scope_fields_are_wildcards": False,
             "comparative_policy_ranking_verdict": "thesis_not_supported",
         },
     }

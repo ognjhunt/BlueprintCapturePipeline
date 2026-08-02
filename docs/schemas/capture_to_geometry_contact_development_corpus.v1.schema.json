@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/capture-to-geometry-contact-development-corpus.v1.schema.json",
+  "title": "Blueprint Capture-to-Geometry-and-Contact development corpus",
+  "type": "object",
+  "required": ["schema_version", "corpus_id", "description", "lane", "development_only", "synthetic_fixture", "held_out", "physical_measurements_included", "qualification_labels_included", "instrumented_contact_included", "r5_evidence", "r6_decision", "r7_admission", "shared_operating_point", "metric_definitions", "cases"],
+  "properties": {
+    "schema_version": {"const": "capture_to_geometry_contact_development_corpus.v1"},
+    "corpus_id": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "lane": {"const": "rigid_contact"},
+    "development_only": {"const": true},
+    "synthetic_fixture": {"const": true},
+    "held_out": {"const": false},
+    "physical_measurements_included": {"const": false},
+    "qualification_labels_included": {"const": false},
+    "instrumented_contact_included": {"const": false},
+    "r5_evidence": {"const": false},
+    "r6_decision": {"const": false},
+    "r7_admission": {"const": false},
+    "shared_operating_point": {"$ref": "#/$defs/shared"},
+    "metric_definitions": {
+      "type": "object",
+      "required": ["contact_sequence", "penetration", "first_contact_time", "replay"],
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "cases": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/case"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "vector3": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}], "items": false},
+    "shared": {
+      "type": "object",
+      "required": ["protocol_family", "length_unit", "mass_unit", "time_unit", "gravity_m_s2", "timestep_s", "duration_s", "friction", "penetration_unsafe_threshold_m"],
+      "properties": {
+        "protocol_family": {"const": "rigid_body_drop"},
+        "length_unit": {"const": "meters"},
+        "mass_unit": {"const": "kilograms"},
+        "time_unit": {"const": "seconds"},
+        "gravity_m_s2": {"type": "number", "maximum": 0},
+        "timestep_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.05},
+        "duration_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 60},
+        "friction": {"$ref": "#/$defs/vector3"},
+        "penetration_unsafe_threshold_m": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "case": {
+      "type": "object",
+      "required": ["case_id", "body_shape", "mass_kg", "initial_height_m"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1},
+        "body_shape": {"enum": ["sphere", "box"]},
+        "radius_m": {"type": "number", "exclusiveMinimum": 0},
+        "half_size_m": {"$ref": "#/$defs/vector3"},
+        "mass_kg": {"type": "number", "exclusiveMinimum": 0},
+        "initial_height_m": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "allOf": [
+        {"if": {"properties": {"body_shape": {"const": "sphere"}}}, "then": {"required": ["radius_m"], "not": {"required": ["half_size_m"]}}},
+        {"if": {"properties": {"body_shape": {"const": "box"}}}, "then": {"required": ["half_size_m"], "not": {"required": ["radius_m"]}}}
+      ],
+      "additionalProperties": false
+    }
+  }
+}

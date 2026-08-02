@@ -1,0 +1,48 @@
+{
+  "schema_version": "capture_to_geometry_contact_development_corpus.v1",
+  "corpus_id": "blueprint-rigid-contact-cross-engine-development-v1",
+  "description": "Method-neutral synthetic sphere and box drop cases for Q-RIGID/Q-CONTACT development plumbing and cross-engine comparison; not captured-site or instrumented physical evidence.",
+  "lane": "rigid_contact",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_measurements_included": false,
+  "qualification_labels_included": false,
+  "instrumented_contact_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "protocol_family": "rigid_body_drop",
+    "length_unit": "meters",
+    "mass_unit": "kilograms",
+    "time_unit": "seconds",
+    "gravity_m_s2": -9.81,
+    "timestep_s": 0.001,
+    "duration_s": 1.0,
+    "friction": [0.8, 0.005, 0.0001],
+    "penetration_unsafe_threshold_m": 0.03
+  },
+  "metric_definitions": {
+    "contact_sequence": "Whether the simulated body made ground contact during the bounded trajectory.",
+    "penetration": "Maximum negative MuJoCo contact distance converted to nonnegative meters.",
+    "first_contact_time": "Simulation step of first contact multiplied by the fixed timestep.",
+    "replay": "Exact digest agreement across two complete executions of each case."
+  },
+  "cases": [
+    {
+      "case_id": "rigid-sphere-drop-development-001",
+      "body_shape": "sphere",
+      "radius_m": 0.05,
+      "mass_kg": 0.2,
+      "initial_height_m": 0.5
+    },
+    {
+      "case_id": "rigid-box-drop-development-002",
+      "body_shape": "box",
+      "half_size_m": [0.04, 0.03, 0.06],
+      "mass_kg": 0.4,
+      "initial_height_m": 0.35
+    }
+  ]
+}

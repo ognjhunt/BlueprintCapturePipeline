@@ -1,0 +1,58 @@
+{
+  "schema_version": "capture_to_deformation_cloth_development_corpus.v1",
+  "corpus_id": "blueprint-mujoco-flex-cloth-development-v1",
+  "description": "Synthetic MuJoCo flex-cloth sag and ground-contact cases for the stretch-only Q-CLOTH development protocol; not captured garment evidence.",
+  "lane": "cloth",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_measurements_included": false,
+  "qualification_labels_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "adapter_protocol": "mujoco_flex_cloth_sag.v1",
+    "length_unit": "meters",
+    "mass_unit": "kilograms",
+    "time_unit": "seconds",
+    "pin_pattern": "four_corners",
+    "elastic_formulation": "stretch_only",
+    "self_collision": "none",
+    "count_x": 6,
+    "count_y": 6,
+    "spacing_m": 0.05,
+    "ground_height_m": 0.0,
+    "total_mass_kg": 1.0,
+    "collision_radius_m": 0.001,
+    "poisson_ratio": 0.0,
+    "thickness_m": 0.01,
+    "edge_damping": 10.0,
+    "gravity_m_s2": [0.0, 0.0, -9.81],
+    "contact_friction": [0.5, 0.005, 0.0001],
+    "duration_s": 0.5,
+    "timestep_s": 0.001,
+    "maximum_edge_strain": 1.0,
+    "maximum_penetration_m": 0.01
+  },
+  "metric_definitions": {
+    "state_trajectory": "Maximum downward sag in meters relative to the initial planar flex height.",
+    "topology_contact": "Whether any flex-ground contact was observed during the trajectory.",
+    "force": "Magnitude in newtons of the configured total gravity load.",
+    "task_outcome": "Whether sag, strain, penetration, and solver-warning envelopes remained satisfied."
+  },
+  "cases": [
+    {
+      "case_id": "mujoco-flex-cloth-development-001",
+      "initial_height_m": 0.2,
+      "youngs_modulus_pa": 300000.0,
+      "maximum_sag_m": 0.2
+    },
+    {
+      "case_id": "mujoco-flex-cloth-development-002",
+      "initial_height_m": 0.08,
+      "youngs_modulus_pa": 30000.0,
+      "maximum_sag_m": 0.1
+    }
+  ]
+}

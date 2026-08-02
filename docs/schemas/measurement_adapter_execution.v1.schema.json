@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-adapter-execution.v1.schema.json",
+  "title": "Blueprint measurement adapter execution contracts",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/workerResult"},
+    {"$ref": "#/$defs/receipt"},
+    {"$ref": "#/$defs/bundle"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "request": {
+      "type": "object",
+      "required": ["schema_version", "execution_id", "adapter_descriptor", "benchmark_spec", "case_manifest", "implementation", "runtime_configuration", "timeout_seconds", "execution_scope", "qualification_labels_available_to_worker", "physical_measurements_available_to_worker", "provider_spend_authorized", "physical_execution_authorized", "production_execution_authorized", "agent_authorized", "execution_request_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_adapter_execution_request.v1"},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "execution_scope": {"const": "development_only"},
+        "qualification_labels_available_to_worker": {"const": false},
+        "physical_measurements_available_to_worker": {"const": false},
+        "provider_spend_authorized": {"const": false},
+        "physical_execution_authorized": {"const": false},
+        "production_execution_authorized": {"const": false},
+        "agent_authorized": {"const": false},
+        "execution_request_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "workerResult": {
+      "type": "object",
+      "required": ["schema_version", "execution_id", "execution_request_digest", "candidate_id", "adapter_descriptor_digest", "benchmark_spec_digest", "case_manifest_digest", "split", "status", "observed_metrics", "unsafe_condition_predicted", "runtime_observations", "failure_codes", "qualification_labels_accessed", "physical_measurements_accessed", "vendor_graded", "agent_graded", "physical_success_established", "worker_result_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_adapter_worker_result.v1"},
+        "status": {"enum": ["completed", "blocked", "failed"]},
+        "qualification_labels_accessed": {"const": false},
+        "physical_measurements_accessed": {"const": false},
+        "vendor_graded": {"const": false},
+        "agent_graded": {"const": false},
+        "physical_success_established": {"const": false},
+        "worker_result_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "receipt": {
+      "type": "object",
+      "required": ["schema_version", "execution_id", "execution_request_digest", "candidate_id", "adapter_descriptor_digest", "benchmark_spec_digest", "case_manifest_digest", "split", "status", "evidence_class", "executor_id", "executor_independent_of_candidate", "clean_environment_verified", "immutable_runtime_identity_verified", "command_digest", "command_executable", "command_argc", "started_at", "finished_at", "duration_seconds", "exit_code", "worker_result_digest", "stdout_digest", "stdout_bytes", "stdout_content_persisted", "stderr_digest", "stderr_bytes", "stderr_content_persisted", "runtime_observations", "host_runtime", "failure_codes", "host_process_isolation_only", "network_isolation_verified", "filesystem_isolation_verified", "secrets_persisted", "qualification_labels_accessed", "provider_spend_authorized", "physical_execution_authorized", "production_route_eligible", "r6_qualification_decision_created", "r7_catalog_admission_created", "agent_authorized", "execution_receipt_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_adapter_execution_receipt.v1"},
+        "status": {"enum": ["planned_not_executed", "completed", "blocked", "failed", "timed_out"]},
+        "evidence_class": {"enum": ["plan_only", "development_execution", "independent_qualification_execution", "failed_execution"]},
+        "stdout_content_persisted": {"const": false},
+        "stderr_content_persisted": {"const": false},
+        "secrets_persisted": {"const": false},
+        "qualification_labels_accessed": {"const": false},
+        "provider_spend_authorized": {"const": false},
+        "physical_execution_authorized": {"const": false},
+        "production_route_eligible": {"const": false},
+        "r6_qualification_decision_created": {"const": false},
+        "r7_catalog_admission_created": {"const": false},
+        "agent_authorized": {"const": false},
+        "execution_receipt_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "bundle": {
+      "type": "object",
+      "required": ["schema_version", "request", "receipt", "worker_result", "prediction", "qualification_created", "catalog_mutated", "production_route_created", "physical_success_established", "execution_bundle_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_adapter_execution_bundle.v1"},
+        "qualification_created": {"const": false},
+        "catalog_mutated": {"const": false},
+        "production_route_created": {"const": false},
+        "physical_success_established": {"const": false},
+        "execution_bundle_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

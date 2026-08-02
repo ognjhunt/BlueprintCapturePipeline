@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/capture-to-geometry-kinematic-development-corpus.v1.schema.json",
+  "title": "Blueprint planar kinematic development corpus",
+  "type": "object",
+  "required": ["schema_version", "corpus_id", "description", "lane", "development_only", "synthetic_fixture", "held_out", "captured_mesh_included", "captured_registration_included", "physical_measurements_included", "qualification_labels_included", "continuous_collision_evaluated", "r5_evidence", "r6_decision", "r7_admission", "shared_operating_point", "cases"],
+  "properties": {
+    "schema_version": {"const": "capture_to_geometry_kinematic_development_corpus.v1"},
+    "corpus_id": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "lane": {"const": "planar_reach_discrete_collision"},
+    "development_only": {"const": true},
+    "synthetic_fixture": {"const": true},
+    "held_out": {"const": false},
+    "captured_mesh_included": {"const": false},
+    "captured_registration_included": {"const": false},
+    "physical_measurements_included": {"const": false},
+    "qualification_labels_included": {"const": false},
+    "continuous_collision_evaluated": {"const": false},
+    "r5_evidence": {"const": false},
+    "r6_decision": {"const": false},
+    "r7_admission": {"const": false},
+    "shared_operating_point": {"type": "object"},
+    "cases": {"type": "array", "minItems": 3}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,47 @@
+{
+  "schema_version": "world_model_action_fidelity_development_corpus.v1",
+  "corpus_id": "blueprint-world-model-action-fidelity-development-v1",
+  "description": "Synthetic strict action-recovery cases for model-neutral Q-WM evaluator development; no provider output, policy-ranking labels, or physical outcomes.",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_outcomes_included": false,
+  "policy_ranking_labels_included": false,
+  "provider_execution_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "adapter_protocol": "world_model_action_fidelity.v1",
+    "data_origin": "synthetic_development_fixture",
+    "claim_scope": "evaluator_support_only",
+    "historical_policy_ranking_verdict": "thesis_not_supported",
+    "policy_ranking_labels_included": false,
+    "physical_outcomes_included": false,
+    "provider_execution_included": false,
+    "action_dimension": 2,
+    "action_unit": "per_dimension",
+    "action_units": ["latent", "latent"],
+    "control_hz": 50.0,
+    "maximum_abs_error": 0.05,
+    "calibration_id": "synthetic-development-calibration",
+    "calibration_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "scorer_runtime_id": "blueprint-strict-action-consistency-v1"
+  },
+  "cases": [
+    {
+      "case_id": "world-model-action-fidelity-within-envelope-001",
+      "action_steps": [
+        {"step_index": 0, "sim_time_s": 0.0, "commanded_action": [0.1, -0.2], "recovered_action": [0.11, -0.19], "per_dimension_uncertainty": [0.01, 0.01], "motion_identity": "good-motion-0", "forward_consistent": true, "inverse_consistent": true},
+        {"step_index": 1, "sim_time_s": 0.02, "commanded_action": [0.3, 0.4], "recovered_action": [0.29, 0.41], "per_dimension_uncertainty": [0.01, 0.01], "motion_identity": "good-motion-1", "forward_consistent": true, "inverse_consistent": true}
+      ]
+    },
+    {
+      "case_id": "world-model-action-fidelity-outside-envelope-002",
+      "action_steps": [
+        {"step_index": 0, "sim_time_s": 0.0, "commanded_action": [-0.2, 0.1], "recovered_action": [-0.1, 0.1], "per_dimension_uncertainty": [0.02, 0.01], "motion_identity": "drift-motion-0", "forward_consistent": true, "inverse_consistent": true},
+        {"step_index": 1, "sim_time_s": 0.02, "commanded_action": [0.2, -0.3], "recovered_action": [0.2, -0.22], "per_dimension_uncertainty": [0.01, 0.02], "motion_identity": "drift-motion-1", "forward_consistent": true, "inverse_consistent": true}
+      ]
+    }
+  ]
+}

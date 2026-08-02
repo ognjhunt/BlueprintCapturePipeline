@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-qualification-benchmarks.v1.schema.json",
+  "title": "Blueprint measurement qualification benchmark contracts",
+  "oneOf": [
+    {"$ref": "#/$defs/spec"},
+    {"$ref": "#/$defs/case"},
+    {"$ref": "#/$defs/prediction"},
+    {"$ref": "#/$defs/label"},
+    {"$ref": "#/$defs/report"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "spec": {
+      "type": "object",
+      "required": ["schema_version", "benchmark_id", "benchmark_version", "lane", "purpose", "protocols", "physical_setup_requirements", "method_ids", "metric_ids", "development_split_digest", "qualification_split_digest", "capture_bundle_digests", "robot_controller_digests", "acceptance_thresholds", "compute_budget", "minimum_repeated_trials", "candidate_may_access_qualification_labels", "vendor_may_grade_qualification", "agent_may_approve", "r6_human_decision_required", "r7_catalog_admission_required", "benchmark_spec_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_qualification_benchmark_spec.v1"},
+        "benchmark_id": {"enum": ["capture-to-geometry-and-contact", "capture-to-observation", "capture-to-deformation"]},
+        "development_split_digest": {"$ref": "#/$defs/digest"},
+        "qualification_split_digest": {"$ref": "#/$defs/digest"},
+        "minimum_repeated_trials": {"type": "integer", "minimum": 2},
+        "candidate_may_access_qualification_labels": {"const": false},
+        "vendor_may_grade_qualification": {"const": false},
+        "agent_may_approve": {"const": false},
+        "r6_human_decision_required": {"const": true},
+        "r7_catalog_admission_required": {"const": true},
+        "benchmark_spec_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "case": {
+      "type": "object",
+      "required": ["schema_version", "case_id", "benchmark_id", "benchmark_spec_digest", "split", "split_digest", "lane", "task_class", "material_regime", "input_artifact_digests", "operating_point", "requested_metric_ids", "sealed_labels_included", "physical_measurement_values_included", "case_manifest_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_qualification_benchmark_case.v1"},
+        "split": {"enum": ["development", "qualification"]},
+        "benchmark_spec_digest": {"$ref": "#/$defs/digest"},
+        "split_digest": {"$ref": "#/$defs/digest"},
+        "sealed_labels_included": {"const": false},
+        "physical_measurement_values_included": {"const": false},
+        "case_manifest_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "prediction": {
+      "type": "object",
+      "required": ["schema_version", "prediction_id", "benchmark_id", "benchmark_spec_digest", "case_id", "case_manifest_digest", "split", "candidate_id", "adapter_descriptor_digest", "execution_receipt_digest", "execution_evidence_class", "executor_id", "executor_independent_of_candidate", "clean_environment_verified", "immutable_runtime_identity_verified", "observed_metrics", "unsafe_condition_predicted", "qualification_labels_accessed", "vendor_graded", "agent_graded", "physical_success_established", "prediction_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_benchmark_prediction.v1"},
+        "execution_receipt_digest": {"$ref": "#/$defs/digest"},
+        "execution_evidence_class": {"enum": ["development_execution", "independent_qualification_execution"]},
+        "executor_independent_of_candidate": {"type": "boolean"},
+        "clean_environment_verified": {"type": "boolean"},
+        "immutable_runtime_identity_verified": {"type": "boolean"},
+        "qualification_labels_accessed": {"const": false},
+        "vendor_graded": {"const": false},
+        "agent_graded": {"const": false},
+        "physical_success_established": {"const": false},
+        "prediction_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "label": {
+      "type": "object",
+      "required": ["schema_version", "label_id", "benchmark_id", "benchmark_spec_digest", "case_id", "case_manifest_digest", "split", "expected_metrics", "unsafe_condition_observed", "physical_measurement_ids", "independent_evaluator_id", "label_visibility", "candidate_accessed", "vendor_graded", "agent_graded", "sealed_label_digest"],
+      "properties": {
+        "schema_version": {"const": "sealed_physical_benchmark_label.v1"},
+        "label_visibility": {"const": "independent_evaluator_only"},
+        "candidate_accessed": {"const": false},
+        "vendor_graded": {"const": false},
+        "agent_graded": {"const": false},
+        "sealed_label_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "report": {
+      "type": "object",
+      "required": ["schema_version", "benchmark_id", "benchmark_spec_digest", "split", "split_digest", "evaluator_id", "independent_execution", "independent_execution_receipts_verified", "case_count", "minimum_repeated_trials", "joined_cases", "metrics", "threshold_checks", "confidence_intervals", "thresholds_passed", "evidence_status", "r6_qualification_decision", "r7_catalog_admission", "production_route_eligible", "physical_success_established", "deployment_readiness_established", "safety_certification_established", "benchmark_report_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_qualification_benchmark_report.v1"},
+        "independent_execution_receipts_verified": {"type": "boolean"},
+        "minimum_repeated_trials": {"type": "integer", "minimum": 2},
+        "confidence_intervals": {"type": "object"},
+        "evidence_status": {"enum": ["development_only_not_qualification", "r5_evidence_candidate"]},
+        "r6_qualification_decision": {"type": "null"},
+        "r7_catalog_admission": {"const": false},
+        "production_route_eligible": {"const": false},
+        "physical_success_established": {"const": false},
+        "deployment_readiness_established": {"const": false},
+        "safety_certification_established": {"const": false},
+        "benchmark_report_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

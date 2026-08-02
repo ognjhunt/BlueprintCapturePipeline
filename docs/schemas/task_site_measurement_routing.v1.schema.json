@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/task-site-measurement-routing.v1.schema.json",
+  "title": "Blueprint task-and-site-specific measurement routing contracts",
+  "description": "Agent-preparable, deterministically authorized sidecar contracts for Decision/Evidence Router v1.",
+  "oneOf": [
+    {"$ref": "#/$defs/requirements"},
+    {"$ref": "#/$defs/siteEvidence"},
+    {"$ref": "#/$defs/siteEvidenceAudit"},
+    {"$ref": "#/$defs/methodProfile"},
+    {"$ref": "#/$defs/qualification"},
+    {"$ref": "#/$defs/routingDecision"},
+    {"$ref": "#/$defs/abstention"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "claimLevel": {"enum": ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8"]},
+    "methodFamily": {
+      "enum": [
+        "analytic_geometry_kinematics", "captured_real_observation",
+        "traditional_simulation", "multiphysics_engineering_solver",
+        "calibrated_renderer_sensor_simulation", "neural_reconstruction_appearance",
+        "learned_world_model", "task_benchmark_framework", "external_provider_tool",
+        "owner_attested_operational_input", "physical_evidence"
+      ]
+    },
+    "siteEvidenceAudit": {
+      "type": "object",
+      "required": ["schema_version", "profile_id", "site_evidence_digest", "gaps", "gap_count", "metric_scale_verified", "appearance_evidence_is_not_physical_evidence", "raw_capture_truth_rewritten", "site_evidence_audit_digest"],
+      "properties": {
+        "schema_version": {"const": "site_evidence_audit.v1"},
+        "profile_id": {"type": "string", "minLength": 1},
+        "site_evidence_digest": {"$ref": "#/$defs/digest"},
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["evidence_id", "gap", "required_by_request", "smallest_next_action"],
+            "additionalProperties": true
+          }
+        },
+        "gap_count": {"type": "integer", "minimum": 0},
+        "metric_scale_verified": {"type": "boolean"},
+        "appearance_evidence_is_not_physical_evidence": {"const": true},
+        "raw_capture_truth_rewritten": {"const": false},
+        "site_evidence_audit_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "requirements": {
+      "type": "object",
+      "required": ["schema_version", "taxonomy_version", "request_id", "task_class", "claim_type", "requested_claim_level", "required_capabilities", "required_capability_alternatives", "required_site_evidence", "interaction", "task_scope", "site_scope", "robot_scope", "sensor_scope", "constraints", "agent_interpretation_authoritative", "requirements_digest"],
+      "properties": {
+        "schema_version": {"const": "task_measurement_requirements.v1"},
+        "taxonomy_version": {"const": "2026-08-01"},
+        "request_id": {"type": "string", "minLength": 1},
+        "task_class": {"type": "string", "minLength": 1},
+        "claim_type": {"type": "string", "minLength": 1},
+        "requested_claim_level": {"$ref": "#/$defs/claimLevel"},
+        "required_capabilities": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "required_capability_alternatives": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string"}
+          }
+        },
+        "required_site_evidence": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "interaction": {"type": "object"},
+        "task_scope": {"type": "object"},
+        "site_scope": {"type": "object"},
+        "robot_scope": {"type": "object"},
+        "sensor_scope": {"type": "object"},
+        "constraints": {"type": "object"},
+        "agent_interpretation_authoritative": {"const": false},
+        "requirements_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "siteEvidence": {
+      "type": "object",
+      "required": ["schema_version", "profile_id", "bundle_id", "bundle_hash", "provenance_record_id", "rights", "privacy", "coordinate_system", "evidence", "limitations", "site_evidence_digest"],
+      "properties": {
+        "schema_version": {"const": "site_evidence_profile.v1"},
+        "profile_id": {"type": "string", "minLength": 1},
+        "bundle_id": {"type": "string", "minLength": 1},
+        "bundle_hash": {"$ref": "#/$defs/digest"},
+        "provenance_record_id": {"type": "string", "minLength": 1},
+        "rights": {"type": "object"},
+        "privacy": {"type": "object"},
+        "coordinate_system": {"type": "object"},
+        "source_capture_digest": {"$ref": "#/$defs/digest"},
+        "geometry_bridge": {
+          "type": "object",
+          "required": [
+            "metric_geometry_manifest_digest", "collider_candidate_manifest_digest",
+            "collider_qualification_digest", "robot_site_registration_digest",
+            "development_only", "method_qualification_created", "r5_evidence_created",
+            "r6_decision_created", "r7_admission_created",
+            "physical_success_established", "deployment_readiness_established",
+            "safety_established", "agent_may_promote"
+          ],
+          "properties": {
+            "metric_geometry_manifest_digest": {"$ref": "#/$defs/digest"},
+            "collider_candidate_manifest_digest": {"$ref": "#/$defs/digest"},
+            "collider_qualification_digest": {"$ref": "#/$defs/digest"},
+            "robot_site_registration_digest": {"$ref": "#/$defs/digest"},
+            "development_only": {"type": "boolean"},
+            "method_qualification_created": {"const": false},
+            "r5_evidence_created": {"const": false},
+            "r6_decision_created": {"const": false},
+            "r7_admission_created": {"const": false},
+            "physical_success_established": {"const": false},
+            "deployment_readiness_established": {"const": false},
+            "safety_established": {"const": false},
+            "agent_may_promote": {"const": false}
+          },
+          "additionalProperties": false
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["available", "validated"],
+            "properties": {"available": {"type": "boolean"}, "validated": {"type": "boolean"}},
+            "additionalProperties": true
+          }
+        },
+        "limitations": {"type": "object"},
+        "site_evidence_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "methodProfile": {
+      "type": "object",
+      "required": ["schema_version", "method_id", "capabilities", "evidence_quality", "expected_cost_usd", "expected_latency_seconds", "capability_profile_digest"],
+      "properties": {
+        "schema_version": {"const": "method_capability_profile.v1"},
+        "method_id": {"type": "string", "minLength": 1},
+        "expected_cost_usd": {"type": "number", "minimum": 0},
+        "expected_latency_seconds": {"type": "number", "minimum": 0},
+        "evidence_quality": {"type": "object"},
+        "world_model_roles": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "proposal_generation", "qualitative_rollout", "synthetic_training_data",
+              "counterfactual_hypothesis", "evaluator_support", "comparative_policy_ranking"
+            ]
+          }
+        },
+        "capability_profile_digest": {"$ref": "#/$defs/digest"},
+        "capabilities": {
+          "type": "object",
+          "required": [
+            "method_id", "method_family", "version", "release_date", "commit_hash", "container_digest", "plugin_versions", "solver_backend", "numeric_precision", "deterministic_mode", "operating_system", "gpu_model", "driver_version", "random_seed_policy",
+            "metric_scale_supported", "mesh_supported", "convex_collider_supported", "triangle_mesh_collider_supported", "sdf_collider_supported", "esdf_supported", "continuous_collision_supported", "thin_shell_collision_supported", "two_sided_collision_supported", "self_collision_supported", "dynamic_collision_supported", "openusd_supported", "mjcf_supported", "urdf_supported", "gaussian_splat_supported_for_rendering", "nerf_supported_for_rendering", "uncertainty_map_supported",
+            "contact_formulation", "penalty_contact_supported", "complementarity_contact_supported", "hydroelastic_contact_supported", "ipc_contact_supported", "adhesion_supported", "static_friction_supported", "dynamic_friction_supported", "anisotropic_friction_supported", "rolling_friction_supported", "torsional_friction_supported", "restitution_supported", "contact_compliance_supported", "contact_force_output_supported", "impulse_output_supported", "penetration_metric_supported",
+            "revolute_joint_supported", "prismatic_joint_supported", "closed_chain_supported", "mimic_joint_supported", "joint_limits_supported", "joint_friction_supported", "joint_damping_supported", "backlash_supported", "detent_supported", "joint_compliance_supported", "articulation_force_output_supported",
+            "cloth_shell_supported", "anisotropic_cloth_supported", "seams_supported", "tearing_supported", "rod_cable_supported", "torsional_rod_supported", "plastic_bending_supported", "hyperelastic_fem_supported", "nearly_incompressible_supported", "viscoelastic_supported", "foam_compression_supported", "mpm_supported", "dem_supported", "sph_supported", "cfd_supported", "granular_cohesion_supported", "particle_breakage_supported", "fluid_surface_tension_supported", "fluid_wetting_supported", "fracture_supported", "cutting_supported", "tissue_model_supported", "food_specific_model_supported",
+            "robot_model_formats", "supported_embodiments", "supported_end_effectors", "position_control_supported", "velocity_control_supported", "torque_control_supported", "impedance_control_supported", "compliance_control_supported", "maximum_control_rate_hz", "action_representation_types", "controller_latency_model_supported", "actuator_dynamics_supported", "whole_body_control_supported",
+            "rgb_supported", "depth_supported", "structured_light_supported", "lidar_supported", "radar_supported", "event_camera_supported", "imu_supported", "force_torque_supported", "contact_sensor_supported", "optical_tactile_supported", "taxel_tactile_supported", "intrinsics_import_supported", "extrinsics_import_supported", "distortion_model_supported", "rolling_shutter_supported", "motion_blur_supported", "isp_model_supported", "temporal_noise_supported", "material_brdf_supported", "transmission_refraction_supported", "spectral_model_supported", "sensor_timing_supported",
+            "qualification_record_ids", "qualified_task_classes", "qualified_material_regimes", "qualified_robot_ids", "qualified_end_effector_ids", "qualified_controller_ids", "qualified_sensor_ids", "qualified_site_classes", "qualified_parameter_ranges", "qualified_metric_ids", "qualified_claim_ceiling", "qualification_expiration", "harmful_false_negative_bound", "known_failure_modes", "prohibited_extrapolations",
+            "source_available", "local_offline_supported", "api_only", "commercial_use_allowed", "redistribution_allowed", "asset_license_ids", "model_license_ids", "provider_training_use_allowed", "data_retention_days", "deletion_right_supported", "subprocessor_regions", "output_export_supported", "output_formats", "maximum_latency_class", "maximum_compute_class", "estimated_cost_class"
+          ],
+          "properties": {
+            "qualified_claim_ceiling": {"$ref": "#/$defs/claimLevel"},
+            "method_family": {"$ref": "#/$defs/methodFamily"}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "qualification": {
+      "type": "object",
+      "required": ["schema_version", "qualification_id", "method_id", "method_version", "capability_profile_digest", "admission_record_digest", "admission_stage", "status", "qualified_capabilities", "claim_ceiling", "scope", "metrics", "approval", "expiration_date", "self_grading", "measurement_qualification_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_qualification_record.v1"},
+        "status": {"const": "approved"},
+        "claim_ceiling": {"$ref": "#/$defs/claimLevel"},
+        "self_grading": {"const": false},
+        "capability_profile_digest": {"$ref": "#/$defs/digest"},
+        "admission_record_digest": {"$ref": "#/$defs/digest"},
+        "admission_stage": {"enum": ["R7", "R8"]},
+        "measurement_qualification_digest": {"$ref": "#/$defs/digest"},
+        "approval": {
+          "type": "object",
+          "required": ["signature_status", "signature_id", "approved_by", "agent_approved"],
+          "properties": {
+            "signature_status": {"const": "verified"},
+            "agent_approved": {"const": false},
+            "approved_by": {"type": "array", "minItems": 2, "items": {"type": "string"}}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "routingDecision": {
+      "type": "object",
+      "required": ["schema_version", "routing_id", "request_id", "policy_version", "taxonomy_version", "catalog_snapshot_hash", "requirements_digest", "site_evidence_profile_id", "site_evidence_digest", "status", "candidates_considered", "selected_route", "claim_boundary", "route_claim_ceiling", "evidence_package", "decision_explanation", "projected_cost_usd", "projected_latency_seconds", "abstention", "agent_selected_route", "agent_qualified_method", "execution_authorized", "deterministic_policy_signature", "routing_decision_digest"],
+      "properties": {
+        "schema_version": {"const": "task_site_measurement_routing_decision.v1"},
+        "status": {"enum": ["route_selected", "abstention"]},
+        "taxonomy_version": {"const": "2026-08-01"},
+        "selected_route": {
+          "type": "object",
+          "required": ["type", "stages"],
+          "properties": {
+            "type": {"enum": ["single_method", "composite", "direct_observation", "physical_test", "abstention"]},
+            "stages": {"type": "array", "items": {"type": "object"}}
+          },
+          "additionalProperties": true
+        },
+        "evidence_package": {"type": "object"},
+        "decision_explanation": {"type": "string", "minLength": 1},
+        "agent_selected_route": {"const": false},
+        "agent_qualified_method": {"const": false},
+        "execution_authorized": {"const": false},
+        "catalog_snapshot_hash": {"$ref": "#/$defs/digest"},
+        "deterministic_policy_signature": {"$ref": "#/$defs/digest"},
+        "routing_decision_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "abstention": {
+      "type": "object",
+      "required": ["schema_version", "abstention_code", "blocking_requirements", "smallest_next_action", "prohibited_fallbacks", "abstention_digest"],
+      "properties": {
+        "schema_version": {"const": "abstention_or_next_action.v1"},
+        "abstention_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

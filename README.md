@@ -39,6 +39,9 @@ AI and engineer orientation maps live under [`docs/architecture/`](docs/architec
 - [`refactor-hotspots.md`](docs/architecture/refactor-hotspots.md)
 - [`evaluation-run-interface.md`](docs/architecture/evaluation-run-interface.md)
 - [`decision-evidence-router.md`](docs/architecture/decision-evidence-router.md)
+- [`task-site-measurement-routing.md`](docs/architecture/task-site-measurement-routing.md)
+- [`measurement research monitoring runbook`](docs/runbooks/measurement-research-monitor.md)
+- [`measurement adapter execution runbook`](docs/runbooks/measurement-adapter-execution.md)
 - [`task-evaluation-supervisor.md`](docs/architecture/task-evaluation-supervisor.md)
 - [`TASK_EVALUATION_SUPERVISOR_RUNBOOK.md`](docs/TASK_EVALUATION_SUPERVISOR_RUNBOOK.md)
 

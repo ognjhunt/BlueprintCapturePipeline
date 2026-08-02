@@ -263,6 +263,27 @@ class MaintainedSiteTaskTestbed(_ValidatedArtifact):
                 errors.append(f"{key}:must_be_list")
         if _string(value.get("lifecycle_state")) not in LIFECYCLE_STATES:
             errors.append("lifecycle_state:unsupported")
+        if value.get("site_evidence_profile") is not None:
+            try:
+                from .task_site_measurement_routing import validate_site_evidence_profile
+
+                site_profile = validate_site_evidence_profile(value["site_evidence_profile"])
+                source_matches = [
+                    bundle
+                    for bundle in bundles or []
+                    if isinstance(bundle, Mapping)
+                    and _string(bundle.get("bundle_id")) == site_profile["bundle_id"]
+                    and _string(bundle.get("digest")) == site_profile["bundle_hash"]
+                ]
+                if not source_matches:
+                    errors.append("site_evidence_profile:source_capture_binding_mismatch")
+                site_rights = dict(site_profile.get("rights") or {})
+                if site_rights.get("commercial_evaluation_allowed") is True and _string(
+                    dict(governance or {}).get("rights")
+                ).lower() not in {"accepted", "cleared", "approved"}:
+                    errors.append("site_evidence_profile:rights_exceed_testbed_governance")
+            except (TypeError, ValueError) as exc:
+                errors.append(f"site_evidence_profile:invalid:{exc}")
         return errors
 
 
@@ -307,6 +328,27 @@ class DecisionEvidenceRequest(_ValidatedArtifact):
                     errors.append(
                         f"claims[{index}].permitted_abstention_behavior:missing"
                     )
+                if claim.get("task_measurement_requirements") is not None:
+                    try:
+                        from .task_site_measurement_routing import (
+                            validate_task_measurement_requirements,
+                        )
+
+                        requirements = validate_task_measurement_requirements(
+                            claim["task_measurement_requirements"]
+                        )
+                        if requirements["request_id"] != _string(claim.get("claim_id")):
+                            errors.append(
+                                f"claims[{index}].task_measurement_requirements.request_id:mismatch"
+                            )
+                        if requirements["claim_type"] != _string(claim.get("claim_type")):
+                            errors.append(
+                                f"claims[{index}].task_measurement_requirements.claim_type:mismatch"
+                            )
+                    except (TypeError, ValueError) as exc:
+                        errors.append(
+                            f"claims[{index}].task_measurement_requirements:invalid:{exc}"
+                        )
             if len(set(claim_ids)) != len(claim_ids):
                 errors.append("claims:duplicate_claim_id")
         budget = value.get("budget")
@@ -379,6 +421,19 @@ class EvidenceMethodProfile(_ValidatedArtifact):
             errors.append("disqualifying_conditions:must_be_string_list")
         if value.get("self_qualified") is True:
             errors.append("method_self_qualification_forbidden")
+        if value.get("measurement_capability_profile") is not None:
+            try:
+                from .task_site_measurement_routing import validate_method_capability_profile
+
+                profile = validate_method_capability_profile(
+                    value["measurement_capability_profile"]
+                )
+                if profile["method_id"] != _string(value.get("method_id")):
+                    errors.append("measurement_capability_profile.method_id:mismatch")
+                if profile["capabilities"]["version"] != _string(value.get("version")):
+                    errors.append("measurement_capability_profile.version:mismatch")
+            except (TypeError, ValueError) as exc:
+                errors.append(f"measurement_capability_profile:invalid:{exc}")
         return errors
 
 
@@ -431,6 +486,19 @@ class QualificationRecord(_ValidatedArtifact):
                 errors.append("simulated_rollout_count:invalid")
             if not _valid_number(value.get("physical_rollout_count"), minimum=1):
                 errors.append("physical_rollout_count:invalid")
+        if value.get("measurement_qualification_record") is not None:
+            try:
+                from .task_site_measurement_routing import validate_measurement_qualification
+
+                qualification = validate_measurement_qualification(
+                    value["measurement_qualification_record"]
+                )
+                if qualification["method_id"] != _string(value.get("method_id")):
+                    errors.append("measurement_qualification_record.method_id:mismatch")
+                if qualification["method_version"] != _string(value.get("method_version")):
+                    errors.append("measurement_qualification_record.method_version:mismatch")
+            except (TypeError, ValueError) as exc:
+                errors.append(f"measurement_qualification_record:invalid:{exc}")
         return errors
 
 
