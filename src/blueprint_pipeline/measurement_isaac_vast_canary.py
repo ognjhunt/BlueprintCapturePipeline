@@ -150,7 +150,10 @@ request = urllib.request.Request(
     os.environ["BLUEPRINT_MEASUREMENT_ISAAC_OUTPUT_PUT_URL"],
     data=payload,
     method="PUT",
-    headers={"Content-Type": "application/json"},
+    # The shared immutable object-store transport signs its output PUT for
+    # application/zip.  The payload remains the canonical JSON runtime result;
+    # matching the signed header is required by S3-compatible SigV4 servers.
+    headers={"Content-Type": "application/zip"},
 )
 with urllib.request.urlopen(request, timeout=300) as response:
     if response.status not in {200, 201, 204}:
