@@ -1006,7 +1006,13 @@ class _IsaacVastProvider:
         assert spec.env["ACCEPT_EULA"] == "Y"
         assert spec.env["PRIVACY_CONSENT"] == "Y"
         assert spec.env["CUDA_VISIBLE_DEVICES"] == "0"
-        assert "reconstruction_isaac_bootstrap" in " ".join(spec.bootstrap_argv)
+        bootstrap = " ".join(spec.bootstrap_argv)
+        assert (
+            "exec /isaac-sim/python.sh -m "
+            "blueprint_pipeline.reconstruction_isaac_bootstrap"
+        ) in bootstrap
+        assert "exec python3 -m blueprint_pipeline.reconstruction_isaac_bootstrap" in bootstrap
+        assert "BLUEPRINT_RECONSTRUCTION_ISAAC_BLOCKED:python_runtime_missing" in bootstrap
         return {"create_payload": {"env": dict(spec.env)}}
 
     def launch(self, job_dir, request, **_kwargs):

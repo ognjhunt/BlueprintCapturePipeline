@@ -164,7 +164,14 @@ def _output_fetcher(url: str, destination: Path) -> SafeHttpFileTransfer:
 
 def _bootstrap_script() -> str:
     return """set -euo pipefail
-python -m blueprint_pipeline.reconstruction_isaac_bootstrap
+if [ -x /isaac-sim/python.sh ]; then
+  exec /isaac-sim/python.sh -m blueprint_pipeline.reconstruction_isaac_bootstrap
+fi
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 -m blueprint_pipeline.reconstruction_isaac_bootstrap
+fi
+echo BLUEPRINT_RECONSTRUCTION_ISAAC_BLOCKED:python_runtime_missing >&2
+exit 127
 """
 
 
