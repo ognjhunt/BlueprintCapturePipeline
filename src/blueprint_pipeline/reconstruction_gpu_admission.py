@@ -76,7 +76,7 @@ EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "isaac_canary": "isaac_splat_nurec_render_result.v3",
     "provider_nurec_isaac_canary": "provider_nurec_isaac_runtime_result.v1",
     "external_scene_isaac_canary": "isaac_splat_nurec_render_result.v3",
-    "measurement_isaac_canary": "measurement_isaac_physx_vast_runtime_result.v1",
+    "measurement_isaac_canary": "measurement_isaac_physx_rtx_vast_runtime_result.v2",
     "measurement_dlo_lab_canary": "measurement_dlo_lab_cuda_vast_runtime_result.v1",
     "measurement_chrono_dem_canary": "measurement_chrono_dem_cuda_vast_runtime_result.v1",
 }
