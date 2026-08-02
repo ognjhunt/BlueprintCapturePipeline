@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 import time
 from typing import Any, Mapping, Sequence
@@ -897,6 +898,64 @@ def build_provider_nurec_isaac_request(value: Mapping[str, Any]) -> dict[str, An
     )
 
 
+def build_provider_nurec_isaac_request_from_checkout(
+    value: Mapping[str, Any], *, source_checkout: str | Path
+) -> dict[str, Any]:
+    """Bind request construction to an existing clean checkout at its real HEAD.
+
+    The portable contract validator intentionally cannot prove that a syntactically
+    valid commit exists. Bundle preparation is local, however, so it must close
+    that gap before copying a multi-gigabyte package or presenting a request to the
+    paid-resource allocator.
+    """
+
+    checkout = Path(source_checkout)
+    if checkout.is_symlink():
+        raise ExternalProviderNuRecError(["provider_isaac_source_checkout_symlink_forbidden"])
+    try:
+        checkout = checkout.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ExternalProviderNuRecError(["provider_isaac_source_checkout_missing"]) from exc
+    if not checkout.is_dir():
+        raise ExternalProviderNuRecError(["provider_isaac_source_checkout_invalid"])
+
+    def git(*arguments: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(checkout), *arguments],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ExternalProviderNuRecError(
+                ["provider_isaac_source_checkout_git_unavailable"]
+            ) from exc
+        return completed.stdout.strip()
+
+    try:
+        top_level = Path(git("rev-parse", "--show-toplevel")).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ExternalProviderNuRecError(["provider_isaac_source_checkout_invalid"]) from exc
+    if top_level != checkout:
+        raise ExternalProviderNuRecError(["provider_isaac_source_checkout_root_mismatch"])
+
+    observed_commit = git("rev-parse", "HEAD")
+    if _COMMIT.fullmatch(observed_commit) is None:
+        raise ExternalProviderNuRecError(["provider_isaac_source_checkout_head_invalid"])
+    dirty = git("status", "--porcelain=v1", "--untracked-files=all")
+    if dirty:
+        raise ExternalProviderNuRecError(["provider_isaac_source_checkout_not_clean"])
+
+    request = _clone(value)
+    supplied_commit = request.get("source_commit_sha")
+    if supplied_commit not in {None, observed_commit}:
+        raise ExternalProviderNuRecError(["provider_isaac_source_checkout_commit_mismatch"])
+    request["source_commit_sha"] = observed_commit
+    return build_provider_nurec_isaac_request(request)
+
+
 def build_provider_nurec_isaac_runtime_result(
     value: Mapping[str, Any], *, verification_request: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1178,6 +1237,7 @@ __all__ = [
     "build_external_source_import_receipt",
     "build_external_source_import_request",
     "build_provider_nurec_isaac_request",
+    "build_provider_nurec_isaac_request_from_checkout",
     "build_provider_nurec_isaac_runtime_result",
     "build_provider_nurec_qualification",
     "build_provider_rights_receipt",

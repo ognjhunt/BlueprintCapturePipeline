@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
 import zipfile
 
 import jsonschema
@@ -14,6 +15,7 @@ from blueprint_pipeline.external_provider_nurec import (
     build_acquisition_receipt,
     build_external_source_import_request,
     build_provider_nurec_isaac_request,
+    build_provider_nurec_isaac_request_from_checkout,
     build_provider_nurec_isaac_runtime_result,
     import_external_source,
     normalize_provider_nurec_isaac_verification,
@@ -382,6 +384,100 @@ def test_provider_isaac_request_is_paid_authority_bounded() -> None:
         runtime, digest_field="isaac_runtime_result_digest"
     )
     jsonschema.Draft202012Validator(schema).validate(runtime)
+
+
+def test_provider_isaac_request_materialization_binds_real_clean_checkout(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(checkout), "config", "user.name", "Test Operator"],
+        check=True,
+    )
+    tracked = checkout / "tracked.txt"
+    tracked.write_text("frozen\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(checkout), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "commit", "-q", "-m", "freeze"],
+        check=True,
+    )
+    commit = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    request_value = {
+        "stable_run_identity": "provider-nurec-checkout-bound",
+        "package_digest": D[0],
+        "package_artifact_reference": "source/ethel_sim.usdz",
+        "external_import_receipt_digest": D[1],
+        "qualification_report_digest": D[2],
+        "fixed_camera_spec_digest": D[3],
+        "fixed_camera_ids": ["probe-near", "probe-wide"],
+        "runtime_implementation_digest": D[4],
+        "runtime_container_image_digest": "registry.test/isaac@" + D[5],
+        "expected_prim_paths": {
+            "appearance": "/World/gauss/gauss",
+            "collision": "/World/gauss/mesh",
+        },
+        "physics_probe_request": {
+            "ground_collider_prim": "/World/gauss/mesh",
+            "ground_height_m": -1.85,
+            "probe_xy_m": [-21.9, 2.0],
+            "selection_status": "cpu_geometry_candidate_unverified_in_isaac",
+            "manufacture_ground_plane": False,
+            "require_contact_event": True,
+            "steps": 240,
+        },
+        "timeout_seconds": 3600,
+        "spend_controls": {
+            "authorized": False,
+            "estimated_max_spend_usd": 2.0,
+            "hard_ttl_seconds": 3600,
+            "teardown_required": True,
+            "provider_zero_required_before_and_after": True,
+        },
+        "provider_authored_package": True,
+        "exact_package_required": True,
+        "headless": True,
+        "display_attached": False,
+        "execution_status": "awaiting_explicit_paid_runtime_authorization",
+        "provider_allocation_performed": False,
+        "expected_runtime_schema": "provider_nurec_isaac_runtime_result.v1",
+        "proof_effect": "none",
+        "claim_ceiling": "request_only",
+    }
+    request = build_provider_nurec_isaac_request_from_checkout(
+        request_value,
+        source_checkout=checkout,
+    )
+    assert request["source_commit_sha"] == commit
+
+    with pytest.raises(
+        ExternalProviderNuRecError,
+        match="provider_isaac_source_checkout_commit_mismatch",
+    ):
+        build_provider_nurec_isaac_request_from_checkout(
+            {**request_value, "source_commit_sha": "f" * 40},
+            source_checkout=checkout,
+        )
+
+    tracked.write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(
+        ExternalProviderNuRecError,
+        match="provider_isaac_source_checkout_not_clean",
+    ):
+        build_provider_nurec_isaac_request_from_checkout(
+            request_value,
+            source_checkout=checkout,
+        )
 
 
 def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(tmp_path: Path) -> None:
