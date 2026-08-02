@@ -749,8 +749,13 @@ def _run_articulated_policy_traces(
         start = np.asarray(request["start_joint_positions_rad"], dtype=np.float64)
         zeros = np.zeros_like(start)
         target_api_modes = set()
+        # ``SimulationContext.stop()`` invalidates SingleArticulation's physics
+        # view in Isaac Sim 6. Reset candidate state through the live physics
+        # handle and stop only once during final cleanup.
+        context.play()
         for candidate in request["candidates"]:
             policy_id = candidate["policy_id"]
+            failure_phase = "candidate_reset"
             trace = {
                 "schema_version": "franka_articulated_policy_trace.v1",
                 "policy_id": policy_id,
@@ -760,20 +765,20 @@ def _run_articulated_policy_traces(
                 "samples": [],
             }
             try:
-                context.stop()
                 articulation.set_joint_positions(start, joint_indices=indices)
                 articulation.set_joint_velocities(zeros, joint_indices=indices)
                 target_api_modes.add(
                     _set_articulation_joint_position_targets(articulation, start, indices)
                 )
-                context.play()
                 for _ in range(int(request["reset_settle_steps"])):
                     context.step(render=False)
+                failure_phase = "observe_reset_state"
                 observed_start = _vector(articulation.get_joint_positions(joint_indices=indices))
                 target_final = np.asarray(candidate["final_joint_positions_rad"], dtype=np.float64)
                 duration = int(candidate["duration_steps"])
                 sample_interval = int(request["sample_interval_steps"])
                 positions = [_end_effector_position(stage, hand_prim, UsdGeom=UsdGeom)]
+                failure_phase = "execute_joint_targets"
                 for step in range(1, duration + 1):
                     alpha = float(step) / float(duration)
                     target = start + alpha * (target_final - start)
@@ -810,6 +815,7 @@ def _run_articulated_policy_traces(
                                 ],
                             }
                         )
+                failure_phase = "observe_final_state"
                 observed_end = _vector(articulation.get_joint_positions(joint_indices=indices))
                 path_length = sum(
                     math.dist(previous, current)
@@ -818,6 +824,15 @@ def _run_articulated_policy_traces(
                 tracking_error = max(
                     abs(float(commanded) - float(observed))
                     for commanded, observed in zip(target_final, observed_end)
+                )
+                failure_phase = "capture_egocentric_observation"
+                egocentric_observation = _capture_egocentric_observation(
+                    rep=rep,
+                    simulation_app=simulation_app,
+                    camera_prim=camera_prim,
+                    camera_spec=request["egocentric_camera"],
+                    out_dir=out_dir,
+                    policy_id=policy_id,
                 )
                 trace.update(
                     status="completed",
@@ -831,14 +846,7 @@ def _run_articulated_policy_traces(
                     ],
                     maximum_end_tracking_error_rad=round(tracking_error, 9),
                     end_effector_path_length_stage_units=round(path_length, 9),
-                    egocentric_observation=_capture_egocentric_observation(
-                        rep=rep,
-                        simulation_app=simulation_app,
-                        camera_prim=camera_prim,
-                        camera_spec=request["egocentric_camera"],
-                        out_dir=out_dir,
-                        policy_id=policy_id,
-                    ),
+                    egocentric_observation=egocentric_observation,
                     physical_success_claimed=False,
                     claim_boundary=(
                         "Exact Isaac articulation observation for this candidate only; not "
@@ -849,6 +857,7 @@ def _run_articulated_policy_traces(
                 trace.update(
                     status="blocked",
                     blockers=["franka_policy_trace_candidate_execution_failed"],
+                    failure_phase=failure_phase,
                     error=repr(exc)[:600],
                 )
             trace["policy_trace_digest"] = _canonical_digest(

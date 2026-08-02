@@ -224,6 +224,20 @@ def test_joint_position_target_compatibility_uses_controller_fallback() -> None:
     assert actions == [{"joint_positions": [0.5], "joint_indices": [5]}]
 
 
+def test_policy_trace_keeps_isaac6_physics_handle_live_between_candidates() -> None:
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+    body = source.split("def _run_articulated_policy_traces(", 1)[1].split(
+        "def _pixel_std(", 1
+    )[0]
+    candidate_loop = body.split('for candidate in request["candidates"]:', 1)[1]
+
+    assert "context.play()" in body.split(
+        'for candidate in request["candidates"]:', 1
+    )[0]
+    assert "context.stop()" not in candidate_loop.split("finally:", 1)[0]
+    assert 'failure_phase = "observe_reset_state"' in candidate_loop
+
+
 def test_qualification_blockers_accept_only_complete_v3_evidence() -> None:
     assert (
         runner._qualification_blockers(
