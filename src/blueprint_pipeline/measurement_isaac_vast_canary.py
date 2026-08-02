@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .claim_contract_keys import PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
 from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec
 from .measurement_adapter_execution import validate_measurement_adapter_execution_bundle
@@ -41,7 +42,7 @@ from .watchdog_owner_teardown_contract import (
 )
 
 
-RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_vast_runtime_result.v1"
+RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_vast_runtime_result.v2"
 EXECUTION_SCHEMA_VERSION = "measurement_isaac_physx_vast_execution.v1"
 TEARDOWN_SCHEMA_VERSION = "measurement_isaac_physx_vast_teardown.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "measurement_isaac_physx_vast_provider_zero.v1"
@@ -246,6 +247,8 @@ def validate_measurement_isaac_vast_runtime_result(
         "bundle_manifest_digest": bundle_receipt.get("bundle_manifest_digest"),
         "isaac_sim_version": ISAAC_VERSION,
         "execution_bundle_count": 2,
+        "rtx_runtime_preflight_completed": True,
+        "q_sensor_qualification_created": False,
         "development_only": True,
         "synthetic_fixture": True,
         "held_out": False,
@@ -259,7 +262,7 @@ def validate_measurement_isaac_vast_runtime_result(
         "comparative_policy_ranking_verdict": "thesis_not_supported",
         "raw_secret_values_recorded": False,
         "proof_effect": "development_execution_only",
-        "claim_ceiling": "isaac_physx_synthetic_rigid_contact_development",
+        "claim_ceiling": "isaac_physx_rigid_contact_plus_rtx_startup_development",
     }
     for key, expected_value in expected.items():
         if result.get(key) != expected_value:
@@ -290,6 +293,40 @@ def validate_measurement_isaac_vast_runtime_result(
         or not isinstance(metrics.get("maximum_penetration_m"), (int, float))
     ):
         blockers.append("measurement_isaac_runtime_aggregate_metrics_invalid")
+    rtx = result.get("rtx_openusd_runtime_preflight")
+    if not isinstance(rtx, Mapping):
+        blockers.append("measurement_isaac_rtx_preflight_invalid")
+    else:
+        checks = rtx.get("checks")
+        checks = checks if isinstance(checks, list) else []
+        by_name = {
+            str(row.get("name")): row
+            for row in checks
+            if isinstance(row, Mapping) and row.get("name")
+        }
+        frame = by_name.get("rtx_smoke_frame_render", {})
+        identity = by_name.get("isaac_runtime_identity", {})
+        boundary = rtx.get("proof_boundary")
+        boundary = boundary if isinstance(boundary, Mapping) else {}
+        if (
+            rtx.get("preflight_result_digest")
+            != canonical_digest(rtx, digest_field="preflight_result_digest")
+            or rtx.get("status") != "passed"
+            or rtx.get("blockers") != []
+            or identity.get("status") != "passed"
+            or identity.get("engine_version") != ISAAC_VERSION
+            or frame.get("status") != "passed"
+            or frame.get("renderer") != "RayTracedLighting"
+            or frame.get("width") != 64
+            or frame.get("height") != 64
+            or not isinstance(frame.get("pixel_count"), int)
+            or frame.get("pixel_count", 0) <= 0
+            or boundary.get("rtx_pixels_rendered") is not True
+            or boundary.get("calibrated_sensor_match_proven") is not False
+            or boundary.get("q_sensor_qualification_created") is not False
+            or boundary.get(PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY) is not False
+        ):
+            blockers.append("measurement_isaac_rtx_preflight_observation_invalid")
     if result.get("blockers") != []:
         blockers.append("measurement_isaac_runtime_reported_blockers")
     if blockers:
@@ -616,7 +653,7 @@ def run_measurement_isaac_vast_canary(
         "raw_secret_values_recorded": False,
         "proof_effect": "development_execution_only" if validated_result else "none",
         "claim_ceiling": (
-            "isaac_physx_synthetic_rigid_contact_development"
+            "isaac_physx_rigid_contact_plus_rtx_startup_development"
             if validated_result
             else "provider_execution_evidence_only"
         ),

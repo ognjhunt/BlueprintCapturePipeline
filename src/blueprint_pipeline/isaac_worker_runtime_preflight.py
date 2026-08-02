@@ -104,9 +104,7 @@ def _isaac_rtx_driver_check(
     rejected = [
         list(version)
         for version in versions
-        if ISAAC_SIM_6_UNSUPPORTED_R570_MIN
-        <= version
-        < ISAAC_SIM_6_UNSUPPORTED_R570_MAX_EXCLUSIVE
+        if ISAAC_SIM_6_UNSUPPORTED_R570_MIN <= version < ISAAC_SIM_6_UNSUPPORTED_R570_MAX_EXCLUSIVE
     ]
     if rejected:
         return (
@@ -136,7 +134,9 @@ def _isaac_rtx_driver_check(
     )
 
 
-def _nvidia_smi_check(*, env: Mapping[str, str], required: bool) -> tuple[dict[str, Any], list[str]]:
+def _nvidia_smi_check(
+    *, env: Mapping[str, str], required: bool
+) -> tuple[dict[str, Any], list[str]]:
     executable = shutil.which("nvidia-smi", path=env.get("PATH"))
     if not executable:
         status = "blocked" if required else "skipped_not_required"
@@ -190,7 +190,15 @@ def _isaac_smoke_checks(
     checks: list[dict[str, Any]] = []
     blockers: list[str] = []
     try:
-        from isaacsim import SimulationApp  # type: ignore[import-not-found]
+        from .measurement_isaac_physx_rigid_adapter import (
+            _bind_isaac_runtime_environment,
+            _import_simulation_app,
+            _installed_simulation_app_extension_roots,
+            _observe_isaac_runtime_identity,
+        )
+
+        runtime_environment = _bind_isaac_runtime_environment()
+        SimulationApp = _import_simulation_app()
     except Exception as exc:  # pragma: no cover - depends on worker image
         checks.append(
             _check(
@@ -202,7 +210,17 @@ def _isaac_smoke_checks(
         )
         return checks, ["python_import_isaacsim_failed"], None
 
-    checks.append(_check("python_import_isaacsim", "passed"))
+    checks.append(
+        _check(
+            "python_import_isaacsim",
+            "passed",
+            simulation_app_class_module=str(getattr(SimulationApp, "__module__", "unavailable")),
+            simulation_app_extension_roots=[
+                str(path) for path in _installed_simulation_app_extension_roots()
+            ],
+            runtime_environment_paths=runtime_environment,
+        )
+    )
     renderer = "RayTracedLighting"
     checks.append(
         _check(
@@ -224,7 +242,17 @@ def _isaac_smoke_checks(
 
     simulation_app = None
     try:
-        simulation_app = SimulationApp({"headless": True, "renderer": renderer})
+        simulation_app = SimulationApp(
+            {"headless": True, "renderer": renderer, "fast_shutdown": True}
+        )
+        runtime_identity = _observe_isaac_runtime_identity(simulation_app)
+        checks.append(
+            _check(
+                "isaac_runtime_identity",
+                "passed",
+                **runtime_identity,
+            )
+        )
         import omni.replicator.core as rep  # type: ignore[import-not-found]
 
         asset_loading_timeout_configured = False
@@ -269,6 +297,8 @@ def _isaac_smoke_checks(
                 steps_executed=steps_executed,
                 max_asset_loading_time_seconds=RTX_SMOKE_MAX_ASSET_LOADING_SECONDS,
                 asset_loading_timeout_configured=asset_loading_timeout_configured,
+                renderer=renderer,
+                fast_shutdown=True,
             )
         )
     except Exception as exc:
@@ -351,6 +381,9 @@ def run_isaac_worker_runtime_preflight(
             "runtime_preflight_executed": True,
             "runtime_preflight_is_not_simulator_proof": True,
             "simulator_execution_proven": False,
+            "rtx_pixels_rendered": not blockers and require_rtx_render,
+            "calibrated_sensor_match_proven": False,
+            "q_sensor_qualification_created": False,
             "rank_fidelity_result_proven": False,
             "non_ranking_operational_claim_validated": False,
             PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,

@@ -32,8 +32,8 @@ from .measurement_qualification_benchmarks import (
 )
 
 
-BUNDLE_SCHEMA_VERSION = "measurement_isaac_physx_input_bundle.v1"
-RECEIPT_SCHEMA_VERSION = "measurement_isaac_physx_input_bundle_receipt.v1"
+BUNDLE_SCHEMA_VERSION = "measurement_isaac_physx_rtx_input_bundle.v2"
+RECEIPT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_input_bundle_receipt.v2"
 RUNNER_RELATIVE_PATH = Path("scripts/run_measurement_isaac_physx_bundle.py")
 WORKER_RELATIVE_PATH = Path("scripts/measurement_isaac_physx_rigid_worker.py")
 
@@ -194,6 +194,9 @@ def compile_measurement_isaac_physx_input_bundle(
         "source_files": source_records,
         "runner_path": RUNNER_RELATIVE_PATH.as_posix(),
         "worker_path": WORKER_RELATIVE_PATH.as_posix(),
+        "rtx_openusd_runtime_preflight_required": True,
+        "rtx_renderer": "RayTracedLighting",
+        "rtx_smoke_resolution": [64, 64],
         "development_only": True,
         "held_out": False,
         "qualification_labels_included": False,
@@ -230,6 +233,9 @@ def compile_measurement_isaac_physx_input_bundle(
         "input_bundle_size_bytes": output.stat().st_size,
         "execution_request_digests": [row["execution_request_digest"] for row in request_records],
         "request_count": len(requests),
+        "rtx_openusd_runtime_preflight_required": True,
+        "rtx_renderer": "RayTracedLighting",
+        "rtx_smoke_resolution": [64, 64],
         "raw_secret_values_recorded": False,
         "provider_allocation_performed": False,
         "paid_execution_authorized_by_bundle": False,
@@ -253,6 +259,12 @@ def validate_measurement_isaac_physx_input_bundle_receipt(
         errors.append("measurement_isaac_bundle_receipt_image_invalid")
     if receipt.get("request_count") != 2:
         errors.append("measurement_isaac_bundle_receipt_request_count_invalid")
+    if (
+        receipt.get("rtx_openusd_runtime_preflight_required") is not True
+        or receipt.get("rtx_renderer") != "RayTracedLighting"
+        or receipt.get("rtx_smoke_resolution") != [64, 64]
+    ):
+        errors.append("measurement_isaac_bundle_receipt_rtx_contract_invalid")
     for key, expected in (
         ("raw_secret_values_recorded", False),
         ("provider_allocation_performed", False),
