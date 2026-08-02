@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/measurement_sensor_stream_pairing.v1.schema.json",
+  "title": "Measurement Sensor Stream Pairing",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "pairing_id",
+    "source_capture_digest",
+    "site_frame_id",
+    "clock_domain",
+    "required_modalities",
+    "maximum_pair_delta_ns",
+    "streams",
+    "pair_groups",
+    "physical_measurements_included",
+    "development_only",
+    "candidate_self_graded",
+    "agent_generated_calibration",
+    "thresholds_modified_after_measurement",
+    "agent_may_approve",
+    "q_sensor_qualification_created",
+    "r5_evidence_created",
+    "r6_decision_created",
+    "r7_admission_created",
+    "physical_success_established"
+  ],
+  "properties": {
+    "schema_version": {"const": "measurement_sensor_stream_pairing.v1"},
+    "pairing_id": {"type": "string", "minLength": 1},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "site_frame_id": {"type": "string", "minLength": 1},
+    "clock_domain": {"type": "string", "minLength": 1},
+    "required_modalities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["rgb", "depth", "lidar"]}
+    },
+    "maximum_pair_delta_ns": {"type": "integer", "minimum": 0},
+    "streams": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/stream"}
+    },
+    "pair_groups": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"$ref": "#/$defs/pairGroup"}
+    },
+    "physical_measurements_included": {"type": "boolean"},
+    "development_only": {"type": "boolean"},
+    "candidate_self_graded": {"const": false},
+    "agent_generated_calibration": {"const": false},
+    "thresholds_modified_after_measurement": {"const": false},
+    "agent_may_approve": {"const": false},
+    "q_sensor_qualification_created": {"const": false},
+    "r5_evidence_created": {"const": false},
+    "r6_decision_created": {"const": false},
+    "r7_admission_created": {"const": false},
+    "physical_success_established": {"const": false},
+    "pairing_digest": {"$ref": "#/$defs/digest"},
+    "decision": {"enum": ["accepted", "rejected", "development_only"]},
+    "proof_effect": {"const": "sensor_stream_pairing_evidence"},
+    "claim_ceiling": {"const": "sensor_pairing_support_only"}
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "sample": {
+      "type": "object",
+      "required": ["sample_id", "timestamp_ns", "artifact_digest"],
+      "properties": {
+        "sample_id": {"type": "string", "minLength": 1},
+        "timestamp_ns": {"type": "integer", "minimum": 0},
+        "artifact_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "required": [
+        "evaluator_id",
+        "candidate_method_independent",
+        "agent_is_evaluator",
+        "signature_status",
+        "approval_signature_id"
+      ],
+      "properties": {
+        "evaluator_id": {"type": "string"},
+        "candidate_method_independent": {"type": "boolean"},
+        "agent_is_evaluator": {"type": "boolean"},
+        "signature_status": {"enum": ["verified", "unverified"]},
+        "approval_signature_id": {"type": "string"}
+      }
+    },
+    "stream": {
+      "type": "object",
+      "required": [
+        "sensor_id",
+        "modality",
+        "stream_digest",
+        "calibration_digest",
+        "extrinsics_digest",
+        "clock_domain",
+        "time_offset_ns",
+        "timestamp_uncertainty_ns",
+        "independent_calibration",
+        "samples"
+      ],
+      "properties": {
+        "sensor_id": {"type": "string", "minLength": 1},
+        "modality": {"enum": ["rgb", "depth", "lidar"]},
+        "stream_digest": {"$ref": "#/$defs/digest"},
+        "calibration_digest": {"$ref": "#/$defs/digest"},
+        "intrinsics_digest": {"$ref": "#/$defs/digest"},
+        "extrinsics_digest": {"$ref": "#/$defs/digest"},
+        "clock_domain": {"type": "string", "minLength": 1},
+        "time_offset_ns": {"type": "integer"},
+        "timestamp_uncertainty_ns": {"type": "integer", "minimum": 0},
+        "independent_calibration": {"$ref": "#/$defs/calibration"},
+        "samples": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/sample"}
+        }
+      }
+    },
+    "sampleBinding": {
+      "type": "object",
+      "required": ["sensor_id", "sample_id"],
+      "properties": {
+        "sensor_id": {"type": "string", "minLength": 1},
+        "sample_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "pairGroup": {
+      "type": "object",
+      "required": ["group_id", "samples"],
+      "properties": {
+        "group_id": {"type": "string", "minLength": 1},
+        "samples": {
+          "type": "object",
+          "propertyNames": {"enum": ["rgb", "depth", "lidar"]},
+          "additionalProperties": {"$ref": "#/$defs/sampleBinding"}
+        }
+      }
+    }
+  }
+}

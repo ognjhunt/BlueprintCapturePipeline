@@ -533,6 +533,14 @@ Implemented and hermetically tested:
   exact nanosecond timestamp handling, non-coplanar target enforcement,
   deterministic replay, and nonqualification flags at the corpus, receipt,
   prediction, suite, and supervisor boundaries;
+- a task-scoped raw RGB/depth/LiDAR pairing contract and site-evidence bridge.
+  It binds exact samples, artifact/calibration/intrinsic/extrinsic digests,
+  clock domains, explicit offsets, uncertainty-aware synchronization limits,
+  and the modalities derived for the task. Missing, reused, cross-clock, or
+  out-of-tolerance samples reject rather than nearest-neighbor filling. Only
+  independently verified signed physical calibration records can validate the
+  site profile's `sensor_calibration` and `sensor_timing` evidence; the bridge
+  never creates Q-SENSOR or R5-R7 authority;
 - a real PyElastica 0.3.3.post2 Capture-to-Deformation cable development
   worker, schema-checked two-regime Cosserat-rod corpus, and aggregate runner,
   including exact material/geometry/load/timestep binding, sampled trajectory
