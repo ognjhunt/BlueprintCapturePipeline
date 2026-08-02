@@ -42,7 +42,7 @@ from .watchdog_owner_teardown_contract import (
 )
 
 
-RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_vast_runtime_result.v2"
+RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_vast_runtime_result.v3"
 EXECUTION_SCHEMA_VERSION = "measurement_isaac_physx_vast_execution.v1"
 TEARDOWN_SCHEMA_VERSION = "measurement_isaac_physx_vast_teardown.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "measurement_isaac_physx_vast_provider_zero.v1"
@@ -262,7 +262,7 @@ def validate_measurement_isaac_vast_runtime_result(
         "comparative_policy_ranking_verdict": "thesis_not_supported",
         "raw_secret_values_recorded": False,
         "proof_effect": "development_execution_only",
-        "claim_ceiling": "isaac_physx_rigid_contact_plus_rtx_startup_development",
+        "claim_ceiling": "isaac_physx_rigid_contact_plus_rtx_multimodal_startup_development",
     }
     for key, expected_value in expected.items():
         if result.get(key) != expected_value:
@@ -308,6 +308,19 @@ def validate_measurement_isaac_vast_runtime_result(
         identity = by_name.get("isaac_runtime_identity", {})
         boundary = rtx.get("proof_boundary")
         boundary = boundary if isinstance(boundary, Mapping) else {}
+        required_outputs_value = bundle_receipt.get("rtx_required_output_kinds")
+        required_outputs = (
+            list(required_outputs_value) if isinstance(required_outputs_value, list) else []
+        )
+        output_summaries = frame.get("output_summaries")
+        output_summaries = output_summaries if isinstance(output_summaries, Mapping) else {}
+        modality_outputs_valid = bool(required_outputs) and all(
+            isinstance(output_summaries.get(kind), Mapping)
+            and output_summaries[kind].get("nonempty") is True
+            and isinstance(output_summaries[kind].get("element_count"), int)
+            and output_summaries[kind].get("element_count", 0) > 0
+            for kind in required_outputs
+        )
         if (
             rtx.get("preflight_result_digest")
             != canonical_digest(rtx, digest_field="preflight_result_digest")
@@ -321,7 +334,35 @@ def validate_measurement_isaac_vast_runtime_result(
             or frame.get("height") != 64
             or not isinstance(frame.get("pixel_count"), int)
             or frame.get("pixel_count", 0) <= 0
+            or frame.get("required_output_kinds") != required_outputs
+            or not modality_outputs_valid
+            or output_summaries.get("rgb", {}).get("nonzero_value_count", 0) <= 0
+            or boundary.get("requested_sensor_modalities_observed") is not True
             or boundary.get("rtx_pixels_rendered") is not True
+            or (
+                "rgb" in required_outputs
+                and boundary.get("rtx_rgb_rendered") is not True
+            )
+            or (
+                "depth" in required_outputs
+                and (
+                    output_summaries.get("depth", {}).get(
+                        "positive_finite_value_count", 0
+                    )
+                    <= 0
+                    or boundary.get("rtx_depth_output_observed") is not True
+                )
+            )
+            or (
+                "semantic_segmentation" in required_outputs
+                and (
+                    output_summaries.get("semantic_segmentation", {}).get(
+                        "expected_label_present"
+                    )
+                    is not True
+                    or boundary.get("rtx_semantic_segmentation_observed") is not True
+                )
+            )
             or boundary.get("calibrated_sensor_match_proven") is not False
             or boundary.get("q_sensor_qualification_created") is not False
             or boundary.get(PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY) is not False
@@ -658,7 +699,7 @@ def run_measurement_isaac_vast_canary(
         "raw_secret_values_recorded": False,
         "proof_effect": "development_execution_only" if validated_result else "none",
         "claim_ceiling": (
-            "isaac_physx_rigid_contact_plus_rtx_startup_development"
+            "isaac_physx_rigid_contact_plus_rtx_multimodal_startup_development"
             if validated_result
             else "provider_execution_evidence_only"
         ),

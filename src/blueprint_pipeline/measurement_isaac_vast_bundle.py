@@ -32,8 +32,9 @@ from .measurement_qualification_benchmarks import (
 )
 
 
-BUNDLE_SCHEMA_VERSION = "measurement_isaac_physx_rtx_input_bundle.v2"
-RECEIPT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_input_bundle_receipt.v2"
+BUNDLE_SCHEMA_VERSION = "measurement_isaac_physx_rtx_input_bundle.v3"
+RECEIPT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_input_bundle_receipt.v3"
+RTX_REQUIRED_OUTPUT_KINDS = ("rgb", "depth", "semantic_segmentation")
 RUNNER_RELATIVE_PATH = Path("scripts/run_measurement_isaac_physx_bundle.py")
 WORKER_RELATIVE_PATH = Path("scripts/measurement_isaac_physx_rigid_worker.py")
 
@@ -153,6 +154,7 @@ def compile_measurement_isaac_physx_input_bundle(
     qualification_split_digest: str,
     controller_scope_digest: str,
     output_path: str | Path,
+    rtx_required_output_kinds: Sequence[str] = RTX_REQUIRED_OUTPUT_KINDS,
 ) -> dict[str, Any]:
     root = Path(repo_root).resolve()
     commit = _git_identity(root)
@@ -180,6 +182,15 @@ def compile_measurement_isaac_physx_input_bundle(
         }
         for index, request in enumerate(requests)
     ]
+    required_outputs = tuple(
+        dict.fromkeys(str(item).strip() for item in rtx_required_output_kinds if str(item).strip())
+    )
+    if (
+        not required_outputs
+        or "rgb" not in required_outputs
+        or not set(required_outputs) <= set(RTX_REQUIRED_OUTPUT_KINDS)
+    ):
+        raise MeasurementIsaacVastBundleError("measurement_isaac_rtx_output_kinds_invalid")
     manifest = {
         "schema_version": BUNDLE_SCHEMA_VERSION,
         "source_commit_sha": commit,
@@ -197,6 +208,7 @@ def compile_measurement_isaac_physx_input_bundle(
         "rtx_openusd_runtime_preflight_required": True,
         "rtx_renderer": "RayTracedLighting",
         "rtx_smoke_resolution": [64, 64],
+        "rtx_required_output_kinds": list(required_outputs),
         "development_only": True,
         "held_out": False,
         "qualification_labels_included": False,
@@ -236,6 +248,7 @@ def compile_measurement_isaac_physx_input_bundle(
         "rtx_openusd_runtime_preflight_required": True,
         "rtx_renderer": "RayTracedLighting",
         "rtx_smoke_resolution": [64, 64],
+        "rtx_required_output_kinds": list(required_outputs),
         "raw_secret_values_recorded": False,
         "provider_allocation_performed": False,
         "paid_execution_authorized_by_bundle": False,
@@ -263,6 +276,10 @@ def validate_measurement_isaac_physx_input_bundle_receipt(
         receipt.get("rtx_openusd_runtime_preflight_required") is not True
         or receipt.get("rtx_renderer") != "RayTracedLighting"
         or receipt.get("rtx_smoke_resolution") != [64, 64]
+        or not isinstance(receipt.get("rtx_required_output_kinds"), list)
+        or not receipt.get("rtx_required_output_kinds")
+        or "rgb" not in receipt.get("rtx_required_output_kinds")
+        or not set(receipt.get("rtx_required_output_kinds")) <= set(RTX_REQUIRED_OUTPUT_KINDS)
     ):
         errors.append("measurement_isaac_bundle_receipt_rtx_contract_invalid")
     for key, expected in (
@@ -289,6 +306,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--qualification-split-digest", required=True)
     parser.add_argument("--controller-scope-digest", required=True)
+    parser.add_argument(
+        "--rtx-output-kind",
+        action="append",
+        choices=list(RTX_REQUIRED_OUTPUT_KINDS),
+        default=None,
+    )
     parser.add_argument("--bundle-output", type=Path, required=True)
     parser.add_argument("--receipt-output", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -298,6 +321,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         qualification_split_digest=args.qualification_split_digest,
         controller_scope_digest=args.controller_scope_digest,
         output_path=args.bundle_output,
+        rtx_required_output_kinds=args.rtx_output_kind or RTX_REQUIRED_OUTPUT_KINDS,
     )
     args.receipt_output.parent.mkdir(parents=True, exist_ok=True)
     args.receipt_output.write_text(
@@ -315,6 +339,7 @@ __all__ = [
     "BUNDLE_SCHEMA_VERSION",
     "MeasurementIsaacVastBundleError",
     "RECEIPT_SCHEMA_VERSION",
+    "RTX_REQUIRED_OUTPUT_KINDS",
     "compile_measurement_isaac_physx_input_bundle",
     "main",
     "validate_measurement_isaac_physx_input_bundle_receipt",

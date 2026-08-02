@@ -58,6 +58,7 @@ def _receipt() -> dict:
         "rtx_openusd_runtime_preflight_required": True,
         "rtx_renderer": "RayTracedLighting",
         "rtx_smoke_resolution": [64, 64],
+        "rtx_required_output_kinds": ["rgb", "depth", "semantic_segmentation"],
         "raw_secret_values_recorded": False,
         "provider_allocation_performed": False,
         "paid_execution_authorized_by_bundle": False,
