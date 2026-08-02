@@ -47,10 +47,14 @@ def _rights(profile: str) -> dict:
         "terms_version": "niantic-business-terms-2026-02-20",
         "rights_terms_source": "https://www.nianticspatial.com/legal/business-terms",
         "ownership_or_license_status": (
-            "official_public_sample_local_inspection" if public else "operator_attested_private_export"
+            "official_public_sample_local_inspection"
+            if public
+            else "operator_attested_private_export"
         ),
         "commercial_use_status": "not_requested",
-        "consent_privacy_status": "not_required_public_sample" if public else "operator_attested_private",
+        "consent_privacy_status": "not_required_public_sample"
+        if public
+        else "operator_attested_private",
         "confidential": not public,
         "public_reporting_allowed": public,
         "retention_status": "bounded_local_cache",
@@ -71,11 +75,15 @@ def _request(asset: Path, profile: str = "public_provider_sample", **updates) ->
         "acquisition_or_export_receipt_digest": D[0],
         "external_source_identity": {
             "provider": "scaniverse",
-            "provider_asset_identifiers": {"public_sample": "ethel_sim"} if profile.startswith("public") else {},
+            "provider_asset_identifiers": {"public_sample": "ethel_sim"}
+            if profile.startswith("public")
+            else {},
             "local_asset_digest": digest,
             "acquisition_or_export_time": "2026-08-01T19:29:32-05:00",
             "capture_modality": {"status": "unknown", "value": "unknown"},
-            "operator_reference": "public-supplier" if profile.startswith("public") else "private_operator_001",
+            "operator_reference": "public-supplier"
+            if profile.startswith("public")
+            else "private_operator_001",
             "terms_version": "niantic-business-terms-2026-02-20",
             "source_relationship_to_blueprint_raw_capture": "none",
         },
@@ -95,17 +103,24 @@ def _request(asset: Path, profile: str = "public_provider_sample", **updates) ->
     return build_external_source_import_request(value)
 
 
-def test_valid_public_and_private_external_source_profiles_are_not_raw_capture(tmp_path: Path) -> None:
+def test_valid_public_and_private_external_source_profiles_are_not_raw_capture(
+    tmp_path: Path,
+) -> None:
     for profile in ("public_provider_sample", "user_managed_provider_export"):
         source = tmp_path / profile
         source.mkdir()
         asset = source / "asset.usdz"
         asset.write_bytes(profile.encode())
         request = _request(asset, profile)
-        assert request["external_source_identity"]["source_relationship_to_blueprint_raw_capture"] == "none"
+        assert (
+            request["external_source_identity"]["source_relationship_to_blueprint_raw_capture"]
+            == "none"
+        )
         assert request["blueprint_raw_capture_truth"] is False
         schema = json.loads(
-            (ROOT / "docs/schemas/external_reconstruction_import_request.v2.schema.json").read_text()
+            (
+                ROOT / "docs/schemas/external_reconstruction_import_request.v2.schema.json"
+            ).read_text()
         )
         jsonschema.Draft202012Validator(schema).validate(request)
 
@@ -115,7 +130,9 @@ def test_external_source_contract_rejects_fabricated_raw_identity_missing_digest
 ) -> None:
     asset = tmp_path / "asset.usdz"
     asset.write_bytes(b"asset")
-    with pytest.raises(ExternalProviderNuRecError, match="fabricated_raw_capture_identity_forbidden"):
+    with pytest.raises(
+        ExternalProviderNuRecError, match="fabricated_raw_capture_identity_forbidden"
+    ):
         _request(asset, source_capture_identity="fake-blueprint-capture")
 
     request = dict(_request(asset))
@@ -169,7 +186,9 @@ def test_external_source_contract_rejects_unsafe_symlink_digest_mismatch_and_uns
         _request(asset, "unsupported_source")
 
 
-def test_public_confidentiality_mismatch_and_provider_receipt_replay_fail_closed(tmp_path: Path) -> None:
+def test_public_confidentiality_mismatch_and_provider_receipt_replay_fail_closed(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "source"
     source.mkdir()
     asset = source / "asset.usdz"
@@ -177,7 +196,9 @@ def test_public_confidentiality_mismatch_and_provider_receipt_replay_fail_closed
     wrong = _rights("public_provider_sample")
     wrong["confidential"] = True
     wrong["public_reporting_allowed"] = False
-    with pytest.raises(ExternalProviderNuRecError, match="public_provider_sample_confidentiality_invalid"):
+    with pytest.raises(
+        ExternalProviderNuRecError, match="public_provider_sample_confidentiality_invalid"
+    ):
         _request(asset, rights_scope=wrong)
 
     request = _request(asset)
@@ -186,11 +207,14 @@ def test_public_confidentiality_mismatch_and_provider_receipt_replay_fail_closed
         artifact_root=source,
         output_root=tmp_path / "out",
     )
-    assert import_external_source(
-        source_artifact=request,
-        artifact_root=source,
-        output_root=tmp_path / "out",
-    ) == receipt
+    assert (
+        import_external_source(
+            source_artifact=request,
+            artifact_root=source,
+            output_root=tmp_path / "out",
+        )
+        == receipt
+    )
     final = tmp_path / "out" / request["external_import_request_digest"][7:]
     rights_path = final / "external_provider_provenance_rights_receipt.v2.json"
     rights = json.loads(rights_path.read_text())
@@ -204,7 +228,9 @@ def test_public_confidentiality_mismatch_and_provider_receipt_replay_fail_closed
         )
 
 
-def test_acquisition_receipt_and_import_receipts_validate_against_versioned_schemas(tmp_path: Path) -> None:
+def test_acquisition_receipt_and_import_receipts_validate_against_versioned_schemas(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "source"
     source.mkdir()
     asset = source / "ethel_sim.usdz"
@@ -235,7 +261,9 @@ def test_acquisition_receipt_and_import_receipts_validate_against_versioned_sche
             "claim_ceiling": "file_identity_and_declared_source_only",
         }
     )
-    request = _request(asset, acquisition_or_export_receipt_digest=acquisition["acquisition_receipt_digest"])
+    request = _request(
+        asset, acquisition_or_export_receipt_digest=acquisition["acquisition_receipt_digest"]
+    )
     receipt = import_external_source(
         source_artifact=request,
         artifact_root=source,
@@ -278,7 +306,10 @@ def test_provider_isaac_request_is_paid_authority_bounded() -> None:
         "fixed_camera_ids": ["probe-near", "probe-wide"],
         "runtime_implementation_digest": D[4],
         "runtime_container_image_digest": "registry.test/isaac@" + D[5],
-        "expected_prim_paths": {"appearance": "/World/gauss/gauss", "collision": "/World/gauss/mesh"},
+        "expected_prim_paths": {
+            "appearance": "/World/gauss/gauss",
+            "collision": "/World/gauss/mesh",
+        },
         "physics_probe_request": {
             "ground_collider_prim": "/World/gauss/mesh",
             "ground_height_m": -1.85,
@@ -481,7 +512,9 @@ def test_provider_isaac_request_materialization_binds_real_clean_checkout(
         )
 
 
-def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(tmp_path: Path) -> None:
+def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
+    tmp_path: Path,
+) -> None:
     package_root = tmp_path / "package-root"
     package = package_root / "source/ethel_sim.usdz"
     package.parent.mkdir(parents=True)
@@ -490,8 +523,14 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
     cameras.write_text(
         json.dumps(
             [
-                {"id": "probe-near", "spec": {"pos": [0, -2, 1], "target": [0, 0, 0], "up": [0, 0, 1], "fov": 60}},
-                {"id": "probe-wide", "spec": {"pos": [0, -5, 3], "target": [0, 0, 0], "up": [0, 0, 1], "fov": 70}},
+                {
+                    "id": "probe-near",
+                    "spec": {"pos": [0, -2, 1], "target": [0, 0, 0], "up": [0, 0, 1], "fov": 60},
+                },
+                {
+                    "id": "probe-wide",
+                    "spec": {"pos": [0, -5, 3], "target": [0, 0, 0], "up": [0, 0, 1], "fov": 70},
+                },
             ]
         )
     )
@@ -525,7 +564,10 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
             "runtime_implementation_digest": sha256_file(runner),
             "render_options_digest": sha256_file(render_options),
             "runtime_container_image_digest": "registry.test/isaac@" + D[5],
-            "expected_prim_paths": {"appearance": "/World/gauss/gauss", "collision": "/World/gauss/mesh"},
+            "expected_prim_paths": {
+                "appearance": "/World/gauss/gauss",
+                "collision": "/World/gauss/mesh",
+            },
             "physics_probe_request": {
                 "ground_collider_prim": "/World/gauss/mesh",
                 "ground_height_m": -1.85,
@@ -589,9 +631,7 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
         "proof_effect": "none",
         "isaac_image_release_digest": D[1],
     }
-    bound["bound_request_digest"] = canonical_digest(
-        bound, digest_field="bound_request_digest"
-    )
+    bound["bound_request_digest"] = canonical_digest(bound, digest_field="bound_request_digest")
     validated_bound, validated_receipt = validate_isaac_vast_bindings(
         bound_request=bound, bundle_receipt=receipt
     )
@@ -608,7 +648,10 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
         bundle_receipt=receipt,
         output_root=tmp_path / "extracted",
     )
-    assert extraction["isaac_verification_request_digest"] == request["isaac_verification_request_digest"]
+    assert (
+        extraction["isaac_verification_request_digest"]
+        == request["isaac_verification_request_digest"]
+    )
     extracted_root = tmp_path / "extracted" / receipt["bundle_digest"][7:]
     assert (extracted_root / "render_options.json").read_bytes() == render_options.read_bytes()
 
@@ -767,21 +810,21 @@ def test_provider_runtime_output_is_independently_rehashed_and_allocator_transpo
                 "nonblank": True,
             }
         )
+    robot_frames = runtime_root / "frames_robot_only"
+    robot_frames.mkdir()
+    robot_rgb = robot_frames / f"{camera_ids[0]}.png"
+    robot_rgb.write_bytes(b"\x89PNG\r\n\x1a\nrobot-evidence")
+    robot_distance = robot_frames / f"{camera_ids[0]}_distance.npy"
+    robot_distance.write_bytes(b"NUMPY-DISTANCE-EVIDENCE")
     runtime = build_provider_nurec_isaac_runtime_result(
         {
             "schema_version": "provider_nurec_isaac_runtime_result.v1",
             "status": "completed",
-            "isaac_verification_request_digest": request[
-                "isaac_verification_request_digest"
-            ],
+            "isaac_verification_request_digest": request["isaac_verification_request_digest"],
             "package_digest": request["package_digest"],
             "fixed_camera_spec_digest": request["fixed_camera_spec_digest"],
-            "runtime_container_image_digest": request[
-                "runtime_container_image_digest"
-            ],
-            "runtime_implementation_digest": request[
-                "runtime_implementation_digest"
-            ],
+            "runtime_container_image_digest": request["runtime_container_image_digest"],
+            "runtime_implementation_digest": request["runtime_implementation_digest"],
             "runtime_identity": {
                 "runtime": "isaac_sim",
                 "renderer": "RayTracedLighting",
@@ -811,6 +854,25 @@ def test_provider_runtime_output_is_independently_rehashed_and_allocator_transpo
                 "probe_configuration": {},
             },
             "cameras": camera_rows,
+            "robot": {
+                "requested": True,
+                "composited": True,
+                "geometry_streamed": True,
+                "robot_only_pass": [
+                    {
+                        "id": camera_ids[0],
+                        "pixel_std": 12.0,
+                        "nonblank": True,
+                        "depth_npy": True,
+                        "rgb_artifact_reference": (f"frames_robot_only/{camera_ids[0]}.png"),
+                        "rgb_digest": sha256_file(robot_rgb),
+                        "distance_artifact_reference": (
+                            f"frames_robot_only/{camera_ids[0]}_distance.npy"
+                        ),
+                        "distance_digest": sha256_file(robot_distance),
+                    }
+                ],
+            },
             "proof_boundary": {
                 "isaac_load_render_physics_presence_compatibility": True,
                 "simulator_task_success_proven": False,
@@ -822,9 +884,7 @@ def test_provider_runtime_output_is_independently_rehashed_and_allocator_transpo
         },
         verification_request=request,
     )
-    (runtime_root / "isaac_runtime_result.json").write_text(
-        json.dumps(runtime), encoding="utf-8"
-    )
+    (runtime_root / "isaac_runtime_result.json").write_text(json.dumps(runtime), encoding="utf-8")
     output_bundle = tmp_path / "provider-output.zip"
     compiled = compile_isaac_verification_output_bundle(
         bundle_receipt=receipt,
@@ -842,6 +902,8 @@ def test_provider_runtime_output_is_independently_rehashed_and_allocator_transpo
     )
     assert validated["runtime_result_digest"] == runtime["isaac_runtime_result_digest"]
     assert validated_runtime == runtime
+    assert (validated_root / f"frames_robot_only/{camera_ids[0]}.png").is_file()
+    assert (validated_root / f"frames_robot_only/{camera_ids[0]}_distance.npy").is_file()
     qualification = normalize_provider_nurec_isaac_verification(
         verification_request=request,
         runtime_result=validated_runtime,
@@ -850,10 +912,9 @@ def test_provider_runtime_output_is_independently_rehashed_and_allocator_transpo
     )
     assert qualification["status"] == "verified_compatibility_only"
     schema = json.loads(
-        (
-            ROOT
-            / "docs/schemas/provider_nurec_isaac_verification_result.v1.schema.json"
-        ).read_text(encoding="utf-8")
+        (ROOT / "docs/schemas/provider_nurec_isaac_verification_result.v1.schema.json").read_text(
+            encoding="utf-8"
+        )
     )
     jsonschema.Draft202012Validator(schema).validate(qualification)
     assert extraction["proof_effect"] == "none"

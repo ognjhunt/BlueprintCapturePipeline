@@ -135,6 +135,45 @@ def test_robot_only_pass_authors_hidden_lights_when_provider_stage_has_none() ->
     assert reused["authored_for_robot_only_pass"] is False
 
 
+def test_robot_evidence_material_is_explicitly_support_only() -> None:
+    from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    robot = UsdGeom.Xform.Define(stage, "/World/Franka").GetPrim()
+
+    report = runner._author_robot_evidence_material(
+        stage,
+        robot,
+        Sdf=Sdf,
+        UsdShade=UsdShade,
+    )
+
+    binding = UsdShade.MaterialBindingAPI(robot).GetDirectBinding()
+    assert str(binding.GetMaterialPath()) == "/World/BlueprintRobotEvidenceMaterial"
+    assert report["binding_strength"] == "strongerThanDescendants"
+    assert report["claim_boundary"] == (
+        "render_material_support_only_not_robot_asset_or_task_evidence"
+    )
+
+
+def test_visual_robot_is_excluded_from_environment_collision_probe() -> None:
+    from pxr import Sdf, Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    robot = UsdGeom.Xform.Define(stage, "/World/Franka").GetPrim()
+    report = {"composited": True, "prim_path": "/World/Franka"}
+
+    runner._exclude_robot_from_environment_physics_probe(stage, report, Sdf=Sdf)
+
+    assert robot.IsActive() is False
+    assert report["excluded_from_environment_physics_probe"] is True
+    assert report["physics_probe_claim_boundary"] == (
+        "visual_robot_excluded_so_probe_measures_provider_environment_collision_only"
+    )
+
+
 def test_provider_package_mode_has_versioned_schema_and_dynamic_exact_prim_paths() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
     assert (

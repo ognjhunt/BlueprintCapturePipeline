@@ -231,14 +231,13 @@ def _composite_robot(stage, options: dict, *, Gf, UsdGeom, Sdf) -> dict:
 
 
 def _ensure_robot_only_lights(stage, lights_path: str, *, Sdf, UsdGeom, UsdLux):
-    """Return a hidden light rig for the mesh-only evidence pass.
+    """Return a hidden light rig for the robot evidence renders.
 
     Provider-authored NuRec packages are often self-emissive and contain no
     lights. A referenced mesh robot then renders black when the splat is
     hidden. Reuse an authored rig when present; otherwise author a deterministic
-    dome+distant rig at runtime, keep it hidden during the scene pass, and show
-    it only for the robot-only pass. The exact source package on disk is never
-    edited.
+    dome+distant rig at runtime and enable it for both the scene-plus-robot and
+    robot-only evidence passes. The exact source package on disk is never edited.
     """
 
     requested_path = str(lights_path or "/World/BlueprintRobotOnlyLights").strip()
@@ -260,10 +259,66 @@ def _ensure_robot_only_lights(stage, lights_path: str, *, Sdf, UsdGeom, UsdLux):
     return prim, {
         "lights_path": str(path),
         "authored_for_robot_only_pass": authored,
+        "enabled_for_robot_scene_and_robot_only_passes": True,
         "dome_intensity": 400.0 if authored else None,
         "distant_intensity": 2500.0 if authored else None,
         "claim_boundary": "render_lighting_support_only_not_scene_or_task_evidence",
     }
+
+
+def _author_robot_evidence_material(stage, robot_prim, *, Sdf, UsdShade) -> dict:
+    """Bind a deterministic preview material for placement evidence renders.
+
+    Some Isaac robot assets resolve their geometry but not their remote MDL
+    materials in a bounded headless canary.  A stronger inherited preview
+    material keeps the exact referenced geometry visible without editing the
+    robot asset or pretending that the fallback proves production appearance.
+    """
+
+    path = Sdf.Path("/World/BlueprintRobotEvidenceMaterial")
+    material = UsdShade.Material.Define(stage, path)
+    shader = UsdShade.Shader.Define(stage, path.AppendChild("PreviewSurface"))
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.72, 0.74, 0.78))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.35)
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.05)
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    UsdShade.MaterialBindingAPI.Apply(robot_prim).Bind(
+        material,
+        bindingStrength=UsdShade.Tokens.strongerThanDescendants,
+    )
+    return {
+        "material_path": str(path),
+        "authored": True,
+        "binding_strength": "strongerThanDescendants",
+        "claim_boundary": "render_material_support_only_not_robot_asset_or_task_evidence",
+    }
+
+
+def _exclude_robot_from_environment_physics_probe(stage, robot_report: dict, *, Sdf) -> None:
+    """Keep the environment collision probe independent of the visual robot.
+
+    The Franka reference contains articulation and collision APIs.  Its solved
+    stance can coincide with the precommitted ground-probe point, so leaving it
+    active changes a scene-collision test into an accidental robot-contact
+    test.  Robot placement is visual evidence in this lane; deactivate it only
+    after all robot renders and before Physics is initialized.
+    """
+
+    path = str(robot_report.get("prim_path") or "")
+    if not robot_report.get("composited") or not path:
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(path))
+    if not prim or not prim.IsValid():
+        robot_report["excluded_from_environment_physics_probe"] = False
+        return
+    prim.SetActive(False)
+    robot_report.update(
+        excluded_from_environment_physics_probe=True,
+        physics_probe_claim_boundary=(
+            "visual_robot_excluded_so_probe_measures_provider_environment_collision_only"
+        ),
+    )
 
 
 def _camera_xform(Gf, position, target, up):
@@ -866,7 +921,7 @@ def _render(args) -> int:
         _phase(result_path, base, "runner_simulation_app_started")
         import omni.usd  # type: ignore
         import omni.replicator.core as rep  # type: ignore
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdUtils  # type: ignore
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade, UsdUtils  # type: ignore
 
         try:
             import carb  # type: ignore
@@ -984,6 +1039,7 @@ def _render(args) -> int:
         # Optional robot compositing at the validated stance (bundle-driven).
         render_options = _load_render_options(Path(args.cameras)) if args.cameras else {}
         robot_report = _composite_robot(stage, render_options, Gf=Gf, UsdGeom=UsdGeom, Sdf=Sdf)
+        robot_lights_prim = None
         if robot_report.get("requested"):
             _phase(result_path, base, "runner_robot_composited", robot=robot_report)
         if robot_report.get("composited"):
@@ -1061,6 +1117,23 @@ def _render(args) -> int:
                     if not rng.IsEmpty():
                         robot_report["world_bound_min"] = [round(float(v), 4) for v in rng.GetMin()]
                         robot_report["world_bound_max"] = [round(float(v), 4) for v in rng.GetMax()]
+            robot_report["visual_material_support"] = _author_robot_evidence_material(
+                stage,
+                robot_prim,
+                Sdf=Sdf,
+                UsdShade=UsdShade,
+            )
+            robot_lights_prim, lighting_report = _ensure_robot_only_lights(
+                stage,
+                str(render_options.get("lights_path") or ""),
+                Sdf=Sdf,
+                UsdGeom=UsdGeom,
+                UsdLux=UsdLux,
+            )
+            UsdGeom.Imageable(robot_lights_prim).MakeVisible()
+            robot_report["robot_only_lighting"] = lighting_report
+            for _ in range(10):
+                simulation_app.update()
             _phase(result_path, base, "runner_robot_geometry", robot=robot_report)
 
         # warm up so the splat/materials upload to the GPU before any capture
@@ -1162,18 +1235,19 @@ def _render(args) -> int:
             pf_imageables = [UsdGeom.Imageable(p) for p in pf]
             for imageable in pf_imageables:
                 imageable.MakeInvisible()
-            # The splat is self-emissive; the mesh robot needs real lights or it
-            # renders black. Lights are authored invisible in the stage — enable
-            # them ONLY for this pass so the splat pass stays unlit.
-            lights_prim, lighting_report = _ensure_robot_only_lights(
-                stage,
-                str(render_options.get("lights_path") or ""),
-                Sdf=Sdf,
-                UsdGeom=UsdGeom,
-                UsdLux=UsdLux,
-            )
-            UsdGeom.Imageable(lights_prim).MakeVisible()
-            robot_report["robot_only_lighting"] = lighting_report
+            # The splat is self-emissive; the mesh robot needs the same support
+            # lights used by the scene-plus-robot evidence pass.
+            lights_prim = robot_lights_prim
+            if lights_prim is None:
+                lights_prim, lighting_report = _ensure_robot_only_lights(
+                    stage,
+                    str(render_options.get("lights_path") or ""),
+                    Sdf=Sdf,
+                    UsdGeom=UsdGeom,
+                    UsdLux=UsdLux,
+                )
+                UsdGeom.Imageable(lights_prim).MakeVisible()
+                robot_report["robot_only_lighting"] = lighting_report
             for _ in range(10):
                 simulation_app.update()
             for idx, cam in enumerate(cameras):
@@ -1199,18 +1273,27 @@ def _render(args) -> int:
                 pngs = sorted(glob.glob(str(cam_out / "*.png")))
                 npys = sorted(glob.glob(str(cam_out / "*.npy")))
                 canonical = ro_dir / f"{cid}.png"
+                distance = ro_dir / f"{cid}_distance.npy"
                 std = 0.0
                 if pngs:
                     canonical.write_bytes(Path(pngs[-1]).read_bytes())
                     std = _pixel_std(canonical)
                 if npys:
-                    (ro_dir / f"{cid}_distance.npy").write_bytes(Path(npys[-1]).read_bytes())
+                    distance.write_bytes(Path(npys[-1]).read_bytes())
                 robot_only.append(
                     {
                         "id": cid,
                         "pixel_std": round(std, 3),
                         "nonblank": std > 3.0,
                         "depth_npy": bool(npys),
+                        "rgb_artifact_reference": (
+                            f"frames_robot_only/{cid}.png" if canonical.is_file() else None
+                        ),
+                        "rgb_digest": (_sha256_file(canonical) if canonical.is_file() else None),
+                        "distance_artifact_reference": (
+                            f"frames_robot_only/{cid}_distance.npy" if distance.is_file() else None
+                        ),
+                        "distance_digest": (_sha256_file(distance) if distance.is_file() else None),
                     }
                 )
                 _phase(
@@ -1243,6 +1326,11 @@ def _render(args) -> int:
         physics_probe = {}
         blockers = []
         if qualification_mode:
+            _exclude_robot_from_environment_physics_probe(
+                stage,
+                robot_report,
+                Sdf=Sdf,
+            )
             physics_probe = _run_qualification_physics_probe(
                 stage,
                 ground_surface,
