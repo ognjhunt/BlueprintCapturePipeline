@@ -10,7 +10,7 @@ import argparse
 import hashlib
 import json
 import os
-import signal
+import signal  # noqa: F401 - compatibility surface used by allocator signal-policy tests
 import subprocess
 import sys
 from pathlib import Path
@@ -72,6 +72,14 @@ from .paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
+from .paid_resource_cli_support import (
+    add_cpu_arguments as _add_cpu_arguments,
+    configure_detached_supervisor_signal_policy,
+    cpu_builder_kwargs,
+    cpu_prerequisite_blocked_result,
+    cpu_vector as _cpu_vector,
+    missing_cpu_provider_arguments as _missing_cpu_provider_arguments,
+)
 from .openpi_policy_ranking_gpu_admission import (
     NEW_SITE_CANARY_PROBE_KIND,
     PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
@@ -111,7 +119,6 @@ from .single_g1_kitchen_qualification_session import (
     SESSION_ACTIONS as QUALIFICATION_SESSION_ACTIONS,
     run_qualification_session,
 )
-
 
 ROOT = Path(__file__).resolve().parents[2]
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
@@ -376,121 +383,18 @@ def _write_blocked_qualification_allocation_outputs(args: argparse.Namespace, re
 
 
 def _configure_detached_supervisor_signal_policy(command: str) -> bool:
-    """Keep an explicitly detached paid supervisor alive through local SIGINT.
-
-    SIGTERM remains available for an intentional stop. Provider resources also
-    remain bounded by their independent deadline watchdogs.
-    """
-
-    detached_model_volume = (
-        command == "model-volume-run" and os.getenv(DETACHED_MODEL_VOLUME_SUPERVISOR_ENV) == "1"
+    return configure_detached_supervisor_signal_policy(
+        command,
+        detached_model_volume_env=DETACHED_MODEL_VOLUME_SUPERVISOR_ENV,
+        detached_cpu_build_env=DETACHED_CPU_BUILD_SUPERVISOR_ENV,
     )
-    detached_cpu_build = (
-        command == "cpu-build-run" and os.getenv(DETACHED_CPU_BUILD_SUPERVISOR_ENV) == "1"
-    )
-    if not (detached_model_volume or detached_cpu_build):
-        return False
-    try:
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-    except (AttributeError, OSError, ValueError):
-        return False
-    return True
-
-
-def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: bool = True) -> None:
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--packet-manifest", required=True)
-    parser.add_argument("--builder-evidence", required=True)
-    parser.add_argument("--spend", required=True)
-    parser.add_argument("--token-file", default="~/.blueprint-secrets/digitalocean_api_token")
-    parser.add_argument("--docker-username-file", default="~/.blueprint-secrets/docker_username")
-    parser.add_argument("--docker-password-file", default="~/.blueprint-secrets/docker_pat")
-    parser.add_argument("--hf-token-file", default="~/.blueprint-secrets/hf_token")
-    parser.add_argument(
-        "--runpod-s3-access-key-file",
-        default="~/.blueprint-secrets/runpod_s3_access_key",
-    )
-    parser.add_argument(
-        "--runpod-s3-secret-key-file",
-        default="~/.blueprint-secrets/runpod_s3_secret_key",
-    )
-    parser.add_argument("--login-private-key", required=require_provider)
-    parser.add_argument("--host-private-key", required=require_provider)
-    parser.add_argument("--ssh-key-id", required=require_provider, type=int)
-    parser.add_argument("--region", default="sfo3")
-    parser.add_argument("--allow-paid", action="store_true")
-
-
-def _cpu_vector(args: argparse.Namespace) -> list[str]:
-    values = [
-        "--output-dir",
-        args.output_dir,
-        "--packet-manifest",
-        args.packet_manifest,
-        "--builder-evidence",
-        args.builder_evidence,
-        "--spend",
-        args.spend,
-        "--token-file",
-        args.token_file,
-        "--docker-username-file",
-        args.docker_username_file,
-        "--docker-password-file",
-        args.docker_password_file,
-        "--hf-token-file",
-        args.hf_token_file,
-        "--runpod-s3-access-key-file",
-        args.runpod_s3_access_key_file,
-        "--runpod-s3-secret-key-file",
-        args.runpod_s3_secret_key_file,
-        "--login-private-key",
-        args.login_private_key,
-        "--host-private-key",
-        args.host_private_key,
-        "--ssh-key-id",
-        str(args.ssh_key_id),
-        "--region",
-        args.region,
-    ]
-    if args.allow_paid:
-        values.append("--allow-paid")
-    return values
-
-
-def _missing_cpu_provider_arguments(args: argparse.Namespace) -> list[str]:
-    return [
-        name
-        for name in ("login_private_key", "host_private_key", "ssh_key_id")
-        if getattr(args, name, None) in (None, "")
-    ]
 
 
 def _run_cpu(args: argparse.Namespace) -> dict:
     prerequisite = _run_cpu_prerequisite_gate(Path(args.output_dir))
     if prerequisite.get("status") != "ready":
-        return {
-            "schema_version": "blueprint.cpu_build_allocator_result.v1",
-            "status": "blocked_before_allocation",
-            "blockers": prerequisite.get("blockers", ["groot_oscar_live_prerequisites_not_ready"]),
-            "provider_mutation_attempted": False,
-        }
-    return run_builder(
-        output_dir=Path(args.output_dir),
-        packet_manifest_path=Path(args.packet_manifest),
-        builder_evidence_path=Path(args.builder_evidence),
-        spend_path=Path(args.spend),
-        token_file=Path(args.token_file),
-        docker_username_file=Path(args.docker_username_file),
-        docker_password_file=Path(args.docker_password_file),
-        login_private_key=Path(args.login_private_key),
-        host_private_key=Path(args.host_private_key),
-        ssh_key_id=args.ssh_key_id,
-        region=args.region,
-        allow_paid=args.allow_paid,
-        hf_token_file=Path(args.hf_token_file),
-        runpod_s3_access_key_file=Path(args.runpod_s3_access_key_file),
-        runpod_s3_secret_key_file=Path(args.runpod_s3_secret_key_file),
-    )
+        return cpu_prerequisite_blocked_result(prerequisite)
+    return run_builder(**cpu_builder_kwargs(args))
 
 
 def _run_cpu_prerequisite_gate(output_dir: Path) -> dict:
@@ -613,18 +517,10 @@ def _run_reconstruction_gpu_canary(
                 "blueprint-reconstruction-",
             ),
             container_disk_bytes=container_disk_bytes,
-            watchdog=(
-                seed.get("watchdog")
-                if isinstance(seed.get("watchdog"), dict)
-                else {}
-            ),
-            conflicting_owner_present=(
-                seed.get("conflicting_owner_present") is not False
-            ),
+            watchdog=(seed.get("watchdog") if isinstance(seed.get("watchdog"), dict) else {}),
+            conflicting_owner_present=(seed.get("conflicting_owner_present") is not False),
             capacity_probe=provider.capacity_preflight,
-            inventory_probe=lambda prefix: provider.billable_inventory(
-                name_prefix=prefix
-            ),
+            inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
             max_hourly_rate_usd=float(max_hourly_rate),
         )
         write_json(Path(args.preflight_bundle), refreshed)
@@ -645,10 +541,10 @@ def _run_reconstruction_gpu_canary(
         authority_id=args.reconstruction_authority_id,
         execute=args.execute,
         execution_adapter_qualified=args.execute,
-        image_release_path=getattr(
-            args, "reconstruction_isaac_image_release", None
+        image_release_path=getattr(args, "reconstruction_isaac_image_release", None),
+        measurement_isaac_runtime_release_path=getattr(
+            args, "measurement_isaac_runtime_release", None
         ),
-        measurement_isaac_runtime_release_path=getattr(args, "measurement_isaac_runtime_release", None),
     )
     if not args.execute or admission.get("status") != "execute_ready":
         return admission
