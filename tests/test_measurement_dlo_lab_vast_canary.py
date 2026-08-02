@@ -10,6 +10,7 @@ from blueprint_pipeline.measurement_dlo_lab_cable_adapter import (
     EXPECTED_SOURCE_COMMIT,
 )
 from blueprint_pipeline.measurement_dlo_lab_runtime_release import (
+    DISPLAY_MODE,
     PYTHON_CONDA_SPEC,
     PYTHON_CONDA_PACKAGE_SHA256,
     PYTHON_VERSION,
@@ -19,6 +20,7 @@ from blueprint_pipeline.measurement_dlo_lab_runtime_release import (
     QUADRANTS_VERSION,
     QUADRANTS_WHEEL_SHA256,
     QUADRANTS_WHEEL_URL,
+    REQUIRED_DEBIAN_PACKAGES,
     RUNTIME_IMAGE,
     build_measurement_dlo_lab_runtime_release,
 )
@@ -74,9 +76,7 @@ def _receipt() -> dict:
         "proof_effect": "none",
         "claim_ceiling": "immutable_development_input_bundle_only",
     }
-    value["bundle_receipt_digest"] = canonical_digest(
-        value, digest_field="bundle_receipt_digest"
-    )
+    value["bundle_receipt_digest"] = canonical_digest(value, digest_field="bundle_receipt_digest")
     return value
 
 
@@ -99,14 +99,10 @@ def _bound_request() -> dict:
         "bound_preflight_digest": D2,
         "bound_checkout_source_commit": SHA,
         "bound_checkout_clean": True,
-        "measurement_dlo_lab_runtime_release_digest": release[
-            "runtime_release_digest"
-        ],
+        "measurement_dlo_lab_runtime_release_digest": release["runtime_release_digest"],
         "provider_mutation_authorized": True,
     }
-    value["bound_request_digest"] = canonical_digest(
-        value, digest_field="bound_request_digest"
-    )
+    value["bound_request_digest"] = canonical_digest(value, digest_field="bound_request_digest")
     return value
 
 
@@ -175,7 +171,13 @@ def test_bootstrap_binds_exact_source_cuda_bundle_and_signed_upload() -> None:
     assert QUADRANTS_WHEEL_URL in script
     assert QUADRANTS_WHEEL_SHA256.removeprefix("sha256:") in script
     assert '"$dlo_python" -m pip install --no-cache-dir -e "$dlo"' in script
-    assert "apt-get install -y --no-install-recommends git ca-certificates gdb" in script
+    assert (
+        "apt-get install -y --no-install-recommends " + " ".join(REQUIRED_DEBIAN_PACKAGES) in script
+    )
+    assert "libegl1" in script
+    assert 'ctypes.util.find_library("EGL")' in script
+    assert "measurement_dlo_lab_libegl_missing" in script
+    assert build_measurement_dlo_lab_runtime_release()["display_mode"] == DISPLAY_MODE
     assert "BLUEPRINT_DLO_NATIVE_DIAGNOSTIC" not in script
     assert 'headers={"Content-Type": "application/zip"}' in script
 
@@ -239,17 +241,16 @@ def test_runtime_validator_enforces_cuda_identity_and_claim_ceiling(monkeypatch)
         "proof_effect": "development_execution_only",
         "claim_ceiling": "dlo_lab_cuda_cable_development",
     }
-    result["runtime_result_digest"] = canonical_digest(
-        result, digest_field="runtime_result_digest"
+    result["runtime_result_digest"] = canonical_digest(result, digest_field="runtime_result_digest")
+    assert (
+        validate_measurement_dlo_lab_vast_runtime_result(
+            result, bound_request=bound, bundle_receipt=receipt
+        )["status"]
+        == "passed"
     )
-    assert validate_measurement_dlo_lab_vast_runtime_result(
-        result, bound_request=bound, bundle_receipt=receipt
-    )["status"] == "passed"
 
     result["qualification_created"] = True
-    result["runtime_result_digest"] = canonical_digest(
-        result, digest_field="runtime_result_digest"
-    )
+    result["runtime_result_digest"] = canonical_digest(result, digest_field="runtime_result_digest")
     with pytest.raises(MeasurementDloLabVastCanaryError, match="qualification_created"):
         validate_measurement_dlo_lab_vast_runtime_result(
             result, bound_request=bound, bundle_receipt=receipt
@@ -289,8 +290,7 @@ def test_canary_launches_once_tears_down_and_preserves_no_signed_urls(
     assert len(provider.requests) == 1
     assert provider.requests[0]["prelaunch_spend_guard"]["retry_cap"] == 0
     persisted = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (tmp_path / "canary").rglob("*.json")
+        path.read_text(encoding="utf-8") for path in (tmp_path / "canary").rglob("*.json")
     )
     assert "signature=input-secret" not in persisted
     assert "signature=put-secret" not in persisted
