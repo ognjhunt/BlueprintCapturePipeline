@@ -75,6 +75,22 @@
     ],
     "purpose": "Collect a bounded sanitized native debugger backtrace for direct Quadrants import without changing another compatibility variable or creating qualification evidence."
   },
+  "attempt6_observation": {
+    "blueprint_source_commit": "15185570d49ed9545805b4067258a1710fef3be0",
+    "gdb_installed": true,
+    "diagnostic_flag_set_at_bootstrap": true,
+    "diagnostic_flag_reached_adapter_worker": false,
+    "direct_quadrants_import_succeeded": false,
+    "native_backtrace_captured": false,
+    "infrastructure_blocker": "generic_adapter_safe_environment_did_not_allow_blueprint_dlo_native_diagnostic",
+    "evidence_path": "docs/evidence/measurement_dlo_lab_vast_attempt6_2026-08-02.json"
+  },
+  "next_infrastructure_fix": {
+    "allowed_non_secret_environment_key": "BLUEPRINT_DLO_NATIVE_DIAGNOSTIC",
+    "signed_transport_environment_keys_remain_forbidden": true,
+    "compatibility_variables_change": false,
+    "purpose": "Deliver the already-bound debugger request to the first case worker without exposing signed transport credentials."
+  },
   "evidence_boundary": {
     "primary_source_metadata_observed": true,
     "python_3_12_runtime_import_proven": false,
