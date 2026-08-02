@@ -176,7 +176,7 @@ def test_bootstrap_binds_exact_source_cuda_bundle_and_signed_upload() -> None:
     assert QUADRANTS_WHEEL_SHA256.removeprefix("sha256:") in script
     assert '"$dlo_python" -m pip install --no-cache-dir -e "$dlo"' in script
     assert "apt-get install -y --no-install-recommends git ca-certificates gdb" in script
-    assert "export BLUEPRINT_DLO_NATIVE_DIAGNOSTIC=1" in script
+    assert "BLUEPRINT_DLO_NATIVE_DIAGNOSTIC" not in script
     assert 'headers={"Content-Type": "application/zip"}' in script
 
 

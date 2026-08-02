@@ -86,10 +86,12 @@
     "evidence_path": "docs/evidence/measurement_dlo_lab_vast_attempt6_2026-08-02.json"
   },
   "next_infrastructure_fix": {
-    "allowed_non_secret_environment_key": "BLUEPRINT_DLO_NATIVE_DIAGNOSTIC",
+    "diagnostic_mode_binding": "execution_request.runtime_configuration.solver_settings.native_diagnostic",
+    "diagnostic_mode": "gdb_first_case_only",
+    "generic_adapter_safe_environment_expanded": false,
     "signed_transport_environment_keys_remain_forbidden": true,
     "compatibility_variables_change": false,
-    "purpose": "Deliver the already-bound debugger request to the first case worker without exposing signed transport credentials."
+    "purpose": "Deliver the debugger request as digest-bound execution configuration without exposing signed transport credentials."
   },
   "evidence_boundary": {
     "primary_source_metadata_observed": true,

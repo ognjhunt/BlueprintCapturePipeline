@@ -569,10 +569,11 @@ Implemented and hermetically tested:
   The next bounded diagnostic holds those compatibility variables fixed and
   collects a sanitized native debugger backtrace. The first debugger attempt
   exposed an infrastructure boundary before collection: the generic adapter
-  executor stripped the non-secret diagnostic flag along with its intentionally
-  narrow environment. The executor now passes that one flag while continuing to
-  strip all signed transport URLs; no compatibility conclusion was inferred from
-  the missing backtrace. The controller rechecks every source
+  executor stripped the bootstrap-only diagnostic flag along with its intentionally
+  narrow environment. The diagnostic mode is now digest-bound in the execution
+  request instead of expanding that environment; signed transport URLs remain
+  stripped, and no compatibility conclusion was inferred from the missing
+  backtrace. The controller rechecks every source
   digest, executes both cases through the generic adapter executor, requires
   CUDA observations and matching replay traces, and preserves all Q-DLO,
   R5-R7, production, physical, and policy-ranking claims as false. Bundle
