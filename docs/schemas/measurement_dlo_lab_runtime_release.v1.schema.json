@@ -13,9 +13,9 @@
   ],
   "properties": {
     "schema_version": {"const": "measurement_dlo_lab_runtime_release.v1"},
-    "runtime_image_digest": {"const": "pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime@sha256:60f22fb80755fd0b470fb47928dbd55816aa9f847edd95cf43c93253507a9ddf"},
+    "runtime_image_digest": {"const": "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385"},
     "pytorch_version": {"const": "2.9.1"},
-    "cuda_version": {"const": "13.0"},
+    "cuda_version": {"const": "12.8"},
     "dlo_lab_source_repository": {"const": "https://github.com/UMass-Embodied-AGI/DLO-Lab.git"},
     "dlo_lab_source_commit": {"const": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796"},
     "dlo_lab_distribution_name": {"const": "genesis-world"},

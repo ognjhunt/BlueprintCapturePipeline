@@ -1,0 +1,52 @@
+{
+  "schema_version": "measurement_dlo_lab_runtime_compatibility_observation.v1",
+  "observed_at": "2026-08-02T00:00:00Z",
+  "dlo_lab": {
+    "repository": "https://github.com/UMass-Embodied-AGI/DLO-Lab",
+    "commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+    "readme_digest": "sha256:8b90975525574e0d021195247989613d884bf685110e4ee1cdbd30cd6f39f58c",
+    "pyproject_digest": "sha256:8722d0a524cb02345b4d3784866b81aa1bb852da5472483bbc94320da4549afb",
+    "declared_python_range": ">=3.10,<3.14",
+    "readme_environment_python": "3.12",
+    "declared_quadrants_version": "0.8.0",
+    "declared_pytorch_version": null
+  },
+  "quadrants": {
+    "repository": "https://github.com/Genesis-Embodied-AI/quadrants",
+    "tag": "v0.8.0",
+    "commit": "a22cc2dedd3458dc88cca287a8e2faf74430a251",
+    "pyproject_digest": "sha256:7571887e11cbc3c20f8a466e3769b57e6379644ce7f1fcf0465fab5decb62be9",
+    "manylinux_workflow_digest": "sha256:9fae082751dac067bf500adca532a2e769dd1bf0f2cc0bf6c2c7b4c9d5b40454",
+    "gpu_workflow_digest": "sha256:7c10679571b1b0568eb819c16be7d5d916c8751f8ac38e4f32d30da3022cec66",
+    "declared_python_range": ">=3.10,<3.14",
+    "published_linux_x86_64_python_wheels": [
+      "cp310",
+      "cp311",
+      "cp312",
+      "cp313"
+    ],
+    "cuda_workflow_python": "3.10",
+    "cuda_workflow_cuda_line": "12.8",
+    "cuda_workflow_installs_pytorch_from": "https://download.pytorch.org/whl/cu128"
+  },
+  "selected_candidate": {
+    "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385",
+    "image_config_digest": "sha256:9a925cca9d307c87d9ee4deef94aad763d9ee0717670d8e29dd0ed2c9d1edc3d",
+    "architecture": "amd64",
+    "base_os": "ubuntu-22.04",
+    "pytorch_version": "2.9.1",
+    "cuda_version": "12.8",
+    "selection_reason": "Replace the failed CUDA 13.0 diagnostic image with the immutable PyTorch image on the CUDA 12.8 line exercised by the exact Quadrants release workflow while preserving DLO-Lab's declared Python compatibility range."
+  },
+  "evidence_boundary": {
+    "primary_source_metadata_observed": true,
+    "runtime_import_proven": false,
+    "cuda_execution_proven": false,
+    "deterministic_replay_proven": false,
+    "qualification_created": false,
+    "r5_evidence_created": false,
+    "r6_decision_created": false,
+    "r7_admission_created": false,
+    "physical_success_established": false
+  }
+}
