@@ -104,7 +104,8 @@
       "quadrants::get_repo_dir_abi:cxx11_",
       "quadrants::lang::CompileConfig::CompileConfig"
     ],
-    "source_localized_cause": "Quadrants v0.8.0 global CompileConfig initialization calls get_repo_dir, which requires XDG_CACHE_HOME or HOME; the sanitized adapter environment provided neither.",
+    "source_localized_cause_inference": "The native frames and version-matched Quadrants v0.8.0 reference source indicate that global CompileConfig initialization calls get_repo_dir, which requires XDG_CACHE_HOME or HOME; the sanitized adapter environment provided neither.",
+    "wheel_build_commit_identity_proven": false,
     "cuda_kernel_failure_observed": false,
     "evidence_path": "docs/evidence/measurement_dlo_lab_vast_attempt7_2026-08-02.json"
   },
