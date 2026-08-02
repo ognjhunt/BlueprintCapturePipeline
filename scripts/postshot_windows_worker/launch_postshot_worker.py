@@ -32,10 +32,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-import boto3
-from botocore.client import Config
+import boto3  # noqa: E402
+from botocore.client import Config  # noqa: E402
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
+from blueprint_pipeline.decision_evidence_contracts import (  # noqa: E402
+    canonical_digest,
+    canonical_json,
+)
 
 SECRETS = Path.home() / ".blueprint-secrets"
 AWS_CREDENTIALS_FILE = SECRETS / "aws_agent_credentials"
@@ -326,84 +329,17 @@ def stage(arguments) -> dict:
 
 
 def launch(arguments) -> None:
-    proxy_root = Path(arguments.proxy_root).resolve()
-    state_dir = proxy_root / "provider_packets" / "postshot" / arguments.run_id
-    staging = json.loads((state_dir / "staging.json").read_text(encoding="utf-8"))
-    urls = json.loads((state_dir / "presigned_urls.json").read_text(encoding="utf-8"))
-    driver_urls = ",".join(f'"{u}"' for u in NVIDIA_DRIVER_URLS)
-    user_data = (
-        BOOTSTRAP_TEMPLATE.replace("__STATUS_PUT__", urls["status_put"])
-        .replace("__HEARTBEAT_PUT__", urls["heartbeat_put"])
-        .replace("__RESULTS_PUT__", urls["results_put"])
-        .replace("__DRIVER_URLS__", driver_urls)
-        .replace("__POSTSHOT_INSTALLER_GET__", urls["installer_get"])
-        .replace("__POSTSHOT_SHA256__", POSTSHOT_INSTALLER_SHA256)
-        .replace("__DATASET_GET__", urls["dataset_get"])
-        .replace("__LICENSE_GET__", urls["license_get"])
+    raise SystemExit(
+        "legacy_postshot_windows_worker_launch_disabled_use_paid_resource_allocator"
     )
-    session = _aws_session()
-    ec2 = session.client("ec2")
-    groups = ec2.describe_security_groups(
-        Filters=[{"Name": "group-name", "Values": [TAG]}]
-    )["SecurityGroups"]
-    if groups:
-        group_id = groups[0]["GroupId"]
-    else:
-        vpc = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])["Vpcs"][0]
-        group_id = ec2.create_security_group(
-            GroupName=TAG,
-            Description="Blueprint Postshot worker: no inbound, egress only",
-            VpcId=vpc["VpcId"],
-        )["GroupId"]
-    error = None
-    for instance_type in INSTANCE_TYPES:
-        try:
-            run = ec2.run_instances(
-                ImageId=WINDOWS_BASE_AMI,
-                InstanceType=instance_type,
-                MinCount=1,
-                MaxCount=1,
-                SecurityGroupIds=[group_id],
-                InstanceInitiatedShutdownBehavior="terminate",
-                UserData=user_data,
-                BlockDeviceMappings=[
-                    {
-                        "DeviceName": "/dev/sda1",
-                        "Ebs": {"VolumeSize": 150, "VolumeType": "gp3", "DeleteOnTermination": True},
-                    }
-                ],
-                TagSpecifications=[
-                    {
-                        "ResourceType": "instance",
-                        "Tags": [
-                            {"Key": "Name", "Value": f"{TAG}-{arguments.run_id}"},
-                            {"Key": "blueprint-run", "Value": arguments.run_id},
-                            {"Key": "blueprint-ttl-minutes", "Value": str(TTL_MINUTES)},
-                        ],
-                    }
-                ],
-            )
-            instance = run["Instances"][0]
-            record = {
-                "schema_version": "postshot_worker_launch.v1",
-                "run_id": arguments.run_id,
-                "instance_id": instance["InstanceId"],
-                "instance_type": instance_type,
-                "image_id": WINDOWS_BASE_AMI,
-                "security_group": group_id,
-                "launched_at_epoch": int(time.time()),
-                "ttl_deadline_epoch": int(time.time()) + TTL_MINUTES * 60,
-                "staging_digest": staging["staging_digest"],
-                "expected_hourly_usd_upper_bound": EXPECTED_HOURLY_USD,
-                "spend_cap_usd": SPEND_CAP_USD,
-            }
-            (state_dir / "launch.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
-            print(json.dumps(record, indent=1))
-            return
-        except Exception as exc:  # noqa: BLE001 - try next instance type, then surface
-            error = exc
-            print(f"launch {instance_type} failed: {exc}")
-    raise SystemExit(f"all instance types failed: {error}")
+
+
+def _legacy_launch_implementation(arguments) -> None:
+    """Retained for teardown archaeology; never exposed by the CLI."""
+
+    raise SystemExit(
+        "legacy_postshot_windows_worker_launch_disabled_use_paid_resource_allocator"
+    )
 
 
 def status(arguments) -> None:

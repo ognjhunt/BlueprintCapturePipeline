@@ -199,6 +199,11 @@
       "required_markers": ["legacy_runpod_autoscaler_disabled_use_paid_resource_allocator"]
     },
     {
+      "path": "scripts/postshot_windows_worker/launch_postshot_worker.py",
+      "classification": "hard_disabled_legacy_launcher",
+      "required_markers": ["legacy_postshot_windows_worker_launch_disabled_use_paid_resource_allocator"]
+    },
+    {
       "path": "src/blueprint_pipeline/provider_race.py",
       "classification": "legacy_orchestrator_no_grant_issuer",
       "required_markers": ["provider.launch("]

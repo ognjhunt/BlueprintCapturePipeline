@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+import urllib.request
 
 import jsonschema
 import pytest
@@ -101,6 +102,54 @@ def test_camera_ids_map_to_valid_collision_checked_usd_prim_names() -> None:
 
     with pytest.raises(ValueError, match="isaac_camera_usd_prim_names_collide"):
         runner._camera_usd_prim_names(["camera-a", "camera_a"])
+
+
+def test_runtime_bundle_upload_rejects_non_https_signed_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    result_path = out_dir / "result.json"
+    result_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        "file:///tmp/untrusted-output.zip",
+    )
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("non-HTTPS URL must not be opened"),
+    )
+
+    runner._bundle_and_upload(out_dir, result_path)
+
+
+def test_runtime_bundle_upload_accepts_validated_https_signed_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    result_path = out_dir / "result.json"
+    result_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        "https://objects.example/output.zip?signature=bound",
+    )
+    opened: list[tuple[str, int]] = []
+
+    class _Response:
+        def read(self) -> bytes:
+            return b""
+
+    def _urlopen(request, *, timeout):
+        opened.append((request.full_url, timeout))
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+
+    runner._bundle_and_upload(out_dir, result_path)
+
+    assert opened == [("https://objects.example/output.zip?signature=bound", 300)]
 
 
 def test_robot_only_pass_authors_hidden_lights_when_provider_stage_has_none() -> None:

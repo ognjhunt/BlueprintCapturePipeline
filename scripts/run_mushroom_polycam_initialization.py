@@ -21,22 +21,25 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
-from blueprint_pipeline.external_pointcloud_initialization import (
+from blueprint_pipeline.decision_evidence_contracts import (  # noqa: E402
+    canonical_digest,
+    canonical_json,
+)
+from blueprint_pipeline.external_pointcloud_initialization import (  # noqa: E402
     ExternalPointcloudInitializationError,
     REQUEST_SCHEMA_VERSION as INITIALIZATION_REQUEST_SCHEMA_VERSION,
     compile_external_pointcloud_initialization,
 )
-from blueprint_pipeline.external_reconstruction_import import (
+from blueprint_pipeline.external_reconstruction_import import (  # noqa: E402
     ExternalReconstructionImportError,
     build_external_reconstruction_import_request,
     import_external_reconstruction,
 )
-from blueprint_pipeline.mushroom_processed_proxy import (
+from blueprint_pipeline.mushroom_processed_proxy import (  # noqa: E402
     COORDINATE_FRAME_DECLARATION,
     build_mushroom_colmap_export_request,
 )
-from blueprint_pipeline.reconstruction_colmap_dataset import (
+from blueprint_pipeline.reconstruction_colmap_dataset import (  # noqa: E402
     ColmapTrainingDatasetError,
     bind_colmap_initialization_points,
     export_colmap_training_dataset,

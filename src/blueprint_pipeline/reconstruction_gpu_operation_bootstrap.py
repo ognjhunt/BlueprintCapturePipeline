@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Any, Mapping, Sequence
 
 from .common import write_json
@@ -225,10 +226,13 @@ def run_reconstruction_gpu_operation_bootstrap(
 
 
 def main() -> int:
-    result = run_reconstruction_gpu_operation_bootstrap(
-        environment=os.environ,
-        work_root="/tmp/blueprint_reconstruction_operation",
-    )
+    with tempfile.TemporaryDirectory(
+        prefix="blueprint_reconstruction_operation_"
+    ) as work_root:
+        result = run_reconstruction_gpu_operation_bootstrap(
+            environment=os.environ,
+            work_root=work_root,
+        )
     print(
         json.dumps(
             {
