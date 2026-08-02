@@ -34,12 +34,12 @@
     "stderr_content_persisted": false,
     "executions": [
       {
-        "execution_index": 1,
+        "execution_id": "dlo-lab-cuda-cable-001-dlo-lab-cable-development-001",
         "stderr_bytes": 222,
         "stderr_digest": "sha256:775d863104249939935f513f78322f4d2fd08d1ae5b1f08e89c7bf31879f2654"
       },
       {
-        "execution_index": 2,
+        "execution_id": "dlo-lab-cuda-cable-002-dlo-lab-cable-development-002",
         "stderr_bytes": 222,
         "stderr_digest": "sha256:3cbbb232ac6db174b4680e580383e0943b3e020ed4f78cf16a14766bf7a7cc01"
       }

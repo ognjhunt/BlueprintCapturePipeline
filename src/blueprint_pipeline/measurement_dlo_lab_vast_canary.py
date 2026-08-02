@@ -19,6 +19,7 @@ from .measurement_dlo_lab_cable_adapter import (
     EXPECTED_SOURCE_COMMIT,
 )
 from .measurement_dlo_lab_runtime_release import (
+    PYTHON_CONDA_PACKAGE_SHA256,
     PYTHON_CONDA_SPEC,
     PYTHON_VERSION,
     PYTORCH_VERSION,
@@ -225,6 +226,11 @@ observed_commit="$(git -C "$dlo" rev-parse HEAD^{commit})"
 test "$observed_commit" = "$BLUEPRINT_MEASUREMENT_DLO_SOURCE_UPSTREAM_COMMIT"
 conda create --yes --prefix "$dlo_env" --override-channels --channel conda-forge \
   "__PYTHON_CONDA_SPEC__" "pip=25.1"
+python_archive="$(find /opt/conda/pkgs -maxdepth 1 -type f \
+  -name 'python-3.12.11-h9e4cc4f_0_cpython.conda' -print -quit)"
+test -n "$python_archive"
+test "sha256:$(sha256sum "$python_archive" | cut -d ' ' -f 1)" = \
+  "__PYTHON_CONDA_PACKAGE_SHA256__"
 "$dlo_python" -m pip install --no-cache-dir \
   "__PYTORCH_WHEEL_URL__#sha256=__PYTORCH_WHEEL_SHA256__"
 "$dlo_python" -m pip install --no-cache-dir \
@@ -272,6 +278,7 @@ exit "$worker_status"
 """
     return (
         script.replace("__PYTHON_CONDA_SPEC__", PYTHON_CONDA_SPEC)
+        .replace("__PYTHON_CONDA_PACKAGE_SHA256__", PYTHON_CONDA_PACKAGE_SHA256)
         .replace("__PYTHON_VERSION__", PYTHON_VERSION)
         .replace("__PYTORCH_VERSION__", PYTORCH_VERSION)
         .replace("__PYTORCH_WHEEL_URL__", PYTORCH_WHEEL_URL)

@@ -11,6 +11,7 @@ from blueprint_pipeline.measurement_dlo_lab_cable_adapter import (
 )
 from blueprint_pipeline.measurement_dlo_lab_runtime_release import (
     PYTHON_CONDA_SPEC,
+    PYTHON_CONDA_PACKAGE_SHA256,
     PYTHON_VERSION,
     PYTORCH_VERSION,
     PYTORCH_WHEEL_SHA256,
@@ -168,6 +169,7 @@ def test_bootstrap_binds_exact_source_cuda_bundle_and_signed_upload() -> None:
     assert "UMass-Embodied-AGI/DLO-Lab.git" in script
     assert 'checkout --detach "$BLUEPRINT_MEASUREMENT_DLO_SOURCE_UPSTREAM_COMMIT"' in script
     assert PYTHON_CONDA_SPEC in script
+    assert PYTHON_CONDA_PACKAGE_SHA256 in script
     assert PYTORCH_WHEEL_URL in script
     assert PYTORCH_WHEEL_SHA256.removeprefix("sha256:") in script
     assert QUADRANTS_WHEEL_URL in script
