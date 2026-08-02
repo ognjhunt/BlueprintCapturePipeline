@@ -29,6 +29,27 @@ Missing source video does not block this support-asset lane. It lowers the claim
 ceiling: the reconstruction is not raw Blueprint capture truth, metric scale is
 not independently established, and physical or deployment claims remain false.
 
+## Replaceable analyzer seam
+
+`rendered_scene_task_target_orchestrator` is the reusable bridge between a
+semantic proposal backend and deterministic target authorization. The backend
+emits a `rendered_scene_task_proposal_set.v1` containing visible object labels,
+affordances, task families, confidence, supporting view IDs, and one 2D binding
+box per proposal. The orchestrator then:
+
+1. rehashes every rendered RGB observation and the analysis splat;
+2. rejects analyzer self-authorization and replay/digest drift;
+3. backprojects each proposed box into the splat with explicit uncertainty;
+4. binds collision, frame-registration, metric-scale, and reach status; and
+5. calls the deterministic target gate, returning either a bounded target or a
+   `no_qualified_3d_task_target` abstention.
+
+The semantic backend may be a local detector, hosted vision model, or agent and
+remains replaceable. A backend being unavailable is not permission to invent a
+target. Static schemas live at
+`docs/schemas/rendered_scene_task_proposal_set.v1.schema.json` and
+`docs/schemas/rendered_scene_task_target_orchestration.v1.schema.json`.
+
 ## Required commands after a runtime
 
 Build robot visibility evidence from isolated robot-only RGB/depth artifacts:

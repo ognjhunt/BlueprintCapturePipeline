@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rendered_scene_task_target_orchestration.v1.schema.json",
+  "title": "Rendered scene task target orchestration v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "scene_id",
+    "source_scene_digest",
+    "analysis_splat_digest",
+    "proposal_set_digest",
+    "analyzer_provenance",
+    "binding_results",
+    "target_analysis",
+    "source_video_available",
+    "source_video_required_for_bounded_sim_target",
+    "candidate_may_self_authorize",
+    "proof_effect",
+    "claim_ceiling",
+    "unsupported_claims",
+    "orchestration_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "rendered_scene_task_target_orchestration.v1"},
+    "status": {"enum": ["target_ready_for_bounded_sim", "abstained"]},
+    "scene_id": {"type": "string", "minLength": 1},
+    "source_scene_digest": {"$ref": "#/$defs/digest"},
+    "analysis_splat_digest": {"$ref": "#/$defs/digest"},
+    "proposal_set_digest": {"$ref": "#/$defs/digest"},
+    "analyzer_provenance": {"type": "object"},
+    "binding_results": {"type": "array", "items": {"type": "object"}},
+    "target_analysis": {"type": "object"},
+    "source_video_available": {"type": "boolean"},
+    "source_video_required_for_bounded_sim_target": {"const": false},
+    "candidate_may_self_authorize": {"const": false},
+    "proof_effect": {"const": "derived_rendered_view_task_target_candidate"},
+    "claim_ceiling": {"enum": ["derived_scene_bounded_sim_target", "task_target_proposal_only"]},
+    "unsupported_claims": {"type": "array", "items": {"type": "string"}},
+    "orchestration_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
