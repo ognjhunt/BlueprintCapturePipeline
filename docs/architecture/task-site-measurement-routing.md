@@ -602,8 +602,10 @@ Implemented and hermetically tested:
   parameterized-rod trajectory, compares replay digests, and emits only the
   generic nonqualifying adapter-worker result. Two paid provider attempts installed
   the exact runtime but aborted before Genesis import completed; the second localized
-  the native assertion to import order, so this closes the worker and diagnostic
-  contracts rather than successful CUDA replay or runtime proof;
+  the native assertion to `genesis_import_started`. Source inspection identified a
+  testable import-order difference between Genesis and the exact source's principal
+  CUDA examples. The worker now encodes that order plus isolated import probes, but
+  this closes diagnostic contracts rather than successful CUDA replay or runtime proof;
 - a deterministic clean-commit DLO-Lab Vast input-bundle compiler and in-worker
   controller. The bundle contains two bounded cable cases, exact request and
   source-file digests, the exact DLO-Lab upstream commit, and the digest-pinned
