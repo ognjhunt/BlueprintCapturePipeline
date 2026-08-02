@@ -553,7 +553,8 @@ Implemented and hermetically tested:
   exact nanosecond timestamp handling, non-coplanar target enforcement,
   deterministic replay, and nonqualification flags at the corpus, receipt,
   prediction, suite, and supervisor boundaries;
-- a task-scoped raw RGB/depth/LiDAR pairing contract and site-evidence bridge.
+- a task-scoped raw RGB/depth/LiDAR/optional-event-camera pairing contract and
+  site-evidence bridge.
   It binds exact samples, artifact/calibration/intrinsic/extrinsic digests,
   clock domains, explicit offsets, uncertainty-aware synchronization limits,
   and the modalities derived for the task. Missing, reused, cross-clock, or

@@ -33,8 +33,9 @@ def _stream(sensor_id: str, modality: str, index: int) -> dict:
         "rgb": [1_000_000, 2_000_000],
         "depth": [1_000_500, 2_000_500],
         "lidar": [999_900, 1_999_900],
+        "event_camera": [1_000_200, 2_000_200],
     }[modality]
-    offsets = {"rgb": 0, "depth": -500, "lidar": 100}
+    offsets = {"rgb": 0, "depth": -500, "lidar": 100, "event_camera": -200}
     value = {
         "sensor_id": sensor_id,
         "modality": modality,
@@ -60,24 +61,26 @@ def _stream(sensor_id: str, modality: str, index: int) -> dict:
             for sample_index, timestamp in enumerate(timestamps, start=1)
         ],
     }
-    if modality in {"rgb", "depth"}:
+    if modality in {"rgb", "depth", "event_camera"}:
         value["intrinsics_digest"] = _digest(index + 12)
     return value
 
 
-def _pairing() -> dict:
+def _pairing(*, include_event_camera: bool = False) -> dict:
     sensor_ids = {"rgb": "camera-rgb", "depth": "camera-depth", "lidar": "lidar-top"}
+    if include_event_camera:
+        sensor_ids["event_camera"] = "event-camera-front"
     return {
         "schema_version": "measurement_sensor_stream_pairing.v1",
         "pairing_id": "site-sensor-pairing-001",
         "source_capture_digest": CAPTURE_DIGEST,
         "site_frame_id": "site-frame-001",
         "clock_domain": "site-ptp-clock",
-        "required_modalities": ["rgb", "depth", "lidar"],
+        "required_modalities": list(sensor_ids),
         "maximum_pair_delta_ns": 1_000,
         "streams": [
             _stream(sensor_ids[modality], modality, index)
-            for index, modality in enumerate(("rgb", "depth", "lidar"), start=2)
+            for index, modality in enumerate(sensor_ids, start=2)
         ],
         "pair_groups": [
             {
@@ -159,6 +162,16 @@ def test_signed_physical_pairing_validates_task_scoped_sensor_site_evidence() ->
     assert site["sensor_pairing_bridge"]["q_sensor_qualification_created"] is False
     gaps = {row["evidence_id"] for row in audit_site_evidence_profile(site)["gaps"]}
     assert "sensor_calibration" not in gaps
+
+
+def test_optional_event_camera_is_bound_only_when_task_requires_it() -> None:
+    pairing = build_sensor_stream_pairing_record(_pairing(include_event_camera=True))
+    assert pairing["decision"] == "accepted"
+    assert pairing["required_modalities"] == ["rgb", "depth", "lidar", "event_camera"]
+    assert all(
+        set(summary["samples"]) == {"rgb", "depth", "lidar", "event_camera"}
+        for summary in pairing["pair_summaries"]
+    )
 
 
 def test_development_pairing_never_validates_site_sensor_evidence() -> None:

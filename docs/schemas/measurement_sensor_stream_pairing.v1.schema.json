@@ -35,7 +35,7 @@
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": {"enum": ["rgb", "depth", "lidar"]}
+      "items": {"enum": ["rgb", "depth", "lidar", "event_camera"]}
     },
     "maximum_pair_delta_ns": {"type": "integer", "minimum": 0},
     "streams": {
@@ -111,7 +111,7 @@
       ],
       "properties": {
         "sensor_id": {"type": "string", "minLength": 1},
-        "modality": {"enum": ["rgb", "depth", "lidar"]},
+        "modality": {"enum": ["rgb", "depth", "lidar", "event_camera"]},
         "stream_digest": {"$ref": "#/$defs/digest"},
         "calibration_digest": {"$ref": "#/$defs/digest"},
         "intrinsics_digest": {"$ref": "#/$defs/digest"},
@@ -142,7 +142,7 @@
         "group_id": {"type": "string", "minLength": 1},
         "samples": {
           "type": "object",
-          "propertyNames": {"enum": ["rgb", "depth", "lidar"]},
+          "propertyNames": {"enum": ["rgb", "depth", "lidar", "event_camera"]},
           "additionalProperties": {"$ref": "#/$defs/sampleBinding"}
         }
       }
