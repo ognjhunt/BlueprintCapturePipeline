@@ -53,6 +53,7 @@ _IMPORT_DIAGNOSTIC_MAX_SECONDS = 45
 _IMPORT_DIAGNOSTIC_MAX_MODULES = 64
 _IMPORT_DIAGNOSTIC_MAX_RAW_BYTES = 1_048_576
 _IMPORT_DIAGNOSTIC_EXCEPTION_EXIT_CODE = 87
+HEADLESS_DISPLAY_MODE = "pyglet_headless_egl"
 
 
 def implementation_digest() -> str:
@@ -258,6 +259,7 @@ def run_dlo_lab_cable_request(
         "precision": runtime["precision"],
         "seed": runtime["seed"],
         "cpu_fallback_used": False,
+        "display_mode": HEADLESS_DISPLAY_MODE,
     }
     implementation = request["implementation"]
     identity_valid = bool(
@@ -277,6 +279,7 @@ def run_dlo_lab_cable_request(
     settings = dict(runtime["solver_settings"])
     if settings != {
         "backend": "cuda",
+        "display_mode": HEADLESS_DISPLAY_MODE,
         "import_diagnostic": _IMPORT_DIAGNOSTIC_MODE,
         "native_diagnostic": _NATIVE_DIAGNOSTIC_MODE,
         "replay_count": 2,
@@ -510,7 +513,7 @@ def _native_debugger_observation(
         "-c",
         _probe_script(import_statements),
     ]
-    diagnostic_env = dict(os.environ)
+    diagnostic_env = _headless_subprocess_environment()
     for name in (
         "BLUEPRINT_MEASUREMENT_DLO_INPUT_GET_URL",
         "BLUEPRINT_MEASUREMENT_DLO_OUTPUT_GET_URL",
@@ -586,6 +589,7 @@ def _import_audit_observation(*, import_statements: str, timeout_seconds: float)
             stderr=subprocess.PIPE,
             timeout=bounded_timeout,
             check=False,
+            env=_headless_subprocess_environment(),
         )
     except subprocess.TimeoutExpired as exc:
         structured_payload = bytes(exc.stdout or b"")
@@ -654,6 +658,7 @@ def _supervised_failure_result(
         "precision": request["runtime_configuration"]["precision"],
         "seed": request["runtime_configuration"]["seed"],
         "cpu_fallback_used": False,
+        "display_mode": HEADLESS_DISPLAY_MODE,
         "supervised_worker_phase": phase,
         "supervised_worker_exit_code": exit_code,
         "supervised_worker_native_signal": (
@@ -689,6 +694,15 @@ def _distribution_version(name: str) -> str:
         return "unavailable"
 
 
+def _headless_subprocess_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"):
+        environment.pop(name, None)
+    environment["PYGLET_HEADLESS"] = "1"
+    environment["PYOPENGL_PLATFORM"] = "egl"
+    return environment
+
+
 def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="blueprint-dlo-lab-supervisor-") as raw_root:
         root = Path(raw_root)
@@ -710,6 +724,7 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
                     stderr=subprocess.PIPE,
                     timeout=max(0.001, deadline - time.monotonic()),
                     check=False,
+                    env=_headless_subprocess_environment(),
                 )
             except subprocess.TimeoutExpired as exc:
                 return _supervised_failure_result(
@@ -781,6 +796,7 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
                 stderr=subprocess.PIPE,
                 timeout=max(0.001, deadline - time.monotonic()),
                 check=False,
+                env=_headless_subprocess_environment(),
             )
         except subprocess.TimeoutExpired as exc:
             stderr = bytes(exc.stderr or b"")
@@ -847,6 +863,7 @@ if __name__ == "__main__":
 __all__ = [
     "EXPECTED_DISTRIBUTION_VERSION",
     "EXPECTED_SOURCE_COMMIT",
+    "HEADLESS_DISPLAY_MODE",
     "IMPLEMENTATION_ID",
     "IMPLEMENTATION_VERSION",
     "PROTOCOL_ID",
