@@ -486,7 +486,30 @@ def _simulate(point: Mapping[str, Any], solver: Mapping[str, Any]) -> dict[str, 
     return trace
 
 
-def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) -> dict[str, Any]:
+def _persist_worker_result(path: Path, result: Mapping[str, Any]) -> None:
+    """Durably publish a worker result before Isaac's process-ending shutdown."""
+
+    output = path.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+    payload = json.dumps(dict(result), indent=2, sort_keys=True) + "\n"
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, output)
+    directory_fd = os.open(output.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def run_isaac_physx_rigid_measurement_request(
+    request_value: Mapping[str, Any],
+    *,
+    checkpoint_output: Path | None = None,
+) -> dict[str, Any]:
     request = validate_measurement_adapter_execution_request(request_value)
     runtime = request["runtime_configuration"]
     observations: dict[str, Any] = {
@@ -495,6 +518,15 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         "precision": runtime["precision"],
         "seed": runtime["seed"],
     }
+    simulation_app: Any | None = None
+
+    def finish(result: dict[str, Any]) -> dict[str, Any]:
+        if checkpoint_output is not None:
+            _persist_worker_result(checkpoint_output, result)
+        if simulation_app is not None:
+            simulation_app.close()
+        return result
+
     implementation = request["implementation"]
     for key, expected, code in (
         ("implementation_id", IMPLEMENTATION_ID, "implementation_id_mismatch"),
@@ -502,22 +534,26 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         ("implementation_digest", implementation_digest(), "implementation_digest_mismatch"),
     ):
         if implementation[key] != expected:
-            return build_measurement_adapter_worker_result(
+            return finish(
+                build_measurement_adapter_worker_result(
+                    request,
+                    status="blocked",
+                    observed_metrics={},
+                    unsafe_condition_predicted=None,
+                    runtime_observations=observations,
+                    failure_codes=[f"isaac_physx_rigid_{code}"],
+                )
+            )
+    if runtime["target_engine_version"] != ISAAC_VERSION:
+        return finish(
+            build_measurement_adapter_worker_result(
                 request,
                 status="blocked",
                 observed_metrics={},
                 unsafe_condition_predicted=None,
                 runtime_observations=observations,
-                failure_codes=[f"isaac_physx_rigid_{code}"],
+                failure_codes=["isaac_physx_rigid_target_version_mismatch"],
             )
-    if runtime["target_engine_version"] != ISAAC_VERSION:
-        return build_measurement_adapter_worker_result(
-            request,
-            status="blocked",
-            observed_metrics={},
-            unsafe_condition_predicted=None,
-            runtime_observations=observations,
-            failure_codes=["isaac_physx_rigid_target_version_mismatch"],
         )
     if runtime["backend_id"] != "isaac-physx-cpu-tgs-rigid":
         raise MeasurementAdapterExecutionError("isaac_physx_rigid_backend_invalid")
@@ -545,7 +581,6 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 255:
             raise MeasurementAdapterExecutionError(f"isaac_physx_rigid_{key}_invalid")
     point = _operating_point(request)
-    simulation_app: Any | None = None
     try:
         runtime_environment = _bind_isaac_runtime_environment()
         SimulationApp = _import_simulation_app()
@@ -560,31 +595,35 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
                 "runtime_environment_paths": runtime_environment,
             }
         )
-        simulation_app = SimulationApp({"headless": True, "fast_shutdown": False})
+        simulation_app = SimulationApp({"headless": True, "fast_shutdown": True})
         try:
             runtime_identity = _observe_isaac_runtime_identity(simulation_app)
         except Exception as exc:  # noqa: BLE001
-            return build_measurement_adapter_worker_result(
-                request,
-                status="blocked",
-                observed_metrics={},
-                unsafe_condition_predicted=None,
-                runtime_observations={
-                    **observations,
-                    "runtime_identity_error_type": type(exc).__name__,
-                    "runtime_identity_error": repr(exc)[:800],
-                },
-                failure_codes=["isaac_physx_rigid_runtime_identity_unavailable"],
+            return finish(
+                build_measurement_adapter_worker_result(
+                    request,
+                    status="blocked",
+                    observed_metrics={},
+                    unsafe_condition_predicted=None,
+                    runtime_observations={
+                        **observations,
+                        "runtime_identity_error_type": type(exc).__name__,
+                        "runtime_identity_error": repr(exc)[:800],
+                    },
+                    failure_codes=["isaac_physx_rigid_runtime_identity_unavailable"],
+                )
             )
         observations.update(runtime_identity)
         if runtime_identity["engine_version"] != ISAAC_VERSION:
-            return build_measurement_adapter_worker_result(
-                request,
-                status="blocked",
-                observed_metrics={},
-                unsafe_condition_predicted=None,
-                runtime_observations=observations,
-                failure_codes=["isaac_physx_rigid_runtime_version_mismatch"],
+            return finish(
+                build_measurement_adapter_worker_result(
+                    request,
+                    status="blocked",
+                    observed_metrics={},
+                    unsafe_condition_predicted=None,
+                    runtime_observations=observations,
+                    failure_codes=["isaac_physx_rigid_runtime_version_mismatch"],
+                )
             )
         first = _simulate(point, solver)
         second = _simulate(point, solver)
@@ -594,22 +633,21 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
             if isinstance(exc, _SimulationAppImportError)
             else {}
         )
-        return build_measurement_adapter_worker_result(
-            request,
-            status="failed",
-            observed_metrics={},
-            unsafe_condition_predicted=None,
-            runtime_observations={
-                **observations,
-                "execution_error_type": type(exc).__name__,
-                "execution_error": repr(exc)[:800],
-                **simulation_app_diagnostics,
-            },
-            failure_codes=["isaac_physx_rigid_execution_failed"],
+        return finish(
+            build_measurement_adapter_worker_result(
+                request,
+                status="failed",
+                observed_metrics={},
+                unsafe_condition_predicted=None,
+                runtime_observations={
+                    **observations,
+                    "execution_error_type": type(exc).__name__,
+                    "execution_error": repr(exc)[:800],
+                    **simulation_app_diagnostics,
+                },
+                failure_codes=["isaac_physx_rigid_execution_failed"],
+            )
         )
-    finally:
-        if simulation_app is not None:
-            simulation_app.close()
     replay_match = first["trace_digest"] == second["trace_digest"]
     contact_observed = first["first_contact_step"] is not None
     available_metrics = {
@@ -631,7 +669,7 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
             "enhanced_determinism": True,
             "renderer_used": False,
             "rtx_sensor_used": False,
-            "fast_shutdown": False,
+            "fast_shutdown": True,
             "contact_source": "physx_contact_report",
             "penetration_source": "rest_height_minus_minimum_live_center_height",
             "timestep_s": point["timestep_s"],
@@ -650,17 +688,19 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         failure_codes.append("isaac_physx_rigid_replay_mismatch")
     if not contact_observed:
         failure_codes.append("isaac_physx_rigid_contact_not_observed")
-    return build_measurement_adapter_worker_result(
-        request,
-        status="failed" if failure_codes else "completed",
-        observed_metrics=metrics,
-        unsafe_condition_predicted=(
-            first["penetration_m"] > point["penetration_unsafe_threshold_m"]
-            if not failure_codes
-            else None
-        ),
-        runtime_observations=observations,
-        failure_codes=failure_codes,
+    return finish(
+        build_measurement_adapter_worker_result(
+            request,
+            status="failed" if failure_codes else "completed",
+            observed_metrics=metrics,
+            unsafe_condition_predicted=(
+                first["penetration_m"] > point["penetration_unsafe_threshold_m"]
+                if not failure_codes
+                else None
+            ),
+            runtime_observations=observations,
+            failure_codes=failure_codes,
+        )
     )
 
 
@@ -681,8 +721,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
-    result = run_isaac_physx_rigid_measurement_request(_load_object(args.request))
-    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    result = run_isaac_physx_rigid_measurement_request(
+        _load_object(args.request),
+        checkpoint_output=args.output,
+    )
+    _persist_worker_result(args.output, result)
     return 0
 
 

@@ -316,16 +316,21 @@ def test_isaac_runtime_identity_rejects_invalid_version_observation() -> None:
 
 
 def test_isaac_worker_blocks_runtime_version_mismatch(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     closed: list[bool] = []
     launch_configs: list[dict] = []
+    checkpoint = tmp_path / "worker-result.json"
 
     class FakeSimulationApp:
         def __init__(self, config: dict) -> None:
             launch_configs.append(config)
 
         def close(self) -> None:
+            persisted = json.loads(checkpoint.read_text(encoding="utf-8"))
+            assert persisted["status"] == "blocked"
+            assert persisted["failure_codes"] == ["isaac_physx_rigid_runtime_version_mismatch"]
             closed.append(True)
 
     fake_isaacsim = types.ModuleType("isaacsim")
@@ -345,12 +350,15 @@ def test_isaac_worker_blocks_runtime_version_mismatch(
             "observed_build_version": "test",
         },
     )
-    result = run_isaac_physx_rigid_measurement_request(_request())
+    result = run_isaac_physx_rigid_measurement_request(
+        _request(),
+        checkpoint_output=checkpoint,
+    )
     assert result["status"] == "blocked"
     assert result["failure_codes"] == ["isaac_physx_rigid_runtime_version_mismatch"]
     assert result["runtime_observations"]["engine_version"] == "6.0.0"
     assert closed == [True]
-    assert launch_configs == [{"headless": True, "fast_shutdown": False}]
+    assert launch_configs == [{"headless": True, "fast_shutdown": True}]
 
 
 @pytest.mark.slow
