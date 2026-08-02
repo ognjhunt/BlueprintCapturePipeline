@@ -148,8 +148,6 @@ def test_bootstrap_verifies_bundle_and_uses_exact_isaac_python() -> None:
     assert "BLUEPRINT_MEASUREMENT_ISAAC_OUTPUT_PUT_URL" in script
     assert 'headers={"Content-Type": "application/zip"}' in script
     assert 'headers={"Content-Type": "application/json"}' not in script
-
-
 def test_default_fetcher_treats_missing_output_as_not_ready(monkeypatch) -> None:
     def missing(*_args, **_kwargs):
         raise urllib.error.HTTPError(GET_URL, 404, "Not Found", {}, None)
@@ -163,7 +161,6 @@ def test_default_fetcher_treats_missing_output_as_not_ready(monkeypatch) -> None
         from blueprint_pipeline.measurement_isaac_vast_canary import (
             _default_result_fetcher,
         )
-
         _default_result_fetcher(GET_URL)
 
 
