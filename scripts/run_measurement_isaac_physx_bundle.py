@@ -26,7 +26,7 @@ from blueprint_pipeline.measurement_isaac_runtime_release import (
 )
 
 
-RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_vast_runtime_result.v2"
+RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_vast_runtime_result.v3"
 
 
 def _read_object(path: Path) -> dict:
@@ -56,7 +56,9 @@ def _safe_process_tail(value: str) -> str:
     return tail.replace("\x00", "")
 
 
-def _run_rtx_preflight(bundle_root: Path) -> tuple[dict, list[str]]:
+def _run_rtx_preflight(
+    bundle_root: Path, *, required_output_kinds: list[str]
+) -> tuple[dict, list[str]]:
     output = bundle_root / "rtx_openusd_runtime_preflight.json"
     command = [
         sys.executable,
@@ -69,6 +71,8 @@ def _run_rtx_preflight(bundle_root: Path) -> tuple[dict, list[str]]:
         "--smoke-steps",
         "2",
     ]
+    for kind in required_output_kinds:
+        command.extend(["--required-output-kind", kind])
     timed_out = False
     try:
         completed = subprocess.run(
@@ -118,6 +122,10 @@ def _run_rtx_preflight(bundle_root: Path) -> tuple[dict, list[str]]:
             "raw_secret_values_recorded": False,
             "proof_boundary": {
                 "rtx_pixels_rendered": False,
+                "rtx_rgb_rendered": False,
+                "rtx_depth_output_observed": False,
+                "rtx_semantic_segmentation_observed": False,
+                "requested_sensor_modalities_observed": False,
                 "calibrated_sensor_match_proven": False,
                 "q_sensor_qualification_created": False,
                 PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
@@ -142,7 +150,7 @@ def _run_rtx_preflight(bundle_root: Path) -> tuple[dict, list[str]]:
 def run_bundle(bundle_root: Path) -> dict:
     manifest = _read_object(bundle_root / "bundle_manifest.json")
     blockers: list[str] = []
-    if manifest.get("schema_version") != "measurement_isaac_physx_rtx_input_bundle.v2":
+    if manifest.get("schema_version") != "measurement_isaac_physx_rtx_input_bundle.v3":
         blockers.append("measurement_isaac_bundle_manifest_schema_invalid")
     supplied_manifest_digest = manifest.get("bundle_manifest_digest")
     if supplied_manifest_digest != canonical_digest(
@@ -169,10 +177,15 @@ def run_bundle(bundle_root: Path) -> dict:
         blockers.append("measurement_isaac_bundle_version_mismatch")
     if manifest.get("runtime_image_digest") != RUNTIME_IMAGE:
         blockers.append("measurement_isaac_bundle_image_mismatch")
+    required_output_kinds = manifest.get("rtx_required_output_kinds")
     if (
         manifest.get("rtx_openusd_runtime_preflight_required") is not True
         or manifest.get("rtx_renderer") != "RayTracedLighting"
         or manifest.get("rtx_smoke_resolution") != [64, 64]
+        or not isinstance(required_output_kinds, list)
+        or not required_output_kinds
+        or "rgb" not in required_output_kinds
+        or not set(required_output_kinds) <= {"rgb", "depth", "semantic_segmentation"}
     ):
         blockers.append("measurement_isaac_bundle_rtx_contract_invalid")
 
@@ -215,7 +228,10 @@ def run_bundle(bundle_root: Path) -> dict:
             code for bundle in bundles for code in bundle["receipt"].get("failure_codes", [])
         )
     if completed and not blockers:
-        rtx_preflight, rtx_blockers = _run_rtx_preflight(bundle_root)
+        rtx_preflight, rtx_blockers = _run_rtx_preflight(
+            bundle_root,
+            required_output_kinds=list(required_output_kinds),
+        )
         blockers.extend(rtx_blockers)
     development_execution_completed = bool(completed and rtx_preflight and not blockers)
     metrics = [
@@ -265,7 +281,7 @@ def run_bundle(bundle_root: Path) -> dict:
             "development_execution_only" if development_execution_completed else "none"
         ),
         "claim_ceiling": (
-            "isaac_physx_rigid_contact_plus_rtx_startup_development"
+            "isaac_physx_rigid_contact_plus_rtx_multimodal_startup_development"
             if development_execution_completed
             else "no_execution_evidence"
         ),

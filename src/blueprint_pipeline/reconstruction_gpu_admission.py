@@ -56,7 +56,7 @@ EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
     "isaac_canary": "isaac_splat_nurec_render_result.v3",
-    "measurement_isaac_canary": "measurement_isaac_physx_rtx_vast_runtime_result.v2",
+    "measurement_isaac_canary": "measurement_isaac_physx_rtx_vast_runtime_result.v3",
 }
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")

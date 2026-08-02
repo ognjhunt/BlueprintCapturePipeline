@@ -70,6 +70,11 @@ def test_measurement_isaac_bundle_is_clean_commit_bound_and_deterministic(tmp_pa
     assert first["rtx_openusd_runtime_preflight_required"] is True
     assert first["rtx_renderer"] == "RayTracedLighting"
     assert first["rtx_smoke_resolution"] == [64, 64]
+    assert first["rtx_required_output_kinds"] == [
+        "rgb",
+        "depth",
+        "semantic_segmentation",
+    ]
     assert first["provider_allocation_performed"] is False
     assert validate_measurement_isaac_physx_input_bundle_receipt(first) == first
     with zipfile.ZipFile(first_path) as archive:
@@ -85,6 +90,7 @@ def test_measurement_isaac_bundle_is_clean_commit_bound_and_deterministic(tmp_pa
     assert manifest["rtx_openusd_runtime_preflight_required"] is True
     assert manifest["rtx_renderer"] == "RayTracedLighting"
     assert manifest["rtx_smoke_resolution"] == [64, 64]
+    assert manifest["rtx_required_output_kinds"] == first["rtx_required_output_kinds"]
     assert manifest["paid_execution_authorized_by_bundle"] is False
 
 
