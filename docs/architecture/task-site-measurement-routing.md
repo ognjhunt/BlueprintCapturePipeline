@@ -201,6 +201,17 @@ loop:
   labels, computing deterministic metrics, and producing R4/R5 evidence
   candidates. A passing report cannot make the R6 human decision or R7 catalog
   admission;
+- `blueprint_pipeline.measurement_sensor_stream_pairing` and
+  `blueprint_pipeline.measurement_observation_qualification` — the task/site
+  Q-SENSOR evidence-preparation lane. The first binds raw calibrated sensor
+  samples and timing; the second requires the full transparent, reflective,
+  dark, small, thin, occluded, and opaque-control taxonomy under controlled,
+  natural, and adverse lighting for the exact task, site, accepted sensor
+  pairing, synthetic methods, and three-or-more exact policy checkpoints. Every
+  material/lighting pair must carry all task-required physical and synthetic
+  modalities plus repeated paired policy outcomes. A generic observation
+  benchmark report cannot produce R5 stage data without this matrix, and the
+  joined result remains only an R5 evidence candidate pending R6/R7;
 - `blueprint_pipeline.measurement_research_monitoring` (with
   `scripts/measurement_research_monitor.py`) — release monitoring that emits
   version-change alerts, stale-profile flags, R0 intake drafts, regression
@@ -542,6 +553,16 @@ Implemented and hermetically tested:
   independently verified signed physical calibration records can validate the
   site profile's `sensor_calibration` and `sensor_timing` evidence; the bridge
   never creates Q-SENSOR or R5-R7 authority;
+- a task/site-specific Capture-to-Observation challenge matrix that binds the
+  accepted sensor-pairing record, exact policy checkpoints, physical and
+  per-method synthetic modality artifacts, and repeated paired policy outcomes.
+  Qualification coverage is the Cartesian product of opaque-control,
+  transparent, reflective, dark, small, thin, and occluded conditions with
+  controlled, natural, and adverse lighting. The matrix fails closed on a
+  missing condition, modality, method, checkpoint, or repeat. It makes
+  downstream task validity primary, blocks the generic observation R5 builder,
+  and allows only a combined independently executed held-out benchmark with
+  every required observation metric to become an R5 evidence candidate;
 - a real PyElastica 0.3.3.post2 Capture-to-Deformation cable development
   worker, schema-checked two-regime Cosserat-rod corpus, and aggregate runner,
   including exact material/geometry/load/timestep binding, sampled trajectory
@@ -699,10 +720,12 @@ Not established by this repository change:
 - a completed Capture-to-Geometry-and-Contact, Capture-to-Observation, or
   Capture-to-Deformation physical benchmark using independently collected
   held-out labels. The observation lane now has a complete two-case synthetic
-  development execution corpus; the geometry/contact lane has complete
-  two-case MuJoCo sphere/box drop, door/drawer articulation, and clear-versus-
-  interference square-peg insertion development corpora; and the deformation
-  cable lane has a
+  development execution corpus and a full task/site challenge-matrix contract,
+  but no physical/synthetic challenge artifacts, repeated real-policy outcomes,
+  or independent held-out report satisfying that contract. The geometry/contact
+  lane has complete two-case MuJoCo sphere/box drop, door/drawer articulation,
+  and clear-versus-interference square-peg insertion development corpora; and
+  the deformation cable lane has a
   complete two-regime PyElastica development corpus. The cloth lane also has a
   complete two-regime MuJoCo flex stretch-only development corpus. The
   granular lane has a complete two-regime rigid-sphere column-collapse
@@ -739,11 +762,10 @@ Not established by this repository change:
 - independent R6 human decisions or R7 production catalog admissions for the
   research candidates;
 - policy-ranking validity (the current verdict remains `thesis_not_supported`);
-- a completed Isaac/PhysX Vast development execution. The exact official
-  Isaac 6.0.1 NGC digest, clean-commit input bundle, canonical paid allocator,
-  zero-retry spend/TTL gate, independent watchdog, output validator, teardown,
-  and provider-zero code paths are implemented, but no provider result may be
-  claimed until the paid canary returns and those receipts validate;
+- an Isaac/PhysX/RTX production qualification. The paid Isaac 6.0.1 development
+  executions and their PhysX/contact plus RGB/depth/semantic RTX receipts are
+  retained and validated, but they do not contain captured-site calibration,
+  the physical observation challenge matrix, an R6 decision, or R7 admission;
 - physical task success, deployment readiness, or safety certification.
 
 Those are evidence-generation gates, not reasons to weaken the router.
