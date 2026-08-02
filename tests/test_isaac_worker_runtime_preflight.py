@@ -98,12 +98,8 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
         camera=lambda **_kwargs: object(),
         render_product=lambda _camera, _resolution: "render_product",
     )
-    fake_core.AnnotatorRegistry = types.SimpleNamespace(
-        get_annotator=lambda _name: fake_annot
-    )
-    fake_core.orchestrator = types.SimpleNamespace(
-        step=lambda: orchestrator_steps.append(True)
-    )
+    fake_core.AnnotatorRegistry = types.SimpleNamespace(get_annotator=lambda _name: fake_annot)
+    fake_core.orchestrator = types.SimpleNamespace(step=lambda: orchestrator_steps.append(True))
     fake_replicator = types.ModuleType("omni.replicator")
     fake_replicator.core = fake_core
     fake_omni = types.ModuleType("omni")
@@ -114,6 +110,24 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
     monkeypatch.setitem(sys.modules, "omni", fake_omni)
     monkeypatch.setitem(sys.modules, "omni.replicator", fake_replicator)
     monkeypatch.setitem(sys.modules, "omni.replicator.core", fake_core)
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_physx_rigid_adapter._bind_isaac_runtime_environment",
+        lambda: {
+            "ISAAC_PATH": "/isaac-sim",
+            "EXP_PATH": "/isaac-sim/apps",
+            "CARB_APP_PATH": "/isaac-sim/kit",
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_physx_rigid_adapter._observe_isaac_runtime_identity",
+        lambda _app: {
+            "engine_version": "6.0.1",
+            "engine_version_source": "test",
+            "observed_package_version": "unavailable",
+            "observed_app_version": "6.0.1",
+            "observed_build_version": "test",
+        },
+    )
 
     result = run_isaac_worker_runtime_preflight(
         output_path=output_path,
@@ -151,7 +165,9 @@ def test_isaac_worker_runtime_preflight_cli_writes_output(
 
 
 def test_isaac_worker_runtime_preflight_nvidia_check_branches(monkeypatch) -> None:
-    monkeypatch.setattr(worker_preflight.shutil, "which", lambda _name, path=None: "/bin/nvidia-smi")
+    monkeypatch.setattr(
+        worker_preflight.shutil, "which", lambda _name, path=None: "/bin/nvidia-smi"
+    )
     monkeypatch.setattr(
         worker_preflight.subprocess,
         "run",

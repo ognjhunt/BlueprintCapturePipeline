@@ -56,7 +56,7 @@ EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
     "isaac_canary": "isaac_splat_nurec_render_result.v3",
-    "measurement_isaac_canary": "measurement_isaac_physx_vast_runtime_result.v1",
+    "measurement_isaac_canary": "measurement_isaac_physx_rtx_vast_runtime_result.v2",
 }
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -104,11 +104,7 @@ def build_reconstruction_gpu_canary_request(
     if not _finite(source.get("max_spend_usd"), minimum=0.000001):
         errors.append("reconstruction_gpu_explicit_budget_missing")
     ttl = source.get("hard_ttl_seconds")
-    if (
-        not isinstance(ttl, int)
-        or isinstance(ttl, bool)
-        or not 1 <= ttl <= MAX_TTL_SECONDS
-    ):
+    if not isinstance(ttl, int) or isinstance(ttl, bool) or not 1 <= ttl <= MAX_TTL_SECONDS:
         errors.append("reconstruction_gpu_explicit_ttl_invalid")
     retries = source.get("retry_cap")
     if (
@@ -117,9 +113,10 @@ def build_reconstruction_gpu_canary_request(
         or not 0 <= retries <= MAX_RETRY_CAP
     ):
         errors.append("reconstruction_gpu_explicit_retry_cap_invalid")
-    if not isinstance(source.get("authority_id"), str) or not str(
-        source.get("authority_id")
-    ).strip():
+    if (
+        not isinstance(source.get("authority_id"), str)
+        or not str(source.get("authority_id")).strip()
+    ):
         errors.append("reconstruction_gpu_paid_authority_missing")
     if source.get("proof_effect") != "none":
         errors.append("reconstruction_gpu_request_proof_effect_invalid")
@@ -276,9 +273,7 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_request_schema_invalid")
     if source.get("operation") not in OPERATIONS:
         blockers.append("reconstruction_gpu_operation_unsupported")
-    expected_result_schema = EXPECTED_RUNTIME_RESULT_SCHEMAS.get(
-        str(source.get("operation") or "")
-    )
+    expected_result_schema = EXPECTED_RUNTIME_RESULT_SCHEMAS.get(str(source.get("operation") or ""))
     if source.get("expected_runtime_result_schema") != expected_result_schema:
         blockers.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
     if source.get("capture_profile") not in CAPTURE_PROFILES:
@@ -323,9 +318,7 @@ def build_reconstruction_gpu_canary_admission(
                 blockers.append("reconstruction_isaac_image_release_invalid")
             else:
                 image_release_digest = str(release["image_release_digest"])
-                if release.get("resolved_image_digest") != source.get(
-                    "worker_image_digest"
-                ):
+                if release.get("resolved_image_digest") != source.get("worker_image_digest"):
                     blockers.append("reconstruction_isaac_image_release_digest_mismatch")
                 if release.get("source_commit_sha") != source.get("source_commit_sha"):
                     blockers.append("reconstruction_isaac_image_release_source_mismatch")
@@ -463,9 +456,7 @@ def build_reconstruction_gpu_canary_admission(
         "operation": operation,
         "operation_request_digest": source.get("operation_request_digest"),
         "operation_input_bundle_digest": source.get("operation_input_bundle_digest"),
-        "expected_runtime_result_schema": source.get(
-            "expected_runtime_result_schema"
-        ),
+        "expected_runtime_result_schema": source.get("expected_runtime_result_schema"),
         "worker_image_digest": source.get("worker_image_digest"),
         "isaac_image_release_digest": image_release_digest,
         "measurement_isaac_runtime_release_digest": measurement_runtime_release_digest,
@@ -487,13 +478,13 @@ def build_reconstruction_gpu_canary_admission(
             ["qualify_reconstruction_operation_execution_adapter"]
             if operation not in EXECUTABLE_OPERATIONS
             else (
-            ["qualify_vast_execution_adapter"]
-            if blockers == ["reconstruction_vast_execution_adapter_not_qualified"]
-            else (
-                ["invoke_canonical_gpu_canary_with_explicit_execute_authority"]
-                if not blockers
-                else ["resolve_admission_blockers"]
-            )
+                ["qualify_vast_execution_adapter"]
+                if blockers == ["reconstruction_vast_execution_adapter_not_qualified"]
+                else (
+                    ["invoke_canonical_gpu_canary_with_explicit_execute_authority"]
+                    if not blockers
+                    else ["resolve_admission_blockers"]
+                )
             )
         ),
     }
