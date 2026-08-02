@@ -202,6 +202,10 @@ def test_reset_stability_accepts_settled_franka() -> None:
     assert assessment["status"] == "completed"
     assert assessment["blockers"] == []
 
+    malformed = runner._reset_stability_assessment([0.0], [0.0], request)
+    assert malformed["status"] == "blocked"
+    assert "franka_policy_trace_reset_observation_vector_invalid" in malformed["blockers"]
+
 
 def test_joint_position_target_compatibility_uses_direct_legacy_api() -> None:
     calls = []

@@ -271,6 +271,24 @@ def _reset_stability_assessment(
     """Fail closed when the exact scene destabilizes the frozen Franka reset."""
 
     start = request["start_joint_positions_rad"]
+    if len(observed_positions) != len(start) or len(observed_velocities) != len(start):
+        return {
+            "status": "blocked",
+            "blockers": [
+                "franka_policy_trace_reset_observation_vector_invalid",
+                "franka_policy_trace_reset_unstable",
+            ],
+            "maximum_position_error_rad": None,
+            "position_error_threshold_rad": float(
+                request["reset_position_error_threshold_rad"]
+            ),
+            "maximum_absolute_velocity_rad_s": None,
+            "velocity_threshold_rad_s": float(request["reset_velocity_threshold_rad_s"]),
+            "claim_boundary": (
+                "Reset stability is an exact-scene runtime admission gate only; passing does "
+                "not prove collision-free placement, task success, physical transfer, or safety."
+            ),
+        }
     maximum_position_error = max(
         abs(float(observed) - float(commanded))
         for observed, commanded in zip(observed_positions, start)
