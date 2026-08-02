@@ -164,6 +164,23 @@ def test_default_fetcher_treats_missing_output_as_not_ready(monkeypatch) -> None
         _default_result_fetcher(GET_URL)
 
 
+def test_default_fetcher_treats_missing_output_as_not_ready(monkeypatch) -> None:
+    def missing(*_args, **_kwargs):
+        raise urllib.error.HTTPError(GET_URL, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_vast_canary.safe_http_request",
+        missing,
+    )
+
+    with pytest.raises(FileNotFoundError, match="measurement_isaac_output_http:404"):
+        from blueprint_pipeline.measurement_isaac_vast_canary import (
+            _default_result_fetcher,
+        )
+
+        _default_result_fetcher(GET_URL)
+
+
 def test_canary_tears_down_and_persists_no_signed_urls(tmp_path: Path, monkeypatch) -> None:
     provider = _Provider()
     raw_result = {"runtime_result_digest": D3, "status": "passed"}
