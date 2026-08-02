@@ -128,16 +128,22 @@
     "common_native_signal": null,
     "common_last_phase": "native_import_probe:torch_then_genesis",
     "common_stderr_bytes": 0,
+    "import_probe_stdout_metadata_recorded": false,
+    "exact_genesis_exception_hook_prints_to_stdout": true,
+    "uncaught_python_exception_remains_possible": true,
+    "native_crash_established": false,
     "cuda_kernel_failure_observed": false,
     "evidence_path": "docs/evidence/measurement_dlo_lab_vast_attempt8_2026-08-02.json"
   },
   "next_import_diagnostic": {
     "diagnostic_mode_binding": "execution_request.runtime_configuration.solver_settings.import_diagnostic",
-    "diagnostic_mode": "audit_first_case_only",
+    "diagnostic_mode": "audit_exception_first_case_only",
     "raw_output_content_persisted": false,
     "sanitized_module_names_only": true,
+    "sanitized_exception_type_only": true,
+    "bounded_integer_system_exit_code_only": true,
     "compatibility_variables_change": false,
-    "purpose": "Localize the silent code-1 Genesis import exit after the sandbox cache-root fix advanced every earlier import probe."
+    "purpose": "Localize the code-1 Genesis import exit after the sandbox cache-root fix advanced every earlier import probe. The exact Genesis source sends uncaught Python tracebacks to stdout, which Attempt 8 did not retain, so this diagnostic captures only safe exception and import metadata."
   },
   "evidence_boundary": {
     "primary_source_metadata_observed": true,

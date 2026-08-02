@@ -581,10 +581,14 @@ Implemented and hermetically tested:
   both paths inside its per-execution temporary root without exposing an operator
   home or widening the inherited-environment allowlist. The fixed-tuple rerun
   cleared every earlier Quadrants/Torch import probe in both cases and advanced
-  to a silent code-1 exit at `torch -> genesis`, with no signal, timeout, stderr,
-  or CUDA kernel observation. A request-bound first-case Python import audit now
-  retains only sanitized module names and raw-output digest metadata to localize
-  that later failure without persisting host paths or secrets. This is still a
+  to a code-1 exit at `torch -> genesis`, with no signal, timeout, stderr, or
+  CUDA kernel observation. Exact Genesis source installs an exception hook that
+  prints uncaught Python tracebacks to stdout; Attempt 8 did not retain that
+  import-probe stream, so neither a Python exception nor a native crash is yet
+  established. A request-bound first-case Python import/exception audit now
+  retains only sanitized module names, exception type, a bounded integer
+  `SystemExit` code, and raw-output digest metadata to localize the later failure
+  without persisting host paths, exception messages, or secrets. This is still a
   diagnostic result, not a qualification claim. The controller rechecks every source
   digest, executes both cases through the generic adapter executor, requires
   CUDA observations and matching replay traces, and preserves all Q-DLO,
