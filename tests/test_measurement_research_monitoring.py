@@ -13,6 +13,7 @@ from blueprint_pipeline.measurement_research_monitoring import (
     ResearchMonitoringError,
     build_release_observation,
     compile_research_monitoring_report,
+    github_latest_release_observation,
 )
 
 
@@ -312,3 +313,14 @@ def test_monthly_workflow_is_read_only_bounded_and_archives_the_report() -> None
     assert "retention-days: 90" in workflow
     assert "paid_resource_allocator" not in workflow
     assert "apply_requalification_trigger" not in workflow
+
+
+def test_github_release_monitor_rejects_non_repository_paths_without_network() -> None:
+    observation = github_latest_release_observation(
+        method_id="fixture-engine",
+        repository="https://attacker.example/releases/latest",
+        observed_on="2026-08-02",
+    )
+    assert observation["observed_version"] == "fetch_failed"
+    assert observation["source_reference"] == "https://api.github.com/"
+    assert observation["notes"] == "repository_invalid"

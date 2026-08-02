@@ -15,6 +15,7 @@ import importlib.metadata
 import json
 import math
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -289,7 +290,7 @@ def run_newton_rigid_measurement_request(
     )
     solver_settings["rigid_contact_relaxation"] = relaxation
     point = _operating_point(request)
-    cache_root = Path(os.environ.get("TMPDIR", "/tmp")) / "warp-kernel-cache"
+    cache_root = Path(os.environ.get("TMPDIR") or tempfile.gettempdir()) / "warp-kernel-cache"
     wp.config.kernel_cache_dir = str(cache_root)
     wp.config.log_level = wp.LOG_WARNING
     wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN

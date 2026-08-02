@@ -46,7 +46,6 @@ from blueprint_pipeline.postshot_worker_contracts import (  # noqa: E402
     build_provider_zero_proof,
     build_reconciled_cost,
     derive_phase_started_epoch,
-    evaluate_canary_gate,
     evaluate_pulses,
     parse_timestamp,
     sanitize_text,

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Mapping, Sequence
 
 from .measurement_engine_capability_profiles import engine_capability_profiles
@@ -40,6 +41,10 @@ ALERT_KINDS = frozenset(
         "capability_profile_stale",
         "unchanged",
     }
+)
+
+_GITHUB_REPOSITORY_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
 )
 
 
@@ -268,14 +273,26 @@ def github_latest_release_observation(
     import urllib.error
     import urllib.request
 
-    url = f"https://api.github.com/repos/{repository}/releases/latest"
+    repository_text = _string(repository)
+    if not _GITHUB_REPOSITORY_PATTERN.fullmatch(repository_text):
+        return build_release_observation(
+            method_id=method_id,
+            observed_version="fetch_failed",
+            observed_release_date="",
+            source_reference="https://api.github.com/",
+            observed_on=observed_on,
+            notes="repository_invalid",
+        )
+    url = f"https://api.github.com/repos/{repository_text}/releases/latest"
     try:
         headers = {"Accept": "application/vnd.github+json"}
         token = _string(os.environ.get("GITHUB_TOKEN"))
         if token:
             headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with urllib.request.urlopen(  # nosec B310 - strict owner/name path and fixed GitHub API origin
+            request, timeout=timeout_seconds
+        ) as response:
             payload = json.loads(response.read().decode("utf-8"))
         version = _string(payload.get("tag_name")).lstrip("v") or "unparsed"
         release_date = _string(payload.get("published_at"))[:10]
