@@ -12,6 +12,11 @@
   physical-transfer, or safety claims
   (`scripts/run_isaac_splat_nurec_render.py`,
   `src/blueprint_pipeline/provider_nurec_robot_placement.py`).
+- Replaced external-scene placement's vertex-only collision probe with a
+  conservative triangle-footprint probe. Large cabinet or fixture triangles
+  that cross the Franka base volume can no longer appear clear merely because
+  their corner vertices lie outside the footprint
+  (`src/blueprint_pipeline/external_scene_robot_placement.py`).
 
 ## 2026-07-30
 

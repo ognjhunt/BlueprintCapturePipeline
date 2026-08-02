@@ -7,6 +7,7 @@ import trimesh
 
 import blueprint_pipeline.external_scene_robot_placement as placement_module
 from blueprint_pipeline.external_scene_robot_placement import (
+    _footprint_overlap_counts,
     propose_external_scene_robot_placement,
 )
 from blueprint_pipeline.scene_placement.types import StandPose
@@ -54,6 +55,7 @@ def test_external_scene_placement_uses_official_franka_and_abstains_formally(
     assert placement["status"] == "runtime_visualization_candidate_only"
     assert placement["official_isaac_asset"].endswith("FrankaPanda/franka.usd")
     assert placement["mesh_vertex_overlap_probe_clear"] is True
+    assert placement["mesh_triangle_aabb_overlap_probe_clear"] is True
     assert placement["analytic_reach_candidate"] is True
     assert placement["metric_reach_qualified"] is False
     assert placement["physical_execution_authorized"] is False
@@ -119,3 +121,31 @@ def test_external_scene_placement_rescues_collision_clear_reach_candidate(
         "collision_clear_analytic_reach_rescue_candidate"
     )
     assert "placement_below_nominal_standoff_range" in placement["formal_gaps"]
+
+
+def test_triangle_crossing_footprint_is_not_missed_when_vertices_are_outside() -> None:
+    # This elevated triangle crosses the 0.2 x 0.2 footprint, but all three
+    # vertices lie outside it. The former vertex-only probe returned clear.
+    vertices = np.asarray(
+        [
+            [-0.4, -0.4, 0.3],
+            [0.4, -0.4, 0.3],
+            [0.0, 0.4, 0.3],
+        ],
+        dtype=np.float64,
+    )
+    faces = np.asarray([[0, 1, 2]], dtype=np.int64)
+
+    vertex_hits, triangle_hits = _footprint_overlap_counts(
+        stage_vertices=vertices,
+        faces=faces,
+        position=(0.0, 0.0, 0.0),
+        yaw=0.0,
+        floor_z=0.0,
+        half_extent_xy=(0.1, 0.1),
+        probe_clearance=0.0,
+        obstacle_height=0.72,
+    )
+
+    assert vertex_hits == 0
+    assert triangle_hits == 1
