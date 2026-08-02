@@ -4,6 +4,7 @@ import importlib.metadata
 import hashlib
 import json
 import shutil
+import sys
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -5870,3 +5871,182 @@ def test_canonical_cli_ingests_a_bound_recapture_receipt_and_stays_fail_closed(
     assert result["proof_state_mutated_by_agent"] is False
     assert (output / "kernel_inputs" / "targeted_recapture_request.json").is_file()
     assert (output / "kernel_inputs" / "targeted_recapture_receipt.json").is_file()
+
+
+def test_measurement_research_artifacts_are_visible_but_never_authorize_routes() -> None:
+    from blueprint_pipeline.measurement_adapter_execution import (
+        build_measurement_adapter_execution_request,
+        run_measurement_adapter_execution,
+    )
+    from blueprint_pipeline.measurement_adapter_runtime import (
+        build_measurement_adapter_descriptor,
+    )
+    from blueprint_pipeline.measurement_method_research_catalog import (
+        research_intake_catalog,
+    )
+    from blueprint_pipeline.measurement_qualification_benchmarks import (
+        build_benchmark_case_manifest,
+        build_qualification_benchmark_spec,
+    )
+    from blueprint_pipeline.measurement_mujoco_adapter import (
+        IMPLEMENTATION_ID,
+        IMPLEMENTATION_VERSION,
+        implementation_digest,
+    )
+    from blueprint_pipeline.measurement_research_monitor import (
+        build_monitor_report,
+        build_monitor_snapshot,
+        build_source_observation,
+    )
+    from blueprint_pipeline.task_evaluation_supervisor.capabilities import (
+        DeterministicEvaluationMethodRouter,
+        DeterministicScenarioAdversarialProposer,
+    )
+
+    candidate = next(row for row in research_intake_catalog() if row["candidate_id"] == "mujoco-3")
+    source = candidate["primary_sources"][0]
+    observation = build_source_observation(
+        candidate,
+        source_reference=source["reference"],
+        source_type=source["source_type"],
+        observed_at="2026-08-02T12:00:00+00:00",
+        fetched_metadata={
+            "status": "available",
+            "content_digest": SHA_A,
+            "observed_version": "3.11.0",
+        },
+    )
+    monitor = build_monitor_report(
+        build_monitor_snapshot([observation], observed_at="2026-08-02T12:00:00+00:00")
+    )
+    descriptor = build_measurement_adapter_descriptor("mujoco-3")
+    benchmark = build_qualification_benchmark_spec(
+        benchmark_id="capture-to-geometry-and-contact",
+        benchmark_version="1",
+        method_ids=["mujoco-3"],
+        development_split_digest=SHA_A,
+        qualification_split_digest=SHA_B,
+        capture_bundle_digests=[SHA_C],
+        robot_controller_digests=["sha256:" + "d" * 64],
+        acceptance_thresholds={
+            "maximum_mean_absolute_error": 0.1,
+            "maximum_mismatch_rate": 0.1,
+            "maximum_harmful_false_negative_rate": 0.0,
+            "minimum_coverage": 0.9,
+        },
+        compute_budget={"usd": 10},
+    )
+    case = build_benchmark_case_manifest(
+        benchmark,
+        case_id="supervisor-mujoco-development-case",
+        split="development",
+        input_artifact_digests=["sha256:" + "e" * 64],
+        task_class="rigid_pick_place",
+        material_regime="rigid",
+        operating_point={"adapter_protocol": "mujoco_rigid_drop.v1"},
+    )
+    execution_request = build_measurement_adapter_execution_request(
+        descriptor,
+        benchmark,
+        case,
+        execution_id="supervisor-plan-only-execution",
+        implementation_id=IMPLEMENTATION_ID,
+        implementation_version=IMPLEMENTATION_VERSION,
+        implementation_digest=implementation_digest(),
+        backend_id="mujoco-cpu",
+        precision="float64",
+        seed=7,
+        solver_settings={
+            "integrator": "implicitfast",
+            "solver": "Newton",
+            "iterations": 100,
+            "tolerance": 1e-10,
+        },
+        timeout_seconds=30,
+    )
+    execution_bundle = run_measurement_adapter_execution(
+        execution_request, command_argv=[sys.executable], execute=False
+    )
+    base_context = _context()
+    testbed_value = dict(base_context.testbed)
+    testbed_value.pop("testbed_digest")
+    testbed_value["task_distribution"] = {
+        **dict(testbed_value["task_distribution"]),
+        "measurement_task_class": "static_reachability",
+    }
+    measurement_testbed = MaintainedSiteTaskTestbed.from_mapping(testbed_value).to_mapping()
+    request_value = dict(base_context.decision_request)
+    request_value.pop("request_digest")
+    request_value["testbed_digest"] = measurement_testbed["testbed_digest"]
+    measurement_request = DecisionEvidenceRequest.from_mapping(request_value).to_mapping()
+    context = replace(
+        base_context,
+        testbed=measurement_testbed,
+        decision_request=measurement_request,
+        measurement_adapter_descriptors=[descriptor],
+        measurement_adapter_execution_bundles=[execution_bundle],
+        measurement_benchmark_specs=[benchmark],
+        measurement_research_monitor_report=monitor,
+    )
+    router_result = DeterministicEvaluationMethodRouter().propose(context).to_mapping()
+    artifact = router_result["artifact"]
+    assert artifact["research_adapter_descriptors"] == [
+        {
+            "candidate_id": "mujoco-3",
+            "adapter_reference": descriptor["adapter_reference"],
+            "adapter_descriptor_digest": descriptor["adapter_descriptor_digest"],
+            "production_route_eligible": False,
+            "execution_authorized": False,
+        }
+    ]
+    assert artifact["qualification_benchmark_specs"][0]["r6_human_decision_required"] is True
+    assert artifact["research_monitor_may_mutate_catalog"] is False
+    assert artifact["measurement_adapter_execution_receipts"] == [
+        {
+            "execution_id": "supervisor-plan-only-execution",
+            "candidate_id": "mujoco-3",
+            "status": "planned_not_executed",
+            "evidence_class": "plan_only",
+            "execution_receipt_digest": execution_bundle["receipt"]["execution_receipt_digest"],
+            "production_route_eligible": False,
+            "qualification_created": False,
+            "agent_may_retry": False,
+        }
+    ]
+    assert any(
+        row["action_type"] == "review_measurement_research_changes"
+        for row in router_result["proposals"]
+    )
+    assert any(
+        row["action_type"] == "review_measurement_adapter_execution"
+        and row["parameters"]["automatic_retry_authorized"] is False
+        for row in router_result["proposals"]
+    )
+
+    scenario_result = DeterministicScenarioAdversarialProposer().propose(context).to_mapping()
+    drafts = scenario_result["artifact"]["qualification_benchmark_drafts"]
+    assert all("mujoco-3" in row["candidate_method_ids"] for row in drafts)
+    assert all(row["agent_may_approve"] is False for row in drafts)
+    assert all(row["research_descriptors_are_qualification"] is False for row in drafts)
+
+
+def test_agents_cannot_assert_measurement_admission_or_execution_controls() -> None:
+    from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import (
+        _reject_protected_fields,
+    )
+
+    for field in (
+        "admission_advanced",
+        "agent_may_approve",
+        "agent_may_promote",
+        "agent_may_retry",
+        "automatic_retry_authorized",
+        "execution_authorized",
+        "production_route_eligible",
+        "r7_catalog_admission",
+    ):
+        with pytest.raises(ValueError, match="protected_agent_control_value"):
+            _reject_protected_fields({field: True})
+    for field in ("catalog_mutated", "qualification_created"):
+        with pytest.raises(ValueError, match="protected_agent_control_field"):
+            _reject_protected_fields({field: False})

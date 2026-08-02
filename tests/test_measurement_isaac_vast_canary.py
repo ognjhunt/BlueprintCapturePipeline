@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.measurement_isaac_runtime_release import (
+    RUNTIME_IMAGE,
+    build_measurement_isaac_runtime_release,
+)
+from blueprint_pipeline.measurement_isaac_vast_bundle import RECEIPT_SCHEMA_VERSION
+from blueprint_pipeline.measurement_isaac_vast_canary import (
+    _bootstrap_script,
+    run_measurement_isaac_vast_canary,
+)
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
+
+
+SHA = "a" * 40
+D1 = "sha256:" + "1" * 64
+D2 = "sha256:" + "2" * 64
+D3 = "sha256:" + "3" * 64
+INPUT_URL = "https://objects.example/input?signature=input-secret"
+PUT_URL = "https://objects.example/output?signature=put-secret"
+GET_URL = "https://objects.example/output?signature=get-secret"
+
+
+def _grant():
+    return require_paid_resource_admission(
+        build_paid_lane_admission(resource_class="gpu_render"),
+        resource_class="gpu_render",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+
+
+def _receipt() -> dict:
+    release = build_measurement_isaac_runtime_release()
+    value = {
+        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "source_commit_sha": SHA,
+        "runtime_image_digest": RUNTIME_IMAGE,
+        "runtime_release_digest": release["runtime_release_digest"],
+        "bundle_manifest_digest": D2,
+        "input_bundle_digest": D1,
+        "input_bundle_size_bytes": 1000,
+        "execution_request_digests": [D2, D3],
+        "request_count": 2,
+        "raw_secret_values_recorded": False,
+        "provider_allocation_performed": False,
+        "paid_execution_authorized_by_bundle": False,
+        "proof_effect": "none",
+        "claim_ceiling": "immutable_development_input_bundle_only",
+    }
+    value["bundle_receipt_digest"] = canonical_digest(
+        value, digest_field="bundle_receipt_digest"
+    )
+    return value
+
+
+def _bound_request() -> dict:
+    release = build_measurement_isaac_runtime_release()
+    value = {
+        "schema_version": "reconstruction_gpu_canary_request.v1",
+        "operation": "measurement_isaac_canary",
+        "source_commit_sha": SHA,
+        "worker_image_digest": RUNTIME_IMAGE,
+        "operation_input_bundle_digest": D1,
+        "operation_request_digest": D2,
+        "max_spend_usd": 1.0,
+        "hard_ttl_seconds": 60,
+        "retry_cap": 0,
+        "authority_id": "fixture-authority",
+        "request_digest": D3,
+        "bound_provider": "vast",
+        "bound_preflight_digest": D2,
+        "bound_checkout_source_commit": SHA,
+        "bound_checkout_clean": True,
+        "measurement_isaac_runtime_release_digest": release["runtime_release_digest"],
+        "provider_mutation_authorized": True,
+    }
+    value["bound_request_digest"] = canonical_digest(
+        value, digest_field="bound_request_digest"
+    )
+    return value
+
+
+def _preflight() -> dict:
+    return {
+        "provider": "vast",
+        "watchdog": {
+            "status": "armed",
+            "independent_process": True,
+            "pid": 123,
+            "deadline_epoch": 2000,
+            "name_prefix": "blueprint-measurement-isaac-",
+        },
+        "gpu_memory_bytes": 48 * 1024**3,
+        "container_disk_bytes": 120 * 1024**3,
+        "on_demand_price_usd_per_hour": 0.5,
+    }
+
+
+class _Provider:
+    name = "vast"
+
+    def __init__(self, *, initially_live: bool = False):
+        self.initially_live = initially_live
+        self.launched = False
+        self.requests: list[dict] = []
+
+    def billable_inventory(self, *, name_prefix: str) -> dict:
+        return {
+            "api_confirmed": True,
+            "live_resource_count": 1 if self.initially_live or self.launched else 0,
+            "resources": [],
+        }
+
+    def build_request(self, spec, job_dir):
+        assert spec.image == RUNTIME_IMAGE
+        assert spec.requires_rtx is True
+        assert spec.gpu_count == 1
+        assert spec.env["ACCEPT_EULA"] == "Y"
+        assert spec.env["BLUEPRINT_MEASUREMENT_ISAAC_INPUT_GET_URL"] == INPUT_URL
+        return {"create_payload": {"env": dict(spec.env)}}
+
+    def launch(self, job_dir, request, **kwargs):
+        self.requests.append(request)
+        self.launched = True
+        return {"status": "launched", "instance_id": "42"}
+
+    def terminate(self, instance_id):
+        self.launched = False
+        return {"status": "terminated", "instance_id": instance_id}
+
+
+def test_bootstrap_verifies_bundle_and_uses_exact_isaac_python() -> None:
+    script = _bootstrap_script()
+    assert "measurement_isaac_input_digest_mismatch" in script
+    assert "measurement_isaac_input_member_unsafe" in script
+    assert "measurement_isaac_source_digest_mismatch" in script
+    assert "/isaac-sim/python.sh" in script
+    assert "BLUEPRINT_MEASUREMENT_ISAAC_OUTPUT_PUT_URL" in script
+
+
+def test_canary_tears_down_and_persists_no_signed_urls(tmp_path: Path, monkeypatch) -> None:
+    provider = _Provider()
+    raw_result = {"runtime_result_digest": D3, "status": "passed"}
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_vast_canary."
+        "validate_measurement_isaac_vast_runtime_result",
+        lambda value, **_kwargs: dict(value),
+    )
+    times = iter([1000.0, 1001.0, 1002.0])
+    result = run_measurement_isaac_vast_canary(
+        bound_request=_bound_request(),
+        bundle_receipt=_receipt(),
+        preflight=_preflight(),
+        job_dir=tmp_path,
+        input_bundle_get_url=INPUT_URL,
+        output_put_url=PUT_URL,
+        output_get_url=GET_URL,
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=lambda _url: raw_result,
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+    assert result["status"] == "completed"
+    assert result["provider_zero_verified"] is True
+    assert result["provider_mutations_performed"] == 2
+    assert result["r7_admission_created"] is False
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    )
+    for secret in (INPUT_URL, PUT_URL, GET_URL):
+        assert secret not in persisted
+    assert not list((tmp_path / "leases").glob("*.lease.json"))
+
+
+def test_canary_refuses_nonzero_provider_and_missing_grant(tmp_path: Path) -> None:
+    provider = _Provider(initially_live=True)
+    with pytest.raises(Exception, match="provider_not_zero_before_launch"):
+        run_measurement_isaac_vast_canary(
+            bound_request=_bound_request(),
+            bundle_receipt=_receipt(),
+            preflight=_preflight(),
+            job_dir=tmp_path / "nonzero",
+            input_bundle_get_url=INPUT_URL,
+            output_put_url=PUT_URL,
+            output_get_url=GET_URL,
+            provider=provider,
+            paid_resource_admission_grant=_grant(),
+            clock=lambda: 1000.0,
+            watchdog_validator=lambda _watchdog, _now, _ttl: True,
+        )
+    assert provider.requests == []
+
+    clean_provider = _Provider()
+    with pytest.raises(Exception, match="paid_resource_admission_grant_missing"):
+        run_measurement_isaac_vast_canary(
+            bound_request=_bound_request(),
+            bundle_receipt=_receipt(),
+            preflight=_preflight(),
+            job_dir=tmp_path / "missing-grant",
+            input_bundle_get_url=INPUT_URL,
+            output_put_url=PUT_URL,
+            output_get_url=GET_URL,
+            provider=clean_provider,
+            paid_resource_admission_grant=None,
+        )
+    assert clean_provider.requests == []

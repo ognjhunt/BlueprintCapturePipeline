@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-isaac-runtime-release.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version", "status", "isaac_sim_version", "resolved_image_digest",
+    "required_platform", "source_kind", "runtime_execution_completed",
+    "provider_startup_proven", "measurement_suite_completed",
+    "qualification_created", "r7_admission_created", "physical_success_established",
+    "raw_secret_values_recorded", "proof_effect", "claim_ceiling",
+    "runtime_release_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "measurement_isaac_runtime_release.v1"},
+    "status": {"const": "passed"},
+    "isaac_sim_version": {"const": "6.0.1"},
+    "resolved_image_digest": {
+      "const": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9"
+    },
+    "required_platform": {"const": "linux/amd64"},
+    "source_kind": {"const": "official_nvidia_ngc_release"},
+    "runtime_execution_completed": {"const": false},
+    "provider_startup_proven": {"const": false},
+    "measurement_suite_completed": {"const": false},
+    "qualification_created": {"const": false},
+    "r7_admission_created": {"const": false},
+    "physical_success_established": {"const": false},
+    "raw_secret_values_recorded": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "immutable_official_runtime_identity_only"},
+    "runtime_release_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

@@ -34,6 +34,7 @@ def _manifest(**updates):
             "source_dirty_patch_sha256": CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
             "worker_image_family": "isaac-eval-worker",
             "isaac_sim_major_version": 6,
+            "isaac_sim_version": "6.0.1",
             "identity_source": "immutable_registry_image_config_environment",
         },
     }

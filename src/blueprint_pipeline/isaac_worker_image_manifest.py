@@ -148,6 +148,7 @@ def derive_worker_build_identity(
     dirty_patch = env.get("BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256", "").strip().lower()
     family = env.get("BLUEPRINT_WORKER_IMAGE_FAMILY", "").strip()
     isaac_major_raw = env.get("BLUEPRINT_ISAAC_SIM_MAJOR_VERSION", "").strip()
+    isaac_version = env.get("BLUEPRINT_ISAAC_SIM_VERSION", "").strip()
     try:
         isaac_major = int(isaac_major_raw)
     except ValueError:
@@ -168,6 +169,7 @@ def derive_worker_build_identity(
         "source_dirty_patch_sha256": dirty_patch or None,
         "worker_image_family": family or None,
         "isaac_sim_major_version": isaac_major,
+        "isaac_sim_version": isaac_version or None,
         "identity_source": "immutable_registry_image_config_environment",
     }
 

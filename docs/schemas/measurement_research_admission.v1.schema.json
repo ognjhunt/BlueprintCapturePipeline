@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-research-admission.v1.schema.json",
+  "title": "Blueprint measurement-method R0-R8 admission record",
+  "type": "object",
+  "required": ["schema_version", "candidate_id", "method_id", "stage", "stage_data", "completed_stage_data", "approvals", "production_eligible", "suspended", "requalification_events", "transition_history", "admission_record_digest"],
+  "properties": {
+    "schema_version": {"const": "measurement_research_admission.v1"},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "method_id": {"type": "string", "minLength": 1},
+    "stage": {"enum": ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"]},
+    "stage_data": {"type": "object"},
+    "completed_stage_data": {
+      "type": "object",
+      "propertyNames": {"enum": ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7"]},
+      "additionalProperties": {"type": "object"}
+    },
+    "approvals": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["role", "actor_id", "actor_type", "approved", "signature_id"],
+        "properties": {
+          "actor_type": {"const": "human"},
+          "approved": {"const": true}
+        },
+        "additionalProperties": true
+      }
+    },
+    "production_eligible": {"type": "boolean"},
+    "suspended": {"type": "boolean"},
+    "requalification_events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["trigger", "detail", "signature_id", "predecessor_digest"],
+        "properties": {
+          "trigger": {
+            "enum": [
+              "engine_solver_api_or_model_update",
+              "gpu_driver_or_numerical_backend_change",
+              "adapter_modification",
+              "regression_detected",
+              "new_failure_mode_discovered",
+              "license_or_privacy_change",
+              "capture_pipeline_change",
+              "monitoring_performance_drift",
+              "qualification_scope_change_requested"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "transition_history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from_stage", "to_stage", "predecessor_digest", "approval_signature_ids"],
+        "additionalProperties": true
+      }
+    },
+    "admission_record_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"stage": {"enum": ["R0", "R1", "R2", "R3", "R4", "R5", "R6"]}}},
+      "then": {"properties": {"production_eligible": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"suspended": {"const": true}}},
+      "then": {"properties": {"production_eligible": {"const": false}}}
+    }
+  ],
+  "additionalProperties": false
+}

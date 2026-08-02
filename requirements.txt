@@ -427,7 +427,7 @@ numpy==2.2.6 ; python_full_version < '3.11' \
     # via
     #   blueprint-capture-pipeline
     #   json-numpy
-numpy==2.4.6 ; python_full_version == '3.11.*' \
+numpy==2.4.6 ; python_full_version >= '3.11' \
     --hash=sha256:001fbb8e08d942dd57599e781f2472269ee7f2755fae407b4f67b2f0b17da3f1 \
     --hash=sha256:0280e0356c0829a18d9de1cb7eee50ec22ca639878d7240307ca0943d73cd2c4 \
     --hash=sha256:0ab0a9c4ffb1a6d95ef519fe4247dba8eb6b18ad93999f76b7f657039acabd47 \
@@ -458,22 +458,6 @@ numpy==2.4.6 ; python_full_version == '3.11.*' \
     --hash=sha256:ed9749eef4cbd126da3dc1d6bcb3a57f5eb7ac6a6484146bdbf743f552dfc577 \
     --hash=sha256:f3a3570c4a2a16746ac2c31a7c7c7b0c186b95ce902e33db6f28094ed7387dda \
     --hash=sha256:f407cb6b8e9d6d8c626bc73c945db1706035af8fd632295547bf1c9e46d092d6
-    # via
-    #   blueprint-capture-pipeline
-    #   json-numpy
-numpy==2.5.1 ; python_full_version >= '3.12' \
-    --hash=sha256:08d60c810432eb83360958dea0999ac4cfb94531ea8efcbf0b7f277c2068aeb2 \
-    --hash=sha256:17a25e09640602e10bc8de0e6fa2b3fd68eedd84ba6d7842dc8f32f9ab87bd0b \
-    --hash=sha256:2ae0ca40bcb22d6ba59c1dfd5446f49940b0f2d821fde133f10dda11f816b84e \
-    --hash=sha256:2c889b56fe48b1018f764b0eec8df59ab654e9148aa91faa12596043500de277 \
-    --hash=sha256:59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca \
-    --hash=sha256:61ac47e772e6b8ea489e1d2f441a34c5c3ac17327e7ce294cbdf535795ad4e75 \
-    --hash=sha256:78798bd5b9ad744056af8efa90e3b9ddaa53272a0848a483084a1cc0a13b2dc0 \
-    --hash=sha256:a48a113e6afea91f5608793bafa7ef2ad481fefbda87ec5069f483de61cb9fa3 \
-    --hash=sha256:ab451b59c5643c570974c43aef780703ef1d3b4965d2be07afd530615a9358d1 \
-    --hash=sha256:e824c2acf8862052246be5a44c15da1777940c60d010dd2aab897824d9c430f9 \
-    --hash=sha256:f7119ebff1a9829e9f431a4f9d28e703023bb6b9fe7c8f724467dbfc27c94ab3 \
-    --hash=sha256:f7d60026c0bdb1380e83bfa7a0419c4577ee4b9a08880afcb6dadeb74c649fa2
     # via
     #   blueprint-capture-pipeline
     #   json-numpy

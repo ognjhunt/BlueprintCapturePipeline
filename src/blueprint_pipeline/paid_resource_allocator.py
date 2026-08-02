@@ -95,15 +95,9 @@ from .reconstruction_gpu_admission import (
     collect_reconstruction_vast_preflight,
     prepare_reconstruction_gpu_canary,
 )
-from .reconstruction_gpu_operation_bundle import (
-    ReconstructionGpuOperationBundleError,
-    validate_reconstruction_gpu_operation_bundle_receipt,
-)
 from .reconstruction_isaac_vast_operation import run_reconstruction_isaac_vast_operation
-from .reconstruction_isaac_worker_bundle import (
-    IsaacWorkerBundleError,
-    validate_isaac_verification_worker_bundle_receipt,
-)
+from . import measurement_isaac_paid_allocator
+from .reconstruction_paid_transport import prepare_reconstruction_paid_transport
 from .reconstruction_vast_operation import run_reconstruction_vast_operation
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
 from .gpu_render_providers import get_render_provider
@@ -117,7 +111,6 @@ from .single_g1_kitchen_qualification_session import (
     SESSION_ACTIONS as QUALIFICATION_SESSION_ACTIONS,
     run_qualification_session,
 )
-from .wam_async_runner_common import read_sensitive_url_file
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -655,94 +648,15 @@ def _run_reconstruction_gpu_canary(
         image_release_path=getattr(
             args, "reconstruction_isaac_image_release", None
         ),
+        measurement_isaac_runtime_release_path=getattr(args, "measurement_isaac_runtime_release", None),
     )
     if not args.execute or admission.get("status") != "execute_ready":
         return admission
 
     operation = str(admission.get("operation") or "worker_smoke")
-    transport_blockers: list[str] = []
-    resolved_urls: dict[str, str] = {}
-    url_inputs = [
-        ("provider_output_put_url", args.provider_output_put_url_file),
-        ("provider_output_get_url", args.provider_output_get_url_file),
-    ]
-    operation_bundle_receipt: dict[str, Any] = {}
-    if operation in {"pose_canary", "trainer_canary", "isaac_canary"}:
-        url_inputs.extend(
-            [
-                ("provider_bundle_url", getattr(args, "provider_bundle_url_file", None)),
-                (
-                    "operation_receipt_get_url",
-                    getattr(args, "reconstruction_operation_receipt_url_file", None),
-                ),
-            ]
-        )
-        receipt_path = getattr(
-            args, "reconstruction_operation_bundle_receipt", None
-        )
-        if not receipt_path:
-            transport_blockers.append(
-                "reconstruction_operation_bundle_receipt_missing"
-            )
-        else:
-            try:
-                if operation == "isaac_canary":
-                    operation_bundle_receipt = (
-                        validate_isaac_verification_worker_bundle_receipt(
-                            _load(receipt_path)
-                        )
-                    )
-                else:
-                    operation_bundle_receipt = (
-                        validate_reconstruction_gpu_operation_bundle_receipt(
-                            _load(receipt_path)
-                        )
-                    )
-            except (
-                OSError,
-                ValueError,
-                ReconstructionGpuOperationBundleError,
-                IsaacWorkerBundleError,
-            ):
-                transport_blockers.append(
-                    "reconstruction_operation_bundle_receipt_invalid"
-                )
-            else:
-                receipt_bindings = (
-                    (
-                        ("operation_request_digest", "isaac_verification_request_digest"),
-                        ("operation_input_bundle_digest", "bundle_digest"),
-                        ("worker_image_digest", "runtime_container_image_digest"),
-                        ("source_commit_sha", "source_commit_sha"),
-                    )
-                    if operation == "isaac_canary"
-                    else (
-                        ("operation", "operation"),
-                        ("operation_request_digest", "operation_request_digest"),
-                        (
-                            "operation_input_bundle_digest",
-                            "operation_input_bundle_digest",
-                        ),
-                        ("worker_image_digest", "worker_image_digest"),
-                        ("source_commit_sha", "source_commit_sha"),
-                    )
-                )
-                for request_key, receipt_key in receipt_bindings:
-                    if admission.get(request_key) != operation_bundle_receipt.get(
-                        receipt_key
-                    ):
-                        transport_blockers.append(
-                            f"reconstruction_operation_bundle_{request_key}_mismatch"
-                        )
-    for label, path_value in url_inputs:
-        value, metadata = read_sensitive_url_file(str(path_value or ""), label=label)
-        if not value:
-            transport_blockers.append(f"reconstruction_{label}_missing")
-        elif not value.startswith("https://"):
-            transport_blockers.append(f"reconstruction_{label}_not_https")
-        elif metadata.get("mode_is_0600") is not True:
-            transport_blockers.append(f"reconstruction_{label}_file_permissions_not_0600")
-        resolved_urls[label] = value
+    operation_bundle_receipt, resolved_urls, transport_blockers = (
+        prepare_reconstruction_paid_transport(args=args, admission=admission, load_json=_load)
+    )
 
     paid_admission = build_paid_lane_admission(
         resource_class="gpu_render",
@@ -771,7 +685,16 @@ def _run_reconstruction_gpu_canary(
         write_json(adapter_path, result)
         return result
 
-    if operation == "worker_smoke":
+    if operation == "measurement_isaac_canary":
+        result = measurement_isaac_paid_allocator.run_measurement_isaac_from_canonical_allocator(
+            args=args,
+            bundle_receipt=operation_bundle_receipt,
+            resolved_urls=resolved_urls,
+            adapter_path=adapter_path,
+            paid_resource_admission_grant=grant,
+            load_json=_load,
+        )
+    elif operation == "worker_smoke":
         result = run_reconstruction_vast_worker_smoke(
             bound_request=_load(args.bound_request_out),
             preflight=_load(args.preflight_bundle),
@@ -890,6 +813,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-operation-bundle-receipt")
     gpu.add_argument("--reconstruction-operation-receipt-url-file")
     gpu.add_argument("--reconstruction-isaac-image-release")
+    measurement_isaac_paid_allocator.add_measurement_isaac_allocator_arguments(gpu)
     gpu.add_argument("--provider-bootstrap-url-file")
     gpu.add_argument("--finetune-provider-bundle")
     gpu.add_argument("--openpi-input-bundle-receipt")

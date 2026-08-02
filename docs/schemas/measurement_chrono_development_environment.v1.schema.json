@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-chrono-development-environment.v1.schema.json",
+  "title": "Blueprint PyChrono isolated development environment receipt",
+  "type": "object",
+  "required": ["schema_version", "pychrono_version", "package_build", "package_channel", "package_subdir", "python_version", "worker_python", "conda_executable", "environment", "runtime_scope", "package_metadata_source", "openmp_library", "openmp_preload_used", "import_verified", "development_only", "granular_benchmark_established_by_environment", "production_route_eligible", "r7_admission", "bootstrap_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "measurement_chrono_development_environment.v1"},
+    "pychrono_version": {"const": "10.0.0"},
+    "package_build": {"type": "string", "minLength": 1},
+    "package_channel": {"const": "https://conda.anaconda.org/projectchrono/label/release"},
+    "package_subdir": {"type": "string", "minLength": 1},
+    "python_version": {"type": "string", "pattern": "^3\\.12(\\.|$)"},
+    "worker_python": {"type": "string", "minLength": 1},
+    "conda_executable": {"type": "string", "minLength": 1},
+    "environment": {"type": "string", "minLength": 1},
+    "runtime_scope": {"const": "isolated_external_conda"},
+    "package_metadata_source": {"const": "conda-meta"},
+    "openmp_library": {"type": ["string", "null"]},
+    "openmp_preload_used": {"type": "boolean"},
+    "import_verified": {"const": true},
+    "development_only": {"const": true},
+    "granular_benchmark_established_by_environment": {"const": false},
+    "production_route_eligible": {"const": false},
+    "r7_admission": {"const": false},
+    "bootstrap_receipt_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

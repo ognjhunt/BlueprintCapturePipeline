@@ -40,12 +40,88 @@ from blueprint_pipeline.evaluation_run import (
     legacy_evaluation_pack_to_leaf_spec,
 )
 from blueprint_pipeline.evaluation_run_contract import validate_evaluation_run_spec
+from blueprint_pipeline.task_site_measurement_routing import (
+    ALL_CAPABILITY_FIELDS,
+    validate_measurement_qualification,
+    validate_method_capability_profile,
+    validate_site_evidence_profile,
+)
 
 
 SHA_A = "sha256:" + "a" * 64
 SHA_B = "sha256:" + "b" * 64
 SHA_C = "sha256:" + "c" * 64
 SHA_D = "sha256:" + "d" * 64
+
+
+def _complete_measurement_capabilities(method_id: str) -> dict:
+    values = {field: False for field in ALL_CAPABILITY_FIELDS}
+    for field in (
+        "plugin_versions",
+        "robot_model_formats",
+        "supported_embodiments",
+        "supported_end_effectors",
+        "action_representation_types",
+        "qualification_record_ids",
+        "qualified_task_classes",
+        "qualified_material_regimes",
+        "qualified_robot_ids",
+        "qualified_end_effector_ids",
+        "qualified_controller_ids",
+        "qualified_sensor_ids",
+        "qualified_site_classes",
+        "qualified_metric_ids",
+        "known_failure_modes",
+        "prohibited_extrapolations",
+        "asset_license_ids",
+        "model_license_ids",
+        "subprocessor_regions",
+        "output_formats",
+    ):
+        values[field] = []
+    values.update(
+        {
+            "method_id": method_id,
+            "method_family": "traditional_simulation",
+            "version": "1",
+            "release_date": "2026-08-01",
+            "commit_hash": "fixture-commit",
+            "container_digest": SHA_B,
+            "solver_backend": "fixture",
+            "numeric_precision": "float64",
+            "deterministic_mode": "strict",
+            "operating_system": "linux",
+            "gpu_model": "none",
+            "driver_version": "none",
+            "random_seed_policy": "frozen",
+            "contact_formulation": "fixture",
+            "maximum_control_rate_hz": 1000,
+            "qualified_parameter_ranges": {},
+            "qualified_claim_ceiling": "C3",
+            "qualification_expiration": "2027-08-01",
+            "harmful_false_negative_bound": 0.01,
+            "maximum_latency_class": "batch",
+            "maximum_compute_class": "cpu",
+            "estimated_cost_class": "low",
+            "data_retention_days": 0,
+            "source_available": True,
+            "local_offline_supported": True,
+            "commercial_use_allowed": True,
+            "provider_training_use_allowed": False,
+            "deletion_right_supported": True,
+            "output_export_supported": True,
+        }
+    )
+    for field in (
+        "metric_scale_supported",
+        "continuous_collision_supported",
+        "dynamic_collision_supported",
+        "static_friction_supported",
+        "dynamic_friction_supported",
+        "contact_compliance_supported",
+    ):
+        values[field] = True
+    return values
 
 
 def _testbed() -> dict:
@@ -56,9 +132,7 @@ def _testbed() -> dict:
             "version": "1",
             "predecessor_testbed_digest": None,
             "supersedes": [],
-            "source_capture_bundles": [
-                {"bundle_id": "capture-1", "version": "3", "digest": SHA_A}
-            ],
+            "source_capture_bundles": [{"bundle_id": "capture-1", "version": "3", "digest": SHA_A}],
             "artifact_references": {
                 "site_card": {"uri": "fixture://site-card", "digest": SHA_A},
                 "task_cards": [{"uri": "fixture://task-card", "digest": SHA_A}],
@@ -104,7 +178,9 @@ def _claim(claim_id: str, claim_type: str, *, coverage: float = 0.8) -> dict:
         "claim_type": claim_type,
         "subject": f"fixture:{claim_id}",
         "measurable_threshold": {"operator": ">=", "value": 0.8, "units": "ratio"},
-        "false_safe_consequence": "critical" if claim_type == "deployment_readiness" else "moderate",
+        "false_safe_consequence": "critical"
+        if claim_type == "deployment_readiness"
+        else "moderate",
         "acceptable_false_safe_risk": 0.001 if claim_type == "deployment_readiness" else 0.05,
         "desired_confidence_or_coverage": {
             "minimum_coverage": coverage,
@@ -479,7 +555,11 @@ def test_router_enforces_false_safe_coverage_budget_rights_inputs_and_availabili
     request = _request(testbed)
     profiles, qualifications = _registry()
 
-    collision_q = next(row for row in qualifications if row["claim_type"] == "collision_contact" and row["method_id"] == "fixture-mujoco")
+    collision_q = next(
+        row
+        for row in qualifications
+        if row["claim_type"] == "collision_contact" and row["method_id"] == "fixture-mujoco"
+    )
     collision_q.pop("qualification_digest")
     collision_q["false_safe_rate"] = 0.5
     collision_q = QualificationRecord.from_mapping(collision_q).to_mapping()
@@ -491,14 +571,20 @@ def test_router_enforces_false_safe_coverage_budget_rights_inputs_and_availabili
     ]
     plan = route_decision_evidence(request, testbed, profiles, qualifications).to_mapping()
     collision = next(row for row in plan["claim_plans"] if row["claim_id"] == "collision")
-    candidate = next(row for row in collision["candidate_methods_considered"] if row["method_id"] == "fixture-mujoco")
+    candidate = next(
+        row
+        for row in collision["candidate_methods_considered"]
+        if row["method_id"] == "fixture-mujoco"
+    )
     assert "false_safe_limit_exceeded" in candidate["rejection_reasons"]
 
     restricted = copy.deepcopy(request)
     restricted.pop("request_digest")
     restricted["restrictions"]["allowed_method_families"] = ["captured_real_observation"]
     restricted = DecisionEvidenceRequest.from_mapping(restricted).to_mapping()
-    restricted_plan = route_decision_evidence(restricted, testbed, profiles, qualifications).to_mapping()
+    restricted_plan = route_decision_evidence(
+        restricted, testbed, profiles, qualifications
+    ).to_mapping()
     reach = next(row for row in restricted_plan["claim_plans"] if row["claim_id"] == "reach")
     assert reach["status"] == "abstention_planned"
 
@@ -829,7 +915,10 @@ class _RawFixtureAdapter:
             self.physical_evidence_mode = "read_only"
 
     def execute(self, **kwargs):
-        return {**self._result, "applicability_envelope": kwargs["method_profile"]["applicability_envelope"]}
+        return {
+            **self._result,
+            "applicability_envelope": kwargs["method_profile"]["applicability_envelope"],
+        }
 
 
 def _execution_fixture():
@@ -996,8 +1085,13 @@ def test_sufficient_primary_skips_conditional_escalation() -> None:
         latency=2,
         correlation_group="independent-geometry",
     )
-    qualifications = [_qualification(primary, "reachability"), _qualification(escalation, "reachability")]
-    plan = route_decision_evidence(request, testbed, [primary, escalation], qualifications).to_mapping()
+    qualifications = [
+        _qualification(primary, "reachability"),
+        _qualification(escalation, "reachability"),
+    ]
+    plan = route_decision_evidence(
+        request, testbed, [primary, escalation], qualifications
+    ).to_mapping()
     execution = execute_evidence_plan(
         plan,
         request,
@@ -1006,13 +1100,19 @@ def test_sufficient_primary_skips_conditional_escalation() -> None:
         qualifications,
         registry=EvidenceMethodAdapterRegistry(
             [
-                _FixtureAdapter(primary["adapter_reference"], supports_claim=True, finding="reachable"),
-                _FixtureAdapter(escalation["adapter_reference"], supports_claim=True, finding="reachable"),
+                _FixtureAdapter(
+                    primary["adapter_reference"], supports_claim=True, finding="reachable"
+                ),
+                _FixtureAdapter(
+                    escalation["adapter_reference"], supports_claim=True, finding="reachable"
+                ),
             ]
         ),
     )
     assert len(execution.results) == 1
-    assert execution.execution_manifest["steps"][1]["status"] == "skipped_evidence_already_sufficient"
+    assert (
+        execution.execution_manifest["steps"][1]["status"] == "skipped_evidence_already_sufficient"
+    )
     assert execution.execution_manifest["status"] == "completed"
 
 
@@ -1053,7 +1153,9 @@ def test_disagreement_abstains_instead_of_counting_votes() -> None:
     registry = EvidenceMethodAdapterRegistry(
         [
             _FixtureAdapter(pose_a["adapter_reference"], supports_claim=True, finding="pose-valid"),
-            _FixtureAdapter(pose_b["adapter_reference"], supports_claim=False, finding="pose-invalid"),
+            _FixtureAdapter(
+                pose_b["adapter_reference"], supports_claim=False, finding="pose-invalid"
+            ),
         ]
     )
     # Limit the execution order to the two disagreement steps while preserving
@@ -1074,7 +1176,9 @@ def test_disagreement_abstains_instead_of_counting_votes() -> None:
     assert envelope["cross_method_disagreements"][0]["resolution"] == "abstain_and_escalate"
 
 
-def _physical_outcome(testbed: dict, prediction_digest: str, *, partition: str = "calibration") -> dict:
+def _physical_outcome(
+    testbed: dict, prediction_digest: str, *, partition: str = "calibration"
+) -> dict:
     from blueprint_pipeline.decision_evidence_contracts import PhysicalOutcomeJoin
 
     return PhysicalOutcomeJoin.from_mapping(
@@ -1117,7 +1221,10 @@ def _physical_outcome(testbed: dict, prediction_digest: str, *, partition: str =
                 },
             },
             "owner_evidence": [{"uri": "fixture://physical-owner-proof", "digest": SHA_D}],
-            "timestamps": {"predicted_at": "2026-07-29T10:00:00Z", "observed_at": "2026-07-29T11:00:00Z"},
+            "timestamps": {
+                "predicted_at": "2026-07-29T10:00:00Z",
+                "observed_at": "2026-07-29T11:00:00Z",
+            },
             "runtime_digest": SHA_B,
             "evaluator_digest": SHA_C,
             "partition": partition,
@@ -1142,7 +1249,10 @@ def test_physical_outcome_join_is_append_only_and_versions_testbed() -> None:
     new_testbed = update.new_testbed.to_mapping()
     assert new_testbed["version"] == "2"
     assert new_testbed["predecessor_testbed_digest"] == testbed["testbed_digest"]
-    assert new_testbed["physical_outcome_history_refs"][0]["physical_outcome_digest"] == update.physical_outcome.digest
+    assert (
+        new_testbed["physical_outcome_history_refs"][0]["physical_outcome_digest"]
+        == update.physical_outcome.digest
+    )
     assert new_testbed["cross_domain_calibration_transfer_enabled"] is False
     calibration = update.calibration_record.to_mapping()
     assert calibration["calibration_partition"] == "calibration"
@@ -1325,7 +1435,9 @@ def test_checked_in_rigid_object_vertical_slice_matches_plan_decision_and_learni
     testbed, request, profiles, _, plan, execution, envelope = _execution_fixture()
     assert fixture["testbed"]["testbed_id"] == testbed["testbed_id"]
     assert fixture["testbed"]["version"] == testbed["version"]
-    assert fixture["testbed"]["raw_capture_digest"] == testbed["source_capture_bundles"][0]["digest"]
+    assert (
+        fixture["testbed"]["raw_capture_digest"] == testbed["source_capture_bundles"][0]["digest"]
+    )
     assert fixture["request"]["claim_types"] == [row["claim_type"] for row in request["claims"]]
     dispositions = {
         row["method_id"]: row["expected_disposition"] for row in fixture["method_cases"]
@@ -1341,13 +1453,24 @@ def test_checked_in_rigid_object_vertical_slice_matches_plan_decision_and_learni
         for row in claim_plans["ranking"]["candidate_methods_considered"]
     )
     assert dispositions["physical-outcome"] == "bounded_evidence_request"
-    assert len(plan["compiled_evaluation_run_specs"]) >= fixture["expected_plan"]["minimum_leaf_evaluation_run_specs"]
-    assert len(plan["non_evaluation_run_steps"]) >= fixture["expected_plan"]["minimum_non_leaf_steps"]
+    assert (
+        len(plan["compiled_evaluation_run_specs"])
+        >= fixture["expected_plan"]["minimum_leaf_evaluation_run_specs"]
+    )
+    assert (
+        len(plan["non_evaluation_run_steps"]) >= fixture["expected_plan"]["minimum_non_leaf_steps"]
+    )
     decision = envelope.to_mapping()
     assert decision["overall_outcome"] == fixture["expected_decision"]["overall_outcome"]
     verdicts = {row["claim_id"]: row["verdict"] for row in decision["per_claim_verdicts"]}
-    assert sorted(key for key, value in verdicts.items() if value != "abstention") == fixture["expected_decision"]["supported_claim_ids"]
-    assert sorted(key for key, value in verdicts.items() if value == "abstention") == fixture["expected_decision"]["abstained_claim_ids"]
+    assert (
+        sorted(key for key, value in verdicts.items() if value != "abstention")
+        == fixture["expected_decision"]["supported_claim_ids"]
+    )
+    assert (
+        sorted(key for key, value in verdicts.items() if value == "abstention")
+        == fixture["expected_decision"]["abstained_claim_ids"]
+    )
     prediction_digest = execution.results[0].digest
     predictor = next(profile for profile in profiles if profile["method_id"] == "fixture-mujoco")
     update = join_physical_outcome(
@@ -1356,7 +1479,10 @@ def test_checked_in_rigid_object_vertical_slice_matches_plan_decision_and_learni
         outcome_value=_physical_outcome(testbed, prediction_digest),
         method_profile_value=predictor,
     )
-    assert update.new_testbed.to_mapping()["version"] == fixture["later_physical_outcome"]["creates_new_testbed_version"]
+    assert (
+        update.new_testbed.to_mapping()["version"]
+        == fixture["later_physical_outcome"]["creates_new_testbed_version"]
+    )
     assert update.new_testbed.to_mapping()["cross_domain_calibration_transfer_enabled"] is False
 
 
@@ -1384,7 +1510,9 @@ def test_cli_plan_execute_aggregate_and_fail_closed_authorization(
                 {
                     "adapter_reference": profile["adapter_reference"],
                     "result": _FixtureAdapter(
-                        profile["adapter_reference"], supports_claim=True, finding="fixture-supports"
+                        profile["adapter_reference"],
+                        supports_claim=True,
+                        finding="fixture-supports",
                     ).execute(method_profile=profile),
                 }
             )
@@ -1395,9 +1523,12 @@ def test_cli_plan_execute_aggregate_and_fail_closed_authorization(
     plan_dir = tmp_path / "plan"
     plan_args = [
         "plan",
-        "--request", str(request_path),
-        "--testbed", str(testbed_path),
-        "--output-dir", str(plan_dir),
+        "--request",
+        str(request_path),
+        "--testbed",
+        str(testbed_path),
+        "--output-dir",
+        str(plan_dir),
     ]
     for path in profile_paths:
         plan_args.extend(["--method-profile", str(path)])
@@ -1413,11 +1544,16 @@ def test_cli_plan_execute_aggregate_and_fail_closed_authorization(
     execute_dir = tmp_path / "execute"
     execute_args = [
         "execute",
-        "--plan", str(plan_dir / "evidence_plan.json"),
-        "--request", str(request_path),
-        "--testbed", str(testbed_path),
-        "--fixture-adapter-registry", str(registry_path),
-        "--output-dir", str(execute_dir),
+        "--plan",
+        str(plan_dir / "evidence_plan.json"),
+        "--request",
+        str(request_path),
+        "--testbed",
+        str(testbed_path),
+        "--fixture-adapter-registry",
+        str(registry_path),
+        "--output-dir",
+        str(execute_dir),
     ]
     for path in profile_paths:
         execute_args.extend(["--method-profile", str(path)])
@@ -1434,10 +1570,14 @@ def test_cli_plan_execute_aggregate_and_fail_closed_authorization(
     aggregate_dir = tmp_path / "aggregate"
     aggregate_args = [
         "aggregate",
-        "--request", str(request_path),
-        "--testbed", str(testbed_path),
-        "--plan", str(plan_dir / "evidence_plan.json"),
-        "--output-dir", str(aggregate_dir),
+        "--request",
+        str(request_path),
+        "--testbed",
+        str(testbed_path),
+        "--plan",
+        str(plan_dir / "evidence_plan.json"),
+        "--output-dir",
+        str(aggregate_dir),
     ]
     for path in result_paths:
         aggregate_args.extend(["--result", path])
@@ -1452,20 +1592,153 @@ def test_cli_plan_execute_aggregate_and_fail_closed_authorization(
         _physical_outcome(testbed, result_value["result_digest"]),
     )
     predictor_path = profile_paths[
-        next(index for index, profile in enumerate(profiles) if profile["method_id"] == "fixture-mujoco")
+        next(
+            index
+            for index, profile in enumerate(profiles)
+            if profile["method_id"] == "fixture-mujoco"
+        )
     ]
     learning_dir = tmp_path / "learning"
-    assert decision_evidence_cli_main(
-        [
-            "ingest-outcome",
-            "--testbed", str(testbed_path),
-            "--decision", str(aggregate_dir / "decision_envelope.json"),
-            "--outcome", str(outcome_path),
-            "--method-profile", str(predictor_path),
-            "--output-dir", str(learning_dir),
-        ]
-    ) == 0
+    assert (
+        decision_evidence_cli_main(
+            [
+                "ingest-outcome",
+                "--testbed",
+                str(testbed_path),
+                "--decision",
+                str(aggregate_dir / "decision_envelope.json"),
+                "--outcome",
+                str(outcome_path),
+                "--method-profile",
+                str(predictor_path),
+                "--output-dir",
+                str(learning_dir),
+            ]
+        )
+        == 0
+    )
     learning = json.loads(capsys.readouterr().out)
     assert learning["status"] == "updated_append_only"
     assert learning["historical_decision_mutated"] is False
     assert learning["cross_domain_transfer_enabled"] is False
+
+
+def test_router_embeds_deterministic_task_site_measurement_route() -> None:
+    site_profile = validate_site_evidence_profile(
+        {
+            "schema_version": "site_evidence_profile.v1",
+            "profile_id": "rigid-site-measurements-v1",
+            "bundle_id": "capture-1",
+            "bundle_hash": SHA_A,
+            "provenance_record_id": "fixture-provenance",
+            "rights": {"commercial_evaluation_allowed": True},
+            "privacy": {"external_processing_allowed": False},
+            "coordinate_system": {"metric_scale_verified": True},
+            "evidence": {
+                key: {"available": True, "validated": True, "record_id": f"record-{key}"}
+                for key in (
+                    "metric_scale",
+                    "robot_site_registration",
+                    "validated_collider",
+                    "mass_inertia",
+                    "friction_contact",
+                    "material_parameters",
+                )
+            },
+            "limitations": {"known_missing_regions": [], "forbidden_claims": []},
+        }
+    )
+    raw_testbed = _testbed()
+    raw_testbed.pop("testbed_digest")
+    raw_testbed["site_evidence_profile"] = site_profile
+    testbed = MaintainedSiteTaskTestbed.from_mapping(raw_testbed).to_mapping()
+
+    raw_profile = _profile(
+        "fixture-mujoco",
+        "traditional_simulation",
+        ["collision_contact"],
+        required_inputs=["collision_scene"],
+        authority=2,
+        cost=1.0,
+        latency=10,
+        correlation_group="fixture-physics",
+    )
+    raw_profile.pop("method_profile_digest")
+    measurement_profile = validate_method_capability_profile(
+        {
+            "schema_version": "method_capability_profile.v1",
+            "method_id": "fixture-mujoco",
+            "capabilities": _complete_measurement_capabilities("fixture-mujoco"),
+            "evidence_quality": {"source": "independent_fixture"},
+            "expected_cost_usd": 1.0,
+            "expected_latency_seconds": 10.0,
+        }
+    )
+    raw_profile["measurement_capability_profile"] = measurement_profile
+    profile = EvidenceMethodProfile.from_mapping(raw_profile).to_mapping()
+
+    raw_qualification = _qualification(profile, "collision_contact")
+    raw_qualification.pop("qualification_digest")
+    qualified_caps = {
+        "metric_scale_supported",
+        "continuous_collision_supported",
+        "dynamic_collision_supported",
+        "static_friction_supported",
+        "dynamic_friction_supported",
+        "contact_compliance_supported",
+    }
+    raw_qualification["measurement_qualification_record"] = validate_measurement_qualification(
+        {
+            "schema_version": "measurement_qualification_record.v1",
+            "qualification_id": "measurement-q-fixture-mujoco",
+            "method_id": "fixture-mujoco",
+            "method_version": "1",
+            "capability_profile_digest": measurement_profile["capability_profile_digest"],
+            "admission_record_digest": SHA_A,
+            "admission_stage": "R7",
+            "status": "approved",
+            "qualified_capabilities": sorted(qualified_caps),
+            "claim_ceiling": "C3",
+            "scope": {
+                "task_classes": ["rigid_pick_place"],
+                "material_regimes": ["none"],
+                "robot_ids": ["fixture-arm"],
+                "end_effector_ids": [],
+                "controller_ids": [],
+                "sensor_ids": ["fixture-rgb-v1"],
+                "metric_ids": [],
+                "parameter_ranges": {},
+            },
+            "metrics": {
+                "physical_accuracy_error": 0.01,
+                "uncertainty": 0.02,
+                "scope_distance": 0.0,
+                "harmful_false_negative_rate": 0.001,
+                "reproducibility_score": 1.0,
+                "privacy_preference": 1.0,
+            },
+            "approval": {
+                "signature_status": "verified",
+                "signature_id": "fixture-signature",
+                "approved_by": ["benchmark-owner", "independent-reviewer"],
+                "agent_approved": False,
+            },
+            "expiration_date": "2027-08-01",
+            "self_grading": False,
+        }
+    )
+    qualification = QualificationRecord.from_mapping(raw_qualification).to_mapping()
+
+    raw_request = _request(testbed)
+    raw_request.pop("request_digest")
+    raw_request["claims"] = [_claim("collision", "collision_contact")]
+    request = DecisionEvidenceRequest.from_mapping(raw_request).to_mapping()
+    plan = route_decision_evidence(request, testbed, [profile], [qualification]).to_mapping()
+
+    claim_plan = plan["claim_plans"][0]
+    measurement = claim_plan["measurement_routing_decision"]
+    assert claim_plan["status"] == "planned"
+    assert measurement["status"] == "route_selected"
+    assert measurement["selected_route"]["stages"][0]["method_id"] == "fixture-mujoco"
+    assert measurement["agent_selected_route"] is False
+    assert measurement["execution_authorized"] is False

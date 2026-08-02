@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-research-monitor.v1.schema.json",
+  "title": "Blueprint measurement research monitoring contracts",
+  "oneOf": [
+    {"$ref": "#/$defs/observation"},
+    {"$ref": "#/$defs/snapshot"},
+    {"$ref": "#/$defs/report"},
+    {"$ref": "#/$defs/schedule"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "observation": {
+      "type": "object",
+      "required": ["schema_version", "candidate_id", "candidate_digest", "source_type", "source_reference", "observed_at", "status", "content_digest", "observed_version", "etag", "last_modified", "release_date", "access", "retrieval", "raw_content_persisted", "embedded_instructions_followed", "credentials_persisted", "candidate_claims_treated_as_qualification", "source_observation_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_primary_source_observation.v1"},
+        "status": {"enum": ["available", "unavailable", "access_restricted", "not_modified", "error"]},
+        "candidate_digest": {"$ref": "#/$defs/digest"},
+        "raw_content_persisted": {"const": false},
+        "embedded_instructions_followed": {"const": false},
+        "credentials_persisted": {"const": false},
+        "candidate_claims_treated_as_qualification": {"const": false},
+        "source_observation_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "snapshot": {
+      "type": "object",
+      "required": ["schema_version", "catalog_version", "catalog_snapshot_digest", "observed_at", "observations", "production_route_count", "qualification_decisions_created", "raw_source_content_persisted", "monitor_snapshot_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_research_monitor_snapshot.v1"},
+        "catalog_snapshot_digest": {"$ref": "#/$defs/digest"},
+        "production_route_count": {"const": 0},
+        "qualification_decisions_created": {"const": 0},
+        "raw_source_content_persisted": {"const": false},
+        "monitor_snapshot_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "report": {
+      "type": "object",
+      "required": ["schema_version", "previous_snapshot_digest", "current_snapshot_digest", "observed_at", "changes", "alerts", "benchmark_recommendations", "priority_candidates_changed", "regression_plan", "catalog_mutated", "admission_advanced", "qualification_created", "production_route_created", "agent_approval_effect", "monitor_report_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_research_monitor_report.v1"},
+        "current_snapshot_digest": {"$ref": "#/$defs/digest"},
+        "catalog_mutated": {"const": false},
+        "admission_advanced": {"const": false},
+        "qualification_created": {"const": false},
+        "production_route_created": {"const": false},
+        "agent_approval_effect": {"const": false},
+        "monitor_report_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "schedule": {
+      "type": "object",
+      "required": ["schema_version", "schedule_id", "cadence", "timezone", "day_of_month", "last_completed_at", "entrypoint", "mode", "network_fetcher_must_be_explicit", "human_approval_required_for_admission", "automatic_catalog_promotion", "monitor_schedule_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_research_monitor_schedule.v1"},
+        "cadence": {"const": "monthly"},
+        "network_fetcher_must_be_explicit": {"const": true},
+        "human_approval_required_for_admission": {"const": true},
+        "automatic_catalog_promotion": {"const": false},
+        "monitor_schedule_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

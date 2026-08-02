@@ -62,6 +62,7 @@ def test_worker_build_identity_is_derived_from_immutable_config() -> None:
                     + CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
                     "BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker",
                     "BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6",
+                    "BLUEPRINT_ISAAC_SIM_VERSION=6.0.1",
                 ]
             }
         }
@@ -73,6 +74,7 @@ def test_worker_build_identity_is_derived_from_immutable_config() -> None:
         CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
     )
     assert result["isaac_sim_major_version"] == 6
+    assert result["isaac_sim_version"] == "6.0.1"
 
 
 def test_worker_build_identity_blocks_missing_source_environment() -> None:
@@ -318,7 +320,7 @@ def test_isaac_build_script_keeps_digest_pinned_base_default() -> None:
     script = (
         Path(__file__).resolve().parents[1] / "scripts" / "build_push_isaac_worker_image.sh"
     ).read_text(encoding="utf-8")
-    assert "nvcr.io/nvidia/isaac-sim:6.0.0@sha256:" in script
+    assert "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9" in script
     assert "refuses pushed Isaac worker build from a dirty source tree" in script
     assert "BLUEPRINT_NVIDIA_WAREHOUSE_CAMERA_RELEASE_OUTPUT" in script
     assert (
