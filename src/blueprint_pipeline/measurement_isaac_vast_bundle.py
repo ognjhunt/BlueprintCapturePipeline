@@ -165,7 +165,7 @@ def compile_measurement_isaac_physx_input_bundle(
         controller_scope_digest=controller_scope_digest,
     )
     runtime_release = build_measurement_isaac_runtime_release()
-    source_files = sorted((root / "src/blueprint_pipeline").glob("*.py"))
+    source_files = sorted((root / "src/blueprint_pipeline").rglob("*.py"))
     source_files.extend([root / RUNNER_RELATIVE_PATH, root / WORKER_RELATIVE_PATH])
     if not source_files or any(not path.is_file() or path.is_symlink() for path in source_files):
         raise MeasurementIsaacVastBundleError("measurement_isaac_source_files_invalid")
