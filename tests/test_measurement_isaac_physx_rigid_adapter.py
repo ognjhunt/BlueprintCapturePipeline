@@ -319,10 +319,11 @@ def test_isaac_worker_blocks_runtime_version_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     closed: list[bool] = []
+    launch_configs: list[dict] = []
 
     class FakeSimulationApp:
-        def __init__(self, _config: dict) -> None:
-            pass
+        def __init__(self, config: dict) -> None:
+            launch_configs.append(config)
 
         def close(self) -> None:
             closed.append(True)
@@ -349,6 +350,7 @@ def test_isaac_worker_blocks_runtime_version_mismatch(
     assert result["failure_codes"] == ["isaac_physx_rigid_runtime_version_mismatch"]
     assert result["runtime_observations"]["engine_version"] == "6.0.0"
     assert closed == [True]
+    assert launch_configs == [{"headless": True, "fast_shutdown": False}]
 
 
 @pytest.mark.slow
