@@ -81,6 +81,7 @@ def _bound_request() -> dict:
         "hard_ttl_seconds": 60,
         "retry_cap": 0,
         "authority_id": "fixture-authority",
+        "vast_preferred_gpu_keywords": ["L40"],
         "request_digest": D3,
         "bound_provider": "vast",
         "bound_preflight_digest": D2,
@@ -228,6 +229,7 @@ def test_canary_records_exact_instance_for_watchdog_and_requests_close(
         watchdog_validator=lambda _watchdog, _now, _ttl: True,
     )
     assert result["status"] == "completed"
+    assert provider.requests[0]["preferred_gpu_keywords"] == ["L40"]
     started_id = watchdog_dir / "started_vast_instance_id.txt"
     assert started_id.read_text(encoding="utf-8") == "42"
     assert started_id.stat().st_mode & 0o777 == 0o600

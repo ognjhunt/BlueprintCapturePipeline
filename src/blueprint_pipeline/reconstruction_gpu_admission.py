@@ -183,6 +183,17 @@ def build_reconstruction_gpu_canary_request(
         errors.append("reconstruction_gpu_paid_authority_missing")
     if source.get("proof_effect") != "none":
         errors.append("reconstruction_gpu_request_proof_effect_invalid")
+    vast_preferences = source.get("vast_preferred_gpu_keywords")
+    if vast_preferences is not None and (
+        not isinstance(vast_preferences, list)
+        or not vast_preferences
+        or len(vast_preferences) > 8
+        or any(
+            not isinstance(item, str) or not item.strip() or len(item.strip()) > 64
+            for item in vast_preferences
+        )
+    ):
+        errors.append("reconstruction_gpu_vast_preferred_gpu_keywords_invalid")
     if errors:
         raise ValueError(";".join(sorted(set(errors))))
     source["request_digest"] = canonical_digest(source, digest_field="request_digest")
