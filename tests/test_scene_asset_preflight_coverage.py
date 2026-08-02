@@ -30,7 +30,9 @@ def _build_capture_root(tmp_path: Path) -> Path:
             "metadata": {"site_identity": {"site_id": "site-1"}},
         },
     )
-    _write_json(capture_root / "raw" / "manifest.json", {"scene_id": "scene-1", "capture_id": "capture-1"})
+    _write_json(
+        capture_root / "raw" / "manifest.json", {"scene_id": "scene-1", "capture_id": "capture-1"}
+    )
     return capture_root
 
 
@@ -132,7 +134,12 @@ def test_scene_asset_preflight_scalar_path_and_ascii_ply_edges(
         encoding="utf-8",
     )
     lines, header_end = sap._ply_header(bad_points)
-    assert sap._inspect_ascii_ply(bad_points, sap._parse_ply_header(lines), header_end)["sampled_point_count"] == 1
+    assert (
+        sap._inspect_ascii_ply(bad_points, sap._parse_ply_header(lines), header_end)[
+            "sampled_point_count"
+        ]
+        == 1
+    )
 
     no_points = tmp_path / "no_points.ply"
     no_points.write_text(
@@ -148,7 +155,12 @@ def test_scene_asset_preflight_scalar_path_and_ascii_ply_edges(
         encoding="utf-8",
     )
     lines, header_end = sap._ply_header(capped)
-    assert sap._inspect_ascii_ply(capped, sap._parse_ply_header(lines), header_end)["sampled_point_count"] == 200000
+    assert (
+        sap._inspect_ascii_ply(capped, sap._parse_ply_header(lines), header_end)[
+            "sampled_point_count"
+        ]
+        == 200000
+    )
 
 
 def test_scene_frame_selection_rejects_degenerate_pointcloud_for_collider_bounds() -> None:
@@ -193,38 +205,86 @@ def test_scene_asset_preflight_binary_ply_and_usd_dependency_edges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert sap._inspect_binary_chunk_bounds(tmp_path / "missing.ply", {"elements": []}, 0) is None
-    assert sap._inspect_binary_chunk_bounds(
-        tmp_path / "missing.ply",
-        {"elements": [{"name": "vertex", "count": 1, "properties": []}]},
-        0,
-    ) is None
-    assert sap._inspect_binary_chunk_bounds(
-        tmp_path / "missing.ply",
-        {"elements": [{"name": "chunk", "count": 1, "properties": [{"kind": "scalar", "type": "float", "name": "min_x"}]}]},
-        0,
-    ) is None
+    assert (
+        sap._inspect_binary_chunk_bounds(
+            tmp_path / "missing.ply",
+            {"elements": [{"name": "vertex", "count": 1, "properties": []}]},
+            0,
+        )
+        is None
+    )
+    assert (
+        sap._inspect_binary_chunk_bounds(
+            tmp_path / "missing.ply",
+            {
+                "elements": [
+                    {
+                        "name": "chunk",
+                        "count": 1,
+                        "properties": [{"kind": "scalar", "type": "float", "name": "min_x"}],
+                    }
+                ]
+            },
+            0,
+        )
+        is None
+    )
     props = [
         {"kind": "scalar", "type": "float", "name": name}
         for name in ("min_x", "min_y", "min_z", "max_x", "max_y", "max_z")
     ]
     list_props = [*props[:-1], {"kind": "list", "type": "float", "name": "max_z"}]
-    assert sap._inspect_binary_chunk_bounds(
-        tmp_path / "missing.ply",
-        {"elements": [{"name": "chunk", "count": 1, "properties": list_props}]},
-        0,
-    ) is None
+    assert (
+        sap._inspect_binary_chunk_bounds(
+            tmp_path / "missing.ply",
+            {"elements": [{"name": "chunk", "count": 1, "properties": list_props}]},
+            0,
+        )
+        is None
+    )
 
     partial = tmp_path / "partial_binary.ply"
     partial.write_bytes(b"header")
-    parsed = {"format": "binary_little_endian", "elements": [{"name": "chunk", "count": 1, "properties": props}]}
+    parsed = {
+        "format": "binary_little_endian",
+        "elements": [{"name": "chunk", "count": 1, "properties": props}],
+    }
     assert sap._inspect_binary_chunk_bounds(partial, parsed, len(b"header")) is None
     success = tmp_path / "chunk_binary.ply"
     success.write_bytes(b"header" + struct.pack("<ffffff", 0.0, 0.0, -0.1, 1.0, 2.0, 3.0))
-    assert sap._inspect_binary_chunk_bounds(success, parsed, len(b"header"))["sampled_chunk_count"] == 1
+    assert (
+        sap._inspect_binary_chunk_bounds(success, parsed, len(b"header"))["sampled_chunk_count"]
+        == 1
+    )
 
     binary_fallback = tmp_path / "binary_fallback.ply"
-    binary_fallback.write_bytes(b"ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nend_header\n\x00")
-    assert sap.inspect_ply_asset(binary_fallback)["estimate_method"] == "binary_header_only_no_decoded_xyz"
+    binary_fallback.write_bytes(
+        b"ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nend_header\n\x00"
+    )
+    assert (
+        sap.inspect_ply_asset(binary_fallback)["estimate_method"]
+        == "binary_header_only_no_decoded_xyz"
+    )
+    binary_xyz = tmp_path / "binary_xyz.ply"
+    xyz_header = (
+        b"ply\nformat binary_little_endian 1.0\nelement vertex 3\n"
+        b"property float x\nproperty float y\nproperty float z\nproperty float opacity\n"
+        b"end_header\n"
+    )
+    binary_xyz.write_bytes(
+        xyz_header
+        + b"".join(
+            struct.pack("<ffff", *point, 1.0)
+            for point in ((-1.0, 0.0, 2.0), (1.0, 3.0, 4.0), (0.0, 2.0, -2.0))
+        )
+    )
+    xyz_inspection = sap.inspect_ply_asset(binary_xyz)
+    assert xyz_inspection["estimate_method"] == "binary_vertex_xyz_stride_sample"
+    assert xyz_inspection["bounds"] == {
+        "min": [-1.0, 0.0, -2.0],
+        "max": [1.0, 3.0, 4.0],
+    }
+    assert xyz_inspection["sampled_point_count"] == 3
     unsupported = tmp_path / "unsupported_format.ply"
     unsupported.write_text("ply\nformat odd 1.0\nend_header\n", encoding="utf-8")
     assert sap.inspect_ply_asset(unsupported)["estimate_method"] == "unsupported_ply_format"
@@ -255,8 +315,13 @@ def test_scene_asset_preflight_binary_ply_and_usd_dependency_edges(
     assert len([dep for dep in deps if dep["ref"] == "texture.png"]) == 1
     assert len(sap._dedupe_dependencies([deps[0], deps[0]])) == 1
     assert sap._dependency_relationship_for_path("a.png", "fallback") == "texture_or_material_asset"
-    assert sap._dependency_relationship_for_path("OmniPBR.mdl", "fallback") == "owner_system_material_library"
-    assert sap._dependency_relationship_for_path("layer.usd", "fallback") == "usd_layer_or_reference"
+    assert (
+        sap._dependency_relationship_for_path("OmniPBR.mdl", "fallback")
+        == "owner_system_material_library"
+    )
+    assert (
+        sap._dependency_relationship_for_path("layer.usd", "fallback") == "usd_layer_or_reference"
+    )
     assert sap._dependency_relationship_for_path("asset.bin", "fallback") == "fallback"
 
     original_import = builtins.__import__
@@ -271,7 +336,9 @@ def test_scene_asset_preflight_binary_ply_and_usd_dependency_edges(
     monkeypatch.setattr(builtins, "__import__", original_import)
 
     failing_pxr = ModuleType("pxr")
-    failing_pxr.UsdUtils = SimpleNamespace(ComputeAllDependencies=lambda _path: (_ for _ in ()).throw(RuntimeError("boom")))
+    failing_pxr.UsdUtils = SimpleNamespace(
+        ComputeAllDependencies=lambda _path: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     monkeypatch.setitem(sys.modules, "pxr", failing_pxr)
     assert sap._extract_openusd_dependencies(usd) == []
 
@@ -282,7 +349,11 @@ def test_scene_asset_preflight_binary_ply_and_usd_dependency_edges(
         @staticmethod
         def ComputeAllDependencies(_path: str):
             return (
-                [SimpleNamespace(realPath=str(usd.resolve())), SimpleNamespace(realPath=str(layer.resolve())), SimpleNamespace(identifier="")],
+                [
+                    SimpleNamespace(realPath=str(usd.resolve())),
+                    SimpleNamespace(realPath=str(layer.resolve())),
+                    SimpleNamespace(identifier=""),
+                ],
                 ["texture.png", "", "OmniPBR.mdl", "asset.bin"],
                 ["missing.usda", "", "lost.bin", "https://assets.example/remote.usd"],
             )
@@ -308,10 +379,18 @@ def test_scene_asset_preflight_fake_openusd_and_gltf_trimesh_edges(
     usd = tmp_path / "scene.usda"
     usd.write_text("#usda 1.0", encoding="utf-8")
 
-    monkeypatch.setattr(sap.importlib.util, "find_spec", lambda name: None if name == "pxr" else original_find_spec(name))
+    monkeypatch.setattr(
+        sap.importlib.util,
+        "find_spec",
+        lambda name: None if name == "pxr" else original_find_spec(name),
+    )
     assert sap._inspect_usd_with_pxr(usd) is None
 
-    monkeypatch.setattr(sap.importlib.util, "find_spec", lambda name: object() if name == "pxr" else original_find_spec(name))
+    monkeypatch.setattr(
+        sap.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "pxr" else original_find_spec(name),
+    )
     original_import = builtins.__import__
 
     def fail_pxr_import(name, *args, **kwargs):
@@ -363,7 +442,14 @@ def test_scene_asset_preflight_fake_openusd_and_gltf_trimesh_edges(
         pass
 
     class FakePrim:
-        def __init__(self, *, mesh: bool = False, type_name: str = "", apis: tuple[type, ...] = (), refs: bool = False) -> None:
+        def __init__(
+            self,
+            *,
+            mesh: bool = False,
+            type_name: str = "",
+            apis: tuple[type, ...] = (),
+            refs: bool = False,
+        ) -> None:
             self.mesh = mesh
             self.type_name = type_name
             self.apis = apis
@@ -384,7 +470,12 @@ def test_scene_asset_preflight_fake_openusd_and_gltf_trimesh_edges(
     class FakeStage:
         def Traverse(self):
             return [
-                FakePrim(mesh=True, type_name="Material", apis=(FakeCollisionAPI, FakeRigidBodyAPI), refs=True),
+                FakePrim(
+                    mesh=True,
+                    type_name="Material",
+                    apis=(FakeCollisionAPI, FakeRigidBodyAPI),
+                    refs=True,
+                ),
                 FakePrim(),
             ]
 
@@ -455,7 +546,9 @@ def test_scene_asset_preflight_fake_openusd_and_gltf_trimesh_edges(
     assert sap._inspect_usd_with_pxr(usd)["bounds"] is None
 
     text_usd = tmp_path / "pxr_text.usda"
-    text_usd.write_text('def Mesh "Collider" { prepend references = @texture.png@ }', encoding="utf-8")
+    text_usd.write_text(
+        'def Mesh "Collider" { prepend references = @texture.png@ }', encoding="utf-8"
+    )
     monkeypatch.setattr(
         sap,
         "_inspect_usd_with_pxr",
@@ -487,7 +580,10 @@ def test_scene_asset_preflight_fake_openusd_and_gltf_trimesh_edges(
         "buffers": [{"uri": "mesh.bin"}],
         "images": [{"uri": "texture.png"}],
         "nodes": [{"name": "visual_node"}],
-        "meshes": [{"name": "visual_mesh", "primitives": [{"attributes": {"POSITION": "bad"}}]}, "not-a-mesh"],
+        "meshes": [
+            {"name": "visual_mesh", "primitives": [{"attributes": {"POSITION": "bad"}}]},
+            "not-a-mesh",
+        ],
         "accessors": [{"type": "VEC3", "min": [-1, -1, 0], "max": [1, 1, 2]}],
     }
     gltf = tmp_path / "visual.gltf"
@@ -496,16 +592,49 @@ def test_scene_asset_preflight_fake_openusd_and_gltf_trimesh_edges(
     assert len(sap._gltf_dependencies(gltf, payload)) == 2
     assert sap._bounds_from_min_max(["bad", 0, 0], [1, 1, 1]) is None
     assert sap._bounds_from_min_max([2, 0, 0], [1, 1, 1]) is None
-    assert sap._gltf_position_accessor_indexes({"meshes": ["bad", {"primitives": ["bad", {"attributes": {"POSITION": "bad"}}]}]}) == []
+    assert (
+        sap._gltf_position_accessor_indexes(
+            {"meshes": ["bad", {"primitives": ["bad", {"attributes": {"POSITION": "bad"}}]}]}
+        )
+        == []
+    )
     assert sap._gltf_accessor_bounds({}) is None
-    assert sap._gltf_accessor_bounds({"meshes": [{"primitives": [{"attributes": {"POSITION": 3}}]}], "accessors": [{"type": "VEC3"}]}) is None
-    assert sap._gltf_accessor_bounds({"accessors": [{"type": "VEC3", "min": ["bad", 0, 0], "max": [1, 1, 1]}]}) is None
-    monkeypatch.setattr(sap, "_bounds_from_min_max", lambda *_args: {"bounds": {"min": [0, 0], "max": [1, 1]}})
-    assert sap._gltf_accessor_bounds({"accessors": [{"type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 1]}]}) is None
+    assert (
+        sap._gltf_accessor_bounds(
+            {
+                "meshes": [{"primitives": [{"attributes": {"POSITION": 3}}]}],
+                "accessors": [{"type": "VEC3"}],
+            }
+        )
+        is None
+    )
+    assert (
+        sap._gltf_accessor_bounds(
+            {"accessors": [{"type": "VEC3", "min": ["bad", 0, 0], "max": [1, 1, 1]}]}
+        )
+        is None
+    )
+    monkeypatch.setattr(
+        sap, "_bounds_from_min_max", lambda *_args: {"bounds": {"min": [0, 0], "max": [1, 1]}}
+    )
+    assert (
+        sap._gltf_accessor_bounds(
+            {"accessors": [{"type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 1]}]}
+        )
+        is None
+    )
 
-    monkeypatch.setattr(sap.importlib.util, "find_spec", lambda name: None if name == "trimesh" else original_find_spec(name))
+    monkeypatch.setattr(
+        sap.importlib.util,
+        "find_spec",
+        lambda name: None if name == "trimesh" else original_find_spec(name),
+    )
     assert sap._trimesh_gltf_bounds(gltf) is None
-    monkeypatch.setattr(sap.importlib.util, "find_spec", lambda name: object() if name == "trimesh" else original_find_spec(name))
+    monkeypatch.setattr(
+        sap.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "trimesh" else original_find_spec(name),
+    )
 
     def fail_trimesh_import(name, *args, **kwargs):
         if name == "trimesh":
@@ -526,7 +655,9 @@ def test_scene_asset_preflight_fake_openusd_and_gltf_trimesh_edges(
     assert sap._trimesh_gltf_bounds(gltf) is None
     fake_trimesh.load = lambda *_args, **_kwargs: SimpleNamespace(bounds=[[0, 0], [1, 1, 1]])
     assert sap._trimesh_gltf_bounds(gltf) is None
-    fake_trimesh.load = lambda *_args, **_kwargs: SimpleNamespace(bounds=[[0, 0, math.inf], [1, 1, 1]])
+    fake_trimesh.load = lambda *_args, **_kwargs: SimpleNamespace(
+        bounds=[[0, 0, math.inf], [1, 1, 1]]
+    )
     assert sap._trimesh_gltf_bounds(gltf) is None
     fake_trimesh.load = lambda *_args, **_kwargs: SimpleNamespace(bounds=[[0, 0, 0], [1, 1, 1]])
     assert sap._trimesh_gltf_bounds(gltf)["estimate_method"] == "trimesh_scene_bounds"
@@ -549,7 +680,10 @@ def test_scene_asset_preflight_obj_xml_discovery_and_queue_edges(
     broken_xml.write_text("<robot", encoding="utf-8")
     assert sap._inspect_xml_asset(broken_xml)["status"] == "blocked_xml_parse_failed"
     mjcf = tmp_path / "scene.xml"
-    mjcf.write_text('<mujoco><worldbody><geom name="floor" type="plane" /></worldbody></mujoco>', encoding="utf-8")
+    mjcf.write_text(
+        '<mujoco><worldbody><geom name="floor" type="plane" /></worldbody></mujoco>',
+        encoding="utf-8",
+    )
     assert sap._inspect_xml_asset(mjcf)["collision_evidence"]["real_collider_proven"] is True
 
     capture_root = _build_capture_root(tmp_path)
@@ -561,14 +695,26 @@ def test_scene_asset_preflight_obj_xml_discovery_and_queue_edges(
             "scene_id": "scene-1",
             "capture_id": "capture-1",
             "obj_scene_path": "raw/scene.obj",
-            "assets": {"splats": {"ply_urls": {"main": "raw/scene.obj"}, "usd_urls": {"usd": "raw/scene.obj"}}},
+            "assets": {
+                "splats": {
+                    "ply_urls": {"main": "raw/scene.obj"},
+                    "usd_urls": {"usd": "raw/scene.obj"},
+                }
+            },
             "nested": {"candidate": "raw/scene.obj"},
         },
     )
-    candidates = sap._candidate_paths_from_payload(capture_root, json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8")))
+    candidates = sap._candidate_paths_from_payload(
+        capture_root,
+        json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8")),
+    )
     assert candidates
-    assert sap.discover_scene_assets(capture_root, explicit_assets=[asset, asset]) == [asset.resolve()]
-    assert sap.inspect_scene_asset(tmp_path / "unsupported.txt")["status"] == "unsupported_asset_type"
+    assert sap.discover_scene_assets(capture_root, explicit_assets=[asset, asset]) == [
+        asset.resolve()
+    ]
+    assert (
+        sap.inspect_scene_asset(tmp_path / "unsupported.txt")["status"] == "unsupported_asset_type"
+    )
 
     dep_scene = tmp_path / "dep_scene.usd"
     dep_scene.write_text("#usda", encoding="utf-8")
@@ -596,7 +742,15 @@ def test_scene_asset_preflight_obj_xml_discovery_and_queue_edges(
 
     _write_json(
         capture_root / "pipeline" / "evaluation_prep" / "object_geometry_manifest.json",
-        {"objects": ["bad", {"object_id": "bad-bounds", "placement_bbox": {"center": ["bad"], "extents": [1, 1, 1]}}]},
+        {
+            "objects": [
+                "bad",
+                {
+                    "object_id": "bad-bounds",
+                    "placement_bbox": {"center": ["bad"], "extents": [1, 1, 1]},
+                },
+            ]
+        },
     )
     assert sap._object_geometry_proxy_obstacles(capture_root / "pipeline") == []
     primitive = sap._proxy_primitive_from_frame(
@@ -613,23 +767,41 @@ def test_scene_asset_preflight_blocked_outputs_and_main_edges(
     capture_root = _build_capture_root(tmp_path)
     result = sap.build_scene_asset_preflight(capture_root=capture_root)
     automation_dir = capture_root / "pipeline" / "simulation_automation"
-    preflight = json.loads((automation_dir / "scene_asset_preflight.json").read_text(encoding="utf-8"))
+    preflight = json.loads(
+        (automation_dir / "scene_asset_preflight.json").read_text(encoding="utf-8")
+    )
     assert result["status"] == "blocked"
-    assert {"missing_local_scene_asset", "missing_scene_frame_estimate"} <= set(preflight["blockers"])
+    assert {"missing_local_scene_asset", "missing_scene_frame_estimate"} <= set(
+        preflight["blockers"]
+    )
 
     ply = tmp_path / "scene.ply"
     _write_ascii_ply(ply)
     assert sap.main(["--capture-root", str(capture_root), "--scene-asset", str(ply)]) == 0
     assert "scorecard=" in capsys.readouterr().out
 
-    monkeypatch.setattr(sap, "build_scene_asset_preflight", lambda **_kwargs: (_ for _ in ()).throw(PipelineError("nope")))
+    monkeypatch.setattr(
+        sap,
+        "build_scene_asset_preflight",
+        lambda **_kwargs: (_ for _ in ()).throw(PipelineError("nope")),
+    )
     assert sap.main(["--capture-root", str(capture_root)]) == 1
     assert "FAILED: nope" in capsys.readouterr().out
 
     module_capture_root = _build_capture_root(tmp_path / "module")
     module_ply = tmp_path / "module_scene.ply"
     _write_ascii_ply(module_ply)
-    monkeypatch.setattr(sys, "argv", ["scene_asset_preflight", "--capture-root", str(module_capture_root), "--scene-asset", str(module_ply)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "scene_asset_preflight",
+            "--capture-root",
+            str(module_capture_root),
+            "--scene-asset",
+            str(module_ply),
+        ],
+    )
     with pytest.raises(SystemExit) as exc:
         run_module_as_main("blueprint_pipeline.scene_asset_preflight")
     assert exc.value.code == 0

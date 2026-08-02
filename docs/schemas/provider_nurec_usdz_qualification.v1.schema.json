@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/provider_nurec_usdz_qualification.v1.schema.json",
+  "title": "Provider NuRec USDZ CPU qualification v1",
+  "type": "object",
+  "required": [
+    "schema_version", "package_digest", "external_import_receipt_digest",
+    "archive_inventory", "root_layer", "meters_per_unit", "up_axis", "default_prim",
+    "dependency_graph", "visual_prims", "mesh_prims", "collision_prims",
+    "estimated_world_bounds", "unknown_or_provider_schemas", "target_renderer_requirement",
+    "cpu_qualification_verdict", "blockers", "warnings", "exact_provider_package_preserved",
+    "provider_authored_package", "blueprint_authored_package", "isaac_rendering_proven",
+    "collision_correctness_proven", "task_execution_proven", "physical_success_proven",
+    "proof_effect", "claim_ceiling", "qualification_report_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "provider_nurec_usdz_qualification.v1"},
+    "package_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "external_import_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "cpu_qualification_verdict": {"enum": ["qualified_for_live_isaac_verification", "abstention"]},
+    "exact_provider_package_preserved": {"const": true},
+    "provider_authored_package": {"const": true},
+    "blueprint_authored_package": {"const": false},
+    "isaac_rendering_proven": {"const": false},
+    "collision_correctness_proven": {"const": false},
+    "task_execution_proven": {"const": false},
+    "physical_success_proven": {"const": false},
+    "proof_effect": {"const": "cpu_package_qualification_only"},
+    "claim_ceiling": {"const": "candidate_for_live_isaac_verification"},
+    "qualification_report_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

@@ -280,7 +280,7 @@ def test_owner_gpu_proof_helpers_and_blocked_validation_edges(tmp_path: Path) ->
         capture_root=capture_root,
     )
     assert "owner_gpu_robot_asset_mismatch" in mismatch["blockers"]
-    assert "owner_gpu_unitree_g1_asset_not_spawned" in mismatch["blockers"]
+    assert "owner_gpu_supported_isaac_robot_asset_not_spawned" in mismatch["blockers"]
 
 
 def test_conversion_arena_gpu_handoff_and_claim_boundary_edges(tmp_path: Path) -> None:

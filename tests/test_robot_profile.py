@@ -57,7 +57,18 @@ def test_g1_profile_matches_runner_constants():
     assert contract["action_interface"]["schema_ref"] == (
         "blueprint://schemas/robot_eval_action_trace.v1"
     )
-    assert contract["claim_boundaries"]["unitree_g1_is_default_reference_embodiment_not_customer_requirement"] is True
+    assert contract["claim_boundaries"]["unitree_g1_is_default_humanoid_not_customer_requirement"] is True
+
+
+def test_franka_panda_profile_is_the_general_default_asset_contract():
+    p = get_robot_profile("franka_panda")
+    assert p.embodiment_type == "fixed_base_single_arm_manipulator"
+    assert p.action_interface["dim"] == 7
+    assert p.simulator_asset_refs["isaac_asset"] == (
+        "/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd"
+    )
+    assert p.simulator_asset_refs["mjcf_model"] == "mjx_panda.xml"
+    assert p.claim_boundaries["explicit_customer_or_task_robot_overrides_default"] is True
 
 
 def test_unknown_robot_id_raises_with_known_ids():

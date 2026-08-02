@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/external_reconstruction_import_request.v2.schema.json",
+  "title": "External reconstruction import request v2",
+  "type": "object",
+  "required": [
+    "schema_version", "stable_run_identity", "source_commit_sha", "source_profile",
+    "acquisition_or_export_receipt_digest", "external_source_identity", "asset_binding",
+    "rights_scope", "remote_calls_authorized", "remote_calls_performed",
+    "external_derived_support_asset", "blueprint_raw_capture_truth", "proof_effect",
+    "claim_ceiling", "external_import_request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "external_reconstruction_import_request.v2"},
+    "source_profile": {"enum": ["public_provider_sample", "user_managed_provider_export"]},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "acquisition_or_export_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "external_source_identity": {
+      "type": "object",
+      "required": [
+        "provider", "provider_asset_identifiers", "local_asset_digest",
+        "acquisition_or_export_time", "capture_modality", "operator_reference",
+        "terms_version", "source_relationship_to_blueprint_raw_capture"
+      ],
+      "properties": {
+        "provider": {"const": "scaniverse"},
+        "local_asset_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+        "source_relationship_to_blueprint_raw_capture": {"const": "none"}
+      },
+      "not": {"anyOf": [{"required": ["source_capture_identity"]}, {"required": ["source_capture_digest"]}]}
+    },
+    "remote_calls_authorized": {"const": false},
+    "remote_calls_performed": {"const": false},
+    "external_derived_support_asset": {"const": true},
+    "blueprint_raw_capture_truth": {"const": false},
+    "proof_effect": {"const": "external_import_request_only"},
+    "claim_ceiling": {"const": "none"},
+    "external_import_request_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "not": {"anyOf": [{"required": ["source_capture_identity"]}, {"required": ["source_capture_digest"]}]},
+  "additionalProperties": true
+}

@@ -83,45 +83,146 @@ def _cameras(**updates):
 
 
 def test_qualification_blockers_accept_only_complete_v3_evidence() -> None:
-    assert runner._qualification_blockers(
+    assert (
+        runner._qualification_blockers(
+            package_digest=DIGEST,
+            stage=_stage(),
+            physics_probe=_physics(),
+            cameras=_cameras(),
+        )
+        == []
+    )
+
+
+def test_camera_ids_map_to_valid_collision_checked_usd_prim_names() -> None:
+    assert runner._camera_usd_prim_names(
+        ["scene-overview-south", "ground-probe-local", "1.entry"]
+    ) == ["scene_overview_south", "ground_probe_local", "_1_entry"]
+
+    with pytest.raises(ValueError, match="isaac_camera_usd_prim_names_collide"):
+        runner._camera_usd_prim_names(["camera-a", "camera_a"])
+
+
+def test_robot_only_pass_authors_hidden_lights_when_provider_stage_has_none() -> None:
+    from pxr import Sdf, Usd, UsdGeom, UsdLux
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+
+    prim, report = runner._ensure_robot_only_lights(
+        stage,
+        "/World/RobotEvidenceLights",
+        Sdf=Sdf,
+        UsdGeom=UsdGeom,
+        UsdLux=UsdLux,
+    )
+
+    assert prim.IsValid()
+    assert report["authored_for_robot_only_pass"] is True
+    assert report["claim_boundary"] == "render_lighting_support_only_not_scene_or_task_evidence"
+    assert UsdGeom.Imageable(prim).GetVisibilityAttr().Get() == "invisible"
+    assert stage.GetPrimAtPath("/World/RobotEvidenceLights/Dome").IsA(UsdLux.DomeLight)
+    assert stage.GetPrimAtPath("/World/RobotEvidenceLights/Distant").IsA(UsdLux.DistantLight)
+
+    same_prim, reused = runner._ensure_robot_only_lights(
+        stage,
+        "/World/RobotEvidenceLights",
+        Sdf=Sdf,
+        UsdGeom=UsdGeom,
+        UsdLux=UsdLux,
+    )
+    assert same_prim == prim
+    assert reused["authored_for_robot_only_pass"] is False
+
+
+def test_robot_evidence_material_is_explicitly_support_only() -> None:
+    from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    robot = UsdGeom.Xform.Define(stage, "/World/Franka").GetPrim()
+
+    report = runner._author_robot_evidence_material(
+        stage,
+        robot,
+        Sdf=Sdf,
+        UsdShade=UsdShade,
+    )
+
+    binding = UsdShade.MaterialBindingAPI(robot).GetDirectBinding()
+    assert str(binding.GetMaterialPath()) == "/World/BlueprintRobotEvidenceMaterial"
+    assert report["binding_strength"] == "strongerThanDescendants"
+    assert report["claim_boundary"] == (
+        "render_material_support_only_not_robot_asset_or_task_evidence"
+    )
+
+
+def test_visual_robot_is_excluded_from_environment_collision_probe() -> None:
+    from pxr import Sdf, Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    robot = UsdGeom.Xform.Define(stage, "/World/Franka").GetPrim()
+    report = {"composited": True, "prim_path": "/World/Franka"}
+
+    runner._exclude_robot_from_environment_physics_probe(stage, report, Sdf=Sdf)
+
+    assert robot.IsActive() is False
+    assert report["excluded_from_environment_physics_probe"] is True
+    assert report["physics_probe_claim_boundary"] == (
+        "visual_robot_excluded_so_probe_measures_provider_environment_collision_only"
+    )
+
+
+def test_provider_package_mode_has_versioned_schema_and_dynamic_exact_prim_paths() -> None:
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+    assert (
+        'PROVIDER_QUALIFICATION_RESULT_SCHEMA = "provider_nurec_isaac_runtime_result.v1"' in source
+    )
+    assert 'NUREC_FIELD_TYPE = "OmniNuRecFieldAsset"' in source
+    assert "--provider-package-mode" in source
+    assert "--expected-appearance-prim" in source
+    assert "--expected-collision-prim" in source
+    stage = _stage(expected_prim_paths={"appearance": None, "collision": None})
+    assert "isaac_expected_prims_not_loaded" in runner._qualification_blockers(
         package_digest=DIGEST,
-        stage=_stage(),
+        stage=stage,
         physics_probe=_physics(),
         cameras=_cameras(),
-    ) == []
+    )
 
 
 def test_v3_schema_accepts_only_explicit_completed_qualification_evidence() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     evidence = {
-            "schema_version": "isaac_splat_nurec_render_result.v3",
-            "status": "completed",
-            "isaac_verification_request_digest": DIGEST,
-            "package_digest": DIGEST,
-            "fixed_camera_spec_digest": DIGEST,
-            "runtime_container_image_digest": IMAGE,
-            "runtime_implementation_digest": DIGEST,
-            "runtime_identity": {
-                "runtime": "isaac_sim",
-                "renderer": "RayTracedLighting",
-                "python_version": "3.11.0",
-                "headless": True,
-            },
-            "raw_secret_values_recorded": False,
-            "cost_usd": 0.25,
-            "duration_seconds": 90.0,
-            "stage": _stage(),
-            "physics_probe": _physics(),
-            "cameras": _cameras(),
-            "proof_boundary": {
-                "isaac_load_render_physics_presence_compatibility": True,
-                "simulator_task_success_proven": False,
-                "physics_navigation_control_proven": False,
-                "physical_success_proven": False,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-            },
-        }
+        "schema_version": "isaac_splat_nurec_render_result.v3",
+        "status": "completed",
+        "isaac_verification_request_digest": DIGEST,
+        "package_digest": DIGEST,
+        "fixed_camera_spec_digest": DIGEST,
+        "runtime_container_image_digest": IMAGE,
+        "runtime_implementation_digest": DIGEST,
+        "runtime_identity": {
+            "runtime": "isaac_sim",
+            "renderer": "RayTracedLighting",
+            "python_version": "3.11.0",
+            "headless": True,
+        },
+        "raw_secret_values_recorded": False,
+        "cost_usd": 0.25,
+        "duration_seconds": 90.0,
+        "stage": _stage(),
+        "physics_probe": _physics(),
+        "cameras": _cameras(),
+        "proof_boundary": {
+            "isaac_load_render_physics_presence_compatibility": True,
+            "simulator_task_success_proven": False,
+            "physics_navigation_control_proven": False,
+            "physical_success_proven": False,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+        },
+    }
     evidence["isaac_runtime_result_digest"] = canonical_digest(
         evidence, digest_field="isaac_runtime_result_digest"
     )

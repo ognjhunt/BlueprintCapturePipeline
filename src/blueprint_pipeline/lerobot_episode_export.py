@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
-from .scene_placement.robot_profile import RobotProfile, get_robot_profile
+from .scene_placement.robot_profile import DEFAULT_ROBOT_ID, RobotProfile, get_robot_profile
 
 LEROBOT_EPISODE_EXPORT_SCHEMA_VERSION = "lerobot_episode_export.v2"
 MODALITY_CONFIG_SCHEMA_VERSION = "gr00t_modality_config.v2"
@@ -1122,7 +1122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job-dir", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--robot-id", default="unitree_g1")
+    parser.add_argument("--robot-id", default=DEFAULT_ROBOT_ID)
     args = parser.parse_args(argv)
     manifest = build_lerobot_episode_export(
         job_dir=args.job_dir,

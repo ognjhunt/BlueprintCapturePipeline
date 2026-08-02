@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/provider_nurec_isaac_verification_result.v1.schema.json",
+  "title": "Provider NuRec Isaac verification result v1",
+  "type": "object",
+  "required": [
+    "schema_version", "status", "isaac_verification_request_digest",
+    "isaac_runtime_result_digest", "package_digest", "camera_artifacts",
+    "collision_prim_path", "appearance_prim_path",
+    "simulator_task_success_proven", "physics_navigation_control_proven",
+    "physical_success_proven", "physical_robot_readiness_proven",
+    "deployment_readiness_proven", "proof_effect", "claim_ceiling",
+    "provider_isaac_verification_result_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "provider_nurec_isaac_verification_result.v1"},
+    "status": {"const": "verified_compatibility_only"},
+    "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
+    "isaac_runtime_result_digest": {"$ref": "#/$defs/digest"},
+    "package_digest": {"$ref": "#/$defs/digest"},
+    "camera_artifacts": {"type": "array", "minItems": 1},
+    "collision_prim_path": {"type": "string", "pattern": "^/"},
+    "appearance_prim_path": {"type": "string", "pattern": "^/"},
+    "simulator_task_success_proven": {"const": false},
+    "physics_navigation_control_proven": {"const": false},
+    "physical_success_proven": {"const": false},
+    "physical_robot_readiness_proven": {"const": false},
+    "deployment_readiness_proven": {"const": false},
+    "proof_effect": {"const": "isaac_load_render_physics_presence_only"},
+    "claim_ceiling": {"const": "isaac_load_render_compatibility"},
+    "provider_isaac_verification_result_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

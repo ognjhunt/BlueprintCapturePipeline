@@ -1279,6 +1279,7 @@ def test_live_pipeline_intake_service_converts_capture_handoff_to_webapp_request
     job_request = envelope["job_request"]
     assert envelope["source_kind"] == "capture_pipeline_handoff"
     assert job_request["source_kind"] == "capture_pipeline_handoff"
+    assert job_request["robot_profile"] == {"robot_profile_id": "unitree_g1"}
     assert job_request["requested_tasks"] == [
         {
             "task_id": "scene_anchor_geometry_0",
@@ -1289,6 +1290,24 @@ def test_live_pipeline_intake_service_converts_capture_handoff_to_webapp_request
     assert job_request["policy_package"]["high_level_skill_trace"]["ordered_skill_sequence"] == [
         "walk_to_target"
     ]
+
+
+def test_capture_handoff_dataset_selection_defaults_unspecified_robot_to_franka(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    dataset_dir = capture_root / "pipeline" / "robot_eval_dataset"
+    _write_json(dataset_dir / "task_cards.json", {"cards": [{"task_id": "pick_cup"}]})
+    _write_json(
+        dataset_dir / "scenario_cards.json",
+        {"cards": [{"task_id": "pick_cup", "scenario_id": "pick_cup_counter"}]},
+    )
+
+    selection, blockers = service._select_dataset_task(capture_root)
+
+    assert blockers == []
+    assert selection is not None
+    assert selection["robot_profile_id"] == "franka_panda"
 
 
 def test_capture_handoff_can_stage_per_request_capture_root(

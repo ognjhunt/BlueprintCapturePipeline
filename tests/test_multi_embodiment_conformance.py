@@ -1,11 +1,10 @@
 """Zero-GPU conformance fixture for a second registered embodiment.
 
-Only one robot profile was ever registered, so nothing exercised the claim that
-the placement, export and action paths are embodiment-parameterised rather than
-quietly hardcoded to the G1. These tests register and drive a second, genuinely
-different embodiment -- fixed base instead of legged, one arm instead of two, a
-7-D delta end-effector action instead of a 78-D whole-body command, and external
-plus wrist cameras instead of a head rig -- entirely on CPU.
+These tests exercise the supported Franka/G1 default hierarchy and a separate
+conformance profile so placement, export, and action paths cannot quietly
+hardcode one embodiment. The fixed-base fixture differs from the humanoid on
+base mobility, action dimensionality, and camera layout and runs entirely on
+CPU.
 """
 
 from __future__ import annotations
@@ -14,10 +13,13 @@ import pytest
 
 from blueprint_pipeline import action_space_registry as spaces
 from blueprint_pipeline.scene_placement.robot_profile import (
+    DEFAULT_HUMANOID_ROBOT_ID,
     DEFAULT_ROBOT_ID,
     FIXED_BASE_SINGLE_ARM_PROFILE,
+    FRANKA_PANDA_PROFILE,
     UNITREE_G1_PROFILE,
     UnknownRobotProfileError,
+    default_robot_id_for_embodiment,
     get_robot_profile,
     known_robot_ids,
     robot_embodiment_pack_contract,
@@ -28,11 +30,30 @@ from blueprint_pipeline.scene_placement.robot_profile import (
 # -- registry ------------------------------------------------------------
 
 
-def test_two_embodiments_are_registered() -> None:
+def test_supported_defaults_and_conformance_embodiment_are_registered() -> None:
     ids = known_robot_ids()
+    assert "franka_panda" in ids
     assert "unitree_g1" in ids
     assert "fixed_base_single_arm_reference" in ids
-    assert DEFAULT_ROBOT_ID == "unitree_g1"
+    assert DEFAULT_ROBOT_ID == "franka_panda"
+    assert DEFAULT_HUMANOID_ROBOT_ID == "unitree_g1"
+    assert get_robot_profile(DEFAULT_ROBOT_ID) is FRANKA_PANDA_PROFILE
+    assert get_robot_profile(DEFAULT_HUMANOID_ROBOT_ID) is UNITREE_G1_PROFILE
+
+
+@pytest.mark.parametrize(
+    ("embodiment_type", "expected"),
+    [
+        (None, "franka_panda"),
+        ("fixed_base_single_arm_manipulator", "franka_panda"),
+        ("mobile_manipulator", "franka_panda"),
+        ("humanoid", "unitree_g1"),
+        ("bipedal-humanoid", "unitree_g1"),
+        ("Humanoid Robot", "unitree_g1"),
+    ],
+)
+def test_embodiment_default_hierarchy(embodiment_type: str | None, expected: str) -> None:
+    assert default_robot_id_for_embodiment(embodiment_type) == expected
 
 
 def test_unknown_robot_id_raises_a_typed_error_callers_can_catch() -> None:

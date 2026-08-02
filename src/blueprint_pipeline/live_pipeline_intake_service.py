@@ -57,6 +57,7 @@ from .live_pipeline_input_intake import (
     translate_decision_evidence_envelope_to_legacy_execution_request,
 )
 from .core.security_controls import json_shape_within_limits, strict_identifier
+from .scene_placement.robot_profile import default_robot_id_for_embodiment
 from .task_candidate_control_plane import (
     TaskCandidateControlPlaneError,
     process_task_candidate_decision_submission,
@@ -769,6 +770,14 @@ def _select_dataset_task(capture_root: Path) -> tuple[Dict[str, Any] | None, lis
         return {
             "task_id": task_id,
             "scenario_id": _string(scenario.get("scenario_id") or scenario.get("scenarioId")),
+            "robot_profile_id": _string(
+                scenario.get("robot_profile_id")
+                or scenario.get("robotProfileId")
+                or scenario.get("robot_profile")
+            )
+            or default_robot_id_for_embodiment(
+                _string(scenario.get("embodiment_type") or scenario.get("embodimentType"))
+            ),
             "task_cards_uri": str(task_cards_path),
             "scenario_cards_uri": str(scenario_cards_path),
             "task_cards_sha256": _file_sha256(task_cards_path),
@@ -923,7 +932,7 @@ def _capture_handoff_to_webapp_request(
                 "scenario_ids": [dataset_selection["scenario_id"]],
             }
         ],
-        "robot_profile": {"robot_profile_id": "unitree_g1_humanoid"},
+        "robot_profile": {"robot_profile_id": dataset_selection["robot_profile_id"]},
         "simulator_preference": {"framework": "mujoco"},
         "policy_package": {
             "policy_api_endpoint": {},

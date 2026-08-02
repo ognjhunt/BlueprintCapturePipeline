@@ -82,6 +82,69 @@ def test_worker_build_identity_blocks_missing_source_environment() -> None:
     assert "worker_image_source_commit_missing_or_invalid" in result["blockers"]
 
 
+def test_source_overlay_identity_binds_last_registry_layer() -> None:
+    source_layer = _digest("d")
+    result = summarize_manifest(
+        image_ref="docker.io/example/isaac:overlay",
+        resolved_digest=_digest("e"),
+        raw_manifest={
+            "layers": [
+                {"digest": _digest("c"), "size": 10},
+                {"digest": source_layer, "size": 20},
+            ]
+        },
+        image_config={
+            "architecture": "amd64",
+            "os": "linux",
+            "config": {
+                "Env": [
+                    "BLUEPRINT_SOURCE_COMMIT=" + "a" * 40,
+                    "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="
+                    + CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+                    "BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker",
+                    "BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6",
+                    "BLUEPRINT_WORKER_IMAGE_BUILD_METHOD=crane_exact_source_overlay_experimental",
+                    "BLUEPRINT_WORKER_BASE_IMAGE_DIGEST=docker.io/example/isaac@"
+                    + _digest("b"),
+                    "BLUEPRINT_WORKER_SOURCE_MANIFEST_SHA256=" + _digest("f"),
+                    "BLUEPRINT_WORKER_SOURCE_LAYER_DIGEST=" + source_layer,
+                ]
+            },
+        },
+    )
+
+    assert result["worker_build_identity"]["status"] == "verified"
+    assert result["worker_build_identity"]["source_layer_matches_last_registry_layer"] is True
+
+    result["worker_build_identity"] = {}
+    mismatched = summarize_manifest(
+        image_ref="docker.io/example/isaac:overlay",
+        resolved_digest=_digest("e"),
+        raw_manifest={"layers": [{"digest": _digest("c"), "size": 10}]},
+        image_config={
+            "config": {
+                "Env": [
+                    "BLUEPRINT_SOURCE_COMMIT=" + "a" * 40,
+                    "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="
+                    + CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+                    "BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker",
+                    "BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6",
+                    "BLUEPRINT_WORKER_IMAGE_BUILD_METHOD=crane_exact_source_overlay_experimental",
+                    "BLUEPRINT_WORKER_BASE_IMAGE_DIGEST=docker.io/example/isaac@"
+                    + _digest("b"),
+                    "BLUEPRINT_WORKER_SOURCE_MANIFEST_SHA256=" + _digest("f"),
+                    "BLUEPRINT_WORKER_SOURCE_LAYER_DIGEST=" + source_layer,
+                ]
+            },
+        },
+    )
+    assert mismatched["worker_build_identity"]["status"] == "blocked"
+    assert (
+        "worker_image_overlay_source_layer_not_last_registry_layer"
+        in mismatched["worker_build_identity"]["blockers"]
+    )
+
+
 def test_split_image_manifest_is_digest_pinned_and_sizes_drive_startup_timeout() -> None:
     result = summarize_manifest(
         image_ref="docker.io/example/isaac:split",

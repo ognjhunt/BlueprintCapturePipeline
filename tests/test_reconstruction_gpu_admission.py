@@ -81,6 +81,20 @@ def _request(**overrides):
         "authority_id": "user-authorization-20260730",
         "proof_effect": "none",
     }
+    if operation == "provider_nurec_isaac_canary":
+        for key in (
+            "reconstruction_dataset_digest",
+            "frozen_split_digest",
+            "calibration_digest",
+        ):
+            value.pop(key)
+        value.update(
+            external_import_receipt_digest=D2,
+            provider_qualification_report_digest=D3,
+            source_relationship_to_blueprint_raw_capture="none",
+            external_derived_support_asset=True,
+            blueprint_raw_capture_truth=False,
+        )
     value.update(overrides)
     return build_reconstruction_gpu_canary_request(value)
 
@@ -170,6 +184,30 @@ def test_request_builder_rejects_untyped_or_authority_mutating_operations():
             raise AssertionError(f"request builder accepted forbidden override: {override}")
 
 
+def test_provider_request_forbids_fabricated_capture_bindings():
+    request = _request(
+        operation="provider_nurec_isaac_canary",
+        capture_profile="public_provider_sample",
+    )
+    assert request["source_relationship_to_blueprint_raw_capture"] == "none"
+    assert "reconstruction_dataset_digest" not in request
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs/schemas/reconstruction_gpu_canary.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(request, schema)
+    with pytest.raises(
+        ValueError, match="reconstruction_gpu_provider_capture_binding_forbidden"
+    ):
+        _request(
+            operation="provider_nurec_isaac_canary",
+            capture_profile="public_provider_sample",
+            reconstruction_dataset_digest=D1,
+        )
+
+
 def test_preflight_collector_requires_global_zero_and_independent_watchdog():
     inventories = {
         "blueprint-reconstruction-": {
@@ -252,8 +290,20 @@ def test_execute_stays_blocked_until_vast_execution_adapter_is_qualified():
 
 
 def test_scientific_canaries_use_only_their_qualified_typed_adapters():
-    for operation in ("pose_canary", "trainer_canary", "isaac_canary"):
-        request = _request(operation=operation)
+    for operation in (
+        "pose_canary",
+        "trainer_canary",
+        "isaac_canary",
+        "provider_nurec_isaac_canary",
+    ):
+        request = _request(
+            operation=operation,
+            capture_profile=(
+                "public_provider_sample"
+                if operation == "provider_nurec_isaac_canary"
+                else "trainer_smoke_fixture"
+            ),
+        )
         dry_run, dry_bound = _build(request=request)
         assert dry_run["status"] == "dry_run_ready"
         assert dry_run["operation"] == operation
@@ -271,7 +321,11 @@ def test_scientific_canaries_use_only_their_qualified_typed_adapters():
             request=request,
             execute=True,
             execution_adapter_qualified=True,
-            image_release=_image_release() if operation == "isaac_canary" else None,
+            image_release=(
+                _image_release()
+                if operation in {"isaac_canary", "provider_nurec_isaac_canary"}
+                else None
+            ),
         )
         assert execute["status"] == "execute_ready"
         assert execute["blockers"] == []
@@ -280,39 +334,47 @@ def test_scientific_canaries_use_only_their_qualified_typed_adapters():
 
 
 def test_isaac_execute_requires_exact_clean_image_release_binding():
-    request = _request(operation="isaac_canary")
-    missing, missing_bound = _build(
-        request=request,
-        execute=True,
-        execution_adapter_qualified=True,
-    )
-    assert "reconstruction_isaac_image_release_missing" in missing["blockers"]
-    assert missing_bound["provider_mutation_authorized"] is False
+    for operation in ("isaac_canary", "provider_nurec_isaac_canary"):
+        request = _request(
+            operation=operation,
+            capture_profile=(
+                "public_provider_sample"
+                if operation == "provider_nurec_isaac_canary"
+                else "trainer_smoke_fixture"
+            ),
+        )
+        missing, missing_bound = _build(
+            request=request,
+            execute=True,
+            execution_adapter_qualified=True,
+        )
+        assert "reconstruction_isaac_image_release_missing" in missing["blockers"]
+        assert missing_bound["provider_mutation_authorized"] is False
 
-    mismatch, mismatch_bound = _build(
-        request=request,
-        execute=True,
-        execution_adapter_qualified=True,
-        image_release=_image_release(
-            image="registry.example/blueprint/isaac@sha256:" + "c" * 64
-        ),
-    )
-    assert "reconstruction_isaac_image_release_digest_mismatch" in mismatch["blockers"]
-    assert mismatch_bound["provider_mutation_authorized"] is False
+        mismatch, mismatch_bound = _build(
+            request=request,
+            execute=True,
+            execution_adapter_qualified=True,
+            image_release=_image_release(
+                image="registry.example/blueprint/isaac@sha256:" + "c" * 64
+            ),
+        )
+        assert "reconstruction_isaac_image_release_digest_mismatch" in mismatch["blockers"]
+        assert mismatch_bound["provider_mutation_authorized"] is False
 
-    passed, passed_bound = _build(
-        request=request,
-        execute=True,
-        execution_adapter_qualified=True,
-        image_release=_image_release(),
-    )
-    assert passed["status"] == "execute_ready"
-    assert passed["isaac_image_release_digest"] == _image_release()[
-        "image_release_digest"
-    ]
-    assert passed_bound["isaac_image_release_digest"] == passed[
-        "isaac_image_release_digest"
-    ]
+        passed, passed_bound = _build(
+            request=request,
+            execute=True,
+            execution_adapter_qualified=True,
+            image_release=_image_release(),
+        )
+        assert passed["status"] == "execute_ready"
+        assert passed["isaac_image_release_digest"] == _image_release()[
+            "image_release_digest"
+        ]
+        assert passed_bound["isaac_image_release_digest"] == passed[
+            "isaac_image_release_digest"
+        ]
 
 def test_operation_request_input_and_result_schema_are_immutable_admission_inputs():
     request = _request()
@@ -422,14 +484,20 @@ def test_allocator_routes_reconstruction_probe_without_provider_mutation(
     assert adapter["cost_usd"] == 0.0
 
 
-def test_allocator_routes_isaac_only_to_separate_vast_lifecycle(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "operation",
+    ["isaac_canary", "provider_nurec_isaac_canary"],
+)
+def test_allocator_routes_isaac_only_to_separate_vast_lifecycle(
+    tmp_path, monkeypatch, operation
+):
     request_digest = D1
     verification_digest = D2
     bundle_digest = D3
     image = "registry.example/isaac@sha256:" + "f" * 64
     admission = {
         "status": "execute_ready",
-        "operation": "isaac_canary",
+        "operation": operation,
         "operation_request_digest": verification_digest,
         "operation_input_bundle_digest": bundle_digest,
         "worker_image_digest": image,

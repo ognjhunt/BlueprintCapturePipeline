@@ -84,7 +84,8 @@ class RobotProfile:
             "robot_profile_is_configuration_not_execution_proof": True,
             "robot_profile_does_not_prove_physical_readiness": True,
             "robot_profile_does_not_prove_safety_validation": True,
-            "g1_reference_profile_is_not_customer_requirement": True,
+            "default_robot_profile_is_not_customer_requirement": True,
+            "explicit_customer_or_task_robot_overrides_default": True,
         }
     )
 
@@ -234,8 +235,101 @@ UNITREE_G1_PROFILE = RobotProfile(
     },
     claim_boundaries={
         "robot_profile_is_configuration_not_execution_proof": True,
-        "unitree_g1_is_default_reference_embodiment_not_customer_requirement": True,
+        "unitree_g1_is_default_humanoid_not_customer_requirement": True,
         "profile_does_not_prove_unitree_policy_execution": True,
+        "profile_does_not_prove_physical_readiness": True,
+        "profile_does_not_prove_safety_validation": True,
+    },
+)
+
+# Blueprint's general-purpose default embodiment is the Franka Panda.  This is
+# a selection default only: an explicit customer/task robot always wins, and a
+# task that explicitly requires a humanoid selects the Unitree G1 profile below
+# via ``default_robot_id_for_embodiment``.
+FRANKA_PANDA_PROFILE = RobotProfile(
+    robot_id="franka_panda",
+    embodiment_type="fixed_base_single_arm_manipulator",
+    pelvis_height_m=0.0,
+    footprint_half_extent_xyz=(0.18, 0.18, 0.36),
+    standing_distance_m=0.0,
+    probe_step_m=0.05,
+    probe_max_out_m=0.9,
+    probe_clearance_m=0.05,
+    openable_standoff_extra_m=0.10,
+    max_facing_error_deg=45.0,
+    standoff_range_m=(0.15, 0.85),
+    floor_tol_m=0.02,
+    foot_clearance_m=0.0,
+    min_obstacle_clearance_m=0.05,
+    arm_span_m=0.855,
+    shoulder_forward_offset_m=0.0,
+    shoulder_lateral_offset_m=0.0,
+    shoulder_above_root_m=0.333,
+    max_effector_to_affordance_m=0.30,
+    usd_prim_path="/World/Franka",
+    articulation_name="franka",
+    head_link_candidates=("camera_link", "panda_hand"),
+    kinematics={
+        "base": "fixed",
+        "arm_count": 1,
+        "degrees_of_freedom": 7,
+        "simulator_dof_count_with_gripper": 9,
+        "gripper": "parallel_jaw",
+        "has_legs": False,
+        "has_torso": False,
+    },
+    action_interface={
+        "action_schema_id": "sc3_7d_delta_end_effector.v1",
+        "dim": 7,
+        "representation": "7d_delta_end_effector_pose",
+        "claim_boundary": (
+            "Action interface declares the profile-compatible command layout; "
+            "it does not prove Franka policy execution or physical readiness."
+        ),
+    },
+    camera_rigs=(
+        {
+            "camera_id": "fixed_external_rgbd",
+            "mount": "external_static",
+            "modalities": ["rgb", "depth"],
+            "calibration_status": "owner_or_profile_calibration_required_for_launch",
+        },
+        {
+            "camera_id": "wrist_rgb",
+            "mount": "wrist",
+            "modalities": ["rgb"],
+            "calibration_status": "owner_or_profile_calibration_required_for_launch",
+        },
+    ),
+    observation_schema={
+        "schema_ref": "blueprint://schemas/robot_eval_observation.v1",
+        "required_fields": [
+            "observation_id",
+            "scenario_eval_run_id",
+            "camera",
+            "visual_observation",
+        ],
+    },
+    simulator_asset_refs={
+        "usd_prim_path": "/World/Franka",
+        "isaac_asset": "/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd",
+        "isaac_asset_family": "Isaac/Robots/FrankaRobotics/FrankaPanda",
+        "mjcf_model": "mjx_panda.xml",
+    },
+    controller_constraints={
+        "requires_franka_compatible_action_space_for_policy_claims": True,
+        "wam_or_openvla_may_only_supply_evaluator_support": True,
+    },
+    calibration_requirements={
+        "owner_camera_intrinsics_required_for_launch_ready_profile": True,
+        "owner_camera_extrinsics_required_for_launch_ready_profile": True,
+        "default_profile_launch_mode": "smoke_only_until_owner_calibration",
+    },
+    claim_boundaries={
+        "robot_profile_is_configuration_not_execution_proof": True,
+        "franka_panda_is_default_robot_not_customer_requirement": True,
+        "explicit_customer_or_task_robot_overrides_default": True,
+        "profile_does_not_prove_franka_policy_execution": True,
         "profile_does_not_prove_physical_readiness": True,
         "profile_does_not_prove_safety_validation": True,
     },
@@ -348,13 +442,34 @@ FIXED_BASE_SINGLE_ARM_PROFILE = RobotProfile(
 )
 
 _REGISTRY: Dict[str, RobotProfile] = {
+    FRANKA_PANDA_PROFILE.robot_id: FRANKA_PANDA_PROFILE,
     UNITREE_G1_PROFILE.robot_id: UNITREE_G1_PROFILE,
     FIXED_BASE_SINGLE_ARM_PROFILE.robot_id: FIXED_BASE_SINGLE_ARM_PROFILE,
 }
 
-DEFAULT_ROBOT_ID = UNITREE_G1_PROFILE.robot_id
+DEFAULT_ROBOT_ID = FRANKA_PANDA_PROFILE.robot_id
+DEFAULT_HUMANOID_ROBOT_ID = UNITREE_G1_PROFILE.robot_id
 ROBOT_EMBODIMENT_PACK_SCHEMA_VERSION = "robot_embodiment_pack.v1"
 RobotEmbodimentPack = RobotProfile
+
+
+def default_robot_id_for_embodiment(embodiment_type: str | None = None) -> str:
+    """Return the configured default without overriding an explicit robot ID.
+
+    The general default is Franka Panda.  Humanoid morphology is the only
+    special case and resolves to Unitree G1.  Callers with an explicit robot ID
+    should use that ID directly rather than calling this selector.
+    """
+
+    normalized = str(embodiment_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {
+        "humanoid",
+        "bipedal_humanoid",
+        "legged_humanoid",
+        "humanoid_robot",
+    }:
+        return DEFAULT_HUMANOID_ROBOT_ID
+    return DEFAULT_ROBOT_ID
 
 
 def register_robot_profile(profile: RobotProfile) -> RobotProfile:

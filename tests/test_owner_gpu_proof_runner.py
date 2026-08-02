@@ -140,7 +140,7 @@ write(os.environ["BLUEPRINT_POLICY_EXECUTION_TRACE"], {
     "default_policy_executed": True,
     "actions": [{
         "id": "a1",
-        "name": "walk_to_target",
+        "name": os.environ["BLUEPRINT_DEFAULT_SMOKE_POLICY_KIND"],
         "target": os.environ["BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET"],
         "status": "attempted"
     }],
@@ -187,18 +187,26 @@ def test_owner_gpu_proof_runner_writes_validated_proof(tmp_path: Path) -> None:
     validation_path = Path(result["validation_manifest_path"])
     proof = json.loads(proof_path.read_text(encoding="utf-8"))
     validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    default_policy = json.loads(
+        (proof_path.parent / proof["default_smoke_policy_uri_or_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert result["owner_gpu_simulator_execution_proven"] is True
     assert result["validation_status"] == "accepted"
     assert proof["schema_version"] == "gpu_owner_system_proof.v1"
     assert proof["exit_code"] == 0
-    assert proof["robot_asset"]["name"] == "Unitree G1"
-    assert proof["robot_asset"]["uri_or_path"] == "Robots/Unitree/G1/g1.usd"
+    assert proof["robot_asset"]["name"] == "Franka Panda"
+    assert proof["robot_asset"]["uri_or_path"] == (
+        "Robots/FrankaRobotics/FrankaPanda/franka.usd"
+    )
     assert proof["rank_fidelity_result_proven"] is False
     assert validation["owner_gpu_simulator_execution_proven"] is True
     assert validation["isaac_sim_execution_proven"] is True
     assert validation["isaac_robot_asset_execution_proven"] is True
-    assert validation["unitree_g1_asset_spawned"] is True
+    assert validation["franka_panda_asset_spawned"] is True
+    assert default_policy["policy_kind"] == "move_end_effector_to_target"
     assert validation["owner_gpu_default_policy_execution_proven"] is True
     assert validation["owner_gpu_sim_robot_pov_evidence_proven"] is True
     assert validation["real_robot_pov_evidence_proven"] is False
@@ -235,12 +243,20 @@ def test_owner_gpu_proof_runner_marks_mujoco_g1_without_isaac_claim(
         robot_asset_class="humanoid_mjcf",
     )
 
+    proof_path = Path(result["proof_path"])
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    default_policy = json.loads(
+        (proof_path.parent / proof["default_smoke_policy_uri_or_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
     validation = json.loads(Path(result["validation_manifest_path"]).read_text(encoding="utf-8"))
     assert result["owner_gpu_simulator_execution_proven"] is True
     assert validation["status"] == "accepted"
     assert validation["simulator_backend"] == "mujoco"
     assert validation["mujoco_g1_asset_spawned"] is True
     assert validation["mujoco_g1_asset_execution_proven"] is True
+    assert default_policy["policy_kind"] == "walk_to_target"
     assert validation["isaac_sim_execution_proven"] is False
     assert validation["isaac_robot_asset_execution_proven"] is False
     assert validation["claim_boundary"]["mujoco_g1_asset_execution_proven"] is True
@@ -351,7 +367,7 @@ def test_owner_gpu_proof_runner_blocks_isaac_proxy_robot_asset(tmp_path: Path) -
     assert result["owner_gpu_simulator_execution_proven"] is False
     assert result["validation_status"] == "blocked"
     assert "owner_gpu_robot_asset_mismatch" in result["validation_blockers"]
-    assert "owner_gpu_unitree_g1_asset_not_spawned" in result["validation_blockers"]
+    assert "owner_gpu_supported_isaac_robot_asset_not_spawned" in result["validation_blockers"]
     assert validation["isaac_sim_execution_proven"] is False
     assert validation["isaac_robot_asset_execution_proven"] is False
 

@@ -175,7 +175,9 @@ def test_robot_eval_job_cards_validation_scheduler_and_worker_edges(
     assert rejo._default_requested_tasks_from_cards(pipeline) == []
     _write_json(dataset / "task_cards.json", {"cards": [{}], "task_card_count": 1})
     assert rejo._default_requested_tasks_from_cards(pipeline) == []
-    assert rejo._default_robot_profile_from_cards(pipeline)["robot_profile_id"] == "unitree_g1"
+    default_profile = rejo._default_robot_profile_from_cards(pipeline)
+    assert default_profile["robot_profile_id"] == "franka_panda"
+    assert default_profile["embodiment"] == "fixed_base_single_arm_manipulator"
     monkeypatch.setattr(rejo, "build_real_site_robot_eval_dataset", lambda **_kwargs: None)
     assert rejo._ensure_robot_eval_cards(capture_root=tmp_path, pipeline_dir=pipeline)
 

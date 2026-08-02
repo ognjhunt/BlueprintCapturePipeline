@@ -99,3 +99,27 @@ def test_isaac_image_release_rejects_mutated_recorded_receipt():
         ReconstructionIsaacImageReleaseError, match="replay_mismatch"
     ):
         validate_reconstruction_isaac_image_release(release)
+
+
+def test_isaac_image_release_requires_overlay_layer_lineage() -> None:
+    identity = {
+        **_manifest()["worker_build_identity"],
+        "build_method": "crane_exact_source_overlay_experimental",
+        "base_image_digest": "docker.io/example/isaac@sha256:" + "c" * 64,
+        "source_manifest_sha256": "sha256:" + "d" * 64,
+        "source_layer_digest": "sha256:" + "e" * 64,
+        "source_layer_matches_last_registry_layer": True,
+    }
+    release = build_reconstruction_isaac_image_release(
+        image_manifest=_manifest(worker_build_identity=identity),
+        expected_source_commit=SHA,
+    )
+    assert release["status"] == "passed"
+
+    identity["source_layer_matches_last_registry_layer"] = False
+    blocked = build_reconstruction_isaac_image_release(
+        image_manifest=_manifest(worker_build_identity=identity),
+        expected_source_commit=SHA,
+    )
+    assert blocked["status"] == "blocked"
+    assert "reconstruction_isaac_image_source_overlay_lineage_invalid" in blocked["blockers"]

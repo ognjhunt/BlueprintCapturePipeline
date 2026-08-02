@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/external_provider_acquisition_receipt.v1.schema.json",
+  "title": "External provider acquisition receipt v1",
+  "type": "object",
+  "required": [
+    "schema_version", "source_page_url", "final_download_url", "original_filename",
+    "acquisition_timestamp", "byte_size", "asset_digest", "http_metadata",
+    "supplier_identity", "declared_sample_scene", "rights_terms_source",
+    "rights_review_status", "source_class", "confidential", "blueprint_raw_capture",
+    "provider_reconstruction", "capture_hardware", "capture_modality",
+    "source_commit_sha", "tool_version", "remote_provider_login_performed",
+    "proof_effect", "claim_ceiling", "acquisition_receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "external_provider_acquisition_receipt.v1"},
+    "source_class": {"const": "public_provider_sample"},
+    "confidential": {"const": false},
+    "blueprint_raw_capture": {"const": false},
+    "provider_reconstruction": {"const": true},
+    "asset_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "acquisition_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "byte_size": {"type": "integer", "minimum": 1},
+    "http_metadata": {"type": "object"},
+    "proof_effect": {"const": "immutable_external_asset_acquisition_only"},
+    "claim_ceiling": {"const": "file_identity_and_declared_source_only"}
+  },
+  "additionalProperties": true
+}

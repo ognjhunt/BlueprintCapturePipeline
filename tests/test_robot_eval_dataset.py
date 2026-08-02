@@ -230,8 +230,8 @@ def test_robot_eval_dataset_uses_simulation_automation_task_proposals_when_eval_
     assert task_cards["cards"][0]["task_evidence_source"] == (
         "pipeline/simulation_automation/task_anchor_proposal_manifest.json"
     )
-    assert scenario_cards["cards"][0]["scenario_id"] == "scenario_scene_anchor_black_unitree_g1"
-    assert scenario_cards["cards"][0]["robot_profile_id"] == "unitree_g1"
+    assert scenario_cards["cards"][0]["scenario_id"] == "scenario_scene_anchor_black_franka_panda"
+    assert scenario_cards["cards"][0]["robot_profile_id"] == "franka_panda"
     assert scenario_cards["cards"][0]["semantic_spawn_target"]["validated_spawn_target_pair"] is True
     assert scenario_cards["cards"][0]["spawn_candidates"][0]["validated"] is True
     assert scenario_cards["cards"][0]["target_candidates"][0]["validated"] is True

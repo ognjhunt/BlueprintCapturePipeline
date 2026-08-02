@@ -12,12 +12,18 @@ from typing import Any, Mapping, Sequence
 import zipfile
 
 from .decision_evidence_contracts import canonical_digest
+from .external_provider_nurec import (
+    ISAAC_RUNTIME_SCHEMA as PROVIDER_ISAAC_RUNTIME_SCHEMA,
+    ExternalProviderNuRecError,
+    build_provider_nurec_isaac_runtime_result,
+)
 from .isaac_reconstruction_verification import (
     ISAAC_RUNTIME_RESULT_SCHEMA,
     IsaacReconstructionVerificationError,
     build_isaac_runtime_result_v3,
 )
 from .reconstruction_isaac_worker_bundle import (
+    PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA,
     validate_isaac_verification_worker_bundle_receipt,
 )
 
@@ -56,64 +62,102 @@ def _portable(value: Any) -> PurePosixPath | None:
     return path
 
 
-def _load_runtime_result(path: Path) -> dict[str, Any]:
+def _load_runtime_result(
+    path: Path,
+    *,
+    receipt: Mapping[str, Any],
+    verification_request: Mapping[str, Any] | None,
+) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, Mapping):
             raise TypeError("runtime result is not an object")
+        if receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA:
+            if verification_request is None:
+                raise TypeError("provider verification request is missing")
+            return build_provider_nurec_isaac_runtime_result(
+                value, verification_request=verification_request
+            )
         return build_isaac_runtime_result_v3(value)
-    except (OSError, json.JSONDecodeError, TypeError, IsaacReconstructionVerificationError) as exc:
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_runtime_result_invalid"]
-        ) from exc
+    except (
+        OSError,
+        json.JSONDecodeError,
+        TypeError,
+        ExternalProviderNuRecError,
+        IsaacReconstructionVerificationError,
+    ) as exc:
+        raise IsaacVerificationOutputBundleError(["isaac_output_runtime_result_invalid"]) from exc
 
 
-def _result_bindings(
-    *, result: Mapping[str, Any], receipt: Mapping[str, Any]
-) -> None:
+def _result_bindings(*, result: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    expected_schema = (
+        PROVIDER_ISAAC_RUNTIME_SCHEMA
+        if receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+        else ISAAC_RUNTIME_RESULT_SCHEMA
+    )
     if (
-        result.get("schema_version") != ISAAC_RUNTIME_RESULT_SCHEMA
+        result.get("schema_version") != expected_schema
         or result.get("isaac_verification_request_digest")
         != receipt.get("isaac_verification_request_digest")
         or result.get("package_digest") != receipt.get("package_digest")
-        or result.get("fixed_camera_spec_digest")
-        != receipt.get("fixed_camera_spec_digest")
+        or result.get("fixed_camera_spec_digest") != receipt.get("fixed_camera_spec_digest")
         or result.get("runtime_container_image_digest")
         != receipt.get("runtime_container_image_digest")
         or result.get("runtime_implementation_digest")
         != receipt.get("runtime_implementation_digest")
         or result.get("raw_secret_values_recorded") is not False
     ):
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_runtime_binding_mismatch"]
-        )
+        raise IsaacVerificationOutputBundleError(["isaac_output_runtime_binding_mismatch"])
+
+
+def _result_artifact_bindings(result: Mapping[str, Any]) -> list[tuple[PurePosixPath, str]]:
+    cameras = result.get("cameras")
+    cameras = cameras if isinstance(cameras, list) else []
+    bindings: list[tuple[PurePosixPath, str]] = []
+    for camera in cameras:
+        if not isinstance(camera, Mapping):
+            raise IsaacVerificationOutputBundleError(["isaac_output_camera_reference_invalid"])
+        reference = _portable(camera.get("artifact_reference"))
+        if reference is None or reference.suffix.lower() != ".png":
+            raise IsaacVerificationOutputBundleError(["isaac_output_camera_reference_invalid"])
+        bindings.append((reference, str(camera.get("digest") or "")))
+
+    robot = result.get("robot")
+    robot = robot if isinstance(robot, Mapping) else {}
+    robot_only = robot.get("robot_only_pass")
+    robot_only = robot_only if isinstance(robot_only, list) else []
+    for evidence in robot_only:
+        if not isinstance(evidence, Mapping):
+            raise IsaacVerificationOutputBundleError(["isaac_output_robot_reference_invalid"])
+        for reference_key, digest_key, suffix in (
+            ("rgb_artifact_reference", "rgb_digest", ".png"),
+            ("distance_artifact_reference", "distance_digest", ".npy"),
+        ):
+            reference_value = evidence.get(reference_key)
+            digest_value = evidence.get(digest_key)
+            if reference_value is None and digest_value is None:
+                continue
+            reference = _portable(reference_value)
+            if reference is None or reference.suffix.lower() != suffix or not digest_value:
+                raise IsaacVerificationOutputBundleError(["isaac_output_robot_reference_invalid"])
+            bindings.append((reference, str(digest_value)))
+
+    references = [reference.as_posix() for reference, _digest in bindings]
+    if len(references) != len(set(references)):
+        raise IsaacVerificationOutputBundleError(["isaac_output_artifact_inventory_invalid"])
+    return sorted(bindings, key=lambda row: row[0].as_posix())
 
 
 def _artifact_rows(result: Mapping[str, Any], root: Path) -> list[dict[str, Any]]:
-    cameras = result.get("cameras")
-    cameras = cameras if isinstance(cameras, list) else []
     rows: list[dict[str, Any]] = []
-    for camera in cameras:
-        if not isinstance(camera, Mapping):
-            raise IsaacVerificationOutputBundleError(
-                ["isaac_output_camera_reference_invalid"]
-            )
-        reference = _portable(camera.get("artifact_reference"))
-        if reference is None or reference.suffix.lower() != ".png":
-            raise IsaacVerificationOutputBundleError(
-                ["isaac_output_camera_reference_invalid"]
-            )
+    for reference, expected_digest in _result_artifact_bindings(result):
         source = root.joinpath(*reference.parts)
         if source.is_symlink() or not source.is_file() or root not in source.resolve().parents:
-            raise IsaacVerificationOutputBundleError(
-                ["isaac_output_camera_artifact_invalid"]
-            )
+            raise IsaacVerificationOutputBundleError(["isaac_output_artifact_invalid"])
         size = source.stat().st_size
         digest = _sha256(source)
-        if size < 1 or size > MAX_MEMBER_BYTES or digest != camera.get("digest"):
-            raise IsaacVerificationOutputBundleError(
-                ["isaac_output_camera_artifact_binding_invalid"]
-            )
+        if size < 1 or size > MAX_MEMBER_BYTES or digest != expected_digest:
+            raise IsaacVerificationOutputBundleError(["isaac_output_artifact_binding_invalid"])
         rows.append(
             {
                 "artifact_id": reference.as_posix(),
@@ -125,9 +169,7 @@ def _artifact_rows(result: Mapping[str, Any], root: Path) -> list[dict[str, Any]
         )
     ids = [row["artifact_id"] for row in rows]
     if len(ids) != len(set(ids)) or sum(row["bytes"] for row in rows) > MAX_TOTAL_BYTES:
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_camera_inventory_invalid"]
-        )
+        raise IsaacVerificationOutputBundleError(["isaac_output_artifact_inventory_invalid"])
     return sorted(rows, key=lambda row: row["artifact_id"])
 
 
@@ -139,9 +181,10 @@ def _write_member(archive: zipfile.ZipFile, name: str, source: Path | bytes) -> 
     if isinstance(source, bytes):
         archive.writestr(info, source)
         return
-    with source.open("rb") as input_stream, archive.open(
-        info, "w", force_zip64=True
-    ) as output_stream:
+    with (
+        source.open("rb") as input_stream,
+        archive.open(info, "w", force_zip64=True) as output_stream,
+    ):
         for chunk in iter(lambda: input_stream.read(STREAM_CHUNK_BYTES), b""):
             output_stream.write(chunk)
 
@@ -157,33 +200,45 @@ def compile_isaac_verification_output_bundle(
     receipt = validate_isaac_verification_worker_bundle_receipt(bundle_receipt)
     lexical_root = Path(runtime_output_root)
     if lexical_root.is_symlink():
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_runtime_root_symlink_forbidden"]
-        )
+        raise IsaacVerificationOutputBundleError(["isaac_output_runtime_root_symlink_forbidden"])
     try:
         root = lexical_root.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_runtime_root_missing"]
-        ) from exc
-    result = _load_runtime_result(root / "isaac_runtime_result.json")
+        raise IsaacVerificationOutputBundleError(["isaac_output_runtime_root_missing"]) from exc
+    provider_bundle = receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+    request_member = str(receipt.get("verification_request_member") or "")
+    request_path: Path | None = None
+    verification_request: Mapping[str, Any] | None = None
+    if provider_bundle:
+        request_path = root.parent / "bundle" / request_member
+        try:
+            request_value = json.loads(request_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise IsaacVerificationOutputBundleError(
+                ["isaac_output_verification_request_missing"]
+            ) from exc
+        if not isinstance(request_value, Mapping):
+            raise IsaacVerificationOutputBundleError(["isaac_output_verification_request_invalid"])
+        verification_request = request_value
+    result = _load_runtime_result(
+        root / "isaac_runtime_result.json",
+        receipt=receipt,
+        verification_request=verification_request,
+    )
     _result_bindings(result=result, receipt=receipt)
     rows = _artifact_rows(result, root)
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "status": "compiled",
-        "isaac_verification_request_digest": receipt[
-            "isaac_verification_request_digest"
-        ],
+        "isaac_verification_request_digest": receipt["isaac_verification_request_digest"],
         "input_bundle_digest": receipt["bundle_digest"],
         "package_digest": receipt["package_digest"],
-        "runtime_container_image_digest": receipt[
-            "runtime_container_image_digest"
-        ],
+        "runtime_container_image_digest": receipt["runtime_container_image_digest"],
         "source_commit_sha": receipt["source_commit_sha"],
         "runtime_result_schema": result["schema_version"],
         "runtime_result_digest": result["isaac_runtime_result_digest"],
         "runtime_result_archive_path": "isaac_runtime_result.json",
+        "verification_request_archive_path": request_member if provider_bundle else None,
         "artifact_members": [
             {key: row[key] for key in ("artifact_id", "archive_path", "digest", "bytes")}
             for row in rows
@@ -203,16 +258,14 @@ def compile_isaac_verification_output_bundle(
     )
     destination = Path(output_path)
     if destination.is_symlink():
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_bundle_symlink_forbidden"]
-        )
+        raise IsaacVerificationOutputBundleError(["isaac_output_bundle_symlink_forbidden"])
     destination.parent.mkdir(parents=True, exist_ok=True)
-    manifest_bytes = (
-        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode("utf-8")
-    result_bytes = (
-        json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode("utf-8")
+    manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
+    )
+    result_bytes = (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
+    )
     temporary: Path | None = None
     try:
         descriptor, name = tempfile.mkstemp(
@@ -223,6 +276,8 @@ def compile_isaac_verification_output_bundle(
         with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
             _write_member(archive, "output_manifest.json", manifest_bytes)
             _write_member(archive, "isaac_runtime_result.json", result_bytes)
+            if provider_bundle and request_path is not None:
+                _write_member(archive, request_member, request_path)
             for row in rows:
                 _write_member(archive, row["archive_path"], row["source"])
         os.replace(temporary, destination)
@@ -238,9 +293,7 @@ def compile_isaac_verification_output_bundle(
     }
 
 
-def _read_capped(
-    archive: zipfile.ZipFile, member: zipfile.ZipInfo, *, cap: int
-) -> bytes:
+def _read_capped(archive: zipfile.ZipFile, member: zipfile.ZipInfo, *, cap: int) -> bytes:
     if member.file_size > cap:
         raise IsaacVerificationOutputBundleError(["isaac_output_metadata_oversized"])
     payload = bytearray()
@@ -251,9 +304,7 @@ def _read_capped(
                 break
             payload.extend(chunk)
             if len(payload) > cap:
-                raise IsaacVerificationOutputBundleError(
-                    ["isaac_output_metadata_oversized"]
-                )
+                raise IsaacVerificationOutputBundleError(["isaac_output_metadata_oversized"])
     return bytes(payload)
 
 
@@ -271,9 +322,7 @@ def _extract_member(
                 break
             size += len(chunk)
             if size > MAX_MEMBER_BYTES:
-                raise IsaacVerificationOutputBundleError(
-                    ["isaac_output_member_oversized"]
-                )
+                raise IsaacVerificationOutputBundleError(["isaac_output_member_oversized"])
             digest.update(chunk)
             output.write(chunk)
     return size, "sha256:" + digest.hexdigest()
@@ -288,30 +337,20 @@ def validate_and_extract_isaac_verification_output_bundle(
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
     """Independently validate and materialize a retrieved Isaac output bundle."""
 
-    input_receipt = validate_isaac_verification_worker_bundle_receipt(
-        expected_input_receipt
-    )
+    input_receipt = validate_isaac_verification_worker_bundle_receipt(expected_input_receipt)
     source = Path(bundle_path)
     if source.is_symlink():
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_bundle_symlink_forbidden"]
-        )
+        raise IsaacVerificationOutputBundleError(["isaac_output_bundle_symlink_forbidden"])
     try:
         source = source.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_bundle_missing"]
-        ) from exc
+        raise IsaacVerificationOutputBundleError(["isaac_output_bundle_missing"]) from exc
     if not source.is_file() or source.stat().st_size > MAX_TOTAL_BYTES + 64 * 1024**2:
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_bundle_invalid"]
-        )
+        raise IsaacVerificationOutputBundleError(["isaac_output_bundle_invalid"])
     bundle_digest = _sha256(source)
     destination = Path(output_root)
     if destination.is_symlink():
-        raise IsaacVerificationOutputBundleError(
-            ["isaac_output_extraction_root_symlink_forbidden"]
-        )
+        raise IsaacVerificationOutputBundleError(["isaac_output_extraction_root_symlink_forbidden"])
     destination.mkdir(parents=True, exist_ok=True)
     destination = destination.resolve()
     final = destination / bundle_digest[7:]
@@ -324,9 +363,7 @@ def validate_and_extract_isaac_verification_output_bundle(
         try:
             archive_context = zipfile.ZipFile(source, "r")
         except (OSError, zipfile.BadZipFile) as exc:
-            raise IsaacVerificationOutputBundleError(
-                ["isaac_output_bundle_invalid"]
-            ) from exc
+            raise IsaacVerificationOutputBundleError(["isaac_output_bundle_invalid"]) from exc
         with archive_context as archive:
             members = archive.infolist()
             names = [member.filename for member in members]
@@ -365,19 +402,42 @@ def validate_and_extract_isaac_verification_output_bundle(
                     )
                 )
             except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise IsaacVerificationOutputBundleError(
-                    ["isaac_output_metadata_invalid"]
-                ) from exc
-            if not isinstance(manifest_value, Mapping) or not isinstance(
-                result_value, Mapping
-            ):
-                raise IsaacVerificationOutputBundleError(
-                    ["isaac_output_metadata_invalid"]
-                )
+                raise IsaacVerificationOutputBundleError(["isaac_output_metadata_invalid"]) from exc
+            if not isinstance(manifest_value, Mapping) or not isinstance(result_value, Mapping):
+                raise IsaacVerificationOutputBundleError(["isaac_output_metadata_invalid"])
             manifest = dict(manifest_value)
+            provider_bundle = (
+                input_receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+            )
+            request_member = str(input_receipt.get("verification_request_member") or "")
+            request_value: Mapping[str, Any] | None = None
+            if provider_bundle:
+                try:
+                    loaded_request = json.loads(
+                        _read_capped(
+                            archive,
+                            archive.getinfo(request_member),
+                            cap=MAX_METADATA_BYTES,
+                        )
+                    )
+                except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise IsaacVerificationOutputBundleError(
+                        ["isaac_output_verification_request_invalid"]
+                    ) from exc
+                if not isinstance(loaded_request, Mapping):
+                    raise IsaacVerificationOutputBundleError(
+                        ["isaac_output_verification_request_invalid"]
+                    )
+                request_value = loaded_request
             try:
-                result = build_isaac_runtime_result_v3(result_value)
-            except IsaacReconstructionVerificationError as exc:
+                if provider_bundle:
+                    assert request_value is not None
+                    result = build_provider_nurec_isaac_runtime_result(
+                        result_value, verification_request=request_value
+                    )
+                else:
+                    result = build_isaac_runtime_result_v3(result_value)
+            except (ExternalProviderNuRecError, IsaacReconstructionVerificationError) as exc:
                 raise IsaacVerificationOutputBundleError(
                     ["isaac_output_runtime_result_invalid"]
                 ) from exc
@@ -394,8 +454,9 @@ def validate_and_extract_isaac_verification_output_bundle(
                 or manifest.get("runtime_container_image_digest")
                 != input_receipt["runtime_container_image_digest"]
                 or manifest.get("source_commit_sha") != expected_source_commit_sha
-                or manifest.get("runtime_result_digest")
-                != result["isaac_runtime_result_digest"]
+                or manifest.get("runtime_result_digest") != result["isaac_runtime_result_digest"]
+                or manifest.get("verification_request_archive_path")
+                != (request_member if provider_bundle else None)
                 or manifest.get("raw_secret_values_included") is not False
                 or manifest.get("scientific_qualification_inferred") is not False
                 or manifest.get("simulator_task_success_proven") is not False
@@ -403,33 +464,23 @@ def validate_and_extract_isaac_verification_output_bundle(
                 or manifest.get("deployment_readiness_proven") is not False
                 or manifest.get("proof_effect") != "none"
             ):
-                raise IsaacVerificationOutputBundleError(
-                    ["isaac_output_manifest_binding_invalid"]
-                )
+                raise IsaacVerificationOutputBundleError(["isaac_output_manifest_binding_invalid"])
             rows = manifest.get("artifact_members")
             if not isinstance(rows, list):
-                raise IsaacVerificationOutputBundleError(
-                    ["isaac_output_inventory_invalid"]
-                )
+                raise IsaacVerificationOutputBundleError(["isaac_output_inventory_invalid"])
             expected_names = {
                 "output_manifest.json",
                 "isaac_runtime_result.json",
                 *(str(row.get("archive_path") or "") for row in rows if isinstance(row, Mapping)),
             }
-            if set(names) != expected_names or manifest.get("artifact_member_count") != len(
-                rows
-            ):
-                raise IsaacVerificationOutputBundleError(
-                    ["isaac_output_inventory_invalid"]
-                )
-            camera_bindings = sorted(
-                (
-                    str(camera.get("artifact_reference") or ""),
-                    str(camera.get("digest") or ""),
-                )
-                for camera in result.get("cameras") or []
-                if isinstance(camera, Mapping)
-            )
+            if provider_bundle:
+                expected_names.add(request_member)
+            if set(names) != expected_names or manifest.get("artifact_member_count") != len(rows):
+                raise IsaacVerificationOutputBundleError(["isaac_output_inventory_invalid"])
+            result_bindings = [
+                (reference.as_posix(), digest)
+                for reference, digest in _result_artifact_bindings(result)
+            ]
             manifest_bindings: list[tuple[str, str]] = []
             total_artifacts = 0
             for row in rows:
@@ -442,8 +493,7 @@ def validate_and_extract_isaac_verification_output_bundle(
                 if (
                     artifact_id is None
                     or archive_path is None
-                    or archive_path.as_posix()
-                    != f"artifacts/{artifact_id.as_posix()}"
+                    or archive_path.as_posix() != f"artifacts/{artifact_id.as_posix()}"
                 ):
                     raise IsaacVerificationOutputBundleError(
                         ["isaac_output_manifest_member_invalid"]
@@ -460,12 +510,10 @@ def validate_and_extract_isaac_verification_output_bundle(
                 total_artifacts += size
                 manifest_bindings.append((artifact_id.as_posix(), digest))
             if (
-                sorted(manifest_bindings) != camera_bindings
+                sorted(manifest_bindings) != result_bindings
                 or manifest.get("artifact_total_bytes") != total_artifacts
             ):
-                raise IsaacVerificationOutputBundleError(
-                    ["isaac_output_result_artifacts_mismatch"]
-                )
+                raise IsaacVerificationOutputBundleError(["isaac_output_result_artifacts_mismatch"])
         write_result = temporary / "isaac_runtime_result.json"
         write_result.write_text(
             json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8"

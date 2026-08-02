@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -24,9 +25,15 @@ from .isaac_reconstruction_verification import (
     IsaacReconstructionVerificationError,
     build_isaac_asset_verification_request,
 )
+from .external_provider_nurec import (
+    ExternalProviderNuRecError,
+    ISAAC_REQUEST_SCHEMA as PROVIDER_ISAAC_REQUEST_SCHEMA,
+    build_provider_nurec_isaac_request,
+)
 
 
 ISAAC_WORKER_BUNDLE_SCHEMA = "isaac_verification_worker_bundle.v1"
+PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA = "provider_nurec_isaac_worker_bundle.v1"
 ISAAC_WORKER_EXTRACTION_SCHEMA = "isaac_verification_worker_bundle_extraction.v1"
 MAX_BUNDLE_MEMBER_BYTES = 4_000_000_000
 MAX_BUNDLE_TOTAL_BYTES = 5_000_000_000
@@ -90,6 +97,80 @@ def _explicit_file(path_value: str | Path, *, digest: str, suffix: str, code: st
     return path
 
 
+def _validate_render_options(path: Path) -> dict[str, Any]:
+    """Validate the optional robot/placement payload before bundling it.
+
+    The runner intentionally accepts an optional ``render_options.json`` beside
+    the fixed cameras.  This bundle compiler is the authority boundary: it
+    requires the file to be an object, rejects credential-shaped keys, and
+    validates the exact fields that can affect robot placement.  The complete
+    bytes remain bound by ``render_options_digest`` in the verification request.
+    """
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise IsaacWorkerBundleError(["isaac_render_options_json_invalid"]) from exc
+    if not isinstance(value, Mapping):
+        raise IsaacWorkerBundleError(["isaac_render_options_json_invalid"])
+
+    def secret_paths(nested: Any, prefix: str = "") -> list[str]:
+        found: list[str] = []
+        if isinstance(nested, Mapping):
+            for raw_key, child in nested.items():
+                key = str(raw_key)
+                path_text = f"{prefix}.{key}" if prefix else key
+                lowered = key.lower()
+                if any(token in lowered for token in ("password", "secret", "credential", "api_key")):
+                    if child not in (None, "", [], {}):
+                        found.append(path_text)
+                found.extend(secret_paths(child, path_text))
+        elif isinstance(nested, list):
+            for index, child in enumerate(nested):
+                found.extend(secret_paths(child, f"{prefix}[{index}]"))
+        return found
+
+    errors: list[str] = []
+    if secret_paths(value):
+        errors.append("isaac_render_options_secret_value_forbidden")
+    robot_usd = value.get("robot_usd")
+    pose = value.get("robot_pose")
+    if not isinstance(robot_usd, str) or not robot_usd.strip():
+        errors.append("isaac_render_options_robot_usd_invalid")
+    if (
+        not isinstance(pose, list)
+        or len(pose) != 4
+        or any(
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(float(item))
+            for item in (pose or [])
+        )
+    ):
+        errors.append("isaac_render_options_robot_pose_invalid")
+    if not isinstance(value.get("robot_id"), str) or not value.get("robot_id", "").strip():
+        errors.append("isaac_render_options_robot_id_invalid")
+    for key in ("robot_placement_digest", "placement_proposal_digest"):
+        if _DIGEST.fullmatch(str(value.get(key) or "")) is None:
+            errors.append(f"isaac_render_options_{key}_invalid")
+    prim_path = value.get("robot_prim_path", "/World/RobotVisual")
+    if not isinstance(prim_path, str) or not prim_path.startswith("/") or ".." in prim_path:
+        errors.append("isaac_render_options_robot_prim_path_invalid")
+    ground_z = value.get("robot_ground_z")
+    if (
+        isinstance(ground_z, bool)
+        or not isinstance(ground_z, (int, float))
+        or not math.isfinite(float(ground_z))
+    ):
+        errors.append("isaac_render_options_robot_ground_z_invalid")
+    for key in ("robot_only_pass",):
+        if value.get(key) is not True:
+            errors.append(f"isaac_render_options_{key}_must_be_true")
+    if errors:
+        raise IsaacWorkerBundleError(errors)
+    return dict(value)
+
+
 def _write_zip_member(archive: zipfile.ZipFile, name: str, source: Path) -> None:
     info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_STORED
@@ -130,7 +211,33 @@ def _command_for_request(request: Mapping[str, Any]) -> list[str]:
         command.extend(["--ground-height", str(probe["ground_height_m"])])
     if probe.get("probe_xy_m") is not None:
         command.extend(["--probe-xy", *[str(value) for value in probe["probe_xy_m"]]])
+    if request.get("schema_version") == PROVIDER_ISAAC_REQUEST_SCHEMA:
+        command.extend(
+            [
+                "--provider-package-mode",
+                "--expected-appearance-prim",
+                str(request["expected_prim_paths"]["appearance"]),
+                "--expected-collision-prim",
+                str(request["expected_prim_paths"]["collision"]),
+            ]
+        )
     return command
+
+
+def _validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    if value.get("schema_version") == PROVIDER_ISAAC_REQUEST_SCHEMA:
+        try:
+            return build_provider_nurec_isaac_request(value)
+        except ExternalProviderNuRecError as exc:
+            raise IsaacWorkerBundleError(
+                [f"provider_isaac_verification_request_invalid:{code}" for code in exc.codes]
+            ) from exc
+    try:
+        return build_isaac_asset_verification_request(value)
+    except IsaacReconstructionVerificationError as exc:
+        raise IsaacWorkerBundleError(
+            [f"isaac_verification_request_invalid:{code}" for code in exc.codes]
+        ) from exc
 
 
 def validate_isaac_verification_worker_bundle_receipt(
@@ -140,7 +247,10 @@ def validate_isaac_verification_worker_bundle_receipt(
 
     receipt = json.loads(json.dumps(dict(value)))
     errors: list[str] = []
-    if receipt.get("schema_version") != ISAAC_WORKER_BUNDLE_SCHEMA:
+    if receipt.get("schema_version") not in {
+        ISAAC_WORKER_BUNDLE_SCHEMA,
+        PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA,
+    }:
         errors.append("isaac_bundle_receipt_schema_invalid")
     if receipt.get("receipt_digest") != canonical_digest(
         receipt, digest_field="receipt_digest"
@@ -159,15 +269,23 @@ def validate_isaac_verification_worker_bundle_receipt(
             errors.append(f"isaac_bundle_receipt_{key}_invalid")
     if _COMMIT.fullmatch(str(receipt.get("source_commit_sha") or "")) is None:
         errors.append("isaac_bundle_receipt_source_commit_invalid")
+    expected_runtime = (
+        "provider_nurec_isaac_runtime_result.v1"
+        if receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+        else "isaac_splat_nurec_render_result.v3"
+    )
+    render_options_digest = receipt.get("render_options_digest")
+    expected_member_count = 6 if render_options_digest is not None else 5
+    if render_options_digest is not None and _DIGEST.fullmatch(str(render_options_digest)) is None:
+        errors.append("isaac_bundle_receipt_render_options_digest_invalid")
     if (
-        receipt.get("expected_runtime_schema")
-        != "isaac_splat_nurec_render_result.v3"
+        receipt.get("expected_runtime_schema") != expected_runtime
         or receipt.get("raw_secret_values_included") is not False
         or receipt.get("provider_allocation_performed") is not False
         or receipt.get("paid_execution_authorized_by_bundle") is not False
         or receipt.get("proof_effect") != "none"
         or receipt.get("claim_ceiling") != "request_only"
-        or receipt.get("bundle_member_count") != 5
+        or receipt.get("bundle_member_count") != expected_member_count
     ):
         errors.append("isaac_bundle_receipt_boundary_invalid")
     command = receipt.get("command")
@@ -194,15 +312,20 @@ def compile_isaac_verification_worker_bundle(
     fixed_camera_spec_path: str | Path,
     runner_path: str | Path,
     output_root: str | Path,
+    render_options_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Compile a deterministic exact-package Isaac input bundle without spending."""
 
-    try:
-        request = build_isaac_asset_verification_request(verification_request)
-    except IsaacReconstructionVerificationError as exc:
-        raise IsaacWorkerBundleError(
-            [f"isaac_verification_request_invalid:{code}" for code in exc.codes]
-        ) from exc
+    request = _validate_request(verification_request)
+    provider_request = request["schema_version"] == PROVIDER_ISAAC_REQUEST_SCHEMA
+    bundle_schema = (
+        PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA if provider_request else ISAAC_WORKER_BUNDLE_SCHEMA
+    )
+    request_member = (
+        "provider_nurec_isaac_verification_request.v1.json"
+        if provider_request
+        else "isaac_asset_verification_request.v1.json"
+    )
     package_root = Path(package_artifact_root)
     if package_root.is_symlink() or not package_root.is_dir():
         raise IsaacWorkerBundleError(["isaac_package_root_invalid"])
@@ -236,7 +359,23 @@ def compile_isaac_verification_worker_bundle(
         suffix=".py",
         code="isaac_runner",
     )
-    total = sum(path.stat().st_size for path in (package, cameras, runner))
+    declared_render_options_digest = request.get("render_options_digest")
+    if (declared_render_options_digest is None) != (render_options_path is None):
+        raise IsaacWorkerBundleError(["isaac_render_options_binding_incomplete"])
+    render_options: Path | None = None
+    if render_options_path is not None:
+        render_options = _explicit_file(
+            render_options_path,
+            digest=str(declared_render_options_digest),
+            suffix=".json",
+            code="isaac_render_options",
+        )
+        _validate_render_options(render_options)
+    total = sum(
+        path.stat().st_size
+        for path in (package, cameras, runner, render_options)
+        if path is not None
+    )
     if total > MAX_BUNDLE_TOTAL_BYTES:
         raise IsaacWorkerBundleError(["isaac_worker_bundle_oversized"])
 
@@ -247,7 +386,12 @@ def compile_isaac_verification_worker_bundle(
     destination = destination.resolve()
     content_id = request["isaac_verification_request_digest"][7:]
     final = destination / content_id
-    receipt_path = final / "isaac_verification_worker_bundle.v1.json"
+    receipt_filename = (
+        "provider_nurec_isaac_worker_bundle.v1.json"
+        if provider_request
+        else "isaac_verification_worker_bundle.v1.json"
+    )
+    receipt_path = final / receipt_filename
     bundle_path = final / "isaac_verification_worker_bundle.zip"
     if final.exists():
         try:
@@ -268,11 +412,11 @@ def compile_isaac_verification_worker_bundle(
 
     temporary = Path(tempfile.mkdtemp(prefix=".isaac-bundle-", dir=destination))
     try:
-        request_path = temporary / "isaac_asset_verification_request.v1.json"
+        request_path = temporary / request_member
         write_json(request_path, request)
         command = _command_for_request(request)
         manifest = {
-            "schema_version": ISAAC_WORKER_BUNDLE_SCHEMA,
+            "schema_version": bundle_schema,
             "isaac_verification_request_digest": request[
                 "isaac_verification_request_digest"
             ],
@@ -283,7 +427,10 @@ def compile_isaac_verification_worker_bundle(
             "source_commit_sha": request["source_commit_sha"],
             "fixed_camera_ids": request["fixed_camera_ids"],
             "command": command,
-            "expected_runtime_schema": "isaac_splat_nurec_render_result.v3",
+            "expected_runtime_schema": request.get(
+                "expected_runtime_schema", "isaac_splat_nurec_render_result.v3"
+            ),
+            "verification_request_member": request_member,
             "raw_secret_values_included": False,
             "provider_allocation_performed": False,
             "paid_execution_authorized_by_bundle": False,
@@ -293,6 +440,8 @@ def compile_isaac_verification_worker_bundle(
             "proof_effect": "none",
             "claim_ceiling": "request_only",
         }
+        if declared_render_options_digest is not None:
+            manifest["render_options_digest"] = declared_render_options_digest
         manifest["bundle_manifest_digest"] = canonical_digest(
             manifest, digest_field="bundle_manifest_digest"
         )
@@ -300,27 +449,30 @@ def compile_isaac_verification_worker_bundle(
         write_json(manifest_path, manifest)
         archive_path = temporary / "isaac_verification_worker_bundle.zip"
         with zipfile.ZipFile(archive_path, "w", allowZip64=True) as archive:
-            for name, source in (
+            members: list[tuple[str, Path]] = [
                 ("bundle_manifest.json", manifest_path),
                 ("fixed_cameras.json", cameras),
-                ("isaac_asset_verification_request.v1.json", request_path),
+                (request_member, request_path),
                 ("reconstruction.usdz", package),
                 ("run_isaac_splat_nurec_render.py", runner),
-            ):
+            ]
+            if render_options is not None:
+                members.append(("render_options.json", render_options))
+            for name, source in members:
                 _write_zip_member(archive, name, source)
         bundle_digest = _sha256(archive_path)
         receipt = {
             **manifest,
             "bundle_digest": bundle_digest,
             "bundle_artifact_reference": f"{content_id}/isaac_verification_worker_bundle.zip",
-            "bundle_member_count": 5,
+            "bundle_member_count": len(members),
             "bundle_bytes": archive_path.stat().st_size,
             "cost_usd": 0.0,
         }
         receipt["receipt_digest"] = canonical_digest(
             receipt, digest_field="receipt_digest"
         )
-        write_json(temporary / "isaac_verification_worker_bundle.v1.json", receipt)
+        write_json(temporary / receipt_filename, receipt)
         os.replace(temporary, final)
         return receipt
     except Exception:
@@ -376,13 +528,19 @@ def extract_isaac_verification_worker_bundle(
                 raise IsaacWorkerBundleError(["isaac_bundle_extraction_replay_tampered"])
         return extraction
 
+    request_member = str(
+        receipt.get("verification_request_member")
+        or "isaac_asset_verification_request.v1.json"
+    )
     expected_names = {
         "bundle_manifest.json",
         "fixed_cameras.json",
-        "isaac_asset_verification_request.v1.json",
+        request_member,
         "reconstruction.usdz",
         "run_isaac_splat_nurec_render.py",
     }
+    if receipt.get("render_options_digest") is not None:
+        expected_names.add("render_options.json")
     temporary = Path(tempfile.mkdtemp(prefix=".isaac-extract-", dir=destination))
     try:
         with zipfile.ZipFile(source, "r") as archive:
@@ -433,11 +591,7 @@ def extract_isaac_verification_worker_bundle(
                     }
                 )
         manifest = json.loads((temporary / "bundle_manifest.json").read_text())
-        request = build_isaac_asset_verification_request(
-            json.loads(
-                (temporary / "isaac_asset_verification_request.v1.json").read_text()
-            )
-        )
+        request = _validate_request(json.loads((temporary / request_member).read_text()))
         if (
             not isinstance(manifest, Mapping)
             or manifest.get("bundle_manifest_digest")
@@ -451,8 +605,15 @@ def extract_isaac_verification_worker_bundle(
             != receipt["fixed_camera_spec_digest"]
             or _sha256(temporary / "run_isaac_splat_nurec_render.py")
             != receipt["runtime_implementation_digest"]
+            or (
+                receipt.get("render_options_digest") is not None
+                and _sha256(temporary / "render_options.json")
+                != receipt["render_options_digest"]
+            )
         ):
             raise IsaacWorkerBundleError(["isaac_bundle_extraction_binding_invalid"])
+        if receipt.get("render_options_digest") is not None:
+            _validate_render_options(temporary / "render_options.json")
         extraction = {
             "schema_version": ISAAC_WORKER_EXTRACTION_SCHEMA,
             "status": "extracted",
@@ -483,6 +644,7 @@ def extract_isaac_verification_worker_bundle(
 
 __all__ = [
     "ISAAC_WORKER_BUNDLE_SCHEMA",
+    "PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA",
     "ISAAC_WORKER_EXTRACTION_SCHEMA",
     "IsaacWorkerBundleError",
     "compile_isaac_verification_worker_bundle",

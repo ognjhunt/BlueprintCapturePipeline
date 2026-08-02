@@ -66,6 +66,15 @@ ARENA_ENVIRONMENT_PACKET_SCHEMA_VERSION = "arena_environment_packet.v1"
 
 SIMULATOR_FRAMEWORKS = ("isaac_sim", "isaac_lab_arena", "mujoco", "pybullet", "newton")
 ISAAC_SIMULATOR_FRAMEWORKS = {"isaac_sim", "isaac_lab_arena"}
+DEFAULT_ISAAC_ROBOT_ASSET = {
+    "name": "Franka Panda",
+    "uri_or_path": "Robots/FrankaRobotics/FrankaPanda/franka.usd",
+    "source": "isaac_sim_robot_assets",
+    "asset_class": "fixed_base_single_arm_manipulator",
+    "catalog_reference": (
+        "Isaac Sim Robot Assets: Robots/FrankaRobotics/FrankaPanda/franka.usd"
+    ),
+}
 DEFAULT_ISAAC_HUMANOID_ROBOT_ASSET = {
     "name": "Unitree G1",
     "uri_or_path": "Robots/Unitree/G1/g1.usd",
@@ -744,9 +753,10 @@ def _pass_fail_ok(value: Any) -> bool:
 
 
 def _default_smoke_policy_ok(payload: Mapping[str, Any]) -> bool:
-    return _string(payload.get("policy_kind")) == "walk_to_target" and bool(
-        _string(payload.get("target"))
-    )
+    return _string(payload.get("policy_kind")) in {
+        "move_end_effector_to_target",
+        "walk_to_target",
+    } and bool(_string(payload.get("target")))
 
 
 def _robot_asset_mapping(value: Any) -> Dict[str, Any]:
@@ -793,6 +803,21 @@ def _is_unitree_g1_isaac_asset(asset: Mapping[str, Any]) -> bool:
     return path_matches and (name_matches or source_matches)
 
 
+def _is_franka_panda_isaac_asset(asset: Mapping[str, Any]) -> bool:
+    name = _normalize_asset_text(_robot_asset_name(asset))
+    path = _normalize_asset_text(_robot_asset_path(asset))
+    source = _normalize_asset_text(_string(asset.get("source") or asset.get("catalog")))
+    path_matches = path.endswith("robots/frankarobotics/frankapanda/franka.usd") or path.endswith(
+        "frankapanda/franka.usd"
+    )
+    name_matches = ("franka" in name and "panda" in name) or name in {
+        "franka",
+        "franka_panda",
+    }
+    source_matches = "isaac" in source or "frankapanda" in path
+    return path_matches and (name_matches or source_matches)
+
+
 def _is_unitree_g1_mujoco_asset(asset: Mapping[str, Any]) -> bool:
     name = _normalize_asset_text(_robot_asset_name(asset))
     path = _normalize_asset_text(_robot_asset_path(asset))
@@ -800,6 +825,21 @@ def _is_unitree_g1_mujoco_asset(asset: Mapping[str, Any]) -> bool:
     path_matches = path.endswith("unitree_g1/g1.xml") or path.endswith("g1.xml")
     name_matches = ("unitree" in name and "g1" in name) or name in {"g1", "unitree_g1"}
     source_matches = "mujoco" in source or "menagerie" in source or "unitree_g1" in path
+    return path_matches and (name_matches or source_matches)
+
+
+def _is_franka_panda_mujoco_asset(asset: Mapping[str, Any]) -> bool:
+    name = _normalize_asset_text(_robot_asset_name(asset))
+    path = _normalize_asset_text(_robot_asset_path(asset))
+    source = _normalize_asset_text(_string(asset.get("source") or asset.get("catalog")))
+    path_matches = path.endswith("franka_emika_panda/panda.xml") or path.endswith(
+        "mjx_panda.xml"
+    )
+    name_matches = ("franka" in name and "panda" in name) or name in {
+        "franka",
+        "franka_panda",
+    }
+    source_matches = "mujoco" in source or "menagerie" in source or "panda" in path
     return path_matches and (name_matches or source_matches)
 
 
@@ -978,15 +1018,24 @@ def validate_owner_gpu_system_proof(
     unitree_g1_asset_spawned = bool(spawn_robot_asset) and _is_unitree_g1_isaac_asset(
         spawn_robot_asset
     )
+    franka_panda_asset_spawned = bool(spawn_robot_asset) and _is_franka_panda_isaac_asset(
+        spawn_robot_asset
+    )
     mujoco_g1_asset_spawned = bool(spawn_robot_asset) and _is_unitree_g1_mujoco_asset(
         spawn_robot_asset
+    )
+    mujoco_franka_panda_asset_spawned = bool(
+        spawn_robot_asset
+    ) and _is_franka_panda_mujoco_asset(spawn_robot_asset)
+    supported_isaac_robot_asset_spawned = (
+        unitree_g1_asset_spawned or franka_panda_asset_spawned
     )
     isaac_robot_asset_valid = (
         isaac_robot_asset_required
         and bool(proof_robot_asset)
         and bool(spawn_robot_asset)
         and robot_asset_matches_proof
-        and unitree_g1_asset_spawned
+        and supported_isaac_robot_asset_spawned
     )
     mujoco_g1_asset_valid = (
         simulator_backend == "mujoco"
@@ -1020,8 +1069,8 @@ def validate_owner_gpu_system_proof(
             blockers.append("owner_gpu_spawn_trace_missing_isaac_robot_asset")
         if proof_robot_asset and spawn_robot_asset and not robot_asset_matches_proof:
             blockers.append("owner_gpu_robot_asset_mismatch")
-        if spawn_robot_asset and not unitree_g1_asset_spawned:
-            blockers.append("owner_gpu_unitree_g1_asset_not_spawned")
+        if spawn_robot_asset and not supported_isaac_robot_asset_spawned:
+            blockers.append("owner_gpu_supported_isaac_robot_asset_not_spawned")
 
     unique_blockers: List[str] = []
     for blocker in blockers:
@@ -1038,7 +1087,11 @@ def validate_owner_gpu_system_proof(
         "simulator_version": proof.get("simulator_version"),
         "gpu_model": proof.get("gpu_model"),
         "robot_asset": robot_asset or None,
-        "expected_isaac_robot_asset": dict(DEFAULT_ISAAC_HUMANOID_ROBOT_ASSET),
+        "expected_isaac_robot_asset": dict(
+            DEFAULT_ISAAC_HUMANOID_ROBOT_ASSET
+            if unitree_g1_asset_spawned
+            else DEFAULT_ISAAC_ROBOT_ASSET
+        ),
         "exit_code": exit_code,
         "blockers": unique_blockers,
         "warnings": warnings,
@@ -1064,7 +1117,10 @@ def validate_owner_gpu_system_proof(
             "robot_asset_matches_proof": robot_asset_matches_proof,
             "isaac_robot_asset_required": isaac_robot_asset_required,
             "unitree_g1_asset_spawned": unitree_g1_asset_spawned,
+            "franka_panda_asset_spawned": franka_panda_asset_spawned,
+            "supported_isaac_robot_asset_spawned": supported_isaac_robot_asset_spawned,
             "mujoco_g1_asset_spawned": mujoco_g1_asset_spawned,
+            "mujoco_franka_panda_asset_spawned": mujoco_franka_panda_asset_spawned,
             "isaac_robot_asset_valid": isaac_robot_asset_valid,
             "mujoco_g1_asset_valid": mujoco_g1_asset_valid,
             "operator_attestation_present": _attestation_ok(proof.get("operator_attestation")),
@@ -1075,7 +1131,11 @@ def validate_owner_gpu_system_proof(
         "isaac_sim_execution_proven": accepted and isaac_robot_asset_valid,
         "isaac_robot_asset_execution_proven": accepted and isaac_robot_asset_valid,
         "unitree_g1_asset_spawned": accepted and unitree_g1_asset_spawned,
+        "franka_panda_asset_spawned": accepted and franka_panda_asset_spawned,
         "mujoco_g1_asset_spawned": accepted and mujoco_g1_asset_spawned,
+        "mujoco_franka_panda_asset_spawned": (
+            accepted and mujoco_franka_panda_asset_spawned
+        ),
         "mujoco_g1_asset_execution_proven": accepted and mujoco_g1_asset_valid,
         "scene_loaded_in_owner_simulator": accepted and scene_loaded,
         "spawn_pose_loaded": accepted and spawn_loaded,
@@ -2754,11 +2814,11 @@ def _gpu_owner_system_proof_schema(*, generated_at: str, scene_id: str, capture_
             "isaac_sim_execution_proven",
             "isaac_robot_asset_execution_proven",
         ],
-        "default_isaac_robot_asset": dict(DEFAULT_ISAAC_HUMANOID_ROBOT_ASSET),
+        "default_isaac_robot_asset": dict(DEFAULT_ISAAC_ROBOT_ASSET),
         "conditional_requirements": {
             "isaac_sim_or_isaac_lab_arena": [
-                "proof.robot_asset identifies Unitree G1",
-                "spawn trace robot_asset identifies Robots/Unitree/G1/g1.usd",
+                "proof.robot_asset identifies the selected supported robot",
+                "spawn trace identifies Franka Panda or explicit Unitree G1 USD",
                 "proof robot_asset and spawn trace robot_asset match",
             ],
         },

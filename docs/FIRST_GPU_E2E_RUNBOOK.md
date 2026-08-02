@@ -812,6 +812,7 @@ receives these environment variables:
 - `BLUEPRINT_SPAWN_TRACE`
 - `BLUEPRINT_ACTION_OR_POLICY_TRACE`
 - `BLUEPRINT_DEFAULT_SMOKE_POLICY`
+- `BLUEPRINT_DEFAULT_SMOKE_POLICY_KIND`
 - `BLUEPRINT_DEFAULT_SMOKE_POLICY_TARGET`
 - `BLUEPRINT_ROBOT_ASSET_NAME`
 - `BLUEPRINT_ROBOT_ASSET_URI_OR_PATH`
@@ -821,21 +822,24 @@ receives these environment variables:
 - `BLUEPRINT_SIM_ROBOT_POV_EVIDENCE`
 - `BLUEPRINT_ARTIFACT_MANIFEST`
 
-For the default `isaac_sim` first run, the robot asset target is Unitree G1 from
-the Isaac Sim robot assets catalog:
+For an unspecified `isaac_sim` owner run, the robot asset target is Franka
+Panda from the Isaac Sim robot assets catalog:
 
 ```bash
-export BLUEPRINT_ROBOT_ASSET_NAME="Unitree G1"
-export BLUEPRINT_ROBOT_ASSET_URI_OR_PATH="Robots/Unitree/G1/g1.usd"
+export BLUEPRINT_ROBOT_ASSET_NAME="Franka Panda"
+export BLUEPRINT_ROBOT_ASSET_URI_OR_PATH="Robots/FrankaRobotics/FrankaPanda/franka.usd"
 export BLUEPRINT_ROBOT_ASSET_SOURCE="isaac_sim_robot_assets"
-export BLUEPRINT_ROBOT_ASSET_CLASS="humanoid"
+export BLUEPRINT_ROBOT_ASSET_CLASS="fixed_base_single_arm_manipulator"
 ```
 
-The spawn trace must include the same asset mapping. A procedural humanoid proxy
-may be recorded as fallback simulator evidence, but it does not clear
+When the selected task explicitly requires a humanoid and does not name a robot,
+select Unitree G1 (`Robots/Unitree/G1/g1.usd`) instead. The spawn trace must
+include the same asset mapping as the proof. A procedural robot proxy may be
+recorded as fallback simulator evidence, but it does not clear
 `isaac_sim_execution_proven` or `isaac_robot_asset_execution_proven`.
 
-For a cheaper local asset check before renting a GPU, run the MuJoCo G1 smoke:
+For a cheaper local check of an explicitly selected humanoid lane before renting
+a GPU, run the MuJoCo G1 smoke:
 
 ```bash
 python scripts/local_mujoco_g1_walk_to_target_smoke.py \

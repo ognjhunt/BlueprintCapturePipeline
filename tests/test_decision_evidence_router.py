@@ -503,6 +503,48 @@ def test_router_enforces_false_safe_coverage_budget_rights_inputs_and_availabili
     assert reach["status"] == "abstention_planned"
 
 
+def test_abstention_next_experiment_ignores_methods_for_other_claim_types() -> None:
+    testbed = _testbed()
+    request = _request(testbed)
+    request.pop("request_digest")
+    request["claims"] = [_claim("collision", "collision_contact")]
+    request = DecisionEvidenceRequest.from_mapping(request).to_mapping()
+    cheap_wrong_claim = _profile(
+        "cheap-reach-only",
+        "analytic_geometry_kinematics",
+        ["reachability"],
+        required_inputs=["metric_geometry"],
+        authority=2,
+        cost=0.0,
+        latency=0.0,
+        correlation_group="reach-only",
+    )
+    compatible_unqualified = _profile(
+        "site-contact-simulation",
+        "traditional_simulation",
+        ["collision_contact"],
+        required_inputs=["collision_scene"],
+        authority=2,
+        cost=1.0,
+        latency=10.0,
+        correlation_group="site-collision",
+    )
+
+    plan = route_decision_evidence(
+        request,
+        testbed,
+        [cheap_wrong_claim, compatible_unqualified],
+        [],
+    ).to_mapping()
+
+    claim_plan = plan["claim_plans"][0]
+    assert claim_plan["status"] == "abstention_planned"
+    assert claim_plan["next_cheapest_experiment"].startswith(
+        "qualify_or_supply:site-contact-simulation:"
+    )
+    assert "claim_type_not_supported" not in claim_plan["next_cheapest_experiment"]
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_reason"),
     [

@@ -43,7 +43,10 @@ from blueprint_pipeline.reconstruction_geometry_contracts import (
     build_metric_geometry_manifest,
     build_nurec_openusd_packaging_result,
 )
-from blueprint_pipeline.safe_outbound_http import SafeHttpFileTransfer
+from blueprint_pipeline.safe_outbound_http import (
+    SafeHttpFileTransfer,
+    SafeOutboundHttpError,
+)
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     build_paid_lane_admission,
@@ -789,7 +792,9 @@ def test_isaac_bootstrap_binds_downloads_preserves_typed_blocker_and_uploads(
             json.dumps(runtime), encoding="utf-8"
         )
         log_path.write_text("typed blocker preserved\n", encoding="utf-8")
-        return 2
+        # Isaac's python.sh wrapper can normalize the typed blocker's process
+        # exit to zero even though the runtime JSON remains fail closed.
+        return 0
 
     def fake_upload(url, *, input_path, expected_sha256, **_kwargs):
         payload = Path(input_path).read_bytes()
@@ -813,7 +818,8 @@ def test_isaac_bootstrap_binds_downloads_preserves_typed_blocker_and_uploads(
         process_runner=fake_process,
     )
     assert result["status"] == "output_uploaded"
-    assert result["isaac_runtime_exit_code"] == 2
+    assert result["isaac_runtime_exit_code"] == 0
+    assert result["input_bundle_download_attempts"] == 1
     assert result["scientific_qualification_inferred"] is False
     assert result["simulator_task_success_proven"] is False
     assert result["bootstrap_receipt_digest"] == canonical_digest(
@@ -842,6 +848,37 @@ def test_isaac_bootstrap_binds_downloads_preserves_typed_blocker_and_uploads(
     assert validated["status"] == "validated"
     assert runtime["status"] == "blocked"
     assert runtime["blockers"] == ["isaacsim_module_unavailable"]
+
+
+def test_isaac_bootstrap_retries_one_same_instance_input_digest_mismatch(
+    tmp_path, monkeypatch
+):
+    expected = "sha256:" + "a" * 64
+    calls = 0
+
+    def fake_download(_url, *, expected_sha256, **_kwargs):
+        nonlocal calls
+        calls += 1
+        assert expected_sha256 == expected
+        if calls == 1:
+            raise SafeOutboundHttpError("outbound_http_file_digest_mismatch")
+        return SafeHttpFileTransfer(
+            status=200,
+            transferred_bytes=123,
+            sha256=expected,
+            host="objects.example",
+        )
+
+    monkeypatch.setattr(isaac_bootstrap, "download_file", fake_download)
+    transfer, attempts = isaac_bootstrap._download_input_bundle_with_integrity_retry(
+        url="https://objects.example/input.zip?secret",
+        output_path=tmp_path / "input.zip",
+        expected_sha256=expected,
+    )
+
+    assert transfer.sha256 == expected
+    assert attempts == 2
+    assert calls == 2
 
 
 def test_isaac_bootstrap_fails_closed_before_runtime_on_binding_ttl_or_missing_result(
@@ -906,6 +943,91 @@ def test_isaac_bootstrap_fails_closed_before_runtime_on_binding_ttl_or_missing_r
             work_root=tmp_path / "missing-result-worker",
             process_runner=lambda *_args: 0,
         )
+
+
+def test_isaac_bootstrap_uploads_typed_blocker_after_abnormal_runtime_exit(
+    tmp_path, monkeypatch
+):
+    request, receipt, input_bundle, receipt_bytes = _isaac_bootstrap_fixture(tmp_path)
+    uploaded = {}
+
+    def fake_download(url, *, output_path, expected_sha256, **_kwargs):
+        payload = receipt_bytes if "receipt.json" in url else input_bundle.read_bytes()
+        Path(output_path).write_bytes(payload)
+        return SafeHttpFileTransfer(
+            status=200,
+            transferred_bytes=len(payload),
+            sha256=expected_sha256,
+            host="objects.example",
+        )
+
+    def abnormal_process(_command, root, log_path, _timeout_seconds):
+        partial = {
+            "schema_version": receipt["expected_runtime_schema"],
+            "status": "running",
+            "phase": "runner_stage_opened",
+            "isaac_verification_request_digest": receipt[
+                "isaac_verification_request_digest"
+            ],
+            "package_digest": receipt["package_digest"],
+            "fixed_camera_spec_digest": receipt["fixed_camera_spec_digest"],
+            "runtime_container_image_digest": receipt[
+                "runtime_container_image_digest"
+            ],
+            "runtime_implementation_digest": receipt[
+                "runtime_implementation_digest"
+            ],
+            "runtime_identity": {
+                "runtime": "isaac_sim",
+                "renderer": "RayTracedLighting",
+                "python_version": "3.11.0",
+                "headless": True,
+            },
+            "raw_secret_values_recorded": False,
+        }
+        (root / "out/isaac_runtime_result.json").write_text(
+            json.dumps(partial), encoding="utf-8"
+        )
+        log_path.write_text("abnormal runtime marker\n", encoding="utf-8")
+        return 1
+
+    def fake_upload(url, *, input_path, expected_sha256, **_kwargs):
+        del url
+        payload = Path(input_path).read_bytes()
+        observed = "sha256:" + hashlib.sha256(payload).hexdigest()
+        assert observed == expected_sha256
+        uploaded["output"] = payload
+        return SafeHttpFileTransfer(
+            status=200,
+            transferred_bytes=len(payload),
+            sha256=observed,
+            host="objects.example",
+        )
+
+    monkeypatch.setattr(isaac_bootstrap, "download_file", fake_download)
+    monkeypatch.setattr(isaac_bootstrap, "upload_file", fake_upload)
+    bootstrap = isaac_bootstrap.run_reconstruction_isaac_bootstrap(
+        environment=_isaac_bootstrap_environment(request, receipt, receipt_bytes),
+        work_root=tmp_path / "abnormal-worker",
+        process_runner=abnormal_process,
+    )
+
+    assert bootstrap["status"] == "output_uploaded"
+    retrieved = tmp_path / "abnormal-output.zip"
+    retrieved.write_bytes(uploaded["output"])
+    _validated, runtime, _root = validate_and_extract_isaac_verification_output_bundle(
+        bundle_path=retrieved,
+        expected_input_receipt=receipt,
+        expected_source_commit_sha=request["source_commit_sha"],
+        output_root=tmp_path / "validated-abnormal-output",
+    )
+    assert runtime["status"] == "blocked"
+    assert runtime["blockers"] == ["isaac_runtime_process_exit_status_mismatch"]
+    diagnostic = runtime["runtime_process_diagnostic"]
+    assert diagnostic["exit_code"] == 1
+    assert diagnostic["partial_phase"] == "runner_stage_opened"
+    assert diagnostic["log_tail"] == "abnormal runtime marker\n"
+    assert diagnostic["transfer_urls_removed_from_runner_environment"] is True
 
 
 def test_isaac_default_process_runner_caps_live_log_and_strips_transfer_urls(
@@ -1006,7 +1128,13 @@ class _IsaacVastProvider:
         assert spec.env["ACCEPT_EULA"] == "Y"
         assert spec.env["PRIVACY_CONSENT"] == "Y"
         assert spec.env["CUDA_VISIBLE_DEVICES"] == "0"
-        assert "reconstruction_isaac_bootstrap" in " ".join(spec.bootstrap_argv)
+        bootstrap = " ".join(spec.bootstrap_argv)
+        assert (
+            "exec /isaac-sim/python.sh -m "
+            "blueprint_pipeline.reconstruction_isaac_bootstrap"
+        ) in bootstrap
+        assert "exec python3 -m blueprint_pipeline.reconstruction_isaac_bootstrap" in bootstrap
+        assert "BLUEPRINT_RECONSTRUCTION_ISAAC_BLOCKED:python_runtime_missing" in bootstrap
         return {"create_payload": {"env": dict(spec.env)}}
 
     def launch(self, job_dir, request, **_kwargs):
