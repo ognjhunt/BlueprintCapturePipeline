@@ -629,9 +629,13 @@ Implemented and hermetically tested:
   `XDG_CACHE_HOME` or `HOME`, while the sanitized adapter process inherited
   neither; the published wheel's exact build commit is not asserted. The executor now synthesizes
   both paths inside its per-execution temporary root without exposing an operator
-  home or widening the inherited-environment allowlist. No CUDA kernel or DLO-Lab
-  case execution was observed, so the next bounded step is one fixed-tuple rerun,
-  not a qualification claim. The controller rechecks every source
+  home or widening the inherited-environment allowlist. The fixed-tuple rerun
+  cleared every earlier Quadrants/Torch import probe in both cases and advanced
+  to a silent code-1 exit at `torch -> genesis`, with no signal, timeout, stderr,
+  or CUDA kernel observation. A request-bound first-case Python import audit now
+  retains only sanitized module names and raw-output digest metadata to localize
+  that later failure without persisting host paths or secrets. This is still a
+  diagnostic result, not a qualification claim. The controller rechecks every source
   digest, executes both cases through the generic adapter executor, requires
   CUDA observations and matching replay traces, and preserves all Q-DLO,
   R5-R7, production, physical, and policy-ranking claims as false. Bundle

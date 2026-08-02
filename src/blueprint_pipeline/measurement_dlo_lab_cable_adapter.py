@@ -45,9 +45,14 @@ _IMPORT_PROBES = (
 )
 _IMPORT_UNAVAILABLE_EXIT_CODE = 86
 _NATIVE_DIAGNOSTIC_MODE = "gdb_first_case_only"
+_IMPORT_DIAGNOSTIC_MODE = "audit_exception_first_case_only"
 _NATIVE_DIAGNOSTIC_CASE_SUFFIX = "001"
 _NATIVE_DIAGNOSTIC_MAX_SECONDS = 45
 _NATIVE_DIAGNOSTIC_MAX_FRAMES = 32
+_IMPORT_DIAGNOSTIC_MAX_SECONDS = 45
+_IMPORT_DIAGNOSTIC_MAX_MODULES = 64
+_IMPORT_DIAGNOSTIC_MAX_RAW_BYTES = 1_048_576
+_IMPORT_DIAGNOSTIC_EXCEPTION_EXIT_CODE = 87
 
 
 def implementation_digest() -> str:
@@ -272,6 +277,7 @@ def run_dlo_lab_cable_request(
     settings = dict(runtime["solver_settings"])
     if settings != {
         "backend": "cuda",
+        "import_diagnostic": _IMPORT_DIAGNOSTIC_MODE,
         "native_diagnostic": _NATIVE_DIAGNOSTIC_MODE,
         "replay_count": 2,
         "source_commit": EXPECTED_SOURCE_COMMIT,
@@ -546,6 +552,89 @@ def _native_debugger_observation(
     }
 
 
+def _import_audit_script(import_statements: str) -> str:
+    indented = "\n".join(f"    {line}" for line in import_statements.splitlines())
+    return (
+        "import os, re, sys\n"
+        "def _blueprint_emit(kind, value):\n"
+        "    if re.fullmatch(r'[A-Za-z0-9_.]+', value):\n"
+        "        os.write(1, ('BLUEPRINT_' + kind + ':' + value + '\\n').encode('ascii'))\n"
+        "def _blueprint_import_audit(event, args):\n"
+        "    if event != 'import' or not args or not isinstance(args[0], str):\n"
+        "        return\n"
+        "    _blueprint_emit('IMPORT', args[0])\n"
+        "sys.addaudithook(_blueprint_import_audit)\n"
+        "try:\n"
+        f"{indented}\n"
+        "except BaseException as exc:\n"
+        "    exc_type = type(exc)\n"
+        "    _blueprint_emit('EXCEPTION', exc_type.__module__ + '.' + exc_type.__qualname__)\n"
+        "    if isinstance(exc, SystemExit) and isinstance(exc.code, int) and not isinstance(exc.code, bool):\n"
+        "        if -255 <= exc.code <= 255:\n"
+        "            os.write(1, ('BLUEPRINT_SYSTEM_EXIT:' + str(exc.code) + '\\n').encode('ascii'))\n"
+        f"    raise SystemExit({_IMPORT_DIAGNOSTIC_EXCEPTION_EXIT_CODE}) from None\n"
+    )
+
+
+def _import_audit_observation(*, import_statements: str, timeout_seconds: float) -> dict[str, Any]:
+    bounded_timeout = max(0.001, min(timeout_seconds, _IMPORT_DIAGNOSTIC_MAX_SECONDS))
+    try:
+        completed = subprocess.run(  # nosec B603 - fixed interpreter and probe source
+            [sys.executable, "-c", _import_audit_script(import_statements)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=bounded_timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        structured_payload = bytes(exc.stdout or b"")
+        stderr_payload = bytes(exc.stderr or b"")
+        return_code = None
+        status = "timed_out"
+    else:
+        structured_payload = completed.stdout
+        stderr_payload = completed.stderr
+        return_code = int(completed.returncode)
+        status = "captured"
+    payload = structured_payload + stderr_payload
+    modules: list[str] = []
+    exception_types: list[str] = []
+    system_exit_codes: list[int] = []
+    for line in structured_payload.decode("utf-8", errors="replace").splitlines():
+        if line.startswith("BLUEPRINT_IMPORT:"):
+            module = line.removeprefix("BLUEPRINT_IMPORT:")
+            if re.fullmatch(r"[A-Za-z0-9_.]+", module):
+                modules.append(module[:200])
+        elif line.startswith("BLUEPRINT_EXCEPTION:"):
+            exception_type = line.removeprefix("BLUEPRINT_EXCEPTION:")
+            if re.fullmatch(r"[A-Za-z0-9_.]+", exception_type):
+                exception_types.append(exception_type[:200])
+        elif line.startswith("BLUEPRINT_SYSTEM_EXIT:"):
+            system_exit_code = line.removeprefix("BLUEPRINT_SYSTEM_EXIT:")
+            if re.fullmatch(r"-?[0-9]{1,3}", system_exit_code):
+                parsed_exit_code = int(system_exit_code)
+                if -255 <= parsed_exit_code <= 255:
+                    system_exit_codes.append(parsed_exit_code)
+    bounded_modules = modules[-_IMPORT_DIAGNOSTIC_MAX_MODULES:]
+    bounded_payload = payload[:_IMPORT_DIAGNOSTIC_MAX_RAW_BYTES]
+    safe_markers_observed = bool(bounded_modules or exception_types or system_exit_codes)
+    return {
+        "status": status if status == "timed_out" or safe_markers_observed else "no_safe_markers",
+        "tool": "python_audit_hook",
+        "return_code": return_code,
+        "timeout_seconds": bounded_timeout,
+        "raw_output_digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+        "raw_output_bytes": len(payload),
+        "raw_output_truncated": len(payload) > len(bounded_payload),
+        "raw_output_content_persisted": False,
+        "module_count": len(modules),
+        "last_modules": bounded_modules,
+        "exception_type": exception_types[-1] if exception_types else None,
+        "system_exit_code": system_exit_codes[-1] if system_exit_codes else None,
+    }
+
+
 def _supervised_failure_result(
     request: Mapping[str, Any],
     *,
@@ -555,6 +644,7 @@ def _supervised_failure_result(
     phase: str,
     failure_codes: Sequence[str],
     native_diagnostic: Mapping[str, Any] | None = None,
+    import_diagnostic: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     observations = {
         "engine_version": "unavailable",
@@ -580,6 +670,8 @@ def _supervised_failure_result(
     }
     if native_diagnostic is not None:
         observations["supervised_worker_native_diagnostic"] = dict(native_diagnostic)
+    if import_diagnostic is not None:
+        observations["supervised_worker_import_diagnostic"] = dict(import_diagnostic)
     return build_measurement_adapter_worker_result(
         request,
         status="blocked",
@@ -637,17 +729,26 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
                 failure_codes = _classified_native_failure(probe.stderr, probe_exit_code)
                 failure_codes.append(f"dlo_lab_adapter_native_import_probe_failed:{probe_id}")
             native_diagnostic = None
+            import_diagnostic = None
             execution_id = str(request.get("execution_id") or "")
             if (
                 probe_id == "quadrants"
                 and probe_exit_code < 0
-                and request["runtime_configuration"]["solver_settings"].get(
-                    "native_diagnostic"
-                )
+                and request["runtime_configuration"]["solver_settings"].get("native_diagnostic")
                 == _NATIVE_DIAGNOSTIC_MODE
                 and execution_id.endswith(_NATIVE_DIAGNOSTIC_CASE_SUFFIX)
             ):
                 native_diagnostic = _native_debugger_observation(
+                    import_statements=import_statements,
+                    timeout_seconds=max(0.001, deadline - time.monotonic()),
+                )
+            if (
+                probe_id == "torch_then_genesis"
+                and request["runtime_configuration"]["solver_settings"].get("import_diagnostic")
+                == _IMPORT_DIAGNOSTIC_MODE
+                and execution_id.endswith(_NATIVE_DIAGNOSTIC_CASE_SUFFIX)
+            ):
+                import_diagnostic = _import_audit_observation(
                     import_statements=import_statements,
                     timeout_seconds=max(0.001, deadline - time.monotonic()),
                 )
@@ -659,6 +760,7 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
                 phase=phase,
                 failure_codes=failure_codes,
                 native_diagnostic=native_diagnostic,
+                import_diagnostic=import_diagnostic,
             )
         try:
             completed = subprocess.run(  # nosec B603 - fixed module and argv

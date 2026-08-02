@@ -118,10 +118,32 @@
     "compatibility_variables_change": false,
     "purpose": "Satisfy native cache-root initialization without exposing operator state, then rerun the same fixed compatibility tuple once."
   },
+  "attempt8_observation": {
+    "blueprint_source_commit": "7eecf463db4ebb18d383982fe0e3ca65250870b3",
+    "sandbox_home_fix_request_bound": true,
+    "direct_quadrants_import_succeeded": true,
+    "torch_then_quadrants_import_succeeded": true,
+    "genesis_import_succeeded": false,
+    "common_exit_code": 1,
+    "common_native_signal": null,
+    "common_last_phase": "native_import_probe:torch_then_genesis",
+    "common_stderr_bytes": 0,
+    "cuda_kernel_failure_observed": false,
+    "evidence_path": "docs/evidence/measurement_dlo_lab_vast_attempt8_2026-08-02.json"
+  },
+  "next_import_diagnostic": {
+    "diagnostic_mode_binding": "execution_request.runtime_configuration.solver_settings.import_diagnostic",
+    "diagnostic_mode": "audit_first_case_only",
+    "raw_output_content_persisted": false,
+    "sanitized_module_names_only": true,
+    "compatibility_variables_change": false,
+    "purpose": "Localize the silent code-1 Genesis import exit after the sandbox cache-root fix advanced every earlier import probe."
+  },
   "evidence_boundary": {
     "primary_source_metadata_observed": true,
     "python_3_12_runtime_import_proven": false,
     "runtime_import_proven": false,
+    "direct_quadrants_import_proven": true,
     "cuda_execution_proven": false,
     "deterministic_replay_proven": false,
     "qualification_created": false,
