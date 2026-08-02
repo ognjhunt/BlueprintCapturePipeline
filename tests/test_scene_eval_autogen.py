@@ -155,6 +155,32 @@ def test_binary_vertex_ply_bounds_recovered(tmp_path: Path) -> None:
     assert manifest["geometry_grounding"] == "bounds_recovered"
 
 
+def test_binary_splat_trims_sparse_outliers_and_infers_y_up(tmp_path: Path) -> None:
+    points = [
+        (
+            float(index % 20) * 0.5,
+            float((index // 20) % 6) * 0.5,
+            float((index // 120) % 18) * 0.5,
+        )
+        for index in range(2_000)
+    ]
+    points.extend([(-250.0, -250.0, -250.0), (250.0, 250.0, 250.0)])
+    scene = _write_binary_vertex_ply(tmp_path / "scaniverse_splat.ply", points)
+
+    ingested = sea.ingest_scene_file(scene)
+
+    assert ingested["status"] == "completed"
+    assert ingested["up_axis"] == "Y"
+    assert ingested["up_axis_source"] == "smallest_robust_extent_heuristic"
+    assert ingested["metric_scale_status"] == "unverified"
+    assert ingested["metric_scale_proven"] is False
+    extents = [
+        ingested["bounds"]["max"][axis] - ingested["bounds"]["min"][axis] for axis in range(3)
+    ]
+    assert max(extents) < 20.0
+    assert extents[1] == min(extents)
+
+
 def test_usda_semantic_grounding_adds_object_tasks(tmp_path: Path) -> None:
     scene = _write_kitchen_usda(tmp_path / "kitchen_scene.usda")
     manifest = sea.generate_scene_eval_tasks(scene, tmp_path / "out")

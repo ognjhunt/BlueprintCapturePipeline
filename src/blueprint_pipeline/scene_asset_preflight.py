@@ -146,9 +146,7 @@ def _relative_if_file(base_dir: Path, target: Path) -> str | None:
 
 
 def _sha_payload(payload: Mapping[str, Any]) -> str:
-    return sha256(
-        repr(sorted(payload.items())).encode("utf-8", errors="replace")
-    ).hexdigest()
+    return sha256(repr(sorted(payload.items())).encode("utf-8", errors="replace")).hexdigest()
 
 
 def _sha_file(path: Path) -> str | None:
@@ -306,10 +304,7 @@ def _bounds_from_points(points: Sequence[Sequence[float]]) -> Dict[str, Any] | N
         return None
     mins = [min(point[index] for point in clean) for index in range(3)]
     maxs = [max(point[index] for point in clean) for index in range(3)]
-    centroid = [
-        sum(point[index] for point in clean) / float(len(clean))
-        for index in range(3)
-    ]
+    centroid = [sum(point[index] for point in clean) / float(len(clean)) for index in range(3)]
     return {
         "bounds": {"min": mins, "max": maxs},
         "centroid": centroid,
@@ -355,9 +350,7 @@ def _semantic_hints_from_names(names: Sequence[str], *, source: str) -> List[Dic
 
 
 def _has_collider_name_token(value: str) -> bool:
-    return bool(
-        re.search(r"(^|[^a-z0-9])(collider|collision|physics)($|[^a-z0-9])", value.lower())
-    )
+    return bool(re.search(r"(^|[^a-z0-9])(collider|collision|physics)($|[^a-z0-9])", value.lower()))
 
 
 def _percentile(values: Sequence[float], percentile: float) -> float | None:
@@ -412,9 +405,7 @@ def _parse_ply_header(lines: Sequence[str]) -> Dict[str, Any]:
                     }
                 )
             else:
-                current["properties"].append(
-                    {"kind": "scalar", "type": parts[1], "name": parts[2]}
-                )
+                current["properties"].append({"kind": "scalar", "type": parts[1], "name": parts[2]})
     return {"format": fmt, "elements": elements}
 
 
@@ -443,7 +434,9 @@ def _inspect_ascii_ply(path: Path, parsed: Mapping[str, Any], header_end: int) -
     vertex = next((item for item in elements if item.get("name") == "vertex"), {})
     properties = [dict(item) for item in vertex.get("properties", []) if isinstance(item, Mapping)]
     property_names = [_string(item.get("name")) for item in properties]
-    xyz_indexes = [property_names.index(axis) if axis in property_names else -1 for axis in ("x", "y", "z")]
+    xyz_indexes = [
+        property_names.index(axis) if axis in property_names else -1 for axis in ("x", "y", "z")
+    ]
     if min(xyz_indexes) < 0:
         return {
             "bounds": None,
@@ -552,6 +545,118 @@ def _inspect_binary_chunk_bounds(
     }
 
 
+def inspect_binary_vertex_ply_xyz(
+    path: Path,
+    parsed: Mapping[str, Any],
+    header_end: int,
+    *,
+    max_samples: int = 100_000,
+) -> Dict[str, Any] | None:
+    """Stride-sample XYZ from a fixed-width binary vertex PLY.
+
+    Standard 3DGS exports commonly store one large ``vertex`` element whose
+    first properties are XYZ followed by appearance parameters.  They do not
+    carry PlayCanvas ``chunk`` min/max records, but their centers remain cheap
+    to inspect without materializing the full splat.  Large captures use robust
+    1st/99th-percentile bounds so a sparse halo of floaters cannot turn a room
+    into a hundreds-of-metres scene.  Raw sampled bounds remain available for
+    diagnostics and no unit or collision claim is inferred here.
+    """
+
+    if max_samples <= 0:
+        return None
+    elements = [dict(item) for item in parsed.get("elements", []) if isinstance(item, Mapping)]
+    vertex_index = next(
+        (index for index, item in enumerate(elements) if item.get("name") == "vertex"),
+        None,
+    )
+    if vertex_index is None:
+        return None
+
+    data_offset = header_end
+    for element in elements[:vertex_index]:
+        properties = [
+            dict(item) for item in element.get("properties", []) if isinstance(item, Mapping)
+        ]
+        record_size = _ply_record_size(properties)
+        if record_size is None:
+            return None
+        data_offset += int(element.get("count") or 0) * record_size
+
+    vertex = elements[vertex_index]
+    properties = [dict(item) for item in vertex.get("properties", []) if isinstance(item, Mapping)]
+    record_size = _ply_record_size(properties)
+    if record_size is None or record_size <= 0:
+        return None
+
+    xyz: Dict[str, tuple[int, str]] = {}
+    property_offset = 0
+    for prop in properties:
+        type_name = _string(prop.get("type"))
+        scalar_format, scalar_size = _PLY_SCALAR_TYPES.get(type_name, ("", 0))
+        if not scalar_format or scalar_size <= 0:
+            return None
+        name = _string(prop.get("name"))
+        if name in {"x", "y", "z"}:
+            xyz[name] = (property_offset, scalar_format)
+        property_offset += scalar_size
+    if set(xyz) != {"x", "y", "z"}:
+        return None
+
+    vertex_count = int(vertex.get("count") or 0)
+    if vertex_count <= 0:
+        return None
+    sample_stride = max(1, math.ceil(vertex_count / max_samples))
+    endian = "<" if parsed.get("format") == "binary_little_endian" else ">"
+    axis_values: List[List[float]] = [[], [], []]
+
+    with path.open("rb") as handle:
+        for index in range(0, vertex_count, sample_stride):
+            handle.seek(data_offset + index * record_size)
+            raw = handle.read(record_size)
+            if len(raw) != record_size:
+                break
+            point = [
+                float(struct.unpack_from(endian + xyz[axis][1], raw, xyz[axis][0])[0])
+                for axis in ("x", "y", "z")
+            ]
+            if not all(math.isfinite(value) for value in point):
+                continue
+            for axis, value in enumerate(point):
+                axis_values[axis].append(value)
+
+    sampled = len(axis_values[0])
+    if sampled == 0:
+        return None
+    raw_low = [min(values) for values in axis_values]
+    raw_high = [max(values) for values in axis_values]
+    robust = sampled >= 1_000
+    trim = 0.01 if robust else 0.0
+    low = [float(_percentile(values, trim)) for values in axis_values]
+    high = [float(_percentile(values, 1.0 - trim)) for values in axis_values]
+    center = [float(_percentile(values, 0.5)) for values in axis_values]
+    floor_candidates = [
+        float(_percentile(values, 0.02 if robust else 0.0)) for values in axis_values
+    ]
+    return {
+        "bounds": {"min": low, "max": high},
+        "raw_sampled_bounds": {"min": raw_low, "max": raw_high},
+        "centroid": center,
+        "floor_z_estimate": floor_candidates[2],
+        "floor_candidates_by_axis": floor_candidates,
+        "sampled_point_count": sampled,
+        "sample_stride": sample_stride,
+        "record_size_bytes": record_size,
+        "robust_outlier_trim_fraction_per_tail": trim,
+        "estimate_method": "binary_vertex_xyz_stride_sample",
+        "confidence": "medium",
+        "limitations": [
+            "Binary vertex bounds are stride-sampled CPU estimates, not full-scan extrema.",
+            "XYZ magnitudes do not independently establish metric units or coordinate-frame alignment.",
+        ],
+    }
+
+
 def inspect_ply_asset(path: Path) -> Dict[str, Any]:
     lines, header_end = _ply_header(path)
     parsed = _parse_ply_header(lines)
@@ -562,16 +667,20 @@ def inspect_ply_asset(path: Path) -> Dict[str, Any]:
     if fmt == "ascii":
         estimate = _inspect_ascii_ply(path, parsed, header_end)
     elif fmt in {"binary_little_endian", "binary_big_endian"}:
-        estimate = _inspect_binary_chunk_bounds(path, parsed, header_end) or {
-            "bounds": None,
-            "centroid": None,
-            "floor_z_estimate": None,
-            "estimate_method": "binary_header_only_no_decoded_xyz",
-            "confidence": "low",
-            "limitations": [
-                "Binary PLY did not expose xyz float vertices or chunk min/max bounds.",
-            ],
-        }
+        estimate = (
+            _inspect_binary_chunk_bounds(path, parsed, header_end)
+            or inspect_binary_vertex_ply_xyz(path, parsed, header_end)
+            or {
+                "bounds": None,
+                "centroid": None,
+                "floor_z_estimate": None,
+                "estimate_method": "binary_header_only_no_decoded_xyz",
+                "confidence": "low",
+                "limitations": [
+                    "Binary PLY did not expose xyz float vertices or chunk min/max bounds.",
+                ],
+            }
+        )
     else:
         estimate = {
             "bounds": None,
@@ -599,6 +708,13 @@ def inspect_ply_asset(path: Path) -> Dict[str, Any]:
         "bounds": estimate.get("bounds"),
         "centroid": estimate.get("centroid"),
         "floor_z_estimate": estimate.get("floor_z_estimate"),
+        "floor_candidates_by_axis": estimate.get("floor_candidates_by_axis"),
+        "raw_sampled_bounds": estimate.get("raw_sampled_bounds"),
+        "sampled_point_count": estimate.get("sampled_point_count"),
+        "sample_stride": estimate.get("sample_stride"),
+        "robust_outlier_trim_fraction_per_tail": estimate.get(
+            "robust_outlier_trim_fraction_per_tail"
+        ),
         "estimate_method": estimate.get("estimate_method"),
         "confidence": estimate.get("confidence"),
         "limitations": [
@@ -903,6 +1019,7 @@ def inspect_usd_asset(path: Path) -> Dict[str, Any]:
     text = path.read_text(encoding="utf-8", errors="ignore")[:2_000_000]
     dependencies = _extract_usd_dependencies(path, text)
     semantic_hints = _extract_usd_semantic_hints(text)
+
     def count(pattern: str) -> int:
         return len(re.findall(pattern, text))
 
@@ -918,7 +1035,9 @@ def inspect_usd_asset(path: Path) -> Dict[str, Any]:
             "mesh_tokens_estimated": count(r"\bMesh\b"),
             "material_tokens_estimated": count(r"\bMaterial\b"),
             "reference_tokens_estimated": count(r"@[^@\n]+@"),
-            "physics_collision_tokens_estimated": count(r"CollisionAPI|PhysicsCollision|physics:collision"),
+            "physics_collision_tokens_estimated": count(
+                r"CollisionAPI|PhysicsCollision|physics:collision"
+            ),
             "rigid_body_tokens_estimated": count(r"RigidBodyAPI|physics:rigidBody"),
         },
         "isaac_usd_import_candidate": True,
@@ -1045,22 +1164,22 @@ def _gltf_accessor_bounds(payload: Mapping[str, Any]) -> Dict[str, Any] | None:
         high = [float(value) for value in bounds.get("max", [])[:3]]
         if len(low) != 3 or len(high) != 3:
             continue
-        combined_low = low if combined_low is None else [
-            min(combined_low[axis], low[axis]) for axis in range(3)
-        ]
-        combined_high = high if combined_high is None else [
-            max(combined_high[axis], high[axis]) for axis in range(3)
-        ]
+        combined_low = (
+            low
+            if combined_low is None
+            else [min(combined_low[axis], low[axis]) for axis in range(3)]
+        )
+        combined_high = (
+            high
+            if combined_high is None
+            else [max(combined_high[axis], high[axis]) for axis in range(3)]
+        )
         used_indexes.append(index)
-        if index in preferred:
-            break
     if combined_low is None or combined_high is None:
         return None
     return {
         "bounds": {"min": combined_low, "max": combined_high},
-        "centroid": [
-            (combined_low[index] + combined_high[index]) * 0.5 for index in range(3)
-        ],
+        "centroid": [(combined_low[index] + combined_high[index]) * 0.5 for index in range(3)],
         "floor_z_estimate": combined_low[2],
         "estimate_method": "gltf_position_accessor_min_max"
         if any(index in preferred for index in used_indexes)
@@ -1132,7 +1251,10 @@ def inspect_gltf_asset(path: Path) -> Dict[str, Any]:
     name_blob = " ".join([path.stem, *node_names, *mesh_names]).lower()
     collider_named = _has_collider_name_token(name_blob)
     dependencies = _gltf_dependencies(path, payload)
-    bounds_estimate = _gltf_accessor_bounds(payload) or _trimesh_gltf_bounds(path) or {}
+    # A loaded scene applies node transforms and combines all geometry.  Prefer
+    # that world-space estimate when the optional importer is available, then
+    # retain accessor min/max as the dependency-light fallback.
+    bounds_estimate = _trimesh_gltf_bounds(path) or _gltf_accessor_bounds(payload) or {}
     return {
         "asset_type": asset_type,
         "path": str(path.resolve()),
@@ -1181,7 +1303,9 @@ def inspect_obj_asset(path: Path) -> Dict[str, Any]:
                     except ValueError:
                         pass
             elif line.startswith(("o ", "g ")):
-                names.append(line.split(maxsplit=1)[1].strip() if len(line.split(maxsplit=1)) > 1 else "")
+                names.append(
+                    line.split(maxsplit=1)[1].strip() if len(line.split(maxsplit=1)) > 1 else ""
+                )
             elif line.startswith("mtllib "):
                 ref = line.split(maxsplit=1)[1].strip() if len(line.split(maxsplit=1)) > 1 else ""
                 if ref:
@@ -1239,7 +1363,9 @@ def _inspect_xml_asset(path: Path) -> Dict[str, Any]:
             ),
         }
     tag = root.tag.split("}")[-1].lower()
-    asset_type = "urdf" if tag == "robot" else "mjcf" if tag == "mujoco" else _asset_type_for_path(path)
+    asset_type = (
+        "urdf" if tag == "robot" else "mjcf" if tag == "mujoco" else _asset_type_for_path(path)
+    )
     dependencies: List[Dict[str, Any]] = []
     names: List[str] = []
     collision_count = 0
@@ -1313,7 +1439,9 @@ def _candidate_paths_from_payload(capture_root: Path, payload: Mapping[str, Any]
     ):
         value = _string(payload.get(key))
         if value and not value.startswith(("gs://", "http://", "https://")):
-            paths.append((capture_root / value).resolve() if not Path(value).is_absolute() else Path(value))
+            paths.append(
+                (capture_root / value).resolve() if not Path(value).is_absolute() else Path(value)
+            )
     assets = _mapping(payload.get("assets"))
     splats = _mapping(assets.get("splats"))
     for group in (splats.get("ply_urls"), splats.get("usd_urls")):
@@ -1321,17 +1449,25 @@ def _candidate_paths_from_payload(capture_root: Path, payload: Mapping[str, Any]
             for value in group.values():
                 text = _string(value)
                 if text and not text.startswith(("gs://", "http://", "https://")):
-                    paths.append((capture_root / text).resolve() if not Path(text).is_absolute() else Path(text))
+                    paths.append(
+                        (capture_root / text).resolve()
+                        if not Path(text).is_absolute()
+                        else Path(text)
+                    )
     for value in _walk_payload_strings(payload):
         text = _string(value)
         if not text or _is_remote_ref(text) or not _looks_like_supported_asset_ref(text):
             continue
         candidate = Path(text)
-        paths.append((capture_root / candidate).resolve() if not candidate.is_absolute() else candidate)
+        paths.append(
+            (capture_root / candidate).resolve() if not candidate.is_absolute() else candidate
+        )
     return paths
 
 
-def discover_scene_assets(capture_root: Path, explicit_assets: Sequence[str | Path] = ()) -> List[Path]:
+def discover_scene_assets(
+    capture_root: Path, explicit_assets: Sequence[str | Path] = ()
+) -> List[Path]:
     context = resolve_local_capture_context(capture_root)
     pipeline_dir = context.pipeline_root
     candidates: List[Path] = []
@@ -1497,7 +1633,9 @@ def _frame_candidate_rank(asset: Mapping[str, Any], frame: Mapping[str, Any]) ->
     )
 
 
-def _select_scene_frame_source(assets: Sequence[Mapping[str, Any]]) -> tuple[Dict[str, Any] | None, List[Dict[str, Any]]]:
+def _select_scene_frame_source(
+    assets: Sequence[Mapping[str, Any]],
+) -> tuple[Dict[str, Any] | None, List[Dict[str, Any]]]:
     candidates: List[tuple[tuple[float, ...], Dict[str, Any], Mapping[str, Any]]] = []
     rejected: List[Dict[str, Any]] = []
     for asset in assets:
@@ -1524,7 +1662,9 @@ def _select_scene_frame_source(assets: Sequence[Mapping[str, Any]]) -> tuple[Dic
     return selected, rejected
 
 
-def _inventory_from_assets(assets: Sequence[Mapping[str, Any]], *, generated_at: str, context: Any) -> Dict[str, Any]:
+def _inventory_from_assets(
+    assets: Sequence[Mapping[str, Any]], *, generated_at: str, context: Any
+) -> Dict[str, Any]:
     records = []
     for asset in assets:
         path_text = _string(asset.get("path"))
@@ -1594,7 +1734,9 @@ def _dependency_audit_from_assets(
             )
     missing_count = sum(1 for item in dependencies if item.get("missing_local_file"))
     hard_missing_count = sum(
-        1 for item in dependencies if item.get("hard_missing_local_file", item.get("missing_local_file"))
+        1
+        for item in dependencies
+        if item.get("hard_missing_local_file", item.get("missing_local_file"))
     )
     owner_system_material_warning_count = sum(
         1 for item in dependencies if item.get("owner_system_material_library_ref")
@@ -1636,7 +1778,9 @@ def _dependency_audit_from_assets(
 
 
 def _object_geometry_proxy_obstacles(pipeline_dir: Path) -> List[Dict[str, Any]]:
-    manifest = _read_optional_mapping(pipeline_dir / "evaluation_prep" / "object_geometry_manifest.json")
+    manifest = _read_optional_mapping(
+        pipeline_dir / "evaluation_prep" / "object_geometry_manifest.json"
+    )
     objects = manifest.get("objects")
     if not isinstance(objects, list):
         return []
@@ -1734,7 +1878,9 @@ def _collider_proxy_artifacts(
         "capture_id": context.capture_id,
         "status": "real_collider_metadata_present"
         if real_collider_proven
-        else "proxy_plan_ready" if proxy_estimated else "blocked_missing_collider_and_proxy",
+        else "proxy_plan_ready"
+        if proxy_estimated
+        else "blocked_missing_collider_and_proxy",
         "real_collider_proven": real_collider_proven,
         "proxy_estimated": proxy_estimated,
         "missing_collider": missing_collider,
@@ -1876,9 +2022,15 @@ def build_scene_asset_preflight(
         "scene_frame_estimate_status": frame_estimate["status"],
         "binary_usd_openusd_handoff": binary_usd_openusd_handoff,
         "owner_system_usd_handoff_ready": owner_system_usd_handoff_ready,
-        "isaac_usd_import_candidate": any(asset.get("isaac_usd_import_candidate") for asset in usd_assets),
-        "isaac_usd_collision_verified": any(asset.get("isaac_usd_collision_verified") for asset in usd_assets),
-        "isaac_usd_collision_unverified": any(asset.get("isaac_usd_collision_unverified") for asset in usd_assets),
+        "isaac_usd_import_candidate": any(
+            asset.get("isaac_usd_import_candidate") for asset in usd_assets
+        ),
+        "isaac_usd_collision_verified": any(
+            asset.get("isaac_usd_collision_verified") for asset in usd_assets
+        ),
+        "isaac_usd_collision_unverified": any(
+            asset.get("isaac_usd_collision_unverified") for asset in usd_assets
+        ),
         "portable_collider_glb_present": portable_collider_present,
         "portable_collider_glb_missing": not portable_collider_present,
         "cpu_proxy_collision_estimated": cpu_proxy_estimated,
@@ -1886,7 +2038,11 @@ def build_scene_asset_preflight(
         "blockers": [
             *blockers,
             *(["portable_collider_glb_missing"] if not portable_collider_present else []),
-            *(["isaac_usd_collision_unverified"] if any(asset.get("isaac_usd_collision_unverified") for asset in usd_assets) else []),
+            *(
+                ["isaac_usd_collision_unverified"]
+                if any(asset.get("isaac_usd_collision_unverified") for asset in usd_assets)
+                else []
+            ),
             "simulator_execution_not_run",
         ],
         "scene_asset_inventory_path": "scene_asset_inventory.json",
@@ -1913,9 +2069,7 @@ def build_scene_asset_preflight(
         },
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
-    inspection["deterministic_fingerprint"] = _sha_payload(
-        {"assets": assets, "blockers": blockers}
-    )
+    inspection["deterministic_fingerprint"] = _sha_payload({"assets": assets, "blockers": blockers})
     frame_estimate["deterministic_fingerprint"] = _sha_payload(
         {"frame": frame_source, "blockers": frame_estimate["blockers"]}
     )
@@ -2006,14 +2160,22 @@ def build_scene_asset_preflight(
         "capture_root": str(context.capture_root),
         "automation_dir": str(automation_dir),
         "status": scorecard["status"],
-        "scene_asset_inventory_path": str((automation_dir / "scene_asset_inventory.json").resolve()),
+        "scene_asset_inventory_path": str(
+            (automation_dir / "scene_asset_inventory.json").resolve()
+        ),
         "scene_asset_dependency_audit_path": str(
             (automation_dir / "scene_asset_dependency_audit.json").resolve()
         ),
-        "scene_asset_preflight_path": str((automation_dir / "scene_asset_preflight.json").resolve()),
-        "scene_asset_inspection_path": str((automation_dir / "scene_asset_inspection.json").resolve()),
+        "scene_asset_preflight_path": str(
+            (automation_dir / "scene_asset_preflight.json").resolve()
+        ),
+        "scene_asset_inspection_path": str(
+            (automation_dir / "scene_asset_inspection.json").resolve()
+        ),
         "scene_frame_estimate_path": str((automation_dir / "scene_frame_estimate.json").resolve()),
-        "cpu_preflight_scorecard_path": str((automation_dir / "cpu_preflight_scorecard.json").resolve()),
+        "cpu_preflight_scorecard_path": str(
+            (automation_dir / "cpu_preflight_scorecard.json").resolve()
+        ),
         "collider_proxy_plan_path": str((automation_dir / "collider_proxy_plan.json").resolve()),
         "cpu_scene_proxy_manifest_path": str(
             (automation_dir / "cpu_scene_proxy_manifest.json").resolve()

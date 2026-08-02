@@ -47,7 +47,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import struct
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -63,8 +62,8 @@ from .robot_eval_dataset import (
 )
 from .scene_asset_preflight import (
     _parse_ply_header,
-    _percentile,
     _ply_header,
+    inspect_binary_vertex_ply_xyz,
     inspect_ply_asset,
     inspect_usd_asset,
 )
@@ -114,65 +113,234 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
 # Environment keyword banks for deterministic classification. Scores are simple
 # hit counts over recovered labels + filename tokens; ties resolve in this order.
 _ENVIRONMENT_KEYWORDS: Sequence[tuple[str, frozenset]] = (
-    ("kitchen", frozenset({
-        "kitchen", "sink", "faucet", "stove", "oven", "fridge", "refrigerator",
-        "microwave", "dishwasher", "kettle", "counter", "countertop", "pantry",
-        "cooktop", "range",
-    })),
-    ("warehouse", frozenset({
-        "warehouse", "rack", "pallet", "forklift", "tote", "conveyor", "aisle",
-        "dock", "carton", "crate", "stockroom",
-    })),
-    ("manufacturing", frozenset({
-        "factory", "assembly", "cnc", "lathe", "workbench", "machine", "fixture",
-        "line", "station", "cell", "press",
-    })),
-    ("office", frozenset({
-        "office", "desk", "monitor", "keyboard", "whiteboard", "cubicle",
-        "printer", "conference",
-    })),
-    ("bathroom", frozenset({
-        "bathroom", "toilet", "shower", "bathtub", "basin", "washbasin", "vanity",
-    })),
-    ("bedroom", frozenset({
-        "bedroom", "bed", "nightstand", "wardrobe", "dresser", "mattress",
-    })),
-    ("retail", frozenset({
-        "store", "retail", "checkout", "register", "display", "mannequin",
-    })),
+    (
+        "kitchen",
+        frozenset(
+            {
+                "kitchen",
+                "sink",
+                "faucet",
+                "stove",
+                "oven",
+                "fridge",
+                "refrigerator",
+                "microwave",
+                "dishwasher",
+                "kettle",
+                "counter",
+                "countertop",
+                "pantry",
+                "cooktop",
+                "range",
+            }
+        ),
+    ),
+    (
+        "warehouse",
+        frozenset(
+            {
+                "warehouse",
+                "rack",
+                "pallet",
+                "forklift",
+                "tote",
+                "conveyor",
+                "aisle",
+                "dock",
+                "carton",
+                "crate",
+                "stockroom",
+            }
+        ),
+    ),
+    (
+        "manufacturing",
+        frozenset(
+            {
+                "factory",
+                "assembly",
+                "cnc",
+                "lathe",
+                "workbench",
+                "machine",
+                "fixture",
+                "line",
+                "station",
+                "cell",
+                "press",
+            }
+        ),
+    ),
+    (
+        "office",
+        frozenset(
+            {
+                "office",
+                "desk",
+                "monitor",
+                "keyboard",
+                "whiteboard",
+                "cubicle",
+                "printer",
+                "conference",
+            }
+        ),
+    ),
+    (
+        "bathroom",
+        frozenset(
+            {
+                "bathroom",
+                "toilet",
+                "shower",
+                "bathtub",
+                "basin",
+                "washbasin",
+                "vanity",
+            }
+        ),
+    ),
+    (
+        "bedroom",
+        frozenset(
+            {
+                "bedroom",
+                "bed",
+                "nightstand",
+                "wardrobe",
+                "dresser",
+                "mattress",
+            }
+        ),
+    ),
+    (
+        "retail",
+        frozenset(
+            {
+                "store",
+                "retail",
+                "checkout",
+                "register",
+                "display",
+                "mannequin",
+            }
+        ),
+    ),
 )
 _DEFAULT_ENVIRONMENT = "generic_indoor"
 
 # Prim/label tokens that name scene structure rather than actionable objects.
-_STRUCTURAL_TOKENS = frozenset({
-    "root", "world", "scene", "stage", "geom", "geometry", "mesh", "meshes",
-    "material", "materials", "looks", "shader", "shaders", "xform", "prototypes",
-    "instance", "instances", "env", "environment", "render", "rendering",
-    "light", "lights", "dome", "camera", "cameras", "physics", "collision",
-    "collider", "colliders", "ground", "floor", "floors", "wall", "walls",
-    "ceiling", "ceilings", "sky", "skybox", "grid", "default", "prim", "group",
-    "layer", "payload", "ref", "proto",
-})
+_STRUCTURAL_TOKENS = frozenset(
+    {
+        "root",
+        "world",
+        "scene",
+        "stage",
+        "geom",
+        "geometry",
+        "mesh",
+        "meshes",
+        "material",
+        "materials",
+        "looks",
+        "shader",
+        "shaders",
+        "xform",
+        "prototypes",
+        "instance",
+        "instances",
+        "env",
+        "environment",
+        "render",
+        "rendering",
+        "light",
+        "lights",
+        "dome",
+        "camera",
+        "cameras",
+        "physics",
+        "collision",
+        "collider",
+        "colliders",
+        "ground",
+        "floor",
+        "floors",
+        "wall",
+        "walls",
+        "ceiling",
+        "ceilings",
+        "sky",
+        "skybox",
+        "grid",
+        "default",
+        "prim",
+        "group",
+        "layer",
+        "payload",
+        "ref",
+        "proto",
+    }
+)
 
 # Labels that read as hand-manipulable payloads regardless of localization.
-_PICKABLE_LABELS = frozenset({
-    "kettle", "cup", "mug", "bowl", "pot", "pan", "plate", "bottle", "vase",
-    "book", "box", "carton", "tote", "package", "part", "tool", "can", "jar",
-    "lamp", "basket", "tray", "item",
-})
+_PICKABLE_LABELS = frozenset(
+    {
+        "kettle",
+        "cup",
+        "mug",
+        "bowl",
+        "pot",
+        "pan",
+        "plate",
+        "bottle",
+        "vase",
+        "book",
+        "box",
+        "carton",
+        "tote",
+        "package",
+        "part",
+        "tool",
+        "can",
+        "jar",
+        "lamp",
+        "basket",
+        "tray",
+        "item",
+    }
+)
 
 # Labels that read as inspectable fixtures / storage the robot surveys.
-_FIXTURE_LABELS = frozenset({
-    "shelf", "rack", "cabinet", "counter", "table", "desk", "machine",
-    "conveyor", "workbench", "station", "pallet", "locker", "bench", "stand",
-    "wardrobe", "dresser", "sofa", "couch", "bed",
-})
+_FIXTURE_LABELS = frozenset(
+    {
+        "shelf",
+        "rack",
+        "cabinet",
+        "counter",
+        "table",
+        "desk",
+        "machine",
+        "conveyor",
+        "workbench",
+        "station",
+        "pallet",
+        "locker",
+        "bench",
+        "stand",
+        "wardrobe",
+        "dresser",
+        "sofa",
+        "couch",
+        "bed",
+    }
+)
 
 # Objects bigger than this on every axis are structure, not a graspable payload.
 _PICKUP_MAX_EXTENT_M = 0.6
 
 
 # ----------------------------- small helpers -----------------------------
+
 
 def _slug(value: Any, *, fallback: str = "item") -> str:
     text = str(value or "").strip().lower()
@@ -184,7 +352,7 @@ def _slug(value: Any, *, fallback: str = "item") -> str:
 def _hash01(*parts: Any) -> float:
     """Deterministic pseudo-random float in [0, 1) from the given parts."""
     digest = sha256("|".join(str(part) for part in parts).encode("utf-8")).hexdigest()
-    return int(digest[:12], 16) / float(16 ** 12)
+    return int(digest[:12], 16) / float(16**12)
 
 
 def _sha_payload(payload: Any) -> str:
@@ -220,90 +388,22 @@ def _threshold_profile_for_family(task_family: str) -> Dict[str, Any]:
 
 # ----------------------------- ingestion -----------------------------
 
-def _sample_binary_vertex_ply(path: Path, *, max_samples: int = 100_000) -> Optional[Dict[str, Any]]:
-    """Bounds/centroid/floor from a standard binary vertex PLY via stdlib struct.
 
-    ``inspect_ply_asset`` decodes ascii vertices and compressed chunk bounds but
-    only header-scans standard binary vertex PLYs — exactly the format bare 3DGS
-    exports use. Stride-sample the vertex records so huge splats stay cheap.
-    """
+def _sample_binary_vertex_ply(
+    path: Path, *, max_samples: int = 100_000
+) -> Optional[Dict[str, Any]]:
+    """Compatibility wrapper around the shared binary-vertex inspector."""
     try:
         lines, header_end = _ply_header(path)
     except (OSError, ValueError):
         return None
     parsed = _parse_ply_header(lines)
-    fmt = str(parsed.get("format") or "")
-    if fmt not in {"binary_little_endian", "binary_big_endian"}:
-        return None
-    elements = [dict(item) for item in parsed.get("elements", []) if isinstance(item, Mapping)]
-    vertex = next((item for item in elements if item.get("name") == "vertex"), None)
-    if vertex is None or elements[0].get("name") != "vertex":
-        return None
-    properties = [dict(item) for item in vertex.get("properties", []) if isinstance(item, Mapping)]
-    scalar_sizes = {"char": 1, "uchar": 1, "int8": 1, "uint8": 1,
-                    "short": 2, "ushort": 2, "int16": 2, "uint16": 2,
-                    "int": 4, "uint": 4, "int32": 4, "uint32": 4, "float": 4, "float32": 4,
-                    "double": 8, "float64": 8}
-    offset = 0
-    xyz_spec: Dict[str, tuple] = {}
-    for prop in properties:
-        if prop.get("kind") != "scalar":
-            return None
-        type_name = str(prop.get("type"))
-        size = scalar_sizes.get(type_name, 0)
-        if size <= 0:
-            return None
-        name = str(prop.get("name"))
-        if name in {"x", "y", "z"}:
-            if type_name in {"float", "float32"}:
-                code = "f"
-            elif type_name in {"double", "float64"}:
-                code = "d"
-            else:
-                return None
-            xyz_spec[name] = (offset, code)
-        offset += size
-    record_size = offset
-    if len(xyz_spec) != 3 or record_size <= 0:
-        return None
-    endian = "<" if fmt == "binary_little_endian" else ">"
-    count = int(vertex.get("count") or 0)
-    if count <= 0:
-        return None
-    stride = max(1, count // max_samples)
-    mins = [math.inf, math.inf, math.inf]
-    maxs = [-math.inf, -math.inf, -math.inf]
-    totals = [0.0, 0.0, 0.0]
-    z_values: List[float] = []
-    sampled = 0
-    with path.open("rb") as handle:
-        for index in range(0, count, stride):
-            handle.seek(header_end + index * record_size)
-            raw = handle.read(record_size)
-            if len(raw) != record_size:
-                break
-            point = []
-            for axis in ("x", "y", "z"):
-                axis_offset, code = xyz_spec[axis]
-                point.append(float(struct.unpack_from(endian + code, raw, axis_offset)[0]))
-            if not all(math.isfinite(value) for value in point):
-                continue
-            for axis_index, value in enumerate(point):
-                mins[axis_index] = min(mins[axis_index], value)
-                maxs[axis_index] = max(maxs[axis_index], value)
-                totals[axis_index] += value
-            z_values.append(point[2])
-            sampled += 1
-    if sampled == 0:
-        return None
-    return {
-        "bounds": {"min": mins, "max": maxs},
-        "centroid": [total / sampled for total in totals],
-        "floor_z_estimate": _percentile(z_values, 0.02),
-        "sampled_point_count": sampled,
-        "estimate_method": "binary_vertex_xyz_stride_sample",
-        "confidence": "medium",
-    }
+    return inspect_binary_vertex_ply_xyz(
+        path,
+        parsed,
+        header_end,
+        max_samples=max_samples,
+    )
 
 
 def _labels_from_semantic_hints(hints: Sequence[Mapping[str, Any]]) -> List[str]:
@@ -322,7 +422,11 @@ def _labels_from_semantic_hints(hints: Sequence[Mapping[str, Any]]) -> List[str]
         # canonicalization, so "tote_bin" stays a pickable tote instead of collapsing
         # into the trash group via "bin".
         for token in tokens:
-            if token in _PICKABLE_LABELS or token in _FIXTURE_LABELS or token in _OPENABLE_TARGET_GROUPS:
+            if (
+                token in _PICKABLE_LABELS
+                or token in _FIXTURE_LABELS
+                or token in _OPENABLE_TARGET_GROUPS
+            ):
                 label = token
                 break
         if label is None:
@@ -336,7 +440,11 @@ def _labels_from_semantic_hints(hints: Sequence[Mapping[str, Any]]) -> List[str]
             if not candidates:
                 continue
             noun = candidates[-1]
-            if noun in _PICKABLE_LABELS or noun in _FIXTURE_LABELS or noun in _OPENABLE_TARGET_GROUPS:
+            if (
+                noun in _PICKABLE_LABELS
+                or noun in _FIXTURE_LABELS
+                or noun in _OPENABLE_TARGET_GROUPS
+            ):
                 label = noun
             elif len(candidates) == len(tokens):
                 # A fully non-structural name is still a usable object hint.
@@ -389,6 +497,10 @@ def ingest_scene_file(scene_path: Path) -> Dict[str, Any]:
         "scene_file_name": scene_path.name,
         "asset_type": "ply" if suffix == ".ply" else "usd",
         "up_axis": "Z",
+        "up_axis_source": "default_pending_inspection",
+        "meters_per_unit": None,
+        "metric_scale_status": "unverified",
+        "metric_scale_proven": False,
         "bounds": None,
         "centroid": None,
         "floor": None,
@@ -424,6 +536,7 @@ def _ingest_supported_scene_file(
             "bounds": inspection.get("bounds"),
             "centroid": inspection.get("centroid"),
             "floor_z_estimate": inspection.get("floor_z_estimate"),
+            "floor_candidates_by_axis": inspection.get("floor_candidates_by_axis"),
             "estimate_method": inspection.get("estimate_method"),
         }
         if not estimate.get("bounds"):
@@ -444,6 +557,11 @@ def _ingest_supported_scene_file(
             "estimate_method": inspection.get("estimate_method"),
         }
         scene["up_axis"] = str(inspection.get("up_axis") or "Z").upper() or "Z"
+        scene["up_axis_source"] = "usd_stage_metadata"
+        meters_per_unit = inspection.get("meters_per_unit")
+        if isinstance(meters_per_unit, (int, float)) and math.isfinite(float(meters_per_unit)):
+            scene["meters_per_unit"] = float(meters_per_unit)
+            scene["metric_scale_status"] = "stage_declared_not_independently_validated"
         scene["object_labels"] = _labels_from_semantic_hints(inspection.get("semantic_hints") or [])
         scene["objects"] = _usd_scene_objects(scene_path)
         if scene["objects"] and not scene["object_labels"]:
@@ -460,12 +578,31 @@ def _ingest_supported_scene_file(
     low = _finite_triplet(bounds.get("min")) if bounds else None
     high = _finite_triplet(bounds.get("max")) if bounds else None
     if low and high:
+        if suffix == ".ply":
+            extents = [high[index] - low[index] for index in range(3)]
+            up_index = min(range(3), key=lambda index: extents[index])
+            scene["up_axis"] = ("X", "Y", "Z")[up_index]
+            scene["up_axis_source"] = "smallest_robust_extent_heuristic"
+            scene["limitations"].append(
+                "PLY up axis is inferred from the smallest robust extent and requires gravity-frame validation."
+            )
         scene["bounds"] = {"min": low, "max": high}
         centroid = _finite_triplet(estimate.get("centroid"))
         scene["centroid"] = centroid or [(low[i] + high[i]) * 0.5 for i in range(3)]
-        up_index = 1 if scene["up_axis"] == "Y" else 2
-        floor = estimate.get("floor_z_estimate") if up_index == 2 else None
-        scene["floor"] = float(floor) if isinstance(floor, (int, float)) and math.isfinite(float(floor)) else low[up_index]
+        up_index = {"X": 0, "Y": 1, "Z": 2}.get(scene["up_axis"], 2)
+        floor_candidates = _finite_triplet(estimate.get("floor_candidates_by_axis"))
+        floor = (
+            floor_candidates[up_index]
+            if floor_candidates is not None
+            else estimate.get("floor_z_estimate")
+            if up_index == 2
+            else None
+        )
+        scene["floor"] = (
+            float(floor)
+            if isinstance(floor, (int, float)) and math.isfinite(float(floor))
+            else low[up_index]
+        )
     else:
         scene["limitations"].append(
             "scene_bounds_unavailable_header_only_inspection_zone_poses_degraded"
@@ -475,6 +612,7 @@ def _ingest_supported_scene_file(
 
 # ----------------------------- environment classification -----------------------------
 
+
 def classify_environment(scene: Mapping[str, Any]) -> Dict[str, Any]:
     """Deterministic keyword-scored environment guess from labels + filename."""
     tokens: List[str] = []
@@ -483,15 +621,12 @@ def classify_environment(scene: Mapping[str, Any]) -> Dict[str, Any]:
     tokens.extend(_slug(Path(str(scene.get("scene_file_name") or "")).stem).split("_"))
     token_set = {token for token in tokens if token}
     scores = {
-        environment: len(token_set & keywords)
-        for environment, keywords in _ENVIRONMENT_KEYWORDS
+        environment: len(token_set & keywords) for environment, keywords in _ENVIRONMENT_KEYWORDS
     }
     best = max(scores.values() or [0])
     environment = _DEFAULT_ENVIRONMENT
     if best > 0:
-        environment = next(
-            env for env, keywords in _ENVIRONMENT_KEYWORDS if scores[env] == best
-        )
+        environment = next(env for env, keywords in _ENVIRONMENT_KEYWORDS if scores[env] == best)
     return {
         "environment": environment,
         "confidence": "keyword_match" if best > 0 else "default_no_semantic_signal",
@@ -503,6 +638,7 @@ def classify_environment(scene: Mapping[str, Any]) -> Dict[str, Any]:
 
 # ----------------------------- zones -----------------------------
 
+
 def derive_scene_zones(scene: Mapping[str, Any]) -> List[Dict[str, Any]]:
     """Named staging zones from the scene bounds: center + inset quadrant midpoints.
 
@@ -512,7 +648,7 @@ def derive_scene_zones(scene: Mapping[str, Any]) -> List[Dict[str, Any]]:
     """
     bounds = scene.get("bounds")
     up_axis = str(scene.get("up_axis") or "Z").upper()
-    up = 1 if up_axis == "Y" else 2
+    up = {"X": 0, "Y": 1, "Z": 2}.get(up_axis, 2)
     h0, h1 = [axis for axis in range(3) if axis != up]
     zone_specs = (
         ("zone_center", 0.5, 0.5, "central staging zone"),
@@ -557,6 +693,7 @@ def _zone_by_id(zones: Sequence[Mapping[str, Any]], zone_id: str) -> Dict[str, A
 
 
 # ----------------------------- task synthesis -----------------------------
+
 
 def _object_pose(scene: Mapping[str, Any], label: str) -> Optional[List[float]]:
     for obj in scene.get("objects") or []:
@@ -761,6 +898,7 @@ def synthesize_tasks(
 
 # ----------------------------- scenario synthesis -----------------------------
 
+
 def _route_midpoint(task: Mapping[str, Any]) -> Optional[List[float]]:
     start = _finite_triplet(task.get("start_zone"))
     goal = _finite_triplet(task.get("goal_zone"))
@@ -935,6 +1073,7 @@ def synthesize_scenarios(
 
 # ----------------------------- eval cards + family library -----------------------------
 
+
 def _eval_cards(
     tasks: Sequence[Mapping[str, Any]],
     scenarios: Sequence[Mapping[str, Any]],
@@ -1004,6 +1143,7 @@ def _scenario_family_library(
 
 # ----------------------------- orchestration -----------------------------
 
+
 def generate_scene_eval_tasks(
     scene_path: str | Path,
     output_dir: str | Path,
@@ -1053,9 +1193,7 @@ def generate_scene_eval_tasks(
             "claim_boundary": "caller_supplied_environment_override",
         }
     zones = derive_scene_zones(scene)
-    tasks = synthesize_tasks(
-        scene, environment, zones, min_tasks=min_tasks, max_tasks=max_tasks
-    )
+    tasks = synthesize_tasks(scene, environment, zones, min_tasks=min_tasks, max_tasks=max_tasks)
     scenarios = synthesize_scenarios(tasks, seeds_per_variation=seeds_per_variation)
     evals = _eval_cards(tasks, scenarios, attempts_per_scenario=attempts_per_scenario)
 
@@ -1145,6 +1283,7 @@ def generate_scene_eval_tasks(
 
 # ----------------------------- CLI -----------------------------
 
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -1158,7 +1297,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="Artifact directory (default: <scene stem>_eval_autogen next to the scene file)",
     )
-    parser.add_argument("--site-id", default=None, help="Explicit site id (default: derived from the file name)")
+    parser.add_argument(
+        "--site-id", default=None, help="Explicit site id (default: derived from the file name)"
+    )
     parser.add_argument(
         "--environment",
         default=None,
