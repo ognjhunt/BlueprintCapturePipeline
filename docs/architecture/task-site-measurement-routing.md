@@ -593,18 +593,19 @@ Implemented and hermetically tested:
   examples, and carries an Apache-2.0 license file, while the task assets remain
   a separate download. Its adapter now requires an isolated source checkout;
   the generic `genesis-world` distribution identity cannot prove that the
-  DLO-Lab fork is installed. This is source/rights feasibility evidence, not
-  runtime, deterministic-replay, material-accuracy, or Q-DLO evidence;
+  DLO-Lab fork is installed. Source and rights feasibility remain separate from
+  the exact-source CUDA development execution described below; neither proves
+  material accuracy or Q-DLO qualification;
 - a CUDA-only exact-source DLO-Lab development worker. Its request binds the
   implementation digest, upstream commit, `genesis-world` distribution version,
   solver parameters, seed, precision, task case, and two-replay requirement.
   It refuses generic Genesis identity and CPU fallback, samples the fixed-free
   parameterized-rod trajectory, compares replay digests, and emits only the
-  generic nonqualifying adapter-worker result. Two paid provider attempts installed
-  the exact runtime but aborted before Genesis import completed; a third attempt proved
-  isolated Torch import succeeds while Torch followed by Quadrants reproducibly aborts
-  with the same native assertion. The worker retains isolated import probes, but this
-  closes diagnostic contracts rather than successful CUDA replay or runtime proof;
+  generic nonqualifying adapter-worker result. Attempt 10 completed both
+  synthetic cases on one CUDA device without CPU fallback, and each case
+  reproduced an identical trace on replay. This proves the exact-source
+  development worker and replay contract, not characterized cable physics,
+  Q-DLO, production routing, or physical success;
 - a deterministic clean-commit DLO-Lab Vast input-bundle compiler and in-worker
   controller. The bundle contains two bounded cable cases, exact request and
   source-file digests, the exact DLO-Lab upstream commit, and the digest-pinned
@@ -649,12 +650,15 @@ Implemented and hermetically tested:
   viewer, the execution request now binds `PYGLET_HEADLESS=1` and
   `PYOPENGL_PLATFORM=egl` through `display_mode=pyglet_headless_egl`, without
   inheriting a host display. The runtime release also binds `libegl1` and an
-  explicit pre-import `libEGL` check. This is still a
-  diagnostic result, not a qualification claim. The controller rechecks every source
-  digest, executes both cases through the generic adapter executor, requires
-  CUDA observations and matching replay traces, and preserves all Q-DLO,
-  R5-R7, production, physical, and policy-ranking claims as false. Bundle
-  creation itself performs no provider allocation;
+  explicit pre-import `libEGL` check. Attempt 10 then completed both synthetic
+  cable cases on one CUDA device without CPU fallback. Each case's repeated
+  trace digest matched exactly and both remained inside their development
+  deformation envelopes. This proves only the exact two-case DLO-Lab CUDA
+  development path; it is not material-accuracy, task/site qualification,
+  physical, or policy-ranking evidence. The controller rechecks every source
+  digest and preserves all Q-DLO, R5-R7, production, physical, and
+  policy-ranking claims as false. Bundle creation itself performs no provider
+  allocation;
 - a separate real MuJoCo 3.11 Capture-to-Deformation cloth worker,
   schema-checked sag/contact corpus, and aggregate runner for the
   `elastic2d=stretch` flex formulation, with solver-warning rejection and
@@ -741,10 +745,11 @@ Not established by this repository change:
   direct tactile development corpus validates sequence reduction and slip-rule
   plumbing only; it contains no real calibration, physical labels, TacSL or
   DiffTactile predictions, or independent evaluator receipt;
-- an executed DLO-Lab GPU development corpus or benchmark. Public source and
-  Apache-2.0 license evidence now exist, but the exact source commit has not yet
-  completed a digest-bound GPU replay, the separate benchmark assets are not
-  retained, and no captured cable/hose material or physical labels are present;
+- a held-out or qualifying DLO-Lab GPU benchmark. The exact source commit has
+  completed the bounded two-case synthetic CUDA development corpus with matching
+  replay traces, but the separate benchmark assets are not retained and no
+  captured cable/hose material, physical labels, independent evaluator receipt,
+  Q-DLO decision, or R7 admission is present;
 - a completed held-out world-model policy-ranking benchmark. The action-
   fidelity development suite has no provider output, real-policy outcomes,
   ranking labels, action-motion correlation, or ranking-regret measurement and
