@@ -4,7 +4,7 @@
   "title": "Authorized external scene Isaac verification request v1",
   "type": "object",
   "required": [
-    "schema_version", "source_commit_sha", "package_digest", "package_result_digest",
+    "schema_version", "source_commit_sha", "robot_id", "package_digest", "package_result_digest",
     "package_artifact_reference", "appearance_scene_digest", "collision_candidate_digest",
     "scene_frame_binding_digest", "target_analysis_digest", "target_binding_digest",
     "placement_proposal_digest", "render_options_digest", "fixed_camera_spec_digest",
@@ -22,6 +22,7 @@
   "properties": {
     "schema_version": {"const": "external_scene_isaac_verification_request.v1"},
     "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
     "package_artifact_reference": {"type": "string", "pattern": "^[^/].*\\.usdz$"},
     "fixed_camera_ids": {"type": "array", "minItems": 1, "uniqueItems": true},
     "runtime_container_image_digest": {"pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},

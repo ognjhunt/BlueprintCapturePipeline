@@ -167,6 +167,63 @@ def test_policy_trace_request_and_pair_distinctness_are_fail_closed() -> None:
     assert "franka_policy_trace_sweep_not_distinct" in blockers
 
 
+def test_joint_position_target_compatibility_uses_direct_legacy_api() -> None:
+    calls = []
+
+    class _Articulation:
+        def set_joint_position_targets(self, positions, *, joint_indices):
+            calls.append((positions, joint_indices))
+
+    mode = runner._set_articulation_joint_position_targets(
+        _Articulation(), [0.1, 0.2], [1, 2], action_factory=pytest.fail
+    )
+
+    assert mode == "direct_set_joint_position_targets"
+    assert calls == [([0.1, 0.2], [1, 2])]
+
+
+def test_joint_position_target_compatibility_uses_isaac6_action_api() -> None:
+    actions = []
+
+    class _Action:
+        def __init__(self, **values):
+            self.values = values
+
+    class _Articulation:
+        def apply_action(self, action):
+            actions.append(action.values)
+
+    mode = runner._set_articulation_joint_position_targets(
+        _Articulation(), [0.3, 0.4], [3, 4], action_factory=_Action
+    )
+
+    assert mode == "articulation_apply_action"
+    assert actions == [{"joint_positions": [0.3, 0.4], "joint_indices": [3, 4]}]
+
+
+def test_joint_position_target_compatibility_uses_controller_fallback() -> None:
+    actions = []
+
+    class _Action:
+        def __init__(self, **values):
+            self.values = values
+
+    class _Controller:
+        def apply_action(self, action):
+            actions.append(action.values)
+
+    class _Articulation:
+        def get_articulation_controller(self):
+            return _Controller()
+
+    mode = runner._set_articulation_joint_position_targets(
+        _Articulation(), [0.5], [5], action_factory=_Action
+    )
+
+    assert mode == "articulation_controller_apply_action"
+    assert actions == [{"joint_positions": [0.5], "joint_indices": [5]}]
+
+
 def test_qualification_blockers_accept_only_complete_v3_evidence() -> None:
     assert (
         runner._qualification_blockers(

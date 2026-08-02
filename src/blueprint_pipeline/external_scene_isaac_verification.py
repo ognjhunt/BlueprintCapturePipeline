@@ -127,6 +127,8 @@ def build_external_scene_isaac_verification_request(
         errors.append("external_scene_isaac_request_schema_invalid")
     if _COMMIT.fullmatch(str(request.get("source_commit_sha") or "")) is None:
         errors.append("external_scene_isaac_source_commit_invalid")
+    if request.get("robot_id") not in {"franka_panda", "unitree_g1"}:
+        errors.append("external_scene_isaac_robot_id_invalid")
     for key in (
         "package_digest",
         "package_result_digest",
@@ -160,6 +162,8 @@ def build_external_scene_isaac_verification_request(
         or any(_CAMERA_ID.fullmatch(str(item or "")) is None for item in camera_ids)
     ):
         errors.append("external_scene_isaac_camera_ids_invalid")
+    elif request.get("robot_id") == "franka_panda" and "head_pov" in camera_ids:
+        errors.append("external_scene_isaac_franka_head_pov_forbidden")
     expected_prims = request.get("expected_prim_paths")
     if expected_prims != {
         "appearance": "/World/BlueprintReconstruction/Appearance",
@@ -351,6 +355,18 @@ def normalize_external_scene_isaac_verification(
     }
     if physics.get("probe_configuration") != expected_probe:
         blockers.append("external_scene_isaac_physics_configuration_mismatch")
+    robot = runtime.get("robot") if isinstance(runtime.get("robot"), Mapping) else {}
+    if robot.get("robot_id") != request["robot_id"]:
+        blockers.append("external_scene_isaac_robot_identity_mismatch")
+    if robot.get("composited") is not True or robot.get("geometry_streamed") is not True:
+        blockers.append("external_scene_isaac_official_robot_geometry_missing")
+    resolved_robot = str(robot.get("resolved_usd") or "").lower()
+    if request["robot_id"] == "franka_panda" and "frankapanda/franka.usd" not in resolved_robot:
+        blockers.append("external_scene_isaac_official_franka_asset_not_observed")
+    if request["robot_id"] == "unitree_g1" and not (
+        "unitree" in resolved_robot and "/g1/" in resolved_robot
+    ):
+        blockers.append("external_scene_isaac_official_g1_asset_not_observed")
     cameras = runtime.get("cameras") if isinstance(runtime.get("cameras"), list) else []
     if [row.get("id") for row in cameras if isinstance(row, Mapping)] != request[
         "fixed_camera_ids"
@@ -411,8 +427,9 @@ def normalize_external_scene_isaac_verification(
             "test_body_fell_through_floor": False,
             "fixed_camera_renders_nonblank": True,
             "official_franka_loaded": bool(
-                isinstance(runtime.get("robot"), Mapping)
-                and runtime["robot"].get("composited") is True
+                request["robot_id"] == "franka_panda"
+                and robot.get("composited") is True
+                and robot.get("geometry_streamed") is True
             ),
         },
         "source_video_available": False,

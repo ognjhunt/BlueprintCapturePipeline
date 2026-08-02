@@ -13,6 +13,9 @@ from PIL import Image
 
 from blueprint_pipeline import reconstruction_isaac_bootstrap as isaac_bootstrap
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.external_scene_isaac_verification import (
+    ExternalSceneIsaacVerificationError,
+)
 from blueprint_pipeline.isaac_reconstruction_verification import (
     IsaacReconstructionVerificationError,
     build_isaac_asset_verification_request,
@@ -32,6 +35,7 @@ from blueprint_pipeline.reconstruction_isaac_output_bundle import (
 )
 from blueprint_pipeline.reconstruction_isaac_vast_operation import (
     ReconstructionIsaacVastError,
+    _independent_qualification,
     replay_reconstruction_isaac_vast_operation,
     run_reconstruction_isaac_vast_operation,
 )
@@ -1147,6 +1151,29 @@ class _IsaacVastProvider:
         assert instance_id == "isaac-42"
         self.launched = False
         return {"status": "stopped", "instance_id": instance_id}
+
+
+def test_external_scene_blocked_runtime_is_an_abstention_not_controller_failure(
+    tmp_path,
+):
+    def blocked_external_normalizer(**_kwargs):
+        raise ExternalSceneIsaacVerificationError(
+            ["external_scene_isaac_runtime_not_completed"]
+        )
+
+    result = _independent_qualification(
+        verification_request={
+            "isaac_verification_request_digest": D[0],
+        },
+        runtime_result={"isaac_runtime_result_digest": D[1]},
+        package_root=tmp_path,
+        runtime_root=tmp_path,
+        normalizer=blocked_external_normalizer,
+    )
+
+    assert result["status"] == "abstained"
+    assert result["blockers"] == ["external_scene_isaac_runtime_not_completed"]
+    assert result["claim_ceiling"] == "runtime_evidence_only"
 
 
 def test_isaac_vast_lifecycle_stages_before_launch_abstains_and_proves_zero(

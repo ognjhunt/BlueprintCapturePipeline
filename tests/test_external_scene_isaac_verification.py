@@ -57,6 +57,7 @@ def _request(*, package: Path, cameras: Path, runner: Path, options: Path) -> di
         {
             "schema_version": "external_scene_isaac_verification_request.v1",
             "source_commit_sha": SHA,
+            "robot_id": "franka_panda",
             "package_digest": _sha(package),
             "package_result_digest": DIGEST,
             "package_artifact_reference": package.name,

@@ -8,8 +8,10 @@ import math
 
 from blueprint_pipeline.splat_scene_analysis import (
     DEFAULT_CAMERA_IDS,
+    FRANKA_PANDA_CAMERA_IDS,
     analyze_scene,
     derive_eval_cameras,
+    evaluation_camera_ids_for_robot,
     suggest_robot_start,
 )
 
@@ -86,6 +88,12 @@ def test_derive_eval_cameras_complete_and_finite() -> None:
         assert spec["fov"] > 0
         # camera should not coincide with its target
         assert np.linalg.norm(np.array(spec["pos"]) - np.array(spec["target"])) > 1e-3
+
+
+def test_robot_specific_camera_defaults_do_not_invent_a_franka_head() -> None:
+    assert evaluation_camera_ids_for_robot("franka_panda") == FRANKA_PANDA_CAMERA_IDS
+    assert "head_pov" not in FRANKA_PANDA_CAMERA_IDS
+    assert "head_pov" in evaluation_camera_ids_for_robot("unitree_g1")
 
 
 def test_up_axis_override() -> None:

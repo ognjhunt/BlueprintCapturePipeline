@@ -274,7 +274,11 @@ def _independent_qualification(
             package_artifact_root=package_root,
             runtime_artifact_root=runtime_root,
         )
-    except (ExternalProviderNuRecError, IsaacReconstructionVerificationError) as exc:
+    except (
+        ExternalProviderNuRecError,
+        ExternalSceneIsaacVerificationError,
+        IsaacReconstructionVerificationError,
+    ) as exc:
         blockers.extend(exc.codes)
     result = {
         "schema_version": QUALIFICATION_SCHEMA_VERSION,

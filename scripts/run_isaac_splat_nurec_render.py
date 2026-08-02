@@ -344,7 +344,12 @@ def _composite_robot(stage, options: dict, *, Gf, UsdGeom, Sdf) -> dict:
     pose = options.get("robot_pose")
     if not robot_usd or not isinstance(pose, (list, tuple)) or len(pose) != 4:
         return {"requested": False}
-    report = {"requested": True, "robot_usd": robot_usd, "robot_pose": [float(v) for v in pose]}
+    report = {
+        "requested": True,
+        "robot_id": str(options.get("robot_id") or "").strip() or None,
+        "robot_usd": robot_usd,
+        "robot_pose": [float(v) for v in pose],
+    }
     try:
         from pxr import Usd  # type: ignore
 
@@ -533,6 +538,48 @@ def _articulation_joint_names(articulation) -> list[str]:
     return [str(value) for value in (names or [])]
 
 
+def _set_articulation_joint_position_targets(
+    articulation,
+    positions,
+    indices,
+    *,
+    action_factory=None,
+) -> str:
+    """Apply joint targets across Isaac Sim articulation API generations.
+
+    Older wrappers expose ``set_joint_position_targets`` directly.  Isaac Sim
+    6 ``SingleArticulation`` instead accepts an ``ArticulationAction`` through
+    either the wrapper or its articulation controller.  Keep both paths in the
+    worker so an image/runtime upgrade cannot silently disable policy traces.
+    """
+
+    direct = getattr(articulation, "set_joint_position_targets", None)
+    if callable(direct):
+        direct(positions, joint_indices=indices)
+        return "direct_set_joint_position_targets"
+    if action_factory is None:
+        try:
+            from isaacsim.core.utils.types import ArticulationAction  # type: ignore
+        except Exception:  # noqa: BLE001 - legacy namespace compatibility
+            from omni.isaac.core.utils.types import ArticulationAction  # type: ignore
+
+        action_factory = ArticulationAction
+    action = action_factory(joint_positions=positions, joint_indices=indices)
+    wrapper_apply = getattr(articulation, "apply_action", None)
+    if callable(wrapper_apply):
+        wrapper_apply(action)
+        return "articulation_apply_action"
+    controller_getter = getattr(articulation, "get_articulation_controller", None)
+    if not callable(controller_getter):
+        raise RuntimeError("franka_policy_trace_position_target_api_unavailable")
+    controller = controller_getter()
+    controller_apply = getattr(controller, "apply_action", None)
+    if not callable(controller_apply):
+        raise RuntimeError("franka_policy_trace_controller_apply_action_unavailable")
+    controller_apply(action)
+    return "articulation_controller_apply_action"
+
+
 def _vector(values) -> list[float]:
     if hasattr(values, "detach"):
         values = values.detach()
@@ -701,6 +748,7 @@ def _run_articulated_policy_traces(
         )
         start = np.asarray(request["start_joint_positions_rad"], dtype=np.float64)
         zeros = np.zeros_like(start)
+        target_api_modes = set()
         for candidate in request["candidates"]:
             policy_id = candidate["policy_id"]
             trace = {
@@ -715,7 +763,9 @@ def _run_articulated_policy_traces(
                 context.stop()
                 articulation.set_joint_positions(start, joint_indices=indices)
                 articulation.set_joint_velocities(zeros, joint_indices=indices)
-                articulation.set_joint_position_targets(start, joint_indices=indices)
+                target_api_modes.add(
+                    _set_articulation_joint_position_targets(articulation, start, indices)
+                )
                 context.play()
                 for _ in range(int(request["reset_settle_steps"])):
                     context.step(render=False)
@@ -727,7 +777,13 @@ def _run_articulated_policy_traces(
                 for step in range(1, duration + 1):
                     alpha = float(step) / float(duration)
                     target = start + alpha * (target_final - start)
-                    articulation.set_joint_position_targets(target, joint_indices=indices)
+                    target_api_modes.add(
+                        _set_articulation_joint_position_targets(
+                            articulation,
+                            target,
+                            indices,
+                        )
+                    )
                     context.step(render=(step % sample_interval == 0 or step == duration))
                     if step % sample_interval == 0 or step == duration:
                         observed = _vector(articulation.get_joint_positions(joint_indices=indices))
@@ -810,6 +866,7 @@ def _run_articulated_policy_traces(
         pair.update(
             candidate_trace_digests=[row["policy_trace_digest"] for row in traces],
             robot_relative_egocentric_camera=True,
+            joint_position_target_api_modes=sorted(target_api_modes),
         )
         pair["trace_pair_digest"] = _canonical_digest(pair, digest_field="trace_pair_digest")
     except Exception as exc:  # noqa: BLE001
