@@ -16,6 +16,7 @@ import importlib
 import importlib.metadata
 import json
 import math
+import os
 from pathlib import Path
 import sys
 from typing import Any, Callable, Mapping, Sequence
@@ -90,6 +91,46 @@ def _enable_installed_simulation_app_extension() -> list[str]:
         enabled.append(root_text)
     importlib.invalidate_caches()
     return enabled
+
+
+def _bind_isaac_runtime_environment(
+    isaac_root: Path = Path("/isaac-sim"),
+) -> dict[str, str]:
+    """Bind required app paths to directories inside the pinned image root."""
+
+    try:
+        resolved_root = isaac_root.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("isaac_physx_rigid_image_root_unavailable") from exc
+    required = {
+        "ISAAC_PATH": resolved_root,
+        "EXP_PATH": resolved_root / "apps",
+        "CARB_APP_PATH": resolved_root / "kit",
+    }
+    bound: dict[str, str] = {}
+    missing: list[str] = []
+    for name, expected in required.items():
+        try:
+            resolved_expected = expected.resolve(strict=True)
+            resolved_expected.relative_to(resolved_root)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"isaac_physx_rigid_{name.lower()}_unavailable") from exc
+        if not resolved_expected.is_dir():
+            raise RuntimeError(f"isaac_physx_rigid_{name.lower()}_unavailable")
+        existing = os.environ.get(name, "").strip()
+        if existing:
+            try:
+                resolved_existing = Path(existing).resolve(strict=True)
+            except OSError as exc:
+                raise RuntimeError(f"isaac_physx_rigid_{name.lower()}_invalid") from exc
+            if resolved_existing != resolved_expected:
+                raise RuntimeError(f"isaac_physx_rigid_{name.lower()}_mismatch")
+        else:
+            missing.append(name)
+        bound[name] = str(resolved_expected)
+    for name in missing:
+        os.environ[name] = bound[name]
+    return bound
 
 
 def implementation_digest() -> str:
@@ -506,6 +547,7 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
     point = _operating_point(request)
     simulation_app: Any | None = None
     try:
+        runtime_environment = _bind_isaac_runtime_environment()
         SimulationApp = _import_simulation_app()
         observations.update(
             {
@@ -515,6 +557,7 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
                 "simulation_app_extension_roots": [
                     str(path) for path in _installed_simulation_app_extension_roots()
                 ],
+                "runtime_environment_paths": runtime_environment,
             }
         )
         simulation_app = SimulationApp({"headless": True})
