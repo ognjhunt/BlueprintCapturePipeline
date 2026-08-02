@@ -27,7 +27,16 @@
     ],
     "cuda_workflow_python": "3.10",
     "cuda_workflow_cuda_line": "12.8",
-    "cuda_workflow_installs_pytorch_from": "https://download.pytorch.org/whl/cu128"
+    "cuda_workflow_installs_pytorch_from": "https://download.pytorch.org/whl/cu128",
+    "release_workflow_run_id": 25961524757,
+    "release_workflow_conclusion": "success",
+    "python_3_11_manylinux_test_job_id": 76319134294,
+    "python_3_11_manylinux_test_conclusion": "success",
+    "python_3_12_manylinux_test_job_id": 76319134316,
+    "python_3_12_manylinux_test_conclusion": "success",
+    "cuda_test_job_id": 76319134382,
+    "cuda_test_python": "3.10",
+    "cuda_test_conclusion": "success"
   },
   "selected_candidate": {
     "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385",
@@ -37,6 +46,24 @@
     "pytorch_version": "2.9.1",
     "cuda_version": "12.8",
     "selection_reason": "Replace the failed CUDA 13.0 diagnostic image with the immutable PyTorch image on the CUDA 12.8 line exercised by the exact Quadrants release workflow while preserving DLO-Lab's declared Python compatibility range."
+  },
+  "attempt4_observation": {
+    "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385",
+    "python_version": "3.11.14",
+    "quadrants_version": "0.8.0",
+    "torch_version": "2.9.1+cu128",
+    "direct_quadrants_import_succeeded": false,
+    "cuda_execution_reached": false,
+    "evidence_path": "docs/evidence/measurement_dlo_lab_vast_attempt4_2026-08-02.json"
+  },
+  "next_candidate": {
+    "schema_version": "measurement_dlo_lab_runtime_release.v2",
+    "python_version": "3.12.11",
+    "python_environment_isolated": true,
+    "pytorch_version": "2.9.1+cu128",
+    "quadrants_version": "0.8.0",
+    "cuda_version": "12.8",
+    "purpose": "Hold source, CUDA, Torch, and Quadrants fixed while testing the DLO-Lab README-prescribed Python 3.12 boundary with exact hashed artifacts."
   },
   "evidence_boundary": {
     "primary_source_metadata_observed": true,
