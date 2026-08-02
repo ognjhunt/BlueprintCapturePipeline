@@ -27,6 +27,8 @@
         "analyzer_id": {"type": "string", "minLength": 1},
         "implementation_version": {"type": "string", "minLength": 1},
         "analyzer_contract_digest": {"$ref": "#/$defs/digest"},
+        "analyzer_request_digest": {"$ref": "#/$defs/digest"},
+        "analyzer_run_digest": {"$ref": "#/$defs/digest"},
         "proposal_generation_is_dynamic": {"const": true},
         "candidate_may_self_authorize": {"const": false}
       }

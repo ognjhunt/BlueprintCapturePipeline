@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rendered_scene_task_analyzer_request.v1.schema.json",
+  "title": "Rendered scene task analyzer request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scene_id",
+    "source_scene_digest",
+    "analysis_splat_digest",
+    "rendered_views",
+    "source_video_available",
+    "robot_id",
+    "task_context",
+    "candidate_may_self_authorize",
+    "analyzer_request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "rendered_scene_task_analyzer_request.v1"},
+    "scene_id": {"type": "string", "minLength": 1},
+    "source_scene_digest": {"$ref": "#/$defs/digest"},
+    "analysis_splat_digest": {"$ref": "#/$defs/digest"},
+    "rendered_views": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "view_id",
+          "rgb_digest",
+          "observation_source",
+          "camera_spec_digest",
+          "image_size"
+        ],
+        "properties": {
+          "view_id": {"type": "string", "minLength": 1},
+          "rgb_digest": {"$ref": "#/$defs/digest"},
+          "observation_source": {"enum": ["raw_capture", "reconstruction_render"]},
+          "camera_spec_digest": {"$ref": "#/$defs/digest"},
+          "image_size": {
+            "type": "object",
+            "required": ["width", "height"],
+            "properties": {
+              "width": {"type": "integer", "minimum": 1},
+              "height": {"type": "integer", "minimum": 1}
+            }
+          }
+        }
+      }
+    },
+    "source_video_available": {"type": "boolean"},
+    "robot_id": {"type": "string", "minLength": 1},
+    "task_context": {"type": "object"},
+    "candidate_may_self_authorize": {"const": false},
+    "analyzer_request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

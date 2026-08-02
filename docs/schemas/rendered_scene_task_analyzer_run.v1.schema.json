@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rendered_scene_task_analyzer_run.v1.schema.json",
+  "title": "Rendered scene task analyzer run v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "analyzer_request_digest",
+    "candidate_may_self_authorize",
+    "proposals",
+    "blockers",
+    "analyzer_run_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "rendered_scene_task_analyzer_run.v1"},
+    "status": {"enum": ["completed", "abstained"]},
+    "analyzer_request_digest": {"$ref": "#/$defs/digest"},
+    "candidate_may_self_authorize": {"const": false},
+    "proposals": {"type": "array", "items": {"type": "object"}},
+    "blockers": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "analyzer_run_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
