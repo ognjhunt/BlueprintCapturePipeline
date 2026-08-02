@@ -28,6 +28,8 @@ _CUDA_ENV_KEYS = (
 )
 _SOURCE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DIGEST_REF_RE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+_SOURCE_OVERLAY_BUILD_METHOD = "crane_exact_source_overlay_experimental"
 
 
 def _digest_ref(image_ref: str, digest: str) -> str:
@@ -148,6 +150,12 @@ def derive_worker_build_identity(
     dirty_patch = env.get("BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256", "").strip().lower()
     family = env.get("BLUEPRINT_WORKER_IMAGE_FAMILY", "").strip()
     isaac_major_raw = env.get("BLUEPRINT_ISAAC_SIM_MAJOR_VERSION", "").strip()
+    build_method = env.get("BLUEPRINT_WORKER_IMAGE_BUILD_METHOD", "").strip()
+    base_image_digest = env.get("BLUEPRINT_WORKER_BASE_IMAGE_DIGEST", "").strip()
+    source_manifest_sha256 = env.get(
+        "BLUEPRINT_WORKER_SOURCE_MANIFEST_SHA256", ""
+    ).strip()
+    source_layer_digest = env.get("BLUEPRINT_WORKER_SOURCE_LAYER_DIGEST", "").strip()
     try:
         isaac_major = int(isaac_major_raw)
     except ValueError:
@@ -161,6 +169,15 @@ def derive_worker_build_identity(
         blockers.append("worker_image_family_invalid")
     if isaac_major != 6:
         blockers.append("worker_image_isaac_major_invalid")
+    if build_method and build_method != _SOURCE_OVERLAY_BUILD_METHOD:
+        blockers.append("worker_image_build_method_invalid")
+    if build_method == _SOURCE_OVERLAY_BUILD_METHOD:
+        if _DIGEST_REF_RE.fullmatch(base_image_digest) is None:
+            blockers.append("worker_image_overlay_base_digest_invalid")
+        if _DIGEST_VALUE_RE.fullmatch(source_manifest_sha256) is None:
+            blockers.append("worker_image_overlay_source_manifest_digest_invalid")
+        if _DIGEST_VALUE_RE.fullmatch(source_layer_digest) is None:
+            blockers.append("worker_image_overlay_source_layer_digest_invalid")
     return {
         "status": "verified" if not blockers else "blocked",
         "blockers": blockers,
@@ -168,6 +185,11 @@ def derive_worker_build_identity(
         "source_dirty_patch_sha256": dirty_patch or None,
         "worker_image_family": family or None,
         "isaac_sim_major_version": isaac_major,
+        "build_method": build_method or "dockerfile_full_build",
+        "base_image_digest": base_image_digest or None,
+        "source_manifest_sha256": source_manifest_sha256 or None,
+        "source_layer_digest": source_layer_digest or None,
+        "source_layer_matches_last_registry_layer": None,
         "identity_source": "immutable_registry_image_config_environment",
     }
 
@@ -223,6 +245,23 @@ def summarize_manifest(
         config
     )
     worker_build_identity = derive_worker_build_identity(config)
+    if worker_build_identity.get("build_method") == _SOURCE_OVERLAY_BUILD_METHOD:
+        expected_source_layer = worker_build_identity.get("source_layer_digest")
+        observed_source_layer = normalized[-1].get("digest") if normalized else None
+        source_layer_matches = bool(
+            expected_source_layer and expected_source_layer == observed_source_layer
+        )
+        worker_build_identity["source_layer_matches_last_registry_layer"] = (
+            source_layer_matches
+        )
+        if not source_layer_matches:
+            worker_build_identity["blockers"] = sorted(
+                {
+                    *worker_build_identity.get("blockers", []),
+                    "worker_image_overlay_source_layer_not_last_registry_layer",
+                }
+            )
+            worker_build_identity["status"] = "blocked"
     raw_history = config.get("history")
     raw_history = raw_history if isinstance(raw_history, list) else []
     nonempty_history = [

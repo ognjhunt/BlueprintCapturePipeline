@@ -11,11 +11,13 @@ from .g1_kitchen_bundle_compatibility import (
     CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
 )
 from .isaac_worker_image_manifest import SCHEMA_VERSION as IMAGE_MANIFEST_SCHEMA
+from .isaac_worker_source_overlay import BUILD_METHOD as SOURCE_OVERLAY_BUILD_METHOD
 
 
 SCHEMA_VERSION = "reconstruction_isaac_image_release.v1"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _IMAGE = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class ReconstructionIsaacImageReleaseError(ValueError):
@@ -60,6 +62,13 @@ def build_reconstruction_isaac_image_release(
         blockers.append("reconstruction_isaac_image_family_invalid")
     if identity.get("isaac_sim_major_version") != 6:
         blockers.append("reconstruction_isaac_image_isaac_major_invalid")
+    if identity.get("build_method") == SOURCE_OVERLAY_BUILD_METHOD and (
+        identity.get("source_layer_matches_last_registry_layer") is not True
+        or _IMAGE.fullmatch(str(identity.get("base_image_digest") or "")) is None
+        or _DIGEST.fullmatch(str(identity.get("source_manifest_sha256") or "")) is None
+        or _DIGEST.fullmatch(str(identity.get("source_layer_digest") or "")) is None
+    ):
+        blockers.append("reconstruction_isaac_image_source_overlay_lineage_invalid")
     release = {
         "schema_version": SCHEMA_VERSION,
         "status": "passed" if not blockers else "blocked",
