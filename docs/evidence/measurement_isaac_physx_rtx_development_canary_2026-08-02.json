@@ -1,0 +1,114 @@
+{
+  "schema_version": "measurement_isaac_physx_rtx_development_evidence.v1",
+  "status": "passed",
+  "generated_at": "2026-08-02T18:09:39.696264+00:00",
+  "evidence_scope": "development_execution_only",
+  "source": {
+    "source_commit_sha": "5ac9fedb5476fd6b0fbea4332d5133514637240c",
+    "request_digest": "sha256:5177c513934ad91ad8cfffd3f14a1628b1a8f91d1f72cee2757938ae4e5b84eb",
+    "input_bundle_digest": "sha256:61f47160303e1bf529262cc82987d64bce61c22dac373429bedc1396505b5a88",
+    "bundle_manifest_digest": "sha256:02940144bd855b900e851ed510e0876e6e6be9c8cb1d98728a059dbad230b03d",
+    "runtime_release_digest": "sha256:0c3e07ac61045e8e27707f6bc5373e078961e2041555556588e9fd52dc500623",
+    "runtime_result_digest": "sha256:d8be6fe117ce540c68a78900c981500e8112dd43fd7074a8f908176aef8af66e",
+    "execution_result_digest": "sha256:005a58613f7d55126bbb96ae5b27637d53cbc4b3b0fd7c4472cc2edc8dc82a65",
+    "rtx_preflight_result_digest": "sha256:29393bb9cc3d1a99d63e913d6470efc00dd6487718ffa7051f73d02c7997f318"
+  },
+  "runtime": {
+    "provider": "vast",
+    "instance_id": "46627972",
+    "worker_image_digest": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9",
+    "isaac_sim_version": "6.0.1",
+    "observed_app_version": "6.0.1",
+    "observed_build_version": "110.1.2+production.326809.f9bf0dda.gl",
+    "cost_usd": 0.06725104791656934,
+    "duration_seconds": 390.95704889297485
+  },
+  "physx": {
+    "status": "passed",
+    "backend_id": "isaac-physx-cpu-tgs-rigid",
+    "solver_type": "TGS",
+    "broadphase_type": "SAP",
+    "gpu_dynamics": false,
+    "enhanced_determinism": true,
+    "cases": [
+      {
+        "case_id": "rigid-sphere-drop-development-001--isaac-sim-6-physx",
+        "status": "completed",
+        "deterministic_replay_match": true,
+        "contact_report_event_count": 301,
+        "first_contact_step": 300,
+        "penetration_m": 2.980232241545089e-09,
+        "trace_digest": "sha256:2ac12053e376c55d2e51c1dc278ca1769b208abc6be093933948ebe9078736e7",
+        "execution_receipt_digest": "sha256:e4aa022ec8b25c92143bfcc837f803fd6ab3799e3a1cb26281349ff5275ad6f2"
+      },
+      {
+        "case_id": "rigid-box-drop-development-002--isaac-sim-6-physx",
+        "status": "completed",
+        "deterministic_replay_match": true,
+        "contact_report_event_count": 399,
+        "first_contact_step": 0,
+        "penetration_m": 0.029889646396040914,
+        "trace_digest": "sha256:1e6d1ec989ee092917c816d88bb62d62466196273e7546ffe5d5dcb3e574bd11",
+        "execution_receipt_digest": "sha256:0054a4f23694bcbd02bda30ad293fc1068f181ce3ab2b0ffe6162a128404df82"
+      }
+    ],
+    "aggregate_metrics": {
+      "ground_contact_case_count": 2,
+      "maximum_penetration_m": 0.029889646396040914,
+      "mean_penetration_m": 0.014944824688136578
+    }
+  },
+  "rtx_openusd_runtime_preflight": {
+    "status": "passed",
+    "gpu_name": "NVIDIA RTX 6000 Ada Generation",
+    "driver_version": "580.142",
+    "memory_total": "49140 MiB",
+    "renderer": "RayTracedLighting",
+    "frame_width": 64,
+    "frame_height": 64,
+    "pixel_shape": [
+      64,
+      64,
+      4
+    ],
+    "pixel_count": 16384,
+    "steps_executed": 1,
+    "rtx_pixels_rendered": true,
+    "subprocess_exit_code": 0,
+    "subprocess_timed_out": false
+  },
+  "claim_boundary": {
+    "claim_ceiling": "isaac_physx_rigid_contact_plus_rtx_startup_development",
+    "development_execution_completed": true,
+    "runtime_preflight_is_not_full_simulator_proof": true,
+    "calibrated_sensor_match_proven": false,
+    "q_sensor_qualification_created": false,
+    "r5_evidence_created": false,
+    "r6_decision_created": false,
+    "r7_catalog_admission_created": false,
+    "production_route_created": false,
+    "policy_execution_proven": false,
+    "task_success_proven": false,
+    "captured_site_accuracy_proven": false,
+    "physical_success_established": false,
+    "public_claim_upgrade_allowed": false
+  },
+  "cleanup": {
+    "teardown_status": "PASS",
+    "teardown_receipt_digest": "sha256:93f0e3e53f1e8ae10d75a1f12c9ee530eb1d893c8c4a53aab0058df3a12884dc",
+    "provider_zero_status": "PASS",
+    "provider_zero_digest": "sha256:22e248daa4a595779a82d9812c8108882f599e5b8e0bb1636859ceeed9992306",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "exact_instance_absence_confirmed": true,
+    "staged_object_count": 2,
+    "all_staged_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "raw_secret_values_recorded": false,
+  "notes": [
+    "This checked summary is copied from the immutable attempt receipts and contains no access credentials or signed URLs.",
+    "The PhysX cases are synthetic development fixtures, not a held-out physical qualification dataset.",
+    "The RTX observation is a startup and pixel-production preflight, not sensor calibration, review-media quality, policy, task, site, or production evidence."
+  ]
+}
