@@ -17,6 +17,9 @@
   that cross the Franka base volume can no longer appear clear merely because
   their corner vertices lie outside the footprint
   (`src/blueprint_pipeline/external_scene_robot_placement.py`).
+- Aligned the external-scene ring search and final placement report on the same
+  robot-local triangle-footprint test. A pose rejected by the final oriented
+  footprint gate can no longer retain runtime-visualization-candidate status.
 
 ## 2026-07-30
 
