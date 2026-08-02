@@ -666,14 +666,11 @@ def _run_reconstruction_gpu_canary(
         ("provider_output_put_url", args.provider_output_put_url_file),
         ("provider_output_get_url", args.provider_output_get_url_file),
     ]
+    isaac_operations = {
+        "isaac_canary", "provider_nurec_isaac_canary", "external_scene_isaac_canary"
+    }
     operation_bundle_receipt: dict[str, Any] = {}
-    if operation in {
-        "pose_canary",
-        "trainer_canary",
-        "isaac_canary",
-        "provider_nurec_isaac_canary",
-        "external_scene_isaac_canary",
-    }:
+    if operation in {"pose_canary", "trainer_canary"} | isaac_operations:
         url_inputs.extend(
             [
                 ("provider_bundle_url", getattr(args, "provider_bundle_url_file", None)),
@@ -692,11 +689,7 @@ def _run_reconstruction_gpu_canary(
             )
         else:
             try:
-                if operation in {
-                    "isaac_canary",
-                    "provider_nurec_isaac_canary",
-                    "external_scene_isaac_canary",
-                }:
+                if operation in isaac_operations:
                     operation_bundle_receipt = (
                         validate_isaac_verification_worker_bundle_receipt(
                             _load(receipt_path)
@@ -725,12 +718,7 @@ def _run_reconstruction_gpu_canary(
                         ("worker_image_digest", "runtime_container_image_digest"),
                         ("source_commit_sha", "source_commit_sha"),
                     )
-                    if operation
-                    in {
-                        "isaac_canary",
-                        "provider_nurec_isaac_canary",
-                        "external_scene_isaac_canary",
-                    }
+                    if operation in isaac_operations
                     else (
                         ("operation", "operation"),
                         ("operation_request_digest", "operation_request_digest"),
