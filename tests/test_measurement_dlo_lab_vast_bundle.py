@@ -11,6 +11,9 @@ import jsonschema
 import pytest
 
 from blueprint_pipeline.measurement_dlo_lab_runtime_release import (
+    PYTHON_VERSION,
+    PYTORCH_VERSION,
+    QUADRANTS_VERSION,
     RUNTIME_IMAGE,
     build_measurement_dlo_lab_runtime_release,
     validate_measurement_dlo_lab_runtime_release,
@@ -64,7 +67,9 @@ def test_runtime_release_is_exact_image_source_and_cuda_bound() -> None:
     assert "@sha256:" in RUNTIME_IMAGE
     assert release["dlo_lab_source_commit"] == ("c5026a9416b03c6bc5186eba13cd4ffd4c0e7796")
     assert release["required_backend"] == "cuda"
-    assert release["pytorch_version"] == "2.9.1"
+    assert release["python_version"] == PYTHON_VERSION
+    assert release["pytorch_version"] == PYTORCH_VERSION
+    assert release["quadrants_version"] == QUADRANTS_VERSION
     assert release["cuda_version"] == "12.8"
     assert release["cpu_fallback_allowed"] is False
     assert release["benchmark_assets_required"] is False
@@ -72,7 +77,7 @@ def test_runtime_release_is_exact_image_source_and_cuda_bound() -> None:
     assert validate_measurement_dlo_lab_runtime_release(release) == release
     schema = json.loads(
         (
-            ROOT / "docs/schemas/measurement_dlo_lab_runtime_release.v1.schema.json"
+            ROOT / "docs/schemas/measurement_dlo_lab_runtime_release.v2.schema.json"
         ).read_text(encoding="utf-8")
     )
     jsonschema.validate(release, schema)

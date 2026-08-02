@@ -10,6 +10,14 @@ from blueprint_pipeline.measurement_dlo_lab_cable_adapter import (
     EXPECTED_SOURCE_COMMIT,
 )
 from blueprint_pipeline.measurement_dlo_lab_runtime_release import (
+    PYTHON_CONDA_SPEC,
+    PYTHON_VERSION,
+    PYTORCH_VERSION,
+    PYTORCH_WHEEL_SHA256,
+    PYTORCH_WHEEL_URL,
+    QUADRANTS_VERSION,
+    QUADRANTS_WHEEL_SHA256,
+    QUADRANTS_WHEEL_URL,
     RUNTIME_IMAGE,
     build_measurement_dlo_lab_runtime_release,
 )
@@ -159,7 +167,12 @@ def test_bootstrap_binds_exact_source_cuda_bundle_and_signed_upload() -> None:
     assert "measurement_dlo_lab_source_digest_mismatch" in script
     assert "UMass-Embodied-AGI/DLO-Lab.git" in script
     assert 'checkout --detach "$BLUEPRINT_MEASUREMENT_DLO_SOURCE_UPSTREAM_COMMIT"' in script
-    assert 'python -m pip install --no-cache-dir -e "$dlo"' in script
+    assert PYTHON_CONDA_SPEC in script
+    assert PYTORCH_WHEEL_URL in script
+    assert PYTORCH_WHEEL_SHA256.removeprefix("sha256:") in script
+    assert QUADRANTS_WHEEL_URL in script
+    assert QUADRANTS_WHEEL_SHA256.removeprefix("sha256:") in script
+    assert '"$dlo_python" -m pip install --no-cache-dir -e "$dlo"' in script
     assert 'headers={"Content-Type": "application/zip"}' in script
 
 
@@ -170,6 +183,10 @@ def test_runtime_validator_enforces_cuda_identity_and_claim_ceiling(monkeypatch)
         "engine_version": EXPECTED_DISTRIBUTION_VERSION,
         "distribution_version": EXPECTED_DISTRIBUTION_VERSION,
         "source_commit": EXPECTED_SOURCE_COMMIT,
+        "python_version": PYTHON_VERSION,
+        "torch_version": PYTORCH_VERSION,
+        "torch_distribution_version": PYTORCH_VERSION,
+        "quadrants_distribution_version": QUADRANTS_VERSION,
         "cuda_available": True,
         "cuda_device_count": 1,
         "cpu_fallback_used": False,
