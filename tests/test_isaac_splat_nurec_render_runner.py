@@ -97,6 +97,8 @@ def _policy_trace_options() -> dict:
             "physics_dt_seconds": 1.0 / 60.0,
             "reset_settle_steps": 30,
             "sample_interval_steps": 10,
+            "reset_position_error_threshold_rad": 0.1,
+            "reset_velocity_threshold_rad_s": 2.0,
             "distinctness_threshold_rad": 0.1,
             "identical_start_tolerance_rad": 0.02,
             "candidates": [
@@ -165,6 +167,44 @@ def test_policy_trace_request_and_pair_distinctness_are_fail_closed() -> None:
     request, blockers = runner._validate_policy_trace_request(invalid)
     assert request is None
     assert "franka_policy_trace_sweep_not_distinct" in blockers
+
+
+def test_reset_stability_rejects_scene_collision_signature() -> None:
+    request, blockers = runner._validate_policy_trace_request(_policy_trace_options())
+    assert blockers == []
+    assert request is not None
+
+    assessment = runner._reset_stability_assessment(
+        [-0.203, -0.548, 0.004, -2.601, 0.001, 2.05, 0.749],
+        [89.9, 0.1, -1.6, -0.07, -32.7, 0.3, 16.7],
+        request,
+    )
+
+    assert assessment["status"] == "blocked"
+    assert assessment["maximum_position_error_rad"] == pytest.approx(0.203)
+    assert assessment["maximum_absolute_velocity_rad_s"] == pytest.approx(89.9)
+    assert "franka_policy_trace_reset_unstable" in assessment["blockers"]
+    assert "franka_policy_trace_reset_position_error_exceeded" in assessment["blockers"]
+    assert "franka_policy_trace_reset_velocity_exceeded" in assessment["blockers"]
+
+
+def test_reset_stability_accepts_settled_franka() -> None:
+    request, blockers = runner._validate_policy_trace_request(_policy_trace_options())
+    assert blockers == []
+    assert request is not None
+
+    assessment = runner._reset_stability_assessment(
+        [0.0, -0.5486, 0.0, -2.6012, 0.0, 2.05, 0.75],
+        [0.0, -0.008, 0.0, 0.007, 0.0, 0.0, 0.0],
+        request,
+    )
+
+    assert assessment["status"] == "completed"
+    assert assessment["blockers"] == []
+
+    malformed = runner._reset_stability_assessment([0.0], [0.0], request)
+    assert malformed["status"] == "blocked"
+    assert "franka_policy_trace_reset_observation_vector_invalid" in malformed["blockers"]
 
 
 def test_joint_position_target_compatibility_uses_direct_legacy_api() -> None:

@@ -204,6 +204,17 @@ def _validate_policy_trace_request(options: dict) -> tuple[dict | None, list[str
         or not 0.0 <= float(start_tolerance) <= 0.05
     ):
         errors.append("franka_policy_trace_start_tolerance_invalid")
+    for key, low, high in (
+        ("reset_position_error_threshold_rad", 0.01, 0.5),
+        ("reset_velocity_threshold_rad_s", 0.1, 20.0),
+    ):
+        value = trace.get(key)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not low <= float(value) <= high
+        ):
+            errors.append(f"franka_policy_trace_{key}_invalid")
     candidates = trace.get("candidates")
     expected_ids = ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
     if (
@@ -250,6 +261,60 @@ def _validate_policy_trace_request(options: dict) -> tuple[dict | None, list[str
     if trace.get("physical_success_claimed") is not False:
         errors.append("franka_policy_trace_physical_claim_forbidden")
     return (None, sorted(set(errors))) if errors else (trace, [])
+
+
+def _reset_stability_assessment(
+    observed_positions: list[float],
+    observed_velocities: list[float],
+    request: dict,
+) -> dict:
+    """Fail closed when the exact scene destabilizes the frozen Franka reset."""
+
+    start = request["start_joint_positions_rad"]
+    if len(observed_positions) != len(start) or len(observed_velocities) != len(start):
+        return {
+            "status": "blocked",
+            "blockers": [
+                "franka_policy_trace_reset_observation_vector_invalid",
+                "franka_policy_trace_reset_unstable",
+            ],
+            "maximum_position_error_rad": None,
+            "position_error_threshold_rad": float(
+                request["reset_position_error_threshold_rad"]
+            ),
+            "maximum_absolute_velocity_rad_s": None,
+            "velocity_threshold_rad_s": float(request["reset_velocity_threshold_rad_s"]),
+            "claim_boundary": (
+                "Reset stability is an exact-scene runtime admission gate only; passing does "
+                "not prove collision-free placement, task success, physical transfer, or safety."
+            ),
+        }
+    maximum_position_error = max(
+        abs(float(observed) - float(commanded))
+        for observed, commanded in zip(observed_positions, start)
+    )
+    maximum_velocity = max(abs(float(value)) for value in observed_velocities)
+    position_threshold = float(request["reset_position_error_threshold_rad"])
+    velocity_threshold = float(request["reset_velocity_threshold_rad_s"])
+    blockers = []
+    if maximum_position_error > position_threshold:
+        blockers.append("franka_policy_trace_reset_position_error_exceeded")
+    if maximum_velocity > velocity_threshold:
+        blockers.append("franka_policy_trace_reset_velocity_exceeded")
+    if blockers:
+        blockers.append("franka_policy_trace_reset_unstable")
+    return {
+        "status": "completed" if not blockers else "blocked",
+        "blockers": sorted(blockers),
+        "maximum_position_error_rad": round(maximum_position_error, 9),
+        "position_error_threshold_rad": position_threshold,
+        "maximum_absolute_velocity_rad_s": round(maximum_velocity, 9),
+        "velocity_threshold_rad_s": velocity_threshold,
+        "claim_boundary": (
+            "Reset stability is an exact-scene runtime admission gate only; passing does not "
+            "prove collision-free placement, task success, physical transfer, or safety."
+        ),
+    }
 
 
 def _trace_pair_distinctness(candidate_traces: list[dict], request: dict) -> dict:
@@ -779,6 +844,28 @@ def _run_articulated_policy_traces(
                     context.step(render=False)
                 failure_phase = "observe_reset_state"
                 observed_start = _vector(articulation.get_joint_positions(joint_indices=indices))
+                observed_start_velocity = _vector(
+                    articulation.get_joint_velocities(joint_indices=indices)
+                )
+                reset_stability = _reset_stability_assessment(
+                    observed_start,
+                    observed_start_velocity,
+                    request,
+                )
+                trace["reset_stability"] = reset_stability
+                if reset_stability["status"] != "completed":
+                    trace.update(
+                        status="blocked",
+                        blockers=list(reset_stability["blockers"]),
+                        observed_start_joint_positions_rad=[
+                            round(value, 9) for value in observed_start
+                        ],
+                        observed_start_joint_velocities_rad_s=[
+                            round(value, 9) for value in observed_start_velocity
+                        ],
+                    )
+                    failure_phase = "candidate_reset_stability"
+                    raise RuntimeError("franka_policy_trace_reset_unstable")
                 target_final = np.asarray(candidate["final_joint_positions_rad"], dtype=np.float64)
                 duration = int(candidate["duration_steps"])
                 sample_interval = int(request["sample_interval_steps"])
@@ -859,9 +946,12 @@ def _run_articulated_policy_traces(
                     ),
                 )
             except Exception as exc:  # noqa: BLE001
+                trace_blockers = list(trace.get("blockers") or [])
+                if not trace_blockers:
+                    trace_blockers.append("franka_policy_trace_candidate_execution_failed")
                 trace.update(
                     status="blocked",
-                    blockers=["franka_policy_trace_candidate_execution_failed"],
+                    blockers=sorted(set(trace_blockers)),
                     failure_phase=failure_phase,
                     error=repr(exc)[:600],
                 )
@@ -869,6 +959,8 @@ def _run_articulated_policy_traces(
                 trace, digest_field="policy_trace_digest"
             )
             traces.append(trace)
+        for trace in traces:
+            blockers.extend(trace.get("blockers") or [])
         pair = _trace_pair_distinctness(traces, request)
         blockers.extend(pair.get("blockers") or [])
         if any(

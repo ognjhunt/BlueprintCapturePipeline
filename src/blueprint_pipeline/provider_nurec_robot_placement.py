@@ -78,6 +78,8 @@ def build_default_franka_policy_trace_request(*, robot_prim_path: str) -> dict[s
         "physics_dt_seconds": 1.0 / 60.0,
         "reset_settle_steps": 30,
         "sample_interval_steps": 10,
+        "reset_position_error_threshold_rad": 0.1,
+        "reset_velocity_threshold_rad_s": 2.0,
         "distinctness_threshold_rad": 0.1,
         "identical_start_tolerance_rad": 0.02,
         "candidates": [
