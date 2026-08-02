@@ -602,6 +602,14 @@ Implemented and hermetically tested:
   parameterized-rod trajectory, compares replay digests, and emits only the
   generic nonqualifying adapter-worker result. The real DLO-Lab runtime has not
   yet executed, so this closes the worker contract rather than runtime proof;
+- a deterministic clean-commit DLO-Lab Vast input-bundle compiler and in-worker
+  controller. The bundle contains two bounded cable cases, exact request and
+  source-file digests, the exact DLO-Lab upstream commit, and the digest-pinned
+  PyTorch 2.9.1/CUDA 13.0 runtime image. The controller rechecks every source
+  digest, executes both cases through the generic adapter executor, requires
+  CUDA observations and matching replay traces, and preserves all Q-DLO,
+  R5-R7, production, physical, and policy-ranking claims as false. Bundle
+  creation itself performs no provider allocation;
 - a separate real MuJoCo 3.11 Capture-to-Deformation cloth worker,
   schema-checked sag/contact corpus, and aggregate runner for the
   `elastic2d=stretch` flex formulation, with solver-warning rejection and

@@ -1,0 +1,55 @@
+{
+  "schema_version": "measurement_dlo_lab_cable_development_corpus.v1",
+  "corpus_id": "blueprint-dlo-lab-cable-development-v1",
+  "description": "Synthetic fixed-free parameterized-rod cases for exact-source DLO-Lab CUDA replay; not characterized cable evidence.",
+  "lane": "cable",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_measurements_included": false,
+  "qualification_labels_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "adapter_protocol": "dlo_lab_parameterized_rod_cantilever.v1",
+    "length_unit": "meters",
+    "mass_unit": "kilograms",
+    "time_unit": "seconds",
+    "n_vertices": 16,
+    "start_m": [0.0, 0.0, 0.5],
+    "direction": [1.0, 0.0, 0.0],
+    "gravity_m_s2": [0.0, 0.0, -9.81],
+    "timestep_s": 0.001,
+    "step_count": 100,
+    "substeps": 5,
+    "damping": 10.0,
+    "angular_damping": 5.0,
+    "maximum_segment_strain": 0.2
+  },
+  "metric_definitions": {
+    "state_trajectory": "Final tip displacement in meters from the undeformed fixed-free pose.",
+    "force": "Magnitude in newtons of the configured total gravity load.",
+    "task_outcome": "Whether displacement or segment-strain limits were exceeded."
+  },
+  "cases": [
+    {
+      "case_id": "dlo-lab-cable-development-001",
+      "base_length_m": 0.3,
+      "base_radius_m": 0.005,
+      "segment_mass_kg": 0.002,
+      "youngs_modulus_pa": 100000.0,
+      "shear_modulus_pa": 10000.0,
+      "maximum_tip_displacement_m": 0.3
+    },
+    {
+      "case_id": "dlo-lab-cable-development-002",
+      "base_length_m": 0.4,
+      "base_radius_m": 0.004,
+      "segment_mass_kg": 0.0015,
+      "youngs_modulus_pa": 200000.0,
+      "shear_modulus_pa": 20000.0,
+      "maximum_tip_displacement_m": 0.4
+    }
+  ]
+}
