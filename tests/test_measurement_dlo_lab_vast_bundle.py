@@ -64,6 +64,8 @@ def test_runtime_release_is_exact_image_source_and_cuda_bound() -> None:
     assert "@sha256:" in RUNTIME_IMAGE
     assert release["dlo_lab_source_commit"] == ("c5026a9416b03c6bc5186eba13cd4ffd4c0e7796")
     assert release["required_backend"] == "cuda"
+    assert release["pytorch_version"] == "2.9.1"
+    assert release["cuda_version"] == "12.8"
     assert release["cpu_fallback_allowed"] is False
     assert release["benchmark_assets_required"] is False
     assert release["production_route_eligible"] is False

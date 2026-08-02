@@ -34,6 +34,7 @@ PROTOCOL_ID = "dlo_lab_parameterized_rod_cantilever.v1"
 EXPECTED_DISTRIBUTION_VERSION = "1.0.0"
 EXPECTED_SOURCE_COMMIT = "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796"
 _IMPORT_PROBES = (
+    ("quadrants", "import quadrants"),
     ("torch", "import torch"),
     ("torch_then_quadrants", "import torch\nimport quadrants"),
     ("torch_then_genesis", "import torch\nimport genesis"),
