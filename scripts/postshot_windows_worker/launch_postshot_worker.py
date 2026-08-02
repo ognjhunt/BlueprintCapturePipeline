@@ -148,7 +148,8 @@ Set-WorkerState "windows_boot" "none" "C:\work\status.jsonl"
 
 # Hard watchdog: this task is independent of the conversational session and
 # the Postshot process.  It enforces the exact UTC deadline and every phase
-# deadline.  InstanceInitiatedShutdownBehavior=terminate is set in launch().
+# deadline.  The disabled legacy launch contract retains
+# InstanceInitiatedShutdownBehavior="terminate" for template compatibility.
 $hardWatchdog = @'
 $runId = "__RUN_ID__"
 $deadline = [DateTime]::Parse("__TTL_DEADLINE_UTC__").ToUniversalTime()
