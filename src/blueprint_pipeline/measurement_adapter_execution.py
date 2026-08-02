@@ -597,6 +597,11 @@ def _safe_environment(temporary_root: Path) -> dict[str, str]:
     result = {
         key: value for key, value in os.environ.items() if key in SAFE_ENV_KEYS and _string(value)
     }
+    # Native runtimes may resolve caches during shared-library initialization
+    # and abort when HOME is absent. Keep the operator home isolated while
+    # giving each execution an explicit writable cache root.
+    result["HOME"] = str(temporary_root)
+    result["XDG_CACHE_HOME"] = str(temporary_root / ".cache")
     result["TMPDIR"] = str(temporary_root)
     result.setdefault("PATH", os.defpath)
     result.setdefault("PYTHONIOENCODING", "utf-8")
