@@ -1,5 +1,18 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-08-02
+
+### Employee-Facing
+
+- Added a fail-closed Franka reset-stability admission gate to external-scene
+  Isaac policy traces. Exact-scene runs now record reset position error and
+  joint velocity, and block policy execution when the robot is unstable after
+  settling. This distinguishes a collision-destabilized placement from a valid
+  but nondistinct policy pair without upgrading placement, task-success,
+  physical-transfer, or safety claims
+  (`scripts/run_isaac_splat_nurec_render.py`,
+  `src/blueprint_pipeline/provider_nurec_robot_placement.py`).
+
 ## 2026-07-30
 
 ### User-Facing
