@@ -243,6 +243,105 @@ def register_external_scene_frames(
     return result
 
 
+def bind_same_source_splat_collision_frames(
+    *,
+    source_scene_digest: str,
+    analysis_splat_digest: str,
+    collision_generation: Mapping[str, Any],
+    collision_candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind a SplatTransform collider by exact source lineage, without ICP."""
+
+    errors: list[str] = []
+    generation = dict(collision_generation)
+    candidate = dict(collision_candidate)
+    artifacts = generation.get("artifacts")
+    collision_artifact = artifacts.get("collision_glb") if isinstance(artifacts, Mapping) else None
+    actions = generation.get("actions")
+    source_frame = generation.get("source_coordinate_frame")
+    output_frame = generation.get("output_coordinate_frame")
+    if (
+        generation.get("schema_version") != "splat_transform_collision_candidate.v1"
+        or generation.get("status") != "candidate_generated"
+    ):
+        errors.append("same_source_collision_generation_invalid")
+    if generation.get("candidate_digest") != canonical_digest(
+        generation, digest_field="candidate_digest"
+    ):
+        errors.append("same_source_collision_generation_digest_invalid")
+    if generation.get("source_asset_digest") != source_scene_digest:
+        errors.append("same_source_collision_source_mismatch")
+    if not isinstance(actions, Mapping) or actions.get("coordinate_transform_applied") is not False:
+        errors.append("same_source_collision_transform_lineage_invalid")
+    expected_output_frame = (
+        {**dict(source_frame), "basis": "source_preserved"}
+        if isinstance(source_frame, Mapping)
+        else None
+    )
+    if output_frame != expected_output_frame:
+        errors.append("same_source_collision_coordinate_frame_not_preserved")
+    if not isinstance(collision_artifact, Mapping) or candidate.get(
+        "source_asset_digest"
+    ) != collision_artifact.get("digest"):
+        errors.append("same_source_collision_candidate_digest_mismatch")
+    if (
+        candidate.get("schema_version") != "external_scene_collision_candidate.v1"
+        or candidate.get("status") != "candidate_compiled"
+    ):
+        errors.append("same_source_compiled_collision_invalid")
+    if candidate.get("collision_candidate_digest") != canonical_digest(
+        candidate, digest_field="collision_candidate_digest"
+    ):
+        errors.append("same_source_compiled_collision_digest_invalid")
+    if not _digest(source_scene_digest) or not _digest(analysis_splat_digest):
+        errors.append("same_source_appearance_lineage_invalid")
+    if errors:
+        raise ExternalSceneFrameRegistrationError(sorted(set(errors)))
+    assert isinstance(source_frame, Mapping)
+    if source_frame.get("up_axis") != "Y" or source_frame.get("handedness") != "right":
+        raise ExternalSceneFrameRegistrationError(["same_source_y_up_frame_required"])
+    matrix = [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    result = {
+        "schema_version": "same_source_splat_collision_frame_registration.v1",
+        "status": "candidate_registered",
+        "method": "exact_same_source_splat_transform_lineage",
+        "appearance_scene_digest": source_scene_digest,
+        "analysis_splat_digest": analysis_splat_digest,
+        "collision_generation_digest": generation["candidate_digest"],
+        "collision_source_digest": collision_artifact["digest"],
+        "collision_candidate_digest": candidate["collision_candidate_digest"],
+        "estimated_scale_ratio": 1.0,
+        "source_to_collision_stage_matrix": matrix,
+        "blockers": [],
+        "metric_scale_proven": False,
+        "collision_contact_proven": False,
+        "candidate_may_self_qualify": False,
+        "proof_effect": "same_source_splat_to_collision_stage_binding_candidate",
+        "claim_ceiling": "appearance_to_collision_frame_binding_candidate",
+    }
+    result["scene_frame_binding_digest"] = canonical_digest(
+        result, digest_field="scene_frame_binding_digest"
+    )
+    return result
+
+
 def compose_registered_target_binding(
     *, target_binding: Mapping[str, Any], frame_registration: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -337,6 +436,7 @@ __all__ = [
     "RESULT_SCHEMA",
     "ExternalSceneFrameRegistrationError",
     "build_external_scene_frame_registration_request",
+    "bind_same_source_splat_collision_frames",
     "compose_registered_target_binding",
     "register_external_scene_frames",
     "transform_camera_specs_to_collision_stage",

@@ -1,4 +1,5 @@
 """Tests for blueprint_pipeline.gaussian_splat_decode."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -196,10 +197,7 @@ def test_opacity_sigmoid_clip_bounds_and_aabb_shape() -> None:
 
 def test_public_api_signatures_pinned() -> None:
     """Pin current public signatures so the hot-lane leaf contract cannot drift."""
-    assert (
-        str(inspect.signature(read_standard_3dgs_ply))
-        == "(path: 'str | Path') -> 'SplatData'"
-    )
+    assert str(inspect.signature(read_standard_3dgs_ply)) == "(path: 'str | Path') -> 'SplatData'"
     assert (
         str(inspect.signature(write_standard_3dgs_ply))
         == "(splat: 'SplatData', path: 'str | Path') -> 'Path'"
@@ -246,12 +244,12 @@ def test_splat_transform_cleanup_wraps_upstream_without_decimation(
     def fake_run(command, **kwargs):
         calls.append(list(command))
         if "--version" in command:
-            return SimpleNamespace(returncode=0, stdout="splat-transform v2.7.0\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="splat-transform v3.2.0\n", stderr="")
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"cleaned-splat")
         return SimpleNamespace(
             returncode=0,
-            stdout="**Row Count:** 100\n**Row Count:** 96\n",
+            stdout="gaussians: 100\ngaussians: 96\n",
             stderr="",
         )
 
@@ -273,6 +271,8 @@ def test_splat_transform_cleanup_wraps_upstream_without_decimation(
     assert result["evaluation_render_authorized"] is False
     cleanup_command = calls[-1]
     assert "--no-tty" in cleanup_command
+    assert cleanup_command.count("--stats") == 2
+    assert "--filter-value=opacity,lt,0.999999" in cleanup_command
     assert not any(token in {"--decimate", "-F"} for token in cleanup_command)
     assert any(token.startswith("--filter-box=") for token in cleanup_command)
 

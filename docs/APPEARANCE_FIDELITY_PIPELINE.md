@@ -64,6 +64,9 @@ The SuperSplat application itself remains the browser-first manual editor.
   evaluation evidence without a future, separately approved contract change.
 - Splat-derived voxel or collision meshes are candidates, not collision truth.
   They must pass metric-scale, coordinate, collider, and simulator-contact gates.
+  The default headless generator is the pinned SplatTransform voxel/collision
+  path; Blueprint should not implement a replacement splat mesher unless that
+  upstream adapter cannot satisfy a measured requirement.
 
 ## Fail-closed cases
 

@@ -6,10 +6,12 @@ import numpy as np
 import trimesh
 
 from blueprint_pipeline.external_scene_frame_registration import (
+    bind_same_source_splat_collision_frames,
     compose_registered_target_binding,
     register_external_scene_frames,
     transform_camera_specs_to_collision_stage,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 
 
@@ -110,3 +112,62 @@ def test_registers_right_handed_axis_convention_and_composes_target(tmp_path) ->
     assert cameras[0]["spec"]["fov"] == 52.0
     assert len(cameras[0]["spec"]["pos"]) == 3
     assert abs(np.linalg.norm(cameras[0]["spec"]["up"]) - 1.0) < 1e-9
+
+
+def test_binds_same_source_splat_transform_collision_without_icp() -> None:
+    source_digest = "sha256:" + "a" * 64
+    collision_digest = "sha256:" + "b" * 64
+    generation = {
+        "schema_version": "splat_transform_collision_candidate.v1",
+        "status": "candidate_generated",
+        "source_asset_digest": source_digest,
+        "actions": {
+            "coordinate_transform_applied": False,
+            "global_decimation_applied": False,
+        },
+        "source_coordinate_frame": {"up_axis": "Y", "handedness": "right"},
+        "output_coordinate_frame": {
+            "up_axis": "Y",
+            "handedness": "right",
+            "basis": "source_preserved",
+        },
+        "artifacts": {"collision_glb": {"digest": collision_digest, "bytes": 100}},
+    }
+    generation["candidate_digest"] = canonical_digest(generation, digest_field="candidate_digest")
+    candidate = {
+        "schema_version": "external_scene_collision_candidate.v1",
+        "status": "candidate_compiled",
+        "source_asset_digest": collision_digest,
+    }
+    candidate["collision_candidate_digest"] = canonical_digest(
+        candidate, digest_field="collision_candidate_digest"
+    )
+
+    result = bind_same_source_splat_collision_frames(
+        source_scene_digest=source_digest,
+        analysis_splat_digest="sha256:" + "c" * 64,
+        collision_generation=generation,
+        collision_candidate=candidate,
+    )
+
+    assert result["status"] == "candidate_registered"
+    assert result["estimated_scale_ratio"] == 1.0
+    assert result["source_to_collision_stage_matrix"] == [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    assert result["metric_scale_proven"] is False
