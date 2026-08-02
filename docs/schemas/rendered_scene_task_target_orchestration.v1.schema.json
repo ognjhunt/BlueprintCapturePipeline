@@ -29,6 +29,8 @@
     "analysis_splat_digest": {"$ref": "#/$defs/digest"},
     "proposal_set_digest": {"$ref": "#/$defs/digest"},
     "analyzer_provenance": {"type": "object"},
+    "analyzer_request_digest": {"$ref": "#/$defs/digest"},
+    "analyzer_run": {"type": "object"},
     "binding_results": {"type": "array", "items": {"type": "object"}},
     "target_analysis": {"type": "object"},
     "source_video_available": {"type": "boolean"},

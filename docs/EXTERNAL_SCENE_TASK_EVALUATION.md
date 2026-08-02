@@ -50,6 +50,42 @@ target. Static schemas live at
 `docs/schemas/rendered_scene_task_proposal_set.v1.schema.json` and
 `docs/schemas/rendered_scene_task_target_orchestration.v1.schema.json`.
 
+### Automatic analyzer invocation
+
+Call `compile_rendered_scene_task_target_with_analyzer` when the pipeline owns
+proposal generation. It builds a `rendered_scene_task_analyzer_request.v1` from
+the exact RGB and splat digests, invokes a replaceable backend, requires the
+backend result to echo the request digest, and only then enters the 2D-to-3D
+binding and deterministic qualification flow. Local file paths are passed in a
+separate runtime-input object and are not part of the portable request digest.
+
+`CommandRenderedSceneAnalyzer` is the generic executable adapter. It uses JSON
+stdin/stdout, never invokes a shell, imposes a timeout and output-size contract,
+and converts missing, failed, timed-out, invalid, or oversized backend output
+into a deterministic analyzer abstention. The command returns proposals only;
+Blueprint constructs analyzer provenance and forbids self-authorization.
+
+An unavailable backend therefore yields no proposal and no selected target,
+with `rendered_target_analyzer_*` blocker codes. A result replayed from a
+different view/splat request is rejected as
+`rendered_target_analyzer_request_digest_mismatch`. The corresponding schemas
+are `docs/schemas/rendered_scene_task_analyzer_request.v1.schema.json` and
+`docs/schemas/rendered_scene_task_analyzer_run.v1.schema.json`.
+
+The supported command entrypoint accepts a digest-bound
+`rendered_scene_task_target_pipeline_request.v1`; executable analyzers must be
+explicitly authorized in that request:
+
+```bash
+python -m blueprint_pipeline.rendered_scene_task_target_orchestrator \
+  --request <rendered-scene-target-pipeline-request.json> \
+  --output <rendered-scene-target-orchestration.json>
+```
+
+This command is the reusable future-run path. It executes the configured
+analyzer, creates the proposal-set provenance itself, binds proposals to 3D,
+and emits either one qualified bounded-sim target or a structured abstention.
+
 ## Required commands after a runtime
 
 Build robot visibility evidence from isolated robot-only RGB/depth artifacts:
