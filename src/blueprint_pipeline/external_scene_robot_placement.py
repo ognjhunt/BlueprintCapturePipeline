@@ -1,7 +1,7 @@
 """Propose a Franka runtime pose around a registered external-scene target.
 
 The dynamic solver reuses Blueprint's general ring-scan placement engine with a
-collision-mesh vertex-overlap probe. The deterministic result remains a runtime
+conservative collision-mesh triangle-overlap probe. The deterministic result remains a runtime
 visualization candidate until metric scale, live contact, full footprint, and
 reach checks are independently qualified.
 """
@@ -50,6 +50,64 @@ def _finite3(value: Any) -> np.ndarray | None:
     except (TypeError, ValueError):
         return None
     return result if np.isfinite(result).all() else None
+
+
+def _footprint_overlap_counts(
+    *,
+    stage_vertices: np.ndarray,
+    faces: np.ndarray,
+    position: Sequence[float],
+    yaw: float,
+    floor_z: float,
+    half_extent_xy: tuple[float, float],
+    probe_clearance: float,
+    obstacle_height: float,
+) -> tuple[int, int]:
+    """Count vertices and conservative triangle bounds crossing a robot footprint.
+
+    Vertex-only probes miss large fixture triangles whose edges or interiors cross
+    the footprint while every vertex remains outside it. Triangle AABB overlap in
+    the robot-local frame is deliberately conservative: false positives lead to a
+    different candidate or abstention, while false negatives can destabilize the
+    articulation after spawn.
+    """
+
+    x, y = float(position[0]), float(position[1])
+    cosine, sine = math.cos(float(yaw)), math.sin(float(yaw))
+    delta = stage_vertices[:, :2] - [x, y]
+    local = np.column_stack(
+        (
+            cosine * delta[:, 0] + sine * delta[:, 1],
+            -sine * delta[:, 0] + cosine * delta[:, 1],
+            stage_vertices[:, 2],
+        )
+    )
+    half_x = float(half_extent_xy[0]) + float(probe_clearance)
+    half_y = float(half_extent_xy[1]) + float(probe_clearance)
+    lower_z = float(floor_z) + 0.04
+    upper_z = float(floor_z) + float(obstacle_height)
+    vertex_hits = int(
+        (
+            (np.abs(local[:, 0]) <= half_x)
+            & (np.abs(local[:, 1]) <= half_y)
+            & (local[:, 2] >= lower_z)
+            & (local[:, 2] <= upper_z)
+        ).sum()
+    )
+    triangles = local[faces]
+    minimum = triangles.min(axis=1)
+    maximum = triangles.max(axis=1)
+    triangle_hits = int(
+        (
+            (maximum[:, 0] >= -half_x)
+            & (minimum[:, 0] <= half_x)
+            & (maximum[:, 1] >= -half_y)
+            & (minimum[:, 1] <= half_y)
+            & (maximum[:, 2] >= lower_z)
+            & (minimum[:, 2] <= upper_z)
+        ).sum()
+    )
+    return vertex_hits, triangle_hits
 
 
 def build_external_scene_robot_placement_request(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -109,7 +167,7 @@ def propose_external_scene_robot_placement(
     glb = Path(collision_glb_path).resolve(strict=True)
     if glb.suffix.lower() != ".glb" or _sha256(glb) != admitted["collision_source_digest"]:
         raise ExternalSceneRobotPlacementError(["external_placement_collision_source_mismatch"])
-    vertices, _, _ = _flatten_glb(glb)
+    vertices, faces, _ = _flatten_glb(glb)
     # Same exact GLB Y-up -> collision-stage Z-up transform used by the collider compiler.
     stage_vertices = np.column_stack((vertices[:, 0], -vertices[:, 2], vertices[:, 1]))
     floor_z = float(stage_vertices[:, 2].min())
@@ -129,20 +187,35 @@ def propose_external_scene_robot_placement(
     )
     profile = get_robot_profile("franka_panda")
     half_x, half_y, _ = profile.footprint_half_extent_xyz
-
+    triangle_stage = stage_vertices[faces]
+    triangle_stage_minimum = triangle_stage.min(axis=1)
+    triangle_stage_maximum = triangle_stage.max(axis=1)
+    lower_obstacle_z = floor_z + 0.04
+    upper_obstacle_z = floor_z + 2.0 * profile.footprint_half_extent_xyz[2]
+    vertical_obstacle_faces = (
+        (triangle_stage_maximum[:, 2] >= lower_obstacle_z)
+        & (triangle_stage_minimum[:, 2] <= upper_obstacle_z)
+    )
     def probe(pose, yaw) -> int:
-        x, y, _ = pose
-        cosine, sine = math.cos(yaw), math.sin(yaw)
-        delta = stage_vertices[:, :2] - [x, y]
-        local_x = cosine * delta[:, 0] + sine * delta[:, 1]
-        local_y = -sine * delta[:, 0] + cosine * delta[:, 1]
-        occupied = (
-            (np.abs(local_x) <= half_x + profile.probe_clearance_m)
-            & (np.abs(local_y) <= half_y + profile.probe_clearance_m)
-            & (stage_vertices[:, 2] >= floor_z + 0.04)
-            & (stage_vertices[:, 2] <= floor_z + 2.0 * profile.footprint_half_extent_xyz[2])
+        # Reuse precomputed world-space triangle bounds across the full ring
+        # scan. The yawed footprint's enclosing AABB is conservative: it may
+        # reject an extra candidate, but cannot admit a crossing triangle on the
+        # basis of sparse vertices.
+        x, y = float(pose[0]), float(pose[1])
+        cosine, sine = abs(math.cos(float(yaw))), abs(math.sin(float(yaw)))
+        inflated_half_x = half_x + profile.probe_clearance_m
+        inflated_half_y = half_y + profile.probe_clearance_m
+        world_half_x = cosine * inflated_half_x + sine * inflated_half_y
+        world_half_y = sine * inflated_half_x + cosine * inflated_half_y
+        return int(
+            (
+                vertical_obstacle_faces
+                & (triangle_stage_maximum[:, 0] >= x - world_half_x)
+                & (triangle_stage_minimum[:, 0] <= x + world_half_x)
+                & (triangle_stage_maximum[:, 1] >= y - world_half_y)
+                & (triangle_stage_minimum[:, 1] <= y + world_half_y)
+            ).sum()
         )
-        return int(occupied.sum())
 
     stance = ring_scan_stand_pose(
         target_object,
@@ -189,7 +262,16 @@ def propose_external_scene_robot_placement(
             stance = rescue
             placement_selection_strategy = "collision_clear_analytic_reach_rescue_candidate"
 
-    hits = probe(stance.position, stance.yaw)
+    vertex_hits, triangle_hits = _footprint_overlap_counts(
+        stage_vertices=stage_vertices,
+        faces=faces,
+        position=stance.position,
+        yaw=stance.yaw,
+        floor_z=floor_z,
+        half_extent_xy=(half_x, half_y),
+        probe_clearance=profile.probe_clearance_m,
+        obstacle_height=2.0 * profile.footprint_half_extent_xyz[2],
+    )
     shoulder_distance_value = shoulder_distance(stance)
     analytic_reach_candidate = bool(shoulder_distance_value <= reach_limit)
     placement = {
@@ -208,8 +290,10 @@ def propose_external_scene_robot_placement(
             round(float(stance.yaw), 12),
         ],
         "floor_height_collision_stage": round(floor_z, 9),
-        "mesh_vertex_overlap_probe_hits": hits,
-        "mesh_vertex_overlap_probe_clear": bool(stance.clear and hits == 0),
+        "mesh_vertex_overlap_probe_hits": vertex_hits,
+        "mesh_vertex_overlap_probe_clear": bool(vertex_hits == 0),
+        "mesh_triangle_aabb_overlap_probe_hits": triangle_hits,
+        "mesh_triangle_aabb_overlap_probe_clear": bool(stance.clear and triangle_hits == 0),
         "standoff_stage_units": round(float(stance.standoff_m), 9),
         "placement_selection_strategy": placement_selection_strategy,
         "analytic_shoulder_to_target_distance_stage_units": round(shoulder_distance_value, 9),
