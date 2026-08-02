@@ -62,8 +62,25 @@ def test_external_scene_placement_uses_official_franka_and_abstains_formally(
     assert placement["metric_reach_qualified"] is False
     assert placement["physical_execution_authorized"] is False
     assert "independent_metric_scale_missing" in placement["formal_gaps"]
+    assert "fixed_base_support_mount_not_physically_qualified" in placement["formal_gaps"]
+    support = placement["fixed_base_support_mount"]
+    assert support["schema_version"] == "fixed_base_support_mount_candidate.v1"
+    assert support["status"] == "simulator_support_candidate_only"
+    assert support["static_collision_required"] is True
+    assert support["physical_load_capacity_qualified"] is False
+    assert support["top_z_collision_stage"] == placement[
+        "robot_pose_xyzyaw_collision_stage"
+    ][2]
+    assert support["center_xyz_collision_stage"][:2] == placement[
+        "robot_pose_xyzyaw_collision_stage"
+    ][:2]
+    assert support["center_xyz_collision_stage"][2] + 0.5 * support[
+        "height_stage_units"
+    ] == support["top_z_collision_stage"]
     options = packet["render_options"]
     assert options["robot_id"] == "franka_panda"
+    assert options["fixed_base_support_mount"] == support
+    assert options["robot_ground_z"] == support["top_z_collision_stage"]
     assert options["articulated_policy_trace_request"]["candidates"][1]["policy_id"] == (
         "franka-inspection-sweep-v1"
     )

@@ -548,6 +548,19 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
                 "robot_only_pass": True,
                 "robot_placement_digest": D[3],
                 "placement_proposal_digest": D[4],
+                "fixed_base_support_mount": {
+                    "schema_version": "fixed_base_support_mount_candidate.v1",
+                    "status": "simulator_support_candidate_only",
+                    "prim_path": "/World/BlueprintDerivedSupport/FrankaMount",
+                    "center_xyz_collision_stage": [-21.9, 2.0, -2.225],
+                    "top_z_collision_stage": -1.85,
+                    "height_stage_units": 0.75,
+                    "half_extents_xy_stage_units": [0.18, 0.18],
+                    "collision_checked_height_stage_units": 0.75,
+                    "static_collision_required": True,
+                    "physical_load_capacity_qualified": False,
+                    "independent_metric_height_qualified": False,
+                },
                 "articulated_policy_trace_request": {
                     "schema_version": "franka_articulated_policy_trace_request.v1",
                     "robot_id": "franka_panda",
@@ -715,6 +728,24 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
             runner_path=runner,
             output_root=tmp_path / "secret-options-bundle",
             render_options_path=bad_options,
+        )
+
+    mismatched_mount = tmp_path / "mismatched_mount_render_options.json"
+    mismatched_value = json.loads(render_options.read_text())
+    mismatched_value["fixed_base_support_mount"]["top_z_collision_stage"] = -1.5
+    mismatched_mount.write_text(json.dumps(mismatched_value))
+    mismatched_request_value = dict(request)
+    mismatched_request_value.pop("isaac_verification_request_digest")
+    mismatched_request_value["render_options_digest"] = sha256_file(mismatched_mount)
+    mismatched_request = build_provider_nurec_isaac_request(mismatched_request_value)
+    with pytest.raises(IsaacWorkerBundleError, match="support_mount_top_z_mismatch"):
+        compile_isaac_verification_worker_bundle(
+            verification_request=mismatched_request,
+            package_artifact_root=package_root,
+            fixed_camera_spec_path=cameras,
+            runner_path=runner,
+            output_root=tmp_path / "mismatched-mount-bundle",
+            render_options_path=mismatched_mount,
         )
 
 

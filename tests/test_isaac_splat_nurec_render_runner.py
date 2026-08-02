@@ -266,9 +266,7 @@ def test_joint_position_target_compatibility_uses_controller_fallback() -> None:
 
 def test_policy_trace_keeps_isaac6_physics_handle_live_between_candidates() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
-    body = source.split("def _run_articulated_policy_traces(", 1)[1].split(
-        "def _pixel_std(", 1
-    )[0]
+    body = source.split("def _run_articulated_policy_traces(", 1)[1].split("def _pixel_std(", 1)[0]
     candidate_loop = body.split('for candidate in request["candidates"]:', 1)[1]
 
     assert "context.play()" in candidate_loop
@@ -388,6 +386,75 @@ def test_robot_only_pass_authors_hidden_lights_when_provider_stage_has_none() ->
     )
     assert same_prim == prim
     assert reused["authored_for_robot_only_pass"] is False
+
+
+def test_fixed_base_support_mount_authors_static_collision_and_is_probe_excluded() -> None:
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    options = {
+        "fixed_base_support_mount": {
+            "schema_version": "fixed_base_support_mount_candidate.v1",
+            "status": "simulator_support_candidate_only",
+            "prim_path": "/World/BlueprintDerivedSupport/FrankaMount",
+            "center_xyz_collision_stage": [1.0, 2.0, 0.4],
+            "top_z_collision_stage": 0.8,
+            "height_stage_units": 0.8,
+            "half_extents_xy_stage_units": [0.18, 0.18],
+            "static_collision_required": True,
+            "physical_load_capacity_qualified": False,
+        }
+    }
+
+    report = runner._author_fixed_base_support_mount(
+        stage,
+        options,
+        Gf=Gf,
+        UsdGeom=UsdGeom,
+        UsdPhysics=UsdPhysics,
+        Sdf=Sdf,
+    )
+
+    prim = stage.GetPrimAtPath("/World/BlueprintDerivedSupport/FrankaMount")
+    assert report["authored"] is True
+    assert report["static_collision_authored"] is True
+    assert report["physical_load_capacity_qualified"] is False
+    assert prim.HasAPI(UsdPhysics.CollisionAPI)
+
+    runner._exclude_support_mount_from_environment_physics_probe(stage, report, Sdf=Sdf)
+    assert prim.IsActive() is False
+    assert report["excluded_from_environment_physics_probe"] is True
+
+
+def test_fixed_base_support_mount_rejects_inconsistent_top_height() -> None:
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    report = runner._author_fixed_base_support_mount(
+        stage,
+        {
+            "fixed_base_support_mount": {
+                "schema_version": "fixed_base_support_mount_candidate.v1",
+                "status": "simulator_support_candidate_only",
+                "prim_path": "/World/BlueprintDerivedSupport/FrankaMount",
+                "center_xyz_collision_stage": [0.0, 0.0, 0.4],
+                "top_z_collision_stage": 0.9,
+                "height_stage_units": 0.8,
+                "half_extents_xy_stage_units": [0.18, 0.18],
+                "static_collision_required": True,
+                "physical_load_capacity_qualified": False,
+            }
+        },
+        Gf=Gf,
+        UsdGeom=UsdGeom,
+        UsdPhysics=UsdPhysics,
+        Sdf=Sdf,
+    )
+
+    assert report["authored"] is False
+    assert "fixed_base_support_mount_top_z_mismatch" in report["blockers"]
 
 
 def test_robot_evidence_material_is_explicitly_support_only() -> None:

@@ -279,9 +279,7 @@ def _reset_stability_assessment(
                 "franka_policy_trace_reset_unstable",
             ],
             "maximum_position_error_rad": None,
-            "position_error_threshold_rad": float(
-                request["reset_position_error_threshold_rad"]
-            ),
+            "position_error_threshold_rad": float(request["reset_position_error_threshold_rad"]),
             "maximum_absolute_velocity_rad_s": None,
             "velocity_threshold_rad_s": float(request["reset_velocity_threshold_rad_s"]),
             "claim_boundary": (
@@ -472,6 +470,116 @@ def _composite_robot(stage, options: dict, *, Gf, UsdGeom, Sdf) -> dict:
         return report
 
 
+def _author_fixed_base_support_mount(stage, options: dict, *, Gf, UsdGeom, UsdPhysics, Sdf):
+    """Author a disclosed static simulator pedestal for a fixed-base arm.
+
+    The mount is derived support geometry, never part of the provider source
+    package and never evidence that a physical baseplate or installation exists.
+    Malformed requests fail closed before the robot policy lane starts.
+    """
+
+    raw = options.get("fixed_base_support_mount")
+    if raw is None:
+        return {"requested": False}
+    report = {"requested": True, "authored": False, "blockers": []}
+    if not isinstance(raw, dict):
+        report["blockers"] = ["fixed_base_support_mount_invalid"]
+        return report
+
+    def finite_vector(value, length):
+        return (
+            isinstance(value, list)
+            and len(value) == length
+            and all(
+                not isinstance(item, bool)
+                and isinstance(item, (int, float))
+                and math.isfinite(float(item))
+                for item in value
+            )
+        )
+
+    errors = []
+    path_text = str(raw.get("prim_path") or "")
+    path = Sdf.Path(path_text)
+    center = raw.get("center_xyz_collision_stage")
+    half_extents = raw.get("half_extents_xy_stage_units")
+    height = raw.get("height_stage_units")
+    top_z = raw.get("top_z_collision_stage")
+    if raw.get("schema_version") != "fixed_base_support_mount_candidate.v1":
+        errors.append("fixed_base_support_mount_schema_invalid")
+    if raw.get("status") != "simulator_support_candidate_only":
+        errors.append("fixed_base_support_mount_status_invalid")
+    if not path.IsAbsolutePath() or not path.IsPrimPath() or ".." in path_text.split("/"):
+        errors.append("fixed_base_support_mount_prim_path_invalid")
+    if not finite_vector(center, 3):
+        errors.append("fixed_base_support_mount_center_invalid")
+    if not finite_vector(half_extents, 2) or any(
+        float(value) <= 0.0 or float(value) > 2.0 for value in (half_extents or [])
+    ):
+        errors.append("fixed_base_support_mount_half_extents_invalid")
+    if (
+        isinstance(height, bool)
+        or not isinstance(height, (int, float))
+        or not 0.01 <= float(height) <= 3.0
+    ):
+        errors.append("fixed_base_support_mount_height_invalid")
+    if (
+        isinstance(top_z, bool)
+        or not isinstance(top_z, (int, float))
+        or not math.isfinite(float(top_z))
+    ):
+        errors.append("fixed_base_support_mount_top_z_invalid")
+    if (
+        finite_vector(center, 3)
+        and isinstance(height, (int, float))
+        and not isinstance(height, bool)
+    ):
+        expected_top = float(center[2]) + 0.5 * float(height)
+        if not isinstance(top_z, (int, float)) or abs(expected_top - float(top_z)) > 1e-5:
+            errors.append("fixed_base_support_mount_top_z_mismatch")
+    if raw.get("static_collision_required") is not True:
+        errors.append("fixed_base_support_mount_static_collision_required")
+    if raw.get("physical_load_capacity_qualified") is not False:
+        errors.append("fixed_base_support_mount_physical_claim_forbidden")
+    if errors:
+        report["blockers"] = sorted(set(errors))
+        return report
+
+    parent = path.GetParentPath()
+    if parent and parent != Sdf.Path.absoluteRootPath:
+        UsdGeom.Xform.Define(stage, parent)
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(2.0)
+    cube.CreateDisplayColorAttr([(0.18, 0.22, 0.28)])
+    xformable = UsdGeom.Xformable(cube.GetPrim())
+    xformable.ClearXformOpOrder()
+    xformable.AddTranslateOp().Set(Gf.Vec3d(*[float(value) for value in center]))
+    xformable.AddScaleOp().Set(
+        Gf.Vec3d(float(half_extents[0]), float(half_extents[1]), 0.5 * float(height))
+    )
+    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    report.update(
+        authored=True,
+        blockers=[],
+        prim_path=path_text,
+        center_xyz_collision_stage=[round(float(value), 9) for value in center],
+        half_extents_xyz_stage_units=[
+            round(float(half_extents[0]), 9),
+            round(float(half_extents[1]), 9),
+            round(0.5 * float(height), 9),
+        ],
+        top_z_collision_stage=round(float(top_z), 9),
+        static_collision_authored=True,
+        source_package_modified=False,
+        physical_load_capacity_qualified=False,
+        claim_boundary=(
+            "Derived static Isaac support only; not a physical baseplate, anchoring, "
+            "load-capacity, installation-safety, or metric-calibration claim."
+        ),
+    )
+    return report
+
+
 def _ensure_robot_only_lights(stage, lights_path: str, *, Sdf, UsdGeom, UsdLux):
     """Return a hidden light rig for the robot evidence renders.
 
@@ -559,6 +667,27 @@ def _exclude_robot_from_environment_physics_probe(stage, robot_report: dict, *, 
         excluded_from_environment_physics_probe=True,
         physics_probe_claim_boundary=(
             "visual_robot_excluded_so_probe_measures_provider_environment_collision_only"
+        ),
+    )
+
+
+def _exclude_support_mount_from_environment_physics_probe(
+    stage, support_report: dict, *, Sdf
+) -> None:
+    """Keep the exact provider contact probe independent of derived support."""
+
+    path = str(support_report.get("prim_path") or "")
+    if not support_report.get("authored") or not path:
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(path))
+    if not prim or not prim.IsValid():
+        support_report["excluded_from_environment_physics_probe"] = False
+        return
+    prim.SetActive(False)
+    support_report.update(
+        excluded_from_environment_physics_probe=True,
+        physics_probe_claim_boundary=(
+            "derived_support_excluded_so_probe_measures_provider_environment_collision_only"
         ),
     )
 
@@ -780,6 +909,14 @@ def _run_articulated_policy_traces(
             "blockers": ["franka_policy_trace_robot_geometry_unavailable"],
             "candidate_traces": [],
         }
+    support = robot_report.get("fixed_base_support_mount")
+    if isinstance(support, dict) and support.get("requested") and not support.get("authored"):
+        return {
+            **base,
+            "status": "blocked",
+            "blockers": ["franka_policy_trace_support_mount_unavailable"],
+            "candidate_traces": [],
+        }
     context = None
     traces = []
     blockers = []
@@ -794,6 +931,7 @@ def _run_articulated_policy_traces(
         )
         context.initialize_physics()
         context.get_physics_context().set_gravity(-9.81)
+
         def _bind_live_articulation():
             articulation = _single_articulation(request["robot_prim_path"])
             articulation.initialize()
@@ -804,6 +942,7 @@ def _run_articulated_policy_traces(
                     raise RuntimeError(f"franka_policy_trace_joint_missing:{name}")
                 indices.append(available_names.index(name))
             return articulation, indices
+
         robot_prim = stage.GetPrimAtPath(Sdf.Path(request["robot_prim_path"]))
         camera_prim, hand_prim = _author_egocentric_camera(
             stage,
@@ -1723,7 +1862,23 @@ def _render(args) -> int:
 
         # Optional robot compositing at the validated stance (bundle-driven).
         render_options = _load_render_options(Path(args.cameras)) if args.cameras else {}
+        support_mount_report = _author_fixed_base_support_mount(
+            stage,
+            render_options,
+            Gf=Gf,
+            UsdGeom=UsdGeom,
+            UsdPhysics=UsdPhysics,
+            Sdf=Sdf,
+        )
+        if support_mount_report.get("requested"):
+            _phase(
+                result_path,
+                base,
+                "runner_fixed_base_support_mount_authored",
+                fixed_base_support_mount=support_mount_report,
+            )
         robot_report = _composite_robot(stage, render_options, Gf=Gf, UsdGeom=UsdGeom, Sdf=Sdf)
+        robot_report["fixed_base_support_mount"] = support_mount_report
         robot_lights_prim = None
         if robot_report.get("requested"):
             _phase(result_path, base, "runner_robot_composited", robot=robot_report)
@@ -2052,6 +2207,11 @@ def _render(args) -> int:
                 robot_report,
                 Sdf=Sdf,
             )
+            _exclude_support_mount_from_environment_physics_probe(
+                stage,
+                support_mount_report,
+                Sdf=Sdf,
+            )
             physics_probe = _run_qualification_physics_probe(
                 stage,
                 ground_surface,
@@ -2074,7 +2234,9 @@ def _render(args) -> int:
                 and policy_trace_result.get("status") != "completed"
             ):
                 blockers.append("isaac_articulated_policy_trace_pair_incomplete")
-                blockers = sorted(set(blockers))
+            if support_mount_report.get("requested") and not support_mount_report.get("authored"):
+                blockers.append("isaac_fixed_base_support_mount_incomplete")
+            blockers = sorted(set(blockers))
             ok = not blockers
         else:
             ok = visual_ok
@@ -2095,6 +2257,7 @@ def _render(args) -> int:
             "nonblank_threshold": threshold,
             "mp4": mp4,
             "robot": robot_report,
+            "fixed_base_support_mount": support_mount_report,
             "articulated_policy_trace_pair": policy_trace_result,
             "blockers": blockers,
             "cost_usd": 0.0,
@@ -2102,6 +2265,7 @@ def _render(args) -> int:
             "proof_boundary": {
                 "captured_scene_displayed_in_isaac_rtx": bool(visual_ok),
                 "robot_visual_composited_at_stance": bool(robot_report.get("composited")),
+                "derived_static_support_mount_authored": bool(support_mount_report.get("authored")),
                 "articulated_policy_execution_observed": bool(
                     policy_trace_result.get("status") == "completed"
                 ),
