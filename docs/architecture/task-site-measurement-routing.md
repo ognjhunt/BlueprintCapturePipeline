@@ -575,8 +575,9 @@ Implemented and hermetically tested:
   stripped, and no compatibility conclusion was inferred from the missing
   backtrace. The next paid attempt captured the decisive native sequence
   `Logger::error -> get_repo_dir -> CompileConfig` during Quadrants shared-library
-  initialization. Exact v0.8.0 source requires `XDG_CACHE_HOME` or `HOME`, while
-  the sanitized adapter process inherited neither. The executor now synthesizes
+  initialization. Version-matched v0.8.0 reference source requires
+  `XDG_CACHE_HOME` or `HOME`, while the sanitized adapter process inherited
+  neither; the published wheel's exact build commit is not asserted. The executor now synthesizes
   both paths inside its per-execution temporary root without exposing an operator
   home or widening the inherited-environment allowlist. No CUDA kernel or DLO-Lab
   case execution was observed, so the next bounded step is one fixed-tuple rerun,
