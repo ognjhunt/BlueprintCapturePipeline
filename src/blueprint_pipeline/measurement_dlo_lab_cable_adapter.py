@@ -44,7 +44,7 @@ _IMPORT_PROBES = (
     ("torch_then_genesis", "import torch\nimport genesis"),
 )
 _IMPORT_UNAVAILABLE_EXIT_CODE = 86
-_NATIVE_DIAGNOSTIC_ENV = "BLUEPRINT_DLO_NATIVE_DIAGNOSTIC"
+_NATIVE_DIAGNOSTIC_MODE = "gdb_first_case_only"
 _NATIVE_DIAGNOSTIC_CASE_SUFFIX = "001"
 _NATIVE_DIAGNOSTIC_MAX_SECONDS = 45
 _NATIVE_DIAGNOSTIC_MAX_FRAMES = 32
@@ -270,7 +270,12 @@ def run_dlo_lab_cable_request(
             failure_codes=["dlo_lab_adapter_implementation_identity_mismatch"],
         )
     settings = dict(runtime["solver_settings"])
-    if settings != {"backend": "cuda", "replay_count": 2, "source_commit": EXPECTED_SOURCE_COMMIT}:
+    if settings != {
+        "backend": "cuda",
+        "native_diagnostic": _NATIVE_DIAGNOSTIC_MODE,
+        "replay_count": 2,
+        "source_commit": EXPECTED_SOURCE_COMMIT,
+    }:
         raise MeasurementAdapterExecutionError("dlo_lab_adapter_solver_settings_invalid")
     if runtime["backend_id"] != "dlo-lab-genesis-cuda" or runtime["precision"] != "float64":
         raise MeasurementAdapterExecutionError("dlo_lab_adapter_runtime_configuration_invalid")
@@ -636,7 +641,10 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             if (
                 probe_id == "quadrants"
                 and probe_exit_code < 0
-                and os.environ.get(_NATIVE_DIAGNOSTIC_ENV) == "1"
+                and request["runtime_configuration"]["solver_settings"].get(
+                    "native_diagnostic"
+                )
+                == _NATIVE_DIAGNOSTIC_MODE
                 and execution_id.endswith(_NATIVE_DIAGNOSTIC_CASE_SUFFIX)
             ):
                 native_diagnostic = _native_debugger_observation(

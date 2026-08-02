@@ -252,7 +252,6 @@ if observed != expected:
     raise SystemExit("measurement_dlo_lab_runtime_identity_mismatch")
 PY
 export PYTHONPATH="$bundle/src"
-export BLUEPRINT_DLO_NATIVE_DIAGNOSTIC=1
 set +e
 "$dlo_python" "$bundle/scripts/run_measurement_dlo_lab_bundle.py" \
   --bundle-root "$bundle" --output "$result"

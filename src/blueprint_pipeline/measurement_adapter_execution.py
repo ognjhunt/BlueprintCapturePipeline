@@ -86,7 +86,6 @@ SHELL_EXECUTABLES = frozenset(
 SAFE_ENV_KEYS = frozenset(
     {
         "DYLD_LIBRARY_PATH",
-        "BLUEPRINT_DLO_NATIVE_DIAGNOSTIC",
         "LANG",
         "LC_ALL",
         "LD_LIBRARY_PATH",

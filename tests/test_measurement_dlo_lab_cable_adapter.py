@@ -96,6 +96,7 @@ def _request() -> dict:
         seed=31,
         solver_settings={
             "backend": "cuda",
+            "native_diagnostic": "gdb_first_case_only",
             "replay_count": 2,
             "source_commit": EXPECTED_SOURCE_COMMIT,
         },
@@ -252,7 +253,6 @@ def test_native_debugger_observation_sanitizes_paths_and_bounds_output(
 def test_dlo_lab_supervisor_runs_native_diagnostic_once_for_first_case(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("BLUEPRINT_DLO_NATIVE_DIAGNOSTIC", "1")
     monkeypatch.setattr(
         dlo_adapter,
         "_native_debugger_observation",
