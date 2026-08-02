@@ -17,6 +17,7 @@ import importlib.metadata
 import json
 import math
 from pathlib import Path
+import sys
 from typing import Any, Callable, Mapping, Sequence
 
 from .measurement_adapter_execution import (
@@ -33,6 +34,12 @@ ISAAC_VERSION = "6.0.1"
 WORKER_SCRIPT = Path(__file__).parents[2] / "scripts/measurement_isaac_physx_rigid_worker.py"
 
 
+class _SimulationAppImportError(ImportError):
+    def __init__(self, diagnostics: Mapping[str, Any]) -> None:
+        super().__init__("isaac_physx_rigid_simulation_app_not_callable")
+        self.diagnostics = json.loads(json.dumps(dict(diagnostics)))
+
+
 def implementation_digest() -> str:
     hasher = hashlib.sha256()
     for label, path in (("adapter", Path(__file__)), ("worker", WORKER_SCRIPT)):
@@ -46,6 +53,7 @@ def implementation_digest() -> str:
 def _import_simulation_app() -> Any:
     """Resolve a callable Isaac launcher across supported packaging layouts."""
 
+    candidates: list[dict[str, Any]] = []
     for module_name in (
         "isaacsim.simulation_app",
         "isaacsim",
@@ -53,12 +61,38 @@ def _import_simulation_app() -> Any:
     ):
         try:
             module = importlib.import_module(module_name)
-        except Exception:  # noqa: BLE001 - try the next supported packaging layout
+        except Exception as exc:  # noqa: BLE001 - report and try the next supported layout
+            candidates.append(
+                {
+                    "module": module_name,
+                    "status": "import_failed",
+                    "error_type": type(exc).__name__,
+                    "error": repr(exc)[:500],
+                }
+            )
             continue
         simulation_app = getattr(module, "SimulationApp", None)
+        candidates.append(
+            {
+                "module": module_name,
+                "status": "callable" if callable(simulation_app) else "noncallable",
+                "module_file": str(getattr(module, "__file__", None) or "unavailable")[:500],
+                "symbol_present": hasattr(module, "SimulationApp"),
+                "symbol_type": type(simulation_app).__name__,
+                "symbol_callable": callable(simulation_app),
+            }
+        )
         if callable(simulation_app):
             return simulation_app
-    raise ImportError("isaac_physx_rigid_simulation_app_not_callable")
+    raise _SimulationAppImportError(
+        {
+            "python_executable": str(sys.executable)[:500],
+            "working_directory": str(Path.cwd())[:500],
+            "isaac_root_present": Path("/isaac-sim").is_dir(),
+            "isaac_python_launcher_present": Path("/isaac-sim/python.sh").is_file(),
+            "candidates": candidates,
+        }
+    )
 
 
 def _observe_isaac_runtime_identity(
@@ -448,6 +482,11 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         first = _simulate(point, solver)
         second = _simulate(point, solver)
     except Exception as exc:  # noqa: BLE001
+        simulation_app_diagnostics = (
+            {"simulation_app_import_diagnostics": exc.diagnostics}
+            if isinstance(exc, _SimulationAppImportError)
+            else {}
+        )
         return build_measurement_adapter_worker_result(
             request,
             status="failed",
@@ -457,6 +496,7 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
                 **observations,
                 "execution_error_type": type(exc).__name__,
                 "execution_error": repr(exc)[:800],
+                **simulation_app_diagnostics,
             },
             failure_codes=["isaac_physx_rigid_execution_failed"],
         )
