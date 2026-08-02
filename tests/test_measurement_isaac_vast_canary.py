@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import time
 import urllib.error
 from pathlib import Path
 
@@ -13,6 +16,7 @@ from blueprint_pipeline.measurement_isaac_runtime_release import (
 from blueprint_pipeline.measurement_isaac_vast_bundle import RECEIPT_SCHEMA_VERSION
 from blueprint_pipeline.measurement_isaac_vast_canary import (
     _bootstrap_script,
+    _watchdog_valid,
     run_measurement_isaac_vast_canary,
 )
 from blueprint_pipeline.paid_resource_admission import (
@@ -57,9 +61,7 @@ def _receipt() -> dict:
         "proof_effect": "none",
         "claim_ceiling": "immutable_development_input_bundle_only",
     }
-    value["bundle_receipt_digest"] = canonical_digest(
-        value, digest_field="bundle_receipt_digest"
-    )
+    value["bundle_receipt_digest"] = canonical_digest(value, digest_field="bundle_receipt_digest")
     return value
 
 
@@ -84,9 +86,7 @@ def _bound_request() -> dict:
         "measurement_isaac_runtime_release_digest": release["runtime_release_digest"],
         "provider_mutation_authorized": True,
     }
-    value["bound_request_digest"] = canonical_digest(
-        value, digest_field="bound_request_digest"
-    )
+    value["bound_request_digest"] = canonical_digest(value, digest_field="bound_request_digest")
     return value
 
 
@@ -141,6 +141,8 @@ class _Provider:
 
 def test_bootstrap_verifies_bundle_and_uses_exact_isaac_python() -> None:
     script = _bootstrap_script()
+    assert 'mktemp -d "${TMPDIR:-/tmp}/blueprint-measurement-isaac.XXXXXX"' in script
+    assert "/work/measurement_isaac" not in script
     assert "measurement_isaac_input_digest_mismatch" in script
     assert "measurement_isaac_input_member_unsafe" in script
     assert "measurement_isaac_source_digest_mismatch" in script
@@ -162,6 +164,76 @@ def test_default_fetcher_treats_missing_output_as_not_ready(monkeypatch) -> None
             _default_result_fetcher,
         )
         _default_result_fetcher(GET_URL)
+
+
+def test_watchdog_validation_binds_live_process_and_exact_nonsymlink_evidence(
+    tmp_path: Path,
+) -> None:
+    watchdog_dir = tmp_path / "watchdog"
+    watchdog_dir.mkdir()
+    watchdog = {
+        "status": "armed",
+        "independent_process": True,
+        "pid": os.getpid(),
+        "deadline_epoch": time.time() + 120,
+        "provider": "vast",
+        "pod_name_prefix": "blueprint-measurement-isaac-",
+        "watchdog_out_dir": str(watchdog_dir),
+    }
+    evidence = watchdog_dir / "groot_oscar_runpod_canary_watchdog.json"
+    evidence.write_text(json.dumps(watchdog), encoding="utf-8")
+    assert _watchdog_valid(watchdog, now_epoch=time.time(), hard_ttl_seconds=60)
+
+    symlink_root = tmp_path / "watchdog-link"
+    symlink_root.symlink_to(watchdog_dir, target_is_directory=True)
+    watchdog["watchdog_out_dir"] = str(symlink_root)
+    evidence.write_text(json.dumps(watchdog), encoding="utf-8")
+    assert not _watchdog_valid(watchdog, now_epoch=time.time(), hard_ttl_seconds=60)
+
+
+def test_canary_records_exact_instance_for_watchdog_and_requests_close(
+    tmp_path: Path, monkeypatch
+) -> None:
+    watchdog_dir = tmp_path / "watchdog"
+    watchdog_dir.mkdir()
+    preflight = _preflight()
+    preflight["watchdog"]["watchdog_out_dir"] = str(watchdog_dir)
+    provider = _Provider()
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_vast_canary."
+        "validate_measurement_isaac_vast_runtime_result",
+        lambda value, **_kwargs: dict(value),
+    )
+    times = iter([1000.0, 1001.0, 1002.0])
+    result = run_measurement_isaac_vast_canary(
+        bound_request=_bound_request(),
+        bundle_receipt=_receipt(),
+        preflight=preflight,
+        job_dir=tmp_path / "canary",
+        input_bundle_get_url=INPUT_URL,
+        output_put_url=PUT_URL,
+        output_get_url=GET_URL,
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=lambda _url: {
+            "runtime_result_digest": D3,
+            "status": "passed",
+        },
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+    assert result["status"] == "completed"
+    started_id = watchdog_dir / "started_vast_instance_id.txt"
+    assert started_id.read_text(encoding="utf-8") == "42"
+    assert started_id.stat().st_mode & 0o777 == 0o600
+    cancel = json.loads(
+        (watchdog_dir / "groot_oscar_runpod_canary_watchdog_cancel.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cancel["instance_id"] == "42"
+    assert cancel["provider_absence_confirmed"] is True
 
 
 def test_default_fetcher_treats_missing_output_as_not_ready(monkeypatch) -> None:
