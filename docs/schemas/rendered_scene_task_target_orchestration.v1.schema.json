@@ -13,6 +13,7 @@
     "analyzer_provenance",
     "binding_results",
     "target_analysis",
+    "task_zone_asset_requirement",
     "source_video_available",
     "source_video_required_for_bounded_sim_target",
     "candidate_may_self_authorize",
@@ -33,6 +34,46 @@
     "analyzer_run": {"type": "object"},
     "binding_results": {"type": "array", "items": {"type": "object"}},
     "target_analysis": {"type": "object"},
+    "task_zone_asset_requirement": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "target_region_id",
+        "interaction_mode",
+        "interaction_mode_source",
+        "verified_simready_asset_required",
+        "authoritative_asset_selection_performed",
+        "next_stage",
+        "requirement_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "task_zone_asset_requirement_candidate.v1"},
+        "status": {
+          "enum": [
+            "not_required_for_inspection_only",
+            "verified_task_zone_asset_required",
+            "abstained_interaction_mode_ambiguous",
+            "abstained_no_selected_target"
+          ]
+        },
+        "target_region_id": {"type": ["string", "null"]},
+        "interaction_mode": {
+          "enum": [
+            "inspection_only",
+            "contact",
+            "articulation",
+            "object_state_transition",
+            "unknown"
+          ]
+        },
+        "interaction_mode_source": {"type": "string", "minLength": 1},
+        "verified_simready_asset_required": {"type": ["boolean", "null"]},
+        "authoritative_asset_selection_performed": {"const": false},
+        "next_stage": {"type": "string", "minLength": 1},
+        "requirement_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
     "source_video_available": {"type": "boolean"},
     "source_video_required_for_bounded_sim_target": {"const": false},
     "candidate_may_self_authorize": {"const": false},

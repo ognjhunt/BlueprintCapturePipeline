@@ -35,6 +35,21 @@ ANALYZER_REQUEST_SCHEMA = "rendered_scene_task_analyzer_request.v1"
 ANALYZER_RUN_SCHEMA = "rendered_scene_task_analyzer_run.v1"
 PIPELINE_REQUEST_SCHEMA = "rendered_scene_task_target_pipeline_request.v1"
 MAX_ANALYZER_OUTPUT_BYTES = 2 * 1024 * 1024
+TASK_ZONE_REQUIREMENT_SCHEMA = "task_zone_asset_requirement_candidate.v1"
+
+_CONTACT_INTENT_WORDS = {
+    "contact",
+    "grasp",
+    "lift",
+    "move",
+    "open",
+    "place",
+    "press",
+    "pull",
+    "push",
+    "turn",
+    "wipe",
+}
 
 RenderedSceneAnalyzerBackend = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
 
@@ -198,6 +213,104 @@ def _resolved_analysis_splat(path: str | Path) -> tuple[Path, str]:
     if not resolved.is_file():
         raise RenderedSceneTaskTargetOrchestratorError(["rendered_target_analysis_splat_missing"])
     return resolved, _sha256(resolved)
+
+
+def _task_zone_asset_requirement(
+    *, target_analysis: Mapping[str, Any], task_context: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Expose whether the proposed task needs verified replacement geometry.
+
+    This is an early requirement candidate, not the authoritative SimReady
+    selection.  The latter still requires an approved task digest and an
+    independently validated asset through ``decide_simready_assets``.
+    """
+
+    selected = target_analysis.get("selected_target")
+    if not isinstance(selected, Mapping):
+        value = {
+            "schema_version": TASK_ZONE_REQUIREMENT_SCHEMA,
+            "status": "abstained_no_selected_target",
+            "target_region_id": None,
+            "interaction_mode": "unknown",
+            "interaction_mode_source": "no_selected_target",
+            "verified_simready_asset_required": None,
+            "authoritative_asset_selection_performed": False,
+            "next_stage": "select_and_authorize_a_3d_task_target",
+        }
+        value["requirement_digest"] = canonical_digest(
+            value, digest_field="requirement_digest"
+        )
+        return value
+
+    explicit_mode = str(task_context.get("requested_interaction_mode") or "").strip()
+    allowed_modes = {"inspection_only", "contact", "articulation", "object_state_transition"}
+    if explicit_mode and explicit_mode not in allowed_modes:
+        mode = "unknown"
+        source = "invalid_explicit_requested_interaction_mode"
+    elif explicit_mode:
+        mode = explicit_mode
+        source = "operator_task_context"
+    else:
+        intent = str(task_context.get("site_task_intent") or "").lower()
+        task_family = str(selected.get("task_family") or "").lower()
+        intent_words = {word.strip(".,:;!?()[]{}") for word in intent.split()}
+        if "inspect" in intent_words or "inspection" in task_family:
+            mode = "inspection_only"
+            source = "bounded_task_intent_inference"
+        elif intent_words.intersection(_CONTACT_INTENT_WORDS):
+            mode = "object_state_transition"
+            source = "bounded_task_intent_inference"
+        else:
+            mode = "unknown"
+            source = "task_intent_ambiguous"
+
+    required = mode in {"contact", "articulation", "object_state_transition"}
+    status = (
+        "verified_task_zone_asset_required"
+        if required
+        else "not_required_for_inspection_only"
+        if mode == "inspection_only"
+        else "abstained_interaction_mode_ambiguous"
+    )
+    value = {
+        "schema_version": TASK_ZONE_REQUIREMENT_SCHEMA,
+        "status": status,
+        "target_region_id": str(selected.get("proposal_id") or ""),
+        "target_label": str(selected.get("object_label") or ""),
+        "task_family": str(selected.get("task_family") or ""),
+        "interaction_mode": mode,
+        "interaction_mode_source": source,
+        "verified_simready_asset_required": required if mode != "unknown" else None,
+        "authoritative_asset_selection_performed": False,
+        "required_independent_validation": (
+            [
+                "scale",
+                "site_to_object_transform",
+                "support_surface",
+                "orientation",
+                "penetration",
+                "reprojection",
+                "physics_properties",
+            ]
+            if required
+            else []
+        ),
+        "next_stage": (
+            "approve_task_then_run_digest_bound_simready_asset_selection"
+            if required
+            else "define_and_qualify_inspection_outcome_metric"
+            if mode == "inspection_only"
+            else "obtain_explicit_requested_interaction_mode"
+        ),
+        "claim_boundary": {
+            "captured_appearance_is_collision_truth": False,
+            "realistic_asset_self_qualifies": False,
+            "requirement_candidate_selects_or_composites_an_asset": False,
+            "changing_to_contact_or_state_transition_requires_a_new_decision": True,
+        },
+    }
+    value["requirement_digest"] = canonical_digest(value, digest_field="requirement_digest")
+    return value
 
 
 def build_rendered_scene_task_analyzer_request(
@@ -510,6 +623,7 @@ def compile_rendered_scene_task_target_with_analyzer(
         metric_scale_status=metric_scale_status,
         collision_support=collision_support,
         reach_support=reach_support,
+        task_context=task_context,
         minimum_visual_confidence=minimum_visual_confidence,
         minimum_opacity=minimum_opacity,
         front_depth_fraction=front_depth_fraction,
@@ -661,6 +775,7 @@ def compile_rendered_scene_task_target(
     metric_scale_status: str,
     collision_support: Mapping[str, Any],
     reach_support: Mapping[str, Any],
+    task_context: Mapping[str, Any] | None = None,
     minimum_visual_confidence: float = 0.8,
     minimum_opacity: float = 0.18,
     front_depth_fraction: float = 0.25,
@@ -765,6 +880,10 @@ def compile_rendered_scene_task_target(
             "reach_support": dict(reach_support),
         }
     )
+    task_zone_asset_requirement = _task_zone_asset_requirement(
+        target_analysis=target_analysis,
+        task_context=dict(task_context or {}),
+    )
     result = {
         "schema_version": RESULT_SCHEMA,
         "status": target_analysis["status"],
@@ -775,6 +894,7 @@ def compile_rendered_scene_task_target(
         "analyzer_provenance": proposals["analyzer_provenance"],
         "binding_results": binding_results,
         "target_analysis": target_analysis,
+        "task_zone_asset_requirement": task_zone_asset_requirement,
         "source_video_available": bool(source_video_available),
         "source_video_required_for_bounded_sim_target": False,
         "candidate_may_self_authorize": False,
@@ -803,6 +923,7 @@ __all__ = [
     "PIPELINE_REQUEST_SCHEMA",
     "PROPOSAL_SET_SCHEMA",
     "RESULT_SCHEMA",
+    "TASK_ZONE_REQUIREMENT_SCHEMA",
     "RenderedSceneTaskTargetOrchestratorError",
     "build_rendered_scene_task_analyzer_request",
     "compile_rendered_scene_task_target",
