@@ -108,9 +108,15 @@ loop:
   method-neutral sphere/box corpus. The worker starts `SimulationApp` before
   Isaac imports, creates a fresh metric Z-up USD stage, observes the live body
   pose and PhysX contact report, repeats the complete trace, and binds the
-  runtime and solver without invoking RTX sensors or a renderer. Plan-time
-  validation is complete; actual Isaac execution remains false until an exact
-  external runtime returns both checked receipts;
+  runtime and solver without invoking RTX sensors or a renderer. A digest-bound
+  Vast development canary on 2026-08-02 executed both checked receipts in the
+  exact Isaac Sim 6.0.1 image, observed deterministic replay and PhysX contact,
+  and separately rendered a non-empty 64x64 RayTracedLighting frame on an RTX
+  GPU. The redacted evidence summary is
+  [`measurement_isaac_physx_rtx_development_canary_2026-08-02.json`](../evidence/measurement_isaac_physx_rtx_development_canary_2026-08-02.json).
+  This proves only bounded development runtime execution and RTX startup/pixel
+  production; it creates no sensor qualification, R5-R7 evidence, production
+  route, captured-site accuracy, policy result, task success, or physical claim;
 - `blueprint_pipeline.measurement_sapien_rigid_adapter` and
   `blueprint_pipeline.measurement_geometry_contact_sapien_development_suite`
   — an exact-pinned SAPIEN 3.0.3/PhysX CPU development worker and checked
@@ -539,6 +545,14 @@ Implemented and hermetically tested:
   supported Python runtime, exact implementation/solver/case/receipt binding,
   and deterministic double replay. It does not establish hydroelastic contact,
   general robot/task support, captured-site accuracy, or qualification;
+- a paid, digest-bound Vast execution of the exact Isaac Sim 6.0.1 development
+  bundle: both CPU PhysX/TGS/SAP sphere/box cases completed with deterministic
+  replay and live contact reports, then a separate RTX 6000 Ada process started
+  RayTracedLighting and produced a non-empty 64x64 RGBA frame. The checked
+  redacted summary preserves request, bundle, runtime, result, teardown, and
+  provider-zero digests. This is development runtime evidence only: Q-SENSOR,
+  R5/R6/R7, production routing, policy/task success, site accuracy, and physical
+  success all remain false;
 - a real OpenCV 4.11 calibrated Capture-to-Observation development worker plus
   a schema-checked two-trial synthetic corpus and aggregate corpus runner, with
   exact nanosecond timestamp handling, non-coplanar target enforcement,
