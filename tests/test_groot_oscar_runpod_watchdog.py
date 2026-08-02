@@ -45,7 +45,6 @@ def test_watchdog_arms_reconstruction_prefix_with_executor_alias(tmp_path) -> No
     assert result["name_prefix"] == "blueprint-reconstruction-"
     assert result["provider"] == "vast"
 
-
 def test_watchdog_arms_measurement_isaac_canary_prefix(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
 
@@ -92,7 +91,6 @@ def test_watchdog_arms_measurement_chrono_dem_canary_prefix(tmp_path, monkeypatc
     assert result["status"] == "armed"
     assert result["pod_name_prefix"] == "blueprint-measurement-chrono-dem-"
     assert result["provider"] == "vast"
-
 
 def test_vast_watchdog_reaps_only_active_label_prefix_matches_and_proves_absence(
     monkeypatch,
