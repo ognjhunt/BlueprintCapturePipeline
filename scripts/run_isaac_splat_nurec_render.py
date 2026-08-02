@@ -1457,13 +1457,24 @@ def _bundle_and_upload(out_dir: Path, result_path: Path) -> None:
     if not signed:
         return
     try:
+        import urllib.parse
         import urllib.request
 
+        parsed = urllib.parse.urlsplit(signed)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return
         data = zip_path.read_bytes()
         req = urllib.request.Request(
             signed, data=data, method="PUT", headers={"Content-Type": "application/zip"}
         )
-        urllib.request.urlopen(req, timeout=300).read()
+        # The exact presigned URL is accepted only after the HTTPS and authority
+        # checks above; redirects remain within urllib's standard handler.
+        urllib.request.urlopen(req, timeout=300).read()  # nosec B310
     except Exception:  # noqa: BLE001
         pass
 

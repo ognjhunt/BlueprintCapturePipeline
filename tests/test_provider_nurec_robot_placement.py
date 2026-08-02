@@ -151,6 +151,13 @@ def test_packet_uses_franka_default_but_formal_placement_abstains(tmp_path):
     assert packet["render_options"]["robot_id"] == "franka_panda"
     assert packet["render_options"]["robot_ground_z"] == -0.06
     assert packet["placement_proposal"]["status"] == "runtime_visualization_candidate_only"
+    support = packet["placement_proposal"]["known_support"]
+    assert support["metric_stage_semantics_declared"] is True
+    assert support["independent_known_distance_scale_anchor"] is False
+    assert "metric_scale_verified" not in support
+    assert "independent_known_distance_scale_anchor_missing" in packet[
+        "placement_proposal"
+    ]["formal_gaps"]
     placement = packet["robot_placement_result"]
     assert placement["status"] == "abstained"
     assert placement["selected_candidate_id"] is None

@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-import pytest
 from PIL import Image
 
 from blueprint_pipeline.pose_image_consistency import check_two_view_epipolar_consistency

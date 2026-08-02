@@ -228,7 +228,10 @@ def build_provider_nurec_robot_placement_packet(
         "ground_surface_prim": surface.get("prim_path"),
         "evidence_digests": evidence_digests,
         "known_support": {
-            "metric_scale_verified": runtime.get("stage", {}).get("meters_per_unit") == 1.0,
+            "metric_stage_semantics_declared": (
+                runtime.get("stage", {}).get("meters_per_unit") == 1.0
+            ),
+            "independent_known_distance_scale_anchor": False,
             "z_up_verified": runtime.get("stage", {}).get("up_axis") == "Z",
             "point_contact_verified": True,
             "nonblank_scene_view_verified": True,
@@ -240,6 +243,7 @@ def build_provider_nurec_robot_placement_packet(
             "human_clearance_not_qualified",
             "captured_placement_coverage_not_measured",
             "task_target_semantics_not_observed",
+            "independent_known_distance_scale_anchor_missing",
         ],
         "proof_boundary": {
             "runtime_visualization_is_formal_placement_approval": False,

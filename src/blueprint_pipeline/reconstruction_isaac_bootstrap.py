@@ -26,6 +26,7 @@ from .reconstruction_isaac_worker_bundle import (
     validate_isaac_verification_worker_bundle_receipt,
 )
 from .safe_outbound_http import (
+    SafeHttpFileTransfer,
     SafeOutboundHttpError,
     download_file,
     presigned_transfer_policy,

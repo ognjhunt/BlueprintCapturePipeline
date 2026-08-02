@@ -69,10 +69,23 @@ jobs:
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y ffmpeg
 
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tools/splat_render/package-lock.json
+
+      - name: Install sealed-camera renderer dependencies
+        working-directory: tools/splat_render
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
       - name: Install Python dependencies
         run: |
           uv lock --check
-          uv sync --frozen --extra dev --extra cloud --extra groot-libero-cpu
+          uv sync --frozen --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation
           uv pip install -e BlueprintContracts
 
       - name: Validate Python interpreter matrix

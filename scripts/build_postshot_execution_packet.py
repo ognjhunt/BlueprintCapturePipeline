@@ -25,7 +25,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
+from blueprint_pipeline.decision_evidence_contracts import (  # noqa: E402
+    canonical_digest,
+    canonical_json,
+)
 
 PACKET_SCHEMA_VERSION = "postshot_execution_packet.v1"
 

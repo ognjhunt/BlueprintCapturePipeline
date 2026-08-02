@@ -15,18 +15,6 @@
     {
       "disposition": "accepted_risk",
       "expires_on": "2026-08-08",
-      "filename": "scripts/run_isaac_splat_nurec_render.py",
-      "fingerprint": "84ba8fce01138023f147a3895bb209183bcfed727ff2fea8ba5da378c5fb6498",
-      "line_number": 580,
-      "owner": "@ognjhunt",
-      "reason": "This existing URL-open site was reviewed at its exact code fingerprint after confirmed unsafe endpoints were migrated to bounded validators; remaining reachability and provenance assumptions must be re-reviewed before expiry.",
-      "reviewed_on": "2026-07-09",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-08-08",
       "filename": "scripts/run_sim_only_beta_deployment_parity_proof.py",
       "fingerprint": "9bb25bb42142519823988cd9c9bddeaaf9bf37d08aa8c94ca5ff18bf49e5affd",
       "line_number": 102,
