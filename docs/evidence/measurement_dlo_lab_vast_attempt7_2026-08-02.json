@@ -4,7 +4,9 @@
   "status": "failed_native_root_cause_localized",
   "blueprint_source_commit": "73166cbedb4c7b14707495ba4d7d515e39a029e3",
   "dlo_lab_source_commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
-  "quadrants_source_commit": "a22cc2dedd3458dc88cca287a8e2faf74430a251",
+  "quadrants_reference_source_commit": "a22cc2dedd3458dc88cca287a8e2faf74430a251",
+  "quadrants_reference_tag": "v0.8.0",
+  "wheel_to_reference_source_commit_identity_proven": false,
   "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385",
   "runtime_release_digest": "sha256:84d9be435c4b892561537505ad976320ca83a11141120706f05a7f14f8db209f",
   "input_bundle_digest": "sha256:e4ed3c8ae9f7ff3d7eee079f84eb2a34cf60d00ca5d44f59da4886613a5a417e",
@@ -13,7 +15,7 @@
   "provider": "vast",
   "instance_id": "46646571",
   "gpu_name": "L40S",
-  "hourly_rate_usd": 0.6222222222222222,
+  "hourly_rate_usd": 0.6014814814814815,
   "duration_seconds": 759.5953431129456,
   "estimated_cost_usd": 0.12691181452833578,
   "runtime_result_digest": "sha256:d3d85fa6764dbcafc060edd804f23b5bb5059ec1c305af88577b59ffc81ae8c1",
@@ -87,10 +89,12 @@
   },
   "source_localization": {
     "quadrants_tag": "v0.8.0",
+    "source_role": "version-matched_upstream_reference_source",
+    "wheel_build_commit_identity_proven": false,
     "get_repo_dir_behavior": "Reads XDG_CACHE_HOME, otherwise requires HOME and aborts when HOME is absent.",
     "compile_config_behavior": "Constructs offline_cache_file_path from get_repo_dir during shared-library initialization.",
     "blueprint_executor_observation": "Inherited HOME and XDG_CACHE_HOME were intentionally absent from the sanitized adapter environment.",
-    "localized_cause": "Quadrants global CompileConfig initialization aborts before CUDA or DLO-Lab execution because the sanitized worker environment provides neither XDG_CACHE_HOME nor HOME.",
+    "localized_cause_inference": "The native frame sequence and version-matched reference source indicate that Quadrants global CompileConfig initialization aborts before CUDA or DLO-Lab execution because the sanitized worker environment provides neither XDG_CACHE_HOME nor HOME.",
     "cuda_kernel_failure_observed": false
   },
   "teardown": {
