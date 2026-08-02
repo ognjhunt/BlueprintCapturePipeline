@@ -91,6 +91,22 @@ def test_qualification_blockers_accept_only_complete_v3_evidence() -> None:
     ) == []
 
 
+def test_provider_package_mode_has_versioned_schema_and_dynamic_exact_prim_paths() -> None:
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+    assert 'PROVIDER_QUALIFICATION_RESULT_SCHEMA = "provider_nurec_isaac_runtime_result.v1"' in source
+    assert 'NUREC_FIELD_TYPE = "OmniNuRecFieldAsset"' in source
+    assert "--provider-package-mode" in source
+    assert "--expected-appearance-prim" in source
+    assert "--expected-collision-prim" in source
+    stage = _stage(expected_prim_paths={"appearance": None, "collision": None})
+    assert "isaac_expected_prims_not_loaded" in runner._qualification_blockers(
+        package_digest=DIGEST,
+        stage=stage,
+        physics_probe=_physics(),
+        cameras=_cameras(),
+    )
+
+
 def test_v3_schema_accepts_only_explicit_completed_qualification_evidence() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     evidence = {

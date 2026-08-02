@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/external_provider_provenance_rights_receipt.v2.schema.json",
+  "title": "External provider provenance and rights receipt v2",
+  "type": "object",
+  "required": [
+    "schema_version", "source_profile", "provider", "external_import_request_digest",
+    "asset_digest", "rights_scope", "status", "remote_upload_authorized_by_receipt",
+    "provider_success_is_blueprint_qualification", "external_derived_support_asset",
+    "blueprint_raw_capture_truth", "proof_effect", "claim_ceiling",
+    "provenance_rights_receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "external_provider_provenance_rights_receipt.v2"},
+    "external_import_request_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "asset_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "status": {"const": "accepted_for_declared_local_import_only"},
+    "remote_upload_authorized_by_receipt": {"const": false},
+    "provider_success_is_blueprint_qualification": {"const": false},
+    "external_derived_support_asset": {"const": true},
+    "blueprint_raw_capture_truth": {"const": false},
+    "proof_effect": {"const": "provenance_and_rights_for_local_import_only"},
+    "claim_ceiling": {"const": "external_reconstruction_import"},
+    "provenance_rights_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

@@ -40,13 +40,18 @@ from pathlib import Path
 
 LEGACY_RESULT_SCHEMA = "isaac_splat_nurec_render_result.v1"
 QUALIFICATION_RESULT_SCHEMA = "isaac_splat_nurec_render_result.v3"
+PROVIDER_QUALIFICATION_RESULT_SCHEMA = "provider_nurec_isaac_runtime_result.v1"
 PARTICLEFIELD_TYPE = "ParticleField3DGaussianSplat"
+NUREC_FIELD_TYPE = "OmniNuRecFieldAsset"
 _CAMERA_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _write_json(path: Path, payload: dict) -> None:
     payload = dict(payload)
-    if payload.get("schema_version") == QUALIFICATION_RESULT_SCHEMA:
+    if payload.get("schema_version") in {
+        QUALIFICATION_RESULT_SCHEMA,
+        PROVIDER_QUALIFICATION_RESULT_SCHEMA,
+    }:
         payload.pop("isaac_runtime_result_digest", None)
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         payload["isaac_runtime_result_digest"] = (
@@ -361,6 +366,13 @@ def _qualification_blockers(*, package_digest, stage, physics_probe, cameras):
         blockers.append("isaac_collision_geometry_inactive")
     if stage.get("obvious_scale_mismatch_detected") is not False:
         blockers.append("isaac_obvious_scale_mismatch")
+    expected_prims = stage.get("expected_prim_paths")
+    if (
+        not isinstance(expected_prims, dict)
+        or not expected_prims.get("appearance")
+        or not expected_prims.get("collision")
+    ):
+        blockers.append("isaac_expected_prims_not_loaded")
     if physics_probe.get("ground_contact_surface_present") is not True:
         blockers.append("isaac_ground_contact_surface_missing")
     if int(physics_probe.get("steps_executed") or 0) < 2:
@@ -597,9 +609,14 @@ def _render(args) -> int:
     frames_dir.mkdir(parents=True, exist_ok=True)
     result_path = out_dir / "isaac_runtime_result.json"
     qualification_mode = bool(args.qualification_mode)
+    provider_package_mode = bool(args.provider_package_mode)
     base = {
         "schema_version": (
-            QUALIFICATION_RESULT_SCHEMA if qualification_mode else LEGACY_RESULT_SCHEMA
+            PROVIDER_QUALIFICATION_RESULT_SCHEMA
+            if provider_package_mode
+            else QUALIFICATION_RESULT_SCHEMA
+            if qualification_mode
+            else LEGACY_RESULT_SCHEMA
         ),
         "renderer": "isaac_rtx_particlefield",
         "raw_secret_values_recorded": False,
@@ -733,7 +750,22 @@ def _render(args) -> int:
         if stage is None:
             _write_json(result_path, {**base, "status": "blocked", "blockers": ["isaac_stage_open_failed"]})
             return 2
-        pf = [p for p in stage.Traverse() if str(p.GetTypeName()) == PARTICLEFIELD_TYPE]
+        pf = [
+            p
+            for p in stage.Traverse()
+            if str(p.GetTypeName()) == PARTICLEFIELD_TYPE
+            or (
+                provider_package_mode
+                and (
+                    str(p.GetTypeName()) == NUREC_FIELD_TYPE
+                    or any(
+                        str(attr.GetName()) == "omni:nurec:isNuRecVolume"
+                        and bool(attr.Get())
+                        for attr in p.GetAttributes()
+                    )
+                )
+            )
+        ]
         prim_types = sorted({str(p.GetTypeName()) for p in stage.Traverse() if p.GetTypeName()})[:40]
         _phase(result_path, base, "runner_stage_opened", stage_path=str(stage_path),
                particlefield_prim_count=len(pf), prim_types=prim_types)
@@ -762,8 +794,8 @@ def _render(args) -> int:
                 UsdUtils=UsdUtils,
             )
             expected_paths = {
-                "appearance": "/World/BlueprintReconstruction/Appearance",
-                "collision": "/World/BlueprintReconstruction/Collision",
+                "appearance": args.expected_appearance_prim,
+                "collision": args.expected_collision_prim,
             }
             stage_evidence["expected_prim_paths"] = {
                 name: path if stage.GetPrimAtPath(path).IsValid() else None
@@ -1173,6 +1205,21 @@ def main(argv=None) -> int:
         help="optional measured collision-probe XY in stage meters",
     )
     ap.add_argument("--physics-probe-steps", type=int, default=240)
+    ap.add_argument(
+        "--provider-package-mode",
+        action="store_true",
+        help="qualify an exact provider-authored NuRec package and emit its versioned runtime result",
+    )
+    ap.add_argument(
+        "--expected-appearance-prim",
+        default="/World/BlueprintReconstruction/Appearance",
+        help="exact appearance prim expected in qualification mode",
+    )
+    ap.add_argument(
+        "--expected-collision-prim",
+        default="/World/BlueprintReconstruction/Collision",
+        help="exact collision prim expected in qualification mode",
+    )
     ap.add_argument("--allow-any-stage", action="store_true",
                     help="skip the ParticleField prim assertion (e.g. rendering a textured USD de-risk scene)")
     args = ap.parse_args(argv)
@@ -1194,6 +1241,14 @@ def main(argv=None) -> int:
         ap.error("--qualification-mode requires an exact packaged --usdc or --usdz, not --ply transcode")
     if args.qualification_mode and args.allow_any_stage:
         ap.error("--qualification-mode cannot be combined with --allow-any-stage")
+    if args.provider_package_mode and not args.qualification_mode:
+        ap.error("--provider-package-mode requires --qualification-mode")
+    for option, value in (
+        ("--expected-appearance-prim", args.expected_appearance_prim),
+        ("--expected-collision-prim", args.expected_collision_prim),
+    ):
+        if not isinstance(value, str) or not value.startswith("/") or ".." in value.split("/"):
+            ap.error(f"{option} must be an absolute safe prim path")
     if args.physics_probe_steps < 2:
         ap.error("--physics-probe-steps must be at least 2")
     return _render(args)

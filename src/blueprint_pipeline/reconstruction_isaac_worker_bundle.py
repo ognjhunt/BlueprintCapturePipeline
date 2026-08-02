@@ -24,9 +24,15 @@ from .isaac_reconstruction_verification import (
     IsaacReconstructionVerificationError,
     build_isaac_asset_verification_request,
 )
+from .external_provider_nurec import (
+    ExternalProviderNuRecError,
+    ISAAC_REQUEST_SCHEMA as PROVIDER_ISAAC_REQUEST_SCHEMA,
+    build_provider_nurec_isaac_request,
+)
 
 
 ISAAC_WORKER_BUNDLE_SCHEMA = "isaac_verification_worker_bundle.v1"
+PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA = "provider_nurec_isaac_worker_bundle.v1"
 ISAAC_WORKER_EXTRACTION_SCHEMA = "isaac_verification_worker_bundle_extraction.v1"
 MAX_BUNDLE_MEMBER_BYTES = 4_000_000_000
 MAX_BUNDLE_TOTAL_BYTES = 5_000_000_000
@@ -130,7 +136,33 @@ def _command_for_request(request: Mapping[str, Any]) -> list[str]:
         command.extend(["--ground-height", str(probe["ground_height_m"])])
     if probe.get("probe_xy_m") is not None:
         command.extend(["--probe-xy", *[str(value) for value in probe["probe_xy_m"]]])
+    if request.get("schema_version") == PROVIDER_ISAAC_REQUEST_SCHEMA:
+        command.extend(
+            [
+                "--provider-package-mode",
+                "--expected-appearance-prim",
+                str(request["expected_prim_paths"]["appearance"]),
+                "--expected-collision-prim",
+                str(request["expected_prim_paths"]["collision"]),
+            ]
+        )
     return command
+
+
+def _validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    if value.get("schema_version") == PROVIDER_ISAAC_REQUEST_SCHEMA:
+        try:
+            return build_provider_nurec_isaac_request(value)
+        except ExternalProviderNuRecError as exc:
+            raise IsaacWorkerBundleError(
+                [f"provider_isaac_verification_request_invalid:{code}" for code in exc.codes]
+            ) from exc
+    try:
+        return build_isaac_asset_verification_request(value)
+    except IsaacReconstructionVerificationError as exc:
+        raise IsaacWorkerBundleError(
+            [f"isaac_verification_request_invalid:{code}" for code in exc.codes]
+        ) from exc
 
 
 def validate_isaac_verification_worker_bundle_receipt(
@@ -140,7 +172,10 @@ def validate_isaac_verification_worker_bundle_receipt(
 
     receipt = json.loads(json.dumps(dict(value)))
     errors: list[str] = []
-    if receipt.get("schema_version") != ISAAC_WORKER_BUNDLE_SCHEMA:
+    if receipt.get("schema_version") not in {
+        ISAAC_WORKER_BUNDLE_SCHEMA,
+        PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA,
+    }:
         errors.append("isaac_bundle_receipt_schema_invalid")
     if receipt.get("receipt_digest") != canonical_digest(
         receipt, digest_field="receipt_digest"
@@ -159,9 +194,13 @@ def validate_isaac_verification_worker_bundle_receipt(
             errors.append(f"isaac_bundle_receipt_{key}_invalid")
     if _COMMIT.fullmatch(str(receipt.get("source_commit_sha") or "")) is None:
         errors.append("isaac_bundle_receipt_source_commit_invalid")
+    expected_runtime = (
+        "provider_nurec_isaac_runtime_result.v1"
+        if receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+        else "isaac_splat_nurec_render_result.v3"
+    )
     if (
-        receipt.get("expected_runtime_schema")
-        != "isaac_splat_nurec_render_result.v3"
+        receipt.get("expected_runtime_schema") != expected_runtime
         or receipt.get("raw_secret_values_included") is not False
         or receipt.get("provider_allocation_performed") is not False
         or receipt.get("paid_execution_authorized_by_bundle") is not False
@@ -197,12 +236,16 @@ def compile_isaac_verification_worker_bundle(
 ) -> dict[str, Any]:
     """Compile a deterministic exact-package Isaac input bundle without spending."""
 
-    try:
-        request = build_isaac_asset_verification_request(verification_request)
-    except IsaacReconstructionVerificationError as exc:
-        raise IsaacWorkerBundleError(
-            [f"isaac_verification_request_invalid:{code}" for code in exc.codes]
-        ) from exc
+    request = _validate_request(verification_request)
+    provider_request = request["schema_version"] == PROVIDER_ISAAC_REQUEST_SCHEMA
+    bundle_schema = (
+        PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA if provider_request else ISAAC_WORKER_BUNDLE_SCHEMA
+    )
+    request_member = (
+        "provider_nurec_isaac_verification_request.v1.json"
+        if provider_request
+        else "isaac_asset_verification_request.v1.json"
+    )
     package_root = Path(package_artifact_root)
     if package_root.is_symlink() or not package_root.is_dir():
         raise IsaacWorkerBundleError(["isaac_package_root_invalid"])
@@ -247,7 +290,12 @@ def compile_isaac_verification_worker_bundle(
     destination = destination.resolve()
     content_id = request["isaac_verification_request_digest"][7:]
     final = destination / content_id
-    receipt_path = final / "isaac_verification_worker_bundle.v1.json"
+    receipt_filename = (
+        "provider_nurec_isaac_worker_bundle.v1.json"
+        if provider_request
+        else "isaac_verification_worker_bundle.v1.json"
+    )
+    receipt_path = final / receipt_filename
     bundle_path = final / "isaac_verification_worker_bundle.zip"
     if final.exists():
         try:
@@ -268,11 +316,11 @@ def compile_isaac_verification_worker_bundle(
 
     temporary = Path(tempfile.mkdtemp(prefix=".isaac-bundle-", dir=destination))
     try:
-        request_path = temporary / "isaac_asset_verification_request.v1.json"
+        request_path = temporary / request_member
         write_json(request_path, request)
         command = _command_for_request(request)
         manifest = {
-            "schema_version": ISAAC_WORKER_BUNDLE_SCHEMA,
+            "schema_version": bundle_schema,
             "isaac_verification_request_digest": request[
                 "isaac_verification_request_digest"
             ],
@@ -283,7 +331,10 @@ def compile_isaac_verification_worker_bundle(
             "source_commit_sha": request["source_commit_sha"],
             "fixed_camera_ids": request["fixed_camera_ids"],
             "command": command,
-            "expected_runtime_schema": "isaac_splat_nurec_render_result.v3",
+            "expected_runtime_schema": request.get(
+                "expected_runtime_schema", "isaac_splat_nurec_render_result.v3"
+            ),
+            "verification_request_member": request_member,
             "raw_secret_values_included": False,
             "provider_allocation_performed": False,
             "paid_execution_authorized_by_bundle": False,
@@ -303,7 +354,7 @@ def compile_isaac_verification_worker_bundle(
             for name, source in (
                 ("bundle_manifest.json", manifest_path),
                 ("fixed_cameras.json", cameras),
-                ("isaac_asset_verification_request.v1.json", request_path),
+                (request_member, request_path),
                 ("reconstruction.usdz", package),
                 ("run_isaac_splat_nurec_render.py", runner),
             ):
@@ -320,7 +371,7 @@ def compile_isaac_verification_worker_bundle(
         receipt["receipt_digest"] = canonical_digest(
             receipt, digest_field="receipt_digest"
         )
-        write_json(temporary / "isaac_verification_worker_bundle.v1.json", receipt)
+        write_json(temporary / receipt_filename, receipt)
         os.replace(temporary, final)
         return receipt
     except Exception:
@@ -376,10 +427,14 @@ def extract_isaac_verification_worker_bundle(
                 raise IsaacWorkerBundleError(["isaac_bundle_extraction_replay_tampered"])
         return extraction
 
+    request_member = str(
+        receipt.get("verification_request_member")
+        or "isaac_asset_verification_request.v1.json"
+    )
     expected_names = {
         "bundle_manifest.json",
         "fixed_cameras.json",
-        "isaac_asset_verification_request.v1.json",
+        request_member,
         "reconstruction.usdz",
         "run_isaac_splat_nurec_render.py",
     }
@@ -433,11 +488,7 @@ def extract_isaac_verification_worker_bundle(
                     }
                 )
         manifest = json.loads((temporary / "bundle_manifest.json").read_text())
-        request = build_isaac_asset_verification_request(
-            json.loads(
-                (temporary / "isaac_asset_verification_request.v1.json").read_text()
-            )
-        )
+        request = _validate_request(json.loads((temporary / request_member).read_text()))
         if (
             not isinstance(manifest, Mapping)
             or manifest.get("bundle_manifest_digest")
@@ -483,6 +534,7 @@ def extract_isaac_verification_worker_bundle(
 
 __all__ = [
     "ISAAC_WORKER_BUNDLE_SCHEMA",
+    "PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA",
     "ISAAC_WORKER_EXTRACTION_SCHEMA",
     "IsaacWorkerBundleError",
     "compile_isaac_verification_worker_bundle",

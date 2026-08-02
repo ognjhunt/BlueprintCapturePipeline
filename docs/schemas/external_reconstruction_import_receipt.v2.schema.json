@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/external_reconstruction_import_receipt.v2.schema.json",
+  "title": "External reconstruction import receipt v2",
+  "type": "object",
+  "required": [
+    "schema_version", "source_profile", "provider", "external_import_request_digest",
+    "provenance_rights_receipt_digest", "asset_digest", "asset_size_bytes",
+    "asset_reference", "asset_absolute_path", "materialization", "status",
+    "source_capture_binding", "external_derived_support_asset", "blueprint_raw_capture_truth",
+    "metric_scale_proven", "collision_geometry_validated", "isaac_compatibility_proven",
+    "simulator_task_success_proven", "physical_success_proven", "remote_calls_performed",
+    "proof_effect", "claim_ceiling", "external_import_receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "external_reconstruction_import_receipt.v2"},
+    "external_import_request_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "provenance_rights_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "asset_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "status": {"const": "imported_derived_support_only"},
+    "source_capture_binding": {"const": "none"},
+    "external_derived_support_asset": {"const": true},
+    "blueprint_raw_capture_truth": {"const": false},
+    "metric_scale_proven": {"const": false},
+    "collision_geometry_validated": {"const": false},
+    "isaac_compatibility_proven": {"const": false},
+    "simulator_task_success_proven": {"const": false},
+    "physical_success_proven": {"const": false},
+    "remote_calls_performed": {"const": false},
+    "proof_effect": {"const": "external_reconstruction_derived_support_only"},
+    "claim_ceiling": {"const": "external_reconstruction_import"},
+    "external_import_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}
