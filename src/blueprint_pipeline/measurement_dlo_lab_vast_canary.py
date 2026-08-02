@@ -18,7 +18,17 @@ from .measurement_dlo_lab_cable_adapter import (
     EXPECTED_DISTRIBUTION_VERSION,
     EXPECTED_SOURCE_COMMIT,
 )
-from .measurement_dlo_lab_runtime_release import RUNTIME_IMAGE
+from .measurement_dlo_lab_runtime_release import (
+    PYTHON_CONDA_SPEC,
+    PYTHON_VERSION,
+    PYTORCH_VERSION,
+    PYTORCH_WHEEL_SHA256,
+    PYTORCH_WHEEL_URL,
+    QUADRANTS_VERSION,
+    QUADRANTS_WHEEL_SHA256,
+    QUADRANTS_WHEEL_URL,
+    RUNTIME_IMAGE,
+)
 from .measurement_dlo_lab_vast_bundle import (
     validate_measurement_dlo_lab_input_bundle_receipt,
 )
@@ -162,11 +172,13 @@ def _record_watchdog_instance_id(*, watchdog: Mapping[str, Any], instance_id: st
 
 
 def _bootstrap_script() -> str:
-    return r"""set -euo pipefail
+    script = r"""set -euo pipefail
 work="$(mktemp -d "${TMPDIR:-/tmp}/blueprint-measurement-dlo.XXXXXX")"
 archive="$work/input.zip"
 bundle="$work/bundle"
 dlo="$work/DLO-Lab"
+dlo_env="$work/python-env"
+dlo_python="$dlo_env/bin/python"
 result="$work/result.json"
 mkdir -p "$bundle"
 python - "$archive" "$bundle" <<'PY'
@@ -211,17 +223,38 @@ git clone --filter=blob:none --no-checkout \
 git -C "$dlo" checkout --detach "$BLUEPRINT_MEASUREMENT_DLO_SOURCE_UPSTREAM_COMMIT"
 observed_commit="$(git -C "$dlo" rev-parse HEAD^{commit})"
 test "$observed_commit" = "$BLUEPRINT_MEASUREMENT_DLO_SOURCE_UPSTREAM_COMMIT"
-python -m pip install --no-cache-dir -e "$dlo"
+conda create --yes --prefix "$dlo_env" --override-channels --channel conda-forge \
+  "__PYTHON_CONDA_SPEC__" "pip=25.1"
+"$dlo_python" -m pip install --no-cache-dir \
+  "__PYTORCH_WHEEL_URL__#sha256=__PYTORCH_WHEEL_SHA256__"
+"$dlo_python" -m pip install --no-cache-dir \
+  "__QUADRANTS_WHEEL_URL__#sha256=__QUADRANTS_WHEEL_SHA256__"
+"$dlo_python" -m pip install --no-cache-dir -e "$dlo"
+"$dlo_python" - <<'PY'
+import importlib.metadata, platform
+expected = {
+    "python": "__PYTHON_VERSION__",
+    "torch": "__PYTORCH_VERSION__",
+    "quadrants": "__QUADRANTS_VERSION__",
+}
+observed = {
+    "python": platform.python_version(),
+    "torch": importlib.metadata.version("torch"),
+    "quadrants": importlib.metadata.version("quadrants"),
+}
+if observed != expected:
+    raise SystemExit("measurement_dlo_lab_runtime_identity_mismatch")
+PY
 export PYTHONPATH="$bundle/src"
 set +e
-python "$bundle/scripts/run_measurement_dlo_lab_bundle.py" \
+"$dlo_python" "$bundle/scripts/run_measurement_dlo_lab_bundle.py" \
   --bundle-root "$bundle" --output "$result"
 worker_status=$?
 set -e
 if [ ! -s "$result" ]; then
   exit "$worker_status"
 fi
-python - "$result" <<'PY'
+"$dlo_python" - "$result" <<'PY'
 import os, sys, urllib.request
 from pathlib import Path
 payload = Path(sys.argv[1]).read_bytes()
@@ -237,6 +270,19 @@ with urllib.request.urlopen(request, timeout=300) as response:
 PY
 exit "$worker_status"
 """
+    return (
+        script.replace("__PYTHON_CONDA_SPEC__", PYTHON_CONDA_SPEC)
+        .replace("__PYTHON_VERSION__", PYTHON_VERSION)
+        .replace("__PYTORCH_VERSION__", PYTORCH_VERSION)
+        .replace("__PYTORCH_WHEEL_URL__", PYTORCH_WHEEL_URL)
+        .replace("__PYTORCH_WHEEL_SHA256__", PYTORCH_WHEEL_SHA256.removeprefix("sha256:"))
+        .replace("__QUADRANTS_VERSION__", QUADRANTS_VERSION)
+        .replace("__QUADRANTS_WHEEL_URL__", QUADRANTS_WHEEL_URL)
+        .replace(
+            "__QUADRANTS_WHEEL_SHA256__",
+            QUADRANTS_WHEEL_SHA256.removeprefix("sha256:"),
+        )
+    )
 
 
 def _finite_number(value: Any) -> bool:
@@ -305,6 +351,10 @@ def validate_measurement_dlo_lab_vast_runtime_result(
                 or runtime.get("engine_version") != EXPECTED_DISTRIBUTION_VERSION
                 or runtime.get("distribution_version") != EXPECTED_DISTRIBUTION_VERSION
                 or runtime.get("source_commit") != EXPECTED_SOURCE_COMMIT
+                or runtime.get("python_version") != PYTHON_VERSION
+                or runtime.get("torch_version") != PYTORCH_VERSION
+                or runtime.get("torch_distribution_version") != PYTORCH_VERSION
+                or runtime.get("quadrants_distribution_version") != QUADRANTS_VERSION
                 or runtime.get("cuda_available") is not True
                 or not isinstance(runtime.get("cuda_device_count"), int)
                 or runtime.get("cuda_device_count", 0) < 1

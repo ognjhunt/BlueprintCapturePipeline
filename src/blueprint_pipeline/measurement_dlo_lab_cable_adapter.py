@@ -304,7 +304,10 @@ def run_dlo_lab_cable_request(
             "distribution_version": version,
             "engine_version": version,
             "source_commit": commit,
+            "python_version": ".".join(str(item) for item in sys.version_info[:3]),
             "torch_version": str(torch.__version__),
+            "torch_distribution_version": importlib.metadata.version("torch"),
+            "quadrants_distribution_version": importlib.metadata.version("quadrants"),
             "cuda_available": bool(torch.cuda.is_available()),
             "cuda_device_count": int(torch.cuda.device_count()),
         }
