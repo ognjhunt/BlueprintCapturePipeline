@@ -1,7 +1,7 @@
 {
   "schema_version": "measurement_dlo_lab_vast_attempt_evidence.v1",
   "attempt_id": "measurement-dlo-lab-vast-attempt7-2026-08-02",
-  "status": "failed_native_root_cause_localized",
+  "status": "failed_native_cause_inferred_from_frames_and_reference_source",
   "blueprint_source_commit": "73166cbedb4c7b14707495ba4d7d515e39a029e3",
   "dlo_lab_source_commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
   "quadrants_reference_source_commit": "a22cc2dedd3458dc88cca287a8e2faf74430a251",
@@ -16,6 +16,7 @@
   "instance_id": "46646571",
   "gpu_name": "L40S",
   "hourly_rate_usd": 0.6014814814814815,
+  "provider_inventory_hourly_rate_observed_usd": 0.6222222222222222,
   "duration_seconds": 759.5953431129456,
   "estimated_cost_usd": 0.12691181452833578,
   "runtime_result_digest": "sha256:d3d85fa6764dbcafc060edd804f23b5bb5059ec1c305af88577b59ffc81ae8c1",
@@ -119,7 +120,7 @@
     "r6_decision": false,
     "r7_admission": false,
     "physical_success_established": false,
-    "proof_effect": "failed_diagnostic_execution_with_sanitized_native_root_cause"
+    "proof_effect": "failed_diagnostic_execution_with_sanitized_native_cause_inference"
   },
   "next_encoded_action": "Synthesize HOME and XDG_CACHE_HOME inside the generic executor's per-run temporary root without inheriting operator paths, focused-test the sandbox invariant, and rerun the same fixed compatibility tuple once."
 }
