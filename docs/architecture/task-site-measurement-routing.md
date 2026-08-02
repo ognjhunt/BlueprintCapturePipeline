@@ -114,9 +114,14 @@ loop:
   and separately rendered a non-empty 64x64 RayTracedLighting frame on an RTX
   GPU. The redacted evidence summary is
   [`measurement_isaac_physx_rtx_development_canary_2026-08-02.json`](../evidence/measurement_isaac_physx_rtx_development_canary_2026-08-02.json).
+  A subsequent request-bound multimodal canary also authored a labeled OpenUSD
+  scene and observed non-empty RGB, positive finite depth, and semantic output
+  with the expected label; its checked summary is
+  [`measurement_isaac_rtx_multimodal_development_canary_2026-08-02.json`](../evidence/measurement_isaac_rtx_multimodal_development_canary_2026-08-02.json).
   This proves only bounded development runtime execution and RTX startup/pixel
-  production; it creates no sensor qualification, R5-R7 evidence, production
-  route, captured-site accuracy, policy result, task success, or physical claim;
+  and structured-output production; it creates no calibrated sensor match,
+  Q-SENSOR qualification, R5-R7 evidence, production route, captured-site
+  accuracy, policy result, task success, or physical claim;
 - `blueprint_pipeline.measurement_sapien_rigid_adapter` and
   `blueprint_pipeline.measurement_geometry_contact_sapien_development_suite`
   — an exact-pinned SAPIEN 3.0.3/PhysX CPU development worker and checked
@@ -542,6 +547,13 @@ Implemented and hermetically tested:
   provider-zero digests. This is development runtime evidence only: Q-SENSOR,
   R5/R6/R7, production routing, policy/task success, site accuracy, and physical
   success all remain false;
+- a second digest-bound Isaac RTX multimodal development canary whose input
+  contract binds task-requested output kinds. It authored a labeled synthetic
+  OpenUSD cube and required nonzero RGB, positive finite camera-distance depth,
+  and semantic segmentation containing the expected label before passing. This
+  closes runtime plumbing—not calibration: no real/synthetic sensor residual,
+  Q-SENSOR decision, perception-policy rank fidelity, or site-specific sensor
+  qualification was created;
 - a real OpenCV 4.11 calibrated Capture-to-Observation development worker plus
   a schema-checked two-trial synthetic corpus and aggregate corpus runner, with
   exact nanosecond timestamp handling, non-coplanar target enforcement,
