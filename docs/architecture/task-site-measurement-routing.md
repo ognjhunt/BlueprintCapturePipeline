@@ -558,9 +558,12 @@ Implemented and hermetically tested:
 - a deterministic clean-commit DLO-Lab Vast input-bundle compiler and in-worker
   controller. The bundle contains two bounded cable cases, exact request and
   source-file digests, the exact DLO-Lab upstream commit, and the digest-pinned
-  PyTorch 2.9.1/CUDA 12.8 runtime image. This replaces the CUDA 13.0 image used
+  PyTorch 2.9.1/CUDA 12.8 runtime image. This replaced the CUDA 13.0 image used
   by the first three failed diagnostics and matches the CUDA line exercised by
-  the Quadrants 0.8.0 release workflow. The controller rechecks every source
+  the Quadrants 0.8.0 release workflow. A fourth paid diagnostic still aborted
+  at direct Quadrants import under Python 3.11.14, so CUDA-line compatibility is
+  not a sufficient fix and the README-prescribed Python 3.12 environment remains
+  the next isolated runtime variable. The controller rechecks every source
   digest, executes both cases through the generic adapter executor, requires
   CUDA observations and matching replay traces, and preserves all Q-DLO,
   R5-R7, production, physical, and policy-ranking claims as false. Bundle
