@@ -162,7 +162,7 @@ archive="$work/input.zip"
 bundle="$work/bundle"
 result="$work/result.json"
 mkdir -p "$bundle"
-python3 - "$archive" "$bundle" <<'PY'
+/isaac-sim/python.sh - "$archive" "$bundle" <<'PY'
 import hashlib, json, os, shutil, stat, sys, urllib.request, zipfile
 from pathlib import Path
 archive = Path(sys.argv[1])
@@ -204,7 +204,7 @@ set -e
 if [ ! -s "$result" ]; then
   exit "$worker_status"
 fi
-python3 - "$result" <<'PY'
+/isaac-sim/python.sh - "$result" <<'PY'
 import os, sys, urllib.request
 from pathlib import Path
 payload = Path(sys.argv[1]).read_bytes()

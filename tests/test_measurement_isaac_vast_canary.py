@@ -146,7 +146,8 @@ def test_bootstrap_verifies_bundle_and_uses_exact_isaac_python() -> None:
     assert "measurement_isaac_input_digest_mismatch" in script
     assert "measurement_isaac_input_member_unsafe" in script
     assert "measurement_isaac_source_digest_mismatch" in script
-    assert "/isaac-sim/python.sh" in script
+    assert script.count("/isaac-sim/python.sh") == 3
+    assert "python3" not in script
     assert "BLUEPRINT_MEASUREMENT_ISAAC_OUTPUT_PUT_URL" in script
     assert 'headers={"Content-Type": "application/zip"}' in script
     assert 'headers={"Content-Type": "application/json"}' not in script
