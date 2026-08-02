@@ -138,6 +138,7 @@ def _requests(
                 seed=31,
                 solver_settings={
                     "backend": "cuda",
+                    "import_diagnostic": "audit_exception_first_case_only",
                     "native_diagnostic": "gdb_first_case_only",
                     "replay_count": 2,
                     "source_commit": EXPECTED_SOURCE_COMMIT,

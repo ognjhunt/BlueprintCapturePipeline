@@ -96,6 +96,7 @@ def _request() -> dict:
         seed=31,
         solver_settings={
             "backend": "cuda",
+            "import_diagnostic": "audit_exception_first_case_only",
             "native_diagnostic": "gdb_first_case_only",
             "replay_count": 2,
             "source_commit": EXPECTED_SOURCE_COMMIT,
@@ -165,9 +166,7 @@ def test_dlo_lab_supervisor_contains_native_abort_and_classifies_stderr(
         "dlo_lab_adapter_supervised_worker_signal:6",
     ]
     observations = result["runtime_observations"]
-    assert observations["supervised_worker_phase"] == (
-        "native_import_probe:torch_then_quadrants"
-    )
+    assert observations["supervised_worker_phase"] == ("native_import_probe:torch_then_quadrants")
     assert observations["supervised_worker_native_signal"] == 6
     assert observations["supervised_worker_timed_out"] is False
     assert observations["supervised_worker_import_order"] == ["torch", "genesis"]
@@ -275,11 +274,94 @@ def test_dlo_lab_supervisor_runs_native_diagnostic_once_for_first_case(
     request = _request()
     assert request["execution_id"].endswith("001")
     result = dlo_adapter._run_supervised_worker(request)
-    diagnostic = result["runtime_observations"][
-        "supervised_worker_native_diagnostic"
-    ]
+    diagnostic = result["runtime_observations"]["supervised_worker_native_diagnostic"]
     assert diagnostic["status"] == "captured"
     assert diagnostic["raw_output_content_persisted"] is False
+
+
+def test_import_audit_observation_retains_only_sanitized_module_names(
+    monkeypatch,
+) -> None:
+    stdout = (
+        b"BLUEPRINT_IMPORT:torch\n"
+        b"BLUEPRINT_IMPORT:genesis.engine.solvers\n"
+        b"BLUEPRINT_IMPORT:../../private/path\n"
+        b"BLUEPRINT_EXCEPTION:builtins.RuntimeError\n"
+        b"BLUEPRINT_SYSTEM_EXIT:9999\n"
+    )
+    stderr = b"Traceback from /tmp/private/source.py\n"
+    call: dict = {}
+
+    def completed(*args, **kwargs):
+        call["args"] = args
+        call["kwargs"] = kwargs
+        return SimpleNamespace(returncode=87, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(dlo_adapter.subprocess, "run", completed)
+    observation = dlo_adapter._import_audit_observation(
+        import_statements="import torch\nimport genesis",
+        timeout_seconds=90,
+    )
+    assert observation["status"] == "captured"
+    assert observation["tool"] == "python_audit_hook"
+    assert observation["return_code"] == 87
+    assert observation["timeout_seconds"] == 45
+    assert observation["last_modules"] == ["torch", "genesis.engine.solvers"]
+    assert observation["exception_type"] == "builtins.RuntimeError"
+    assert observation["system_exit_code"] is None
+    assert observation["raw_output_content_persisted"] is False
+    assert "/tmp/private" not in json.dumps(observation)
+    assert "../../private" not in json.dumps(observation)
+    assert call["kwargs"]["stdout"] is dlo_adapter.subprocess.PIPE
+    assert call["kwargs"]["stderr"] is dlo_adapter.subprocess.PIPE
+
+
+def test_import_audit_script_uses_stdout_and_sanitizes_exception_metadata() -> None:
+    source = dlo_adapter._import_audit_script("raise RuntimeError('/private/path')")
+    completed = subprocess.run(
+        [sys.executable, "-c", source],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert completed.returncode == 87
+    assert b"BLUEPRINT_EXCEPTION:builtins.RuntimeError" in completed.stdout
+    assert b"/private/path" not in completed.stdout
+    assert completed.stderr == b""
+
+
+def test_dlo_lab_supervisor_runs_import_audit_once_for_first_case(
+    monkeypatch,
+) -> None:
+    outcomes = iter(
+        [
+            SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+            SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+            SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+            SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+            SimpleNamespace(returncode=1, stdout=b"", stderr=b""),
+        ]
+    )
+    monkeypatch.setattr(
+        dlo_adapter,
+        "_import_audit_observation",
+        lambda **_kwargs: {
+            "status": "captured",
+            "tool": "python_audit_hook",
+            "raw_output_content_persisted": False,
+            "last_modules": ["torch", "genesis"],
+        },
+    )
+    monkeypatch.setattr(
+        dlo_adapter.subprocess,
+        "run",
+        lambda *_args, **_kwargs: next(outcomes),
+    )
+    result = dlo_adapter._run_supervised_worker(_request())
+    diagnostic = result["runtime_observations"]["supervised_worker_import_diagnostic"]
+    assert diagnostic["status"] == "captured"
+    assert diagnostic["last_modules"] == ["torch", "genesis"]
 
 
 def test_dlo_lab_worker_rejects_protocol_solver_and_implementation_tampering() -> None:
