@@ -141,6 +141,7 @@ def test_dlo_lab_supervisor_contains_native_abort_and_classifies_stderr(
         [
             SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
             SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+            SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
             SimpleNamespace(
                 returncode=-6,
                 stdout=b"",
@@ -169,6 +170,9 @@ def test_dlo_lab_supervisor_contains_native_abort_and_classifies_stderr(
     assert observations["supervised_worker_native_signal"] == 6
     assert observations["supervised_worker_timed_out"] is False
     assert observations["supervised_worker_import_order"] == ["torch", "genesis"]
+    assert observations["python_version"]
+    assert observations["quadrants_distribution_version"]
+    assert observations["torch_distribution_version"]
     assert observations["supervised_worker_stderr_bytes"] > 0
     assert observations["supervised_worker_stderr_content_persisted"] is False
 
