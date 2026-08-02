@@ -85,7 +85,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           uv lock --check
-          uv sync --frozen --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation
+          uv sync --frozen --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
+            --extra sapien-development --extra exact-geometry-development
           uv pip install -e BlueprintContracts
 
       - name: Validate Python interpreter matrix
