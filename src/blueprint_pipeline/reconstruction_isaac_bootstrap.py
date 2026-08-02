@@ -10,6 +10,7 @@ import re
 import selectors
 import signal
 import subprocess
+import sys
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -37,6 +38,7 @@ MAX_INPUT_BUNDLE_BYTES = 5_000_000_000
 MAX_RECEIPT_BYTES = 16 * 1024**2
 MAX_OUTPUT_BUNDLE_BYTES = 5_000_000_000
 MAX_LOG_BYTES = 16 * 1024**2
+MAX_DIAGNOSTIC_LOG_TAIL_BYTES = 4096
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _IMAGE = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -186,6 +188,73 @@ def _rebase_command(command: Sequence[str], root: Path) -> list[str]:
     return [replacements.get(item, item) for item in command]
 
 
+def _blocked_runtime_result_after_abnormal_exit(
+    *,
+    partial_result: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    exit_code: int,
+    log_path: Path,
+) -> dict[str, Any]:
+    """Preserve a typed blocker when Isaac exits before its final result.
+
+    Transfer URLs are removed from the runner environment before process start,
+    so the capped console tail is safe to return as diagnostic evidence. The
+    result remains explicitly blocked and cannot satisfy compatibility gates.
+    """
+
+    try:
+        log_bytes = log_path.read_bytes()
+    except OSError:
+        log_bytes = b""
+    identity = partial_result.get("runtime_identity")
+    if not isinstance(identity, Mapping):
+        identity = {
+            "runtime": "isaac_sim",
+            "renderer": "unknown_after_abnormal_exit",
+            "python_version": sys.version.split()[0],
+            "headless": True,
+        }
+    existing_blockers = partial_result.get("blockers")
+    blockers = [
+        str(item)
+        for item in (existing_blockers if isinstance(existing_blockers, list) else [])
+        if str(item)
+    ]
+    blockers.append("isaac_runtime_process_exit_status_mismatch")
+    result = {
+        "schema_version": receipt["expected_runtime_schema"],
+        "status": "blocked",
+        "isaac_verification_request_digest": receipt[
+            "isaac_verification_request_digest"
+        ],
+        "package_digest": receipt["package_digest"],
+        "fixed_camera_spec_digest": receipt["fixed_camera_spec_digest"],
+        "runtime_container_image_digest": receipt[
+            "runtime_container_image_digest"
+        ],
+        "runtime_implementation_digest": receipt["runtime_implementation_digest"],
+        "runtime_identity": dict(identity),
+        "raw_secret_values_recorded": False,
+        "blockers": sorted(set(blockers)),
+        "runtime_process_diagnostic": {
+            "exit_code": int(exit_code),
+            "partial_status": partial_result.get("status"),
+            "partial_phase": partial_result.get("phase"),
+            "log_digest": "sha256:" + hashlib.sha256(log_bytes).hexdigest(),
+            "log_bytes": len(log_bytes),
+            "log_tail": log_bytes[-MAX_DIAGNOSTIC_LOG_TAIL_BYTES:].decode(
+                "utf-8", errors="replace"
+            ),
+            "log_tail_truncated": len(log_bytes) > MAX_DIAGNOSTIC_LOG_TAIL_BYTES,
+            "transfer_urls_removed_from_runner_environment": True,
+        },
+    }
+    result["isaac_runtime_result_digest"] = canonical_digest(
+        result, digest_field="isaac_runtime_result_digest"
+    )
+    return result
+
+
 def run_reconstruction_isaac_bootstrap(
     *,
     environment: Mapping[str, str],
@@ -305,13 +374,18 @@ def run_reconstruction_isaac_bootstrap(
         raise ReconstructionIsaacBootstrapError(
             ["reconstruction_isaac_bootstrap_runtime_result_missing"]
         )
-    runtime_status = _load(
+    runtime_result = _load(
         result_path, code="reconstruction_isaac_bootstrap_runtime_result_invalid"
-    ).get("status")
+    )
+    runtime_status = runtime_result.get("status")
     if (exit_code, runtime_status) not in {(0, "completed"), (2, "blocked")}:
-        raise ReconstructionIsaacBootstrapError(
-            ["reconstruction_isaac_bootstrap_runtime_exit_status_mismatch"]
+        runtime_result = _blocked_runtime_result_after_abnormal_exit(
+            partial_result=runtime_result,
+            receipt=receipt,
+            exit_code=exit_code,
+            log_path=root / "isaac_execution.log",
         )
+        write_json(result_path, runtime_result)
     try:
         output_receipt = compile_isaac_verification_output_bundle(
             bundle_receipt=receipt,
