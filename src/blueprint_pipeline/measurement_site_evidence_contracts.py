@@ -95,7 +95,7 @@ def site_sensor_pairing_bridge_validation_errors(value: Mapping[str, Any]) -> li
         not isinstance(modalities, list)
         or not modalities
         or len(set(modalities)) != len(modalities)
-        or not set(modalities) <= {"rgb", "depth", "lidar"}
+        or not set(modalities) <= {"rgb", "depth", "lidar", "event_camera"}
     ):
         errors.append("sensor_pairing_bridge_modalities_invalid")
     if bridge.get("decision") not in {"accepted", "rejected", "development_only"}:
