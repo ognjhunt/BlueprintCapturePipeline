@@ -109,6 +109,13 @@ def _preflight(**overrides):
     return value
 
 
+def test_request_binds_optional_vast_gpu_preferences() -> None:
+    request = _request(vast_preferred_gpu_keywords=["L40", "RTX A6000"])
+    assert request["vast_preferred_gpu_keywords"] == ["L40", "RTX A6000"]
+    with pytest.raises(ValueError, match="vast_preferred_gpu_keywords_invalid"):
+        _request(vast_preferred_gpu_keywords=[])
+
+
 def _build(*, request=None, preflight=None, provider="vast", execute=False, **overrides):
     args = {
         "request": request or _request(),
@@ -139,10 +146,7 @@ def test_vast_first_reconstruction_canary_dry_run_binds_all_proof_inputs():
     assert bound["frozen_split_digest"] == D3
     assert bound["operation_request_digest"] == D1
     assert bound["operation_input_bundle_digest"] == D2
-    assert (
-        bound["expected_runtime_result_schema"]
-        == "reconstruction_vast_worker_smoke_result.v1"
-    )
+    assert bound["expected_runtime_result_schema"] == "reconstruction_vast_worker_smoke_result.v1"
     assert bound["provider_mutation_authorized"] is False
     schema = json.loads(
         (
@@ -228,9 +232,7 @@ def test_preflight_collector_requires_global_zero_and_independent_watchdog():
 def test_reconstruction_canary_fails_closed_on_authority_provider_and_evidence_drift():
     request = _request()
     request["candidate_may_read_hidden_heldout"] = True
-    request["request_digest"] = canonical_digest(
-        request, digest_field="request_digest"
-    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     admission, _ = _build(
         request=request,
         provider="runpod",
@@ -263,8 +265,7 @@ def test_scientific_canaries_use_only_their_qualified_typed_adapters():
         assert dry_run["status"] == "dry_run_ready"
         assert dry_run["operation"] == operation
         assert (
-            dry_run["expected_runtime_result_schema"]
-            == EXPECTED_RUNTIME_RESULT_SCHEMAS[operation]
+            dry_run["expected_runtime_result_schema"] == EXPECTED_RUNTIME_RESULT_SCHEMAS[operation]
         )
         assert dry_run["execution_adapter_qualified"] is False
         assert dry_run["legal_next_actions"] == [
@@ -298,9 +299,7 @@ def test_isaac_execute_requires_exact_clean_image_release_binding():
         request=request,
         execute=True,
         execution_adapter_qualified=True,
-        image_release=_image_release(
-            image="registry.example/blueprint/isaac@sha256:" + "c" * 64
-        ),
+        image_release=_image_release(image="registry.example/blueprint/isaac@sha256:" + "c" * 64),
     )
     assert "reconstruction_isaac_image_release_digest_mismatch" in mismatch["blockers"]
     assert mismatch_bound["provider_mutation_authorized"] is False
@@ -312,12 +311,8 @@ def test_isaac_execute_requires_exact_clean_image_release_binding():
         image_release=_image_release(),
     )
     assert passed["status"] == "execute_ready"
-    assert passed["isaac_image_release_digest"] == _image_release()[
-        "image_release_digest"
-    ]
-    assert passed_bound["isaac_image_release_digest"] == passed[
-        "isaac_image_release_digest"
-    ]
+    assert passed["isaac_image_release_digest"] == _image_release()["image_release_digest"]
+    assert passed_bound["isaac_image_release_digest"] == passed["isaac_image_release_digest"]
 
 
 def test_measurement_isaac_execute_requires_official_exact_runtime_release():
@@ -346,10 +341,9 @@ def test_measurement_isaac_execute_requires_official_exact_runtime_release():
     )
     assert passed["status"] == "execute_ready"
     assert passed["blockers"] == []
-    assert passed["measurement_isaac_runtime_release_digest"] == release[
-        "runtime_release_digest"
-    ]
+    assert passed["measurement_isaac_runtime_release_digest"] == release["runtime_release_digest"]
     assert passed_bound["provider_mutation_authorized"] is True
+
 
 def test_operation_request_input_and_result_schema_are_immutable_admission_inputs():
     request = _request()
@@ -358,23 +352,13 @@ def test_operation_request_input_and_result_schema_are_immutable_admission_input
         operation_input_bundle_digest="sha256:" + "z" * 64,
         expected_runtime_result_schema="reconstruction_training_result.v1",
     )
-    request["request_digest"] = canonical_digest(
-        request, digest_field="request_digest"
-    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     admission, bound = _build(request=request)
 
     assert admission["status"] == "blocked"
-    assert (
-        "reconstruction_gpu_operation_request_digest_invalid" in admission["blockers"]
-    )
-    assert (
-        "reconstruction_gpu_operation_input_bundle_digest_invalid"
-        in admission["blockers"]
-    )
-    assert (
-        "reconstruction_gpu_expected_runtime_result_schema_invalid"
-        in admission["blockers"]
-    )
+    assert "reconstruction_gpu_operation_request_digest_invalid" in admission["blockers"]
+    assert "reconstruction_gpu_operation_input_bundle_digest_invalid" in admission["blockers"]
+    assert "reconstruction_gpu_expected_runtime_result_schema_invalid" in admission["blockers"]
     assert bound["provider_mutation_authorized"] is False
 
 
@@ -487,9 +471,7 @@ def test_allocator_routes_isaac_only_to_separate_vast_lifecycle(tmp_path, monkey
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     bound_path.write_text(json.dumps(bound), encoding="utf-8")
     preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
-    monkeypatch.setattr(
-        allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission
-    )
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission)
     monkeypatch.setattr(
         "blueprint_pipeline.reconstruction_paid_transport."
         "validate_isaac_verification_worker_bundle_receipt",
@@ -514,9 +496,7 @@ def test_allocator_routes_isaac_only_to_separate_vast_lifecycle(tmp_path, monkey
             "cost_usd": 0.1,
         }
 
-    monkeypatch.setattr(
-        allocator, "run_reconstruction_isaac_vast_operation", fake_isaac
-    )
+    monkeypatch.setattr(allocator, "run_reconstruction_isaac_vast_operation", fake_isaac)
     monkeypatch.setattr(
         allocator,
         "run_reconstruction_vast_operation",
@@ -573,9 +553,7 @@ def test_allocator_routes_measurement_isaac_to_guarded_vast_lifecycle(tmp_path, 
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     bound_path.write_text(json.dumps({"request_digest": D1}), encoding="utf-8")
     preflight_path.write_text(json.dumps({"provider": "vast"}), encoding="utf-8")
-    monkeypatch.setattr(
-        allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission
-    )
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission)
     monkeypatch.setattr(
         "blueprint_pipeline.reconstruction_paid_transport."
         "validate_measurement_isaac_physx_input_bundle_receipt",
@@ -604,8 +582,7 @@ def test_allocator_routes_measurement_isaac_to_guarded_vast_lifecycle(tmp_path, 
         }
 
     monkeypatch.setattr(
-        "blueprint_pipeline.measurement_isaac_paid_allocator."
-        "run_measurement_isaac_vast_canary",
+        "blueprint_pipeline.measurement_isaac_paid_allocator.run_measurement_isaac_vast_canary",
         fake_measurement,
     )
     monkeypatch.setattr(
