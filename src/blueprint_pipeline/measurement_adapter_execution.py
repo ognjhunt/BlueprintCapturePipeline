@@ -61,6 +61,7 @@ LOCAL_EXECUTION_MODES = frozenset(
     {
         "local_library",
         "isolated_external_conda",
+        "isolated_source_checkout",
         "pipeline_native_read_only",
         "dataset_benchmark",
     }
