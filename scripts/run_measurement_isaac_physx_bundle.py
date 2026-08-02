@@ -58,35 +58,54 @@ def _safe_process_tail(value: str) -> str:
 
 def _run_rtx_preflight(bundle_root: Path) -> tuple[dict, list[str]]:
     output = bundle_root / "rtx_openusd_runtime_preflight.json"
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "blueprint_pipeline.isaac_worker_runtime_preflight",
-            "--output",
-            str(output),
-            "--require-nvidia-smi",
-            "--require-rtx-render",
-            "--smoke-steps",
-            "2",
-        ],
-        check=False,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=180,
-    )
+    command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.isaac_worker_runtime_preflight",
+        "--output",
+        str(output),
+        "--require-nvidia-smi",
+        "--require-rtx-render",
+        "--smoke-steps",
+        "2",
+    ]
+    timed_out = False
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=360,
+        )
+        exit_code = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        exit_code = 124
+        stdout = (
+            exc.stdout.decode("utf-8", "replace")
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode("utf-8", "replace")
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")
+        )
     process_observation = {
-        "exit_code": completed.returncode,
-        "stdout_bytes": len(completed.stdout.encode("utf-8", "replace")),
-        "stderr_bytes": len(completed.stderr.encode("utf-8", "replace")),
-        "stdout_digest": "sha256:"
-        + hashlib.sha256(completed.stdout.encode("utf-8", "replace")).hexdigest(),
-        "stderr_digest": "sha256:"
-        + hashlib.sha256(completed.stderr.encode("utf-8", "replace")).hexdigest(),
-        "stdout_tail": _safe_process_tail(completed.stdout),
-        "stderr_tail": _safe_process_tail(completed.stderr),
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "timeout_seconds": 360,
+        "stdout_bytes": len(stdout.encode("utf-8", "replace")),
+        "stderr_bytes": len(stderr.encode("utf-8", "replace")),
+        "stdout_digest": "sha256:" + hashlib.sha256(stdout.encode("utf-8", "replace")).hexdigest(),
+        "stderr_digest": "sha256:" + hashlib.sha256(stderr.encode("utf-8", "replace")).hexdigest(),
+        "stdout_tail": _safe_process_tail(stdout),
+        "stderr_tail": _safe_process_tail(stderr),
         "raw_secret_values_recorded": False,
     }
     if not output.is_file() or output.is_symlink() or output.stat().st_size > 1024 * 1024:
@@ -113,8 +132,8 @@ def _run_rtx_preflight(bundle_root: Path) -> tuple[dict, list[str]]:
     result["subprocess_observation"] = process_observation
     result["preflight_result_digest"] = _sha256_json(result)
     blockers: list[str] = []
-    if completed.returncode != 0:
-        blockers.append(f"measurement_isaac_rtx_preflight_exit_nonzero:{completed.returncode}")
+    if exit_code != 0:
+        blockers.append(f"measurement_isaac_rtx_preflight_exit_nonzero:{exit_code}")
     if result.get("status") != "passed" or result.get("blockers") != []:
         blockers.append("measurement_isaac_rtx_preflight_reported_blockers")
     return result, blockers
