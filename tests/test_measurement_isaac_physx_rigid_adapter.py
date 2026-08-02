@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.metadata
 import json
 import os
-import subprocess
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ from blueprint_pipeline.measurement_isaac_physx_rigid_adapter import (
     ISAAC_VERSION,
     PROTOCOL_ID,
     WORKER_SCRIPT,
+    _observe_isaac_runtime_identity,
     implementation_digest,
     run_isaac_physx_rigid_measurement_request,
 )
@@ -33,9 +36,9 @@ from blueprint_pipeline.measurement_qualification_benchmarks import (
 ROOT = Path(__file__).parents[1]
 CORPUS_PATH = ROOT / "tests/fixtures/measurement_capture_to_geometry_contact_v1/corpus.json"
 QUALIFICATION_SPLIT_DIGEST = "sha256:" + "f" * 64
-CONTROLLER_SCOPE_DIGEST = "sha256:" + hashlib.sha256(
-    b"isaac-physx-rigid-development-no-controller"
-).hexdigest()
+CONTROLLER_SCOPE_DIGEST = (
+    "sha256:" + hashlib.sha256(b"isaac-physx-rigid-development-no-controller").hexdigest()
+)
 
 
 def _isaac_launcher() -> Path:
@@ -143,22 +146,78 @@ def test_isaac_worker_rejects_solver_and_identity_tampering_before_import() -> N
     assert result["failure_codes"] == ["isaac_physx_rigid_implementation_id_mismatch"]
 
 
+def test_isaac_runtime_identity_uses_app_version_file_without_dist_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_distribution(_name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError
+
+    class FakeApp:
+        @staticmethod
+        def get_app_version() -> str:
+            return "Isaac-Sim"
+
+        @staticmethod
+        def get_build_version() -> str:
+            return "6.0.1+release.test"
+
+    class FakeSimulationApp:
+        app = FakeApp()
+
+    monkeypatch.setattr(importlib.metadata, "version", missing_distribution)
+    identity = _observe_isaac_runtime_identity(
+        FakeSimulationApp(),
+        version_getter=lambda: (ISAAC_VERSION, "", "6", "0", "1", "", "", ""),
+    )
+    assert identity == {
+        "engine_version": ISAAC_VERSION,
+        "engine_version_source": "isaacsim.core.version.get_version_app_VERSION_file",
+        "observed_package_version": "unavailable",
+        "observed_app_version": "Isaac-Sim",
+        "observed_build_version": "6.0.1+release.test",
+    }
+
+
+def test_isaac_runtime_identity_rejects_invalid_version_observation() -> None:
+    with pytest.raises(RuntimeError, match="runtime_version_observation_invalid"):
+        _observe_isaac_runtime_identity(object(), version_getter=lambda: ())
+
+
+def test_isaac_worker_blocks_runtime_version_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[bool] = []
+
+    class FakeSimulationApp:
+        def __init__(self, _config: dict) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append(True)
+
+    fake_isaacsim = types.ModuleType("isaacsim")
+    fake_isaacsim.SimulationApp = FakeSimulationApp  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "isaacsim", fake_isaacsim)
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_physx_rigid_adapter._observe_isaac_runtime_identity",
+        lambda _app: {
+            "engine_version": "6.0.0",
+            "engine_version_source": "isaacsim.core.version.get_version_app_VERSION_file",
+            "observed_package_version": "unavailable",
+            "observed_app_version": "Isaac-Sim",
+            "observed_build_version": "test",
+        },
+    )
+    result = run_isaac_physx_rigid_measurement_request(_request())
+    assert result["status"] == "blocked"
+    assert result["failure_codes"] == ["isaac_physx_rigid_runtime_version_mismatch"]
+    assert result["runtime_observations"]["engine_version"] == "6.0.0"
+    assert closed == [True]
+
+
 @pytest.mark.slow
 def test_isaac_external_runtime_executes_shared_cases() -> None:
     launcher = _isaac_launcher()
-    version = subprocess.run(
-        [
-            str(launcher),
-            "-c",
-            "import importlib.metadata;print(importlib.metadata.version('isaacsim'))",
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert version.returncode == 0, version.stderr
-    assert version.stdout.strip().splitlines()[-1] == ISAAC_VERSION
     bundles = [
         run_measurement_adapter_execution(
             _request(index),
@@ -169,8 +228,7 @@ def test_isaac_external_runtime_executes_shared_cases() -> None:
     ]
     assert [row["receipt"]["status"] for row in bundles] == ["completed", "completed"]
     assert all(
-        row["receipt"]["runtime_observations"]["engine_version"] == ISAAC_VERSION
-        for row in bundles
+        row["receipt"]["runtime_observations"]["engine_version"] == ISAAC_VERSION for row in bundles
     )
     assert all(
         row["receipt"]["runtime_observations"]["deterministic_replay_match"] is True
