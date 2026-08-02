@@ -36,6 +36,13 @@ PROPOSAL_SCHEMA_VERSION = "provider_nurec_robot_placement_proposal.v1"
 TASK_SCHEMA_VERSION = "provider_nurec_site_task_definition.v1"
 PACKET_SCHEMA_VERSION = "provider_nurec_robot_placement_packet.v1"
 FRANKA_POLICY_TRACE_REQUEST_SCHEMA_VERSION = "franka_articulated_policy_trace_request.v1"
+FRANKA_INSPECTION_CONTROLLER_IDS = (
+    "franka-inspection-center-hold-v1",
+    "franka-inspection-left-narrow-v1",
+    "franka-inspection-right-narrow-v1",
+    "franka-inspection-left-wide-v1",
+    "franka-inspection-right-wide-v1",
+)
 
 
 class ProviderNuRecRobotPlacementError(ValueError):
@@ -111,6 +118,81 @@ def build_default_franka_policy_trace_request(*, robot_prim_path: str) -> dict[s
             "width": 320,
             "height": 240,
         },
+        "physical_success_claimed": False,
+    }
+    request["policy_trace_request_digest"] = canonical_digest(
+        request, digest_field="policy_trace_request_digest"
+    )
+    return request
+
+
+def build_franka_inspection_controller_cohort_request(
+    *, robot_prim_path: str, target_position_stage: Sequence[float]
+) -> dict[str, Any]:
+    """Build five frozen scripted inspection baselines for task-metric plumbing.
+
+    These candidates are deterministic controllers, not learned policies.  The
+    target binding lets Isaac report camera-to-target geometry for the separate
+    inspection outcome scorer.
+    """
+
+    if (
+        not isinstance(robot_prim_path, str)
+        or not robot_prim_path.startswith("/")
+        or ".." in robot_prim_path.split("/")
+    ):
+        raise ProviderNuRecRobotPlacementError(["franka_policy_trace_robot_prim_path_invalid"])
+    if (
+        not isinstance(target_position_stage, Sequence)
+        or isinstance(target_position_stage, (str, bytes))
+        or len(target_position_stage) != 3
+        or any(
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(float(item))
+            for item in target_position_stage
+        )
+    ):
+        raise ProviderNuRecRobotPlacementError(["franka_inspection_target_position_invalid"])
+    start = [0.0, -0.55, 0.0, -2.6, 0.0, 2.05, 0.75]
+    sweeps = (0.0, -0.175, 0.175, -0.35, 0.35)
+    request = {
+        "schema_version": FRANKA_POLICY_TRACE_REQUEST_SCHEMA_VERSION,
+        "robot_id": "franka_panda",
+        "robot_prim_path": robot_prim_path,
+        "controller_id": "deterministic_franka_inspection_cohort.v1",
+        "candidate_kind": "scripted_controller_baseline",
+        "joint_names": [f"panda_joint{index}" for index in range(1, 8)],
+        "start_joint_positions_rad": start,
+        "physics_dt_seconds": 1.0 / 60.0,
+        "reset_settle_steps": 30,
+        "sample_interval_steps": 10,
+        "reset_position_error_threshold_rad": 0.1,
+        "reset_velocity_threshold_rad_s": 2.0,
+        "distinctness_threshold_rad": 0.1,
+        "identical_start_tolerance_rad": 0.02,
+        "inspection_target_position_stage": [
+            round(float(item), 9) for item in target_position_stage
+        ],
+        "candidates": [
+            {
+                "policy_id": candidate_id,
+                "action_source": "scripted_controller",
+                "duration_steps": 120,
+                "final_joint_positions_rad": [offset, *start[1:]],
+            }
+            for candidate_id, offset in zip(FRANKA_INSPECTION_CONTROLLER_IDS, sweeps)
+        ],
+        "egocentric_camera": {
+            "parent_link_name": "panda_hand",
+            "local_position_m": [0.05, 0.0, 0.04],
+            "local_target_m": [0.3, 0.0, 0.04],
+            "local_up": [0.0, 0.0, 1.0],
+            "fov_degrees": 70.0,
+            "width": 320,
+            "height": 240,
+        },
+        "comparative_policy_ranking_claimed": False,
         "physical_success_claimed": False,
     }
     request["policy_trace_request_digest"] = canonical_digest(

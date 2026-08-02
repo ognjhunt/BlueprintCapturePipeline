@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/robot_appearance_composite_contract.v1.schema.json",
+  "title": "Robot Appearance Composite Contract v1",
+  "type": "object",
+  "required": [
+    "schema_version", "robot_id", "appearance_fidelity_status",
+    "appearance_fidelity_qualification_digest", "appearance_frame_digest",
+    "robot_rgba_frame_digest", "robot_depth_frame_digest", "camera_spec_digest",
+    "robot_asset_digest", "dynamics_runtime_result_digest", "compositor_implementation_digest",
+    "output_frame_digest", "robot_asset_source", "exact_camera_binding",
+    "depth_aware_occlusion", "presentation_derivative_used", "status",
+    "evaluation_input_authorized", "robot_dynamics_proven_by_composite",
+    "physical_success_proven", "claim_ceiling", "robot_appearance_composite_contract_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "robot_appearance_composite_contract.v1"},
+    "appearance_fidelity_status": {"const": "qualified"},
+    "robot_asset_source": {"const": "official_simulator_asset"},
+    "exact_camera_binding": {"const": true},
+    "depth_aware_occlusion": {"const": true},
+    "presentation_derivative_used": {"const": false},
+    "status": {"const": "authorized_composite"},
+    "evaluation_input_authorized": {"const": true},
+    "robot_dynamics_proven_by_composite": {"const": false},
+    "physical_success_proven": {"const": false},
+    "claim_ceiling": {"const": "qualified_scene_robot_visual_composite"},
+    "robot_appearance_composite_contract_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

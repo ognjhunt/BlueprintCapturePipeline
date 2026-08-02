@@ -50,7 +50,11 @@ def _finite(value: Any) -> float | None:
 
 
 def build_franka_inspection_outcome_contract(
-    *, target_analysis: Mapping[str, Any], placement_proposal_digest: str
+    *,
+    target_analysis: Mapping[str, Any],
+    placement_proposal_digest: str,
+    target_position_stage: Sequence[float] | None = None,
+    scene_frame_binding_digest: str | None = None,
 ) -> dict[str, Any]:
     analysis = _clone(dict(target_analysis))
     selected = analysis.get("selected_target")
@@ -81,14 +85,21 @@ def build_franka_inspection_outcome_contract(
         errors.append("inspection_target_uncertainty_invalid")
     if errors:
         raise ExternalSceneInspectionOutcomeError(errors)
+    stage_position = list(target_position_stage) if target_position_stage is not None else position
+    if len(stage_position) != 3 or any(_finite(item) is None for item in stage_position):
+        raise ExternalSceneInspectionOutcomeError(["inspection_target_stage_position_invalid"])
+    if scene_frame_binding_digest is not None and not _digest(scene_frame_binding_digest):
+        raise ExternalSceneInspectionOutcomeError(["inspection_scene_frame_binding_invalid"])
     contract = {
         "schema_version": CONTRACT_SCHEMA,
         "task_family": task_family,
         "target_region_id": str(selected["proposal_id"]),
         "target_position_scene": [round(float(item), 9) for item in position],
+        "inspection_target_position_stage": [round(float(item), 9) for item in stage_position],
         "target_spatial_uncertainty_scene_units": round(float(uncertainty), 9),
         "target_analysis_digest": analysis["target_analysis_digest"],
         "placement_proposal_digest": placement_proposal_digest,
+        "scene_frame_binding_digest": scene_frame_binding_digest,
         "thresholds_frozen_before_candidate_execution": True,
         "thresholds": {
             "minimum_target_in_fov_fraction": 0.6,

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/appearance_presentation_derivative.v1.schema.json",
+  "title": "Appearance Presentation Derivative v1",
+  "type": "object",
+  "required": [
+    "schema_version", "source_frame_digest", "output_frame_digest", "implementation_digest",
+    "method_id", "presentation_only", "evaluation_input_allowed", "policy_observation_allowed",
+    "target_binding_allowed", "metric_geometry_allowed", "collision_geometry_allowed",
+    "qualification_routing_allowed", "claim_ceiling", "appearance_presentation_derivative_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "appearance_presentation_derivative.v1"},
+    "method_id": {"enum": ["difix", "artifixer", "other_declared_enhancer"]},
+    "presentation_only": {"const": true},
+    "evaluation_input_allowed": {"const": false},
+    "policy_observation_allowed": {"const": false},
+    "target_binding_allowed": {"const": false},
+    "metric_geometry_allowed": {"const": false},
+    "collision_geometry_allowed": {"const": false},
+    "qualification_routing_allowed": {"const": false},
+    "claim_ceiling": {"const": "presentation_only"},
+    "appearance_presentation_derivative_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

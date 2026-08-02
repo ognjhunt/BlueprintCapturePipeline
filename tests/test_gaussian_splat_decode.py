@@ -5,6 +5,7 @@ import dataclasses
 import inspect
 import struct
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,6 +16,7 @@ from blueprint_pipeline.gaussian_splat_decode import (
     convert_to_standard_ply,
     find_splat_transform_cli,
     read_standard_3dgs_ply,
+    run_splat_transform_cleanup,
     write_standard_3dgs_ply,
 )
 
@@ -219,3 +221,78 @@ def test_public_api_signatures_pinned() -> None:
         "find_splat_transform_cli",
     ):
         assert callable(getattr(gsd, name))
+
+
+def test_splat_transform_cleanup_wraps_upstream_without_decimation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cli = (
+        tmp_path
+        / "tools"
+        / "splat_render"
+        / "node_modules"
+        / "@playcanvas"
+        / "splat-transform"
+        / "bin"
+        / "cli.mjs"
+    )
+    cli.parent.mkdir(parents=True)
+    cli.write_text("// fixture", encoding="utf-8")
+    source = tmp_path / "scene.spz"
+    source.write_bytes(b"source-splat")
+    output = tmp_path / "derived" / "cleaned.spz"
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(list(command))
+        if "--version" in command:
+            return SimpleNamespace(returncode=0, stdout="splat-transform v2.7.0\n", stderr="")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"cleaned-splat")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="**Row Count:** 100\n**Row Count:** 96\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(gsd.subprocess, "run", fake_run)
+    result = run_splat_transform_cleanup(
+        source,
+        output,
+        repo_root=tmp_path,
+        gpu=0,
+        minimum_opacity=0.02,
+        robust_bounds=[-2, -1, -3, 4, 2, 5],
+    )
+
+    assert result["status"] == "completed_unqualified_candidate"
+    assert result["source"]["splat_count"] == 100
+    assert result["render_input_candidate"]["splat_count"] == 96
+    assert result["removed_splat_count"] == 4
+    assert result["global_decimation_applied"] is False
+    assert result["evaluation_render_authorized"] is False
+    cleanup_command = calls[-1]
+    assert "--no-tty" in cleanup_command
+    assert not any(token in {"--decimate", "-F"} for token in cleanup_command)
+    assert any(token.startswith("--filter-box=") for token in cleanup_command)
+
+
+def test_splat_transform_cleanup_forbids_source_overwrite(tmp_path: Path) -> None:
+    source = tmp_path / "scene.spz"
+    source.write_bytes(b"source-splat")
+    result = run_splat_transform_cleanup(source, source, repo_root=tmp_path)
+    assert result["status"] == "blocked"
+    assert "immutable_source_overwrite_forbidden" in result["blockers"]
+
+
+def test_splat_transform_cleanup_rejects_inverted_bounds(tmp_path: Path) -> None:
+    source = tmp_path / "scene.spz"
+    source.write_bytes(b"source-splat")
+    result = run_splat_transform_cleanup(
+        source,
+        tmp_path / "clean.spz",
+        repo_root=tmp_path,
+        robust_bounds=[1, -1, -1, 0, 1, 1],
+    )
+    assert result["status"] == "blocked"
+    assert "splat_cleanup_robust_bounds_invalid" in result["blockers"]

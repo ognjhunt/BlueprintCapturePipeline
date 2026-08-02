@@ -7,6 +7,7 @@ import numpy as np
 import trimesh
 
 import blueprint_pipeline.external_scene_robot_placement as placement_module
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.external_scene_robot_placement import (
     _footprint_overlap_counts,
     _triangle_footprint_overlap_count,
@@ -17,6 +18,25 @@ from blueprint_pipeline.scene_placement.types import StandPose
 
 def _digest(path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _target_analysis(*, position: list[float]) -> dict:
+    value = {
+        "schema_version": "scene_task_target_analysis_result.v1",
+        "status": "target_ready_for_bounded_sim",
+        "scene_id": "test-scene",
+        "source_scene_digest": "sha256:" + "a" * 64,
+        "metric_scale_status": "provider_declared_not_independently_validated",
+        "selected_target": {
+            "proposal_id": "fixture-inspection-target",
+            "object_label": "fixture surface",
+            "task_family": "franka_fixture_inspection",
+            "target_position_scene": position,
+            "spatial_uncertainty_scene_units": 0.25,
+        },
+    }
+    value["target_analysis_digest"] = canonical_digest(value, digest_field="target_analysis_digest")
+    return value
 
 
 def test_external_scene_placement_uses_official_franka_and_abstains_formally(
@@ -34,7 +54,7 @@ def test_external_scene_placement_uses_official_franka_and_abstains_formally(
         "schema_version": "external_scene_robot_placement_request.v1",
         "robot_id": "franka_panda",
         "source_scene_digest": "sha256:" + "a" * 64,
-        "target_analysis_digest": "sha256:" + "b" * 64,
+        "target_analysis_digest": "",
         "target_binding_digest": "sha256:" + "c" * 64,
         "scene_frame_binding_digest": "sha256:" + "d" * 64,
         "collision_candidate_digest": "sha256:" + "e" * 64,
@@ -47,10 +67,13 @@ def test_external_scene_placement_uses_official_franka_and_abstains_formally(
         "collision_status": "candidate_compiled",
         "candidate_may_self_authorize": False,
     }
+    target_analysis = _target_analysis(position=[0.0, 0.0, 0.7])
+    request["target_analysis_digest"] = target_analysis["target_analysis_digest"]
 
     packet = propose_external_scene_robot_placement(
         collision_glb_path=glb,
         request=request,
+        target_analysis=target_analysis,
     )
 
     placement = packet["placement"]
@@ -68,22 +91,34 @@ def test_external_scene_placement_uses_official_franka_and_abstains_formally(
     assert support["status"] == "simulator_support_candidate_only"
     assert support["static_collision_required"] is True
     assert support["physical_load_capacity_qualified"] is False
-    assert support["top_z_collision_stage"] == placement[
-        "robot_pose_xyzyaw_collision_stage"
-    ][2]
-    assert support["center_xyz_collision_stage"][:2] == placement[
-        "robot_pose_xyzyaw_collision_stage"
-    ][:2]
-    assert support["center_xyz_collision_stage"][2] + 0.5 * support[
-        "height_stage_units"
-    ] == support["top_z_collision_stage"]
+    assert support["top_z_collision_stage"] == placement["robot_pose_xyzyaw_collision_stage"][2]
+    assert (
+        support["center_xyz_collision_stage"][:2]
+        == placement["robot_pose_xyzyaw_collision_stage"][:2]
+    )
+    assert (
+        support["center_xyz_collision_stage"][2] + 0.5 * support["height_stage_units"]
+        == support["top_z_collision_stage"]
+    )
     options = packet["render_options"]
     assert options["robot_id"] == "franka_panda"
     assert options["fixed_base_support_mount"] == support
     assert options["robot_ground_z"] == support["top_z_collision_stage"]
-    assert options["articulated_policy_trace_request"]["candidates"][1]["policy_id"] == (
-        "franka-inspection-sweep-v1"
+    cohort = options["articulated_policy_trace_request"]
+    assert cohort["controller_id"] == "deterministic_franka_inspection_cohort.v1"
+    assert [row["policy_id"] for row in cohort["candidates"]] == [
+        "franka-inspection-center-hold-v1",
+        "franka-inspection-left-narrow-v1",
+        "franka-inspection-right-narrow-v1",
+        "franka-inspection-left-wide-v1",
+        "franka-inspection-right-wide-v1",
+    ]
+    assert (
+        cohort["inspection_target_position_stage"] == (placement["target_position_collision_stage"])
     )
+    outcome_contract = options["inspection_outcome_contract"]
+    assert outcome_contract["placement_proposal_digest"] == placement["placement_proposal_digest"]
+    assert outcome_contract["thresholds_frozen_before_candidate_execution"] is True
 
 
 def test_external_scene_placement_rescues_collision_clear_reach_candidate(
@@ -103,7 +138,7 @@ def test_external_scene_placement_rescues_collision_clear_reach_candidate(
         "schema_version": "external_scene_robot_placement_request.v1",
         "robot_id": "franka_panda",
         "source_scene_digest": "sha256:" + "a" * 64,
-        "target_analysis_digest": "sha256:" + "b" * 64,
+        "target_analysis_digest": "",
         "target_binding_digest": "sha256:" + "c" * 64,
         "scene_frame_binding_digest": "sha256:" + "d" * 64,
         "collision_candidate_digest": "sha256:" + "e" * 64,
@@ -116,6 +151,8 @@ def test_external_scene_placement_rescues_collision_clear_reach_candidate(
         "collision_status": "candidate_compiled",
         "candidate_may_self_authorize": False,
     }
+    target_analysis = _target_analysis(position=[0.0, 0.0, 0.7])
+    request["target_analysis_digest"] = target_analysis["target_analysis_digest"]
     candidates = iter(
         [
             StandPose((1.2, 0.0, 0.0), 0.0, "target", True, 0.15, "nominal"),
@@ -131,6 +168,7 @@ def test_external_scene_placement_rescues_collision_clear_reach_candidate(
     packet = propose_external_scene_robot_placement(
         collision_glb_path=glb,
         request=request,
+        target_analysis=target_analysis,
     )
 
     placement = packet["placement"]

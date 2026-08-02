@@ -28,6 +28,7 @@ from .external_provider_nurec import (
     build_provider_nurec_isaac_runtime_result,
 )
 from .local_evidence_adapters import (
+    SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER,
     SIGNED_ISAAC_POINT_CONTACT_ADAPTER,
     SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER,
     SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER,
@@ -86,7 +87,11 @@ def _validated_policy_trace_pair(runtime: Mapping[str, Any]) -> dict[str, Any] |
         errors.append("articulated_policy_trace_pair_not_completed")
     if pair.get("robot_id") != "franka_panda":
         errors.append("articulated_policy_trace_pair_robot_invalid")
-    if pair.get("controller_id") != "deterministic_franka_joint_position_pair.v1":
+    controller_id = pair.get("controller_id")
+    if controller_id not in {
+        "deterministic_franka_joint_position_pair.v1",
+        "deterministic_franka_inspection_cohort.v1",
+    }:
         errors.append("articulated_policy_trace_pair_controller_invalid")
     if pair.get("articulated_policy_execution_observed") is not True:
         errors.append("articulated_policy_trace_execution_not_observed")
@@ -94,15 +99,29 @@ def _validated_policy_trace_pair(runtime: Mapping[str, Any]) -> dict[str, Any] |
         errors.append("articulated_policy_trace_ranking_boundary_invalid")
     if pair.get("physical_success_claimed") is not False:
         errors.append("articulated_policy_trace_physical_boundary_invalid")
+    if controller_id == "deterministic_franka_inspection_cohort.v1" and not str(
+        pair.get("inspection_outcome_contract_digest") or ""
+    ).startswith("sha256:"):
+        errors.append("articulated_policy_trace_inspection_contract_missing")
     if pair.get("articulated_policy_trace_pair_digest") != canonical_digest(
         pair, digest_field="articulated_policy_trace_pair_digest"
     ):
         errors.append("articulated_policy_trace_pair_digest_mismatch")
     traces = pair.get("candidate_traces")
-    expected_ids = ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+    expected_ids = (
+        ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+        if controller_id == "deterministic_franka_joint_position_pair.v1"
+        else [
+            "franka-inspection-center-hold-v1",
+            "franka-inspection-left-narrow-v1",
+            "franka-inspection-right-narrow-v1",
+            "franka-inspection-left-wide-v1",
+            "franka-inspection-right-wide-v1",
+        ]
+    )
     if (
         not isinstance(traces, list)
-        or len(traces) != 2
+        or len(traces) != len(expected_ids)
         or [row.get("policy_id") for row in traces if isinstance(row, Mapping)] != expected_ids
     ):
         errors.append("articulated_policy_trace_candidates_invalid")
@@ -126,6 +145,17 @@ def _validated_policy_trace_pair(runtime: Mapping[str, Any]) -> dict[str, Any] |
             or not str(observation.get("digest") or "").startswith("sha256:")
         ):
             errors.append(f"articulated_policy_trace_{index}_egocentric_observation_invalid")
+        if controller_id == "deterministic_franka_inspection_cohort.v1":
+            target_views = trace.get("target_view_observations")
+            if (
+                trace.get("action_source") != "scripted_controller"
+                or trace.get("contact_reporting_active") is not True
+                or not isinstance(trace.get("collision_free_observed"), bool)
+                or not isinstance(target_views, list)
+                or not target_views
+                or any(not isinstance(row, Mapping) for row in target_views)
+            ):
+                errors.append(f"articulated_policy_trace_{index}_inspection_evidence_invalid")
     assessment = pair.get("trace_pair_assessment")
     if not isinstance(assessment, Mapping):
         errors.append("articulated_policy_trace_pair_assessment_missing")
@@ -187,8 +217,7 @@ def _method_profiles(
     source_bundle = testbed["source_capture_bundles"][0]
     bundle_id = str(source_bundle["bundle_id"])
     scene_entrypoint = str(
-        testbed["supported_condition_ranges"].get("scene_entrypoint")
-        or "scene.usdz"
+        testbed["supported_condition_ranges"].get("scene_entrypoint") or "scene.usdz"
     )
     task_id = str(testbed["task_distribution"]["tasks"][0])
     task_family = str(testbed["task_distribution"]["task_family"])
@@ -283,6 +312,33 @@ def _method_profiles(
         }
         return leaf
 
+    def inspection_ranking_replay_leaf() -> dict[str, Any]:
+        leaf = replay_leaf(
+            "signed-isaac-inspection-ranking-replay",
+            "signed_isaac_inspection_candidate_ranking",
+        )
+        leaf["policy_adapter"] = {
+            "adapter_id": "robot_eval_policy_package",
+            "adapter_version": "1",
+            "policy_id": "franka-scripted-inspection-controller-cohort-v1",
+            "observation_schema_ref": "external_scene_inspection_candidate_ranking.v1",
+            "action_schema_ref": "deterministic_franka_inspection_cohort.v1",
+        }
+        leaf["proof_contract"] = {
+            "adapter_id": "robot_eval_proof_contract",
+            "adapter_version": "1",
+            "contract_id": "signed-isaac-inspection-ranking-replay-proof",
+            "required_evidence": ["signed_isaac_inspection_candidate_ranking"],
+            "claim_ceiling": {"level": "comparative_controller_ranking_only"},
+            "prohibited_claims": [
+                "comparative_policy_ranking",
+                "metric_task_success",
+                "physical_success",
+                "deployment_readiness",
+            ],
+        }
+        return leaf
+
     common = {
         "schema_version": "evidence_method_profile.v1",
         "version": "1",
@@ -357,6 +413,23 @@ def _method_profiles(
             "expected_cost_usd": 0.0,
             "provider_availability": {"status": "available"},
             "evaluation_run_template": trace_replay_leaf(),
+        },
+        {
+            "method_id": "signed-isaac-inspection-ranking-replay",
+            "implementation_digest": canonical_digest(
+                {"adapter": SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER, "version": "1"}
+            ),
+            "adapter_reference": SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER,
+            "method_family": "traditional_simulation",
+            "supported_claim_types": ["comparative_controller_ranking"],
+            "required_inputs": ["signed_isaac_inspection_candidate_ranking"],
+            "authority_tier": 2,
+            "proof_tier": "isaac_task_bound_controller_ranking_only",
+            "correlation_group": "exact-isaac-runtime",
+            "shared_dependencies": ["exact-scene-package", "exact-isaac-runtime"],
+            "expected_cost_usd": 0.0,
+            "provider_availability": {"status": "available"},
+            "evaluation_run_template": inspection_ranking_replay_leaf(),
         },
         {
             "method_id": "analytic-franka-kinematics-candidate",
@@ -444,7 +517,7 @@ def _method_profiles(
         "sensors": bindings["sensors"],
         "controller_action_representation": bindings["controller_action_representation"],
     }
-    visual, contact, trace_pair_profile = profiles[:3]
+    visual, contact, trace_pair_profile, inspection_ranking_profile = profiles[:4]
     visual_evidence = next(
         row
         for row in testbed["evidence_inventory"]
@@ -460,6 +533,14 @@ def _method_profiles(
             row
             for row in testbed["evidence_inventory"]
             if row["evidence_id"] == "signed_isaac_articulated_policy_trace_pair"
+        ),
+        None,
+    )
+    inspection_ranking_evidence = next(
+        (
+            row
+            for row in testbed["evidence_inventory"]
+            if row["evidence_id"] == "signed_isaac_inspection_candidate_ranking"
         ),
         None,
     )
@@ -551,6 +632,17 @@ def _method_profiles(
                 evaluator_id="blueprint-independent-trace-pair-validator",
                 evaluator_digest=trace_pair_evidence["articulated_policy_trace_pair_digest"],
                 owner_digest=trace_pair_evidence["articulated_policy_trace_pair_digest"],
+            )
+        )
+    if inspection_ranking_evidence is not None:
+        qualifications.append(
+            qualification(
+                profile=inspection_ranking_profile,
+                qualification_id="qualification-exact-inspection-controller-ranking-v1",
+                claim_type="comparative_controller_ranking",
+                evaluator_id="blueprint-deterministic-inspection-scorer",
+                evaluator_digest=inspection_ranking_evidence["ranking_digest"],
+                owner_digest=inspection_ranking_evidence["ranking_digest"],
             )
         )
     return profiles, qualifications

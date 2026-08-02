@@ -8,6 +8,7 @@ reach checks are independently qualified.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 from pathlib import Path
@@ -15,9 +16,11 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .external_scene_collision_candidate import _flatten_glb, _sha256
-from .provider_nurec_robot_placement import build_default_franka_policy_trace_request
+from .external_scene_inspection_outcome import build_franka_inspection_outcome_contract
+from .provider_nurec_robot_placement import build_franka_inspection_controller_cohort_request
 from .scene_placement.placement import ring_scan_stand_pose
 from .scene_placement.robot_profile import get_robot_profile
 from .scene_placement.types import SceneObject
@@ -194,7 +197,10 @@ def build_external_scene_robot_placement_request(value: Mapping[str, Any]) -> di
 
 
 def propose_external_scene_robot_placement(
-    *, collision_glb_path: str | Path, request: Mapping[str, Any]
+    *,
+    collision_glb_path: str | Path,
+    request: Mapping[str, Any],
+    target_analysis: Mapping[str, Any],
 ) -> dict[str, Any]:
     admitted = build_external_scene_robot_placement_request(request)
     glb = Path(collision_glb_path).resolve(strict=True)
@@ -400,6 +406,16 @@ def propose_external_scene_robot_placement(
     placement["placement_proposal_digest"] = canonical_digest(
         placement, digest_field="placement_proposal_digest"
     )
+    inspection_outcome_contract = build_franka_inspection_outcome_contract(
+        target_analysis=target_analysis,
+        placement_proposal_digest=placement["placement_proposal_digest"],
+        target_position_stage=placement["target_position_collision_stage"],
+        scene_frame_binding_digest=placement["scene_frame_binding_digest"],
+    )
+    if inspection_outcome_contract["target_analysis_digest"] != admitted["target_analysis_digest"]:
+        raise ExternalSceneRobotPlacementError(
+            ["external_placement_inspection_contract_target_mismatch"]
+        )
     render_options = {
         "robot_id": "franka_panda",
         "robot_usd": str(profile.simulator_asset_refs["isaac_asset"]).lstrip("/"),
@@ -410,9 +426,11 @@ def propose_external_scene_robot_placement(
         "robot_only_pass": True,
         "robot_placement_digest": placement["placement_proposal_digest"],
         "placement_proposal_digest": placement["placement_proposal_digest"],
+        "inspection_outcome_contract": inspection_outcome_contract,
         "lights_path": "/World/Lights",
-        "articulated_policy_trace_request": build_default_franka_policy_trace_request(
-            robot_prim_path=profile.usd_prim_path
+        "articulated_policy_trace_request": build_franka_inspection_controller_cohort_request(
+            robot_prim_path=profile.usd_prim_path,
+            target_position_stage=placement["target_position_collision_stage"],
         ),
     }
     render_options["render_options_digest"] = canonical_digest(
@@ -421,10 +439,73 @@ def propose_external_scene_robot_placement(
     return {"placement": placement, "render_options": render_options}
 
 
+def write_external_scene_robot_placement_packet(
+    *,
+    collision_glb_path: str | Path,
+    request: Mapping[str, Any],
+    target_analysis: Mapping[str, Any],
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Write the digest-bound placement, metric contract, and Isaac options."""
+
+    packet = propose_external_scene_robot_placement(
+        collision_glb_path=collision_glb_path,
+        request=request,
+        target_analysis=target_analysis,
+    )
+    root = Path(output_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    write_json(root / "request.v1.json", build_external_scene_robot_placement_request(request))
+    write_json(root / "result.v1.json", packet["placement"])
+    write_json(
+        root / "inspection_outcome_contract.v1.json",
+        packet["render_options"]["inspection_outcome_contract"],
+    )
+    write_json(root / "render_options.json", packet["render_options"])
+    return packet
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--collision-glb", required=True)
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--target-analysis", required=True)
+    parser.add_argument("--output-dir", required=True)
+    args = parser.parse_args(argv)
+
+    def load(path: str) -> Mapping[str, Any]:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(value, Mapping):
+            raise ExternalSceneRobotPlacementError(["external_placement_cli_input_invalid"])
+        return value
+
+    target_analysis = load(args.target_analysis)
+    if target_analysis.get("schema_version") == "rendered_scene_task_target_orchestration.v1":
+        nested = target_analysis.get("target_analysis")
+        if not isinstance(nested, Mapping):
+            raise ExternalSceneRobotPlacementError(
+                ["external_placement_target_analysis_wrapper_invalid"]
+            )
+        target_analysis = nested
+    packet = write_external_scene_robot_placement_packet(
+        collision_glb_path=args.collision_glb,
+        request=load(args.request),
+        target_analysis=target_analysis,
+        output_dir=args.output_dir,
+    )
+    print(json.dumps(packet, sort_keys=True))
+    return 0
+
+
 __all__ = [
     "REQUEST_SCHEMA",
     "RESULT_SCHEMA",
     "ExternalSceneRobotPlacementError",
     "build_external_scene_robot_placement_request",
     "propose_external_scene_robot_placement",
+    "write_external_scene_robot_placement_packet",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

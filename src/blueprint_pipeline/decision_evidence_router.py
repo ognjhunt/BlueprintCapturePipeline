@@ -29,6 +29,7 @@ _BASE_AUTHORITY = {
     "kinematic_feasibility": 1,
     "perception_visibility": 1,
     "collision_contact": 2,
+    "comparative_controller_ranking": 2,
     "comparative_policy_ranking": 3,
     "physical_task_success": 4,
     "deployment_readiness": 4,

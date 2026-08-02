@@ -24,8 +24,13 @@ from .decision_evidence_router import route_decision_evidence
 from .external_scene_isaac_verification import (
     build_external_scene_isaac_verification_request,
 )
+from .external_scene_inspection_outcome import (
+    build_franka_inspection_outcome_contract,
+    rank_franka_inspection_candidates,
+)
 from .isaac_reconstruction_verification import build_isaac_runtime_result_v3
 from .local_evidence_adapters import (
+    SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER,
     SIGNED_ISAAC_POINT_CONTACT_ADAPTER,
     SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER,
     SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER,
@@ -130,6 +135,39 @@ def compile_external_scene_task_evaluation(
     pair_value = runtime.get("articulated_policy_trace_pair")
     if isinstance(pair_value, Mapping) and pair_value.get("status") == "completed":
         policy_pair = _validated_policy_trace_pair(runtime)
+    inspection_outcome_contract = build_franka_inspection_outcome_contract(
+        target_analysis=target,
+        placement_proposal_digest=placement["placement_proposal_digest"],
+        target_position_stage=placement["target_position_collision_stage"],
+        scene_frame_binding_digest=placement["scene_frame_binding_digest"],
+    )
+    inspection_ranking = None
+    if (
+        policy_pair is not None
+        and policy_pair.get("controller_id") == "deterministic_franka_inspection_cohort.v1"
+    ):
+        if (
+            policy_pair.get("inspection_outcome_contract_digest")
+            != inspection_outcome_contract["contract_digest"]
+        ):
+            raise ExternalSceneTaskEvaluationError(
+                ["external_scene_inspection_outcome_contract_mismatch"]
+            )
+        inspection_ranking = rank_franka_inspection_candidates(
+            contract=inspection_outcome_contract,
+            candidates=[
+                {
+                    "candidate_id": row["policy_id"],
+                    "action_source": row["action_source"],
+                    "checkpoint_provenance_digest": row.get("checkpoint_provenance_digest"),
+                    "stable_reset_observed": row["reset_stability"]["status"] == "completed",
+                    "collision_free_observed": row["collision_free_observed"],
+                    "terminal_egocentric_nonblank": row["egocentric_observation"]["nonblank"],
+                    "target_view_observations": row["target_view_observations"],
+                }
+                for row in policy_pair["candidate_traces"]
+            ],
+        )
     visual_qualified = bool(
         visual.get("status") == "verified_visual_placement_only"
         and visual.get("visual_robot_placement_observed") is True
@@ -164,9 +202,7 @@ def compile_external_scene_task_evaluation(
                     "camera_id": "franka-wrist-egocentric",
                     "parent_link": "panda_hand",
                     "modality": "isaac_rgb",
-                    "trace_pair_digest": policy_pair[
-                        "articulated_policy_trace_pair_digest"
-                    ],
+                    "trace_pair_digest": policy_pair["articulated_policy_trace_pair_digest"],
                 }
                 if policy_pair is not None
                 else None
@@ -175,7 +211,11 @@ def compile_external_scene_task_evaluation(
         },
         "controller_action_representation": {
             "type": "joint_position",
-            "controller_id": "deterministic_franka_joint_position_pair.v1",
+            "controller_id": (
+                policy_pair["controller_id"]
+                if policy_pair is not None
+                else "deterministic_franka_inspection_cohort.v1"
+            ),
         },
         "selected_robot_placement": {
             "candidate_id": "external-scene-placement-candidate",
@@ -242,6 +282,13 @@ def compile_external_scene_task_evaluation(
                 "physical_task_success": False,
             }
         )
+    if inspection_ranking is not None:
+        evidence_inventory.append(
+            {
+                "evidence_id": "signed_isaac_inspection_candidate_ranking",
+                **inspection_ranking,
+            }
+        )
     testbed = MaintainedSiteTaskTestbed.from_mapping(
         {
             "schema_version": "maintained_site_task_testbed.v1",
@@ -253,11 +300,29 @@ def compile_external_scene_task_evaluation(
                 {"bundle_id": bundle_id, "version": "1", "digest": request["package_digest"]}
             ],
             "artifact_references": {
-                "site_card": {"uri": f"artifact://{site_id}", "digest": target["target_analysis_digest"]},
-                "task_cards": [{"uri": f"artifact://{task_id}", "digest": target["target_analysis_digest"]}],
-                "scenario_cards": [{"uri": f"artifact://{target_region_id}", "digest": request["target_binding_digest"]}],
-                "eval_cards": [{"uri": "artifact://external-scene-base-eval", "digest": independent["qualification_digest"]}],
-                "evaluator": {"uri": "artifact://signed-evidence-router", "digest": independent["qualification_digest"]},
+                "site_card": {
+                    "uri": f"artifact://{site_id}",
+                    "digest": target["target_analysis_digest"],
+                },
+                "task_cards": [
+                    {"uri": f"artifact://{task_id}", "digest": target["target_analysis_digest"]}
+                ],
+                "scenario_cards": [
+                    {
+                        "uri": f"artifact://{target_region_id}",
+                        "digest": request["target_binding_digest"],
+                    }
+                ],
+                "eval_cards": [
+                    {
+                        "uri": "artifact://external-scene-base-eval",
+                        "digest": independent["qualification_digest"],
+                    }
+                ],
+                "evaluator": {
+                    "uri": "artifact://signed-evidence-router",
+                    "digest": independent["qualification_digest"],
+                },
                 "reset": {"uri": "artifact://external-scene-reset", "digest": reset_digest},
             },
             "task_distribution": {"task_family": task_family, "tasks": [task_id]},
@@ -290,6 +355,12 @@ def compile_external_scene_task_evaluation(
                 "articulated_policy_trace_pair_digest": (
                     policy_pair["articulated_policy_trace_pair_digest"] if policy_pair else None
                 ),
+                "inspection_outcome_contract_digest": inspection_outcome_contract[
+                    "contract_digest"
+                ],
+                "inspection_candidate_ranking_digest": (
+                    inspection_ranking["ranking_digest"] if inspection_ranking else None
+                ),
             },
             "target_regions": [
                 {
@@ -308,7 +379,9 @@ def compile_external_scene_task_evaluation(
                 "comparative_policy_ranking",
                 "physical_task_success",
                 "deployment_readiness",
-            ] + ([] if visual_qualified else ["visual_robot_placement"]) + ([] if policy_pair else ["articulated_policy_execution"]),
+            ]
+            + ([] if visual_qualified else ["visual_robot_placement"])
+            + ([] if policy_pair else ["articulated_policy_execution"]),
             "invalidation_triggers": [
                 "package_digest_change",
                 "robot_asset_change",
@@ -327,13 +400,58 @@ def compile_external_scene_task_evaluation(
         "sensors": bindings["sensors"],
         "controller_action_representation": bindings["controller_action_representation"],
     }
+    candidate_ids = (
+        [row["policy_id"] for row in policy_pair["candidate_traces"]]
+        if policy_pair is not None
+        else []
+    )
     claims = [
-        _claim("exact-sim-robot-visibility", "perception_visibility", subject={"target_region_id": target_region_id}, scope=scope),
-        _claim("exact-sim-point-contact", "collision_contact", subject={"probe_scope": "single_precommitted_point"}, scope=scope),
-        _claim("franka-kinematic-feasibility", "kinematic_feasibility", subject={"target_position_site_m": target_position}, scope=scope),
-        _claim("franka-policy-trace-distinguishability", "simulated_policy_trace_distinguishability", subject={"candidate_policy_ids": ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]}, scope=scope),
-        _claim("franka-candidate-policy-ranking", "comparative_policy_ranking", subject={"candidate_policy_ids": ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]}, scope=scope, consequence="high", risk=0.01),
-        _claim("franka-physical-task-success", "physical_task_success", subject=task_id, scope=scope, consequence="high", risk=0.01),
+        _claim(
+            "exact-sim-robot-visibility",
+            "perception_visibility",
+            subject={"target_region_id": target_region_id},
+            scope=scope,
+        ),
+        _claim(
+            "exact-sim-point-contact",
+            "collision_contact",
+            subject={"probe_scope": "single_precommitted_point"},
+            scope=scope,
+        ),
+        _claim(
+            "franka-kinematic-feasibility",
+            "kinematic_feasibility",
+            subject={"target_position_site_m": target_position},
+            scope=scope,
+        ),
+        _claim(
+            "franka-policy-trace-distinguishability",
+            "simulated_policy_trace_distinguishability",
+            subject={"candidate_policy_ids": candidate_ids},
+            scope=scope,
+        ),
+        _claim(
+            "franka-controller-ranking",
+            "comparative_controller_ranking",
+            subject={"candidate_controller_ids": candidate_ids},
+            scope=scope,
+        ),
+        _claim(
+            "franka-candidate-policy-ranking",
+            "comparative_policy_ranking",
+            subject={"candidate_policy_ids": candidate_ids},
+            scope=scope,
+            consequence="high",
+            risk=0.01,
+        ),
+        _claim(
+            "franka-physical-task-success",
+            "physical_task_success",
+            subject=task_id,
+            scope=scope,
+            consequence="high",
+            risk=0.01,
+        ),
     ]
     decision_request = DecisionEvidenceRequest.from_mapping(
         {
@@ -345,15 +463,33 @@ def compile_external_scene_task_evaluation(
             "testbed_digest": testbed["testbed_digest"],
             "decision_question": f"Which claims are supported for {site_id}, {task_id}, and the exact bound Franka placement?",
             "candidates": [
-                {"robot_id": "franka_panda", "policy_id": policy_id, "policy_trace_status": "collected" if policy_pair else "not_collected"}
-                for policy_id in ("franka-fixed-hold-v1", "franka-inspection-sweep-v1")
+                {
+                    "robot_id": "franka_panda",
+                    "policy_id": candidate_id,
+                    "candidate_kind": "scripted_controller_baseline",
+                    "policy_trace_status": "collected" if policy_pair else "not_collected",
+                }
+                for candidate_id in candidate_ids
             ],
             "claims": claims,
-            "budget": {"max_cost_usd": 1.0, "max_latency_seconds": 3600.0, "delay_cost_per_second": 0.0},
+            "budget": {
+                "max_cost_usd": 1.0,
+                "max_latency_seconds": 3600.0,
+                "delay_cost_per_second": 0.0,
+            },
             "deadline": "2026-12-31T00:00:00Z",
             "available_physical_evidence": [],
-            "permitted_evidence_methods": ["analytic_geometry_kinematics", "traditional_simulation", "learned_world_model", "physical_evidence"],
-            "restrictions": {"external_processing_allowed": False, "max_data_retention_days": 0, "live_robot_execution_allowed": False},
+            "permitted_evidence_methods": [
+                "analytic_geometry_kinematics",
+                "traditional_simulation",
+                "learned_world_model",
+                "physical_evidence",
+            ],
+            "restrictions": {
+                "external_processing_allowed": False,
+                "max_data_retention_days": 0,
+                "live_robot_execution_allowed": False,
+            },
             "requested_result_audience": "blueprint_internal_base_evaluation",
             "provenance": {"caller_identity": "pipeline:external-scene-task-evaluation"},
             "idempotency_key": f"{site_id}-franka-base-eval-request-v1",
@@ -366,6 +502,8 @@ def compile_external_scene_task_evaluation(
         authorized_adapters.append(SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER)
     if policy_pair is not None:
         authorized_adapters.append(SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER)
+    if inspection_ranking is not None and inspection_ranking.get("status") == "completed":
+        authorized_adapters.append(SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER)
     authorization = {
         "schema_version": "external_scene_task_evaluation_authorization.v1",
         "plan_digest": plan["plan_digest"],
@@ -374,7 +512,9 @@ def compile_external_scene_task_evaluation(
         "paid_compute_authorized": False,
         "physical_robot_run_authorized": False,
     }
-    authorization["authorization_digest"] = canonical_digest(authorization, digest_field="authorization_digest")
+    authorization["authorization_digest"] = canonical_digest(
+        authorization, digest_field="authorization_digest"
+    )
     execution = execute_evidence_plan(
         plan,
         decision_request,
@@ -392,6 +532,11 @@ def compile_external_scene_task_evaluation(
         "exact-sim-point-contact": "supported",
         "franka-kinematic-feasibility": "abstention",
         "franka-policy-trace-distinguishability": "supported" if policy_pair else "abstention",
+        "franka-controller-ranking": (
+            "supported"
+            if inspection_ranking is not None and inspection_ranking["status"] == "completed"
+            else "abstention"
+        ),
         "franka-candidate-policy-ranking": "abstention",
         "franka-physical-task-success": "abstention",
     }
@@ -399,6 +544,7 @@ def compile_external_scene_task_evaluation(
         raise ExternalSceneTaskEvaluationError(["external_scene_decision_claim_boundary_upgraded"])
     artifact_root = Path(output_root).expanduser().resolve() / "external_scene_task_evaluation"
     artifacts = {
+        "inspection_outcome_contract.json": inspection_outcome_contract,
         "testbed.json": testbed,
         "decision_evidence_request.json": decision_request,
         "method_profiles.json": {"method_profiles": profiles},
@@ -408,6 +554,8 @@ def compile_external_scene_task_evaluation(
         "execution_manifest.json": execution.execution_manifest,
         "decision_envelope.json": decision,
     }
+    if inspection_ranking is not None:
+        artifacts["inspection_candidate_ranking.json"] = inspection_ranking
     for index, result in enumerate(results, start=1):
         artifacts[f"evidence_result_{index}.json"] = result
     for name, value in sorted(artifacts.items()):
@@ -435,6 +583,9 @@ def compile_external_scene_task_evaluation(
         "visual_robot_placement_qualified": visual_qualified,
         "single_point_contact_qualified": True,
         "policy_trace_pair_qualified": policy_pair is not None,
+        "controller_candidate_ranking_proven": bool(
+            inspection_ranking and inspection_ranking["controller_candidate_ranking_proven"] is True
+        ),
         "comparative_policy_ranking_proven": False,
         "physical_task_success_proven": False,
         "deployment_readiness_proven": False,

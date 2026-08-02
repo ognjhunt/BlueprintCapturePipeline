@@ -88,6 +88,12 @@ def test_reconstruction_planner_selects_cheapest_sufficient_not_always_3dgs() ->
                 required_flags=["metric_geometry"],
             ),
             _method(
+                "qualified-native-render",
+                "native_3dgs_rendering",
+                ["qualified_appearance_render"],
+                cost=0.02,
+            ),
+            _method(
                 "expensive-splat",
                 "gaussian_splat_3d",
                 ["appearance_layer"],
@@ -100,6 +106,7 @@ def test_reconstruction_planner_selects_cheapest_sufficient_not_always_3dgs() ->
     assert [row["method_id"] for row in plan["selected_methods"]] == [
         "decoded-observations",
         "lidar-scaffold",
+        "qualified-native-render",
     ]
     assert "appearance_layer" not in plan["required_representations"]
     assert plan["proof_boundary"]["physical_task_success_established"] is False
@@ -132,10 +139,16 @@ def test_reconstruction_planner_minimizes_total_method_set_cost() -> None:
                 ["decoded_observation_frames", "metric_reference_layer"],
                 cost=0.07,
             ),
+            _method(
+                "qualified-native-render",
+                "native_3dgs_rendering",
+                ["qualified_appearance_render"],
+                cost=0.01,
+            ),
         ],
     )
 
-    assert plan["estimated_cost_usd"] == 0.07
+    assert plan["estimated_cost_usd"] == 0.08
     assert plan["selected_methods"] == [
         {
             "representations": ["decoded_observation_frames", "metric_reference_layer"],
@@ -144,7 +157,15 @@ def test_reconstruction_planner_minimizes_total_method_set_cost() -> None:
             "method_profile_digest": plan["selected_methods"][0]["method_profile_digest"],
             "provider_identity": "local",
             "expected_cost_usd": 0.07,
-        }
+        },
+        {
+            "representations": ["qualified_appearance_render"],
+            "method_id": "qualified-native-render",
+            "method_version": "1",
+            "method_profile_digest": plan["selected_methods"][1]["method_profile_digest"],
+            "provider_identity": "local",
+            "expected_cost_usd": 0.01,
+        },
     ]
 
 

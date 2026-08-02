@@ -174,7 +174,11 @@ def _validate_policy_trace_request(options: dict) -> tuple[dict | None, list[str
         errors.append("franka_policy_trace_robot_invalid")
     if trace.get("robot_prim_path") != options.get("robot_prim_path"):
         errors.append("franka_policy_trace_robot_prim_mismatch")
-    if trace.get("controller_id") != "deterministic_franka_joint_position_pair.v1":
+    controller_id = trace.get("controller_id")
+    if controller_id not in {
+        "deterministic_franka_joint_position_pair.v1",
+        "deterministic_franka_inspection_cohort.v1",
+    }:
         errors.append("franka_policy_trace_controller_invalid")
     if trace.get("joint_names") != joint_names:
         errors.append("franka_policy_trace_joint_names_invalid")
@@ -216,10 +220,20 @@ def _validate_policy_trace_request(options: dict) -> tuple[dict | None, list[str
         ):
             errors.append(f"franka_policy_trace_{key}_invalid")
     candidates = trace.get("candidates")
-    expected_ids = ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+    expected_ids = (
+        ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+        if controller_id == "deterministic_franka_joint_position_pair.v1"
+        else [
+            "franka-inspection-center-hold-v1",
+            "franka-inspection-left-narrow-v1",
+            "franka-inspection-right-narrow-v1",
+            "franka-inspection-left-wide-v1",
+            "franka-inspection-right-wide-v1",
+        ]
+    )
     if (
         not isinstance(candidates, list)
-        or len(candidates) != 2
+        or len(candidates) != len(expected_ids)
         or [row.get("policy_id") for row in candidates if isinstance(row, dict)] != expected_ids
     ):
         errors.append("franka_policy_trace_candidates_invalid")
@@ -231,15 +245,43 @@ def _validate_policy_trace_request(options: dict) -> tuple[dict | None, list[str
                 errors.append(f"franka_policy_trace_candidate_{index}_target_invalid")
             if not isinstance(steps, int) or isinstance(steps, bool) or not 30 <= steps <= 1800:
                 errors.append(f"franka_policy_trace_candidate_{index}_steps_invalid")
+            if (
+                controller_id == "deterministic_franka_inspection_cohort.v1"
+                and candidate.get("action_source") != "scripted_controller"
+            ):
+                errors.append(f"franka_policy_trace_candidate_{index}_action_source_invalid")
         if all(finite_vector(row.get("final_joint_positions_rad")) for row in candidates):
             hold = candidates[0]["final_joint_positions_rad"]
-            sweep = candidates[1]["final_joint_positions_rad"]
+            sweeps = [row["final_joint_positions_rad"] for row in candidates[1:]]
             if max(abs(float(a) - float(b)) for a, b in zip(start, hold)) > 1e-9:
                 errors.append("franka_policy_trace_hold_invalid")
-            if max(abs(float(a) - float(b)) for a, b in zip(start, sweep)) < float(
-                threshold or 0.0
+            if any(
+                max(abs(float(a) - float(b)) for a, b in zip(start, sweep))
+                < float(threshold or 0.0)
+                for sweep in sweeps
             ):
                 errors.append("franka_policy_trace_sweep_not_distinct")
+    target = trace.get("inspection_target_position_stage")
+    if controller_id == "deterministic_franka_inspection_cohort.v1" and not finite_vector(
+        target, length=3
+    ):
+        errors.append("franka_policy_trace_inspection_target_invalid")
+    outcome_contract = options.get("inspection_outcome_contract")
+    if controller_id == "deterministic_franka_inspection_cohort.v1":
+        if not isinstance(outcome_contract, dict):
+            errors.append("franka_inspection_outcome_contract_missing")
+        elif (
+            outcome_contract.get("schema_version")
+            != "external_scene_inspection_outcome_contract.v1"
+            or outcome_contract.get("contract_digest")
+            != _canonical_digest(outcome_contract, digest_field="contract_digest")
+            or outcome_contract.get("placement_proposal_digest")
+            != options.get("placement_proposal_digest")
+            or outcome_contract.get("inspection_target_position_stage") != target
+            or outcome_contract.get("thresholds_frozen_before_candidate_execution") is not True
+            or outcome_contract.get("candidate_may_self_authorize") is not False
+        ):
+            errors.append("franka_inspection_outcome_contract_invalid")
     camera = trace.get("egocentric_camera")
     if not isinstance(camera, dict) or camera.get("parent_link_name") != "panda_hand":
         errors.append("franka_policy_trace_camera_invalid")
@@ -316,10 +358,10 @@ def _reset_stability_assessment(
 
 
 def _trace_pair_distinctness(candidate_traces: list[dict], request: dict) -> dict:
-    """Independently compute bounded trace-pair identity and distinctness metrics."""
+    """Independently compute bounded trace-cohort reset and distinctness metrics."""
 
     errors = []
-    if len(candidate_traces) != 2:
+    if len(candidate_traces) < 2:
         errors.append("franka_policy_trace_pair_incomplete")
         return {
             "status": "blocked",
@@ -333,13 +375,22 @@ def _trace_pair_distinctness(candidate_traces: list[dict], request: dict) -> dic
         errors.append("franka_policy_trace_observation_vector_invalid")
         start_delta = None
         end_delta = None
+        minimum_end_delta = None
     else:
-        start_delta = max(abs(float(a) - float(b)) for a, b in zip(starts[0], starts[1]))
-        end_delta = max(abs(float(a) - float(b)) for a, b in zip(ends[0], ends[1]))
+        start_delta = max(
+            max(abs(float(a) - float(b)) for a, b in zip(starts[0], start)) for start in starts[1:]
+        )
+        reference_end_deltas = [
+            max(abs(float(a) - float(b)) for a, b in zip(ends[0], end)) for end in ends[1:]
+        ]
+        end_delta = max(reference_end_deltas)
+        minimum_end_delta = min(reference_end_deltas)
     identical_start = start_delta is not None and start_delta <= float(
         request["identical_start_tolerance_rad"]
     )
-    distinct = end_delta is not None and end_delta >= float(request["distinctness_threshold_rad"])
+    distinct = minimum_end_delta is not None and minimum_end_delta >= float(
+        request["distinctness_threshold_rad"]
+    )
     if not identical_start:
         errors.append("franka_policy_trace_identical_start_not_observed")
     if not distinct:
@@ -356,6 +407,9 @@ def _trace_pair_distinctness(candidate_traces: list[dict], request: dict) -> dic
         "distinct": distinct,
         "maximum_end_joint_delta_rad": (
             round(float(end_delta), 9) if end_delta is not None else None
+        ),
+        "minimum_non_reference_end_joint_delta_rad": (
+            round(float(minimum_end_delta), 9) if minimum_end_delta is not None else None
         ),
         "distinctness_threshold_rad": float(request["distinctness_threshold_rad"]),
         "identical_start_tolerance_rad": float(request["identical_start_tolerance_rad"]),
@@ -795,6 +849,82 @@ def _end_effector_position(stage, hand_prim, *, UsdGeom) -> list[float]:
     return [float(translation[index]) for index in range(3)]
 
 
+def _inspection_target_view_observation(
+    stage, camera_prim, target_position, camera_fov_degrees, *, Gf, UsdGeom
+) -> dict:
+    cache = UsdGeom.XformCache()
+    matrix = cache.GetLocalToWorldTransform(camera_prim)
+    translation = matrix.ExtractTranslation()
+    camera_position = [float(translation[index]) for index in range(3)]
+    forward_value = matrix.TransformDir(Gf.Vec3d(0.0, 0.0, -1.0))
+    forward = [float(forward_value[index]) for index in range(3)]
+    target_delta = [float(target_position[index]) - camera_position[index] for index in range(3)]
+    distance = math.sqrt(sum(value * value for value in target_delta))
+    forward_length = math.sqrt(sum(value * value for value in forward))
+    if distance <= 1e-9 or forward_length <= 1e-9:
+        raise RuntimeError("franka_inspection_camera_target_geometry_degenerate")
+    cosine = sum(a * b for a, b in zip(forward, target_delta)) / (forward_length * distance)
+    angle = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+    azimuth = math.atan2(
+        camera_position[1] - float(target_position[1]),
+        camera_position[0] - float(target_position[0]),
+    )
+    sector = int(math.floor(((azimuth + math.pi) / (2.0 * math.pi)) * 8.0)) % 8
+    return {
+        "camera_position_stage": [round(value, 9) for value in camera_position],
+        "camera_target_distance_stage_units": round(distance, 9),
+        "view_axis_error_degrees": round(angle, 9),
+        "target_in_fov": bool(angle <= 0.5 * float(camera_fov_degrees)),
+        "viewpoint_bin": f"azimuth-sector-{sector}",
+    }
+
+
+def _robot_environment_contact_events(robot_prim_path: str, support_prim_path: str) -> list[dict]:
+    """Read current PhysX contacts and exclude only fixed-base support contact."""
+
+    import omni.physx  # type: ignore
+    from pxr import PhysicsSchemaTools  # type: ignore
+
+    report = omni.physx.get_physx_simulation_interface().get_contact_report()
+    headers = report[0] if report else []
+    events = []
+    for header in headers:
+        paths = []
+        for name in ("actor0", "actor1", "collider0", "collider1"):
+            value = getattr(header, name, "")
+            try:
+                paths.append(str(PhysicsSchemaTools.intToSdfPath(int(value))))
+            except Exception:  # noqa: BLE001
+                paths.append(str(value))
+        robot_paths = [
+            path
+            for path in paths
+            if path == robot_prim_path or path.startswith(robot_prim_path + "/")
+        ]
+        if not robot_paths:
+            continue
+        outside = [
+            path
+            for path in paths
+            if path and not (path == robot_prim_path or path.startswith(robot_prim_path + "/"))
+        ]
+        if not outside:
+            continue
+        support_only = bool(support_prim_path) and all(
+            path == support_prim_path or path.startswith(support_prim_path + "/")
+            for path in outside
+        )
+        base_link_only = all(
+            "panda_link0" in path or path == robot_prim_path for path in robot_paths
+        )
+        if support_only and base_link_only:
+            continue
+        events.append(
+            {"robot_paths": sorted(set(robot_paths)), "other_paths": sorted(set(outside))}
+        )
+    return events
+
+
 def _author_egocentric_camera(stage, robot_prim, request: dict, *, Gf, Sdf, UsdGeom):
     camera_spec = request["egocentric_camera"]
     hand = _find_named_descendant(robot_prim, camera_spec["parent_link_name"])
@@ -902,6 +1032,9 @@ def _run_articulated_policy_traces(
         "joint_names": request["joint_names"],
         "physics_dt_seconds": request["physics_dt_seconds"],
     }
+    outcome_contract = options.get("inspection_outcome_contract")
+    if isinstance(outcome_contract, dict):
+        base["inspection_outcome_contract_digest"] = outcome_contract["contract_digest"]
     if not robot_report.get("composited") or not robot_report.get("geometry_streamed"):
         return {
             **base,
@@ -923,6 +1056,7 @@ def _run_articulated_policy_traces(
     try:
         import numpy as np  # type: ignore
         from isaacsim.core.api import SimulationContext  # type: ignore
+        from pxr import PhysxSchema, UsdPhysics  # type: ignore
 
         context = SimulationContext(
             physics_dt=float(request["physics_dt_seconds"]),
@@ -944,6 +1078,25 @@ def _run_articulated_policy_traces(
             return articulation, indices
 
         robot_prim = stage.GetPrimAtPath(Sdf.Path(request["robot_prim_path"]))
+        inspection_target = request.get("inspection_target_position_stage")
+        contact_reporting_active = False
+        if inspection_target is not None:
+            articulation_roots = [
+                prim
+                for prim in stage.Traverse()
+                if str(prim.GetPath()).startswith(request["robot_prim_path"])
+                and prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+            ]
+            if not articulation_roots:
+                raise RuntimeError("franka_inspection_articulation_root_missing")
+            for root in articulation_roots:
+                report_api = (
+                    PhysxSchema.PhysxContactReportAPI(root)
+                    if root.HasAPI(PhysxSchema.PhysxContactReportAPI)
+                    else PhysxSchema.PhysxContactReportAPI.Apply(root)
+                )
+                report_api.CreateThresholdAttr().Set(0.0)
+            contact_reporting_active = True
         camera_prim, hand_prim = _author_egocentric_camera(
             stage,
             robot_prim,
@@ -965,6 +1118,7 @@ def _run_articulated_policy_traces(
             trace = {
                 "schema_version": "franka_articulated_policy_trace.v1",
                 "policy_id": policy_id,
+                "action_source": candidate.get("action_source", "scripted_controller"),
                 "robot_id": request["robot_id"],
                 "controller_id": request["controller_id"],
                 "status": "running",
@@ -1009,6 +1163,8 @@ def _run_articulated_policy_traces(
                 duration = int(candidate["duration_steps"])
                 sample_interval = int(request["sample_interval_steps"])
                 positions = [_end_effector_position(stage, hand_prim, UsdGeom=UsdGeom)]
+                target_view_observations = []
+                robot_environment_contacts = []
                 failure_phase = "execute_joint_targets"
                 for step in range(1, duration + 1):
                     alpha = float(step) / float(duration)
@@ -1021,11 +1177,29 @@ def _run_articulated_policy_traces(
                         )
                     )
                     context.step(render=(step % sample_interval == 0 or step == duration))
+                    if contact_reporting_active:
+                        robot_environment_contacts.extend(
+                            _robot_environment_contact_events(
+                                request["robot_prim_path"],
+                                str((support or {}).get("prim_path") or ""),
+                            )
+                        )
                     if step % sample_interval == 0 or step == duration:
                         observed = _vector(articulation.get_joint_positions(joint_indices=indices))
                         velocity = _vector(articulation.get_joint_velocities(joint_indices=indices))
                         end_effector = _end_effector_position(stage, hand_prim, UsdGeom=UsdGeom)
                         positions.append(end_effector)
+                        if inspection_target is not None:
+                            target_view_observations.append(
+                                _inspection_target_view_observation(
+                                    stage,
+                                    camera_prim,
+                                    inspection_target,
+                                    request["egocentric_camera"]["fov_degrees"],
+                                    Gf=Gf,
+                                    UsdGeom=UsdGeom,
+                                )
+                            )
                         trace["samples"].append(
                             {
                                 "step": step,
@@ -1078,6 +1252,12 @@ def _run_articulated_policy_traces(
                     maximum_end_tracking_error_rad=round(tracking_error, 9),
                     end_effector_path_length_stage_units=round(path_length, 9),
                     egocentric_observation=egocentric_observation,
+                    target_view_observations=target_view_observations,
+                    contact_reporting_active=contact_reporting_active,
+                    robot_environment_contact_event_count=len(robot_environment_contacts),
+                    collision_free_observed=bool(
+                        contact_reporting_active and not robot_environment_contacts
+                    ),
                     physical_success_claimed=False,
                     claim_boundary=(
                         "Exact Isaac articulation observation for this candidate only; not "

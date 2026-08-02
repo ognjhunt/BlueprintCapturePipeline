@@ -8,6 +8,7 @@ from blueprint_pipeline.external_provider_nurec import (
 from blueprint_pipeline.provider_nurec_robot_placement import (
     ProviderNuRecRobotPlacementError,
     build_default_franka_policy_trace_request,
+    build_franka_inspection_controller_cohort_request,
     build_provider_nurec_robot_placement_packet,
     write_provider_nurec_robot_placement_packet,
 )
@@ -193,6 +194,20 @@ def test_packet_can_bind_reusable_franka_trace_pair_without_upgrading_placement(
         "franka-inspection-sweep-v1",
     ]
     assert packet["robot_placement_result"]["status"] == "abstained"
+    assert trace["physical_success_claimed"] is False
+
+
+def test_builds_five_scripted_inspection_controllers_without_policy_claim() -> None:
+    trace = build_franka_inspection_controller_cohort_request(
+        robot_prim_path="/World/Franka",
+        target_position_stage=[0.1, -4.2, -0.1],
+    )
+
+    assert trace["controller_id"] == "deterministic_franka_inspection_cohort.v1"
+    assert trace["candidate_kind"] == "scripted_controller_baseline"
+    assert len(trace["candidates"]) == 5
+    assert all(row["action_source"] == "scripted_controller" for row in trace["candidates"])
+    assert trace["comparative_policy_ranking_claimed"] is False
     assert trace["physical_success_claimed"] is False
 
 

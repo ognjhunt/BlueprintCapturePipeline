@@ -26,6 +26,10 @@ METHOD_KINDS = {
     "lidar_depth_fusion",
     "photogrammetric_mesh",
     "gaussian_splat_3d",
+    "appearance_truth_preservation",
+    "appearance_fidelity_qualification",
+    "native_3dgs_rendering",
+    "robot_appearance_compositing",
     "semantic_scene_graph",
     "object_segmentation",
     "room_structural_prior",
@@ -40,6 +44,7 @@ REPRESENTATIONS = {
     "decoded_observation_frames",
     "calibrated_frames",
     "appearance_layer",
+    "qualified_appearance_render",
     "metric_reference_layer",
     "semantic_layer",
     "physics_layer",
@@ -185,6 +190,7 @@ def _required_representations(claim_types: Sequence[str]) -> list[str]:
     required: set[str] = set()
     if claims.intersection({"perception_visibility", "task_discovery", "appearance_review"}):
         required.add("decoded_observation_frames")
+        required.add("qualified_appearance_render")
     if claims.intersection({"reachability", "robot_placement", "navigation_clearance"}):
         required.add("metric_reference_layer")
     if claims.intersection(PHYSICS_DEPENDENT_CLAIMS):

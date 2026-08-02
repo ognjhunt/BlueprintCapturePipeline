@@ -3,7 +3,7 @@
 This is the local-first, reproducible "the splat actually displays" path that the Isaac
 lane uses to reach parity with (and exceed) MuJoCo's box proxies. It:
 
-1. decodes/decimates the compressed PlayCanvas PLY (or SPZ) to a standard 3DGS PLY via
+1. decodes the compressed PlayCanvas PLY (or SPZ) to a full-resolution standard 3DGS PLY via
    the canonical ``splat-transform`` CLI (:mod:`gaussian_splat_decode`),
 2. analyzes the splat geometry (up-axis, floor, footprint, free-floor start pose) via
    :mod:`splat_scene_analysis`,
@@ -125,7 +125,7 @@ def render_splat_scene(
     camera_ids: Sequence[str] = DEFAULT_CAMERA_IDS,
     width: int = 1280,
     height: int = 960,
-    decimate: int = 200000,
+    decimate: int = 0,
     settle_frames: int = 6,
     settle_ms: int = 100,
     warmup_ms: int = 2000,
@@ -153,6 +153,13 @@ def render_splat_scene(
         "output_dir": str(out_dir),
         "blockers": [],
         "graphics_backend": str(graphics_backend).strip().lower(),
+        "appearance_fidelity": {
+            "full_resolution_source_is_appearance_truth": True,
+            "global_decimation_applied": bool(decimate and decimate > 0),
+            "appearance_fidelity_qualified": False,
+            "evaluation_input_authorized": False,
+            "qualification_required": "appearance_fidelity_qualification.v1",
+        },
         "proof_boundary": {
             "captured_scene_displayed": False,
             "interaction_overlay_displayed": False,
@@ -166,6 +173,12 @@ def render_splat_scene(
     normalized_graphics_backend = str(graphics_backend).strip().lower()
     if normalized_graphics_backend not in {"swiftshader", "metal"}:
         manifest["blockers"].append("unsupported_graphics_backend")
+        return manifest
+    if isinstance(decimate, bool) or not isinstance(decimate, int) or decimate < 0:
+        manifest["blockers"].append("invalid_splat_decimation_request")
+        return manifest
+    if decimate > 0:
+        manifest["blockers"].append("unqualified_global_splat_decimation_forbidden")
         return manifest
 
     # 1) decode/decimate to a standard 3DGS PLY (analysis + render input)
@@ -197,6 +210,18 @@ def render_splat_scene(
         normalized_focus = [float(value) for value in focus_point]
     else:
         normalized_focus = None
+    manifest["appearance_fidelity"].update(
+        {
+            "source_splat_count": int(splat.count),
+            "retained_splat_count": int(splat.count),
+            "retained_splat_fraction": 1.0,
+            "spherical_harmonics_degree": (
+                int(round((1 + int(splat.sh_rest.shape[1] / 3)) ** 0.5)) - 1
+                if splat.sh_rest is not None and splat.sh_rest.size
+                else 0
+            ),
+        }
+    )
     cameras = derive_eval_cameras(geom, camera_ids, focus_point=normalized_focus)
     manifest["camera_focus_point"] = normalized_focus
     cameras_json = out_dir / "cameras.json"
@@ -360,7 +385,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=960)
-    ap.add_argument("--decimate", type=int, default=200000, help="0 to disable")
+    ap.add_argument(
+        "--decimate",
+        type=int,
+        default=0,
+        help="must remain 0; global decimation is forbidden for fidelity renders",
+    )
     ap.add_argument("--settle-frames", type=int, default=6)
     ap.add_argument("--warmup-ms", type=int, default=2000)
     ap.add_argument(
