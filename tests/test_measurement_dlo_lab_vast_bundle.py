@@ -68,6 +68,12 @@ def test_runtime_release_is_exact_image_source_and_cuda_bound() -> None:
     assert release["benchmark_assets_required"] is False
     assert release["production_route_eligible"] is False
     assert validate_measurement_dlo_lab_runtime_release(release) == release
+    schema = json.loads(
+        (
+            ROOT / "docs/schemas/measurement_dlo_lab_runtime_release.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(release, schema)
 
 
 def test_bundle_is_clean_commit_bound_deterministic_and_schema_checked(tmp_path: Path) -> None:

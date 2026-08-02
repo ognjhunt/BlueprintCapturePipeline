@@ -34,6 +34,7 @@ CANARY_NAME_PREFIXES = (
     "blueprint-groot-oscar-canary-",
     "blueprint-native-warehouse-camera-",
     "blueprint-measurement-isaac-",
+    "blueprint-measurement-dlo-",
 )
 CAMPAIGN_PENDING_TEARDOWN_LANES = {
     "persistent_policy_wam_loop": "runpod_wam_async",
