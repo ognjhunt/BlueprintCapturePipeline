@@ -163,12 +163,35 @@ def _build_git_state(repo_root: Path, expected_commit: str) -> dict[str, Any]:
         commit = _git("rev-parse", "HEAD", repo_root=repo_root)
         branch = _git("branch", "--show-current", repo_root=repo_root) or None
         porcelain = _git("status", "--porcelain", repo_root=repo_root)
-        upstream = _git("rev-parse", "--abbrev-ref", "@{upstream}", repo_root=repo_root)
-        ahead_behind = _git(
-            "rev-list", "--left-right", "--count", "HEAD...@{upstream}", repo_root=repo_root
-        ).split()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ExternalScenePilotEvidenceError(["pilot_git_state_unavailable"]) from exc
+    try:
+        upstream = _git("rev-parse", "--abbrev-ref", "@{upstream}", repo_root=repo_root)
+    except (OSError, subprocess.CalledProcessError):
+        upstream = None
+    comparison_ref = upstream
+    if comparison_ref is None:
+        try:
+            _git("rev-parse", "--verify", "refs/remotes/origin/main", repo_root=repo_root)
+        except (OSError, subprocess.CalledProcessError):
+            comparison_ref = None
+        else:
+            comparison_ref = "origin/main"
+    ahead: int | None = None
+    behind: int | None = None
+    if comparison_ref is not None:
+        try:
+            ahead_behind = _git(
+                "rev-list",
+                "--left-right",
+                "--count",
+                f"HEAD...{comparison_ref}",
+                repo_root=repo_root,
+            ).split()
+            ahead = int(ahead_behind[0])
+            behind = int(ahead_behind[1])
+        except (OSError, subprocess.CalledProcessError, ValueError, IndexError) as exc:
+            raise ExternalScenePilotEvidenceError(["pilot_git_divergence_unavailable"]) from exc
     payload: dict[str, Any] = {
         "schema_version": GIT_STATE_SCHEMA_VERSION,
         "repo_root": str(repo_root),
@@ -179,8 +202,9 @@ def _build_git_state(repo_root: Path, expected_commit: str) -> dict[str, Any]:
         "clean": not porcelain,
         "status_porcelain": porcelain.splitlines(),
         "upstream": upstream,
-        "ahead": int(ahead_behind[0]),
-        "behind": int(ahead_behind[1]),
+        "comparison_ref": comparison_ref,
+        "ahead": ahead,
+        "behind": behind,
     }
     payload["git_state_digest"] = canonical_digest(payload)
     return payload
