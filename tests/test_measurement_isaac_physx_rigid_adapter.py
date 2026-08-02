@@ -217,6 +217,35 @@ def test_isaac_simulation_app_falls_back_after_noncallable_shim(
     assert _import_simulation_app() is LegacySimulationApp
 
 
+def test_isaac_simulation_app_failure_carries_safe_candidate_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_import(name: str) -> object:
+        if name == "isaacsim":
+            return types.SimpleNamespace(
+                __file__="/isaac-sim/isaacsim/__init__.py", SimulationApp=None
+            )
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    with pytest.raises(ImportError, match="simulation_app_not_callable") as captured:
+        _import_simulation_app()
+    diagnostics = captured.value.diagnostics  # type: ignore[attr-defined]
+    assert [row["status"] for row in diagnostics["candidates"]] == [
+        "import_failed",
+        "noncallable",
+        "import_failed",
+    ]
+    assert diagnostics["candidates"][1] == {
+        "module": "isaacsim",
+        "status": "noncallable",
+        "module_file": "/isaac-sim/isaacsim/__init__.py",
+        "symbol_present": True,
+        "symbol_type": "NoneType",
+        "symbol_callable": False,
+    }
+
+
 def test_isaac_runtime_identity_rejects_invalid_version_observation() -> None:
     with pytest.raises(RuntimeError, match="runtime_version_observation_invalid"):
         _observe_isaac_runtime_identity(object(), version_getter=lambda: ())
