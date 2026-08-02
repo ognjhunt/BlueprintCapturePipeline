@@ -33,6 +33,7 @@ VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
 CANARY_NAME_PREFIXES = (
     "blueprint-groot-oscar-canary-",
     "blueprint-native-warehouse-camera-",
+    "blueprint-reconstruction-",
 )
 CAMPAIGN_PENDING_TEARDOWN_LANES = {
     "persistent_policy_wam_loop": "runpod_wam_async",
@@ -373,6 +374,10 @@ def arm_watchdog(
         "deadline_epoch": float(deadline_epoch),
         "provider": resolved_provider,
         "pod_name_prefix": pod_name_prefix,
+        # Reconstruction executors use the provider-neutral ``name_prefix``
+        # spelling while the historical watchdog contract uses
+        # ``pod_name_prefix``. Bind both to the same exact teardown scope.
+        "name_prefix": pod_name_prefix,
         "watchdog_out_dir": str(root),
         "provider_mutation_trigger": "hard_deadline_only",
         "pre_deadline_provider_mutation_allowed": False,

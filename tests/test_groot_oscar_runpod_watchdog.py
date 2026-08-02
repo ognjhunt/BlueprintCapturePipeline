@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 import pytest
 
@@ -26,6 +27,22 @@ class _Provider:
     def terminate(self, instance_id: str) -> dict:
         self.ids.remove(instance_id)
         return {"status": "terminated"}
+
+
+def test_watchdog_arms_reconstruction_prefix_with_executor_alias(tmp_path) -> None:
+    deadline = time.time() + 120
+    result = watchdog_module.arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix="blueprint-reconstruction-",
+        deadline_epoch=deadline,
+        pid=os.getpid(),
+        provider_name="vast",
+    )
+
+    assert result["status"] == "armed"
+    assert result["pod_name_prefix"] == "blueprint-reconstruction-"
+    assert result["name_prefix"] == "blueprint-reconstruction-"
+    assert result["provider"] == "vast"
 
 
 def test_vast_watchdog_reaps_only_active_label_prefix_matches_and_proves_absence(
