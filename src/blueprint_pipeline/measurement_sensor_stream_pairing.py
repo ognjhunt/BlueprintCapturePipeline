@@ -22,7 +22,7 @@ from .task_site_measurement_routing import validate_site_evidence_profile
 
 
 PAIRING_SCHEMA_VERSION = "measurement_sensor_stream_pairing.v1"
-SUPPORTED_MODALITIES = frozenset({"rgb", "depth", "lidar"})
+SUPPORTED_MODALITIES = frozenset({"rgb", "depth", "lidar", "event_camera"})
 
 
 class MeasurementSensorPairingError(ValueError):
@@ -144,7 +144,7 @@ def _analyze(value: Mapping[str, Any]) -> tuple[dict[str, Any], list[str], list[
         for key in ("stream_digest", "calibration_digest", "extrinsics_digest"):
             if not _valid_digest(stream.get(key)):
                 errors.append(f"sensor_pairing_{key}_invalid:{sensor_id}")
-        if modality in {"rgb", "depth"} and not _valid_digest(
+        if modality in {"rgb", "depth", "event_camera"} and not _valid_digest(
             stream.get("intrinsics_digest")
         ):
             errors.append(f"sensor_pairing_intrinsics_digest_invalid:{sensor_id}")
