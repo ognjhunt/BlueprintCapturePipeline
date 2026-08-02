@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from blueprint_pipeline.measurement_adapter_execution import _subprocess_failure_codes
+from blueprint_pipeline.measurement_adapter_execution import (
+    _safe_environment,
+    _subprocess_failure_codes,
+)
 from blueprint_pipeline.measurement_dlo_lab_cable_adapter import (
     _classified_native_failure,
 )
@@ -19,6 +22,19 @@ def test_native_worker_failure_is_categorized_without_persisting_content(
         "worker_stderr_native_termination",
         "worker_stderr_openmp_runtime_failure",
     ]
+
+
+def test_safe_environment_synthesizes_isolated_home_and_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", "/operator-home-must-not-leak")
+    monkeypatch.setenv("XDG_CACHE_HOME", "/operator-cache-must-not-leak")
+
+    environment = _safe_environment(tmp_path)
+
+    assert environment["HOME"] == str(tmp_path)
+    assert environment["XDG_CACHE_HOME"] == str(tmp_path / ".cache")
+    assert environment["TMPDIR"] == str(tmp_path)
 
 
 def test_dlo_supervisor_classifies_abort_without_returning_stderr() -> None:
