@@ -15,8 +15,10 @@ import importlib.metadata
 import json
 import math
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .measurement_adapter_execution import (
     MeasurementAdapterExecutionError,
@@ -219,8 +221,13 @@ def _simulate(gs: Any, torch: Any, point: Mapping[str, Any], *, seed: int) -> di
         gs.destroy()
 
 
-def run_dlo_lab_cable_request(request_value: Mapping[str, Any]) -> dict[str, Any]:
+def run_dlo_lab_cable_request(
+    request_value: Mapping[str, Any],
+    *,
+    phase_writer: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     request = validate_measurement_adapter_execution_request(request_value)
+    record_phase = phase_writer or (lambda _phase: None)
     runtime = request["runtime_configuration"]
     observations: dict[str, Any] = {
         "engine_version": "unavailable",
@@ -252,6 +259,7 @@ def run_dlo_lab_cable_request(request_value: Mapping[str, Any]) -> dict[str, Any
     if runtime["backend_id"] != "dlo-lab-genesis-cuda" or runtime["precision"] != "float64":
         raise MeasurementAdapterExecutionError("dlo_lab_adapter_runtime_configuration_invalid")
     point = _operating_point(request)
+    record_phase("genesis_import_started")
     try:
         import genesis as gs
         import torch
@@ -264,6 +272,7 @@ def run_dlo_lab_cable_request(request_value: Mapping[str, Any]) -> dict[str, Any
             runtime_observations=observations,
             failure_codes=["dlo_lab_adapter_runtime_unavailable"],
         )
+    record_phase("genesis_import_completed")
     version = importlib.metadata.version("genesis-world")
     commit = _source_commit(gs)
     observations.update(
@@ -294,8 +303,11 @@ def run_dlo_lab_cable_request(request_value: Mapping[str, Any]) -> dict[str, Any
             runtime_observations=observations,
             failure_codes=["dlo_lab_adapter_cuda_unavailable"],
         )
+    record_phase("first_simulation_started")
     first = _simulate(gs, torch, point, seed=runtime["seed"])
+    record_phase("first_simulation_completed")
     second = _simulate(gs, torch, point, seed=runtime["seed"])
+    record_phase("second_simulation_completed")
     replay_match = first["trace_digest"] == second["trace_digest"]
     unsafe = bool(
         first["tip_displacement_m"] > point["maximum_tip_displacement_m"]
@@ -344,13 +356,140 @@ def _load(path: Path) -> dict[str, Any]:
     return dict(value)
 
 
+def _phase_writer(path: Path) -> Callable[[str], None]:
+    def write(phase: str) -> None:
+        path.write_text(
+            json.dumps({"phase": phase}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    return write
+
+
+def _classified_native_failure(stderr: bytes, exit_code: int) -> list[str]:
+    text = stderr.decode("utf-8", errors="replace").lower()
+    codes = [f"dlo_lab_adapter_supervised_worker_exit_nonzero:{exit_code}"]
+    if exit_code < 0:
+        codes.append(f"dlo_lab_adapter_supervised_worker_signal:{-exit_code}")
+    for pattern, code in (
+        ("qt.qpa", "dlo_lab_adapter_qt_platform_failure"),
+        ("could not load the qt platform plugin", "dlo_lab_adapter_qt_platform_failure"),
+        ("omp: error", "dlo_lab_adapter_openmp_runtime_failure"),
+        ("libgomp", "dlo_lab_adapter_openmp_runtime_failure"),
+        ("cuda_error", "dlo_lab_adapter_cuda_runtime_failure"),
+        ("cuda error", "dlo_lab_adapter_cuda_runtime_failure"),
+        ("libcuda", "dlo_lab_adapter_cuda_runtime_failure"),
+        ("terminate called", "dlo_lab_adapter_native_termination"),
+        ("assertion", "dlo_lab_adapter_native_assertion"),
+        ("fatal python error", "dlo_lab_adapter_fatal_python_error"),
+    ):
+        if pattern in text:
+            codes.append(code)
+    return sorted(set(codes))
+
+
+def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="blueprint-dlo-lab-supervisor-") as raw_root:
+        root = Path(raw_root)
+        request_path = root / "request.json"
+        result_path = root / "result.json"
+        phase_path = root / "phase.json"
+        request_path.write_text(
+            json.dumps(dict(request), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            completed = subprocess.run(  # nosec B603 - fixed module and argv
+                [
+                    sys.executable,
+                    "-m",
+                    "blueprint_pipeline.measurement_dlo_lab_cable_adapter",
+                    "--direct-worker",
+                    "--request",
+                    str(request_path),
+                    "--output",
+                    str(result_path),
+                    "--phase-output",
+                    str(phase_path),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=int(request["timeout_seconds"]),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr = bytes(exc.stderr or b"")
+            exit_code: int | None = None
+            timed_out = True
+            failure_codes = ["dlo_lab_adapter_supervised_worker_timed_out"]
+        else:
+            stderr = completed.stderr
+            exit_code = int(completed.returncode)
+            timed_out = False
+            if exit_code == 0 and result_path.is_file() and not result_path.is_symlink():
+                return _load(result_path)
+            failure_codes = (
+                _classified_native_failure(stderr, exit_code)
+                if exit_code != 0
+                else ["dlo_lab_adapter_supervised_worker_result_missing"]
+            )
+        phase = "supervised_worker_not_started"
+        try:
+            phase_value = json.loads(phase_path.read_text(encoding="utf-8"))
+            if isinstance(phase_value, Mapping):
+                phase = str(phase_value.get("phase") or phase)
+        except (OSError, json.JSONDecodeError):
+            pass
+        observations = {
+            "engine_version": "unavailable",
+            "distribution_version": "unavailable",
+            "source_commit": "unavailable",
+            "backend_id": request["runtime_configuration"]["backend_id"],
+            "precision": request["runtime_configuration"]["precision"],
+            "seed": request["runtime_configuration"]["seed"],
+            "cpu_fallback_used": False,
+            "supervised_worker_phase": phase,
+            "supervised_worker_exit_code": exit_code,
+            "supervised_worker_native_signal": (
+                -exit_code if not timed_out and exit_code is not None and exit_code < 0 else None
+            ),
+            "supervised_worker_timed_out": timed_out,
+            "supervised_worker_stderr_digest": "sha256:"
+            + hashlib.sha256(stderr).hexdigest(),
+            "supervised_worker_stderr_bytes": len(stderr),
+            "supervised_worker_stderr_content_persisted": False,
+        }
+        return build_measurement_adapter_worker_result(
+            request,
+            status="blocked",
+            observed_metrics={},
+            unsafe_condition_predicted=None,
+            runtime_observations=observations,
+            failure_codes=failure_codes,
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run an exact-source DLO-Lab CUDA cable case")
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--phase-output", type=Path)
+    parser.add_argument("--direct-worker", action="store_true")
     args = parser.parse_args(argv)
+    if args.direct_worker and args.phase_output is None:
+        parser.error("--phase-output is required with --direct-worker")
+    request = validate_measurement_adapter_execution_request(_load(args.request))
+    result = (
+        run_dlo_lab_cable_request(
+            request,
+            phase_writer=_phase_writer(args.phase_output) if args.phase_output else None,
+        )
+        if args.direct_worker
+        else _run_supervised_worker(request)
+    )
     args.output.write_text(
-        json.dumps(run_dlo_lab_cable_request(_load(args.request)), indent=2, sort_keys=True) + "\n",
+        json.dumps(result, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return 0
