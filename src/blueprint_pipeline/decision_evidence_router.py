@@ -536,8 +536,25 @@ def route_decision_evidence(
             selected = []
             status = "abstention_planned"
             rationale = "no_qualified_sufficient_plan"
-            rejected = sorted(candidates, key=lambda candidate: (candidate.objective, _string(candidate.profile.get("method_id"))))
-            next_candidate = next((candidate for candidate in rejected if candidate.reasons), None)
+            rejected = sorted(
+                candidates,
+                key=lambda candidate: (
+                    candidate.objective,
+                    _string(candidate.profile.get("method_id")),
+                ),
+            )
+            # An abstention should identify the cheapest experiment that could
+            # actually answer this claim.  A globally cheaper profile for a
+            # different claim type is not a legal escalation candidate.
+            claim_compatible = [
+                candidate
+                for candidate in rejected
+                if "claim_type_not_supported" not in candidate.reasons
+            ]
+            next_candidate = next(
+                (candidate for candidate in claim_compatible if candidate.reasons),
+                None,
+            )
             if next_candidate is not None:
                 next_experiment = (
                     f"qualify_or_supply:{next_candidate.profile.get('method_id')}:"
