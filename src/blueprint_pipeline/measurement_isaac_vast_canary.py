@@ -416,8 +416,17 @@ def run_measurement_isaac_vast_canary(
                     if float(clock()) - started_at >= hard_ttl:
                         break
                     sleeper(min(10.0, max(0.0, hard_ttl - (float(clock()) - started_at))))
+                except Exception as exc:  # noqa: BLE001 - preserve teardown evidence
+                    blockers.append(
+                        f"measurement_isaac_output_fetch_failed:{type(exc).__name__}"
+                    )
+                    break
             if raw_result is None:
-                blockers.append("measurement_isaac_output_timeout")
+                if not any(
+                    blocker.startswith("measurement_isaac_output_fetch_failed:")
+                    for blocker in blockers
+                ):
+                    blockers.append("measurement_isaac_output_timeout")
             else:
                 write_json(root / "provider_runtime_result.json", raw_result)
                 try:

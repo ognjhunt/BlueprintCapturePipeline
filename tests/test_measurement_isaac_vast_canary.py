@@ -205,6 +205,39 @@ def test_canary_tears_down_and_persists_no_signed_urls(tmp_path: Path, monkeypat
     assert not list((tmp_path / "leases").glob("*.lease.json"))
 
 
+def test_canary_records_fetch_failure_and_still_tears_down(tmp_path: Path) -> None:
+    provider = _Provider()
+    times = iter([1000.0, 1001.0, 1002.0])
+
+    def failed_fetch(_url: str):
+        raise RuntimeError("provider response intentionally omitted")
+
+    result = run_measurement_isaac_vast_canary(
+        bound_request=_bound_request(),
+        bundle_receipt=_receipt(),
+        preflight=_preflight(),
+        job_dir=tmp_path,
+        input_bundle_get_url=INPUT_URL,
+        output_put_url=PUT_URL,
+        output_get_url=GET_URL,
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=failed_fetch,
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda *_args: True,
+    )
+
+    assert result["status"] == "failed"
+    assert result["blockers"] == [
+        "measurement_isaac_output_fetch_failed:RuntimeError",
+    ]
+    assert result["provider_zero_verified"] is True
+    assert provider.launched is False
+    assert (tmp_path / "measurement_isaac_vast_execution.json").is_file()
+    assert (tmp_path / "teardown_receipt.json").is_file()
+
+
 def test_canary_refuses_nonzero_provider_and_missing_grant(tmp_path: Path) -> None:
     provider = _Provider(initially_live=True)
     with pytest.raises(Exception, match="provider_not_zero_before_launch"):
