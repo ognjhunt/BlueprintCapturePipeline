@@ -86,6 +86,64 @@ This command is the reusable future-run path. It executes the configured
 analyzer, creates the proposal-set provenance itself, binds proposals to 3D,
 and emits either one qualified bounded-sim target or a structured abstention.
 
+### Private local TorchVision backend
+
+`torchvision_rendered_scene_analyzer` is the first in-repo semantic backend for
+this seam. It runs Faster R-CNN ResNet-50 FPN v2 over every rendered RGB view,
+maps taskable COCO objects to the default Franka Panda task catalog (or the G1
+catalog when the request explicitly selects a humanoid), and emits the strongest
+detection for each visible taskable object. It does not upload scene images,
+download a checkpoint during analysis, bind its own 3D target, or authorize a
+task.
+
+The official checkpoint is operator-provisioned outside the request and must
+match this pinned SHA-256 before inference:
+
+```text
+dd69338a24b8d7381807e247652bdc356325bcbaf1cd3e092e00e0a1a58706bf
+```
+
+Inspect the portable analyzer identity and contract digest with:
+
+```bash
+python -m blueprint_pipeline.torchvision_rendered_scene_analyzer --print-contract
+```
+
+Configure the generic command adapter with an absolute local checkpoint path:
+
+```json
+{
+  "analyzer_id": "blueprint_local_torchvision_coco_detector",
+  "implementation_version": "1",
+  "analyzer_contract_digest": "<digest printed by --print-contract>",
+  "command_execution_authorized": true,
+  "candidate_may_self_authorize": false,
+  "command": [
+    "python",
+    "-m",
+    "blueprint_pipeline.torchvision_rendered_scene_analyzer",
+    "--weights",
+    "/absolute/path/fasterrcnn_resnet50_fpn_v2_coco-dd69338a.pth"
+  ]
+}
+```
+
+Without a task-context filter, the backend proposes taskable visible objects and
+the deterministic target gate ranks only successfully bound, qualified
+candidates. A request may narrow the proposal vocabulary with
+`task_context.allowed_object_labels` (for example, `["sink"]`) without changing
+model confidence or bypassing qualification. Missing or altered weights,
+replayed RGB, unsupported robots, inference failure, and no taskable detections
+all produce structured `torchvision_analyzer_*` abstentions.
+
+The subsequent Franka placement solver first searches the nominal standoff
+annulus. When that pose is collision-probe clear but analytically outside the
+arm envelope, it may search the smaller profile-defined gap for a clear analytic
+reach-rescue candidate. Such a pose is marked
+`collision_clear_analytic_reach_rescue_candidate`; a below-nominal standoff is
+preserved as `placement_below_nominal_standoff_range`. This improves runtime
+placement without upgrading metric reach, contact, safety, or physical claims.
+
 ## Required commands after a runtime
 
 Build robot visibility evidence from isolated robot-only RGB/depth artifacts:

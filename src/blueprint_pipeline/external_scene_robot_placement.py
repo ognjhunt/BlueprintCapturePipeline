@@ -154,11 +154,44 @@ def propose_external_scene_robot_placement(
         n_azimuths=144,
         robot_profile=profile,
     )
-    hits = probe(stance.position, stance.yaw)
-    shoulder = np.asarray(stance.position) + [0.0, 0.0, profile.shoulder_above_root_m]
-    shoulder_distance = float(np.linalg.norm(target - shoulder))
     reach_limit = float(profile.max_shoulder_to_affordance_m())
-    analytic_reach_candidate = bool(shoulder_distance <= reach_limit)
+
+    def shoulder_distance(candidate) -> float:
+        shoulder = np.asarray(candidate.position) + [
+            0.0,
+            0.0,
+            profile.shoulder_above_root_m,
+        ]
+        return float(np.linalg.norm(target - shoulder))
+
+    placement_selection_strategy = "nearest_nominal_standoff_collision_clear_candidate"
+    initial_shoulder_distance = shoulder_distance(stance)
+    # A collision-clear pose at the nominal standoff can still put a high or deep
+    # target just outside the arm envelope. Search the narrow gap down to the
+    # profile's own base standoff, while retaining the footprint-clearance probe.
+    # This is an analytic rescue candidate only; it cannot qualify metric reach.
+    if stance.clear and initial_shoulder_distance > reach_limit:
+        rescue_minimum_standoff = max(
+            float(profile.standing_distance_m),
+            float(profile.probe_clearance_m),
+        )
+        rescue = ring_scan_stand_pose(
+            target_object,
+            probe=probe,
+            floor_z=floor_z,
+            standing_distance=rescue_minimum_standoff,
+            max_standing_distance=profile.standoff_range_m[0],
+            radial_step=profile.probe_step_m,
+            n_azimuths=144,
+            robot_profile=profile,
+        )
+        if rescue.clear and shoulder_distance(rescue) <= reach_limit:
+            stance = rescue
+            placement_selection_strategy = "collision_clear_analytic_reach_rescue_candidate"
+
+    hits = probe(stance.position, stance.yaw)
+    shoulder_distance_value = shoulder_distance(stance)
+    analytic_reach_candidate = bool(shoulder_distance_value <= reach_limit)
     placement = {
         "schema_version": RESULT_SCHEMA,
         "status": "runtime_visualization_candidate_only" if stance.clear else "abstained",
@@ -178,7 +211,8 @@ def propose_external_scene_robot_placement(
         "mesh_vertex_overlap_probe_hits": hits,
         "mesh_vertex_overlap_probe_clear": bool(stance.clear and hits == 0),
         "standoff_stage_units": round(float(stance.standoff_m), 9),
-        "analytic_shoulder_to_target_distance_stage_units": round(shoulder_distance, 9),
+        "placement_selection_strategy": placement_selection_strategy,
+        "analytic_shoulder_to_target_distance_stage_units": round(shoulder_distance_value, 9),
         "analytic_profile_reach_limit_stage_units": round(reach_limit, 9),
         "analytic_reach_candidate": analytic_reach_candidate,
         "metric_scale_status": admitted["metric_scale_status"],
@@ -202,6 +236,11 @@ def propose_external_scene_robot_placement(
                 []
                 if admitted["collision_status"] == "qualified"
                 else ["live_collision_contact_and_full_footprint_not_qualified"]
+            ),
+            *(
+                ["placement_below_nominal_standoff_range"]
+                if stance.standoff_m < profile.standoff_range_m[0]
+                else []
             ),
             "access_reset_and_human_clearance_not_qualified",
         ],
