@@ -560,7 +560,7 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
                 "runtime_environment_paths": runtime_environment,
             }
         )
-        simulation_app = SimulationApp({"headless": True})
+        simulation_app = SimulationApp({"headless": True, "fast_shutdown": False})
         try:
             runtime_identity = _observe_isaac_runtime_identity(simulation_app)
         except Exception as exc:  # noqa: BLE001
@@ -631,6 +631,7 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
             "enhanced_determinism": True,
             "renderer_used": False,
             "rtx_sensor_used": False,
+            "fast_shutdown": False,
             "contact_source": "physx_contact_report",
             "penetration_source": "rest_height_minus_minimum_live_center_height",
             "timestep_s": point["timestep_s"],
