@@ -176,6 +176,27 @@ def test_live_gate_not_run_keeps_pilot_partial(tmp_path: Path) -> None:
     }
 
 
+def test_detached_head_uses_origin_main_for_divergence(tmp_path: Path) -> None:
+    repo, commit = _git_repo(tmp_path)
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", commit], cwd=repo, check=True)
+    subprocess.run(["git", "switch", "--detach", commit], cwd=repo, check=True)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    artifact = artifact_root / "runtime.json"
+    artifact.write_text("{}", encoding="utf-8")
+    request = _request(commit=commit, artifact=artifact, artifact_root=artifact_root)
+
+    reports = compile_external_scene_pilot_evidence(
+        request, artifact_root=artifact_root, repo_root=repo
+    )
+
+    assert reports["git_state"]["branch"] is None
+    assert reports["git_state"]["upstream"] is None
+    assert reports["git_state"]["comparison_ref"] == "origin/main"
+    assert reports["git_state"]["ahead"] == 0
+    assert reports["git_state"]["behind"] == 0
+
+
 def test_cpu_and_task_evaluation_abstentions_are_completion_safe(tmp_path: Path) -> None:
     repo, commit = _git_repo(tmp_path)
     artifact_root = tmp_path / "artifacts"
