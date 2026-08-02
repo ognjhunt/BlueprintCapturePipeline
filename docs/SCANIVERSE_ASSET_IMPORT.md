@@ -213,6 +213,31 @@ then verify:
 - Task Evaluation Run and optional evidence-export readouts label Scaniverse assets separately from raw Blueprint
   capture evidence
 
+### Finalizing a multi-asset pilot
+
+Use the evidence finalizer after each lane has produced its import, Isaac,
+policy-trace, Task Evaluation Run, and teardown artifacts:
+
+```bash
+python -m blueprint_pipeline.external_scene_pilot_evidence \
+  --request /path/to/external_scene_pilot_finalization_request.v1.json \
+  --artifact-root /path/to/BlueprintCapturePipeline \
+  --repo-root /path/to/BlueprintCapturePipeline \
+  --output-root /path/to/pilot-finalization
+```
+
+The request lists every gate with a status, deterministic blocker codes, and
+one or more relative evidence paths plus their SHA-256 digests. The compiler
+re-hashes every referenced regular file, refuses missing mandatory gates, and
+rejects any `supported` claim whose declared gate set is not fully passed. It
+emits a master run manifest, provider-neutral comparison, claim ledger,
+terminal summary, reproduction record, and exact Git-state report.
+
+A CPU qualification or formal Task Evaluation Run may complete with an
+explicit abstention. Live stage load, nonblank rendering, collision/contact,
+robot/camera evidence, two distinct candidate traces, digest linkage, and
+remote provider-zero evidence may not be replaced by narrative claims.
+
 ## API And Plan Assumptions
 
 Current public docs support manual Scaniverse Web upload/processing/download for
