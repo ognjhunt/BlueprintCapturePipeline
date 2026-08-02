@@ -14,6 +14,9 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,6 +44,10 @@ _IMPORT_PROBES = (
     ("torch_then_genesis", "import torch\nimport genesis"),
 )
 _IMPORT_UNAVAILABLE_EXIT_CODE = 86
+_NATIVE_DIAGNOSTIC_ENV = "BLUEPRINT_DLO_NATIVE_DIAGNOSTIC"
+_NATIVE_DIAGNOSTIC_CASE_SUFFIX = "001"
+_NATIVE_DIAGNOSTIC_MAX_SECONDS = 45
+_NATIVE_DIAGNOSTIC_MAX_FRAMES = 32
 
 
 def implementation_digest() -> str:
@@ -427,6 +434,113 @@ def _probe_script(import_statements: str) -> str:
     )
 
 
+def _sanitize_native_backtrace(payload: bytes) -> list[dict[str, Any]]:
+    """Reduce debugger output to bounded symbols and library basenames.
+
+    Raw debugger output can contain host paths and is therefore never returned.
+    """
+
+    frames: list[dict[str, Any]] = []
+    for raw_line in payload.decode("utf-8", errors="replace").splitlines():
+        match = re.match(r"^#(?P<index>\d+)\s+(?P<body>.+)$", raw_line.strip())
+        if match is None:
+            continue
+        body = match.group("body")
+        address = re.match(r"^0x[0-9a-fA-F]+\s+in\s+", body)
+        if address is not None:
+            body = body[address.end() :]
+        module = None
+        if " from " in body:
+            body, raw_module = body.rsplit(" from ", 1)
+            module = Path(raw_module.strip()).name[:160] or None
+        if " at " in body:
+            body = body.split(" at ", 1)[0]
+        symbol = body.split("(", 1)[0].strip()
+        symbol = re.sub(r"[^A-Za-z0-9_:+~.<>=,*/& -]", "_", symbol)[:200]
+        frame = {
+            "index": int(match.group("index")),
+            "symbol": symbol or "unknown",
+            "module": module,
+        }
+        frames.append(frame)
+        if len(frames) >= _NATIVE_DIAGNOSTIC_MAX_FRAMES:
+            break
+    return frames
+
+
+def _native_debugger_observation(
+    *, import_statements: str, timeout_seconds: float
+) -> dict[str, Any]:
+    gdb = shutil.which("gdb")
+    if gdb is None:
+        return {
+            "status": "tool_unavailable",
+            "tool": "gdb",
+            "raw_output_content_persisted": False,
+        }
+    bounded_timeout = max(0.001, min(timeout_seconds, _NATIVE_DIAGNOSTIC_MAX_SECONDS))
+    command = [
+        gdb,
+        "--batch",
+        "--nx",
+        "--nh",
+        "-ex",
+        "set pagination off",
+        "-ex",
+        "set print frame-arguments none",
+        "-ex",
+        "catch throw",
+        "-ex",
+        "run",
+        "-ex",
+        "bt 32",
+        "--args",
+        sys.executable,
+        "-c",
+        _probe_script(import_statements),
+    ]
+    diagnostic_env = dict(os.environ)
+    for name in (
+        "BLUEPRINT_MEASUREMENT_DLO_INPUT_GET_URL",
+        "BLUEPRINT_MEASUREMENT_DLO_OUTPUT_GET_URL",
+        "BLUEPRINT_MEASUREMENT_DLO_OUTPUT_PUT_URL",
+    ):
+        diagnostic_env.pop(name, None)
+    try:
+        completed = subprocess.run(  # nosec B603 - fixed debugger and probe argv
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=bounded_timeout,
+            check=False,
+            env=diagnostic_env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        payload = bytes(exc.stdout or b"") + bytes(exc.stderr or b"")
+        return {
+            "status": "timed_out",
+            "tool": "gdb",
+            "timeout_seconds": bounded_timeout,
+            "raw_output_digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "raw_output_bytes": len(payload),
+            "raw_output_content_persisted": False,
+            "frames": _sanitize_native_backtrace(payload),
+        }
+    payload = completed.stdout + completed.stderr
+    frames = _sanitize_native_backtrace(payload)
+    return {
+        "status": "captured" if frames else "no_frames",
+        "tool": "gdb",
+        "return_code": int(completed.returncode),
+        "timeout_seconds": bounded_timeout,
+        "raw_output_digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+        "raw_output_bytes": len(payload),
+        "raw_output_content_persisted": False,
+        "frames": frames,
+    }
+
+
 def _supervised_failure_result(
     request: Mapping[str, Any],
     *,
@@ -435,6 +549,7 @@ def _supervised_failure_result(
     timed_out: bool,
     phase: str,
     failure_codes: Sequence[str],
+    native_diagnostic: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     observations = {
         "engine_version": "unavailable",
@@ -458,6 +573,8 @@ def _supervised_failure_result(
         "supervised_worker_stderr_bytes": len(stderr),
         "supervised_worker_stderr_content_persisted": False,
     }
+    if native_diagnostic is not None:
+        observations["supervised_worker_native_diagnostic"] = dict(native_diagnostic)
     return build_measurement_adapter_worker_result(
         request,
         status="blocked",
@@ -514,6 +631,18 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             else:
                 failure_codes = _classified_native_failure(probe.stderr, probe_exit_code)
                 failure_codes.append(f"dlo_lab_adapter_native_import_probe_failed:{probe_id}")
+            native_diagnostic = None
+            execution_id = str(request.get("execution_id") or "")
+            if (
+                probe_id == "quadrants"
+                and probe_exit_code < 0
+                and os.environ.get(_NATIVE_DIAGNOSTIC_ENV) == "1"
+                and execution_id.endswith(_NATIVE_DIAGNOSTIC_CASE_SUFFIX)
+            ):
+                native_diagnostic = _native_debugger_observation(
+                    import_statements=import_statements,
+                    timeout_seconds=max(0.001, deadline - time.monotonic()),
+                )
             return _supervised_failure_result(
                 request,
                 stderr=probe.stderr,
@@ -521,6 +650,7 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
                 timed_out=False,
                 phase=phase,
                 failure_codes=failure_codes,
+                native_diagnostic=native_diagnostic,
             )
         try:
             completed = subprocess.run(  # nosec B603 - fixed module and argv

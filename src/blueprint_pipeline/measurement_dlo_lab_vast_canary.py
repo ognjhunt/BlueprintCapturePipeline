@@ -217,7 +217,7 @@ for row in manifest.get("source_files", []):
 PY
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends git ca-certificates libgl1 libglib2.0-0
+apt-get install -y --no-install-recommends git ca-certificates gdb libgl1 libglib2.0-0
 rm -rf /var/lib/apt/lists/*
 git clone --filter=blob:none --no-checkout \
   https://github.com/UMass-Embodied-AGI/DLO-Lab.git "$dlo"
@@ -252,6 +252,7 @@ if observed != expected:
     raise SystemExit("measurement_dlo_lab_runtime_identity_mismatch")
 PY
 export PYTHONPATH="$bundle/src"
+export BLUEPRINT_DLO_NATIVE_DIAGNOSTIC=1
 set +e
 "$dlo_python" "$bundle/scripts/run_measurement_dlo_lab_bundle.py" \
   --bundle-root "$bundle" --output "$result"
