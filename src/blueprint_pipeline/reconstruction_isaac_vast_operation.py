@@ -291,6 +291,7 @@ def _independent_qualification(
             (
                 qualified.get("provider_isaac_verification_result_digest")
                 or qualified.get("isaac_verification_result_digest")
+                or qualified.get("verification_result_digest")
             )
             if qualified
             else None

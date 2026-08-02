@@ -6,11 +6,15 @@ from pathlib import Path
 
 import jsonschema
 import pytest
+from PIL import Image
+
+from blueprint_pipeline import external_scene_isaac_verification as verification
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.external_scene_isaac_verification import (
     ExternalSceneIsaacVerificationError,
     build_external_scene_isaac_verification_request,
+    normalize_external_scene_isaac_verification,
 )
 from blueprint_pipeline.reconstruction_isaac_worker_bundle import (
     compile_isaac_verification_worker_bundle,
@@ -222,3 +226,116 @@ def test_external_scene_request_rejects_missing_video_as_blocker_or_fabricated_s
         "external_scene_isaac_request_boundary_invalid:source_video_required_for_candidate_execution"
         in exc.value.codes
     )
+
+
+def test_policy_only_abstention_preserves_static_scene_qualification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_root = tmp_path / "package"
+    runtime_root = tmp_path / "runtime"
+    package_root.mkdir()
+    (runtime_root / "frames").mkdir(parents=True)
+    package = package_root / "scene.usdz"
+    package.write_bytes(b"exact external scene package")
+    frame = runtime_root / "frames/task_focus.png"
+    image = Image.new("RGB", (8, 8))
+    image.putdata(
+        [(index * 3 % 255, index * 7 % 255, index * 13 % 255) for index in range(64)]
+    )
+    image.save(frame)
+    width, height, mean, std = verification._render_measurements(frame)
+    request = {
+        "isaac_verification_request_digest": DIGEST,
+        "package_digest": _sha(package),
+        "package_result_digest": DIGEST,
+        "package_artifact_reference": "scene.usdz",
+        "fixed_camera_spec_digest": DIGEST,
+        "runtime_container_image_digest": IMAGE,
+        "runtime_implementation_digest": DIGEST,
+        "expected_prim_paths": {
+            "appearance": "/World/BlueprintReconstruction/Appearance",
+            "collision": "/World/BlueprintReconstruction/Collision",
+        },
+        "physics_probe_request": {
+            "steps": 240,
+            "test_body": {"shape": "cube"},
+            "gravity_m_s2": -9.81,
+            "physics_dt_seconds": 1.0 / 60.0,
+        },
+        "robot_id": "franka_panda",
+        "fixed_camera_ids": ["task_focus"],
+        "remote_processing_authorization_digest": DIGEST,
+        "target_analysis_digest": DIGEST,
+        "target_binding_digest": DIGEST,
+        "placement_proposal_digest": DIGEST,
+    }
+    runtime = {
+        "status": "blocked",
+        "blockers": ["isaac_articulated_policy_trace_pair_incomplete"],
+        "isaac_verification_request_digest": DIGEST,
+        "package_digest": request["package_digest"],
+        "fixed_camera_spec_digest": DIGEST,
+        "runtime_container_image_digest": IMAGE,
+        "runtime_implementation_digest": DIGEST,
+        "isaac_runtime_result_digest": DIGEST,
+        "stage": {
+            "meters_per_unit": 1.0,
+            "up_axis": "Z",
+            "transforms_valid": True,
+            "dependency_inspection_available": True,
+            "missing_asset_count": 0,
+            "obvious_scale_mismatch_detected": False,
+            "particlefield_prim_count": 1,
+            "active_collision_prim_count": 1,
+            "expected_prim_paths": request["expected_prim_paths"],
+        },
+        "physics_probe": {
+            "ground_contact_surface_present": True,
+            "live_rigid_body_pose_observed": True,
+            "test_body_fell_through_floor": False,
+            "contact_event_count": 2,
+            "steps_executed": 240,
+            "probe_configuration": {
+                "test_body": {"shape": "cube"},
+                "gravity_m_s2": -9.81,
+                "physics_dt_seconds": 1.0 / 60.0,
+            },
+        },
+        "robot": {
+            "robot_id": "franka_panda",
+            "composited": True,
+            "geometry_streamed": True,
+            "resolved_usd": (
+                "https://assets.example/Isaac/Robots/FrankaRobotics/"
+                "FrankaPanda/franka.usd"
+            ),
+        },
+        "cameras": [
+            {
+                "id": "task_focus",
+                "artifact_reference": "frames/task_focus.png",
+                "digest": _sha(frame),
+                "width": width,
+                "height": height,
+                "pixel_mean": mean,
+                "pixel_std": std,
+            }
+        ],
+        "articulated_policy_trace_pair": {"status": "blocked"},
+    }
+    monkeypatch.setattr(
+        verification, "build_external_scene_isaac_verification_request", lambda _value: request
+    )
+    monkeypatch.setattr(verification, "build_isaac_runtime_result_v3", lambda _value: runtime)
+
+    result = normalize_external_scene_isaac_verification(
+        verification_request=request,
+        runtime_result=runtime,
+        package_artifact_root=package_root,
+        runtime_artifact_root=runtime_root,
+    )
+
+    assert result["status"] == "verified_derived_scene_compatibility_only"
+    assert result["policy_lane_abstained_without_invalidating_static_evidence"] is True
+    assert result["articulated_policy_trace_pair_qualified"] is False
+    assert result["checks"]["live_contact_observed"] is True

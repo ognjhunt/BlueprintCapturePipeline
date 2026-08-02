@@ -231,11 +231,22 @@ def test_policy_trace_keeps_isaac6_physics_handle_live_between_candidates() -> N
     )[0]
     candidate_loop = body.split('for candidate in request["candidates"]:', 1)[1]
 
-    assert "context.play()" in body.split(
-        'for candidate in request["candidates"]:', 1
-    )[0]
+    assert "context.play()" in candidate_loop
+    assert "articulation, indices = _bind_live_articulation()" in candidate_loop
     assert "context.stop()" not in candidate_loop.split("finally:", 1)[0]
+    assert 'failure_phase = "candidate_articulation_rebind"' in candidate_loop
     assert 'failure_phase = "observe_reset_state"' in candidate_loop
+
+
+def test_robot_only_pass_hides_appearance_and_environment_collision() -> None:
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+    robot_only = source.split("# Optional probe/composite pass", 1)[1].split(
+        "policy_trace_result =", 1
+    )[0]
+
+    assert "environment_prims = list(pf)" in robot_only
+    assert 'stage_evidence.get("collision_prims", [])' in robot_only
+    assert "imageable.MakeInvisible()" in robot_only
 
 
 def test_qualification_blockers_accept_only_complete_v3_evidence() -> None:

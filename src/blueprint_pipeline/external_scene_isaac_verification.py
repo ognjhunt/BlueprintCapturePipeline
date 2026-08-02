@@ -282,7 +282,14 @@ def normalize_external_scene_isaac_verification(
             [f"external_scene_isaac_runtime_invalid:{code}" for code in exc.codes]
         ) from exc
     blockers: list[str] = []
-    if runtime.get("status") != "completed":
+    runtime_blockers = sorted(
+        str(code) for code in (runtime.get("blockers") or []) if str(code)
+    )
+    policy_only_abstention = bool(
+        runtime.get("status") == "blocked"
+        and runtime_blockers == ["isaac_articulated_policy_trace_pair_incomplete"]
+    )
+    if runtime.get("status") != "completed" and not policy_only_abstention:
         blockers.append("external_scene_isaac_runtime_not_completed")
     for key in (
         "isaac_verification_request_digest",
@@ -418,6 +425,12 @@ def normalize_external_scene_isaac_verification(
         "fixed_camera_render_references": render_refs,
         "physics_probe": dict(physics),
         "articulated_policy_trace_pair": runtime.get("articulated_policy_trace_pair"),
+        "articulated_policy_trace_pair_qualified": bool(
+            runtime.get("status") == "completed"
+            and isinstance(runtime.get("articulated_policy_trace_pair"), Mapping)
+            and runtime["articulated_policy_trace_pair"].get("status") == "completed"
+        ),
+        "policy_lane_abstained_without_invalidating_static_evidence": policy_only_abstention,
         "checks": {
             "exact_package_opened": True,
             "expected_prims_present": True,
@@ -440,7 +453,11 @@ def normalize_external_scene_isaac_verification(
         "physical_success_proven": False,
         "deployment_readiness_proven": False,
         "proof_effect": "external_scene_isaac_load_render_contact_presence_only",
-        "claim_ceiling": "derived_scene_isaac_compatibility_and_trace_observation",
+        "claim_ceiling": (
+            "derived_scene_isaac_compatibility_and_trace_observation"
+            if runtime.get("status") == "completed"
+            else "derived_scene_isaac_load_render_contact_compatibility_only"
+        ),
     }
     result["verification_result_digest"] = canonical_digest(
         result, digest_field="verification_result_digest"

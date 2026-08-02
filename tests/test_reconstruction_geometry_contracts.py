@@ -30,6 +30,7 @@ from blueprint_pipeline.reconstruction_isaac_worker_bundle import (
 )
 from blueprint_pipeline.reconstruction_isaac_output_bundle import (
     IsaacVerificationOutputBundleError,
+    _result_artifact_bindings,
     compile_isaac_verification_output_bundle,
     validate_and_extract_isaac_verification_output_bundle,
 )
@@ -1173,7 +1174,58 @@ def test_external_scene_blocked_runtime_is_an_abstention_not_controller_failure(
 
     assert result["status"] == "abstained"
     assert result["blockers"] == ["external_scene_isaac_runtime_not_completed"]
-    assert result["claim_ceiling"] == "runtime_evidence_only"
+
+
+def test_external_scene_independent_qualification_preserves_verifier_digest(
+    tmp_path: Path,
+) -> None:
+    verifier_digest = "sha256:" + "a" * 64
+
+    result = _independent_qualification(
+        verification_request={
+            "isaac_verification_request_digest": "sha256:" + "b" * 64,
+        },
+        runtime_result={"isaac_runtime_result_digest": "sha256:" + "c" * 64},
+        package_root=tmp_path,
+        runtime_root=tmp_path,
+        normalizer=lambda **_: {
+            "schema_version": "external_scene_isaac_verification_result.v1",
+            "verification_result_digest": verifier_digest,
+        },
+    )
+
+    assert result["status"] == "verified_compatibility_only"
+    assert result["qualified_result_digest"] == verifier_digest
+    assert result["claim_ceiling"] == "isaac_load_render_compatibility"
+
+
+def test_isaac_output_bundle_binds_policy_egocentric_observations() -> None:
+    bindings = _result_artifact_bindings(
+        {
+            "cameras": [],
+            "robot": {"robot_only_pass": []},
+            "articulated_policy_trace_pair": {
+                "candidate_traces": [
+                    {
+                        "policy_id": "franka-inspection-sweep-v1",
+                        "egocentric_observation": {
+                            "artifact_reference": (
+                                "policy_traces/franka-inspection-sweep-v1/egocentric.png"
+                            ),
+                            "digest": D[0],
+                        },
+                    }
+                ]
+            },
+        }
+    )
+
+    assert [(str(path), digest) for path, digest in bindings] == [
+        (
+            "policy_traces/franka-inspection-sweep-v1/egocentric.png",
+            D[0],
+        )
+    ]
 
 
 def test_isaac_vast_lifecycle_stages_before_launch_abstains_and_proves_zero(

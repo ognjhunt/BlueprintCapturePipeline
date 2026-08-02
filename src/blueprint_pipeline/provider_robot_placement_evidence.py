@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -59,16 +59,20 @@ def _artifact(root: Path, reference: Any, suffix: str) -> Path:
     return resolved
 
 
-def build_provider_robot_placement_evidence(
+def _build_signed_isaac_visual_placement_evidence(
     *,
     verification_request: Mapping[str, Any],
     runtime_result: Mapping[str, Any],
     runtime_artifact_root: str | Path,
+    request_builder: Callable[[Mapping[str, Any]], dict[str, Any]],
+    runtime_builder: Callable[..., dict[str, Any]],
+    schema_version: str,
+    digest_field: str,
 ) -> dict[str, Any]:
     """Rehash robot RGB/depth evidence and qualify only visual placement."""
 
-    request = build_provider_nurec_isaac_request(verification_request)
-    runtime = build_provider_nurec_isaac_runtime_result(
+    request = request_builder(verification_request)
+    runtime = runtime_builder(
         runtime_result,
         verification_request=request,
     )
@@ -81,7 +85,14 @@ def build_provider_robot_placement_evidence(
     robot = runtime.get("robot")
     robot = dict(robot) if isinstance(robot, Mapping) else {}
     blockers: list[str] = []
-    if runtime.get("status") != "completed":
+    runtime_blockers = sorted(
+        str(code) for code in (runtime.get("blockers") or []) if str(code)
+    )
+    policy_only_abstention = bool(
+        runtime.get("status") == "blocked"
+        and runtime_blockers == ["isaac_articulated_policy_trace_pair_incomplete"]
+    )
+    if runtime.get("status") != "completed" and not policy_only_abstention:
         blockers.append("provider_robot_placement_runtime_not_completed")
     if (
         robot.get("requested") is not True
@@ -91,6 +102,12 @@ def build_provider_robot_placement_evidence(
         or int(robot.get("mesh_point_total") or 0) < 100
     ):
         blockers.append("provider_robot_placement_geometry_not_observed")
+    if (
+        robot.get("robot_only_environment_hidden") is not True
+        or not isinstance(robot.get("robot_only_hidden_environment_prim_paths"), list)
+        or not robot.get("robot_only_hidden_environment_prim_paths")
+    ):
+        blockers.append("provider_robot_placement_robot_only_isolation_not_proven")
     pose = robot.get("robot_pose")
     bounds_min = robot.get("world_bound_min")
     bounds_max = robot.get("world_bound_max")
@@ -166,7 +183,7 @@ def build_provider_robot_placement_evidence(
         blockers.append("provider_robot_placement_camera_inventory_mismatch")
 
     evidence = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "status": "verified_visual_placement_only" if not blockers else "blocked",
         "blockers": sorted(set(blockers)),
         "isaac_verification_request_digest": request["isaac_verification_request_digest"],
@@ -182,6 +199,7 @@ def build_provider_robot_placement_evidence(
         "mesh_point_total": robot.get("mesh_point_total"),
         "camera_evidence": rows,
         "visual_robot_placement_observed": not blockers,
+        "policy_lane_abstained_without_invalidating_visual_evidence": policy_only_abstention,
         "collision_free_placement_proven": False,
         "kinematic_reachability_proven": False,
         "navigation_or_task_success_proven": False,
@@ -190,11 +208,28 @@ def build_provider_robot_placement_evidence(
         "claim_ceiling": "isaac_visual_robot_placement",
         "raw_secret_values_recorded": False,
     }
-    evidence["provider_robot_placement_evidence_digest"] = canonical_digest(
+    evidence[digest_field] = canonical_digest(
         evidence,
-        digest_field="provider_robot_placement_evidence_digest",
+        digest_field=digest_field,
     )
     return evidence
+
+
+def build_provider_robot_placement_evidence(
+    *,
+    verification_request: Mapping[str, Any],
+    runtime_result: Mapping[str, Any],
+    runtime_artifact_root: str | Path,
+) -> dict[str, Any]:
+    return _build_signed_isaac_visual_placement_evidence(
+        verification_request=verification_request,
+        runtime_result=runtime_result,
+        runtime_artifact_root=runtime_artifact_root,
+        request_builder=build_provider_nurec_isaac_request,
+        runtime_builder=build_provider_nurec_isaac_runtime_result,
+        schema_version=SCHEMA_VERSION,
+        digest_field="provider_robot_placement_evidence_digest",
+    )
 
 
 __all__ = [

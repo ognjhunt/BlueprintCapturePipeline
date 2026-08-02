@@ -184,6 +184,14 @@ def _method_profiles(
     *, testbed: Mapping[str, Any]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     bindings = testbed["robot_sensor_controller_bindings"]
+    source_bundle = testbed["source_capture_bundles"][0]
+    bundle_id = str(source_bundle["bundle_id"])
+    scene_entrypoint = str(
+        testbed["supported_condition_ranges"].get("scene_entrypoint")
+        or "scene.usdz"
+    )
+    task_id = str(testbed["task_distribution"]["tasks"][0])
+    task_family = str(testbed["task_distribution"]["task_family"])
 
     def replay_leaf(method_id: str, required_evidence: str) -> dict[str, Any]:
         return {
@@ -193,9 +201,9 @@ def _method_profiles(
             "scene_bundle": {
                 "adapter_id": "openusd_scene_bundle",
                 "adapter_version": "1",
-                "bundle_id": "ethel-provider-nurec-package",
-                "uri": "artifact://ethel-provider-nurec-package",
-                "entrypoint": "ethel_sim.usdz",
+                "bundle_id": bundle_id,
+                "uri": f"artifact://{bundle_id}",
+                "entrypoint": scene_entrypoint,
                 "content_digest": testbed["source_capture_bundles"][0]["digest"],
             },
             "robot_adapter": {
@@ -207,12 +215,12 @@ def _method_profiles(
             "task_scenario_pack": {
                 "adapter_id": "manifest_task_scenario_pack",
                 "adapter_version": "1",
-                "pack_id": "ethel-ground-probe-inspection",
-                "tasks": [{"task_id": testbed["task_distribution"]["tasks"][0]}],
+                "pack_id": f"{task_id}-exact-scene-pack",
+                "tasks": [{"task_id": task_id}],
                 "scenarios": [
                     {
                         "scenario_id": "exact-signed-run-replay",
-                        "task_id": testbed["task_distribution"]["tasks"][0],
+                        "task_id": task_id,
                     }
                 ],
             },
@@ -281,7 +289,7 @@ def _method_profiles(
         "applicability_envelope": {
             "testbed_ids": [testbed["testbed_id"]],
             "testbed_versions": [testbed["version"]],
-            "task_families": [TASK_FAMILY],
+            "task_families": [task_family],
         },
         "calibration_evidence_references": [],
         "constraints": {"external_processing": False, "data_retention_days": 0},
@@ -305,7 +313,7 @@ def _method_profiles(
             "authority_tier": 1,
             "proof_tier": "isaac_visual_placement_only",
             "correlation_group": "exact-isaac-runtime",
-            "shared_dependencies": ["exact-provider-package", "exact-isaac-runtime"],
+            "shared_dependencies": ["exact-scene-package", "exact-isaac-runtime"],
             "expected_cost_usd": 0.0,
             "provider_availability": {"status": "available"},
             "evaluation_run_template": replay_leaf(
@@ -325,7 +333,7 @@ def _method_profiles(
             "authority_tier": 2,
             "proof_tier": "isaac_single_point_contact_only",
             "correlation_group": "exact-isaac-runtime",
-            "shared_dependencies": ["exact-provider-package", "exact-isaac-runtime"],
+            "shared_dependencies": ["exact-scene-package", "exact-isaac-runtime"],
             "expected_cost_usd": 0.0,
             "provider_availability": {"status": "available"},
             "evaluation_run_template": replay_leaf(
@@ -345,7 +353,7 @@ def _method_profiles(
             "authority_tier": 2,
             "proof_tier": "isaac_articulated_trace_pair_only",
             "correlation_group": "exact-isaac-runtime",
-            "shared_dependencies": ["exact-provider-package", "exact-isaac-runtime"],
+            "shared_dependencies": ["exact-scene-package", "exact-isaac-runtime"],
             "expected_cost_usd": 0.0,
             "provider_availability": {"status": "available"},
             "evaluation_run_template": trace_replay_leaf(),
@@ -385,7 +393,7 @@ def _method_profiles(
             "authority_tier": 3,
             "proof_tier": "sim_only_candidate",
             "correlation_group": "isaac-articulated-runtime",
-            "shared_dependencies": ["exact-provider-package", "formal-placement"],
+            "shared_dependencies": ["exact-scene-package", "formal-placement"],
             "expected_cost_usd": 0.15,
             "provider_availability": {"status": "available"},
         },
@@ -404,7 +412,7 @@ def _method_profiles(
             "authority_tier": 3,
             "proof_tier": "learned_sim_candidate",
             "correlation_group": "learned-site-model",
-            "shared_dependencies": ["exact-provider-package"],
+            "shared_dependencies": ["exact-scene-package"],
             "expected_cost_usd": 0.3,
             "provider_availability": {"status": "unavailable"},
         },
@@ -430,7 +438,7 @@ def _method_profiles(
         for definition in definitions
     ]
     scope = {
-        "task_family": TASK_FAMILY,
+        "task_family": task_family,
         "site_domain_conditions": testbed["supported_condition_ranges"],
         "embodiment": bindings["embodiment"],
         "sensors": bindings["sensors"],
@@ -454,6 +462,11 @@ def _method_profiles(
             if row["evidence_id"] == "signed_isaac_articulated_policy_trace_pair"
         ),
         None,
+    )
+    visual_digest = str(
+        visual_evidence.get("visual_placement_evidence_digest")
+        or visual_evidence.get("provider_robot_placement_evidence_digest")
+        or ""
     )
 
     def qualification(
@@ -505,29 +518,35 @@ def _method_profiles(
             }
         ).to_mapping()
 
-    qualifications = [
-        qualification(
-            profile=visual,
-            qualification_id="qualification-ethel-exact-visual-placement-v1",
-            claim_type="perception_visibility",
-            evaluator_id="blueprint-independent-depth-rehasher",
-            evaluator_digest=visual_evidence["provider_robot_placement_evidence_digest"],
-            owner_digest=visual_evidence["provider_robot_placement_evidence_digest"],
-        ),
+    qualifications = []
+    if visual_evidence.get("independently_rehashed") is True and visual_digest.startswith(
+        "sha256:"
+    ):
+        qualifications.append(
+            qualification(
+                profile=visual,
+                qualification_id="qualification-exact-visual-placement-v1",
+                claim_type="perception_visibility",
+                evaluator_id="blueprint-independent-depth-rehasher",
+                evaluator_digest=visual_digest,
+                owner_digest=visual_digest,
+            )
+        )
+    qualifications.append(
         qualification(
             profile=contact,
-            qualification_id="qualification-ethel-exact-point-contact-v1",
+            qualification_id="qualification-exact-point-contact-v1",
             claim_type="collision_contact",
             evaluator_id="blueprint-independent-isaac-qualifier",
             evaluator_digest=contact_evidence["independent_qualification_digest"],
             owner_digest=contact_evidence["independent_qualification_digest"],
-        ),
-    ]
+        )
+    )
     if trace_pair_evidence is not None:
         qualifications.append(
             qualification(
                 profile=trace_pair_profile,
-                qualification_id="qualification-ethel-exact-policy-trace-pair-v1",
+                qualification_id="qualification-exact-policy-trace-pair-v1",
                 claim_type="simulated_policy_trace_distinguishability",
                 evaluator_id="blueprint-independent-trace-pair-validator",
                 evaluator_digest=trace_pair_evidence["articulated_policy_trace_pair_digest"],

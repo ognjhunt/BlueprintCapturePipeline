@@ -729,14 +729,16 @@ def _run_articulated_policy_traces(
         )
         context.initialize_physics()
         context.get_physics_context().set_gravity(-9.81)
-        articulation = _single_articulation(request["robot_prim_path"])
-        articulation.initialize()
-        available_names = _articulation_joint_names(articulation)
-        indices = []
-        for name in request["joint_names"]:
-            if name not in available_names:
-                raise RuntimeError(f"franka_policy_trace_joint_missing:{name}")
-            indices.append(available_names.index(name))
+        def _bind_live_articulation():
+            articulation = _single_articulation(request["robot_prim_path"])
+            articulation.initialize()
+            available_names = _articulation_joint_names(articulation)
+            indices = []
+            for name in request["joint_names"]:
+                if name not in available_names:
+                    raise RuntimeError(f"franka_policy_trace_joint_missing:{name}")
+                indices.append(available_names.index(name))
+            return articulation, indices
         robot_prim = stage.GetPrimAtPath(Sdf.Path(request["robot_prim_path"]))
         camera_prim, hand_prim = _author_egocentric_camera(
             stage,
@@ -750,12 +752,12 @@ def _run_articulated_policy_traces(
         zeros = np.zeros_like(start)
         target_api_modes = set()
         # ``SimulationContext.stop()`` invalidates SingleArticulation's physics
-        # view in Isaac Sim 6. Reset candidate state through the live physics
-        # handle and stop only once during final cleanup.
-        context.play()
+        # view in Isaac Sim 6. Replicator capture can also cycle the Kit timeline
+        # after a candidate observation. Re-play and rebind the articulation at
+        # every candidate boundary; stop only once during final cleanup.
         for candidate in request["candidates"]:
             policy_id = candidate["policy_id"]
-            failure_phase = "candidate_reset"
+            failure_phase = "candidate_articulation_rebind"
             trace = {
                 "schema_version": "franka_articulated_policy_trace.v1",
                 "policy_id": policy_id,
@@ -765,6 +767,9 @@ def _run_articulated_policy_traces(
                 "samples": [],
             }
             try:
+                context.play()
+                articulation, indices = _bind_live_articulation()
+                failure_phase = "candidate_reset"
                 articulation.set_joint_positions(start, joint_indices=indices)
                 articulation.set_joint_velocities(zeros, joint_indices=indices)
                 target_api_modes.add(
@@ -1820,8 +1825,25 @@ def _render(args) -> int:
         if render_options.get("robot_only_pass") and robot_report.get("composited"):
             ro_dir = out_dir / "frames_robot_only"
             ro_dir.mkdir(parents=True, exist_ok=True)
-            pf_imageables = [UsdGeom.Imageable(p) for p in pf]
-            for imageable in pf_imageables:
+            environment_prims = list(pf)
+            environment_prims.extend(
+                stage.GetPrimAtPath(Sdf.Path(str(row.get("prim_path") or "")))
+                for row in stage_evidence.get("collision_prims", [])
+                if str(row.get("prim_path") or "")
+            )
+            environment_imageables = []
+            seen_environment_paths = set()
+            for prim in environment_prims:
+                if not prim or not prim.IsValid() or str(prim.GetPath()) in seen_environment_paths:
+                    continue
+                seen_environment_paths.add(str(prim.GetPath()))
+                if prim.IsA(UsdGeom.Imageable):
+                    environment_imageables.append(UsdGeom.Imageable(prim))
+            robot_report["robot_only_environment_hidden"] = True
+            robot_report["robot_only_hidden_environment_prim_paths"] = sorted(
+                seen_environment_paths
+            )
+            for imageable in environment_imageables:
                 imageable.MakeInvisible()
             # The splat is self-emissive; the mesh robot needs the same support
             # lights used by the scene-plus-robot evidence pass.
@@ -1899,7 +1921,7 @@ def _render(args) -> int:
                     render_product.destroy()
                 except Exception:  # noqa: BLE001
                     pass
-            for imageable in pf_imageables:
+            for imageable in environment_imageables:
                 imageable.MakeVisible()
             if lights_prim and lights_prim.IsValid():
                 UsdGeom.Imageable(lights_prim).MakeInvisible()
