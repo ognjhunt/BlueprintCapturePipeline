@@ -173,6 +173,93 @@ def _validate_render_options(path: Path) -> dict[str, Any]:
     for key in ("robot_only_pass",):
         if value.get(key) is not True:
             errors.append(f"isaac_render_options_{key}_must_be_true")
+    support = value.get("fixed_base_support_mount")
+    if support is not None:
+        if not isinstance(support, Mapping):
+            errors.append("isaac_render_options_support_mount_invalid")
+        else:
+            center = support.get("center_xyz_collision_stage")
+            half_extents = support.get("half_extents_xy_stage_units")
+            height = support.get("height_stage_units")
+            top_z = support.get("top_z_collision_stage")
+
+            def finite_mount_vector(vector: Any, length: int) -> bool:
+                return (
+                    isinstance(vector, list)
+                    and len(vector) == length
+                    and all(
+                        not isinstance(item, bool)
+                        and isinstance(item, (int, float))
+                        and math.isfinite(float(item))
+                        for item in vector
+                    )
+                )
+
+            if support.get("schema_version") != "fixed_base_support_mount_candidate.v1":
+                errors.append("isaac_render_options_support_mount_schema_invalid")
+            if support.get("status") != "simulator_support_candidate_only":
+                errors.append("isaac_render_options_support_mount_status_invalid")
+            support_path = support.get("prim_path")
+            if (
+                not isinstance(support_path, str)
+                or not support_path.startswith("/")
+                or ".." in support_path.split("/")
+            ):
+                errors.append("isaac_render_options_support_mount_prim_path_invalid")
+            if not finite_mount_vector(center, 3):
+                errors.append("isaac_render_options_support_mount_center_invalid")
+            if not finite_mount_vector(half_extents, 2) or any(
+                float(item) <= 0.0 or float(item) > 2.0 for item in (half_extents or [])
+            ):
+                errors.append("isaac_render_options_support_mount_half_extents_invalid")
+            if (
+                isinstance(height, bool)
+                or not isinstance(height, (int, float))
+                or not 0.01 <= float(height) <= 3.0
+            ):
+                errors.append("isaac_render_options_support_mount_height_invalid")
+            if (
+                isinstance(top_z, bool)
+                or not isinstance(top_z, (int, float))
+                or not math.isfinite(float(top_z))
+            ):
+                errors.append("isaac_render_options_support_mount_top_z_invalid")
+            if (
+                finite_mount_vector(center, 3)
+                and isinstance(height, (int, float))
+                and not isinstance(height, bool)
+                and isinstance(top_z, (int, float))
+                and not isinstance(top_z, bool)
+                and abs(float(center[2]) + 0.5 * float(height) - float(top_z)) > 1e-5
+            ):
+                errors.append("isaac_render_options_support_mount_top_z_mismatch")
+            if support.get("static_collision_required") is not True:
+                errors.append("isaac_render_options_support_mount_static_collision_required")
+            if support.get("physical_load_capacity_qualified") is not False:
+                errors.append("isaac_render_options_support_mount_physical_claim_forbidden")
+            if (
+                isinstance(top_z, (int, float))
+                and not isinstance(top_z, bool)
+                and isinstance(ground_z, (int, float))
+                and not isinstance(ground_z, bool)
+                and abs(float(top_z) - float(ground_z)) > 1e-5
+            ):
+                errors.append("isaac_render_options_support_mount_ground_z_mismatch")
+            if (
+                finite_mount_vector(center, 3)
+                and isinstance(pose, list)
+                and len(pose) == 4
+                and (
+                    abs(float(center[0]) - float(pose[0])) > 1e-5
+                    or abs(float(center[1]) - float(pose[1])) > 1e-5
+                    or (
+                        isinstance(top_z, (int, float))
+                        and not isinstance(top_z, bool)
+                        and abs(float(top_z) - float(pose[2])) > 1e-5
+                    )
+                )
+            ):
+                errors.append("isaac_render_options_support_mount_robot_pose_mismatch")
     trace = value.get("articulated_policy_trace_request")
     if trace is not None:
         if not isinstance(trace, Mapping):

@@ -220,11 +220,25 @@ def propose_external_scene_robot_placement(
     )
     profile = get_robot_profile("franka_panda")
     half_x, half_y, _ = profile.footprint_half_extent_xyz
+    # Franka is a fixed-base arm. Derive a support-mount height that aligns the
+    # nominal shoulder with the selected affordance instead of silently treating
+    # the manipulator like a floor-standing robot. This is a simulation support
+    # candidate only; physical baseplate strength and metric height remain
+    # independent qualification gates.
+    mount_height = max(
+        0.05,
+        float(target[2]) - floor_z - float(profile.shoulder_above_root_m),
+    )
+    mount_top_z = floor_z + mount_height
     triangle_stage = stage_vertices[faces]
     triangle_stage_minimum = triangle_stage.min(axis=1)
     triangle_stage_maximum = triangle_stage.max(axis=1)
     lower_obstacle_z = floor_z + 0.04
-    upper_obstacle_z = floor_z + 2.0 * profile.footprint_half_extent_xyz[2]
+    support_obstacle_height = max(
+        mount_height,
+        2.0 * profile.footprint_half_extent_xyz[2],
+    )
+    upper_obstacle_z = floor_z + support_obstacle_height
     vertical_obstacle_faces = (triangle_stage_maximum[:, 2] >= lower_obstacle_z) & (
         triangle_stage_minimum[:, 2] <= upper_obstacle_z
     )
@@ -260,7 +274,7 @@ def propose_external_scene_robot_placement(
         shoulder = np.asarray(candidate.position) + [
             0.0,
             0.0,
-            profile.shoulder_above_root_m,
+            mount_height + profile.shoulder_above_root_m,
         ]
         return float(np.linalg.norm(target - shoulder))
 
@@ -297,7 +311,7 @@ def propose_external_scene_robot_placement(
         floor_z=floor_z,
         half_extent_xy=(half_x, half_y),
         probe_clearance=profile.probe_clearance_m,
-        obstacle_height=2.0 * profile.footprint_half_extent_xyz[2],
+        obstacle_height=support_obstacle_height,
     )
     shoulder_distance_value = shoulder_distance(stance)
     analytic_reach_candidate = bool(shoulder_distance_value <= reach_limit)
@@ -314,10 +328,31 @@ def propose_external_scene_robot_placement(
         "robot_pose_xyzyaw_collision_stage": [
             round(float(stance.position[0]), 9),
             round(float(stance.position[1]), 9),
-            round(float(floor_z), 9),
+            round(float(mount_top_z), 9),
             round(float(stance.yaw), 12),
         ],
         "floor_height_collision_stage": round(floor_z, 9),
+        "fixed_base_support_mount": {
+            "schema_version": "fixed_base_support_mount_candidate.v1",
+            "status": "simulator_support_candidate_only",
+            "prim_path": "/World/BlueprintDerivedSupport/FrankaMount",
+            "center_xyz_collision_stage": [
+                round(float(stance.position[0]), 9),
+                round(float(stance.position[1]), 9),
+                round(float(floor_z + 0.5 * mount_height), 9),
+            ],
+            "top_z_collision_stage": round(float(mount_top_z), 9),
+            "height_stage_units": round(float(mount_height), 9),
+            "half_extents_xy_stage_units": [round(float(half_x), 9), round(float(half_y), 9)],
+            "collision_checked_height_stage_units": round(float(support_obstacle_height), 9),
+            "static_collision_required": True,
+            "physical_load_capacity_qualified": False,
+            "independent_metric_height_qualified": False,
+            "claim_boundary": (
+                "Derived static simulator support only; not evidence of a physical baseplate, "
+                "anchoring, load capacity, installation safety, or metric calibration."
+            ),
+        },
         "mesh_vertex_overlap_probe_hits": vertex_hits,
         "mesh_vertex_overlap_probe_clear": bool(vertex_hits == 0),
         "mesh_triangle_aabb_overlap_probe_hits": triangle_hits,
@@ -354,6 +389,7 @@ def propose_external_scene_robot_placement(
                 if stance.standoff_m < profile.standoff_range_m[0]
                 else []
             ),
+            "fixed_base_support_mount_not_physically_qualified",
             "access_reset_and_human_clearance_not_qualified",
         ],
         "candidate_may_self_authorize": False,
@@ -369,7 +405,8 @@ def propose_external_scene_robot_placement(
         "robot_usd": str(profile.simulator_asset_refs["isaac_asset"]).lstrip("/"),
         "robot_prim_path": profile.usd_prim_path,
         "robot_pose": placement["robot_pose_xyzyaw_collision_stage"],
-        "robot_ground_z": placement["floor_height_collision_stage"],
+        "robot_ground_z": placement["fixed_base_support_mount"]["top_z_collision_stage"],
+        "fixed_base_support_mount": placement["fixed_base_support_mount"],
         "robot_only_pass": True,
         "robot_placement_digest": placement["placement_proposal_digest"],
         "placement_proposal_digest": placement["placement_proposal_digest"],
