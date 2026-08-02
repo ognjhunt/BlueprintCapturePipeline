@@ -18,6 +18,10 @@ PROCESSED_OBSERVATION_VISIBILITY_ADAPTER = (
 SWEPT_AABB_COLLISION_SIMULATION_ADAPTER = (
     "local://swept-aabb-collision-simulation-v1"
 )
+SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER = (
+    "local://signed-isaac-visual-placement-replay-v1"
+)
+SIGNED_ISAAC_POINT_CONTACT_ADAPTER = "local://signed-isaac-point-contact-replay-v1"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -465,6 +469,155 @@ class SweptAabbCollisionSimulationAdapter:
         }
 
 
+def _evidence_row(testbed: Mapping[str, Any], evidence_id: str) -> dict[str, Any] | None:
+    matches = [
+        row
+        for row in _rows(testbed.get("evidence_inventory"))
+        if str(row.get("evidence_id") or "") == evidence_id
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _sha256_digest(value: Any) -> bool:
+    text = str(value or "")
+    return len(text) == 71 and text.startswith("sha256:") and all(
+        character in "0123456789abcdef" for character in text[7:]
+    )
+
+
+@dataclass(frozen=True)
+class SignedIsaacVisualPlacementReplayAdapter:
+    """Replay an exact, independently rehashed Isaac robot-depth observation.
+
+    This answers only whether the named robot was visible at the exact
+    digest-bound pose in the exact retained simulated views.
+    """
+
+    adapter_reference: str = SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER
+
+    def execute(self, **kwargs: Any) -> Mapping[str, Any]:
+        claim = _mapping(kwargs.get("claim"))
+        testbed = _mapping(kwargs.get("testbed"))
+        if str(claim.get("claim_type") or "") != "perception_visibility":
+            return _unavailable("signed_isaac_visual_claim_type_not_supported")
+        evidence = _evidence_row(testbed, "signed_isaac_visual_placement")
+        if evidence is None or evidence.get("independently_rehashed") is not True:
+            return _unavailable("signed_isaac_visual_evidence_missing")
+        camera_rows = _rows(evidence.get("camera_evidence"))
+        if not camera_rows or any(
+            row.get("visual_geometry_observed") is not True
+            or not str(row.get("rgb_artifact_reference") or "")
+            or not str(row.get("distance_artifact_reference") or "")
+            or not _sha256_digest(row.get("rgb_digest"))
+            or not _sha256_digest(row.get("distance_digest"))
+            for row in camera_rows
+        ):
+            return _unavailable("signed_isaac_visual_camera_evidence_invalid")
+        coverage = _number(evidence.get("exact_view_coverage"))
+        if coverage is None or not 0 <= coverage <= 1:
+            return _unavailable("signed_isaac_visual_coverage_invalid")
+        return {
+            "status": "valid",
+            "supports_claim": True,
+            "observed_value": len(camera_rows),
+            "categorical_finding": "robot_visible_at_exact_simulated_pose",
+            "uncertainty": 1.0 - coverage,
+            "coverage": coverage,
+            "blockers": [],
+            "invalid_rollout_reasons": [],
+            "raw_artifact_references": [
+                {
+                    "uri": f"artifact://{row['rgb_artifact_reference']}",
+                    "digest": row["rgb_digest"],
+                }
+                for row in camera_rows
+            ] + [
+                {
+                    "uri": f"artifact://{row['distance_artifact_reference']}",
+                    "digest": row["distance_digest"],
+                }
+                for row in camera_rows
+            ],
+            "provenance": {
+                "execution_mode": "hermetic_local_signed_evidence_replay",
+                "source_runtime": "isaac_sim",
+                "provider_robot_placement_evidence_digest": evidence.get(
+                    "provider_robot_placement_evidence_digest"
+                ),
+                "physical_robot_run_initiated": False,
+            },
+            "claim_ceiling": {
+                "isaac_visual_robot_placement": True,
+                "formal_robot_placement": False,
+                "kinematic_reachability": False,
+                "task_success": False,
+                "physical_success": False,
+                "deployment_readiness": False,
+                "safety_certification": False,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class SignedIsaacPointContactReplayAdapter:
+    """Replay exact point-contact evidence from an independently qualified run."""
+
+    adapter_reference: str = SIGNED_ISAAC_POINT_CONTACT_ADAPTER
+
+    def execute(self, **kwargs: Any) -> Mapping[str, Any]:
+        claim = _mapping(kwargs.get("claim"))
+        testbed = _mapping(kwargs.get("testbed"))
+        if str(claim.get("claim_type") or "") != "collision_contact":
+            return _unavailable("signed_isaac_contact_claim_type_not_supported")
+        evidence = _evidence_row(testbed, "signed_isaac_point_contact")
+        count = _number(_mapping(evidence).get("contact_event_count"))
+        if (
+            evidence is None
+            or evidence.get("independently_qualified") is not True
+            or evidence.get("test_body_fell_through_floor") is not False
+            or not _sha256_digest(evidence.get("isaac_runtime_result_digest"))
+            or not _sha256_digest(evidence.get("independent_qualification_digest"))
+            or count is None
+            or count < 1
+        ):
+            return _unavailable("signed_isaac_point_contact_evidence_missing")
+        return {
+            "status": "valid",
+            "supports_claim": True,
+            "observed_value": int(count),
+            "categorical_finding": "point_contact_observed_at_committed_probe",
+            "uncertainty": 0.0,
+            "coverage": 1.0,
+            "blockers": [],
+            "invalid_rollout_reasons": [],
+            "raw_artifact_references": [
+                {
+                    "uri": "artifact://provider_nurec_isaac_runtime_result",
+                    "digest": evidence["isaac_runtime_result_digest"],
+                },
+                {
+                    "uri": "artifact://independent_isaac_qualification",
+                    "digest": evidence["independent_qualification_digest"],
+                },
+            ],
+            "provenance": {
+                "execution_mode": "hermetic_local_signed_evidence_replay",
+                "source_runtime": "isaac_sim",
+                "probe_scope": "single_precommitted_point",
+                "visual_robot_excluded_from_environment_probe": True,
+                "physical_robot_run_initiated": False,
+            },
+            "claim_ceiling": {
+                "isaac_point_contact_presence": True,
+                "complete_robot_collision_clearance": False,
+                "task_success": False,
+                "physical_success": False,
+                "deployment_readiness": False,
+                "safety_certification": False,
+            },
+        }
+
+
 def authorized_local_evidence_adapter_registry(
     authorized_references: Sequence[str],
 ) -> EvidenceMethodAdapterRegistry:
@@ -473,6 +626,8 @@ def authorized_local_evidence_adapter_registry(
         CAPTURED_VISIBILITY_ADAPTER: CapturedVisibilityAdapter(),
         PROCESSED_OBSERVATION_VISIBILITY_ADAPTER: ProcessedObservationVisibilityAdapter(),
         SWEPT_AABB_COLLISION_SIMULATION_ADAPTER: SweptAabbCollisionSimulationAdapter(),
+        SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER: SignedIsaacVisualPlacementReplayAdapter(),
+        SIGNED_ISAAC_POINT_CONTACT_ADAPTER: SignedIsaacPointContactReplayAdapter(),
     }
     requested = sorted({str(item or "").strip() for item in authorized_references if str(item or "").strip()})
     unknown = sorted(set(requested) - set(available))
@@ -485,10 +640,14 @@ __all__ = [
     "ANALYTIC_REACHABILITY_ADAPTER",
     "CAPTURED_VISIBILITY_ADAPTER",
     "PROCESSED_OBSERVATION_VISIBILITY_ADAPTER",
+    "SIGNED_ISAAC_POINT_CONTACT_ADAPTER",
+    "SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER",
     "SWEPT_AABB_COLLISION_SIMULATION_ADAPTER",
     "AnalyticReachabilityAdapter",
     "CapturedVisibilityAdapter",
     "ProcessedObservationVisibilityAdapter",
+    "SignedIsaacPointContactReplayAdapter",
+    "SignedIsaacVisualPlacementReplayAdapter",
     "SweptAabbCollisionSimulationAdapter",
     "authorized_local_evidence_adapter_registry",
 ]
