@@ -399,7 +399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         final_config=_load(args.final_config),
         resolved_image_digest=args.resolved_digest,
     )
-    write_json(args.output, result)
+    write_json(Path(args.output), result)
     print(json.dumps(result, sort_keys=True))
     return 0 if result.get("status") == "verified" else 2
 

@@ -13,6 +13,7 @@ from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
 from blueprint_pipeline.isaac_worker_source_overlay import (
     BUILD_METHOD,
     DEFAULT_BASE_IMAGE_DIGEST,
+    main,
     prepare_source_overlay,
     verify_registry_overlay,
 )
@@ -184,3 +185,55 @@ def test_registry_overlay_verification_binds_layer_prefix_and_runtime_config() -
     )
     assert blocked["status"] == "blocked"
     assert "isaac_worker_source_overlay_plan_invalid" in blocked["blockers"]
+
+
+def test_verify_registry_cli_writes_atomic_result(tmp_path: Path) -> None:
+    plan = _plan()
+    base_layers = [{"digest": "sha256:" + "c" * 64, "size": 10}]
+    source_layer = "sha256:" + "d" * 64
+    environment = [
+        f"{key}={value}" for key, value in plan["expected_final_environment"].items()
+    ]
+    environment.append(f"BLUEPRINT_WORKER_SOURCE_LAYER_DIGEST={source_layer}")
+    values = {
+        "plan.json": plan,
+        "base.json": {"layers": base_layers},
+        "final.json": {
+            "layers": [*base_layers, {"digest": source_layer, "size": 20}]
+        },
+        "config.json": {
+            "architecture": "amd64",
+            "os": "linux",
+            "config": {
+                "Env": environment,
+                "User": "blueprint",
+                "WorkingDir": "/workspace",
+                "Entrypoint": ["blueprint-run-robot-eval-worker"],
+            },
+        },
+    }
+    for name, value in values.items():
+        (tmp_path / name).write_text(json.dumps(value), encoding="utf-8")
+    output = tmp_path / "result.json"
+
+    assert (
+        main(
+            [
+                "verify-registry",
+                "--plan",
+                str(tmp_path / "plan.json"),
+                "--base-manifest",
+                str(tmp_path / "base.json"),
+                "--final-manifest",
+                str(tmp_path / "final.json"),
+                "--final-config",
+                str(tmp_path / "config.json"),
+                "--resolved-digest",
+                "sha256:" + "e" * 64,
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "verified"
