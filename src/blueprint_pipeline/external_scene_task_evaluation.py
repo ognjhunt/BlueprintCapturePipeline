@@ -8,9 +8,12 @@ until an independently qualified method and its required inputs exist.
 
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
+from .common import write_json
 from .decision_evidence_contracts import (
     DecisionEvidenceRequest,
     MaintainedSiteTaskTestbed,
@@ -442,8 +445,48 @@ def compile_external_scene_task_evaluation(
     return summary
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in (
+        "verification-request",
+        "runtime-result",
+        "independent-qualification",
+        "visual-placement-evidence",
+        "target-analysis",
+        "robot-placement-result",
+    ):
+        parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--output-root", required=True)
+    parser.add_argument("--summary-out")
+    args = parser.parse_args(argv)
+
+    def load(name: str) -> Mapping[str, Any]:
+        value = json.loads(Path(getattr(args, name)).read_text(encoding="utf-8"))
+        if not isinstance(value, Mapping):
+            raise ExternalSceneTaskEvaluationError([f"{name}_not_json_object"])
+        return value
+
+    summary = compile_external_scene_task_evaluation(
+        verification_request=load("verification_request"),
+        runtime_result=load("runtime_result"),
+        independent_qualification=load("independent_qualification"),
+        visual_placement_evidence=load("visual_placement_evidence"),
+        target_analysis=load("target_analysis"),
+        robot_placement_result=load("robot_placement_result"),
+        output_root=args.output_root,
+    )
+    if args.summary_out:
+        write_json(Path(args.summary_out), summary)
+    print(json.dumps(summary, sort_keys=True))
+    return 0
+
+
 __all__ = [
     "ExternalSceneTaskEvaluationError",
     "SCHEMA_VERSION",
     "compile_external_scene_task_evaluation",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
