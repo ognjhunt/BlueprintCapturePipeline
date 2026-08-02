@@ -618,8 +618,12 @@ Implemented and hermetically tested:
   by the first three failed diagnostics and matches the CUDA line exercised by
   the Quadrants 0.8.0 release workflow. A fourth paid diagnostic still aborted
   at direct Quadrants import under Python 3.11.14, so CUDA-line compatibility is
-  not a sufficient fix and the README-prescribed Python 3.12 environment remains
-  the next isolated runtime variable. The controller rechecks every source
+  not a sufficient fix. A fifth diagnostic held the exact source, CUDA 12.8,
+  Torch 2.9.1+cu128, and Quadrants 0.8.0 fixed while moving to the README-prescribed
+  Python 3.12.11 environment; direct Quadrants import again aborted in both cases
+  before CUDA execution. Python version is therefore not a sufficient fix either.
+  The next bounded diagnostic holds those compatibility variables fixed and
+  collects a sanitized native debugger backtrace. The controller rechecks every source
   digest, executes both cases through the generic adapter executor, requires
   CUDA observations and matching replay traces, and preserves all Q-DLO,
   R5-R7, production, physical, and policy-ranking claims as false. Bundle

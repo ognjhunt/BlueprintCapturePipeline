@@ -197,6 +197,91 @@ def test_dlo_lab_supervisor_does_not_report_timeout_as_native_signal(
     assert observations["supervised_worker_timed_out"] is True
 
 
+def test_native_debugger_observation_sanitizes_paths_and_bounds_output(
+    monkeypatch,
+) -> None:
+    raw = (
+        b"Catchpoint 1 (exception thrown), 0x00007f in __cxa_throw () "
+        b"from /usr/lib/x86_64-linux-gnu/libstdc++.so.6\n"
+        b"#0  0x00007f in __cxa_throw () from /usr/lib/x86_64-linux-gnu/libstdc++.so.6\n"
+        b"#1  0x000042 in quadrants::ThreadPool::ThreadPool(int) "
+        b"at /build/private/threading.cpp:40\n"
+    )
+    monkeypatch.setenv("BLUEPRINT_MEASUREMENT_DLO_INPUT_GET_URL", "https://signed/input")
+    monkeypatch.setenv("BLUEPRINT_MEASUREMENT_DLO_OUTPUT_GET_URL", "https://signed/get")
+    monkeypatch.setenv("BLUEPRINT_MEASUREMENT_DLO_OUTPUT_PUT_URL", "https://signed/put")
+    call: dict = {}
+
+    def completed(*args, **kwargs):
+        call["args"] = args
+        call["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout=raw, stderr=b"")
+
+    monkeypatch.setattr(dlo_adapter.shutil, "which", lambda _name: "/usr/bin/gdb")
+    monkeypatch.setattr(
+        dlo_adapter.subprocess,
+        "run",
+        completed,
+    )
+    observation = dlo_adapter._native_debugger_observation(
+        import_statements="import quadrants",
+        timeout_seconds=90,
+    )
+    assert observation["status"] == "captured"
+    assert observation["timeout_seconds"] == 45
+    assert observation["raw_output_content_persisted"] is False
+    assert observation["raw_output_bytes"] == len(raw)
+    assert observation["frames"] == [
+        {"index": 0, "symbol": "__cxa_throw", "module": "libstdc++.so.6"},
+        {
+            "index": 1,
+            "symbol": "quadrants::ThreadPool::ThreadPool",
+            "module": None,
+        },
+    ]
+    assert "/build/private" not in json.dumps(observation)
+    debugger_command = call["args"][0]
+    assert "bt 32" in debugger_command
+    assert "thread apply all" not in " ".join(debugger_command)
+    diagnostic_env = call["kwargs"]["env"]
+    assert "BLUEPRINT_MEASUREMENT_DLO_INPUT_GET_URL" not in diagnostic_env
+    assert "BLUEPRINT_MEASUREMENT_DLO_OUTPUT_GET_URL" not in diagnostic_env
+    assert "BLUEPRINT_MEASUREMENT_DLO_OUTPUT_PUT_URL" not in diagnostic_env
+
+
+def test_dlo_lab_supervisor_runs_native_diagnostic_once_for_first_case(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_DLO_NATIVE_DIAGNOSTIC", "1")
+    monkeypatch.setattr(
+        dlo_adapter,
+        "_native_debugger_observation",
+        lambda **_kwargs: {
+            "status": "captured",
+            "tool": "gdb",
+            "raw_output_content_persisted": False,
+            "frames": [{"index": 0, "symbol": "__cxa_throw", "module": None}],
+        },
+    )
+    monkeypatch.setattr(
+        dlo_adapter.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=-6,
+            stdout=b"",
+            stderr=b"terminate called after throwing std::system_error\n",
+        ),
+    )
+    request = _request()
+    assert request["execution_id"].endswith("001")
+    result = dlo_adapter._run_supervised_worker(request)
+    diagnostic = result["runtime_observations"][
+        "supervised_worker_native_diagnostic"
+    ]
+    assert diagnostic["status"] == "captured"
+    assert diagnostic["raw_output_content_persisted"] is False
+
+
 def test_dlo_lab_worker_rejects_protocol_solver_and_implementation_tampering() -> None:
     protocol = copy.deepcopy(_request())
     protocol["case_manifest"]["operating_point"]["adapter_protocol"] = "generic-genesis"
