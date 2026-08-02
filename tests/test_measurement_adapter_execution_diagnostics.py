@@ -31,3 +31,16 @@ def test_dlo_supervisor_classifies_abort_without_returning_stderr() -> None:
         "dlo_lab_adapter_supervised_worker_exit_nonzero:-6",
         "dlo_lab_adapter_supervised_worker_signal:6",
     ]
+
+
+def test_dlo_supervisor_classifies_native_system_error_without_returning_stderr() -> None:
+    assert _classified_native_failure(
+        b"terminate called after throwing std::system_error\nwhat(): Invalid argument\n",
+        -6,
+    ) == [
+        "dlo_lab_adapter_native_invalid_argument",
+        "dlo_lab_adapter_native_system_error",
+        "dlo_lab_adapter_native_termination",
+        "dlo_lab_adapter_supervised_worker_exit_nonzero:-6",
+        "dlo_lab_adapter_supervised_worker_signal:6",
+    ]

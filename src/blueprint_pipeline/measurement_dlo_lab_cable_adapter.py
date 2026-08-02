@@ -36,6 +36,7 @@ EXPECTED_SOURCE_COMMIT = "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796"
 _IMPORT_PROBES = (
     ("quadrants", "import quadrants"),
     ("torch", "import torch"),
+    ("quadrants_then_torch", "import quadrants\nimport torch"),
     ("torch_then_quadrants", "import torch\nimport quadrants"),
     ("torch_then_genesis", "import torch\nimport genesis"),
 )
@@ -402,6 +403,8 @@ def _classified_native_failure(stderr: bytes, exit_code: int) -> list[str]:
         ("cuda_error", "dlo_lab_adapter_cuda_runtime_failure"),
         ("cuda error", "dlo_lab_adapter_cuda_runtime_failure"),
         ("libcuda", "dlo_lab_adapter_cuda_runtime_failure"),
+        ("std::system_error", "dlo_lab_adapter_native_system_error"),
+        ("invalid argument", "dlo_lab_adapter_native_invalid_argument"),
         ("terminate called", "dlo_lab_adapter_native_termination"),
         ("assertion", "dlo_lab_adapter_native_assertion"),
         ("fatal python error", "dlo_lab_adapter_fatal_python_error"),
@@ -445,6 +448,9 @@ def _supervised_failure_result(
         ),
         "supervised_worker_timed_out": timed_out,
         "supervised_worker_import_order": ["torch", "genesis"],
+        "python_version": ".".join(str(item) for item in sys.version_info[:3]),
+        "quadrants_distribution_version": _distribution_version("quadrants"),
+        "torch_distribution_version": _distribution_version("torch"),
         "supervised_worker_stderr_digest": "sha256:" + hashlib.sha256(stderr).hexdigest(),
         "supervised_worker_stderr_bytes": len(stderr),
         "supervised_worker_stderr_content_persisted": False,
@@ -457,6 +463,13 @@ def _supervised_failure_result(
         runtime_observations=observations,
         failure_codes=sorted(set(failure_codes)),
     )
+
+
+def _distribution_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "unavailable"
 
 
 def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
