@@ -96,7 +96,7 @@ from .reconstruction_gpu_admission import (
     prepare_reconstruction_gpu_canary,
 )
 from .reconstruction_isaac_vast_operation import run_reconstruction_isaac_vast_operation
-from . import measurement_isaac_paid_allocator
+from . import measurement_dlo_lab_paid_allocator
 from .reconstruction_paid_transport import prepare_reconstruction_paid_transport
 from .reconstruction_vast_operation import run_reconstruction_vast_operation
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
@@ -649,6 +649,9 @@ def _run_reconstruction_gpu_canary(
             args, "reconstruction_isaac_image_release", None
         ),
         measurement_isaac_runtime_release_path=getattr(args, "measurement_isaac_runtime_release", None),
+        measurement_dlo_lab_runtime_release_path=getattr(
+            args, "measurement_dlo_lab_runtime_release", None
+        ),
     )
     if not args.execute or admission.get("status") != "execute_ready":
         return admission
@@ -685,8 +688,9 @@ def _run_reconstruction_gpu_canary(
         write_json(adapter_path, result)
         return result
 
-    if operation == "measurement_isaac_canary":
-        result = measurement_isaac_paid_allocator.run_measurement_isaac_from_canonical_allocator(
+    if operation in {"measurement_dlo_lab_canary", "measurement_isaac_canary"}:
+        result = measurement_dlo_lab_paid_allocator.run_measurement_canary_from_canonical_allocator(
+            operation=operation,
             args=args,
             bundle_receipt=operation_bundle_receipt,
             resolved_urls=resolved_urls,
@@ -813,7 +817,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-operation-bundle-receipt")
     gpu.add_argument("--reconstruction-operation-receipt-url-file")
     gpu.add_argument("--reconstruction-isaac-image-release")
-    measurement_isaac_paid_allocator.add_measurement_isaac_allocator_arguments(gpu)
+    measurement_dlo_lab_paid_allocator.add_measurement_allocator_arguments(gpu)
     gpu.add_argument("--provider-bootstrap-url-file")
     gpu.add_argument("--finetune-provider-bundle")
     gpu.add_argument("--openpi-input-bundle-receipt")
