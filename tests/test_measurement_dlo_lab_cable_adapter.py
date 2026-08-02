@@ -140,6 +140,7 @@ def test_dlo_lab_supervisor_contains_native_abort_and_classifies_stderr(
     outcomes = iter(
         [
             SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+            SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
             SimpleNamespace(
                 returncode=-6,
                 stdout=b"",

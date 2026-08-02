@@ -13,10 +13,13 @@ from .measurement_dlo_lab_cable_adapter import (
 
 SCHEMA_VERSION = "measurement_dlo_lab_runtime_release.v1"
 PYTORCH_VERSION = "2.9.1"
-CUDA_VERSION = "13.0"
+# Quadrants 0.8.0's release workflow exercises its CUDA wheel against the
+# PyTorch cu128 index.  Keep the DLO development image on that upstream-tested
+# CUDA line instead of the CUDA 13.0 image used by the first three diagnostics.
+CUDA_VERSION = "12.8"
 RUNTIME_IMAGE = (
-    "pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime"
-    "@sha256:60f22fb80755fd0b470fb47928dbd55816aa9f847edd95cf43c93253507a9ddf"
+    "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime"
+    "@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385"
 )
 
 

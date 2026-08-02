@@ -601,15 +601,16 @@ Implemented and hermetically tested:
   It refuses generic Genesis identity and CPU fallback, samples the fixed-free
   parameterized-rod trajectory, compares replay digests, and emits only the
   generic nonqualifying adapter-worker result. Two paid provider attempts installed
-  the exact runtime but aborted before Genesis import completed; the second localized
-  the native assertion to `genesis_import_started`. Source inspection identified a
-  testable import-order difference between Genesis and the exact source's principal
-  CUDA examples. The worker now encodes that order plus isolated import probes, but
-  this closes diagnostic contracts rather than successful CUDA replay or runtime proof;
+  the exact runtime but aborted before Genesis import completed; a third attempt proved
+  isolated Torch import succeeds while Torch followed by Quadrants reproducibly aborts
+  with the same native assertion. The worker retains isolated import probes, but this
+  closes diagnostic contracts rather than successful CUDA replay or runtime proof;
 - a deterministic clean-commit DLO-Lab Vast input-bundle compiler and in-worker
   controller. The bundle contains two bounded cable cases, exact request and
   source-file digests, the exact DLO-Lab upstream commit, and the digest-pinned
-  PyTorch 2.9.1/CUDA 13.0 runtime image. The controller rechecks every source
+  PyTorch 2.9.1/CUDA 12.8 runtime image. This replaces the CUDA 13.0 image used
+  by the first three failed diagnostics and matches the CUDA line exercised by
+  the Quadrants 0.8.0 release workflow. The controller rechecks every source
   digest, executes both cases through the generic adapter executor, requires
   CUDA observations and matching replay traces, and preserves all Q-DLO,
   R5-R7, production, physical, and policy-ranking claims as false. Bundle
