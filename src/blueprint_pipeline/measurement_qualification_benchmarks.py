@@ -776,6 +776,10 @@ def build_r5_stage_data(report_value: Mapping[str, Any]) -> dict[str, Any]:
     report = validate_qualification_benchmark_report(report_value)
     if report["evidence_status"] != "r5_evidence_candidate":
         raise MeasurementBenchmarkError("measurement_benchmark_report_not_r5_candidate")
+    if report["benchmark_id"] == "capture-to-observation":
+        raise MeasurementBenchmarkError(
+            "measurement_observation_r5_requires_task_site_challenge_report"
+        )
     physical_ids = sorted(
         {item for row in report["joined_cases"] for item in row["physical_measurement_ids"]}
     )
