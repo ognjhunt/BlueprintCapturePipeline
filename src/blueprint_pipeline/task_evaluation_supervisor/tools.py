@@ -8,10 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-import hashlib
 import json
 import math
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 from typing import Any, Callable, Mapping, Sequence
 
@@ -22,7 +21,6 @@ from ..arkit_reconstruction_dataset import (
 from ..arkit_depth_surface_compiler import (
     compile_arkit_depth_surface as compile_arkit_depth_surface_runtime,
 )
-from ..appearance_fidelity import build_appearance_fidelity_qualification
 from ..decision_evidence_contracts import canonical_digest
 from ..decision_evidence_router import route_decision_evidence
 from ..evaluation_run_contract import validate_evaluation_run_spec
@@ -92,6 +90,8 @@ from .capture_reconstruction_routing import (
     build_capture_reconstruction_route,
     validate_capture_reconstruction_route,
 )
+from .emitted_artifacts import validated_emitted_artifact as _validated_emitted_artifact
+from . import appearance_tools
 from .phase2_artifacts import (
     authorization_request,
     clarification_request,
@@ -102,37 +102,6 @@ from .phase2_artifacts import (
 
 
 TOOL_REGISTRY_SCHEMA_VERSION = "task_evaluation_supervisor_tool_registry.v1"
-
-
-def _validated_emitted_artifact(
-    *, root: str | Path, relative_path: Any, expected_digest: Any
-) -> Path:
-    root_path = Path(root).resolve(strict=True)
-    text = str(relative_path or "").replace("\\", "/")
-    relative = PurePosixPath(text)
-    if (
-        not text
-        or relative.is_absolute()
-        or any(part in {"", ".", ".."} for part in relative.parts)
-        or ":" in relative.parts[0]
-    ):
-        raise ValueError("emitted_artifact_relative_path_unsafe")
-    candidate = root_path.joinpath(*relative.parts)
-    if candidate.is_symlink():
-        raise ValueError("emitted_artifact_symlink_forbidden")
-    try:
-        resolved = candidate.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError("emitted_artifact_missing") from exc
-    if root_path not in resolved.parents or not resolved.is_file():
-        raise ValueError("emitted_artifact_escape_or_not_file")
-    digest = hashlib.sha256()
-    with resolved.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    if expected_digest != f"sha256:{digest.hexdigest()}":
-        raise ValueError("emitted_artifact_digest_mismatch")
-    return resolved
 
 
 def _output_schema(
@@ -345,34 +314,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
-    "qualify_appearance_fidelity": _output_schema(
-        {
-            "contract_present": {"const": True},
-            "digest_matches": {"const": True},
-            "qualification_digest": {"type": "string"},
-            "status": {"enum": ["qualified", "blocked"]},
-            "retained_splat_fraction": {"type": "number"},
-            "evaluation_render_authorized": {"type": "boolean"},
-            "global_decimation_forbidden": {"const": True},
-            "claim_ceiling": {"enum": ["qualified_appearance_render", "none"]},
-            "proof_state_changed": {"const": False},
-        }
-    ),
-    "render_native_3dgs": _output_schema(
-        {
-            "contract_present": {"const": True},
-            "digest_matches": {"const": True},
-            "render_result_digest": {"type": "string"},
-            "status": {"enum": ["completed", "failed"]},
-            "source_appearance_digest": {"type": "string"},
-            "native_3dgs": {"const": True},
-            "full_resolution_source_preserved": {"const": True},
-            "global_decimation_applied": {"const": False},
-            "evaluation_render_authorized": {"const": False},
-            "claim_ceiling": {"const": "native_appearance_render_candidate"},
-            "proof_state_changed": {"const": False},
-        }
-    ),
+    **appearance_tools.appearance_tool_output_schemas(_output_schema),
     "run_generated_repair_candidate": _output_schema(
         {
             "contract_present": {"const": True},
@@ -854,32 +796,7 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             timeout_seconds=1_800.0,
             idempotency="frozen_hidden_split_independent_evaluator",
         ),
-        _descriptor(
-            "qualify_appearance_fidelity",
-            "appearance_fidelity_qualification",
-            expected_artifacts=["appearance_fidelity_qualification.v1"],
-            input_properties={
-                "appearance_fidelity_qualification_digest": {"type": "string"}
-            },
-            required_inputs=["appearance_fidelity_qualification_digest"],
-            mutability="reversible_mutation",
-            allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend",
-            timeout_seconds=30.0,
-            idempotency="digest_bound_deterministic_fidelity_qualification",
-        ),
-        _descriptor(
-            "render_native_3dgs",
-            "native_3dgs_rendering",
-            expected_artifacts=["native_3dgs_render_result.v1"],
-            input_properties={"native_3dgs_render_request_digest": {"type": "string"}},
-            required_inputs=["native_3dgs_render_request_digest"],
-            mutability="reversible_mutation",
-            allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend",
-            timeout_seconds=3_600.0,
-            idempotency="content_addressed_full_fidelity_native_render",
-        ),
+        *appearance_tools.appearance_tool_descriptors(_descriptor),
         _descriptor(
             "run_generated_repair_candidate",
             "generated_reconstruction_support",
@@ -1399,8 +1316,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "validate_metric_scale",
         "train_gaussian_reconstruction",
         "evaluate_heldout_appearance",
-        "qualify_appearance_fidelity",
-        "render_native_3dgs",
+        *appearance_tools.APPEARANCE_TOOL_IDS,
         "run_generated_repair_candidate",
         "compile_metric_geometry",
         "compile_collision_candidate",
@@ -1951,9 +1867,7 @@ def _compile_arkit_metric_scaffold(
         "reconstruction_result_digest": result_digest,
         "metric_scaffold_digest": metric_reference["digest"],
         "arkit_export_digest": export_reference["digest"],
-        "arkit_raw_contract_validation_digest": metrics[
-            "arkit_raw_contract_validation_digest"
-        ],
+        "arkit_raw_contract_validation_digest": metrics["arkit_raw_contract_validation_digest"],
         "decoded_pts_verified": True,
         "raw_arkit_poses_modified": False,
         "metric_scale_independently_validated": False,
@@ -2145,8 +2059,7 @@ def _export_arkit_reconstruction_dataset(
             not isinstance(artifact, Mapping)
             or artifact.get("schema_version") != artifact_type
             or artifact.get(digest_field) != expected_content_digest
-            or artifact.get(digest_field)
-            != canonical_digest(artifact, digest_field=digest_field)
+            or artifact.get(digest_field) != canonical_digest(artifact, digest_field=digest_field)
             or reference.get("content_digest") != expected_content_digest
         ):
             raise ValueError("arkit_reconstruction_dataset_export_artifact_digest_invalid")
@@ -2574,10 +2487,8 @@ def _run_pose_refinement(
             != request["pose_refinement_execution_request_digest"]
             or manifest["source_capture_digest"] != request["source_capture_digest"]
             or manifest["frozen_split_digest"] != request["frozen_split_digest"]
-            or manifest["camera_calibration_digest"]
-            != request["camera_calibration_digest"]
-            or manifest["initial_pose_manifest_digest"]
-            != request["initial_pose_manifest_digest"]
+            or manifest["camera_calibration_digest"] != request["camera_calibration_digest"]
+            or manifest["initial_pose_manifest_digest"] != request["initial_pose_manifest_digest"]
             or manifest["method_id"] != request["method_id"]
             or manifest["implementation_digest"] != request["implementation_digest"]
             or manifest["container_image_digest"] != request["container_image_digest"]
@@ -3118,136 +3029,6 @@ def _run_generated_repair_candidate(
     ]
 
 
-def _qualify_appearance_fidelity(
-    *, context: Any, arguments: Mapping[str, Any]
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    root_value = getattr(context, "supervisor_output_dir", None)
-    source_value = getattr(context, "appearance_fidelity_qualification", None)
-    if not isinstance(root_value, str) or not root_value:
-        raise ValueError("registered_tool_execution_scope_missing:qualify_appearance_fidelity")
-    if not isinstance(source_value, Mapping):
-        raise ValueError("appearance_fidelity_qualification_not_injected")
-    try:
-        qualification = build_appearance_fidelity_qualification(source_value)
-    except ValueError as exc:
-        raise ValueError("appearance_fidelity_qualification_contract_invalid") from exc
-    digest = qualification["appearance_fidelity_qualification_digest"]
-    if arguments.get("appearance_fidelity_qualification_digest") != digest:
-        raise ValueError(
-            "registered_tool_source_digest_mismatch:qualify_appearance_fidelity"
-        )
-    path = write_phase2_artifact(
-        root_value,
-        "generated/qualify_appearance_fidelity/appearance_fidelity_qualification.json",
-        qualification,
-    )
-    return {
-        "contract_present": True,
-        "digest_matches": True,
-        "qualification_digest": digest,
-        "status": qualification["status"],
-        "retained_splat_fraction": qualification["retained_splat_fraction"],
-        "evaluation_render_authorized": qualification["evaluation_render_authorized"],
-        "global_decimation_forbidden": True,
-        "claim_ceiling": qualification["claim_ceiling"],
-        "proof_state_changed": False,
-    }, [
-        {
-            "artifact_path": str(path.relative_to(Path(root_value))),
-            "artifact_digest": digest,
-            "artifact_type": "appearance_fidelity_qualification.v1",
-        }
-    ]
-
-
-def _sha256_digest(value: Any) -> bool:
-    text = str(value or "")
-    return bool(re.fullmatch(r"sha256:[0-9a-f]{64}", text))
-
-
-def _render_native_3dgs(
-    *, context: Any, arguments: Mapping[str, Any]
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    root_value = getattr(context, "supervisor_output_dir", None)
-    request_value = getattr(context, "native_3dgs_render_request", None)
-    renderer = getattr(context, "native_3dgs_renderer", None)
-    if not isinstance(root_value, str) or not root_value:
-        raise ValueError("registered_tool_execution_scope_missing:render_native_3dgs")
-    if not isinstance(request_value, Mapping) or not callable(renderer):
-        raise ValueError("native_3dgs_render_runtime_not_injected")
-    request = dict(request_value)
-    digest_field = "native_3dgs_render_request_digest"
-    request_digest = request.get(digest_field)
-    if not _sha256_digest(request_digest) or request_digest != canonical_digest(
-        request, digest_field=digest_field
-    ):
-        raise ValueError("native_3dgs_render_request_contract_invalid")
-    if arguments.get(digest_field) != request_digest:
-        raise ValueError("registered_tool_source_digest_mismatch:render_native_3dgs")
-    for field in ("source_appearance_digest", "render_input_digest", "camera_set_digest"):
-        if not _sha256_digest(request.get(field)):
-            raise ValueError(f"native_3dgs_render_request_{field}_invalid")
-    if request.get("global_decimation_applied") is not False:
-        raise ValueError("native_3dgs_render_global_decimation_forbidden")
-    output_root = Path(root_value) / "generated" / "render_native_3dgs"
-    emitted = renderer(request=dict(request), output_root=output_root)
-    if not isinstance(emitted, Mapping):
-        raise ValueError("native_3dgs_render_result_not_object")
-    result = dict(emitted)
-    result["schema_version"] = "native_3dgs_render_result.v1"
-    errors: list[str] = []
-    for field in ("source_appearance_digest", "render_input_digest", "camera_set_digest"):
-        if result.get(field) != request.get(field):
-            errors.append(f"native_3dgs_render_{field}_lineage_mismatch")
-    for field in ("implementation_digest", "runtime_digest"):
-        if not _sha256_digest(result.get(field)):
-            errors.append(f"native_3dgs_render_{field}_invalid")
-    if result.get("status") not in {"completed", "failed"}:
-        errors.append("native_3dgs_render_status_invalid")
-    if result.get("native_3dgs") is not True:
-        errors.append("native_3dgs_renderer_required")
-    if result.get("full_anisotropic_gaussians") is not True:
-        errors.append("native_3dgs_full_anisotropic_gaussians_required")
-    if result.get("full_resolution_source_preserved") is not True:
-        errors.append("native_3dgs_full_resolution_source_not_preserved")
-    if result.get("global_decimation_applied") is not False:
-        errors.append("native_3dgs_global_decimation_forbidden")
-    if result.get("status") == "completed" and not _sha256_digest(
-        result.get("frame_manifest_digest")
-    ):
-        errors.append("native_3dgs_frame_manifest_digest_invalid")
-    if errors:
-        raise ValueError(";".join(sorted(errors)))
-    result["evaluation_render_authorized"] = False
-    result["claim_ceiling"] = "native_appearance_render_candidate"
-    result_digest = canonical_digest(result, digest_field="native_3dgs_render_result_digest")
-    result["native_3dgs_render_result_digest"] = result_digest
-    path = write_phase2_artifact(
-        root_value,
-        "generated/render_native_3dgs/native_3dgs_render_result.json",
-        result,
-    )
-    return {
-        "contract_present": True,
-        "digest_matches": True,
-        "render_result_digest": result_digest,
-        "status": result["status"],
-        "source_appearance_digest": result["source_appearance_digest"],
-        "native_3dgs": True,
-        "full_resolution_source_preserved": True,
-        "global_decimation_applied": False,
-        "evaluation_render_authorized": False,
-        "claim_ceiling": "native_appearance_render_candidate",
-        "proof_state_changed": False,
-    }, [
-        {
-            "artifact_path": str(path.relative_to(Path(root_value))),
-            "artifact_digest": result_digest,
-            "artifact_type": "native_3dgs_render_result.v1",
-        }
-    ]
-
-
 def _bound_artifact(
     context: Any,
     *,
@@ -3385,10 +3166,10 @@ def _bound_artifact(
         return _run_pose_refinement(context=context, arguments=arguments)
     elif tool_id == "train_gaussian_reconstruction":
         return _train_gaussian_reconstruction(context=context, arguments=arguments)
-    elif tool_id == "qualify_appearance_fidelity":
-        return _qualify_appearance_fidelity(context=context, arguments=arguments)
-    elif tool_id == "render_native_3dgs":
-        return _render_native_3dgs(context=context, arguments=arguments)
+    elif tool_id in appearance_tools.APPEARANCE_TOOL_IDS:
+        return appearance_tools.execute_appearance_tool(
+            tool_id=tool_id, context=context, arguments=arguments
+        )
     elif tool_id in _GEOMETRY_TOOL_CONFIG:
         return _execute_geometry_contract_tool(
             context=context, tool_id=tool_id, arguments=arguments
@@ -3522,13 +3303,9 @@ def non_spend_tool_bindings(
             or not isinstance(getattr(context, "reconstruction_training_request", None), Mapping)
         ):
             continue
-        if tool_id == "qualify_appearance_fidelity" and not isinstance(
-            getattr(context, "appearance_fidelity_qualification", None), Mapping
-        ):
-            continue
-        if tool_id == "render_native_3dgs" and (
-            not isinstance(getattr(context, "native_3dgs_render_request", None), Mapping)
-            or not callable(getattr(context, "native_3dgs_renderer", None))
+        if (
+            tool_id in appearance_tools.APPEARANCE_TOOL_IDS
+            and not appearance_tools.appearance_tool_available(tool_id, context)
         ):
             continue
         if tool_id in _GEOMETRY_TOOL_CONFIG:
