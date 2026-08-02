@@ -1066,7 +1066,18 @@ def reconcile(arguments: argparse.Namespace) -> None:
         result["status"] = "reconciled"
     result["reconciliation_digest"] = canonical_digest(result, digest_field="reconciliation_digest")
     _write_artifact(state_dir / "cost_reconciliation.json", result)
-    print(json.dumps(result, indent=2))
+    print(
+        json.dumps(
+            {
+                "schema_version": result["schema_version"],
+                "run_id": result["run_id"],
+                "status": result["status"],
+                "reconciled": result["status"] == "reconciled",
+                "reconciliation_digest": result["reconciliation_digest"],
+            },
+            indent=2,
+        )
+    )
 
 
 def _historical_attempts(proxy_root: Path) -> list[dict[str, Any]]:
