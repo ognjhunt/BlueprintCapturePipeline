@@ -545,6 +545,13 @@ Implemented and hermetically tested:
   the generic `genesis-world` distribution identity cannot prove that the
   DLO-Lab fork is installed. This is source/rights feasibility evidence, not
   runtime, deterministic-replay, material-accuracy, or Q-DLO evidence;
+- a CUDA-only exact-source DLO-Lab development worker. Its request binds the
+  implementation digest, upstream commit, `genesis-world` distribution version,
+  solver parameters, seed, precision, task case, and two-replay requirement.
+  It refuses generic Genesis identity and CPU fallback, samples the fixed-free
+  parameterized-rod trajectory, compares replay digests, and emits only the
+  generic nonqualifying adapter-worker result. The real DLO-Lab runtime has not
+  yet executed, so this closes the worker contract rather than runtime proof;
 - a separate real MuJoCo 3.11 Capture-to-Deformation cloth worker,
   schema-checked sag/contact corpus, and aggregate runner for the
   `elastic2d=stretch` flex formulation, with solver-warning rejection and
