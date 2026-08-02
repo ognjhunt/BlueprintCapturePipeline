@@ -23,6 +23,7 @@ from blueprint_pipeline.measurement_isaac_physx_rigid_adapter import (
     ISAAC_VERSION,
     PROTOCOL_ID,
     WORKER_SCRIPT,
+    _bind_isaac_runtime_environment,
     _enable_installed_simulation_app_extension,
     _import_simulation_app,
     _installed_simulation_app_extension_roots,
@@ -273,6 +274,42 @@ def test_isaac_simulation_app_extension_root_is_bounded_and_enabled(
         sys.path[:] = original_sys_path
 
 
+def test_isaac_runtime_environment_is_bound_inside_image_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "apps").mkdir()
+    (tmp_path / "kit").mkdir()
+    for name in ("ISAAC_PATH", "EXP_PATH", "CARB_APP_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    try:
+        bound = _bind_isaac_runtime_environment(tmp_path)
+        assert bound == {
+            "ISAAC_PATH": str(tmp_path),
+            "EXP_PATH": str(tmp_path / "apps"),
+            "CARB_APP_PATH": str(tmp_path / "kit"),
+        }
+        assert {name: os.environ[name] for name in bound} == bound
+    finally:
+        for name in ("ISAAC_PATH", "EXP_PATH", "CARB_APP_PATH"):
+            os.environ.pop(name, None)
+
+
+def test_isaac_runtime_environment_rejects_existing_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "apps").mkdir()
+    (tmp_path / "kit").mkdir()
+    mismatch = tmp_path / "other-apps"
+    mismatch.mkdir()
+    for name in ("ISAAC_PATH", "EXP_PATH", "CARB_APP_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("EXP_PATH", str(mismatch))
+    with pytest.raises(RuntimeError, match="exp_path_mismatch"):
+        _bind_isaac_runtime_environment(tmp_path)
+
+
 def test_isaac_runtime_identity_rejects_invalid_version_observation() -> None:
     with pytest.raises(RuntimeError, match="runtime_version_observation_invalid"):
         _observe_isaac_runtime_identity(object(), version_getter=lambda: ())
@@ -293,6 +330,10 @@ def test_isaac_worker_blocks_runtime_version_mismatch(
     fake_isaacsim = types.ModuleType("isaacsim")
     fake_isaacsim.SimulationApp = FakeSimulationApp  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "isaacsim", fake_isaacsim)
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_physx_rigid_adapter._bind_isaac_runtime_environment",
+        lambda: {},
+    )
     monkeypatch.setattr(
         "blueprint_pipeline.measurement_isaac_physx_rigid_adapter._observe_isaac_runtime_identity",
         lambda _app: {
