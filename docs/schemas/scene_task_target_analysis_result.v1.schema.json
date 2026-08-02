@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scene_task_target_analysis_result.v1.schema.json",
+  "title": "Scene task target analysis result v1",
+  "type": "object",
+  "required": ["schema_version", "status", "request_digest", "scene_id", "source_scene_digest", "robot_id", "analyzer_provenance", "source_video_available", "source_video_required_for_bounded_sim_target", "derived_reconstruction_views_used", "metric_scale_status", "candidate_targets", "selected_target", "blockers", "claim_boundary", "target_analysis_digest"],
+  "properties": {
+    "schema_version": {"const": "scene_task_target_analysis_result.v1"},
+    "status": {"enum": ["target_ready_for_bounded_sim", "abstained"]},
+    "request_digest": {"$ref": "#/$defs/digest"},
+    "scene_id": {"type": "string"},
+    "source_scene_digest": {"$ref": "#/$defs/digest"},
+    "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
+    "analyzer_provenance": {"type": "object"},
+    "source_video_available": {"type": "boolean"},
+    "source_video_required_for_bounded_sim_target": {"const": false},
+    "derived_reconstruction_views_used": {"type": "boolean"},
+    "metric_scale_status": {"type": "string"},
+    "candidate_targets": {"type": "array", "items": {"type": "object"}},
+    "selected_target": {"type": ["object", "null"]},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {"type": "object"},
+    "target_analysis_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

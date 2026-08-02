@@ -151,7 +151,9 @@ def build_acquisition_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
-def _validate_rights_scope(rights: Mapping[str, Any], source_profile: str, errors: list[str]) -> None:
+def _validate_rights_scope(
+    rights: Mapping[str, Any], source_profile: str, errors: list[str]
+) -> None:
     for key in (
         "terms_version",
         "rights_terms_source",
@@ -166,7 +168,11 @@ def _validate_rights_scope(rights: Mapping[str, Any], source_profile: str, error
         if not isinstance(rights.get(key), str) or not rights[key]:
             errors.append(f"external_source_rights_{key}_missing")
     uses = rights.get("allowed_uses")
-    if not isinstance(uses, list) or not uses or any(not isinstance(item, str) or not item for item in uses):
+    if (
+        not isinstance(uses, list)
+        or not uses
+        or any(not isinstance(item, str) or not item for item in uses)
+    ):
         errors.append("external_source_rights_allowed_uses_invalid")
     if "local_engineering_inspection" not in (uses or []):
         errors.append("external_source_local_inspection_not_authorized")
@@ -318,7 +324,10 @@ def build_external_source_import_receipt(value: Mapping[str, Any]) -> dict[str, 
         _safe_relative(receipt.get("asset_reference"), "external_source_receipt_asset_path_unsafe")
     except ExternalProviderNuRecError as exc:
         errors.extend(exc.codes)
-    if not isinstance(receipt.get("asset_size_bytes"), int) or receipt.get("asset_size_bytes", 0) < 1:
+    if (
+        not isinstance(receipt.get("asset_size_bytes"), int)
+        or receipt.get("asset_size_bytes", 0) < 1
+    ):
         errors.append("external_source_receipt_asset_size_invalid")
     expected = {
         "status": "imported_derived_support_only",
@@ -410,7 +419,11 @@ def import_external_source(
         ):
             raise ExternalProviderNuRecError(["external_source_import_replay_binding_mismatch"])
         replay_asset = Path(replay["asset_absolute_path"])
-        if replay_asset.is_symlink() or not replay_asset.is_file() or sha256_file(replay_asset) != replay["asset_digest"]:
+        if (
+            replay_asset.is_symlink()
+            or not replay_asset.is_file()
+            or sha256_file(replay_asset) != replay["asset_digest"]
+        ):
             raise ExternalProviderNuRecError(["external_source_import_replay_asset_tampered"])
         return replay
 
@@ -451,9 +464,7 @@ def import_external_source(
             if admit_in_place
             else f"{content_id}/assets/{admitted.name}"
         )
-        final_asset_path = (
-            source.resolve() if admit_in_place else final / "assets" / admitted.name
-        )
+        final_asset_path = source.resolve() if admit_in_place else final / "assets" / admitted.name
         receipt = build_external_source_import_receipt(
             {
                 "stable_run_identity": request["stable_run_identity"],
@@ -632,7 +643,12 @@ def _inspect_stage(path: Path) -> dict[str, Any]:
                 bounds = [world.min(axis=0).tolist(), world.max(axis=0).tolist()]
                 mesh_row["world_bounds"] = [_vec3(bounds[0]), _vec3(bounds[1])]
                 all_bounds.extend(bounds)
-                if has_collision and len(counts) and np.all(counts == 3) and len(indices) == len(counts) * 3:
+                if (
+                    has_collision
+                    and len(counts)
+                    and np.all(counts == 3)
+                    and len(indices) == len(counts) * 3
+                ):
                     triangles = indices.reshape((-1, 3))
                     a, b, c = world[triangles[:, 0]], world[triangles[:, 1]], world[triangles[:, 2]]
                     normals = np.cross(b - a, c - a)
@@ -685,7 +701,8 @@ def _inspect_stage(path: Path) -> dict[str, Any]:
         "estimated_world_bounds": bounds_value,
         "unknown_or_provider_schemas": sorted(unknown_schemas),
         "ground_probe_candidates": sorted(
-            ground_candidates, key=lambda row: (-row["triangle_area_m2"], row["collision_prim_path"])
+            ground_candidates,
+            key=lambda row: (-row["triangle_area_m2"], row["collision_prim_path"]),
         ),
     }
 
@@ -708,7 +725,9 @@ def build_provider_nurec_qualification(value: Mapping[str, Any]) -> dict[str, An
     blockers = report.get("blockers")
     if not isinstance(blockers, list):
         errors.append("provider_nurec_blockers_invalid")
-    elif bool(blockers) == (report.get("cpu_qualification_verdict") == "qualified_for_live_isaac_verification"):
+    elif bool(blockers) == (
+        report.get("cpu_qualification_verdict") == "qualified_for_live_isaac_verification"
+    ):
         errors.append("provider_nurec_verdict_blocker_inconsistent")
     expected = {
         "exact_provider_package_preserved": True,
@@ -841,7 +860,11 @@ def build_provider_nurec_isaac_request(value: Mapping[str, Any]) -> dict[str, An
     ):
         errors.append("provider_isaac_expected_prim_paths_invalid")
     camera_ids = request.get("fixed_camera_ids")
-    if not isinstance(camera_ids, list) or not camera_ids or len(camera_ids) != len(set(camera_ids)):
+    if (
+        not isinstance(camera_ids, list)
+        or not camera_ids
+        or len(camera_ids) != len(set(camera_ids))
+    ):
         errors.append("provider_isaac_camera_ids_invalid")
     probe = request.get("physics_probe_request")
     if not isinstance(probe, Mapping):
@@ -854,14 +877,23 @@ def build_provider_nurec_isaac_request(value: Mapping[str, Any]) -> dict[str, An
         ):
             errors.append("provider_isaac_ground_height_invalid")
         xy = probe.get("probe_xy_m")
-        if not isinstance(xy, list) or len(xy) != 2 or any(
-            isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(float(item))
-            for item in (xy or [])
+        if (
+            not isinstance(xy, list)
+            or len(xy) != 2
+            or any(
+                isinstance(item, bool)
+                or not isinstance(item, (int, float))
+                or not math.isfinite(float(item))
+                for item in (xy or [])
+            )
         ):
             errors.append("provider_isaac_probe_xy_invalid")
         if probe.get("selection_status") != "cpu_geometry_candidate_unverified_in_isaac":
             errors.append("provider_isaac_probe_status_invalid")
-        if probe.get("manufacture_ground_plane") is not False or probe.get("require_contact_event") is not True:
+        if (
+            probe.get("manufacture_ground_plane") is not False
+            or probe.get("require_contact_event") is not True
+        ):
             errors.append("provider_isaac_probe_boundary_invalid")
         if not isinstance(probe.get("steps"), int) or probe.get("steps", 0) < 2:
             errors.append("provider_isaac_probe_steps_invalid")
@@ -1003,7 +1035,11 @@ def build_provider_nurec_isaac_runtime_result(
         if stage.get("expected_prim_paths") != request["expected_prim_paths"]:
             errors.append("provider_isaac_runtime_expected_prim_binding_mismatch")
         for key in ("particlefield_prim_count", "active_collision_prim_count"):
-            if not isinstance(stage.get(key), int) or isinstance(stage.get(key), bool) or stage.get(key, 0) < 1:
+            if (
+                not isinstance(stage.get(key), int)
+                or isinstance(stage.get(key), bool)
+                or stage.get(key, 0) < 1
+            ):
                 errors.append(f"provider_isaac_runtime_stage_invalid:{key}")
         physics = result.get("physics_probe")
         if not isinstance(physics, Mapping):
@@ -1051,6 +1087,22 @@ def build_provider_nurec_isaac_runtime_result(
             )
         ):
             errors.append("provider_isaac_runtime_claim_boundary_invalid")
+        trace_pair = result.get("articulated_policy_trace_pair")
+        if trace_pair is not None:
+            if (
+                not isinstance(trace_pair, Mapping)
+                or trace_pair.get("articulated_policy_trace_pair_digest")
+                != canonical_digest(trace_pair, digest_field="articulated_policy_trace_pair_digest")
+                or trace_pair.get("status") not in {"completed", "blocked", "not_requested"}
+                or trace_pair.get("physical_success_claimed") not in {False, None}
+            ):
+                errors.append("provider_isaac_runtime_policy_trace_pair_invalid")
+            if isinstance(boundary, Mapping) and (
+                boundary.get("articulated_policy_execution_observed")
+                is not (isinstance(trace_pair, Mapping) and trace_pair.get("status") == "completed")
+                or boundary.get("comparative_policy_ranking_proven") is not False
+            ):
+                errors.append("provider_isaac_runtime_policy_trace_boundary_invalid")
     expected = canonical_digest(result, digest_field="isaac_runtime_result_digest")
     if supplied is not None and supplied != expected:
         errors.append("provider_isaac_runtime_result_digest_mismatch")
@@ -1120,9 +1172,7 @@ def normalize_provider_nurec_isaac_verification(
                 "provider_isaac_camera_reference_unsafe",
             )
             if reference.suffix.lower() != ".png":
-                raise ExternalProviderNuRecError(
-                    ["provider_isaac_camera_reference_unsafe"]
-                )
+                raise ExternalProviderNuRecError(["provider_isaac_camera_reference_unsafe"])
             artifact = runtime_root.joinpath(*reference.parts)
             observed = sha256_file(artifact)
             if (
@@ -1155,9 +1205,7 @@ def normalize_provider_nurec_isaac_verification(
     result = {
         "schema_version": ISAAC_VERIFICATION_RESULT_SCHEMA,
         "status": "verified_compatibility_only",
-        "isaac_verification_request_digest": request[
-            "isaac_verification_request_digest"
-        ],
+        "isaac_verification_request_digest": request["isaac_verification_request_digest"],
         "isaac_runtime_result_digest": runtime["isaac_runtime_result_digest"],
         "package_digest": request["package_digest"],
         "camera_artifacts": camera_rows,
@@ -1202,15 +1250,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         destination = Path(args.qualification_output)
         if destination.is_symlink():
-            raise ExternalProviderNuRecError(["provider_nurec_qualification_output_symlink_forbidden"])
+            raise ExternalProviderNuRecError(
+                ["provider_nurec_qualification_output_symlink_forbidden"]
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(
             json.dumps(qualification, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
     except (OSError, json.JSONDecodeError, ExternalProviderNuRecError) as exc:
-        codes = list(exc.codes) if isinstance(exc, ExternalProviderNuRecError) else [
-            f"provider_nurec_cli_input_error:{type(exc).__name__}"
-        ]
+        codes = (
+            list(exc.codes)
+            if isinstance(exc, ExternalProviderNuRecError)
+            else [f"provider_nurec_cli_input_error:{type(exc).__name__}"]
+        )
         print(json.dumps({"status": "abstention", "blockers": sorted(codes)}, sort_keys=True))
         return 2
     print(

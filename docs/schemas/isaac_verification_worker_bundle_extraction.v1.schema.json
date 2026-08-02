@@ -27,7 +27,8 @@
               "bundle_manifest.json", "fixed_cameras.json",
               "isaac_asset_verification_request.v1.json", "reconstruction.usdz",
               "run_isaac_splat_nurec_render.py", "render_options.json",
-              "provider_nurec_isaac_verification_request.v1.json"
+              "provider_nurec_isaac_verification_request.v1.json",
+              "external_scene_isaac_verification_request.v1.json"
             ]
           },
           "digest": {"$ref": "#/$defs/digest"},

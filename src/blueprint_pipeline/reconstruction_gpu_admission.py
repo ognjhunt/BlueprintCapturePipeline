@@ -40,6 +40,7 @@ OPERATIONS = {
     "trainer_canary",
     "isaac_canary",
     "provider_nurec_isaac_canary",
+    "external_scene_isaac_canary",
 }
 EXECUTABLE_OPERATIONS = {
     "worker_smoke",
@@ -47,6 +48,7 @@ EXECUTABLE_OPERATIONS = {
     "trainer_canary",
     "isaac_canary",
     "provider_nurec_isaac_canary",
+    "external_scene_isaac_canary",
 }
 EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "worker_smoke": "reconstruction_vast_worker_smoke_result.v1",
@@ -54,8 +56,14 @@ EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "trainer_canary": "reconstruction_training_result.v1",
     "isaac_canary": "isaac_splat_nurec_render_result.v3",
     "provider_nurec_isaac_canary": "provider_nurec_isaac_runtime_result.v1",
+    "external_scene_isaac_canary": "isaac_splat_nurec_render_result.v3",
 }
 PROVIDER_NUREC_ISAAC_OPERATION = "provider_nurec_isaac_canary"
+EXTERNAL_SCENE_ISAAC_OPERATION = "external_scene_isaac_canary"
+EXTERNAL_DERIVED_ISAAC_OPERATIONS = {
+    PROVIDER_NUREC_ISAAC_OPERATION,
+    EXTERNAL_SCENE_ISAAC_OPERATION,
+}
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
@@ -88,11 +96,21 @@ def build_reconstruction_gpu_canary_request(
     ):
         if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
             errors.append(f"reconstruction_gpu_{key}_invalid")
-    if operation == PROVIDER_NUREC_ISAAC_OPERATION:
-        for key in (
-            "external_import_receipt_digest",
-            "provider_qualification_report_digest",
-        ):
+    if operation in EXTERNAL_DERIVED_ISAAC_OPERATIONS:
+        required_external_digests = (
+            ("external_import_receipt_digest", "provider_qualification_report_digest")
+            if operation == PROVIDER_NUREC_ISAAC_OPERATION
+            else (
+                "remote_processing_authorization_digest",
+                "package_result_digest",
+                "collision_candidate_digest",
+                "scene_frame_binding_digest",
+                "target_analysis_digest",
+                "target_binding_digest",
+                "placement_proposal_digest",
+            )
+        )
+        for key in required_external_digests:
             if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
                 errors.append(f"reconstruction_gpu_{key}_invalid")
         for key in (
@@ -101,7 +119,8 @@ def build_reconstruction_gpu_canary_request(
             "calibration_digest",
         ):
             if key in source:
-                errors.append(f"reconstruction_gpu_provider_capture_binding_forbidden:{key}")
+                boundary = "provider" if operation == PROVIDER_NUREC_ISAAC_OPERATION else "external"
+                errors.append(f"reconstruction_gpu_{boundary}_capture_binding_forbidden:{key}")
         expected_boundaries = {
             "source_relationship_to_blueprint_raw_capture": "none",
             "external_derived_support_asset": True,
@@ -109,7 +128,18 @@ def build_reconstruction_gpu_canary_request(
         }
         for key, expected in expected_boundaries.items():
             if source.get(key) != expected:
-                errors.append(f"reconstruction_gpu_provider_source_boundary_invalid:{key}")
+                boundary = "provider" if operation == PROVIDER_NUREC_ISAAC_OPERATION else "external"
+                errors.append(f"reconstruction_gpu_{boundary}_source_boundary_invalid:{key}")
+        if operation == EXTERNAL_SCENE_ISAAC_OPERATION:
+            for key, expected in {
+                "source_video_available": False,
+                "source_video_required_for_candidate_execution": False,
+                "independent_metric_scale_proven": False,
+                "remote_upload_authorized": True,
+                "paid_compute_authorized": True,
+            }.items():
+                if source.get(key) != expected:
+                    errors.append(f"reconstruction_gpu_external_boundary_invalid:{key}")
     else:
         for key in (
             "reconstruction_dataset_digest",
@@ -129,11 +159,7 @@ def build_reconstruction_gpu_canary_request(
     if not _finite(source.get("max_spend_usd"), minimum=0.000001):
         errors.append("reconstruction_gpu_explicit_budget_missing")
     ttl = source.get("hard_ttl_seconds")
-    if (
-        not isinstance(ttl, int)
-        or isinstance(ttl, bool)
-        or not 1 <= ttl <= MAX_TTL_SECONDS
-    ):
+    if not isinstance(ttl, int) or isinstance(ttl, bool) or not 1 <= ttl <= MAX_TTL_SECONDS:
         errors.append("reconstruction_gpu_explicit_ttl_invalid")
     retries = source.get("retry_cap")
     if (
@@ -142,9 +168,10 @@ def build_reconstruction_gpu_canary_request(
         or not 0 <= retries <= MAX_RETRY_CAP
     ):
         errors.append("reconstruction_gpu_explicit_retry_cap_invalid")
-    if not isinstance(source.get("authority_id"), str) or not str(
-        source.get("authority_id")
-    ).strip():
+    if (
+        not isinstance(source.get("authority_id"), str)
+        or not str(source.get("authority_id")).strip()
+    ):
         errors.append("reconstruction_gpu_paid_authority_missing")
     if source.get("proof_effect") != "none":
         errors.append("reconstruction_gpu_request_proof_effect_invalid")
@@ -300,9 +327,7 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_request_schema_invalid")
     if source.get("operation") not in OPERATIONS:
         blockers.append("reconstruction_gpu_operation_unsupported")
-    expected_result_schema = EXPECTED_RUNTIME_RESULT_SCHEMAS.get(
-        str(source.get("operation") or "")
-    )
+    expected_result_schema = EXPECTED_RUNTIME_RESULT_SCHEMAS.get(str(source.get("operation") or ""))
     if source.get("expected_runtime_result_schema") != expected_result_schema:
         blockers.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
     if source.get("capture_profile") not in CAPTURE_PROFILES:
@@ -326,11 +351,21 @@ def build_reconstruction_gpu_canary_admission(
         if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
             blockers.append(f"reconstruction_gpu_{key}_invalid")
     operation = str(source.get("operation") or "")
-    if operation == PROVIDER_NUREC_ISAAC_OPERATION:
-        for key in (
-            "external_import_receipt_digest",
-            "provider_qualification_report_digest",
-        ):
+    if operation in EXTERNAL_DERIVED_ISAAC_OPERATIONS:
+        required_external_digests = (
+            ("external_import_receipt_digest", "provider_qualification_report_digest")
+            if operation == PROVIDER_NUREC_ISAAC_OPERATION
+            else (
+                "remote_processing_authorization_digest",
+                "package_result_digest",
+                "collision_candidate_digest",
+                "scene_frame_binding_digest",
+                "target_analysis_digest",
+                "target_binding_digest",
+                "placement_proposal_digest",
+            )
+        )
+        for key in required_external_digests:
             if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
                 blockers.append(f"reconstruction_gpu_{key}_invalid")
         for key in (
@@ -339,14 +374,26 @@ def build_reconstruction_gpu_canary_admission(
             "calibration_digest",
         ):
             if key in source:
-                blockers.append(f"reconstruction_gpu_provider_capture_binding_forbidden:{key}")
+                boundary = "provider" if operation == PROVIDER_NUREC_ISAAC_OPERATION else "external"
+                blockers.append(f"reconstruction_gpu_{boundary}_capture_binding_forbidden:{key}")
         for key, expected in {
             "source_relationship_to_blueprint_raw_capture": "none",
             "external_derived_support_asset": True,
             "blueprint_raw_capture_truth": False,
         }.items():
             if source.get(key) != expected:
-                blockers.append(f"reconstruction_gpu_provider_source_boundary_invalid:{key}")
+                boundary = "provider" if operation == PROVIDER_NUREC_ISAAC_OPERATION else "external"
+                blockers.append(f"reconstruction_gpu_{boundary}_source_boundary_invalid:{key}")
+        if operation == EXTERNAL_SCENE_ISAAC_OPERATION:
+            for key, expected in {
+                "source_video_available": False,
+                "source_video_required_for_candidate_execution": False,
+                "independent_metric_scale_proven": False,
+                "remote_upload_authorized": True,
+                "paid_compute_authorized": True,
+            }.items():
+                if source.get(key) != expected:
+                    blockers.append(f"reconstruction_gpu_external_boundary_invalid:{key}")
     else:
         for key in (
             "reconstruction_dataset_digest",
@@ -366,6 +413,7 @@ def build_reconstruction_gpu_canary_admission(
     if source.get("operation") in {
         "isaac_canary",
         "provider_nurec_isaac_canary",
+        "external_scene_isaac_canary",
     }:
         if image_release is None:
             if execute:
@@ -377,9 +425,7 @@ def build_reconstruction_gpu_canary_admission(
                 blockers.append("reconstruction_isaac_image_release_invalid")
             else:
                 image_release_digest = str(release["image_release_digest"])
-                if release.get("resolved_image_digest") != source.get(
-                    "worker_image_digest"
-                ):
+                if release.get("resolved_image_digest") != source.get("worker_image_digest"):
                     blockers.append("reconstruction_isaac_image_release_digest_mismatch")
                 if release.get("source_commit_sha") != source.get("source_commit_sha"):
                     blockers.append("reconstruction_isaac_image_release_source_mismatch")
@@ -496,19 +542,13 @@ def build_reconstruction_gpu_canary_admission(
         "operation": operation,
         "operation_request_digest": source.get("operation_request_digest"),
         "operation_input_bundle_digest": source.get("operation_input_bundle_digest"),
-        "expected_runtime_result_schema": source.get(
-            "expected_runtime_result_schema"
-        ),
+        "expected_runtime_result_schema": source.get("expected_runtime_result_schema"),
         "worker_image_digest": source.get("worker_image_digest"),
         "isaac_image_release_digest": image_release_digest,
         "reconstruction_dataset_digest": source.get("reconstruction_dataset_digest"),
         "frozen_split_digest": source.get("frozen_split_digest"),
-        "external_import_receipt_digest": source.get(
-            "external_import_receipt_digest"
-        ),
-        "provider_qualification_report_digest": source.get(
-            "provider_qualification_report_digest"
-        ),
+        "external_import_receipt_digest": source.get("external_import_receipt_digest"),
+        "provider_qualification_report_digest": source.get("provider_qualification_report_digest"),
         "max_spend_usd": max_spend_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": retry_cap,
@@ -525,13 +565,13 @@ def build_reconstruction_gpu_canary_admission(
             ["qualify_reconstruction_operation_execution_adapter"]
             if operation not in EXECUTABLE_OPERATIONS
             else (
-            ["qualify_vast_execution_adapter"]
-            if blockers == ["reconstruction_vast_execution_adapter_not_qualified"]
-            else (
-                ["invoke_canonical_gpu_canary_with_explicit_execute_authority"]
-                if not blockers
-                else ["resolve_admission_blockers"]
-            )
+                ["qualify_vast_execution_adapter"]
+                if blockers == ["reconstruction_vast_execution_adapter_not_qualified"]
+                else (
+                    ["invoke_canonical_gpu_canary_with_explicit_execute_authority"]
+                    if not blockers
+                    else ["resolve_admission_blockers"]
+                )
             )
         ),
     }

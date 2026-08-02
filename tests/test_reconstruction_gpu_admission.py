@@ -95,6 +95,30 @@ def _request(**overrides):
             external_derived_support_asset=True,
             blueprint_raw_capture_truth=False,
         )
+    if operation == "external_scene_isaac_canary":
+        for key in (
+            "reconstruction_dataset_digest",
+            "frozen_split_digest",
+            "calibration_digest",
+        ):
+            value.pop(key)
+        value.update(
+            remote_processing_authorization_digest=D1,
+            package_result_digest=D2,
+            collision_candidate_digest=D3,
+            scene_frame_binding_digest=D4,
+            target_analysis_digest=D5,
+            target_binding_digest=D1,
+            placement_proposal_digest=D2,
+            source_relationship_to_blueprint_raw_capture="none",
+            external_derived_support_asset=True,
+            blueprint_raw_capture_truth=False,
+            source_video_available=False,
+            source_video_required_for_candidate_execution=False,
+            independent_metric_scale_proven=False,
+            remote_upload_authorized=True,
+            paid_compute_authorized=True,
+        )
     value.update(overrides)
     return build_reconstruction_gpu_canary_request(value)
 
@@ -148,10 +172,7 @@ def test_vast_first_reconstruction_canary_dry_run_binds_all_proof_inputs():
     assert bound["frozen_split_digest"] == D3
     assert bound["operation_request_digest"] == D1
     assert bound["operation_input_bundle_digest"] == D2
-    assert (
-        bound["expected_runtime_result_schema"]
-        == "reconstruction_vast_worker_smoke_result.v1"
-    )
+    assert bound["expected_runtime_result_schema"] == "reconstruction_vast_worker_smoke_result.v1"
     assert bound["provider_mutation_authorized"] is False
     schema = json.loads(
         (
@@ -198,13 +219,34 @@ def test_provider_request_forbids_fabricated_capture_bindings():
         ).read_text(encoding="utf-8")
     )
     jsonschema.validate(request, schema)
-    with pytest.raises(
-        ValueError, match="reconstruction_gpu_provider_capture_binding_forbidden"
-    ):
+    with pytest.raises(ValueError, match="reconstruction_gpu_provider_capture_binding_forbidden"):
         _request(
             operation="provider_nurec_isaac_canary",
             capture_profile="public_provider_sample",
             reconstruction_dataset_digest=D1,
+        )
+
+
+def test_external_scene_canary_allows_missing_video_but_not_fake_metric_scale():
+    request = _request(
+        operation="external_scene_isaac_canary",
+        capture_profile="user_managed_provider_export",
+    )
+    assert request["source_video_available"] is False
+    assert request["source_video_required_for_candidate_execution"] is False
+    assert request["independent_metric_scale_proven"] is False
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs/schemas/reconstruction_gpu_canary.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(request, schema)
+    with pytest.raises(ValueError, match="independent_metric_scale_proven"):
+        _request(
+            operation="external_scene_isaac_canary",
+            capture_profile="user_managed_provider_export",
+            independent_metric_scale_proven=True,
         )
 
 
@@ -261,9 +303,7 @@ def test_preflight_collector_requires_global_zero_and_independent_watchdog():
 def test_reconstruction_canary_fails_closed_on_authority_provider_and_evidence_drift():
     request = _request()
     request["candidate_may_read_hidden_heldout"] = True
-    request["request_digest"] = canonical_digest(
-        request, digest_field="request_digest"
-    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     admission, _ = _build(
         request=request,
         provider="runpod",
@@ -308,8 +348,7 @@ def test_scientific_canaries_use_only_their_qualified_typed_adapters():
         assert dry_run["status"] == "dry_run_ready"
         assert dry_run["operation"] == operation
         assert (
-            dry_run["expected_runtime_result_schema"]
-            == EXPECTED_RUNTIME_RESULT_SCHEMAS[operation]
+            dry_run["expected_runtime_result_schema"] == EXPECTED_RUNTIME_RESULT_SCHEMAS[operation]
         )
         assert dry_run["execution_adapter_qualified"] is False
         assert dry_run["legal_next_actions"] == [
@@ -369,12 +408,9 @@ def test_isaac_execute_requires_exact_clean_image_release_binding():
             image_release=_image_release(),
         )
         assert passed["status"] == "execute_ready"
-        assert passed["isaac_image_release_digest"] == _image_release()[
-            "image_release_digest"
-        ]
-        assert passed_bound["isaac_image_release_digest"] == passed[
-            "isaac_image_release_digest"
-        ]
+        assert passed["isaac_image_release_digest"] == _image_release()["image_release_digest"]
+        assert passed_bound["isaac_image_release_digest"] == passed["isaac_image_release_digest"]
+
 
 def test_operation_request_input_and_result_schema_are_immutable_admission_inputs():
     request = _request()
@@ -383,23 +419,13 @@ def test_operation_request_input_and_result_schema_are_immutable_admission_input
         operation_input_bundle_digest="sha256:" + "z" * 64,
         expected_runtime_result_schema="reconstruction_training_result.v1",
     )
-    request["request_digest"] = canonical_digest(
-        request, digest_field="request_digest"
-    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     admission, bound = _build(request=request)
 
     assert admission["status"] == "blocked"
-    assert (
-        "reconstruction_gpu_operation_request_digest_invalid" in admission["blockers"]
-    )
-    assert (
-        "reconstruction_gpu_operation_input_bundle_digest_invalid"
-        in admission["blockers"]
-    )
-    assert (
-        "reconstruction_gpu_expected_runtime_result_schema_invalid"
-        in admission["blockers"]
-    )
+    assert "reconstruction_gpu_operation_request_digest_invalid" in admission["blockers"]
+    assert "reconstruction_gpu_operation_input_bundle_digest_invalid" in admission["blockers"]
+    assert "reconstruction_gpu_expected_runtime_result_schema_invalid" in admission["blockers"]
     assert bound["provider_mutation_authorized"] is False
 
 
@@ -486,11 +512,9 @@ def test_allocator_routes_reconstruction_probe_without_provider_mutation(
 
 @pytest.mark.parametrize(
     "operation",
-    ["isaac_canary", "provider_nurec_isaac_canary"],
+    ["isaac_canary", "provider_nurec_isaac_canary", "external_scene_isaac_canary"],
 )
-def test_allocator_routes_isaac_only_to_separate_vast_lifecycle(
-    tmp_path, monkeypatch, operation
-):
+def test_allocator_routes_isaac_only_to_separate_vast_lifecycle(tmp_path, monkeypatch, operation):
     request_digest = D1
     verification_digest = D2
     bundle_digest = D3
@@ -518,9 +542,7 @@ def test_allocator_routes_isaac_only_to_separate_vast_lifecycle(
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     bound_path.write_text(json.dumps(bound), encoding="utf-8")
     preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
-    monkeypatch.setattr(
-        allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission
-    )
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission)
     monkeypatch.setattr(
         allocator,
         "validate_isaac_verification_worker_bundle_receipt",
@@ -546,9 +568,7 @@ def test_allocator_routes_isaac_only_to_separate_vast_lifecycle(
             "cost_usd": 0.1,
         }
 
-    monkeypatch.setattr(
-        allocator, "run_reconstruction_isaac_vast_operation", fake_isaac
-    )
+    monkeypatch.setattr(allocator, "run_reconstruction_isaac_vast_operation", fake_isaac)
     monkeypatch.setattr(
         allocator,
         "run_reconstruction_vast_operation",

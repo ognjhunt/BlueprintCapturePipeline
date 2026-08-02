@@ -80,6 +80,72 @@
         }
       }
     },
+    "articulated_policy_trace_pair": {
+      "type": "object",
+      "required": [
+        "requested", "schema_version", "status", "policy_trace_request_digest",
+        "robot_id", "robot_prim_path", "controller_id", "joint_names",
+        "candidate_traces", "trace_pair_assessment",
+        "articulated_policy_execution_observed", "comparative_policy_ranking_proven",
+        "physical_success_claimed", "articulated_policy_trace_pair_digest"
+      ],
+      "properties": {
+        "requested": {"const": true},
+        "schema_version": {"const": "franka_articulated_policy_trace_pair.v1"},
+        "status": {"const": "completed"},
+        "policy_trace_request_digest": {"$ref": "#/$defs/digest"},
+        "robot_id": {"const": "franka_panda"},
+        "controller_id": {"const": "deterministic_franka_joint_position_pair.v1"},
+        "candidate_traces": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "required": [
+              "schema_version", "policy_id", "status", "samples",
+              "observed_start_joint_positions_rad", "observed_end_joint_positions_rad",
+              "egocentric_observation", "physical_success_claimed", "policy_trace_digest"
+            ],
+            "properties": {
+              "schema_version": {"const": "franka_articulated_policy_trace.v1"},
+              "policy_id": {"enum": ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]},
+              "status": {"const": "completed"},
+              "samples": {"type": "array", "minItems": 1},
+              "egocentric_observation": {
+                "type": "object",
+                "required": ["artifact_reference", "digest", "nonblank", "robot_relative_mount"],
+                "properties": {
+                  "digest": {"$ref": "#/$defs/digest"},
+                  "nonblank": {"const": true},
+                  "robot_relative_mount": {"const": true}
+                }
+              },
+              "physical_success_claimed": {"const": false},
+              "policy_trace_digest": {"$ref": "#/$defs/digest"}
+            }
+          }
+        },
+        "trace_pair_assessment": {
+          "type": "object",
+          "required": [
+            "status", "identical_frozen_start_observed", "distinct",
+            "robot_relative_egocentric_camera", "trace_pair_digest"
+          ],
+          "properties": {
+            "status": {"const": "completed"},
+            "identical_frozen_start_observed": {"const": true},
+            "distinct": {"const": true},
+            "robot_relative_egocentric_camera": {"const": true},
+            "trace_pair_digest": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "articulated_policy_execution_observed": {"const": true},
+        "comparative_policy_ranking_proven": {"const": false},
+        "physical_success_claimed": {"const": false},
+        "articulated_policy_trace_pair_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
     "proof_boundary": {
       "type": "object",
       "required": [
@@ -93,7 +159,9 @@
         "physics_navigation_control_proven": {"const": false},
         "physical_success_proven": {"const": false},
         "physical_robot_readiness_proven": {"const": false},
-        "deployment_readiness_proven": {"const": false}
+        "deployment_readiness_proven": {"const": false},
+        "articulated_policy_execution_observed": {"type": "boolean"},
+        "comparative_policy_ranking_proven": {"const": false}
       }
     },
     "isaac_runtime_result_digest": {"$ref": "#/$defs/digest"}

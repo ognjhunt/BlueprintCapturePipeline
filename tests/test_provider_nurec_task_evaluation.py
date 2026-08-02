@@ -148,6 +148,97 @@ def _runtime(request: dict) -> dict:
     )
 
 
+def _runtime_with_trace(request: dict) -> dict:
+    runtime = copy.deepcopy(_runtime(request))
+    runtime.pop("isaac_runtime_result_digest")
+    start = [0.0, -0.55, 0.0, -2.6, 0.0, 2.05, 0.75]
+    traces = []
+    for policy_id, end, path_length, observation_digest in (
+        ("franka-fixed-hold-v1", start, 0.001, D[1]),
+        (
+            "franka-inspection-sweep-v1",
+            [0.34, -0.55, 0.0, -2.6, 0.0, 2.05, 0.75],
+            0.22,
+            D[2],
+        ),
+    ):
+        trace = {
+            "schema_version": "franka_articulated_policy_trace.v1",
+            "policy_id": policy_id,
+            "robot_id": "franka_panda",
+            "controller_id": "deterministic_franka_joint_position_pair.v1",
+            "status": "completed",
+            "duration_steps": 120,
+            "samples": [
+                {
+                    "step": 120,
+                    "sim_time_seconds": 2.0,
+                    "commanded_joint_positions_rad": end,
+                    "observed_joint_positions_rad": end,
+                    "observed_joint_velocities_rad_s": [0.0] * 7,
+                    "end_effector_position_stage_units": [31.2, -9.65, 0.8],
+                }
+            ],
+            "observed_start_joint_positions_rad": start,
+            "observed_end_joint_positions_rad": end,
+            "commanded_end_joint_positions_rad": end,
+            "maximum_end_tracking_error_rad": 0.0,
+            "end_effector_path_length_stage_units": path_length,
+            "egocentric_observation": {
+                "camera_parent_link": "panda_hand",
+                "artifact_reference": f"policy_traces/{policy_id}/egocentric.png",
+                "digest": observation_digest,
+                "width": 320,
+                "height": 240,
+                "pixel_std": 12.0,
+                "nonblank": True,
+                "robot_relative_mount": True,
+            },
+            "physical_success_claimed": False,
+            "claim_boundary": "simulated trace only",
+        }
+        trace["policy_trace_digest"] = canonical_digest(trace, digest_field="policy_trace_digest")
+        traces.append(trace)
+    assessment = {
+        "status": "completed",
+        "blockers": [],
+        "identical_frozen_start_observed": True,
+        "maximum_start_joint_delta_rad": 0.0,
+        "distinct": True,
+        "maximum_end_joint_delta_rad": 0.34,
+        "distinctness_threshold_rad": 0.1,
+        "identical_start_tolerance_rad": 0.02,
+        "claim_boundary": "simulated distinguishability only",
+        "candidate_trace_digests": [row["policy_trace_digest"] for row in traces],
+        "robot_relative_egocentric_camera": True,
+    }
+    assessment["trace_pair_digest"] = canonical_digest(assessment, digest_field="trace_pair_digest")
+    pair = {
+        "requested": True,
+        "schema_version": "franka_articulated_policy_trace_pair.v1",
+        "policy_trace_request_digest": D[3],
+        "robot_id": "franka_panda",
+        "robot_prim_path": "/World/Franka",
+        "controller_id": "deterministic_franka_joint_position_pair.v1",
+        "joint_names": [f"panda_joint{index}" for index in range(1, 8)],
+        "physics_dt_seconds": 1.0 / 60.0,
+        "status": "completed",
+        "blockers": [],
+        "candidate_traces": traces,
+        "trace_pair_assessment": assessment,
+        "articulated_policy_execution_observed": True,
+        "comparative_policy_ranking_proven": False,
+        "physical_success_claimed": False,
+    }
+    pair["articulated_policy_trace_pair_digest"] = canonical_digest(
+        pair, digest_field="articulated_policy_trace_pair_digest"
+    )
+    runtime["articulated_policy_trace_pair"] = pair
+    runtime["proof_boundary"]["articulated_policy_execution_observed"] = True
+    runtime["proof_boundary"]["comparative_policy_ranking_proven"] = False
+    return build_provider_nurec_isaac_runtime_result(runtime, verification_request=request)
+
+
 def _independent(request: dict, runtime: dict) -> dict:
     value = {
         "schema_version": "reconstruction_isaac_independent_qualification.v1",
@@ -263,6 +354,40 @@ def test_compile_routes_exact_evidence_and_abstains_on_policy_claims(tmp_path) -
         },
     ]
     assert (tmp_path / "provider_nurec_task_evaluation/summary.json").is_file()
+
+
+def test_compile_supports_distinct_articulated_trace_pair_without_ranking(tmp_path) -> None:
+    request = _request()
+    runtime = _runtime_with_trace(request)
+    independent = _independent(request, runtime)
+    packet = build_provider_nurec_robot_placement_packet(
+        verification_request=request,
+        runtime_result=runtime,
+        independent_qualification=independent,
+        site_id="public_reference_ethel_sim",
+        task_id="inspect-ground-probe-waypoint",
+    )
+    result = compile_provider_nurec_task_evaluation(
+        verification_request=request,
+        runtime_result=runtime,
+        independent_qualification=independent,
+        visual_placement_evidence=_visual(request, runtime),
+        task_definition=packet["task_definition"],
+        robot_placement_result=packet["robot_placement_result"],
+        output_root=tmp_path,
+    )
+
+    verdicts = {row["claim_id"]: row["verdict"] for row in result["per_claim_verdicts"]}
+    assert verdicts["franka-policy-trace-distinguishability"] == "supported"
+    assert verdicts["franka-candidate-policy-ranking"] == "abstention"
+    assert result["claim_flags"]["articulated_policy_execution"] is True
+    assert result["claim_flags"]["policy_trace_distinguishability"] is True
+    assert result["claim_flags"]["comparative_policy_ranking"] is False
+    assert result["paid_compute_reused_not_relaunched"] is False
+    assert [row["policy_trace_status"] for row in result["candidate_policies"]] == [
+        "collected",
+        "collected",
+    ]
 
 
 def test_compile_rejects_tampered_visual_evidence(tmp_path) -> None:

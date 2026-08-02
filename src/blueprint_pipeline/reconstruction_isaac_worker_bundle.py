@@ -30,6 +30,11 @@ from .external_provider_nurec import (
     ISAAC_REQUEST_SCHEMA as PROVIDER_ISAAC_REQUEST_SCHEMA,
     build_provider_nurec_isaac_request,
 )
+from .external_scene_isaac_verification import (
+    ExternalSceneIsaacVerificationError,
+    REQUEST_SCHEMA as EXTERNAL_SCENE_ISAAC_REQUEST_SCHEMA,
+    build_external_scene_isaac_verification_request,
+)
 
 
 ISAAC_WORKER_BUNDLE_SCHEMA = "isaac_verification_worker_bundle.v1"
@@ -121,7 +126,9 @@ def _validate_render_options(path: Path) -> dict[str, Any]:
                 key = str(raw_key)
                 path_text = f"{prefix}.{key}" if prefix else key
                 lowered = key.lower()
-                if any(token in lowered for token in ("password", "secret", "credential", "api_key")):
+                if any(
+                    token in lowered for token in ("password", "secret", "credential", "api_key")
+                ):
                     if child not in (None, "", [], {}):
                         found.append(path_text)
                 found.extend(secret_paths(child, path_text))
@@ -166,6 +173,134 @@ def _validate_render_options(path: Path) -> dict[str, Any]:
     for key in ("robot_only_pass",):
         if value.get(key) is not True:
             errors.append(f"isaac_render_options_{key}_must_be_true")
+    trace = value.get("articulated_policy_trace_request")
+    if trace is not None:
+        if not isinstance(trace, Mapping):
+            errors.append("isaac_render_options_policy_trace_request_invalid")
+        else:
+            expected_joint_names = [f"panda_joint{index}" for index in range(1, 8)]
+            joint_names = trace.get("joint_names")
+            start = trace.get("start_joint_positions_rad")
+            candidates = trace.get("candidates")
+            if trace.get("schema_version") != "franka_articulated_policy_trace_request.v1":
+                errors.append("isaac_render_options_policy_trace_schema_invalid")
+            if trace.get("robot_id") != "franka_panda" or trace.get("robot_prim_path") != prim_path:
+                errors.append("isaac_render_options_policy_trace_robot_binding_invalid")
+            if trace.get("controller_id") != "deterministic_franka_joint_position_pair.v1":
+                errors.append("isaac_render_options_policy_trace_controller_invalid")
+            if joint_names != expected_joint_names:
+                errors.append("isaac_render_options_policy_trace_joint_names_invalid")
+
+            def finite_vector(vector: Any) -> bool:
+                return (
+                    isinstance(vector, list)
+                    and len(vector) == len(expected_joint_names)
+                    and all(
+                        not isinstance(item, bool)
+                        and isinstance(item, (int, float))
+                        and math.isfinite(float(item))
+                        for item in vector
+                    )
+                )
+
+            if not finite_vector(start):
+                errors.append("isaac_render_options_policy_trace_start_invalid")
+            if (
+                not isinstance(trace.get("physics_dt_seconds"), (int, float))
+                or isinstance(trace.get("physics_dt_seconds"), bool)
+                or abs(float(trace.get("physics_dt_seconds", 0.0)) - (1.0 / 60.0)) > 1e-12
+            ):
+                errors.append("isaac_render_options_policy_trace_physics_dt_invalid")
+            for key, low, high in (
+                ("reset_settle_steps", 2, 600),
+                ("sample_interval_steps", 1, 60),
+            ):
+                item = trace.get(key)
+                if not isinstance(item, int) or isinstance(item, bool) or not low <= item <= high:
+                    errors.append(f"isaac_render_options_policy_trace_{key}_invalid")
+            threshold = trace.get("distinctness_threshold_rad")
+            if (
+                not isinstance(threshold, (int, float))
+                or isinstance(threshold, bool)
+                or not 0.01 <= float(threshold) <= 1.0
+            ):
+                errors.append("isaac_render_options_policy_trace_distinctness_threshold_invalid")
+            start_tolerance = trace.get("identical_start_tolerance_rad")
+            if (
+                not isinstance(start_tolerance, (int, float))
+                or isinstance(start_tolerance, bool)
+                or not 0.0 <= float(start_tolerance) <= 0.05
+            ):
+                errors.append("isaac_render_options_policy_trace_start_tolerance_invalid")
+            expected_policy_ids = ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+            if (
+                not isinstance(candidates, list)
+                or len(candidates) != 2
+                or [row.get("policy_id") for row in candidates if isinstance(row, Mapping)]
+                != expected_policy_ids
+            ):
+                errors.append("isaac_render_options_policy_trace_candidates_invalid")
+            elif finite_vector(start):
+                for index, candidate in enumerate(candidates):
+                    final = candidate.get("final_joint_positions_rad")
+                    steps = candidate.get("duration_steps")
+                    if not finite_vector(final):
+                        errors.append(
+                            f"isaac_render_options_policy_trace_candidate_{index}_target_invalid"
+                        )
+                    if (
+                        not isinstance(steps, int)
+                        or isinstance(steps, bool)
+                        or not 30 <= steps <= 1_800
+                    ):
+                        errors.append(
+                            f"isaac_render_options_policy_trace_candidate_{index}_steps_invalid"
+                        )
+                if all(finite_vector(row.get("final_joint_positions_rad")) for row in candidates):
+                    hold = candidates[0]["final_joint_positions_rad"]
+                    sweep = candidates[1]["final_joint_positions_rad"]
+                    if max(abs(float(a) - float(b)) for a, b in zip(start, hold)) > 1e-9:
+                        errors.append("isaac_render_options_policy_trace_hold_policy_invalid")
+                    if max(abs(float(a) - float(b)) for a, b in zip(start, sweep)) < float(
+                        threshold or 0.0
+                    ):
+                        errors.append("isaac_render_options_policy_trace_sweep_policy_not_distinct")
+            camera = trace.get("egocentric_camera")
+            if not isinstance(camera, Mapping):
+                errors.append("isaac_render_options_policy_trace_egocentric_camera_missing")
+            else:
+                if camera.get("parent_link_name") != "panda_hand":
+                    errors.append("isaac_render_options_policy_trace_camera_parent_invalid")
+                for key in ("local_position_m", "local_target_m", "local_up"):
+                    vector = camera.get(key)
+                    if (
+                        not isinstance(vector, list)
+                        or len(vector) != 3
+                        or any(
+                            isinstance(item, bool)
+                            or not isinstance(item, (int, float))
+                            or not math.isfinite(float(item))
+                            for item in (vector or [])
+                        )
+                    ):
+                        errors.append(f"isaac_render_options_policy_trace_camera_{key}_invalid")
+                for key, low, high in (("width", 64, 1280), ("height", 64, 1280)):
+                    item = camera.get(key)
+                    if (
+                        not isinstance(item, int)
+                        or isinstance(item, bool)
+                        or not low <= item <= high
+                    ):
+                        errors.append(f"isaac_render_options_policy_trace_camera_{key}_invalid")
+                fov = camera.get("fov_degrees")
+                if (
+                    not isinstance(fov, (int, float))
+                    or isinstance(fov, bool)
+                    or not 20.0 <= float(fov) <= 140.0
+                ):
+                    errors.append("isaac_render_options_policy_trace_camera_fov_invalid")
+            if trace.get("physical_success_claimed") is not False:
+                errors.append("isaac_render_options_policy_trace_physical_claim_forbidden")
     if errors:
         raise IsaacWorkerBundleError(errors)
     return dict(value)
@@ -232,6 +367,13 @@ def _validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
             raise IsaacWorkerBundleError(
                 [f"provider_isaac_verification_request_invalid:{code}" for code in exc.codes]
             ) from exc
+    if value.get("schema_version") == EXTERNAL_SCENE_ISAAC_REQUEST_SCHEMA:
+        try:
+            return build_external_scene_isaac_verification_request(value)
+        except ExternalSceneIsaacVerificationError as exc:
+            raise IsaacWorkerBundleError(
+                [f"external_scene_isaac_verification_request_invalid:{code}" for code in exc.codes]
+            ) from exc
     try:
         return build_isaac_asset_verification_request(value)
     except IsaacReconstructionVerificationError as exc:
@@ -252,9 +394,7 @@ def validate_isaac_verification_worker_bundle_receipt(
         PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA,
     }:
         errors.append("isaac_bundle_receipt_schema_invalid")
-    if receipt.get("receipt_digest") != canonical_digest(
-        receipt, digest_field="receipt_digest"
-    ):
+    if receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest"):
         errors.append("isaac_bundle_receipt_digest_mismatch")
     for key in (
         "isaac_verification_request_digest",
@@ -318,13 +458,18 @@ def compile_isaac_verification_worker_bundle(
 
     request = _validate_request(verification_request)
     provider_request = request["schema_version"] == PROVIDER_ISAAC_REQUEST_SCHEMA
+    external_scene_request = request["schema_version"] == EXTERNAL_SCENE_ISAAC_REQUEST_SCHEMA
     bundle_schema = (
         PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA if provider_request else ISAAC_WORKER_BUNDLE_SCHEMA
     )
     request_member = (
         "provider_nurec_isaac_verification_request.v1.json"
         if provider_request
-        else "isaac_asset_verification_request.v1.json"
+        else (
+            "external_scene_isaac_verification_request.v1.json"
+            if external_scene_request
+            else "isaac_asset_verification_request.v1.json"
+        )
     )
     package_root = Path(package_artifact_root)
     if package_root.is_symlink() or not package_root.is_dir():
@@ -417,9 +562,7 @@ def compile_isaac_verification_worker_bundle(
         command = _command_for_request(request)
         manifest = {
             "schema_version": bundle_schema,
-            "isaac_verification_request_digest": request[
-                "isaac_verification_request_digest"
-            ],
+            "isaac_verification_request_digest": request["isaac_verification_request_digest"],
             "package_digest": request["package_digest"],
             "fixed_camera_spec_digest": request["fixed_camera_spec_digest"],
             "runtime_implementation_digest": request["runtime_implementation_digest"],
@@ -469,9 +612,7 @@ def compile_isaac_verification_worker_bundle(
             "bundle_bytes": archive_path.stat().st_size,
             "cost_usd": 0.0,
         }
-        receipt["receipt_digest"] = canonical_digest(
-            receipt, digest_field="receipt_digest"
-        )
+        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
         write_json(temporary / receipt_filename, receipt)
         os.replace(temporary, final)
         return receipt
@@ -514,23 +655,18 @@ def extract_isaac_verification_worker_bundle(
             extraction = json.loads(extraction_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise IsaacWorkerBundleError(["isaac_bundle_extraction_replay_invalid"]) from exc
-        if (
-            extraction.get("bundle_digest") != receipt["bundle_digest"]
-            or extraction.get("extraction_receipt_digest")
-            != canonical_digest(extraction, digest_field="extraction_receipt_digest")
-        ):
+        if extraction.get("bundle_digest") != receipt["bundle_digest"] or extraction.get(
+            "extraction_receipt_digest"
+        ) != canonical_digest(extraction, digest_field="extraction_receipt_digest"):
             raise IsaacWorkerBundleError(["isaac_bundle_extraction_replay_tampered"])
         for row in extraction.get("extracted_members") or []:
             target = final.joinpath(*PurePosixPath(str(row.get("archive_path") or "")).parts)
-            if target.is_symlink() or not target.is_file() or _sha256(target) != row.get(
-                "digest"
-            ):
+            if target.is_symlink() or not target.is_file() or _sha256(target) != row.get("digest"):
                 raise IsaacWorkerBundleError(["isaac_bundle_extraction_replay_tampered"])
         return extraction
 
     request_member = str(
-        receipt.get("verification_request_member")
-        or "isaac_asset_verification_request.v1.json"
+        receipt.get("verification_request_member") or "isaac_asset_verification_request.v1.json"
     )
     expected_names = {
         "bundle_manifest.json",
@@ -601,14 +737,12 @@ def extract_isaac_verification_worker_bundle(
             != receipt["isaac_verification_request_digest"]
             or _command_for_request(request) != receipt["command"]
             or _sha256(temporary / "reconstruction.usdz") != receipt["package_digest"]
-            or _sha256(temporary / "fixed_cameras.json")
-            != receipt["fixed_camera_spec_digest"]
+            or _sha256(temporary / "fixed_cameras.json") != receipt["fixed_camera_spec_digest"]
             or _sha256(temporary / "run_isaac_splat_nurec_render.py")
             != receipt["runtime_implementation_digest"]
             or (
                 receipt.get("render_options_digest") is not None
-                and _sha256(temporary / "render_options.json")
-                != receipt["render_options_digest"]
+                and _sha256(temporary / "render_options.json") != receipt["render_options_digest"]
             )
         ):
             raise IsaacWorkerBundleError(["isaac_bundle_extraction_binding_invalid"])
@@ -619,9 +753,7 @@ def extract_isaac_verification_worker_bundle(
             "status": "extracted",
             "bundle_digest": receipt["bundle_digest"],
             "bundle_manifest_digest": receipt["bundle_manifest_digest"],
-            "isaac_verification_request_digest": receipt[
-                "isaac_verification_request_digest"
-            ],
+            "isaac_verification_request_digest": receipt["isaac_verification_request_digest"],
             "extracted_members": extracted_rows,
             "raw_secret_values_extracted": False,
             "provider_allocation_inferred": False,

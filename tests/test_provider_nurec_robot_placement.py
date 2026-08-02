@@ -7,6 +7,7 @@ from blueprint_pipeline.external_provider_nurec import (
 )
 from blueprint_pipeline.provider_nurec_robot_placement import (
     ProviderNuRecRobotPlacementError,
+    build_default_franka_policy_trace_request,
     build_provider_nurec_robot_placement_packet,
     write_provider_nurec_robot_placement_packet,
 )
@@ -155,9 +156,10 @@ def test_packet_uses_franka_default_but_formal_placement_abstains(tmp_path):
     assert support["metric_stage_semantics_declared"] is True
     assert support["independent_known_distance_scale_anchor"] is False
     assert "metric_scale_verified" not in support
-    assert "independent_known_distance_scale_anchor_missing" in packet[
-        "placement_proposal"
-    ]["formal_gaps"]
+    assert (
+        "independent_known_distance_scale_anchor_missing"
+        in packet["placement_proposal"]["formal_gaps"]
+    )
     placement = packet["robot_placement_result"]
     assert placement["status"] == "abstained"
     assert placement["selected_candidate_id"] is None
@@ -170,6 +172,28 @@ def test_packet_uses_franka_default_but_formal_placement_abstains(tmp_path):
     assert receipt["formal_placement_status"] == "abstained"
     assert receipt["physical_robot_execution_authorized"] is False
     assert (tmp_path / "render_options.json").is_file()
+
+
+def test_packet_can_bind_reusable_franka_trace_pair_without_upgrading_placement():
+    request = _request()
+    runtime = _runtime(request)
+    packet = build_provider_nurec_robot_placement_packet(
+        verification_request=request,
+        runtime_result=runtime,
+        independent_qualification=_qualification(request, runtime),
+        site_id="public_reference_ethel_sim",
+        task_id="inspect-ground-probe-waypoint",
+        include_articulated_policy_trace_pair=True,
+    )
+
+    trace = packet["render_options"]["articulated_policy_trace_request"]
+    assert trace == build_default_franka_policy_trace_request(robot_prim_path="/World/Franka")
+    assert [row["policy_id"] for row in trace["candidates"]] == [
+        "franka-fixed-hold-v1",
+        "franka-inspection-sweep-v1",
+    ]
+    assert packet["robot_placement_result"]["status"] == "abstained"
+    assert trace["physical_success_claimed"] is False
 
 
 def test_packet_rejects_unqualified_runtime_binding():

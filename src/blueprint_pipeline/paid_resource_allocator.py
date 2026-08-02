@@ -672,6 +672,7 @@ def _run_reconstruction_gpu_canary(
         "trainer_canary",
         "isaac_canary",
         "provider_nurec_isaac_canary",
+        "external_scene_isaac_canary",
     }:
         url_inputs.extend(
             [
@@ -694,6 +695,7 @@ def _run_reconstruction_gpu_canary(
                 if operation in {
                     "isaac_canary",
                     "provider_nurec_isaac_canary",
+                    "external_scene_isaac_canary",
                 }:
                     operation_bundle_receipt = (
                         validate_isaac_verification_worker_bundle_receipt(
@@ -724,7 +726,11 @@ def _run_reconstruction_gpu_canary(
                         ("source_commit_sha", "source_commit_sha"),
                     )
                     if operation
-                    in {"isaac_canary", "provider_nurec_isaac_canary"}
+                    in {
+                        "isaac_canary",
+                        "provider_nurec_isaac_canary",
+                        "external_scene_isaac_canary",
+                    }
                     else (
                         ("operation", "operation"),
                         ("operation_request_digest", "operation_request_digest"),
