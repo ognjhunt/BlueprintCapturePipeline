@@ -166,6 +166,11 @@ def test_dynamic_analyzer_proposal_is_bound_and_deterministically_authorized(tmp
     assert target["status"] == "authorized_derived_sim_target"
     assert "independent_metric_scale_missing" in target["qualification_gaps"]
     assert result["target_analysis"]["claim_boundary"]["simulated_task_success"] is False
+    requirement = result["task_zone_asset_requirement"]
+    assert requirement["status"] == "not_required_for_inspection_only"
+    assert requirement["interaction_mode"] == "inspection_only"
+    assert requirement["verified_simready_asset_required"] is False
+    assert requirement["authoritative_asset_selection_performed"] is False
     proposal_set["proposal_set_digest"] = canonical_digest(
         proposal_set, digest_field="proposal_set_digest"
     )
@@ -196,6 +201,37 @@ def test_weak_visual_to_3d_binding_abstains_without_fabricating_target(tmp_path)
     assert "bbox_binding_projected_support_insufficient" in result["binding_results"][0]["blockers"]
     assert result["target_analysis"]["selected_target"] is None
     assert result["target_analysis"]["blockers"] == ["no_qualified_3d_task_target"]
+    assert result["task_zone_asset_requirement"]["status"] == (
+        "abstained_no_selected_target"
+    )
+
+
+def test_contact_task_surfaces_verified_simready_requirement_before_sim(tmp_path) -> None:
+    result = _compile(
+        tmp_path,
+        task_context={
+            "site_task_intent": "turn the visible faucet handle",
+            "requested_interaction_mode": "articulation",
+        },
+    )
+
+    requirement = result["task_zone_asset_requirement"]
+    assert requirement["status"] == "verified_task_zone_asset_required"
+    assert requirement["interaction_mode"] == "articulation"
+    assert requirement["interaction_mode_source"] == "operator_task_context"
+    assert requirement["verified_simready_asset_required"] is True
+    assert requirement["next_stage"] == (
+        "approve_task_then_run_digest_bound_simready_asset_selection"
+    )
+    assert set(requirement["required_independent_validation"]) == {
+        "scale",
+        "site_to_object_transform",
+        "support_surface",
+        "orientation",
+        "penetration",
+        "reprojection",
+        "physics_properties",
+    }
 
 
 def test_rendered_view_digest_mismatch_fails_before_analysis(tmp_path) -> None:
