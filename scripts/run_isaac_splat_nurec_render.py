@@ -44,6 +44,7 @@ PROVIDER_QUALIFICATION_RESULT_SCHEMA = "provider_nurec_isaac_runtime_result.v1"
 PARTICLEFIELD_TYPE = "ParticleField3DGaussianSplat"
 NUREC_FIELD_TYPE = "OmniNuRecFieldAsset"
 _CAMERA_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_USD_PRIM_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -63,6 +64,22 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _phase(result_path: Path, base: dict, phase: str, **extra) -> None:
     _write_json(result_path, {**base, "status": "running", "provider_runtime_phase": phase, **extra})
+
+
+def _camera_usd_prim_names(camera_ids: list[str]) -> list[str]:
+    """Map portable external IDs to valid, collision-free USD identifiers."""
+
+    names = []
+    for camera_id in camera_ids:
+        name = re.sub(r"[^A-Za-z0-9_]", "_", camera_id)
+        if not name or name[0].isdigit():
+            name = "_" + name
+        if _USD_PRIM_IDENTIFIER.fullmatch(name) is None:
+            raise ValueError("isaac_camera_usd_prim_name_invalid")
+        names.append(name)
+    if len(set(names)) != len(names):
+        raise ValueError("isaac_camera_usd_prim_names_collide")
+    return names
 
 
 def _transcode_ply_to_usd(ply: Path, usd: Path, *, python: str, fmt: str = "lightfield") -> dict:
@@ -706,6 +723,14 @@ def _render(args) -> int:
             {**base, "status": "blocked", "blockers": ["isaac_camera_ids_invalid"]},
         )
         return 2
+    try:
+        camera_prim_names = _camera_usd_prim_names(camera_ids)
+    except ValueError as exc:
+        _write_json(
+            result_path,
+            {**base, "status": "blocked", "blockers": [str(exc)]},
+        )
+        return 2
     _phase(result_path, base, "runner_importing_isaacsim", camera_count=len(cameras), stage_path=str(stage_path))
 
     try:
@@ -906,7 +931,7 @@ def _render(args) -> int:
         for idx, cam in enumerate(cameras):
             cid = str(cam.get("id") or f"cam_{idx}")
             spec = cam.get("spec") or {}
-            cam_path = f"{cam_root}/{cid}"
+            cam_path = f"{cam_root}/{camera_prim_names[idx]}"
             camera = UsdGeom.Camera.Define(stage, Sdf.Path(cam_path))
             xform = _camera_xform(Gf, spec.get("pos", [0, 0, 0]), spec.get("target", [0, 0, -1]),
                                   spec.get("up", [0, 0, 1]))
@@ -993,7 +1018,7 @@ def _render(args) -> int:
                 simulation_app.update()
             for idx, cam in enumerate(cameras):
                 cid = str(cam.get("id") or f"cam_{idx}")
-                cam_path = f"{cam_root}/{cid}"
+                cam_path = f"{cam_root}/{camera_prim_names[idx]}"
                 cam_out = ro_dir / cid
                 cam_out.mkdir(parents=True, exist_ok=True)
                 render_product = rep.create.render_product(cam_path, (int(args.width), int(args.height)))

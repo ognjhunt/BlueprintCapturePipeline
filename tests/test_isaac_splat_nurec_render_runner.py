@@ -91,6 +91,15 @@ def test_qualification_blockers_accept_only_complete_v3_evidence() -> None:
     ) == []
 
 
+def test_camera_ids_map_to_valid_collision_checked_usd_prim_names() -> None:
+    assert runner._camera_usd_prim_names(
+        ["scene-overview-south", "ground-probe-local", "1.entry"]
+    ) == ["scene_overview_south", "ground_probe_local", "_1_entry"]
+
+    with pytest.raises(ValueError, match="isaac_camera_usd_prim_names_collide"):
+        runner._camera_usd_prim_names(["camera-a", "camera_a"])
+
+
 def test_provider_package_mode_has_versioned_schema_and_dynamic_exact_prim_paths() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
     assert 'PROVIDER_QUALIFICATION_RESULT_SCHEMA = "provider_nurec_isaac_runtime_result.v1"' in source
