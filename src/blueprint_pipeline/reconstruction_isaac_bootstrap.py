@@ -240,6 +240,7 @@ def _blocked_runtime_result_after_abnormal_exit(
             "exit_code": int(exit_code),
             "partial_status": partial_result.get("status"),
             "partial_phase": partial_result.get("phase"),
+            "partial_error": str(partial_result.get("error") or "")[:1000] or None,
             "log_digest": "sha256:" + hashlib.sha256(log_bytes).hexdigest(),
             "log_bytes": len(log_bytes),
             "log_tail": log_bytes[-MAX_DIAGNOSTIC_LOG_TAIL_BYTES:].decode(
@@ -378,7 +379,13 @@ def run_reconstruction_isaac_bootstrap(
         result_path, code="reconstruction_isaac_bootstrap_runtime_result_invalid"
     )
     runtime_status = runtime_result.get("status")
-    if (exit_code, runtime_status) not in {(0, "completed"), (2, "blocked")}:
+    # Isaac's ``python.sh`` wrapper can return zero even when the invoked
+    # Python entrypoint returns two for a typed, fail-closed blocker. Accept
+    # either wrapper representation only when the result itself is blocked.
+    if not (
+        (runtime_status == "completed" and exit_code == 0)
+        or (runtime_status == "blocked" and exit_code in {0, 2})
+    ):
         runtime_result = _blocked_runtime_result_after_abnormal_exit(
             partial_result=runtime_result,
             receipt=receipt,

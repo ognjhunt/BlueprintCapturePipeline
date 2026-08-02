@@ -789,7 +789,9 @@ def test_isaac_bootstrap_binds_downloads_preserves_typed_blocker_and_uploads(
             json.dumps(runtime), encoding="utf-8"
         )
         log_path.write_text("typed blocker preserved\n", encoding="utf-8")
-        return 2
+        # Isaac's python.sh wrapper can normalize the typed blocker's process
+        # exit to zero even though the runtime JSON remains fail closed.
+        return 0
 
     def fake_upload(url, *, input_path, expected_sha256, **_kwargs):
         payload = Path(input_path).read_bytes()
@@ -813,7 +815,7 @@ def test_isaac_bootstrap_binds_downloads_preserves_typed_blocker_and_uploads(
         process_runner=fake_process,
     )
     assert result["status"] == "output_uploaded"
-    assert result["isaac_runtime_exit_code"] == 2
+    assert result["isaac_runtime_exit_code"] == 0
     assert result["scientific_qualification_inferred"] is False
     assert result["simulator_task_success_proven"] is False
     assert result["bootstrap_receipt_digest"] == canonical_digest(
