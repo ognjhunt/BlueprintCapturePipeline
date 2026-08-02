@@ -28,6 +28,10 @@ from blueprint_pipeline.measurement_isaac_runtime_release import (
     RUNTIME_IMAGE as MEASUREMENT_ISAAC_IMAGE,
     build_measurement_isaac_runtime_release,
 )
+from blueprint_pipeline.measurement_dlo_lab_runtime_release import (
+    RUNTIME_IMAGE as MEASUREMENT_DLO_IMAGE,
+    build_measurement_dlo_lab_runtime_release,
+)
 
 
 SHA = "a" * 40
@@ -454,6 +458,48 @@ def test_measurement_isaac_execute_requires_official_exact_runtime_release():
     assert passed_bound["provider_mutation_authorized"] is True
 
 
+def test_measurement_dlo_execute_requires_exact_runtime_release_and_zero_retries():
+    request = _request(
+        operation="measurement_dlo_lab_canary",
+        capture_profile="synthetic_measurement",
+        worker_image_digest=MEASUREMENT_DLO_IMAGE,
+        retry_cap=0,
+    )
+    missing, missing_bound = _build(
+        request=request,
+        execute=True,
+        execution_adapter_qualified=True,
+        retry_cap=0,
+    )
+    assert "measurement_dlo_lab_runtime_release_missing" in missing["blockers"]
+    assert missing_bound["provider_mutation_authorized"] is False
+
+    release = build_measurement_dlo_lab_runtime_release()
+    passed, passed_bound = _build(
+        request=request,
+        execute=True,
+        execution_adapter_qualified=True,
+        retry_cap=0,
+        measurement_dlo_lab_runtime_release=release,
+    )
+    assert passed["status"] == "execute_ready"
+    assert passed["blockers"] == []
+    assert passed["measurement_dlo_lab_runtime_release_digest"] == release[
+        "runtime_release_digest"
+    ]
+    assert passed_bound["provider_mutation_authorized"] is True
+
+    retried, retried_bound = _build(
+        request=request,
+        execute=True,
+        execution_adapter_qualified=True,
+        retry_cap=1,
+        measurement_dlo_lab_runtime_release=release,
+    )
+    assert "reconstruction_gpu_retry_binding_mismatch" in retried["blockers"]
+    assert retried_bound["provider_mutation_authorized"] is False
+
+
 def test_operation_request_input_and_result_schema_are_immutable_admission_inputs():
     request = _request()
     request.update(
@@ -727,4 +773,91 @@ def test_allocator_routes_measurement_isaac_to_guarded_vast_lifecycle(tmp_path, 
     assert len(calls) == 1
     assert calls[0]["bundle_receipt"] == receipt
     assert calls[0]["job_dir"].name == "measurement_isaac_vast_canary"
+    assert calls[0]["input_bundle_get_url"].endswith("provider_bundle_url")
+
+
+def test_allocator_routes_measurement_dlo_to_guarded_vast_lifecycle(tmp_path, monkeypatch):
+    admission = {
+        "status": "execute_ready",
+        "operation": "measurement_dlo_lab_canary",
+        "operation_request_digest": D2,
+        "operation_input_bundle_digest": D3,
+        "worker_image_digest": MEASUREMENT_DLO_IMAGE,
+        "source_commit_sha": SHA,
+        "blockers": [],
+    }
+    receipt = {
+        "bundle_manifest_digest": D2,
+        "input_bundle_digest": D3,
+        "runtime_image_digest": MEASUREMENT_DLO_IMAGE,
+        "source_commit_sha": SHA,
+    }
+    receipt_path = tmp_path / "measurement-dlo-receipt.json"
+    bound_path = tmp_path / "bound.json"
+    preflight_path = tmp_path / "preflight.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    bound_path.write_text(json.dumps({"request_digest": D1}), encoding="utf-8")
+    preflight_path.write_text(json.dumps({"provider": "vast"}), encoding="utf-8")
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission)
+    monkeypatch.setattr(
+        "blueprint_pipeline.reconstruction_paid_transport."
+        "validate_measurement_dlo_lab_input_bundle_receipt",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.paid_resource_transport.read_sensitive_url_file",
+        lambda _path, *, label: (
+            f"https://objects.example/{label}",
+            {"mode_is_0600": True},
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_dlo_lab_paid_allocator.get_render_provider",
+        lambda _name: object(),
+    )
+    calls = []
+
+    def fake_measurement(**kwargs):
+        calls.append(kwargs)
+        return {
+            "schema_version": "measurement_dlo_lab_cuda_vast_execution.v1",
+            "status": "completed",
+            "provider_mutations_performed": 2,
+            "cost_usd": 0.1,
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_dlo_lab_paid_allocator."
+        "run_measurement_dlo_lab_vast_canary",
+        fake_measurement,
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_reconstruction_isaac_vast_operation",
+        lambda **_kwargs: pytest.fail("reconstruction Isaac adapter must not receive DLO"),
+    )
+    args = SimpleNamespace(
+        reconstruction_refresh_preflight=False,
+        provider_launch_request=str(tmp_path / "unused-request.json"),
+        preflight_bundle=str(preflight_path),
+        admission_out=str(tmp_path / "admission.json"),
+        bound_request_out=str(bound_path),
+        adapter_output=str(tmp_path / "adapter.json"),
+        provider="vast",
+        expected_source_commit=SHA,
+        reconstruction_max_spend_usd=1.0,
+        reconstruction_hard_ttl_seconds=1800,
+        reconstruction_retry_cap=0,
+        reconstruction_authority_id="user-authorized",
+        execute=True,
+        provider_output_put_url_file=str(tmp_path / "put-url"),
+        provider_output_get_url_file=str(tmp_path / "get-url"),
+        provider_bundle_url_file=str(tmp_path / "input-url"),
+        measurement_dlo_lab_bundle_receipt=str(receipt_path),
+    )
+    result = allocator._run_reconstruction_gpu_canary(args, checkout_commit=SHA)
+    assert result["status"] == "completed"
+    assert len(calls) == 1
+    assert calls[0]["bundle_receipt"] == receipt
+    assert calls[0]["job_dir"].name == "measurement_dlo_lab_vast_canary"
     assert calls[0]["input_bundle_get_url"].endswith("provider_bundle_url")
