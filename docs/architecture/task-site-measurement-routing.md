@@ -566,14 +566,21 @@ Implemented and hermetically tested:
   Torch 2.9.1+cu128, and Quadrants 0.8.0 fixed while moving to the README-prescribed
   Python 3.12.11 environment; direct Quadrants import again aborted in both cases
   before CUDA execution. Python version is therefore not a sufficient fix either.
-  The next bounded diagnostic holds those compatibility variables fixed and
-  collects a sanitized native debugger backtrace. The first debugger attempt
+  A bounded diagnostic then held those compatibility variables fixed and
+  collected a sanitized native debugger backtrace. The first debugger attempt
   exposed an infrastructure boundary before collection: the generic adapter
   executor stripped the bootstrap-only diagnostic flag along with its intentionally
   narrow environment. The diagnostic mode is now digest-bound in the execution
   request instead of expanding that environment; signed transport URLs remain
   stripped, and no compatibility conclusion was inferred from the missing
-  backtrace. The controller rechecks every source
+  backtrace. The next paid attempt captured the decisive native sequence
+  `Logger::error -> get_repo_dir -> CompileConfig` during Quadrants shared-library
+  initialization. Exact v0.8.0 source requires `XDG_CACHE_HOME` or `HOME`, while
+  the sanitized adapter process inherited neither. The executor now synthesizes
+  both paths inside its per-execution temporary root without exposing an operator
+  home or widening the inherited-environment allowlist. No CUDA kernel or DLO-Lab
+  case execution was observed, so the next bounded step is one fixed-tuple rerun,
+  not a qualification claim. The controller rechecks every source
   digest, executes both cases through the generic adapter executor, requires
   CUDA observations and matching replay traces, and preserves all Q-DLO,
   R5-R7, production, physical, and policy-ranking claims as false. Bundle

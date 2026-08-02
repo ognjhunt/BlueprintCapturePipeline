@@ -93,6 +93,30 @@
     "compatibility_variables_change": false,
     "purpose": "Deliver the debugger request as digest-bound execution configuration without exposing signed transport credentials."
   },
+  "attempt7_observation": {
+    "blueprint_source_commit": "73166cbedb4c7b14707495ba4d7d515e39a029e3",
+    "diagnostic_mode_request_bound": true,
+    "direct_quadrants_import_succeeded": false,
+    "native_backtrace_captured": true,
+    "native_backtrace_raw_content_persisted": false,
+    "decisive_frame_sequence": [
+      "quadrants::Logger::error",
+      "quadrants::get_repo_dir_abi:cxx11_",
+      "quadrants::lang::CompileConfig::CompileConfig"
+    ],
+    "source_localized_cause": "Quadrants v0.8.0 global CompileConfig initialization calls get_repo_dir, which requires XDG_CACHE_HOME or HOME; the sanitized adapter environment provided neither.",
+    "cuda_kernel_failure_observed": false,
+    "evidence_path": "docs/evidence/measurement_dlo_lab_vast_attempt7_2026-08-02.json"
+  },
+  "next_targeted_fix": {
+    "generic_adapter_safe_environment_allowlist_expanded": false,
+    "operator_home_inherited": false,
+    "sandbox_home": "per_execution_temporary_root",
+    "sandbox_xdg_cache_home": "per_execution_temporary_root/.cache",
+    "signed_transport_environment_keys_remain_forbidden": true,
+    "compatibility_variables_change": false,
+    "purpose": "Satisfy native cache-root initialization without exposing operator state, then rerun the same fixed compatibility tuple once."
+  },
   "evidence_boundary": {
     "primary_source_metadata_observed": true,
     "python_3_12_runtime_import_proven": false,
