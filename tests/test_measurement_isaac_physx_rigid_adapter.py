@@ -23,7 +23,9 @@ from blueprint_pipeline.measurement_isaac_physx_rigid_adapter import (
     ISAAC_VERSION,
     PROTOCOL_ID,
     WORKER_SCRIPT,
+    _enable_installed_simulation_app_extension,
     _import_simulation_app,
+    _installed_simulation_app_extension_roots,
     _observe_isaac_runtime_identity,
     implementation_digest,
     run_isaac_physx_rigid_measurement_request,
@@ -244,6 +246,31 @@ def test_isaac_simulation_app_failure_carries_safe_candidate_diagnostics(
         "symbol_type": "NoneType",
         "symbol_callable": False,
     }
+
+
+def test_isaac_simulation_app_extension_root_is_bounded_and_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extension_root = tmp_path / "exts/isaacsim.simulation_app"
+    package_root = extension_root / "isaacsim/simulation_app"
+    package_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    assert _installed_simulation_app_extension_roots(tmp_path) == [extension_root]
+
+    root_package = types.SimpleNamespace(__path__=[])
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_physx_rigid_adapter._installed_simulation_app_extension_roots",
+        lambda: [extension_root],
+    )
+    monkeypatch.setattr(importlib, "import_module", lambda name: root_package)
+    original_sys_path = list(sys.path)
+    try:
+        assert _enable_installed_simulation_app_extension() == [str(extension_root)]
+        assert root_package.__path__ == [str(extension_root / "isaacsim")]
+        assert sys.path[0] == str(extension_root)
+    finally:
+        sys.path[:] = original_sys_path
 
 
 def test_isaac_runtime_identity_rejects_invalid_version_observation() -> None:

@@ -40,6 +40,58 @@ class _SimulationAppImportError(ImportError):
         self.diagnostics = json.loads(json.dumps(dict(diagnostics)))
 
 
+def _installed_simulation_app_extension_roots(
+    isaac_root: Path = Path("/isaac-sim"),
+) -> list[Path]:
+    """Find only pinned-image extension roots that contain SimulationApp."""
+
+    try:
+        resolved_isaac_root = isaac_root.resolve(strict=True)
+    except OSError:
+        return []
+    raw_candidates = [resolved_isaac_root / "exts/isaacsim.simulation_app"]
+    for base_name in ("exts", "extscache"):
+        base = resolved_isaac_root / base_name
+        try:
+            raw_candidates.extend(sorted(base.glob("isaacsim.simulation_app*")))
+        except OSError:
+            continue
+    roots: list[Path] = []
+    for candidate in raw_candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(resolved_isaac_root)
+        except (OSError, ValueError):
+            continue
+        package = resolved / "isaacsim/simulation_app"
+        if package.is_dir() and (package / "__init__.py").is_file() and resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _enable_installed_simulation_app_extension() -> list[str]:
+    """Expose the shipped extension through the image's wrapper package."""
+
+    extension_roots = _installed_simulation_app_extension_roots()
+    if not extension_roots:
+        return []
+    root_package = importlib.import_module("isaacsim")
+    package_path = getattr(root_package, "__path__", None)
+    if package_path is None or not hasattr(package_path, "append"):
+        return []
+    enabled: list[str] = []
+    for extension_root in extension_roots:
+        namespace_path = str(extension_root / "isaacsim")
+        if namespace_path not in package_path:
+            package_path.append(namespace_path)
+        root_text = str(extension_root)
+        if root_text not in sys.path:
+            sys.path.insert(0, root_text)
+        enabled.append(root_text)
+    importlib.invalidate_caches()
+    return enabled
+
+
 def implementation_digest() -> str:
     hasher = hashlib.sha256()
     for label, path in (("adapter", Path(__file__)), ("worker", WORKER_SCRIPT)):
@@ -53,6 +105,7 @@ def implementation_digest() -> str:
 def _import_simulation_app() -> Any:
     """Resolve a callable Isaac launcher across supported packaging layouts."""
 
+    enabled_extension_roots = _enable_installed_simulation_app_extension()
     candidates: list[dict[str, Any]] = []
     for module_name in (
         "isaacsim.simulation_app",
@@ -90,6 +143,7 @@ def _import_simulation_app() -> Any:
             "working_directory": str(Path.cwd())[:500],
             "isaac_root_present": Path("/isaac-sim").is_dir(),
             "isaac_python_launcher_present": Path("/isaac-sim/python.sh").is_file(),
+            "enabled_extension_roots": enabled_extension_roots,
             "candidates": candidates,
         }
     )
@@ -453,6 +507,16 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
     simulation_app: Any | None = None
     try:
         SimulationApp = _import_simulation_app()
+        observations.update(
+            {
+                "simulation_app_class_module": str(
+                    getattr(SimulationApp, "__module__", "unavailable")
+                ),
+                "simulation_app_extension_roots": [
+                    str(path) for path in _installed_simulation_app_extension_roots()
+                ],
+            }
+        )
         simulation_app = SimulationApp({"headless": True})
         try:
             runtime_identity = _observe_isaac_runtime_identity(simulation_app)
