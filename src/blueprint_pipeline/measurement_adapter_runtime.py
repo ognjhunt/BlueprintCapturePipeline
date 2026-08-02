@@ -126,8 +126,9 @@ ADAPTER_RECIPES: dict[str, AdapterRecipe] = {
         access_required=True,
     ),
     "dlo-lab": AdapterRecipe(
-        python_distributions=("dlo-lab",),
         benchmark_ids=("capture-to-deformation",),
+        execution_mode="isolated_source_checkout",
+        target_version="c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
     ),
     "pyelastica": AdapterRecipe(
         python_distributions=("pyelastica",),
