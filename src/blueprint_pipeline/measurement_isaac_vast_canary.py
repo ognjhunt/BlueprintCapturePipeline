@@ -35,6 +35,10 @@ from .paid_resource_admission import (
     require_paid_resource_admission_grant,
 )
 from .safe_outbound_http import presigned_transfer_policy, request as safe_http_request
+from .watchdog_owner_teardown_contract import (
+    WATCHDOG_EVIDENCE_NAME,
+    write_owner_teardown_cancel_request,
+)
 
 
 RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_vast_runtime_result.v1"
@@ -48,6 +52,7 @@ MAX_RESULT_BYTES = 64 * 1024**2
 
 INPUT_GET_ENV = "BLUEPRINT_MEASUREMENT_ISAAC_INPUT_GET_URL"
 OUTPUT_PUT_ENV = "BLUEPRINT_MEASUREMENT_ISAAC_OUTPUT_PUT_URL"
+WATCHDOG_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
 
 
 class MeasurementIsaacVastCanaryError(ValueError):
@@ -86,8 +91,7 @@ def _watchdog_valid(
     if (
         watchdog.get("status") != "armed"
         or watchdog.get("independent_process") is not True
-        or str(watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or "")
-        != NAME_PREFIX
+        or str(watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or "") != NAME_PREFIX
         or pid <= 0
         or deadline < now_epoch + hard_ttl_seconds
     ):
@@ -96,12 +100,64 @@ def _watchdog_valid(
         os.kill(pid, 0)
     except OSError:
         return False
+    root_value = str(watchdog.get("watchdog_out_dir") or "").strip()
+    if not root_value:
+        return False
+    declared_root = Path(root_value).expanduser()
+    root = declared_root.resolve()
+    evidence_path = root / WATCHDOG_EVIDENCE_NAME
+    try:
+        root_stat = declared_root.lstat()
+        evidence_stat = evidence_path.lstat()
+        persisted = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if (
+        declared_root.is_symlink()
+        or not root.is_dir()
+        or evidence_path.is_symlink()
+        or not evidence_path.is_file()
+        or root_stat.st_uid != os.getuid()
+        or evidence_stat.st_uid != os.getuid()
+        or evidence_stat.st_size > 64 * 1024
+        or not isinstance(persisted, Mapping)
+    ):
+        return False
+    for key in (
+        "status",
+        "independent_process",
+        "pid",
+        "deadline_epoch",
+        "provider",
+        "pod_name_prefix",
+        "watchdog_out_dir",
+    ):
+        if persisted.get(key) != watchdog.get(key):
+            return False
     return True
+
+
+def _watchdog_root(watchdog: Mapping[str, Any]) -> Path | None:
+    value = str(watchdog.get("watchdog_out_dir") or "").strip()
+    return Path(value).expanduser().resolve() if value else None
+
+
+def _record_watchdog_instance_id(*, watchdog: Mapping[str, Any], instance_id: str) -> None:
+    root = _watchdog_root(watchdog)
+    if root is None:
+        return
+    path = root / WATCHDOG_STARTED_INSTANCE_ID_NAME
+    if path.exists() or path.is_symlink():
+        raise MeasurementIsaacVastCanaryError(
+            "measurement_isaac_watchdog_instance_id_already_exists"
+        )
+    path.write_text(instance_id, encoding="utf-8")
+    os.chmod(path, 0o600)
 
 
 def _bootstrap_script() -> str:
     return r"""set -euo pipefail
-work=/work/measurement_isaac
+work="$(mktemp -d "${TMPDIR:-/tmp}/blueprint-measurement-isaac.XXXXXX")"
 archive="$work/input.zip"
 bundle="$work/bundle"
 result="$work/result.json"
@@ -296,9 +352,7 @@ def run_measurement_isaac_vast_canary(
     watchdog = preflight.get("watchdog")
     watchdog = watchdog if isinstance(watchdog, Mapping) else {}
     validator = watchdog_validator or (
-        lambda value, now, ttl: _watchdog_valid(
-            value, now_epoch=now, hard_ttl_seconds=ttl
-        )
+        lambda value, now, ttl: _watchdog_valid(value, now_epoch=now, hard_ttl_seconds=ttl)
     )
     if not validator(watchdog, started_at, hard_ttl):
         raise MeasurementIsaacVastCanaryError("measurement_isaac_independent_watchdog_not_live")
@@ -349,9 +403,7 @@ def run_measurement_isaac_vast_canary(
             "BLUEPRINT_MEASUREMENT_ISAAC_RUNTIME_RELEASE_DIGEST": str(
                 request["measurement_isaac_runtime_release_digest"]
             ),
-            "BLUEPRINT_MEASUREMENT_ISAAC_INPUT_BUNDLE_DIGEST": str(
-                receipt["input_bundle_digest"]
-            ),
+            "BLUEPRINT_MEASUREMENT_ISAAC_INPUT_BUNDLE_DIGEST": str(receipt["input_bundle_digest"]),
             "ACCEPT_EULA": "Y",
             "PRIVACY_CONSENT": "Y",
         }
@@ -407,6 +459,7 @@ def run_measurement_isaac_vast_canary(
             instance_id = str(launch_result["instance_id"])
             provider_mutations += 1
             bind_pending_teardown_instance(pending_path, instance_id)
+            _record_watchdog_instance_id(watchdog=watchdog, instance_id=instance_id)
             raw_result: dict[str, Any] | None = None
             while float(clock()) - started_at <= hard_ttl:
                 try:
@@ -417,9 +470,7 @@ def run_measurement_isaac_vast_canary(
                         break
                     sleeper(min(10.0, max(0.0, hard_ttl - (float(clock()) - started_at))))
                 except Exception as exc:  # noqa: BLE001 - preserve teardown evidence
-                    blockers.append(
-                        f"measurement_isaac_output_fetch_failed:{type(exc).__name__}"
-                    )
+                    blockers.append(f"measurement_isaac_output_fetch_failed:{type(exc).__name__}")
                     break
             if raw_result is None:
                 if not any(
@@ -520,6 +571,14 @@ def run_measurement_isaac_vast_canary(
             provider_zero_receipt, digest_field="provider_zero_digest"
         )
         write_json(root / "provider_zero_verification.json", provider_zero_receipt)
+        watchdog_root = _watchdog_root(watchdog)
+        if instance_id is not None and teardown_passed and watchdog_root is not None:
+            write_owner_teardown_cancel_request(
+                root=watchdog_root,
+                pod_name_prefix=NAME_PREFIX,
+                provider_name="vast",
+                instance_id=instance_id,
+            )
 
     duration = max(0.0, float(clock()) - started_at)
     hourly = float(preflight.get("on_demand_price_usd_per_hour") or 0)
