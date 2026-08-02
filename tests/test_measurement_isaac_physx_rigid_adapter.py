@@ -23,6 +23,7 @@ from blueprint_pipeline.measurement_isaac_physx_rigid_adapter import (
     ISAAC_VERSION,
     PROTOCOL_ID,
     WORKER_SCRIPT,
+    _import_simulation_app,
     _observe_isaac_runtime_identity,
     implementation_digest,
     run_isaac_physx_rigid_measurement_request,
@@ -176,6 +177,44 @@ def test_isaac_runtime_identity_uses_app_version_file_without_dist_info(
         "observed_app_version": "Isaac-Sim",
         "observed_build_version": "6.0.1+release.test",
     }
+
+
+def test_isaac_simulation_app_prefers_concrete_module_and_skips_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CallableSimulationApp:
+        pass
+
+    modules = {
+        "isaacsim.simulation_app": types.SimpleNamespace(SimulationApp=CallableSimulationApp),
+        "isaacsim": types.SimpleNamespace(SimulationApp=None),
+    }
+    imported: list[str] = []
+
+    def fake_import(name: str) -> object:
+        imported.append(name)
+        if name in modules:
+            return modules[name]
+        raise ImportError(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    assert _import_simulation_app() is CallableSimulationApp
+    assert imported == ["isaacsim.simulation_app"]
+
+
+def test_isaac_simulation_app_falls_back_after_noncallable_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LegacySimulationApp:
+        pass
+
+    modules = {
+        "isaacsim.simulation_app": types.SimpleNamespace(SimulationApp=None),
+        "isaacsim": types.SimpleNamespace(SimulationApp=None),
+        "omni.isaac.kit": types.SimpleNamespace(SimulationApp=LegacySimulationApp),
+    }
+    monkeypatch.setattr(importlib, "import_module", lambda name: modules[name])
+    assert _import_simulation_app() is LegacySimulationApp
 
 
 def test_isaac_runtime_identity_rejects_invalid_version_observation() -> None:
