@@ -6,7 +6,8 @@
     "schema_version", "status", "isaac_verification_request_digest",
     "input_bundle_digest", "package_digest", "runtime_container_image_digest",
     "source_commit_sha", "runtime_result_schema", "runtime_result_digest",
-    "runtime_result_archive_path", "artifact_members", "artifact_member_count",
+    "runtime_result_archive_path", "verification_request_archive_path",
+    "artifact_members", "artifact_member_count",
     "artifact_total_bytes", "raw_secret_values_included",
     "scientific_qualification_inferred", "simulator_task_success_proven",
     "physical_success_proven", "deployment_readiness_proven", "proof_effect",
@@ -24,9 +25,17 @@
       "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
     },
     "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "runtime_result_schema": {"const": "isaac_splat_nurec_render_result.v3"},
+    "runtime_result_schema": {
+      "enum": [
+        "isaac_splat_nurec_render_result.v3",
+        "provider_nurec_isaac_runtime_result.v1"
+      ]
+    },
     "runtime_result_digest": {"$ref": "#/$defs/digest"},
     "runtime_result_archive_path": {"const": "isaac_runtime_result.json"},
+    "verification_request_archive_path": {
+      "type": ["string", "null"]
+    },
     "artifact_members": {
       "type": "array",
       "items": {"$ref": "#/$defs/artifact"}

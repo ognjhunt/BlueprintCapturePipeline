@@ -31,19 +31,29 @@ CAPTURE_PROFILES = {
     "camera_360_native",
     "camera_360_equirectangular",
     "trainer_smoke_fixture",
+    "public_provider_sample",
+    "user_managed_provider_export",
 }
-OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary", "isaac_canary"}
+OPERATIONS = {
+    "worker_smoke",
+    "pose_canary",
+    "trainer_canary",
+    "isaac_canary",
+    "provider_nurec_isaac_canary",
+}
 EXECUTABLE_OPERATIONS = {
     "worker_smoke",
     "pose_canary",
     "trainer_canary",
     "isaac_canary",
+    "provider_nurec_isaac_canary",
 }
 EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "worker_smoke": "reconstruction_vast_worker_smoke_result.v1",
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
     "isaac_canary": "isaac_splat_nurec_render_result.v3",
+    "provider_nurec_isaac_canary": "provider_nurec_isaac_runtime_result.v1",
 }
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -298,7 +308,10 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_request_proof_effect_invalid")
 
     image_release_digest: str | None = None
-    if source.get("operation") == "isaac_canary":
+    if source.get("operation") in {
+        "isaac_canary",
+        "provider_nurec_isaac_canary",
+    }:
         if image_release is None:
             if execute:
                 blockers.append("reconstruction_isaac_image_release_missing")

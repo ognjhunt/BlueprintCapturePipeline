@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import zipfile
 
@@ -15,8 +16,16 @@ from blueprint_pipeline.external_provider_nurec import (
     build_provider_nurec_isaac_request,
     build_provider_nurec_isaac_runtime_result,
     import_external_source,
+    normalize_provider_nurec_isaac_verification,
     qualify_provider_nurec_usdz,
     sha256_file,
+)
+from blueprint_pipeline.reconstruction_isaac_output_bundle import (
+    compile_isaac_verification_output_bundle,
+    validate_and_extract_isaac_verification_output_bundle,
+)
+from blueprint_pipeline.reconstruction_isaac_vast_operation import (
+    _validate_bindings as validate_isaac_vast_bindings,
 )
 from blueprint_pipeline.reconstruction_isaac_worker_bundle import (
     compile_isaac_verification_worker_bundle,
@@ -446,6 +455,32 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
         (ROOT / "docs/schemas/provider_nurec_isaac_worker_bundle.v1.schema.json").read_text()
     )
     jsonschema.Draft202012Validator(schema).validate(receipt)
+    bound = {
+        "schema_version": "reconstruction_gpu_canary_request.v1",
+        "operation": "provider_nurec_isaac_canary",
+        "request_digest": D[0],
+        "operation_request_digest": request["isaac_verification_request_digest"],
+        "operation_input_bundle_digest": receipt["bundle_digest"],
+        "expected_runtime_result_schema": "provider_nurec_isaac_runtime_result.v1",
+        "worker_image_digest": request["runtime_container_image_digest"],
+        "source_commit_sha": request["source_commit_sha"],
+        "bound_provider": "vast",
+        "provider_mutation_authorized": True,
+        "bound_checkout_clean": True,
+        "bound_checkout_source_commit": request["source_commit_sha"],
+        "candidate_may_read_hidden_heldout": False,
+        "trainer_may_grade_heldout": False,
+        "proof_effect": "none",
+        "isaac_image_release_digest": D[1],
+    }
+    bound["bound_request_digest"] = canonical_digest(
+        bound, digest_field="bound_request_digest"
+    )
+    validated_bound, validated_receipt = validate_isaac_vast_bindings(
+        bound_request=bound, bundle_receipt=receipt
+    )
+    assert validated_bound["operation"] == "provider_nurec_isaac_canary"
+    assert validated_receipt == receipt
     bundle = (
         tmp_path
         / "bundles"
@@ -458,3 +493,210 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
         output_root=tmp_path / "extracted",
     )
     assert extraction["isaac_verification_request_digest"] == request["isaac_verification_request_digest"]
+
+
+def test_provider_runtime_output_is_independently_rehashed_and_allocator_transportable(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "package-root"
+    package = package_root / "source/ethel_sim.usdz"
+    package.parent.mkdir(parents=True)
+    package.write_bytes(b"exact-provider-package")
+    cameras = tmp_path / "fixed_cameras.json"
+    camera_ids = ["probe-near", "probe-wide"]
+    cameras.write_text(
+        json.dumps(
+            [
+                {
+                    "id": camera_id,
+                    "spec": {
+                        "pos": [0, -2 - index, 1 + index],
+                        "target": [0, 0, 0],
+                        "up": [0, 0, 1],
+                        "fov": 60,
+                    },
+                }
+                for index, camera_id in enumerate(camera_ids)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    runner = tmp_path / "runner.py"
+    runner.write_text("print('provider fixture')\n", encoding="utf-8")
+    request = build_provider_nurec_isaac_request(
+        {
+            "stable_run_identity": "provider-nurec-output-test",
+            "source_commit_sha": "1" * 40,
+            "package_digest": sha256_file(package),
+            "package_artifact_reference": "source/ethel_sim.usdz",
+            "external_import_receipt_digest": D[1],
+            "qualification_report_digest": D[2],
+            "fixed_camera_spec_digest": sha256_file(cameras),
+            "fixed_camera_ids": camera_ids,
+            "runtime_implementation_digest": sha256_file(runner),
+            "runtime_container_image_digest": "registry.test/isaac@" + D[5],
+            "expected_prim_paths": {
+                "appearance": "/World/gauss/gauss",
+                "collision": "/World/gauss/mesh",
+            },
+            "physics_probe_request": {
+                "ground_collider_prim": "/World/gauss/mesh",
+                "ground_height_m": -1.85,
+                "probe_xy_m": [-21.9, 2.0],
+                "selection_status": "cpu_geometry_candidate_unverified_in_isaac",
+                "manufacture_ground_plane": False,
+                "require_contact_event": True,
+                "steps": 240,
+            },
+            "timeout_seconds": 3600,
+            "spend_controls": {
+                "authorized": False,
+                "estimated_max_spend_usd": 2.0,
+                "hard_ttl_seconds": 3600,
+                "teardown_required": True,
+                "provider_zero_required_before_and_after": True,
+            },
+            "provider_authored_package": True,
+            "exact_package_required": True,
+            "headless": True,
+            "display_attached": False,
+            "execution_status": "awaiting_explicit_paid_runtime_authorization",
+            "provider_allocation_performed": False,
+            "expected_runtime_schema": "provider_nurec_isaac_runtime_result.v1",
+            "proof_effect": "none",
+            "claim_ceiling": "request_only",
+        }
+    )
+    receipt = compile_isaac_verification_worker_bundle(
+        verification_request=request,
+        package_artifact_root=package_root,
+        fixed_camera_spec_path=cameras,
+        runner_path=runner,
+        output_root=tmp_path / "bundles",
+    )
+    bundle = (
+        tmp_path
+        / "bundles"
+        / request["isaac_verification_request_digest"][7:]
+        / "isaac_verification_worker_bundle.zip"
+    )
+    extraction = extract_isaac_verification_worker_bundle(
+        bundle_path=bundle,
+        bundle_receipt=receipt,
+        output_root=tmp_path / "materialized",
+    )
+    work_root = tmp_path / "worker"
+    work_root.mkdir()
+    os.replace(
+        tmp_path / "materialized" / receipt["bundle_digest"][7:],
+        work_root / "bundle",
+    )
+    runtime_root = work_root / "out"
+    frames = runtime_root / "frames"
+    frames.mkdir(parents=True)
+    camera_rows = []
+    for index, camera_id in enumerate(camera_ids):
+        frame = frames / f"{camera_id}.png"
+        frame.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes([index + 1]) * 64)
+        camera_rows.append(
+            {
+                "id": camera_id,
+                "artifact_reference": f"frames/{camera_id}.png",
+                "digest": sha256_file(frame),
+                "width": 1280,
+                "height": 960,
+                "pixel_mean": 100.0,
+                "pixel_std": 10.0,
+                "nonblank": True,
+            }
+        )
+    runtime = build_provider_nurec_isaac_runtime_result(
+        {
+            "schema_version": "provider_nurec_isaac_runtime_result.v1",
+            "status": "completed",
+            "isaac_verification_request_digest": request[
+                "isaac_verification_request_digest"
+            ],
+            "package_digest": request["package_digest"],
+            "fixed_camera_spec_digest": request["fixed_camera_spec_digest"],
+            "runtime_container_image_digest": request[
+                "runtime_container_image_digest"
+            ],
+            "runtime_implementation_digest": request[
+                "runtime_implementation_digest"
+            ],
+            "runtime_identity": {
+                "runtime": "isaac_sim",
+                "renderer": "RayTracedLighting",
+                "python_version": "3.11",
+                "headless": True,
+            },
+            "raw_secret_values_recorded": False,
+            "cost_usd": 0.25,
+            "duration_seconds": 120.0,
+            "stage": {
+                "meters_per_unit": 1.0,
+                "up_axis": "Z",
+                "transforms_valid": True,
+                "dependency_inspection_available": True,
+                "missing_asset_count": 0,
+                "particlefield_prim_count": 2,
+                "active_collision_prim_count": 1,
+                "obvious_scale_mismatch_detected": False,
+                "expected_prim_paths": request["expected_prim_paths"],
+            },
+            "physics_probe": {
+                "ground_contact_surface_present": True,
+                "steps_executed": 240,
+                "live_rigid_body_pose_observed": True,
+                "test_body_fell_through_floor": False,
+                "contact_event_count": 1,
+                "probe_configuration": {},
+            },
+            "cameras": camera_rows,
+            "proof_boundary": {
+                "isaac_load_render_physics_presence_compatibility": True,
+                "simulator_task_success_proven": False,
+                "physics_navigation_control_proven": False,
+                "physical_success_proven": False,
+                "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
+            },
+        },
+        verification_request=request,
+    )
+    (runtime_root / "isaac_runtime_result.json").write_text(
+        json.dumps(runtime), encoding="utf-8"
+    )
+    output_bundle = tmp_path / "provider-output.zip"
+    compiled = compile_isaac_verification_output_bundle(
+        bundle_receipt=receipt,
+        runtime_output_root=runtime_root,
+        output_path=output_bundle,
+    )
+    assert compiled["runtime_result_schema"] == "provider_nurec_isaac_runtime_result.v1"
+    validated, validated_runtime, validated_root = (
+        validate_and_extract_isaac_verification_output_bundle(
+            bundle_path=output_bundle,
+            expected_input_receipt=receipt,
+            expected_source_commit_sha=request["source_commit_sha"],
+            output_root=tmp_path / "validated-output",
+        )
+    )
+    assert validated["runtime_result_digest"] == runtime["isaac_runtime_result_digest"]
+    assert validated_runtime == runtime
+    qualification = normalize_provider_nurec_isaac_verification(
+        verification_request=request,
+        runtime_result=validated_runtime,
+        package_artifact_root=package_root,
+        runtime_artifact_root=validated_root,
+    )
+    assert qualification["status"] == "verified_compatibility_only"
+    schema = json.loads(
+        (
+            ROOT
+            / "docs/schemas/provider_nurec_isaac_verification_result.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(schema).validate(qualification)
+    assert extraction["proof_effect"] == "none"

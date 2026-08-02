@@ -12,12 +12,18 @@ from typing import Any, Mapping, Sequence
 import zipfile
 
 from .decision_evidence_contracts import canonical_digest
+from .external_provider_nurec import (
+    ISAAC_RUNTIME_SCHEMA as PROVIDER_ISAAC_RUNTIME_SCHEMA,
+    ExternalProviderNuRecError,
+    build_provider_nurec_isaac_runtime_result,
+)
 from .isaac_reconstruction_verification import (
     ISAAC_RUNTIME_RESULT_SCHEMA,
     IsaacReconstructionVerificationError,
     build_isaac_runtime_result_v3,
 )
 from .reconstruction_isaac_worker_bundle import (
+    PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA,
     validate_isaac_verification_worker_bundle_receipt,
 )
 
@@ -56,13 +62,30 @@ def _portable(value: Any) -> PurePosixPath | None:
     return path
 
 
-def _load_runtime_result(path: Path) -> dict[str, Any]:
+def _load_runtime_result(
+    path: Path,
+    *,
+    receipt: Mapping[str, Any],
+    verification_request: Mapping[str, Any] | None,
+) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, Mapping):
             raise TypeError("runtime result is not an object")
+        if receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA:
+            if verification_request is None:
+                raise TypeError("provider verification request is missing")
+            return build_provider_nurec_isaac_runtime_result(
+                value, verification_request=verification_request
+            )
         return build_isaac_runtime_result_v3(value)
-    except (OSError, json.JSONDecodeError, TypeError, IsaacReconstructionVerificationError) as exc:
+    except (
+        OSError,
+        json.JSONDecodeError,
+        TypeError,
+        ExternalProviderNuRecError,
+        IsaacReconstructionVerificationError,
+    ) as exc:
         raise IsaacVerificationOutputBundleError(
             ["isaac_output_runtime_result_invalid"]
         ) from exc
@@ -71,8 +94,13 @@ def _load_runtime_result(path: Path) -> dict[str, Any]:
 def _result_bindings(
     *, result: Mapping[str, Any], receipt: Mapping[str, Any]
 ) -> None:
+    expected_schema = (
+        PROVIDER_ISAAC_RUNTIME_SCHEMA
+        if receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+        else ISAAC_RUNTIME_RESULT_SCHEMA
+    )
     if (
-        result.get("schema_version") != ISAAC_RUNTIME_RESULT_SCHEMA
+        result.get("schema_version") != expected_schema
         or result.get("isaac_verification_request_digest")
         != receipt.get("isaac_verification_request_digest")
         or result.get("package_digest") != receipt.get("package_digest")
@@ -166,7 +194,28 @@ def compile_isaac_verification_output_bundle(
         raise IsaacVerificationOutputBundleError(
             ["isaac_output_runtime_root_missing"]
         ) from exc
-    result = _load_runtime_result(root / "isaac_runtime_result.json")
+    provider_bundle = receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+    request_member = str(receipt.get("verification_request_member") or "")
+    request_path: Path | None = None
+    verification_request: Mapping[str, Any] | None = None
+    if provider_bundle:
+        request_path = root.parent / "bundle" / request_member
+        try:
+            request_value = json.loads(request_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise IsaacVerificationOutputBundleError(
+                ["isaac_output_verification_request_missing"]
+            ) from exc
+        if not isinstance(request_value, Mapping):
+            raise IsaacVerificationOutputBundleError(
+                ["isaac_output_verification_request_invalid"]
+            )
+        verification_request = request_value
+    result = _load_runtime_result(
+        root / "isaac_runtime_result.json",
+        receipt=receipt,
+        verification_request=verification_request,
+    )
     _result_bindings(result=result, receipt=receipt)
     rows = _artifact_rows(result, root)
     manifest = {
@@ -184,6 +233,7 @@ def compile_isaac_verification_output_bundle(
         "runtime_result_schema": result["schema_version"],
         "runtime_result_digest": result["isaac_runtime_result_digest"],
         "runtime_result_archive_path": "isaac_runtime_result.json",
+        "verification_request_archive_path": request_member if provider_bundle else None,
         "artifact_members": [
             {key: row[key] for key in ("artifact_id", "archive_path", "digest", "bytes")}
             for row in rows
@@ -223,6 +273,8 @@ def compile_isaac_verification_output_bundle(
         with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
             _write_member(archive, "output_manifest.json", manifest_bytes)
             _write_member(archive, "isaac_runtime_result.json", result_bytes)
+            if provider_bundle and request_path is not None:
+                _write_member(archive, request_member, request_path)
             for row in rows:
                 _write_member(archive, row["archive_path"], row["source"])
         os.replace(temporary, destination)
@@ -375,9 +427,38 @@ def validate_and_extract_isaac_verification_output_bundle(
                     ["isaac_output_metadata_invalid"]
                 )
             manifest = dict(manifest_value)
+            provider_bundle = (
+                input_receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+            )
+            request_member = str(input_receipt.get("verification_request_member") or "")
+            request_value: Mapping[str, Any] | None = None
+            if provider_bundle:
+                try:
+                    loaded_request = json.loads(
+                        _read_capped(
+                            archive,
+                            archive.getinfo(request_member),
+                            cap=MAX_METADATA_BYTES,
+                        )
+                    )
+                except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise IsaacVerificationOutputBundleError(
+                        ["isaac_output_verification_request_invalid"]
+                    ) from exc
+                if not isinstance(loaded_request, Mapping):
+                    raise IsaacVerificationOutputBundleError(
+                        ["isaac_output_verification_request_invalid"]
+                    )
+                request_value = loaded_request
             try:
-                result = build_isaac_runtime_result_v3(result_value)
-            except IsaacReconstructionVerificationError as exc:
+                if provider_bundle:
+                    assert request_value is not None
+                    result = build_provider_nurec_isaac_runtime_result(
+                        result_value, verification_request=request_value
+                    )
+                else:
+                    result = build_isaac_runtime_result_v3(result_value)
+            except (ExternalProviderNuRecError, IsaacReconstructionVerificationError) as exc:
                 raise IsaacVerificationOutputBundleError(
                     ["isaac_output_runtime_result_invalid"]
                 ) from exc
@@ -396,6 +477,8 @@ def validate_and_extract_isaac_verification_output_bundle(
                 or manifest.get("source_commit_sha") != expected_source_commit_sha
                 or manifest.get("runtime_result_digest")
                 != result["isaac_runtime_result_digest"]
+                or manifest.get("verification_request_archive_path")
+                != (request_member if provider_bundle else None)
                 or manifest.get("raw_secret_values_included") is not False
                 or manifest.get("scientific_qualification_inferred") is not False
                 or manifest.get("simulator_task_success_proven") is not False
@@ -416,6 +499,8 @@ def validate_and_extract_isaac_verification_output_bundle(
                 "isaac_runtime_result.json",
                 *(str(row.get("archive_path") or "") for row in rows if isinstance(row, Mapping)),
             }
+            if provider_bundle:
+                expected_names.add(request_member)
             if set(names) != expected_names or manifest.get("artifact_member_count") != len(
                 rows
             ):

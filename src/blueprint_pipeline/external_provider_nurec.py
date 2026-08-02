@@ -32,6 +32,7 @@ IMPORT_RECEIPT_SCHEMA = "external_reconstruction_import_receipt.v2"
 QUALIFICATION_SCHEMA = "provider_nurec_usdz_qualification.v1"
 ISAAC_REQUEST_SCHEMA = "provider_nurec_isaac_verification_request.v1"
 ISAAC_RUNTIME_SCHEMA = "provider_nurec_isaac_runtime_result.v1"
+ISAAC_VERIFICATION_RESULT_SCHEMA = "provider_nurec_isaac_verification_result.v1"
 
 SOURCE_PROFILES = {"public_provider_sample", "user_managed_provider_export"}
 SUPPORTED_PROVIDERS = {"scaniverse"}
@@ -996,6 +997,123 @@ def build_provider_nurec_isaac_runtime_result(
     return result
 
 
+def normalize_provider_nurec_isaac_verification(
+    *,
+    verification_request: Mapping[str, Any],
+    runtime_result: Mapping[str, Any],
+    package_artifact_root: str | Path,
+    runtime_artifact_root: str | Path,
+) -> dict[str, Any]:
+    """Independently rehash a completed provider-package Isaac result."""
+
+    request = build_provider_nurec_isaac_request(verification_request)
+    runtime = build_provider_nurec_isaac_runtime_result(
+        runtime_result, verification_request=request
+    )
+    errors: list[str] = []
+    if runtime.get("status") != "completed":
+        errors.append("provider_isaac_runtime_not_completed")
+
+    package_root = Path(package_artifact_root)
+    runtime_root = Path(runtime_artifact_root)
+    for root, code in (
+        (package_root, "provider_isaac_package_root_invalid"),
+        (runtime_root, "provider_isaac_runtime_root_invalid"),
+    ):
+        if root.is_symlink() or not root.is_dir():
+            errors.append(code)
+    if errors:
+        raise ExternalProviderNuRecError(errors)
+    package_root = package_root.resolve()
+    runtime_root = runtime_root.resolve()
+
+    try:
+        package_reference = _safe_relative(
+            request["package_artifact_reference"],
+            "provider_isaac_package_reference_unsafe",
+        )
+        package = package_root.joinpath(*package_reference.parts)
+        if (
+            package.is_symlink()
+            or not package.is_file()
+            or package_root not in package.resolve().parents
+            or sha256_file(package) != request["package_digest"]
+        ):
+            errors.append("provider_isaac_package_rehash_mismatch")
+    except (OSError, RuntimeError, ExternalProviderNuRecError) as exc:
+        if isinstance(exc, ExternalProviderNuRecError):
+            errors.extend(exc.codes)
+        else:
+            errors.append("provider_isaac_package_rehash_failed")
+
+    camera_rows: list[dict[str, Any]] = []
+    for camera in runtime.get("cameras") or []:
+        if not isinstance(camera, Mapping):
+            errors.append("provider_isaac_camera_artifact_invalid")
+            continue
+        try:
+            reference = _safe_relative(
+                camera.get("artifact_reference"),
+                "provider_isaac_camera_reference_unsafe",
+            )
+            if reference.suffix.lower() != ".png":
+                raise ExternalProviderNuRecError(
+                    ["provider_isaac_camera_reference_unsafe"]
+                )
+            artifact = runtime_root.joinpath(*reference.parts)
+            observed = sha256_file(artifact)
+            if (
+                artifact.is_symlink()
+                or not artifact.is_file()
+                or runtime_root not in artifact.resolve().parents
+                or observed != camera.get("digest")
+            ):
+                errors.append("provider_isaac_camera_artifact_digest_mismatch")
+                continue
+            camera_rows.append(
+                {
+                    "id": camera.get("id"),
+                    "artifact_reference": reference.as_posix(),
+                    "digest": observed,
+                    "nonblank": camera.get("nonblank"),
+                    "pixel_std": camera.get("pixel_std"),
+                }
+            )
+        except (OSError, RuntimeError, ExternalProviderNuRecError) as exc:
+            if isinstance(exc, ExternalProviderNuRecError):
+                errors.extend(exc.codes)
+            else:
+                errors.append("provider_isaac_camera_artifact_invalid")
+    if [row["id"] for row in camera_rows] != request["fixed_camera_ids"]:
+        errors.append("provider_isaac_camera_artifact_inventory_mismatch")
+    if errors:
+        raise ExternalProviderNuRecError(errors)
+
+    result = {
+        "schema_version": ISAAC_VERIFICATION_RESULT_SCHEMA,
+        "status": "verified_compatibility_only",
+        "isaac_verification_request_digest": request[
+            "isaac_verification_request_digest"
+        ],
+        "isaac_runtime_result_digest": runtime["isaac_runtime_result_digest"],
+        "package_digest": request["package_digest"],
+        "camera_artifacts": camera_rows,
+        "collision_prim_path": request["expected_prim_paths"]["collision"],
+        "appearance_prim_path": request["expected_prim_paths"]["appearance"],
+        "simulator_task_success_proven": False,
+        "physics_navigation_control_proven": False,
+        "physical_success_proven": False,
+        "physical_robot_readiness_proven": False,
+        "deployment_readiness_proven": False,
+        "proof_effect": "isaac_load_render_physics_presence_only",
+        "claim_ceiling": "isaac_load_render_compatibility",
+    }
+    result["provider_isaac_verification_result_digest"] = canonical_digest(
+        result, digest_field="provider_isaac_verification_result_digest"
+    )
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Admit and CPU-qualify an exact provider-authored NuRec USDZ"
@@ -1052,6 +1170,7 @@ __all__ = [
     "IMPORT_REQUEST_SCHEMA",
     "ISAAC_REQUEST_SCHEMA",
     "ISAAC_RUNTIME_SCHEMA",
+    "ISAAC_VERIFICATION_RESULT_SCHEMA",
     "QUALIFICATION_SCHEMA",
     "RIGHTS_RECEIPT_SCHEMA",
     "ExternalProviderNuRecError",
@@ -1063,6 +1182,7 @@ __all__ = [
     "build_provider_nurec_qualification",
     "build_provider_rights_receipt",
     "import_external_source",
+    "normalize_provider_nurec_isaac_verification",
     "qualify_provider_nurec_usdz",
     "sha256_file",
 ]
