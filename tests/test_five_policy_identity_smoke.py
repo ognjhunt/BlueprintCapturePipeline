@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from blueprint_pipeline.five_policy_identity_smoke import (
+    PHASE_LOG_PREFIX,
     build_input_bundle,
     canonical_gcs_rows,
     extract_input_bundle,
@@ -89,7 +90,9 @@ class _FakePolicy:
         return {"actions": np.full((self.rows, 8), self.value, dtype=np.float32)}
 
 
-def test_five_real_identity_receipt_mechanics_with_fake_runtime(tmp_path: Path) -> None:
+def test_five_real_identity_receipt_mechanics_with_fake_runtime(
+    tmp_path: Path, capsys: object
+) -> None:
     bundle = tmp_path / "input.zip"
     receipt = build_input_bundle(registry_path=REGISTRY, output_zip=bundle)
     extracted = extract_input_bundle(
@@ -145,6 +148,81 @@ def test_five_real_identity_receipt_mechanics_with_fake_runtime(tmp_path: Path) 
     assert {row["candidate_id"] for row in result["query_receipts"]} == set(rows_by_config)
     assert all(row["fresh_infer_call_count"] == 1 for row in result["query_receipts"])
     assert result["claim_boundary"]["actions_executed"] is False
+    captured = capsys.readouterr().out  # type: ignore[attr-defined]
+    phase_rows = [
+        json.loads(line.removeprefix(PHASE_LOG_PREFIX))
+        for line in captured.splitlines()
+        if line.startswith(PHASE_LOG_PREFIX)
+    ]
+    assert [row["phase"] for row in phase_rows].count("checkpoint_download_started") == 5
+    assert [row["phase"] for row in phase_rows].count("receipt_written") == 5
+    assert phase_rows[-1] == {
+        "completed_identity_query_count": 5,
+        "expected_candidate_count": 5,
+        "phase": "smoke_completed",
+    }
+    assert all("checkpoint_uri" not in row for row in phase_rows)
+
+
+def test_openpi_image_pins_parallel_gcs_downloader_artifact() -> None:
+    dockerfile = (
+        Path(__file__).parents[1] / "deploy/docker/policy_ranking_openpi/Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "ARG GSUTIL_VERSION=5.37" in dockerfile
+    assert (
+        "ARG GSUTIL_ARCHIVE_SHA256="
+        "c217df9fba2fb16464ee2e4968ff7d669c9699a69af7003c5deb2da4db8e4298"
+    ) in dockerfile
+    assert "VIRTUAL_ENV=/opt/gsutil-venv uv pip install /tmp/gsutil.tar.gz" in dockerfile
+    assert "ln -s /opt/gsutil-venv/bin/gsutil /usr/local/bin/gsutil" in dockerfile
+
+
+def test_failure_phase_logs_error_type_without_error_text(
+    tmp_path: Path, capsys: object
+) -> None:
+    bundle = tmp_path / "input.zip"
+    receipt = build_input_bundle(registry_path=REGISTRY, output_zip=bundle)
+    extracted = extract_input_bundle(
+        bundle_path=bundle,
+        expected_bundle_sha256=receipt["bundle_sha256"],
+        output_dir=tmp_path / "extracted",
+    )
+    registry = extracted["registry"]
+    metadata_by_uri: dict[str, dict[str, object]] = {}
+    for index, candidate in enumerate(registry["direct_droid_execution_cohort"]):
+        row = {
+            "name": candidate["checkpoint_uri"].removeprefix("gs://openpi-assets/")
+            + "/weights.bin",
+            "generation": str(index + 1),
+            "metageneration": "1",
+            "size": "1",
+            "md5Hash": "test=",
+            "crc32c": "test=",
+            "etag": f"etag-{index}",
+        }
+        rows = canonical_gcs_rows({"items": [row]})
+        candidate["checkpoint_object_count"] = 1
+        candidate["checkpoint_size_bytes"] = 1
+        candidate["gcs_generation_manifest_sha256"] = gcs_generation_manifest_sha256(rows)
+        metadata_by_uri[candidate["checkpoint_uri"]] = {"items": [row]}
+    registry["direct_cohort_total_checkpoint_bytes"] = 5
+
+    def fail_download(_uri: str) -> Path:
+        raise RuntimeError("signed-url-secret-must-not-reach-progress-log")
+
+    result = run_identity_smoke(
+        extracted=extracted,
+        output_dir=tmp_path / "output",
+        metadata_fetcher=lambda uri: metadata_by_uri[uri],
+        checkpoint_downloader=fail_download,
+        require_gpu=False,
+    )
+    captured = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert result["status"] == "blocked"
+    assert captured.count('"phase":"candidate_failed"') == 5
+    assert '"error_type":"RuntimeError"' in captured
+    assert "signed-url-secret-must-not-reach-progress-log" not in captured
 
 
 def test_gpu_admission_accepts_five_policy_identity_smoke_bundle(tmp_path: Path) -> None:

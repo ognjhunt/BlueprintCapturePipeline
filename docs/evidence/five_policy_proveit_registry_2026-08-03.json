@@ -14,6 +14,16 @@
     ],
     "redistribution_planned": false
   },
+  "runtime_transfer_dependency": {
+    "name": "gsutil",
+    "version": "5.37",
+    "source_archive_url": "https://files.pythonhosted.org/packages/9a/6f/5da5e0a8dd3b101809e9f6ba7875facdcd26de42d2ca8fede2ff9769bc39/gsutil-5.37.tar.gz",
+    "source_archive_size_bytes": 2975606,
+    "source_archive_sha256": "c217df9fba2fb16464ee2e4968ff7d669c9699a69af7003c5deb2da4db8e4298",
+    "license": "Apache-2.0",
+    "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "environment_isolated_from_openpi": true
+  },
   "direct_droid_execution_cohort": [
     {
       "candidate_id": "pi05_droid",

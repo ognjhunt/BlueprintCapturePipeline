@@ -47,6 +47,16 @@ GCS_FIELDS = (
     "crc32c",
     "etag",
 )
+PHASE_LOG_PREFIX = "BLUEPRINT_FIVE_POLICY_PHASE:"
+
+
+def _emit_phase(phase: str, *, candidate_id: str | None = None, **evidence: Any) -> None:
+    """Emit a secret-free, machine-readable progress marker to worker logs."""
+
+    payload: dict[str, Any] = {"phase": phase, **evidence}
+    if candidate_id is not None:
+        payload["candidate_id"] = candidate_id
+    print(PHASE_LOG_PREFIX + json.dumps(payload, sort_keys=True, separators=(",", ":")), flush=True)
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -348,6 +358,7 @@ def run_identity_smoke(
     manifest = extracted["manifest"]
     observation = _load_observation(extracted["paths"])
     gpu = _gpu_evidence()
+    _emit_phase("gpu_gate_observed", gpu_present=gpu.get("gpu_present") is True)
     blockers: list[str] = []
     if require_gpu and gpu.get("gpu_present") is not True:
         blockers.append("five_policy_smoke_gpu_not_present")
@@ -358,6 +369,7 @@ def run_identity_smoke(
             checkpoint_uri = str(candidate["checkpoint_uri"])
             policy = None
             started = time.time_ns()
+            _emit_phase("candidate_started", candidate_id=candidate_id)
             try:
                 rows = canonical_gcs_rows(metadata_fetcher(checkpoint_uri))
                 generation_digest = gcs_generation_manifest_sha256(rows)
@@ -367,11 +379,28 @@ def run_identity_smoke(
                     raise ValueError("checkpoint_object_count_changed")
                 if sum(int(row["size"]) for row in rows) != candidate["checkpoint_size_bytes"]:
                     raise ValueError("checkpoint_size_changed")
+                _emit_phase(
+                    "checkpoint_metadata_verified",
+                    candidate_id=candidate_id,
+                    object_count=len(rows),
+                    size_bytes=sum(int(row["size"]) for row in rows),
+                )
+                _emit_phase("checkpoint_download_started", candidate_id=candidate_id)
                 checkpoint = checkpoint_downloader(checkpoint_uri)
+                _emit_phase("checkpoint_download_completed", candidate_id=candidate_id)
                 verification = _verify_checkpoint_files(
                     checkpoint=checkpoint, checkpoint_uri=checkpoint_uri, rows=rows
                 )
+                _emit_phase(
+                    "checkpoint_integrity_verified",
+                    candidate_id=candidate_id,
+                    object_count=verification["verified_object_count"],
+                    size_bytes=verification["verified_size_bytes"],
+                )
+                _emit_phase("policy_load_started", candidate_id=candidate_id)
                 policy = policy_loader(str(candidate["config_name"]), checkpoint)
+                _emit_phase("policy_load_completed", candidate_id=candidate_id)
+                _emit_phase("inference_started", candidate_id=candidate_id)
                 raw = policy.infer(dict(observation))
                 if not isinstance(raw, Mapping) or "actions" not in raw:
                     raise ValueError("policy_native_actions_missing")
@@ -382,6 +411,11 @@ def run_identity_smoke(
                 )
                 if actions.shape != expected_shape or not np.isfinite(actions).all():
                     raise ValueError(f"policy_native_action_shape_or_finiteness_invalid:{actions.shape}")
+                _emit_phase(
+                    "inference_completed",
+                    candidate_id=candidate_id,
+                    action_shape=list(actions.shape),
+                )
                 rows_out = actions.tolist()
                 identity = {
                     "candidate": candidate,
@@ -409,8 +443,14 @@ def run_identity_smoke(
                 receipt["receipt_sha256"] = canonical_sha256(receipt)
                 receipts.append(receipt)
                 write_json(output / f"{candidate_id}.query_receipt.json", receipt)
+                _emit_phase("receipt_written", candidate_id=candidate_id)
             except Exception as exc:  # noqa: BLE001 - preserve per-policy failure
                 blockers.append(f"five_policy_smoke_failed:{candidate_id}:{type(exc).__name__}:{exc}")
+                _emit_phase(
+                    "candidate_failed",
+                    candidate_id=candidate_id,
+                    error_type=type(exc).__name__,
+                )
             finally:
                 policy = None
                 gc.collect()
@@ -420,6 +460,7 @@ def run_identity_smoke(
                     jax.clear_caches()
                 except Exception:  # noqa: BLE001
                     pass
+                _emit_phase("candidate_cleanup_completed", candidate_id=candidate_id)
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "completed" if not blockers and len(receipts) == EXPECTED_POLICY_COUNT else "blocked",
@@ -440,6 +481,11 @@ def run_identity_smoke(
     }
     result["manifest_sha256"] = canonical_sha256(result)
     write_json(output / "five_policy_identity_smoke_result.json", result)
+    _emit_phase(
+        "smoke_completed" if result["status"] == "completed" else "smoke_blocked",
+        completed_identity_query_count=len(receipts),
+        expected_candidate_count=EXPECTED_POLICY_COUNT,
+    )
     return result
 
 
