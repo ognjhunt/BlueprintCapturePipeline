@@ -1503,6 +1503,7 @@ def run_native_camera_gpu_lane(
         "pod_name_prefix": CANARY_NAME_PREFIX,
         "campaign_kind": "nvidia_warehouse_native_camera",
         "paid_lane": PAID_LANE,
+        "maximum_concurrent_paid_gpus_global": maximum_concurrent_paid_gpus_global,
         "campaign_budget": budget_context,
     }
     _write_private_json(receipt_path, receipt)

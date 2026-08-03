@@ -649,6 +649,75 @@ def test_owner_teardown_cancel_requires_global_provider_zero(tmp_path, monkeypat
     assert all(observed_at < deadline for observed_at, name_prefix in observed if name_prefix == "")
 
 
+def test_owner_teardown_cancel_allows_one_unrelated_gpu_when_two_are_authorized(
+    tmp_path, monkeypatch
+) -> None:
+    now = 100.0
+    deadline = 200.0
+    prefix = "blueprint-native-warehouse-camera-"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now)
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(
+        json.dumps(
+            {
+                "schema_version": watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION,
+                "requested_by": "qualification_owner_teardown",
+                "provider": "runpod",
+                "instance_id": "native-camera-terminated",
+                "pod_name_prefix": prefix,
+                "provider_absence_confirmed": True,
+                "provider_absence_evidence": (
+                    "provider_api_exact_id_prefix_and_global_inventory"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cancel_path.chmod(0o600)
+    receipt_path = tmp_path / "provider_lane_handoff_receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "pod_name_prefix": prefix,
+                "maximum_concurrent_paid_gpus_global": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_path.chmod(0o600)
+    monkeypatch.setattr(
+        "blueprint_pipeline.paid_provider_lane_lease.restore_paid_provider_lane_lease_to_retained_watchdog",
+        lambda _receipt: {"status": "blocked"},
+    )
+
+    class Provider:
+        name = "runpod"
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            count = 1 if name_prefix == "" else 0
+            return {
+                "api_confirmed": True,
+                "live_resource_count": count,
+                "resources": ([{"instance_id": "unrelated-live"}] if count else []),
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_factory=lambda _name: Provider(),
+        clock=lambda: now,
+        sleeper=lambda _seconds: pytest.fail("authorized scoped zero must not sleep"),
+    )
+
+    assert result["owner_teardown_cancel_requested"] is True
+    assert result["provider_absence_confirmed"] is True
+    assert result["provider_absence_scope"] == (
+        "name_prefix_exact_instance_with_authorized_concurrency"
+    )
+    assert result["maximum_concurrent_paid_gpus_global"] == 2
+
+
 def test_vast_owner_cancel_requires_exact_recorded_id_absence(tmp_path, monkeypatch) -> None:
     now = 100.0
     deadline = 200.0
