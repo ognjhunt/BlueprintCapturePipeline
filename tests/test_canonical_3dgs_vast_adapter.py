@@ -9,11 +9,16 @@ import zipfile
 import jsonschema
 import pytest
 
+from blueprint_pipeline import canonical_3dgs_vast_output as vast_output
 from blueprint_pipeline.canonical_3dgs_vast_output import (
+    MANIFEST_MEMBER,
     compile_canonical_3dgs_vast_output_bundle,
     validate_canonical_3dgs_vast_output_bundle,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.reconstruction_gpu_operation_output import (
+    ReconstructionGpuOperationOutputError,
+)
 from blueprint_pipeline.reconstruction_gpu_admission import (
     CANONICAL_SPLATFACTO_VAST_ADAPTER_ID,
     build_reconstruction_gpu_canary_admission,
@@ -128,7 +133,9 @@ def test_specialized_request_cannot_be_qualified_by_generic_boolean() -> None:
     assert bound["execution_adapter_id"] == CANONICAL_SPLATFACTO_VAST_ADAPTER_ID
 
 
-def test_canonical_vast_output_independently_decodes_standard_ply(tmp_path: Path) -> None:
+def test_canonical_vast_output_independently_decodes_standard_ply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "result"
     root.mkdir()
     splat = root / "candidate.ply"
@@ -171,6 +178,14 @@ def test_canonical_vast_output_independently_decodes_standard_ply(tmp_path: Path
         Path("docs/schemas/canonical_3dgs_vast_output_bundle.v1.schema.json").read_text()
     )
     jsonschema.Draft202012Validator(schema).validate(manifest)
+    original_read = zipfile.ZipFile.read
+
+    def manifest_only_read(archive, member, *args, **kwargs):
+        name = member.filename if isinstance(member, zipfile.ZipInfo) else member
+        assert name == MANIFEST_MEMBER, "artifact members must be streamed"
+        return original_read(archive, member, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", manifest_only_read)
     validated, runtime = validate_canonical_3dgs_vast_output_bundle(
         bundle_path=output,
         expected_operation="trainer_canary",
@@ -186,9 +201,27 @@ def test_canonical_vast_output_independently_decodes_standard_ply(tmp_path: Path
 
 
 def test_canonical_vast_output_rejects_tampering(tmp_path: Path) -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ReconstructionGpuOperationOutputError):
         validate_canonical_3dgs_vast_output_bundle(
             bundle_path=tmp_path / "missing.zip",
+            expected_operation="trainer_canary",
+            expected_operation_request_digest="sha256:" + "3" * 64,
+            expected_worker_image_digest=IMAGE,
+            expected_source_commit_sha=SOURCE,
+        )
+
+
+def test_canonical_vast_output_caps_manifest_before_json_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = tmp_path / "oversized-manifest.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr(MANIFEST_MEMBER, b"{" + b" " * 64 + b"}")
+    monkeypatch.setattr(vast_output, "MAX_MANIFEST_BYTES", 16)
+
+    with pytest.raises(ReconstructionGpuOperationOutputError):
+        validate_canonical_3dgs_vast_output_bundle(
+            bundle_path=bundle,
             expected_operation="trainer_canary",
             expected_operation_request_digest="sha256:" + "3" * 64,
             expected_worker_image_digest=IMAGE,

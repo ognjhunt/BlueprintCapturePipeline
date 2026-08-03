@@ -140,12 +140,19 @@ def _copy_immutable(source: Path, destination: Path, expected_digest: str) -> No
         temporary.unlink(missing_ok=True)
 
 
-def _opencv_camera_to_world(value: Any) -> list[list[float]]:
+def _camera_to_world_for_opencv_renderer(
+    value: Any, *, source_axis_convention: str
+) -> list[list[float]]:
     matrix = np.asarray(value, dtype=np.float64)
     if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
         raise Canonical3DGSEvaluationError(["evaluator_arkit_pose_invalid"])
     converted = matrix.copy()
-    converted[:3, :3] = matrix[:3, :3] @ ARKIT_TO_OPENCV
+    if source_axis_convention == "arkit_x_right_y_up_z_backward":
+        converted[:3, :3] = matrix[:3, :3] @ ARKIT_TO_OPENCV
+    elif source_axis_convention != "opencv_x_right_y_down_z_forward":
+        raise Canonical3DGSEvaluationError(
+            ["evaluator_camera_axis_convention_invalid"]
+        )
     return [[float(item) for item in row] for row in converted]
 
 
@@ -244,8 +251,9 @@ def compile_canonical_3dgs_hidden_evaluator_input(
                 "trajectory": "author_heldout",
                 "t_video_sec": timestamp_value,
                 "capture_pose_frame_id": str(matches[0].get("pose_frame_id")),
-                "T_world_camera_provider_frame": _opencv_camera_to_world(
-                    pose.get("T_world_camera")
+                "T_world_camera_provider_frame": _camera_to_world_for_opencv_renderer(
+                    pose.get("T_world_camera"),
+                    source_axis_convention="arkit_x_right_y_up_z_backward",
                 ),
                 "intrinsics": camera_intrinsics,
                 "reference_relative_path": relative,
@@ -392,8 +400,9 @@ def compile_canonical_3dgs_proxy_hidden_evaluator_input(
                 "trajectory": "author_heldout",
                 "t_video_sec": float(raw["t_video_sec"]),
                 "capture_pose_frame_id": camera_id,
-                "T_world_camera_provider_frame": _opencv_camera_to_world(
-                    camera.get("T_world_camera")
+                "T_world_camera_provider_frame": _camera_to_world_for_opencv_renderer(
+                    camera.get("T_world_camera"),
+                    source_axis_convention="opencv_x_right_y_down_z_forward",
                 ),
                 "intrinsics": camera_intrinsics,
                 "reference_relative_path": relative,

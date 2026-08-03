@@ -20,6 +20,7 @@ SCHEMA_VERSION = "canonical_3dgs_vast_output_bundle.v1"
 MAX_MEMBER_BYTES = 16 * 1024**3
 MAX_TOTAL_BYTES = 96 * 1024**3
 MAX_MEMBER_COUNT = 20_000
+MAX_MANIFEST_BYTES = 8 * 1024**2
 MANIFEST_MEMBER = "canonical_3dgs_vast_output_manifest.json"
 
 
@@ -56,6 +57,20 @@ def _member(archive: zipfile.ZipFile, name: str, source: Path | bytes) -> None:
             info, "w", force_zip64=True
         ) as output_stream:
             shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+
+
+def _hash_archive_member(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo
+) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    total = 0
+    with archive.open(info, "r") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            total += len(chunk)
+            if total > MAX_MEMBER_BYTES:
+                raise ValueError("member_oversized")
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest(), total
 
 
 def compile_canonical_3dgs_vast_output_bundle(
@@ -203,40 +218,74 @@ def validate_canonical_3dgs_vast_output_bundle(
         with zipfile.ZipFile(bundle, "r") as archive:
             infos = archive.infolist()
             names = [info.filename for info in infos]
-            if len(names) != len(set(names)) or MANIFEST_MEMBER not in names:
+            if (
+                not infos
+                or len(infos) > MAX_MEMBER_COUNT + 1
+                or len(names) != len(set(names))
+                or MANIFEST_MEMBER not in names
+            ):
                 raise ValueError("member_set")
-            manifest = json.loads(archive.read(MANIFEST_MEMBER))
+            info_by_name = {info.filename: info for info in infos}
+            manifest_info = info_by_name[MANIFEST_MEMBER]
+            if (
+                manifest_info.file_size <= 0
+                or manifest_info.file_size > MAX_MANIFEST_BYTES
+                or sum(info.file_size for info in infos)
+                > MAX_TOTAL_BYTES + MAX_MANIFEST_BYTES
+            ):
+                raise ValueError("archive_size")
+            manifest = json.loads(archive.read(manifest_info))
+            members = manifest.get("members")
+            if (
+                not isinstance(members, list)
+                or not members
+                or len(members) > MAX_MEMBER_COUNT
+                or manifest.get("member_count") != len(members)
+            ):
+                raise ValueError("manifest_members")
             expected_names = {MANIFEST_MEMBER} | {
-                str(row["archive_path"]) for row in manifest.get("members") or []
+                str(row["archive_path"]) for row in members
             }
             if set(names) != expected_names:
                 raise ValueError("member_set")
             for info in infos:
+                member_limit = (
+                    MAX_MANIFEST_BYTES
+                    if info.filename == MANIFEST_MEMBER
+                    else MAX_MEMBER_BYTES
+                )
                 if (
                     _portable(info.filename) is None
                     or info.is_dir()
                     or ((info.external_attr >> 16) & 0o170000) == stat.S_IFLNK
-                    or info.file_size > MAX_MEMBER_BYTES
+                    or info.file_size > member_limit
                     or info.compress_type != zipfile.ZIP_STORED
                 ):
                     raise ValueError("unsafe_member")
-            for row in manifest.get("members") or []:
-                payload = archive.read(str(row["archive_path"]))
+            for row in members:
+                if not isinstance(row, Mapping):
+                    raise ValueError("member_record")
+                info = info_by_name[str(row["archive_path"])]
+                digest, byte_count = _hash_archive_member(archive, info)
                 if (
-                    len(payload) != row.get("bytes")
-                    or "sha256:" + hashlib.sha256(payload).hexdigest() != row.get("digest")
+                    byte_count != row.get("bytes")
+                    or info.file_size != row.get("bytes")
+                    or digest != row.get("digest")
                 ):
                     raise ValueError("digest")
             splat_rows = [
                 row
-                for row in manifest.get("members") or []
+                for row in members
                 if row.get("digest") == manifest.get("standard_3dgs_ply_digest")
             ]
             if len(splat_rows) != 1:
                 raise ValueError("splat")
             with tempfile.TemporaryDirectory(prefix="canonical-vast-ply-") as tmp:
                 splat_path = Path(tmp) / "candidate.ply"
-                splat_path.write_bytes(archive.read(str(splat_rows[0]["archive_path"])))
+                with archive.open(
+                    info_by_name[str(splat_rows[0]["archive_path"])], "r"
+                ) as source, splat_path.open("wb") as destination:
+                    shutil.copyfileobj(source, destination, length=1024 * 1024)
                 decoded_count = read_standard_3dgs_ply(splat_path).count
     except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
         raise ReconstructionGpuOperationOutputError(

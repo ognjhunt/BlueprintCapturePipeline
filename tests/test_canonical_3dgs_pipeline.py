@@ -37,6 +37,7 @@ from blueprint_pipeline.canonical_3dgs_transport import (
 )
 from blueprint_pipeline.canonical_3dgs_evaluation import (
     Canonical3DGSEvaluationError,
+    compile_canonical_3dgs_proxy_hidden_evaluator_input,
     evaluate_canonical_3dgs_campaign,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -858,6 +859,95 @@ def test_proxy_source_admission_cannot_claim_raw_contract() -> None:
         build_canonical_3dgs_source_admission(
             **common, raw_contract_3_2_proven=True
         )
+
+
+def test_proxy_hidden_evaluator_preserves_opencv_camera_pose(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "proxy"
+    hidden_root = artifact_root / "evaluator_hidden"
+    hidden_root.mkdir(parents=True)
+    reference = hidden_root / "reference.png"
+    reference.write_bytes(b"proxy-heldout-frame")
+    split = {
+        "schema_version": "frozen_split_manifest.v1",
+        "candidate_frame_ids": ["candidate"],
+        "heldout_frame_ids": ["heldout"],
+    }
+    split["split_digest"] = canonical_digest(split, digest_field="split_digest")
+    hidden = {
+        "schema_version": "hidden_heldout_evaluator_manifest.v1",
+        "access_scope": "independent_evaluator_only",
+        "candidate_method_access_allowed": False,
+        "split_digest": split["split_digest"],
+        "frames": [
+            {
+                "frame_id": "heldout",
+                "t_video_sec": 1.0,
+                "evaluator_relative_path": "evaluator_hidden/reference.png",
+                "frame_digest": _digest(reference),
+            }
+        ],
+    }
+    hidden["hidden_heldout_digest"] = canonical_digest(
+        hidden, digest_field="hidden_heldout_digest"
+    )
+    split_path = artifact_root / "split.json"
+    hidden_path = hidden_root / "manifest.json"
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+    hidden_path.write_text(json.dumps(hidden), encoding="utf-8")
+    capture_digest = _sha("7")
+    scaffold = {
+        "schema_version": "arkitscenes_metric_scaffold_proxy.v1",
+        "access_scope": "independent_evaluator_only",
+        "capture_digest": capture_digest,
+        "split_digest": split["split_digest"],
+        "metric_scale_status": "dataset_declared_not_independently_validated",
+        "camera_frames": [
+            {
+                "frame_id": "heldout",
+                "t_video_sec": 1.0,
+                "T_world_camera": np.eye(4).tolist(),
+                "rgb_intrinsics": {
+                    "fx": 50.0,
+                    "fy": 50.0,
+                    "cx": 32.0,
+                    "cy": 24.0,
+                    "width": 64,
+                    "height": 48,
+                },
+            }
+        ],
+    }
+    scaffold["metric_scaffold_digest"] = canonical_digest(
+        scaffold, digest_field="metric_scaffold_digest"
+    )
+    dataset_manifest = {
+        "source_capture_identity": "ARKitScenes:fixture",
+        "source_capture_digest": capture_digest,
+        "dataset_manifest_digest": _sha("8"),
+        "artifact_references": {
+            "hidden_heldout_evaluator_manifest": {
+                "relative_path": "evaluator_hidden/manifest.json",
+                "digest": _digest(hidden_path),
+            },
+            "frozen_split_manifest": {
+                "relative_path": "split.json",
+                "digest": _digest(split_path),
+            },
+        },
+    }
+
+    evaluator = compile_canonical_3dgs_proxy_hidden_evaluator_input(
+        reconstruction_dataset_manifest=dataset_manifest,
+        dataset_artifact_root=artifact_root,
+        evaluator_metric_scaffold=scaffold,
+        output_root=tmp_path / "evaluator",
+        source_commit_sha=SOURCE_COMMIT,
+        authority_used={"local_processing_authorized": True},
+        timestamp="2026-08-03T05:00:00Z",
+    )
+
+    assert evaluator["camera_axis_convention"] == "opencv_x_right_y_down_z_forward"
+    assert evaluator["cameras"][0]["T_world_camera_provider_frame"] == np.eye(4).tolist()
 
 
 def test_execution_request_names_missing_authority_without_a_winner(tmp_path: Path) -> None:
