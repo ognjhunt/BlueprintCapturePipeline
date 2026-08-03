@@ -816,7 +816,10 @@ def test_reconstruction_gpu_execute_routes_through_shared_grant_and_vast_adapter
     result = allocator._run_reconstruction_gpu_canary(args, checkout_commit="c" * 40)
 
     assert result["status"] == "completed"
-    assert observed["prepare"]["execution_adapter_qualified"] is True
+    assert (
+        observed["prepare"]["execution_adapter_id"]
+        == "reconstruction_vast_operation_v1"
+    )
     assert observed["run"]["provider"] is provider
     grant = observed["run"]["paid_resource_admission_grant"]
     assert grant.resource_class == "gpu_render"

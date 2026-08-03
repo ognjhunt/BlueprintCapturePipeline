@@ -22,10 +22,32 @@ from .reconstruction_gpu_operation_bundle import (
     ReconstructionGpuOperationBundleError,
     validate_reconstruction_gpu_operation_bundle_receipt,
 )
+from .canonical_3dgs_transport import (
+    Canonical3DGSTransportError,
+    validate_canonical_3dgs_transport_receipt,
+)
 from .reconstruction_isaac_worker_bundle import (
     IsaacWorkerBundleError,
     validate_isaac_verification_worker_bundle_receipt,
 )
+
+
+def _canonical_worker_wheel_blockers(
+    receipt: Mapping[str, Any], *, canonical_splatfacto: bool
+) -> list[str]:
+    if not canonical_splatfacto:
+        return []
+    required = (
+        "worker_wheel_filename",
+        "worker_wheel_digest",
+        "worker_wheel_archive_path",
+        "worker_wheel_bytes",
+    )
+    return (
+        []
+        if all(receipt.get(field) is not None for field in required)
+        else ["canonical_splatfacto_worker_wheel_missing"]
+    )
 
 
 def _chrono_transport_manifest_blockers(
@@ -118,6 +140,9 @@ def prepare_reconstruction_paid_transport(
         "measurement_dlo_lab_canary",
         "measurement_chrono_dem_canary",
     } or operation in isaac_operations
+    canonical_splatfacto = (
+        admission.get("execution_adapter_id") == "canonical_splatfacto_vast_v1"
+    )
     if scientific:
         urls.append(("provider_bundle_url", getattr(args, "provider_bundle_url_file", None)))
         if operation not in {
@@ -153,6 +178,8 @@ def prepare_reconstruction_paid_transport(
                     receipt = validate_measurement_dlo_lab_input_bundle_receipt(raw)
                 elif operation == "measurement_chrono_dem_canary":
                     receipt = validate_measurement_chrono_dem_input_bundle_receipt(raw)
+                elif canonical_splatfacto:
+                    receipt = validate_canonical_3dgs_transport_receipt(raw)
                 else:
                     receipt = validate_reconstruction_gpu_operation_bundle_receipt(raw)
             except (
@@ -164,9 +191,15 @@ def prepare_reconstruction_paid_transport(
                 MeasurementIsaacVastBundleError,
                 MeasurementDloLabVastBundleError,
                 MeasurementChronoDemVastBundleError,
+                Canonical3DGSTransportError,
             ):
                 blockers.append("reconstruction_operation_bundle_receipt_invalid")
             else:
+                blockers.extend(
+                    _canonical_worker_wheel_blockers(
+                        receipt, canonical_splatfacto=canonical_splatfacto
+                    )
+                )
                 bindings = (
                     (
                         ("operation_request_digest", "isaac_verification_request_digest"),
@@ -187,6 +220,12 @@ def prepare_reconstruction_paid_transport(
                         "measurement_dlo_lab_canary",
                         "measurement_chrono_dem_canary",
                     }
+                    else (
+                        ("operation_request_digest", "canonical_3dgs_execution_plan_digest"),
+                        ("operation_input_bundle_digest", "transport_bundle_digest"),
+                        ("source_commit_sha", "source_commit_sha"),
+                    )
+                    if canonical_splatfacto
                     else (
                         ("operation", "operation"),
                         ("operation_request_digest", "operation_request_digest"),

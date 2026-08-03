@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/canonical_3dgs_vast_output_bundle.v1.schema.json",
+  "title": "Canonical 3DGS Vast output bundle manifest",
+  "type": "object",
+  "required": ["schema_version", "status", "operation", "arm_id", "canonical_3dgs_execution_plan_digest", "transport_bundle_digest", "worker_receipt_digest", "worker_image_digest", "source_commit_sha", "standard_3dgs_ply_digest", "gaussian_count", "members", "member_count", "hidden_heldout_pixels_included", "candidate_self_graded", "quality_winner", "proof_effect", "claim_ceiling", "output_bundle_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "canonical_3dgs_vast_output_bundle.v1"},
+    "status": {"const": "candidate_generated_not_graded"},
+    "operation": {"const": "trainer_canary"},
+    "arm_id": {"const": "splatfacto-comparison"},
+    "canonical_3dgs_execution_plan_digest": {"$ref": "#/$defs/digest"},
+    "transport_bundle_digest": {"$ref": "#/$defs/digest"},
+    "worker_receipt_digest": {"$ref": "#/$defs/digest"},
+    "worker_image_digest": {"pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "standard_3dgs_ply_digest": {"$ref": "#/$defs/digest"},
+    "gaussian_count": {"type": "integer", "minimum": 1},
+    "members": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["relative_path", "archive_path", "digest", "bytes"], "properties": {"relative_path": {"type": "string", "minLength": 1}, "archive_path": {"pattern": "^results/"}, "digest": {"$ref": "#/$defs/digest"}, "bytes": {"type": "integer", "minimum": 0}}, "additionalProperties": false}},
+    "member_count": {"type": "integer", "minimum": 1},
+    "hidden_heldout_pixels_included": {"const": false},
+    "candidate_self_graded": {"const": false},
+    "quality_winner": {"type": "null"},
+    "proof_effect": {"const": "appearance_asset_candidate_only"},
+    "claim_ceiling": {"const": "appearance_reconstruction"},
+    "output_bundle_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {"digest": {"pattern": "^sha256:[0-9a-f]{64}$"}}
+}

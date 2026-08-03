@@ -331,7 +331,7 @@
     "task_evaluation_run_completed": true
   },
   "excluded_scenarios": [],
-  "execution_packet_digest": "sha256:a93c60cf72f5f49522710fa9b034133c00dcc3ba930e2eea5ddbd67c71058881",
+  "execution_packet_digest": "sha256:58c694a13e7236712ce9acd0bda29509757965337c0658a59b9b5a37d9517759",
   "expected_cell_count": 15,
   "matrix_evidence_type": "learned_policy_scenario_matrix",
   "observed_attempt_count": 15,
@@ -431,7 +431,7 @@
     }
   ],
   "reconstruction_digest": "sha256:1cfe1f73d0cca3385dfd90d53cd73476788988a5521c87a3bb676913f0044316",
-  "request_digest": "sha256:73b5b6e44005202ede98c82304b9efeecb443e623268a88b8eba1b43eb46c223",
+  "request_digest": "sha256:d44e00cff9de40667ad72f2e2dbb9137db2326b4f62053d15f48a984b9f6ab33",
   "robot_id": "franka_panda",
   "routing_decision": {
     "abstention": null,
@@ -577,7 +577,7 @@
     "status": "route_selected",
     "taxonomy_version": "2026-08-01"
   },
-  "run_digest": "sha256:97b2b3a74ff80f95211fbaaa4dfb37ead5a03b56c971de40903bd1877b0c9bcb",
+  "run_digest": "sha256:792bce64ec4a7070194c8b7184343e26424604ef6be1aaa93c852cf4df1105b6",
   "run_id": "new-site-run-001",
   "scenario_count": 3,
   "scenario_pack_digest": "sha256:05c1f5d287356bd0d42f477432774ef7b2922208438898c5a7721d5fc6ec8c60",

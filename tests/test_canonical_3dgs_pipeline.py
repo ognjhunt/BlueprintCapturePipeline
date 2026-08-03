@@ -13,6 +13,7 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline import local_reconstruction_adapters as adapters
+from blueprint_pipeline import canonical_3dgs_pipeline as canonical_pipeline
 from blueprint_pipeline.canonical_3dgs_admission import (
     build_canonical_3dgs_worker_admission,
 )
@@ -26,6 +27,7 @@ from blueprint_pipeline.canonical_3dgs_pipeline import (
     finalize_canonical_3dgs_receipts,
     prepare_canonical_v32_training_dataset,
 )
+from blueprint_pipeline.capture_v32_candidate_admission import MISSING_SELECTION_PROFILE
 from blueprint_pipeline.canonical_3dgs_execution_request import (
     build_canonical_3dgs_execution_request,
 )
@@ -36,6 +38,8 @@ from blueprint_pipeline.canonical_3dgs_transport import (
     validate_canonical_3dgs_transport_receipt,
 )
 from blueprint_pipeline.canonical_3dgs_evaluation import (
+    Canonical3DGSEvaluationError,
+    compile_canonical_3dgs_proxy_hidden_evaluator_input,
     evaluate_canonical_3dgs_campaign,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -141,12 +145,14 @@ def _preparation(dataset: dict) -> dict:
         "source_profile": "blueprint_raw_v3_2",
         "canonical_3dgs_source_admission_digest": _sha("8"),
         "source_capture_digest": CAPTURE_DIGEST,
+        "pipeline_source_commit_sha": SOURCE_COMMIT,
         "raw_contract_3_2_proven": True,
         "colmap_training_dataset_digest": dataset["colmap_training_dataset_digest"],
         "colmap_training_dataset_export_result_digest": dataset[
             "colmap_training_dataset_export_result_digest"
         ],
         "frozen_split_digest": SPLIT_DIGEST,
+        "hidden_evaluator_input_digest": _sha("7"),
         "pose_binding": "raw_arkit_pose_baseline",
         "world_frame": "canonical_arkit_world",
         "coordinate_frame_declaration": {"frame": "canonical_arkit_world"},
@@ -307,8 +313,133 @@ def _canonical_v32_fixture(root: Path, frame_count: int = 8) -> list[float]:
             "frames": confidence_rows,
         },
     )
+    candidates = []
+    for index, frame_id in enumerate(frame_ids):
+        intrinsics = {
+            "authority": "arkit_arframe_exact_per_observation",
+            "fx": 50,
+            "fy": 50,
+            "cx": 32,
+            "cy": 24,
+            "width": 64,
+            "height": 48,
+            "matrix_column_major": [50, 0, 0, 0, 50, 0, 32, 24, 1],
+        }
+        candidates.append(
+            {
+                "candidate_id": f"rgb_{index:06d}",
+                "source_video_uri": "walkthrough.mov",
+                "output_image_relative_path": f"candidate_rgb/{index:06d}.png",
+                "decoded_frame_ordinal": index,
+                "encoded_frame_index": index,
+                "decoded_pts_sec": times[index],
+                "decoded_source_pts_sec": times[index],
+                "t_capture_sec": times[index],
+                "write_attempt_index": index,
+                "frame_id": frame_id,
+                "pose_frame_id": frame_id,
+                "coordinate_frame_session_id": "fixture-session",
+                "site_frame_id": "fixture-session",
+                "site_frame_definition": "arkit_world_origin_at_session_start",
+                "transform_semantics": "row_major_camera_to_site",
+                "units": "meters",
+                "handedness": "right_handed",
+                "up_axis": "Y",
+                "gravity_aligned": True,
+                "T_site_camera": poses[index]["T_world_camera"],
+                "T_world_camera": poses[index]["T_world_camera"],
+                "camera_intrinsics": intrinsics,
+                "camera_calibration_digest": canonical_digest(intrinsics),
+                "tracking_state": "normal",
+                "tracking_reason": None,
+                "world_mapping_status": "mapped",
+                "relocalization_event": False,
+                "arkit_frame_row_ordinal": index,
+                "arkit_pose_row_ordinal": index,
+                "pose_assisted_eligible": True,
+                "raw_observation_authority": True,
+                "downstream_artifact_authority": False,
+                "depth_path": f"arkit/depth/{frame_id}.png",
+                "confidence_path": f"arkit/confidence/{frame_id}.png",
+            }
+        )
+    candidate_manifest = {
+        "schema_version": "downstream_candidate_manifest.v1",
+        "capture_id": "capture-fixture",
+        "scene_id": "scene-fixture",
+        "source_video_uri": "walkthrough.mov",
+        "source_video_sha256": _digest(root / "walkthrough.mov")[7:],
+        "source_video_authority": "immutable_raw_capture_video",
+        "decoded_timing_authority": (
+            "sync_map_decoded_sample_presentation_timestamps"
+        ),
+        "coordinate_frame_session_id": "fixture-session",
+        "candidate_order": "encoded_frame_index_ascending",
+        "candidate_count": frame_count,
+        "candidates": candidates,
+        "selection_contract": {
+            "selection_authority": "blueprint_pipeline_task_site_profile",
+            "capture_default_selection": None,
+            "selection_parameters_required": True,
+            "allowed_deterministic_selectors": [
+                "explicit_encoded_frame_ordinals",
+                "profile_bound_even_decoded_pts_coverage",
+                "profile_bound_quality_filter",
+            ],
+            "smallest_missing_input_when_unselectable": MISSING_SELECTION_PROFILE,
+        },
+        "provider_neutrality": {
+            "mobile_app_direct_provider_upload_allowed": False,
+            "third_party_provider_upload_authorized": False,
+            "provider_selection_authority": "blueprint_pipeline",
+            "provider_authorization_status": "not_granted_by_capture_manifest",
+        },
+        "allowed_use_scope": {
+            "raw_observation_indexing_allowed": True,
+            "derived_processing_allowed": True,
+            "data_licensing_allowed": False,
+            "latest_revocation_check_required": True,
+            "provider_upload_requires_separate_downstream_authorization": True,
+            "redaction_required_before_derived_use": False,
+            "requested_outputs": ["reconstruction_candidate"],
+        },
+        "claim_boundary": {
+            "raw_capture_remains_authoritative": True,
+            "candidate_manifest_qualifies_reconstruction": False,
+            "candidate_manifest_qualifies_metric_scale": False,
+            "candidate_manifest_qualifies_collision_or_physics": False,
+            "candidate_manifest_proves_task_success": False,
+        },
+    }
+    candidate_manifest["manifest_digest"] = canonical_digest(
+        candidate_manifest, digest_field="manifest_digest"
+    )
+    _write_json(root / "downstream_candidate_manifest.json", candidate_manifest)
     return times
 
+def _selection_profile(capture_root: Path, ordinals: list[int]) -> dict:
+    manifest = json.loads(
+        (capture_root / "downstream_candidate_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    profile = {
+        "schema_version": "task_site_frame_selection_profile.v1",
+        "site_id": "site-fixture",
+        "task_id": "task-fixture",
+        "candidate_manifest_digest": manifest["manifest_digest"],
+        "selector": "explicit_encoded_frame_ordinals",
+        "parameters": {"encoded_frame_ordinals": ordinals},
+        "rights_authorization": {
+            "status": "authorized",
+            "latest_revocation_check_status": "clear",
+            "rights_evidence_digest": _sha("d"),
+        },
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    return profile
 
 def _stub_v32_media(monkeypatch: pytest.MonkeyPatch, times: list[float]) -> None:
     monkeypatch.setattr(adapters.shutil, "which", lambda name: f"/fake/{name}")
@@ -434,6 +565,7 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
     capture_root = tmp_path / "capture"
     times = _canonical_v32_fixture(capture_root)
     _stub_v32_media(monkeypatch, times)
+    selection_profile = _selection_profile(capture_root, [0, 2, 5, 7])
 
     prepared = prepare_canonical_v32_training_dataset(
         capture_root=capture_root,
@@ -445,10 +577,13 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
             "provider_upload_authorized": False,
             "paid_compute_authorized": False,
         },
-        maximum_frames=8,
+        task_site_selection_profile=selection_profile,
     )
 
     assert prepared["preparation"]["status"] == "training_dataset_ready"
+    assert prepared["preparation"]["selected_decoded_frame_ordinals"] == [0, 2, 5, 7]
+    assert prepared["preparation"]["frame_selection_default_used"] is False
+    assert prepared["preparation"]["task_site_frame_selection_profile_digest"] == selection_profile["profile_digest"]
     assert prepared["dataset"]["image_count"] >= 3
     assert prepared["dataset"]["initialization_point_count"] > 0
     assert prepared["dataset"]["hidden_heldout_pixels_included"] is False
@@ -478,7 +613,7 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
         preparation=prepared["preparation"],
         dataset=prepared["dataset"],
         dataset_root=prepared["dataset_root"],
-        source_commit_sha=SOURCE_COMMIT,
+        source_commit_sha=prepared["preparation"]["pipeline_source_commit_sha"],
         timestamp="2026-08-03T05:00:00Z",
     )
     assert plan["primary_method_id"] == "jawset_postshot_splat3_v1"
@@ -529,23 +664,103 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
     def fake_evaluator(*, source_artifact: dict, output_root: Path) -> dict:
         del output_root
         postshot = source_artifact["candidate_method_id"] == "jawset_postshot_splat3_v1"
+        psnr = 31.0 if postshot else 28.0
+        global_ssim = 0.96 if postshot else 0.91
+        windowed_ssim = 0.95 if postshot else 0.90
+        mean_absolute_error = 0.02 if postshot else 0.04
+        lpips = 0.04 if postshot else 0.08
+        rows = [
+            {
+                "view_id": pair["view_id"],
+                "trajectory": pair["trajectory"],
+                "real_view_digest": pair["real_view_digest"],
+                "candidate_render_digest": pair["candidate_render_digest"],
+                "psnr_db": psnr,
+                "global_ssim": global_ssim,
+                "windowed_ssim": windowed_ssim,
+                "mean_absolute_error": mean_absolute_error,
+                "lpips": lpips,
+            }
+            for pair in source_artifact["pairs"]
+        ]
         aggregate = {
-            "view_count": len(source_artifact["pairs"]),
-            "mean_psnr_db": 31.0 if postshot else 28.0,
-            "mean_global_ssim": 0.96 if postshot else 0.91,
-            "mean_windowed_ssim": 0.95 if postshot else 0.90,
-            "mean_absolute_error": 0.02 if postshot else 0.04,
-            "mean_lpips": 0.04 if postshot else 0.08,
+            "view_count": len(rows),
+            "mean_psnr_db": psnr,
+            "mean_global_ssim": global_ssim,
+            "mean_windowed_ssim": windowed_ssim,
+            "mean_absolute_error": mean_absolute_error,
+            "mean_lpips": lpips,
             "thresholds_passed": True,
         }
         report = {
             "schema_version": "visual_heldout_evaluation_report.v2",
+            "stable_run_identity": source_artifact["stable_run_identity"],
+            "source_capture_identity": source_artifact["source_capture_identity"],
+            "source_capture_digest": source_artifact["source_capture_digest"],
+            "reconstruction_dataset_digest": source_artifact[
+                "reconstruction_dataset_digest"
+            ],
+            "frozen_split_digest": source_artifact["frozen_split_digest"],
+            "candidate_reconstruction_result_digest": source_artifact[
+                "candidate_reconstruction_result_digest"
+            ],
+            "evaluation_request_digest": source_artifact[
+                "heldout_appearance_evaluation_request_digest"
+            ],
             "candidate_method_id": source_artifact["candidate_method_id"],
+            "candidate_provider_identity": source_artifact[
+                "candidate_provider_identity"
+            ],
+            "evaluator_identity": source_artifact["evaluator_identity"],
+            "evaluator_provider_identity": source_artifact[
+                "evaluator_provider_identity"
+            ],
+            "evaluator_implementation_digest": source_artifact[
+                "evaluator_implementation_digest"
+            ],
+            "source_commit_sha": source_artifact["source_commit_sha"],
+            "coordinate_frame_declaration": source_artifact[
+                "coordinate_frame_declaration"
+            ],
+            "metric_definitions": {"fixture": "exact-test-values"},
+            "lpips_runtime": {
+                "model_id": "lpips_alex_v0.1",
+                "checkpoint_digest": source_artifact["lpips_model"][
+                    "checkpoint_digest"
+                ],
+            },
+            "rows": rows,
             "by_trajectory": {
                 "author_heldout": aggregate,
                 "independent_short": {"view_count": 0, "thresholds_passed": None},
             },
+            "measured_trajectories": ["author_heldout"],
+            "thresholds": source_artifact["thresholds"],
+            "all_measured_trajectories_passed": True,
             "status": "passed_appearance_only",
+            "heldout_observation_count": len(rows),
+            "candidate_had_hidden_access": False,
+            "candidate_selected_heldout": False,
+            "candidate_self_graded": False,
+            "cost_usd": 0.0,
+            "authority_used": source_artifact["authority_used"],
+            "warnings": [],
+            "blockers": [],
+            "proof_effect": "independent_heldout_appearance_evaluation_only",
+            "claim_ceiling": "appearance_reconstruction",
+            "metric_scale_proven": False,
+            "metric_geometry_proven": False,
+            "collision_geometry_proven": False,
+            "physics_readiness_proven": False,
+            "physical_task_success_proven": False,
+            "deployment_readiness_proven": False,
+            "parent_artifact_or_event": {
+                "candidate_reconstruction_result_digest": source_artifact[
+                    "candidate_reconstruction_result_digest"
+                ],
+                "frozen_split_digest": source_artifact["frozen_split_digest"],
+            },
+            "timestamp": source_artifact["timestamp"],
         }
         report["visual_heldout_evaluation_report_digest"] = canonical_digest(
             report, digest_field="visual_heldout_evaluation_report_digest"
@@ -580,6 +795,123 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
         for row in comparison["candidate_reports"]
     )
 
+    def stale_report_evaluator(*, source_artifact: dict, output_root: Path) -> dict:
+        report = fake_evaluator(
+            source_artifact=source_artifact, output_root=output_root
+        )
+        report["evaluation_request_digest"] = _sha("e")
+        report["visual_heldout_evaluation_report_digest"] = canonical_digest(
+            report, digest_field="visual_heldout_evaluation_report_digest"
+        )
+        return report
+
+    with pytest.raises(
+        Canonical3DGSEvaluationError,
+        match="canonical_quality_report_request_binding_mismatch",
+    ):
+        evaluate_canonical_3dgs_campaign(
+            campaign_result=campaign_result["campaign"],
+            results_root=results_root,
+            evaluator_input=evaluator,
+            evaluator_root=evaluator_root,
+            thresholds={
+                "minimum_mean_psnr_db": 25.0,
+                "minimum_mean_global_ssim": 0.8,
+                "minimum_mean_windowed_ssim": 0.8,
+                "maximum_mean_absolute_error": 0.1,
+                "maximum_mean_lpips": 0.2,
+            },
+            lpips_model={
+                "model_id": "lpips_alex_v0.1",
+                "checkpoint_digest": "sha256:" + "9" * 64,
+            },
+            output_root=tmp_path / "stale-report-quality",
+            renderer=fake_renderer,
+            appearance_evaluator=stale_report_evaluator,
+        )
+    stale_evaluator = dict(evaluator)
+    stale_evaluator["source_commit_sha"] = "d" * 40
+    stale_evaluator["canonical_3dgs_hidden_evaluator_input_digest"] = canonical_digest(
+        stale_evaluator,
+        digest_field="canonical_3dgs_hidden_evaluator_input_digest",
+    )
+    with pytest.raises(
+        Canonical3DGSEvaluationError,
+        match="canonical_quality_source_or_evaluator_binding_mismatch",
+    ):
+        evaluate_canonical_3dgs_campaign(
+            campaign_result=campaign_result["campaign"],
+            results_root=results_root,
+            evaluator_input=stale_evaluator,
+            evaluator_root=evaluator_root,
+            thresholds={
+                "minimum_mean_psnr_db": 25.0,
+                "minimum_mean_global_ssim": 0.8,
+                "minimum_mean_windowed_ssim": 0.8,
+                "maximum_mean_absolute_error": 0.1,
+                "maximum_mean_lpips": 0.2,
+            },
+            lpips_model={
+                "model_id": "lpips_alex_v0.1",
+                "checkpoint_digest": "sha256:" + "9" * 64,
+            },
+            output_root=tmp_path / "stale-quality",
+            renderer=fake_renderer,
+            appearance_evaluator=fake_evaluator,
+        )
+
+
+def test_plan_rejects_pipeline_source_commit_mismatch(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset = _dataset(dataset_root)
+    with pytest.raises(Canonical3DGSPipelineError, match="preparation_dataset_binding_invalid"):
+        build_canonical_3dgs_execution_plan(
+            preparation=_preparation(dataset),
+            dataset=dataset,
+            dataset_root=dataset_root,
+            source_commit_sha="d" * 40,
+        )
+
+
+def test_v32_preparation_abstains_without_task_site_selection_profile(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(Canonical3DGSPipelineError) as exc:
+        prepare_canonical_v32_training_dataset(
+            capture_root=tmp_path / "capture",
+            output_root=tmp_path / "derived",
+            intake_id="fixture-intake",
+            capture_digest=CAPTURE_DIGEST,
+            rights_and_retention={"local_processing_authorized": True},
+            task_site_selection_profile=None,
+        )
+    assert exc.value.codes == (MISSING_SELECTION_PROFILE,)
+
+def test_v32_preparation_rejects_candidate_video_identity_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture_root = tmp_path / "capture"
+    times = _canonical_v32_fixture(capture_root)
+    _stub_v32_media(monkeypatch, times)
+    (capture_root / "alternate.mov").write_bytes(
+        (capture_root / "walkthrough.mov").read_bytes()
+    )
+    video_track = json.loads((capture_root / "video_track.json").read_text())
+    video_track["video_file"] = "alternate.mov"
+    _write_json(capture_root / "video_track.json", video_track)
+
+    with pytest.raises(
+        adapters.LocalReconstructionAdapterError,
+        match="metric_scaffold:selection_capture_binding_mismatch",
+    ):
+        prepare_canonical_v32_training_dataset(
+            capture_root=capture_root,
+            output_root=tmp_path / "derived",
+            intake_id="fixture-intake",
+            capture_digest=CAPTURE_DIGEST,
+            rights_and_retention={"local_processing_authorized": True},
+            task_site_selection_profile=_selection_profile(capture_root, [0, 2, 5, 7]),
+        )
 
 def test_canonical_plan_rejects_dataset_byte_drift_before_any_runner(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
@@ -699,6 +1031,44 @@ def test_worker_wheel_digest_rejects_stale_or_extra_python_sources(tmp_path: Pat
     ) != canonical_3dgs_worker_package_digest(package)
 
 
+def test_canonical_transport_can_embed_and_revalidate_exact_worker_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset = _dataset(dataset_root)
+    plan = build_canonical_3dgs_execution_plan(
+        preparation=_preparation(dataset),
+        dataset=dataset,
+        dataset_root=dataset_root,
+        source_commit_sha=SOURCE_COMMIT,
+    )
+    wheel = tmp_path / "blueprint_capture_pipeline-2.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("blueprint_pipeline/__init__.py", "VALUE = 1\n")
+    monkeypatch.setattr(
+        "blueprint_pipeline.canonical_3dgs_transport.canonical_3dgs_worker_wheel_package_digest",
+        lambda _path: plan["worker_python_package_digest"],
+    )
+    bundle = tmp_path / "campaign.zip"
+    receipt = compile_canonical_3dgs_transport_bundle(
+        plan=plan,
+        dataset_root=dataset_root,
+        bundle_path=bundle,
+        receipt_path=tmp_path / "receipt.json",
+        worker_wheel_path=wheel,
+    )
+    assert receipt["worker_wheel_digest"] == _digest(wheel)
+    extraction = extract_canonical_3dgs_transport_bundle(
+        bundle_path=bundle,
+        receipt=receipt,
+        output_root=tmp_path / "worker",
+    )
+    materialized = (
+        tmp_path / "worker" / extraction["transport_bundle_digest"].removeprefix("sha256:")
+    )
+    assert (materialized / receipt["worker_wheel_archive_path"]).read_bytes() == wheel.read_bytes()
+
+
 def test_canonical_transport_rejects_bundle_byte_drift(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
     dataset = _dataset(dataset_root)
@@ -777,6 +1147,104 @@ def test_proxy_source_admission_cannot_claim_raw_contract() -> None:
         )
 
 
+def test_proxy_coordinate_basis_records_preserved_opencv_axes() -> None:
+    assert canonical_pipeline._camera_axis_projection(
+        {"source_profile": "public_dataset_arkitscenes_proxy"}
+    ) == "source_opencv_preserved_no_axis_flip"
+    assert canonical_pipeline._camera_axis_projection(
+        {"source_profile": "blueprint_raw_v3_2"}
+    ) == "arkit_to_opencv_explicit_yz_flip"
+
+
+def test_proxy_hidden_evaluator_preserves_opencv_camera_pose(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "proxy"
+    hidden_root = artifact_root / "evaluator_hidden"
+    hidden_root.mkdir(parents=True)
+    reference = hidden_root / "reference.png"
+    reference.write_bytes(b"proxy-heldout-frame")
+    split = {
+        "schema_version": "frozen_split_manifest.v1",
+        "candidate_frame_ids": ["candidate"],
+        "heldout_frame_ids": ["heldout"],
+    }
+    split["split_digest"] = canonical_digest(split, digest_field="split_digest")
+    hidden = {
+        "schema_version": "hidden_heldout_evaluator_manifest.v1",
+        "access_scope": "independent_evaluator_only",
+        "candidate_method_access_allowed": False,
+        "split_digest": split["split_digest"],
+        "frames": [
+            {
+                "frame_id": "heldout",
+                "t_video_sec": 1.0,
+                "evaluator_relative_path": "evaluator_hidden/reference.png",
+                "frame_digest": _digest(reference),
+            }
+        ],
+    }
+    hidden["hidden_heldout_digest"] = canonical_digest(
+        hidden, digest_field="hidden_heldout_digest"
+    )
+    split_path = artifact_root / "split.json"
+    hidden_path = hidden_root / "manifest.json"
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+    hidden_path.write_text(json.dumps(hidden), encoding="utf-8")
+    capture_digest = _sha("7")
+    scaffold = {
+        "schema_version": "arkitscenes_metric_scaffold_proxy.v1",
+        "access_scope": "independent_evaluator_only",
+        "capture_digest": capture_digest,
+        "split_digest": split["split_digest"],
+        "metric_scale_status": "dataset_declared_not_independently_validated",
+        "camera_frames": [
+            {
+                "frame_id": "heldout",
+                "t_video_sec": 1.0,
+                "T_world_camera": np.eye(4).tolist(),
+                "rgb_intrinsics": {
+                    "fx": 50.0,
+                    "fy": 50.0,
+                    "cx": 32.0,
+                    "cy": 24.0,
+                    "width": 64,
+                    "height": 48,
+                },
+            }
+        ],
+    }
+    scaffold["metric_scaffold_digest"] = canonical_digest(
+        scaffold, digest_field="metric_scaffold_digest"
+    )
+    dataset_manifest = {
+        "source_capture_identity": "ARKitScenes:fixture",
+        "source_capture_digest": capture_digest,
+        "dataset_manifest_digest": _sha("8"),
+        "artifact_references": {
+            "hidden_heldout_evaluator_manifest": {
+                "relative_path": "evaluator_hidden/manifest.json",
+                "digest": _digest(hidden_path),
+            },
+            "frozen_split_manifest": {
+                "relative_path": "split.json",
+                "digest": _digest(split_path),
+            },
+        },
+    }
+
+    evaluator = compile_canonical_3dgs_proxy_hidden_evaluator_input(
+        reconstruction_dataset_manifest=dataset_manifest,
+        dataset_artifact_root=artifact_root,
+        evaluator_metric_scaffold=scaffold,
+        output_root=tmp_path / "evaluator",
+        source_commit_sha=SOURCE_COMMIT,
+        authority_used={"local_processing_authorized": True},
+        timestamp="2026-08-03T05:00:00Z",
+    )
+
+    assert evaluator["camera_axis_convention"] == "opencv_x_right_y_down_z_forward"
+    assert evaluator["cameras"][0]["T_world_camera_provider_frame"] == np.eye(4).tolist()
+
+
 def test_execution_request_names_missing_authority_without_a_winner(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
     dataset = _dataset(dataset_root)
@@ -794,7 +1262,11 @@ def test_execution_request_names_missing_authority_without_a_winner(tmp_path: Pa
         receipt_path=tmp_path / "transport.json",
     )
     request = build_canonical_3dgs_execution_request(
-        plan=plan, transport_receipt=transport, timestamp="2026-08-03T05:00:00Z"
+        plan=plan,
+        transport_receipt=transport,
+        worker_wheel_digest=_sha("9"),
+        worker_wheel_filename="blueprint_capture_pipeline-2.0.0-py3-none-any.whl",
+        timestamp="2026-08-03T05:00:00Z",
     )
     schema = json.loads(
         (Path(__file__).parents[1] / "docs/schemas/canonical_3dgs_execution_request.v1.schema.json").read_text()
@@ -863,6 +1335,14 @@ def test_platform_worker_receipts_finalize_into_one_bound_campaign(tmp_path: Pat
             "provider_mutations_performed": 0,
             "paid_execution_started": False,
             "execution_adapter_qualified": True,
+            "execution_adapter_id": (
+                "canonical_postshot_windows_v1"
+                if arm["arm_id"] == "postshot-primary"
+                else "canonical_splatfacto_vast_v1"
+            ),
+            "worker_platform": (
+                "windows" if arm["arm_id"] == "postshot-primary" else "linux"
+            ),
         }
         allocator_admission["admission_digest"] = canonical_digest(
             allocator_admission, digest_field="admission_digest"

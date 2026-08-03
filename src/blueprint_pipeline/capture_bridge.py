@@ -531,6 +531,17 @@ class CaptureDescriptor:
     arkit_intrinsics_uri: Optional[str] = None
     arkit_depth_prefix_uri: Optional[str] = None
     arkit_confidence_prefix_uri: Optional[str] = None
+    sync_map_uri: Optional[str] = None
+    video_frame_retention_uri: Optional[str] = None
+    arkit_frame_quality_uri: Optional[str] = None
+    arkit_feature_points_uri: Optional[str] = None
+    arkit_plane_observations_uri: Optional[str] = None
+    arkit_light_estimates_uri: Optional[str] = None
+    arkit_meshes_prefix_uri: Optional[str] = None
+    arkit_mesh_manifest_uri: Optional[str] = None
+    downstream_candidate_manifest_uri: Optional[str] = None
+    reconstruction_qualification_request_uri: Optional[str] = None
+    device_calibration_uri: Optional[str] = None
     depth_conditioning: Dict[str, Any] = field(default_factory=dict)
     geometry_source: Optional[str] = None
     geometry_ready: bool = False
@@ -654,6 +665,9 @@ class CaptureDescriptor:
             _optional_str(data.get("arkit_confidence_prefix_uri"))
             or _optional_str(capture_bundle.get("arkit_confidence_prefix_uri"))
         )
+        def evidence_uri(key: str) -> Optional[str]:
+            return _optional_str(data.get(key)) or _optional_str(capture_bundle.get(key))
+
         evidence_tier_hint = _optional_str(
             data.get("evidence_tier") or capture_bundle.get("evidence_tier")
         )
@@ -742,6 +756,21 @@ class CaptureDescriptor:
             arkit_intrinsics_uri=arkit_intrinsics_uri,
             arkit_depth_prefix_uri=arkit_depth_prefix_uri,
             arkit_confidence_prefix_uri=arkit_confidence_prefix_uri,
+            sync_map_uri=evidence_uri("sync_map_uri"),
+            video_frame_retention_uri=evidence_uri("video_frame_retention_uri"),
+            arkit_frame_quality_uri=evidence_uri("arkit_frame_quality_uri"),
+            arkit_feature_points_uri=evidence_uri("arkit_feature_points_uri"),
+            arkit_plane_observations_uri=evidence_uri("arkit_plane_observations_uri"),
+            arkit_light_estimates_uri=evidence_uri("arkit_light_estimates_uri"),
+            arkit_meshes_prefix_uri=evidence_uri("arkit_meshes_prefix_uri"),
+            arkit_mesh_manifest_uri=evidence_uri("arkit_mesh_manifest_uri"),
+            downstream_candidate_manifest_uri=evidence_uri(
+                "downstream_candidate_manifest_uri"
+            ),
+            reconstruction_qualification_request_uri=evidence_uri(
+                "reconstruction_qualification_request_uri"
+            ),
+            device_calibration_uri=evidence_uri("device_calibration_uri"),
             depth_conditioning=(
                 dict(data.get("depth_conditioning"))
                 if isinstance(data.get("depth_conditioning"), Mapping)
@@ -860,6 +889,17 @@ class CaptureDescriptor:
             "arkit_intrinsics_uri": self.arkit_intrinsics_uri,
             "arkit_depth_prefix_uri": self.arkit_depth_prefix_uri,
             "arkit_confidence_prefix_uri": self.arkit_confidence_prefix_uri,
+            "sync_map_uri": self.sync_map_uri,
+            "video_frame_retention_uri": self.video_frame_retention_uri,
+            "arkit_frame_quality_uri": self.arkit_frame_quality_uri,
+            "arkit_feature_points_uri": self.arkit_feature_points_uri,
+            "arkit_plane_observations_uri": self.arkit_plane_observations_uri,
+            "arkit_light_estimates_uri": self.arkit_light_estimates_uri,
+            "arkit_meshes_prefix_uri": self.arkit_meshes_prefix_uri,
+            "arkit_mesh_manifest_uri": self.arkit_mesh_manifest_uri,
+            "downstream_candidate_manifest_uri": self.downstream_candidate_manifest_uri,
+            "reconstruction_qualification_request_uri": self.reconstruction_qualification_request_uri,
+            "device_calibration_uri": self.device_calibration_uri,
             "geometry_source": self.geometry_source,
             "geometry_ready": self.geometry_ready if self.geometry_ready else None,
             "coordinate_frame_session_id": self.coordinate_frame_session_id,
@@ -959,6 +999,19 @@ def build_capture_bundle_constraints(
         "arkit_intrinsics_uri": descriptor.arkit_intrinsics_uri,
         "arkit_depth_prefix_uri": descriptor.arkit_depth_prefix_uri,
         "arkit_confidence_prefix_uri": descriptor.arkit_confidence_prefix_uri,
+        "sync_map_uri": descriptor.sync_map_uri,
+        "video_frame_retention_uri": descriptor.video_frame_retention_uri,
+        "arkit_frame_quality_uri": descriptor.arkit_frame_quality_uri,
+        "arkit_feature_points_uri": descriptor.arkit_feature_points_uri,
+        "arkit_plane_observations_uri": descriptor.arkit_plane_observations_uri,
+        "arkit_light_estimates_uri": descriptor.arkit_light_estimates_uri,
+        "arkit_meshes_prefix_uri": descriptor.arkit_meshes_prefix_uri,
+        "arkit_mesh_manifest_uri": descriptor.arkit_mesh_manifest_uri,
+        "downstream_candidate_manifest_uri": descriptor.downstream_candidate_manifest_uri,
+        "reconstruction_qualification_request_uri": (
+            descriptor.reconstruction_qualification_request_uri
+        ),
+        "device_calibration_uri": descriptor.device_calibration_uri,
     }
     arkit = {k: v for k, v in arkit.items() if v is not None}
     if arkit:

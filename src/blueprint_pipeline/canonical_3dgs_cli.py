@@ -1,37 +1,53 @@
-"""Unified module CLI for the canonical 3DGS production lane."""
+"""Single module command surface for canonical 3DGS operations."""
 
 from __future__ import annotations
 
+import importlib
 import sys
 from typing import Callable, Sequence
 
-from .canonical_3dgs_admission import main as admission_main
-from .canonical_3dgs_evaluation import main as evaluation_main
-from .canonical_3dgs_execution_request import main as execution_request_main
-from .canonical_3dgs_pipeline import finalize_main, main as prepare_main
-from .canonical_3dgs_registration import main as registration_main
-from .canonical_3dgs_transport import main as transport_main
-from .canonical_3dgs_worker import main as worker_main
-
 
 Command = Callable[[Sequence[str] | None], int]
-_COMMANDS: dict[str, Command] = {
-    "admit-worker": admission_main,
-    "evaluate": evaluation_main,
-    "finalize": finalize_main,
-    "prepare": prepare_main,
-    "register": registration_main,
-    "request-execution": execution_request_main,
-    "run-arm": worker_main,
-    "transport": transport_main,
+COMMANDS: dict[str, tuple[str, str]] = {
+    "prepare": ("blueprint_pipeline.canonical_3dgs_pipeline", "main"),
+    "run-arm": ("blueprint_pipeline.canonical_3dgs_worker", "main"),
+    "finalize": ("blueprint_pipeline.canonical_3dgs_pipeline", "finalize_main"),
+    "transport": ("blueprint_pipeline.canonical_3dgs_transport", "main"),
+    "admit-worker": ("blueprint_pipeline.canonical_3dgs_admission", "main"),
+    "request-execution": (
+        "blueprint_pipeline.canonical_3dgs_execution_request",
+        "main",
+    ),
+    "evaluate": ("blueprint_pipeline.canonical_3dgs_evaluation", "main"),
+    "register": ("blueprint_pipeline.canonical_3dgs_registration", "main"),
 }
 
 
+def _lazy_command(module_name: str, handler_name: str) -> Command:
+    def invoke(arguments: Sequence[str] | None = None) -> int:
+        module = importlib.import_module(module_name)
+        handler: Command = getattr(module, handler_name)
+        return handler(arguments)
+
+    return invoke
+
+
+_COMMANDS: dict[str, Command] = {
+    command: _lazy_command(module_name, handler_name)
+    for command, (module_name, handler_name) in COMMANDS.items()
+}
+
+
+def _usage() -> str:
+    commands = "|".join(COMMANDS)
+    return f"usage: python -m blueprint_pipeline.canonical_3dgs_cli <{commands}> [arguments]"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = list(argv if argv is not None else sys.argv[1:])
+    arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments or arguments[0] in {"-h", "--help"}:
-        print("usage: python -m blueprint_pipeline.canonical_3dgs_cli <command> [arguments]")
-        print("commands: " + ", ".join(sorted(_COMMANDS)))
+        print(_usage())
+        print("commands: " + ", ".join(sorted(COMMANDS)))
         return 0 if arguments else 2
     command = arguments.pop(0)
     target = _COMMANDS.get(command)
@@ -43,3 +59,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+__all__ = ["COMMANDS", "main"]

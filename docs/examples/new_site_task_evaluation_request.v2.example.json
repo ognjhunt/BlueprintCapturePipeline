@@ -736,7 +736,7 @@
           "status": "completed"
         }
       ],
-      "execution_packet_digest": "sha256:a93c60cf72f5f49522710fa9b034133c00dcc3ba930e2eea5ddbd67c71058881",
+      "execution_packet_digest": "sha256:58c694a13e7236712ce9acd0bda29509757965337c0658a59b9b5a37d9517759",
       "execution_plan": {
         "cells": [
           {
@@ -1100,11 +1100,11 @@
             "scenario_pack_digest": "sha256:05c1f5d287356bd0d42f477432774ef7b2922208438898c5a7721d5fc6ec8c60"
           }
         ],
-        "execution_plan_digest": "sha256:a462210be4c27f8e430582fa09767280ec167fcef7c12017549595938b16f339",
+        "execution_plan_digest": "sha256:6e630bd7cc7d85e20e621063865216479e13064fad458f6d4caee8c59278d1b4",
         "expected_cell_count": 15,
         "matrix_evidence_type": "learned_policy_scenario_matrix",
         "policy_count": 5,
-        "request_digest": "sha256:73b5b6e44005202ede98c82304b9efeecb443e623268a88b8eba1b43eb46c223",
+        "request_digest": "sha256:d44e00cff9de40667ad72f2e2dbb9137db2326b4f62053d15f48a984b9f6ab33",
         "run_id": "new-site-run-001",
         "scenario_count": 3,
         "scenario_pack_digest": "sha256:05c1f5d287356bd0d42f477432774ef7b2922208438898c5a7721d5fc6ec8c60",
@@ -1114,7 +1114,7 @@
       "expected_cell_count": 15,
       "matrix_evidence_type": "learned_policy_scenario_matrix",
       "observed_cell_count": 15,
-      "request_digest": "sha256:73b5b6e44005202ede98c82304b9efeecb443e623268a88b8eba1b43eb46c223",
+      "request_digest": "sha256:d44e00cff9de40667ad72f2e2dbb9137db2326b4f62053d15f48a984b9f6ab33",
       "run_id": "new-site-run-001",
       "schema_version": "new_site_policy_scenario_execution_packet.v1",
       "status": "completed"
@@ -1485,7 +1485,7 @@
     "source_scene_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
     "status": "qualified"
   },
-  "request_digest": "sha256:73b5b6e44005202ede98c82304b9efeecb443e623268a88b8eba1b43eb46c223",
+  "request_digest": "sha256:d44e00cff9de40667ad72f2e2dbb9137db2326b4f62053d15f48a984b9f6ab33",
   "robot_placement": {
     "placement_digest": "sha256:965c3a5b06ad650e29d3f4b07387445c777c3d00abe8a4369ee4388b69471277",
     "pose_site": [
@@ -1988,8 +1988,6 @@
     },
     "robot_id": "franka_panda",
     "routing_as_of": "2026-08-03",
-    "routing_inputs_digest": "sha256:7e8b6758dcf681b1c02563567f4880ffec8855ffa06e2ec6b90bc096a2ad11b5",
-    "schema_version": "post_capture_routing_inputs.v1",
     "site_evidence_profile": {
       "bundle_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "bundle_id": "capture-fixture",

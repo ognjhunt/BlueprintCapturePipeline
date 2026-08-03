@@ -16,7 +16,9 @@ import numpy as np
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .appearance_fidelity import build_appearance_fidelity_qualification
 from .heldout_appearance_evaluation_v2 import (
+    HeldoutAppearanceV2Error,
     build_heldout_appearance_evaluation_request_v2,
+    build_visual_heldout_evaluation_report_v2,
     evaluate_heldout_appearance_v2,
 )
 from .sealed_camera_render import render_splat_at_exact_cameras
@@ -86,6 +88,78 @@ def _load_jsonl(path: Path, *, code: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _validated_report_for_request(
+    value: Any, *, request: Mapping[str, Any], arm_id: str
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise Canonical3DGSEvaluationError(
+            [f"canonical_quality_report_invalid:{arm_id}"]
+        )
+    try:
+        report = build_visual_heldout_evaluation_report_v2(value)
+    except (HeldoutAppearanceV2Error, TypeError, ValueError) as exc:
+        raise Canonical3DGSEvaluationError(
+            [f"canonical_quality_report_invalid:{arm_id}"]
+        ) from exc
+    bindings = (
+        ("stable_run_identity", "stable_run_identity"),
+        ("source_capture_identity", "source_capture_identity"),
+        ("source_capture_digest", "source_capture_digest"),
+        ("reconstruction_dataset_digest", "reconstruction_dataset_digest"),
+        ("frozen_split_digest", "frozen_split_digest"),
+        (
+            "candidate_reconstruction_result_digest",
+            "candidate_reconstruction_result_digest",
+        ),
+        ("candidate_method_id", "candidate_method_id"),
+        ("candidate_provider_identity", "candidate_provider_identity"),
+        ("evaluator_identity", "evaluator_identity"),
+        ("evaluator_provider_identity", "evaluator_provider_identity"),
+        ("evaluator_implementation_digest", "evaluator_implementation_digest"),
+        ("source_commit_sha", "source_commit_sha"),
+        ("coordinate_frame_declaration", "coordinate_frame_declaration"),
+        ("thresholds", "thresholds"),
+        ("authority_used", "authority_used"),
+        ("timestamp", "timestamp"),
+    )
+    if (
+        report.get("evaluation_request_digest")
+        != request.get("heldout_appearance_evaluation_request_digest")
+        or any(report.get(report_key) != request.get(request_key) for report_key, request_key in bindings)
+    ):
+        raise Canonical3DGSEvaluationError(
+            [f"canonical_quality_report_request_binding_mismatch:{arm_id}"]
+        )
+    request_pairs = {
+        str(row.get("view_id")): row
+        for row in request.get("pairs") or []
+        if isinstance(row, Mapping)
+    }
+    report_rows = {
+        str(row.get("view_id")): row
+        for row in report.get("rows") or []
+        if isinstance(row, Mapping)
+    }
+    if (
+        len(request_pairs) != len(request.get("pairs") or [])
+        or len(report_rows) != len(report.get("rows") or [])
+        or set(report_rows) != set(request_pairs)
+        or any(
+            report_rows[view_id].get(key) != request_pairs[view_id].get(key)
+            for view_id in request_pairs
+            for key in (
+                "trajectory",
+                "real_view_digest",
+                "candidate_render_digest",
+            )
+        )
+    ):
+        raise Canonical3DGSEvaluationError(
+            [f"canonical_quality_report_pair_binding_mismatch:{arm_id}"]
+        )
+    return report
+
+
 def _reference(
     dataset_manifest: Mapping[str, Any], name: str, dataset_root: Path
 ) -> tuple[Path, dict[str, Any]]:
@@ -140,12 +214,19 @@ def _copy_immutable(source: Path, destination: Path, expected_digest: str) -> No
         temporary.unlink(missing_ok=True)
 
 
-def _opencv_camera_to_world(value: Any) -> list[list[float]]:
+def _camera_to_world_for_opencv_renderer(
+    value: Any, *, source_axis_convention: str
+) -> list[list[float]]:
     matrix = np.asarray(value, dtype=np.float64)
     if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
         raise Canonical3DGSEvaluationError(["evaluator_arkit_pose_invalid"])
     converted = matrix.copy()
-    converted[:3, :3] = matrix[:3, :3] @ ARKIT_TO_OPENCV
+    if source_axis_convention == "arkit_x_right_y_up_z_backward":
+        converted[:3, :3] = matrix[:3, :3] @ ARKIT_TO_OPENCV
+    elif source_axis_convention != "opencv_x_right_y_down_z_forward":
+        raise Canonical3DGSEvaluationError(
+            ["evaluator_camera_axis_convention_invalid"]
+        )
     return [[float(item) for item in row] for row in converted]
 
 
@@ -244,8 +325,9 @@ def compile_canonical_3dgs_hidden_evaluator_input(
                 "trajectory": "author_heldout",
                 "t_video_sec": timestamp_value,
                 "capture_pose_frame_id": str(matches[0].get("pose_frame_id")),
-                "T_world_camera_provider_frame": _opencv_camera_to_world(
-                    pose.get("T_world_camera")
+                "T_world_camera_provider_frame": _camera_to_world_for_opencv_renderer(
+                    pose.get("T_world_camera"),
+                    source_axis_convention="arkit_x_right_y_up_z_backward",
                 ),
                 "intrinsics": camera_intrinsics,
                 "reference_relative_path": relative,
@@ -389,11 +471,12 @@ def compile_canonical_3dgs_proxy_hidden_evaluator_input(
         cameras.append(
             {
                 "camera_id": camera_id,
-                "trajectory": "arkitscenes_proxy_heldout",
+                "trajectory": "author_heldout",
                 "t_video_sec": float(raw["t_video_sec"]),
                 "capture_pose_frame_id": camera_id,
-                "T_world_camera_provider_frame": _opencv_camera_to_world(
-                    camera.get("T_world_camera")
+                "T_world_camera_provider_frame": _camera_to_world_for_opencv_renderer(
+                    camera.get("T_world_camera"),
+                    source_axis_convention="opencv_x_right_y_down_z_forward",
                 ),
                 "intrinsics": camera_intrinsics,
                 "reference_relative_path": relative,
@@ -518,8 +601,13 @@ def evaluate_canonical_3dgs_campaign(
     if (
         evaluator["source_capture_digest"] != campaign["source_capture_digest"]
         or evaluator["frozen_split_digest"] != campaign["frozen_split_digest"]
+        or evaluator["source_commit_sha"] != campaign["source_commit_sha"]
+        or evaluator["canonical_3dgs_hidden_evaluator_input_digest"]
+        != campaign.get("hidden_evaluator_input_digest")
     ):
-        raise Canonical3DGSEvaluationError(["canonical_quality_capture_or_split_mismatch"])
+        raise Canonical3DGSEvaluationError(
+            ["canonical_quality_source_or_evaluator_binding_mismatch"]
+        )
     required_thresholds = {
         "minimum_mean_psnr_db",
         "minimum_mean_global_ssim",
@@ -652,8 +740,12 @@ def evaluate_canonical_3dgs_campaign(
             "timestamp": campaign["timestamp"],
         }
         request = build_heldout_appearance_evaluation_request_v2(request)
-        report = dict(
-            appearance_evaluator(source_artifact=request, output_root=destination / arm_id)
+        report = _validated_report_for_request(
+            appearance_evaluator(
+                source_artifact=request, output_root=destination / arm_id
+            ),
+            request=request,
+            arm_id=arm_id,
         )
         _immutable_json(destination / arm_id / "heldout_evaluation_request.json", request)
         _immutable_json(destination / arm_id / "heldout_evaluation_report.json", report)

@@ -96,6 +96,7 @@ from .reconstruction_gpu_admission import (
     PROBE_KIND as RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
     collect_reconstruction_vast_preflight,
     prepare_reconstruction_gpu_canary,
+    select_reconstruction_execution_adapter_id,
 )
 from .reconstruction_isaac_vast_operation import run_reconstruction_isaac_vast_operation
 from . import measurement_dlo_lab_paid_allocator
@@ -138,7 +139,6 @@ DETACHED_GPU_CANARY_MANIFEST = "detached_gpu_canary_supervisor.json"
 DETACHED_GPU_CANARY_LOG = "detached_gpu_canary_supervisor.log"
 DETACHED_GPU_CANARY_LOCK = "detached_gpu_canary_supervisor.lock"
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
-
 
 def admit_openai_api_candidate(**kwargs: Any) -> AdmissionResult:
     """Canonical source-bound issuer for one paid OpenAI candidate capability."""
@@ -758,7 +758,6 @@ def _run_reconstruction_gpu_canary(
             max_hourly_rate_usd=float(max_hourly_rate),
         )
         write_json(Path(args.preflight_bundle), refreshed)
-
     admission = prepare_reconstruction_gpu_canary(
         request_path=args.provider_launch_request,
         preflight_path=args.preflight_bundle,
@@ -774,7 +773,9 @@ def _run_reconstruction_gpu_canary(
         retry_cap=args.reconstruction_retry_cap,
         authority_id=args.reconstruction_authority_id,
         execute=args.execute,
-        execution_adapter_qualified=args.execute,
+        execution_adapter_id=select_reconstruction_execution_adapter_id(
+            args.provider_launch_request, execute=args.execute
+        ),
         image_release_path=getattr(
             args, "reconstruction_isaac_image_release", None
         ),
@@ -787,12 +788,10 @@ def _run_reconstruction_gpu_canary(
     )
     if not args.execute or admission.get("status") != "execute_ready":
         return admission
-
     operation = str(admission.get("operation") or "worker_smoke")
     operation_bundle_receipt, resolved_urls, transport_blockers = (
         prepare_reconstruction_paid_transport(args=args, admission=admission, load_json=_load)
     )
-
     paid_admission = build_paid_lane_admission(
         resource_class="gpu_render",
         blockers=[*list(admission.get("blockers") or []), *transport_blockers],
@@ -852,6 +851,7 @@ def _run_reconstruction_gpu_canary(
             output_bundle_get_url=resolved_urls["provider_output_get_url"],
             provider=get_render_provider(args.provider),
             paid_resource_admission_grant=grant,
+            allocator_admission=admission,
         )
     else:
         result = run_reconstruction_isaac_vast_operation(

@@ -245,12 +245,22 @@ def build_canonical_registered_appearance(
             or binding.get("global_decimation_applied") is not False
         ):
             errors.append("registered_reconstruction_appearance_profile_mismatch")
-    source_artifact_digests = {
+    expected_geometry_artifact_id = {
+        "blueprint_raw_v3_2": "arkit_observed_surface",
+        "public_dataset_arkitscenes_proxy": "observed_surface",
+    }.get(str(source.get("source_profile") or ""))
+    source_geometry_digests = {
         str(row.get("digest"))
         for row in source.get("input_artifacts") or []
         if isinstance(row, Mapping)
+        and row.get("artifact_id") == expected_geometry_artifact_id
     }
-    if not _digest(geometry_asset_digest) or geometry_asset_digest not in source_artifact_digests:
+    if (
+        not expected_geometry_artifact_id
+        or len(source_geometry_digests) != 1
+        or not _digest(geometry_asset_digest)
+        or geometry_asset_digest not in source_geometry_digests
+    ):
         errors.append("registered_reconstruction_geometry_source_binding_invalid")
     if errors:
         raise Canonical3DGSRegistrationError(errors)

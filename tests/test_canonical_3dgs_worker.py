@@ -12,6 +12,7 @@ from blueprint_pipeline.canonical_3dgs_admission import (
     build_canonical_3dgs_worker_admission,
     require_canonical_3dgs_worker_admission,
 )
+from blueprint_pipeline.canonical_3dgs_cli import COMMANDS, main as canonical_cli_main
 from blueprint_pipeline.canonical_3dgs_pipeline import (
     POSTSHOT_METHOD,
     SPLATFACTO_METHOD,
@@ -72,7 +73,13 @@ def _transport_receipt() -> dict:
     return value
 
 
-def _allocator_admission(transport: dict, *, worker_image: str, authority: str = "operator-approved-run-1") -> dict:
+def _allocator_admission(
+    transport: dict,
+    *,
+    worker_image: str,
+    authority: str = "operator-approved-run-1",
+    arm_id: str = "postshot-primary",
+) -> dict:
     value = {
         "schema_version": "reconstruction_gpu_canary_admission.v1",
         "status": "execute_ready",
@@ -93,6 +100,12 @@ def _allocator_admission(transport: dict, *, worker_image: str, authority: str =
         "provider_mutations_performed": 0,
         "paid_execution_started": False,
         "execution_adapter_qualified": True,
+        "execution_adapter_id": (
+            "canonical_postshot_windows_v1"
+            if arm_id == "postshot-primary"
+            else "canonical_splatfacto_vast_v1"
+        ),
+        "worker_platform": "windows" if arm_id == "postshot-primary" else "linux",
     }
     value["admission_digest"] = canonical_digest(value, digest_field="admission_digest")
     return value
@@ -287,7 +300,22 @@ def test_splatfacto_setup_installs_and_smokes_blueprint_worker_module() -> None:
     script = (root / "scripts/setup_splatfacto_venv.sh").read_text(encoding="utf-8")
 
     assert 'pip" install --no-deps -e "${REPO_ROOT}"' in script
-    assert "-m blueprint_pipeline.canonical_3dgs_cli run-arm --help" in script
+    assert "canonical_3dgs_cli run-arm --help" in script
+
+
+def test_canonical_module_cli_consolidates_all_operations_without_console_scripts() -> None:
+    assert set(COMMANDS) == {
+        "prepare",
+        "run-arm",
+        "finalize",
+        "transport",
+        "admit-worker",
+        "request-execution",
+        "evaluate",
+        "register",
+    }
+    assert canonical_cli_main(["--help"]) == 0
+    assert canonical_cli_main(["unknown-operation"]) == 2
 
 
 def test_worker_admission_binds_authority_watchdog_spend_and_exact_transport() -> None:
@@ -388,7 +416,9 @@ def test_worker_admission_blocks_missing_authority_and_cannot_cross_arm() -> Non
 def test_worker_admission_rejects_allocator_tamper_and_expiry() -> None:
     transport = _transport_receipt()
     worker_image = "blueprint/splatfacto-worker@sha256:" + "b" * 64
-    allocator = _allocator_admission(transport, worker_image=worker_image)
+    allocator = _allocator_admission(
+        transport, worker_image=worker_image, arm_id="splatfacto-comparison"
+    )
     allocator["retry_cap"] = 1
     admission = build_canonical_3dgs_worker_admission(
         transport_receipt=transport,
@@ -410,7 +440,9 @@ def test_worker_admission_rejects_allocator_tamper_and_expiry() -> None:
     assert admission["status"] == "blocked"
     assert any("retry_cap" in code for code in admission["blockers"])
 
-    valid_allocator = _allocator_admission(transport, worker_image=worker_image)
+    valid_allocator = _allocator_admission(
+        transport, worker_image=worker_image, arm_id="splatfacto-comparison"
+    )
     admitted = build_canonical_3dgs_worker_admission(
         transport_receipt=transport,
         arm_id="splatfacto-comparison",
@@ -438,3 +470,35 @@ def test_worker_admission_rejects_allocator_tamper_and_expiry() -> None:
             worker_package_digest=transport["worker_python_package_digest"],
             observed_now=datetime(2026, 8, 3, 14, 0, 1, tzinfo=timezone.utc),
         )
+
+
+def test_linux_vast_allocator_cannot_authorize_postshot_windows_arm() -> None:
+    transport = _transport_receipt()
+    worker_image = "blueprint/postshot-worker@sha256:" + "a" * 64
+    linux_allocator = _allocator_admission(
+        transport,
+        worker_image=worker_image,
+        arm_id="splatfacto-comparison",
+    )
+    admission = build_canonical_3dgs_worker_admission(
+        transport_receipt=transport,
+        arm_id="postshot-primary",
+        worker_platform="windows",
+        paid_allocator_admission=linux_allocator,
+        worker_image_digest=worker_image,
+        trainer_runtime_digest="sha256:" + "9" * 64,
+        trainer_runtime_version="fixture-postshot-1.0",
+        authority_id="operator-approved-run-1",
+        max_spend_usd=15.0,
+        hard_ttl_seconds=7200,
+        provider_upload_authorized=True,
+        paid_compute_authorized=True,
+        watchdog_armed=True,
+        provider_zero_before_allocation=True,
+        timestamp="2026-08-03T12:00:00Z",
+    )
+    assert admission["status"] == "blocked"
+    assert "canonical_3dgs_allocator_adapter_not_platform_qualified" in admission[
+        "blockers"
+    ]
+    assert "canonical_3dgs_allocator_worker_platform_mismatch" in admission["blockers"]
