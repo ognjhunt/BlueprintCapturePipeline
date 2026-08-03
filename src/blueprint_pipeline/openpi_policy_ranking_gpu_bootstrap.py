@@ -15,6 +15,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .common import write_json
+from .five_policy_identity_smoke import (
+    MAX_INPUT_BYTES as FIVE_POLICY_MAX_INPUT_BYTES,
+    extract_input_bundle as extract_five_policy_input_bundle,
+    run_identity_smoke as run_five_policy_identity_smoke,
+)
 from .new_site_diagnostic_canary_gpu import (
     INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
     MAX_INPUT_BYTES as CANARY_MAX_INPUT_BYTES,
@@ -41,7 +46,12 @@ POLICY_IDS = (
 )
 EXECUTION_MODE_FULL_CAMPAIGN = "full_campaign"
 EXECUTION_MODE_NEW_SITE_CANARY = "new_site_diagnostic_canary"
-EXECUTION_MODES = {EXECUTION_MODE_FULL_CAMPAIGN, EXECUTION_MODE_NEW_SITE_CANARY}
+EXECUTION_MODE_IDENTITY_SMOKE = "five_policy_identity_smoke"
+EXECUTION_MODES = {
+    EXECUTION_MODE_FULL_CAMPAIGN,
+    EXECUTION_MODE_NEW_SITE_CANARY,
+    EXECUTION_MODE_IDENTITY_SMOKE,
+}
 
 
 def _sha256(path: Path) -> str:
@@ -288,7 +298,11 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
             max_bytes=(
                 CANARY_MAX_INPUT_BYTES
                 if execution_mode == EXECUTION_MODE_NEW_SITE_CANARY
-                else MAX_INPUT_BYTES
+                else (
+                    FIVE_POLICY_MAX_INPUT_BYTES
+                    if execution_mode == EXECUTION_MODE_IDENTITY_SMOKE
+                    else MAX_INPUT_BYTES
+                )
             ),
         )
         if execution_mode == EXECUTION_MODE_NEW_SITE_CANARY:
@@ -309,6 +323,16 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
                 menagerie_root="/opt/mujoco-menagerie/franka_emika_panda",
                 output_dir=campaign_output,
                 initial_camera_paths=extracted_input.get("initial_camera_paths") or None,
+            )
+        elif execution_mode == EXECUTION_MODE_IDENTITY_SMOKE:
+            extracted_input = extract_five_policy_input_bundle(
+                bundle_path=bundle,
+                expected_bundle_sha256=input_sha,
+                output_dir=extracted,
+            )
+            campaign = run_five_policy_identity_smoke(
+                extracted=extracted_input,
+                output_dir=campaign_output,
             )
         else:
             extracted_input = extract_private_input_bundle(
@@ -333,6 +357,7 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
         failure_type = type(exc).__name__
         campaign_output.mkdir(parents=True, exist_ok=True)
         is_canary = execution_mode == EXECUTION_MODE_NEW_SITE_CANARY
+        is_identity_smoke = execution_mode == EXECUTION_MODE_IDENTITY_SMOKE
         failure_claim_boundary = (
             {
                 "ranking_accuracy": False,
@@ -343,22 +368,36 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
                 "result_type": "bounded_nonconfirmatory_technical_diagnostic",
             }
             if is_canary
-            else {
-                "learned_policy_simulator_execution": False,
-                "prospective_captured_site_ranking": False,
-                "prospective_controlled_warehouse_ranking": False,
-                "warehouse_ranking_is_independent_physical_answer_key": False,
-                "site_specific_physical_success_proven": False,
-                "physical_robot_endpoint_contacted": False,
-                "physical_robot_operated": False,
-                "wam_executed": False,
-            }
+            else (
+                {
+                    "real_checkpoint_inference_observed": False,
+                    "actions_executed": False,
+                    "policy_ranking": False,
+                    "task_success": False,
+                    "physical_robot_execution": False,
+                }
+                if is_identity_smoke
+                else {
+                    "learned_policy_simulator_execution": False,
+                    "prospective_captured_site_ranking": False,
+                    "prospective_controlled_warehouse_ranking": False,
+                    "warehouse_ranking_is_independent_physical_answer_key": False,
+                    "site_specific_physical_success_proven": False,
+                    "physical_robot_endpoint_contacted": False,
+                    "physical_robot_operated": False,
+                    "wam_executed": False,
+                }
+            )
         )
         failure_manifest: dict[str, Any] = {
             "schema_version": (
                 "new_site_diagnostic_canary_gpu.v1"
                 if is_canary
-                else "openpi_policy_ranking_gpu_job.v1"
+                else (
+                    "five_policy_identity_smoke_result.v1"
+                    if is_identity_smoke
+                    else "openpi_policy_ranking_gpu_job.v1"
+                )
             ),
             "status": "blocked",
             "execution_mode": execution_mode,
@@ -373,6 +412,14 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
                         extracted_input.get("manifest") or {}
                     ).get("protocol_sha256"),
                     "canary": None,
+                }
+            )
+        elif is_identity_smoke:
+            failure_manifest.update(
+                {
+                    "expected_candidate_count": 5,
+                    "completed_identity_query_count": 0,
+                    "query_receipts": [],
                 }
             )
         else:
@@ -394,7 +441,11 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
             / (
                 "new_site_diagnostic_canary_gpu.json"
                 if is_canary
-                else "openpi_policy_ranking_gpu_job.json"
+                else (
+                    "five_policy_identity_smoke_result.json"
+                    if is_identity_smoke
+                    else "openpi_policy_ranking_gpu_job.json"
+                )
             ),
             failure_manifest,
         )

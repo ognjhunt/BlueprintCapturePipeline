@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Any
 
 from .common import write_json
+from .five_policy_identity_smoke import (
+    INPUT_RECEIPT_SCHEMA_VERSION as FIVE_POLICY_INPUT_RECEIPT_SCHEMA_VERSION,
+)
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .groot_oscar_runpod_watchdog import (
     terminate_canary_resources,
@@ -34,6 +37,7 @@ from .new_site_diagnostic_canary_gpu import (
 )
 from .openpi_policy_ranking_gpu_bootstrap import (
     EXECUTION_MODE_FULL_CAMPAIGN,
+    EXECUTION_MODE_IDENTITY_SMOKE,
     EXECUTION_MODE_NEW_SITE_CANARY,
     POLICY_IDS,
 )
@@ -255,6 +259,78 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
                 "episode_record_count": 0,
                 "scene_ids": [str((canary.get("freeze_bindings") or {}).get("scene_id") or "")],
                 "individual_camera_media_present": expected_media,
+                "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                "archive_size_bytes": len(archive_bytes),
+                "archive_member_count": len(members),
+                "raw_secret_values_recorded": False,
+            }
+        identity_manifest_name = "five_policy_identity_smoke_result.json"
+        if identity_manifest_name in names:
+            try:
+                value = json.loads(archive.read(identity_manifest_name).decode("utf-8"))
+            except (UnicodeError, ValueError, json.JSONDecodeError):
+                value = {}
+                blockers.append("openpi_output_identity_smoke_manifest_unreadable")
+            manifest = dict(value) if isinstance(value, Mapping) else {}
+            if manifest.get("schema_version") != "five_policy_identity_smoke_result.v1":
+                blockers.append("openpi_output_identity_smoke_schema_invalid")
+            declared_sha = str(manifest.get("manifest_sha256") or "")
+            digest_payload = dict(manifest)
+            digest_payload.pop("manifest_sha256", None)
+            from .policy_ranking_thesis import canonical_sha256
+
+            if declared_sha != canonical_sha256(digest_payload):
+                blockers.append("openpi_output_identity_smoke_manifest_sha256_mismatch")
+            campaign_status = str(manifest.get("status") or "")
+            receipts = manifest.get("query_receipts")
+            receipts = receipts if isinstance(receipts, list) else []
+            candidate_ids: list[str] = []
+            for index, receipt in enumerate(receipts):
+                receipt = receipt if isinstance(receipt, Mapping) else {}
+                candidate_ids.append(str(receipt.get("candidate_id") or ""))
+                receipt_payload = dict(receipt)
+                receipt_sha = receipt_payload.pop("receipt_sha256", None)
+                if (
+                    receipt.get("schema_version")
+                    != "five_policy_identity_query_receipt.v1"
+                    or receipt.get("status") != "completed"
+                    or receipt.get("fresh_infer_call_count") != 1
+                    or receipt.get("fixture_or_fake") is not False
+                    or receipt_sha != canonical_sha256(receipt_payload)
+                ):
+                    blockers.append(f"openpi_output_identity_smoke_receipt_invalid:{index}")
+            if campaign_status == "completed":
+                if (
+                    manifest.get("expected_candidate_count") != 5
+                    or manifest.get("completed_identity_query_count") != 5
+                    or len(receipts) != 5
+                    or len(set(candidate_ids)) != 5
+                ):
+                    blockers.append("openpi_output_identity_smoke_completed_count_invalid")
+            elif campaign_status == "blocked":
+                if not manifest.get("blockers"):
+                    blockers.append("openpi_output_identity_smoke_blocked_reason_missing")
+            else:
+                blockers.append("openpi_output_identity_smoke_not_terminal")
+            claim = manifest.get("claim_boundary")
+            claim = claim if isinstance(claim, Mapping) else {}
+            if (
+                claim.get("actions_executed") is not False
+                or claim.get("policy_ranking") is not False
+                or claim.get("task_success") is not False
+                or claim.get("physical_robot_execution") is not False
+            ):
+                blockers.append("openpi_output_identity_smoke_claim_boundary_invalid")
+            return {
+                "schema_version": "openpi_policy_ranking_output_validation.v1",
+                "status": "completed" if not blockers else "blocked",
+                "execution_mode": EXECUTION_MODE_IDENTITY_SMOKE,
+                "blockers": sorted(set(blockers)),
+                "terminal_output_present": True,
+                "campaign_status": manifest.get("status"),
+                "campaign_manifest": manifest,
+                "identity_query_count": len(receipts),
+                "candidate_ids": candidate_ids,
                 "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
                 "archive_size_bytes": len(archive_bytes),
                 "archive_member_count": len(members),
@@ -591,7 +667,12 @@ def _build_vast_launch_request(
         EXECUTION_MODE_NEW_SITE_CANARY
         if input_bundle.get("schema_version")
         == CANARY_INPUT_RECEIPT_SCHEMA_VERSION
-        else EXECUTION_MODE_FULL_CAMPAIGN
+        else (
+            EXECUTION_MODE_IDENTITY_SMOKE
+            if input_bundle.get("schema_version")
+            == FIVE_POLICY_INPUT_RECEIPT_SCHEMA_VERSION
+            else EXECUTION_MODE_FULL_CAMPAIGN
+        )
     )
     spec = RenderLaunchSpec(
         name=pod_name,
@@ -672,7 +753,11 @@ def build_openpi_policy_ranking_provider_request(
     operation = (
         "execute_frozen_new_site_diagnostic_canary"
         if execution_mode == EXECUTION_MODE_NEW_SITE_CANARY
-        else "execute_frozen_openpi_policy_ranking_campaign"
+        else (
+            "execute_five_policy_identity_smoke"
+            if execution_mode == EXECUTION_MODE_IDENTITY_SMOKE
+            else "execute_frozen_openpi_policy_ranking_campaign"
+        )
     )
     request: dict[str, Any] = {
         "schema_version": "robot_eval_gpu_provider_launch_request.v1",
