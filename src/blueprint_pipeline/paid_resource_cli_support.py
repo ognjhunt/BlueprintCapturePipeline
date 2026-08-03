@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 
+DETACHED_GPU_CANARY_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_GPU_CANARY_SUPERVISOR"
+
+
 def configure_detached_supervisor_signal_policy(
     command: str,
     *,
@@ -25,7 +28,10 @@ def configure_detached_supervisor_signal_policy(
         command == "model-volume-run" and os.getenv(detached_model_volume_env) == "1"
     )
     detached_cpu_build = command == "cpu-build-run" and os.getenv(detached_cpu_build_env) == "1"
-    if not (detached_model_volume or detached_cpu_build):
+    detached_gpu_canary = (
+        command == "gpu-canary" and os.getenv(DETACHED_GPU_CANARY_SUPERVISOR_ENV) == "1"
+    )
+    if not (detached_model_volume or detached_cpu_build or detached_gpu_canary):
         return False
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -132,6 +138,7 @@ def cpu_builder_kwargs(args: argparse.Namespace) -> dict[str, Any]:
 
 
 __all__ = [
+    "DETACHED_GPU_CANARY_SUPERVISOR_ENV",
     "add_cpu_arguments",
     "cpu_builder_kwargs",
     "cpu_prerequisite_blocked_result",
