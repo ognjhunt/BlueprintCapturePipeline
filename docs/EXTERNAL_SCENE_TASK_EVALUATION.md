@@ -172,3 +172,10 @@ python -m blueprint_pipeline.external_scene_task_evaluation \
 The result is expected to be partial whenever any requested claim lacks a
 digest-bound qualification. “Partial” means the supported claims are real and
 bounded; it does not mean the task, policy ranking, or deployment succeeded.
+
+For the provider-neutral top-level contract that binds source admission,
+registered native 3DGS, automatic target selection, robot defaults, task/site
+engine routing, and five learned-policy attempts, see
+`docs/NEW_SITE_TASK_EVALUATION_RUN.md`. The older external-scene compiler
+remains the exact Isaac evidence adapter used by the 506 lane; it is not the
+global engine-selection policy.

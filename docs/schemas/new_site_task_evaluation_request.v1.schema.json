@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/new_site_task_evaluation_request.v1.schema.json",
+  "title": "Provider-neutral new-site Task Evaluation Run request",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "source_profile",
+    "reconstruction",
+    "target_orchestration",
+    "robot_placement",
+    "scene_composition",
+    "routing_inputs",
+    "execution_authorization",
+    "policy_evaluation",
+    "request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "new_site_task_evaluation_request.v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "source_profile": {"$ref": "#/$defs/digestArtifact"},
+    "reconstruction": {
+      "type": "object",
+      "required": [
+        "source_profile_digest",
+        "appearance_format",
+        "appearance_asset_digest",
+        "geometry_asset_digest",
+        "scene_registration_digest",
+        "registration_status",
+        "full_resolution_appearance_preserved",
+        "presentation_output_used_as_evaluation_evidence",
+        "reconstruction_digest"
+      ],
+      "properties": {
+        "source_profile_digest": {"$ref": "#/$defs/digest"},
+        "appearance_format": {"const": "native_3dgs"},
+        "appearance_asset_digest": {"$ref": "#/$defs/digest"},
+        "geometry_asset_digest": {"$ref": "#/$defs/digest"},
+        "scene_registration_digest": {"$ref": "#/$defs/digest"},
+        "registration_status": {"enum": ["qualified", "unqualified", "abstained"]},
+        "full_resolution_appearance_preserved": {"type": "boolean"},
+        "presentation_output_used_as_evaluation_evidence": {"const": false},
+        "reconstruction_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "target_orchestration": {"$ref": "#/$defs/targetOrchestration"},
+    "robot_placement": {"$ref": "#/$defs/digestArtifact"},
+    "scene_composition": {"$ref": "#/$defs/digestArtifact"},
+    "routing_inputs": {
+      "type": "object",
+      "required": [
+        "requirements",
+        "site_evidence_profile",
+        "method_capability_profiles",
+        "measurement_qualifications",
+        "catalog_snapshot_hash",
+        "routing_as_of",
+        "source_profile_digest",
+        "target_binding_digest",
+        "placement_digest",
+        "robot_id",
+        "task_class"
+      ],
+      "properties": {
+        "requirements": {"type": "object"},
+        "site_evidence_profile": {"type": "object"},
+        "method_capability_profiles": {"type": "array", "minItems": 1},
+        "measurement_qualifications": {"type": "array"},
+        "catalog_snapshot_hash": {"$ref": "#/$defs/digest"},
+        "routing_as_of": {"type": "string", "format": "date"},
+        "source_profile_digest": {"$ref": "#/$defs/digest"},
+        "target_binding_digest": {"$ref": "#/$defs/digest"},
+        "placement_digest": {"$ref": "#/$defs/digest"},
+        "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
+        "task_class": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "execution_authorization": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "policy_execution_authorized",
+        "physical_robot_execution_authorized",
+        "routing_decision_digest",
+        "placement_digest",
+        "metric_spec_digest",
+        "candidate_set_digest",
+        "authorization_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "new_site_policy_execution_authorization.v1"},
+        "policy_execution_authorized": {"type": "boolean"},
+        "physical_robot_execution_authorized": {"const": false},
+        "routing_decision_digest": {"$ref": "#/$defs/digest"},
+        "placement_digest": {"$ref": "#/$defs/digest"},
+        "metric_spec_digest": {"$ref": "#/$defs/digest"},
+        "candidate_set_digest": {"$ref": "#/$defs/digest"},
+        "authorization_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "policy_evaluation": {
+      "type": "object",
+      "required": ["task_metric", "policy_candidates", "attempts"],
+      "properties": {
+        "task_metric": {"$ref": "#/$defs/digestArtifact"},
+        "policy_candidates": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/digestArtifact"}
+        },
+        "attempts": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/digestArtifact"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "digestArtifact": {
+      "type": "object",
+      "required": ["schema_version"],
+      "additionalProperties": true
+    },
+    "targetOrchestration": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "reconstruction_digest",
+        "analysis_appearance_digest",
+        "selected_target",
+        "target_orchestration_digest"
+      ],
+      "properties": {
+        "schema_version": {"type": "string", "minLength": 1},
+        "status": {"enum": ["target_ready_for_bounded_sim", "selected_target_ready", "abstained"]},
+        "reconstruction_digest": {"$ref": "#/$defs/digest"},
+        "analysis_appearance_digest": {"$ref": "#/$defs/digest"},
+        "selected_target": {
+          "type": ["object", "null"]
+        },
+        "target_orchestration_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -984,6 +984,14 @@ python3 scripts/stage_capture_bundle.py \
 
 ## Entry Points
 
+Provider-neutral new-site Task Evaluation Run compilation is available through
+`python -m blueprint_pipeline.new_site_task_evaluation_run`. It binds admitted
+capture/provider inputs, registered native 3DGS and dynamics geometry, a
+deterministically authorized task target and robot placement, the best exactly
+qualified task/site engine route, and five matched-reset learned-policy
+attempts—or emits the smallest fail-closed abstention. See
+[`docs/NEW_SITE_TASK_EVALUATION_RUN.md`](docs/NEW_SITE_TASK_EVALUATION_RUN.md).
+
 Current pipeline:
 
 ```bash
