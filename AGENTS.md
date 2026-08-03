@@ -89,6 +89,18 @@ dependent step as blocked instead of guessing.
   `docs/autonomous-loop-evidence-checklist-2026-05-03.md` (sibling checkout; see
   the sibling-checkout convention above) before claiming `done`, `blocked`, or
   `awaiting_human_decision`.
+- Disk hygiene for agent scratch (2026-08-02 audit: ~40 GB of session clones
+  accumulated in six days and filled the disk): put throwaway clones under
+  `/private/tmp` or a date-stamped `~/workspace/<purpose>-YYYYMMDD` name,
+  prefer `git worktree add` against an existing checkout over a fresh clone,
+  and delete your scratch dirs at session end. The reaper is
+  `python scripts/agent_workspace_gc.py` (dry-run by default; deletion
+  requires `--apply --ack reap-agent-scratch`); it only removes clean, pushed
+  scratch dirs idle beyond the age window and always keeps primaries,
+  evidence/inputs/dataset names, and dirty/unpushed/no-remote clones. Repo
+  `output/` and `robot_eval_jobs/` stay governed by
+  `scripts/manage_output_artifact_retention.py`; `~/.claude` is bounded by
+  Claude Code's built-in `cleanupPeriodDays` cleanup.
 
 ## Commands
 
