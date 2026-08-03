@@ -85,6 +85,27 @@ def _contact_impulse_magnitude(value: Any) -> float:
     return float(np.linalg.norm(array))
 
 
+def _controller_joint_limits(controller: Any) -> np.ndarray:
+    """Normalize Isaac 6 ArticulationController joint limits to ``(dof, 2)``."""
+
+    raw_limits = controller.get_joint_limits()
+    if raw_limits is None:
+        raise ValueError("native_control_franka_joint_limits_unavailable")
+    if isinstance(raw_limits, tuple) and len(raw_limits) == 2:
+        lower = _backend_array_to_numpy(raw_limits[0]).astype(float)
+        upper = _backend_array_to_numpy(raw_limits[1]).astype(float)
+        if lower.shape != upper.shape:
+            raise ValueError("native_control_franka_joint_limits_shape_invalid")
+        limits = np.stack((lower, upper), axis=-1)
+    else:
+        limits = _backend_array_to_numpy(raw_limits).astype(float)
+    if limits.ndim == 3 and limits.shape[0] == 1:
+        limits = limits[0]
+    if limits.ndim != 2 or limits.shape[1] != 2 or not np.isfinite(limits).all():
+        raise ValueError("native_control_franka_joint_limits_invalid")
+    return limits
+
+
 def _quaternion_angle_rad(left: Sequence[float], right: Sequence[float]) -> float:
     left_value = np.asarray(left, dtype=float)
     right_value = np.asarray(right, dtype=float)
@@ -382,11 +403,12 @@ def isaac_sim_6_native_control_backend(
         wrist_prim.CreateFocalLengthAttr(9.0)
         set_pose(wrist_path, (0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0))
         world.reset()
-        dof_limits = _backend_array_to_numpy(robot.get_dof_limits()).astype(float)
-        if dof_limits.ndim == 3:
-            dof_limits = dof_limits[0]
         expected_dofs = len(spec["reset_contract"]["joint_positions"])
         articulation_controller = robot.get_articulation_controller()
+        # Franka is a SingleArticulation in Isaac Sim 6.0.1. Joint limits are
+        # exposed by its initialized public ArticulationController API, not by
+        # the SingleArticulation wrapper itself.
+        dof_limits = _controller_joint_limits(articulation_controller)
         camera = CameraSensor(RtxCamera(camera_path), resolution=(480, 640), annotators=["rgba", "distance_to_camera"])
         external_pose_view = XformPrim(camera_path)
         wrist_pose_view = XformPrim(wrist_path)

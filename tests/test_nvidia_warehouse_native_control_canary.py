@@ -8,6 +8,7 @@ import blueprint_pipeline.nvidia_warehouse_native_control_canary as control
 from blueprint_pipeline.nvidia_warehouse_native_control_canary import (
     CLAIM_LABEL,
     _contact_impulse_magnitude,
+    _controller_joint_limits,
     _validated_spec,
     rank_controller_results,
     run_native_control_canary,
@@ -71,6 +72,29 @@ def test_ranking_preserves_deterministic_exact_ties() -> None:
 
 def test_contact_impulse_uses_physx_float3_magnitude() -> None:
     assert _contact_impulse_magnitude(np.asarray([3.0, 4.0, 0.0])) == 5.0
+
+
+def test_controller_joint_limits_normalizes_public_isaac_tuple() -> None:
+    class Controller:
+        def get_joint_limits(self):
+            return (
+                np.asarray([[-2.0, -1.0, 0.0]]),
+                np.asarray([[2.0, 1.0, 0.04]]),
+            )
+
+    assert _controller_joint_limits(Controller()).tolist() == [
+        [-2.0, 2.0],
+        [-1.0, 1.0],
+        [0.0, 0.04],
+    ]
+
+
+def test_controller_joint_limits_accepts_view_shaped_array() -> None:
+    class Controller:
+        def get_joint_limits(self):
+            return np.asarray([[[-2.0, 2.0], [0.0, 0.04]]])
+
+    assert _controller_joint_limits(Controller()).shape == (2, 2)
 
 
 def test_injected_native_backend_emits_result_envelope_and_integrity_index(
@@ -182,3 +206,10 @@ def test_native_backend_uses_franka_compatible_numpy_articulation_adapter() -> N
     assert 'backend="numpy"' in source
     assert 'device="cpu"' in source
     assert 'backend="torch"' not in source
+
+
+def test_native_backend_reads_limits_from_public_articulation_controller() -> None:
+    source = inspect.getsource(control.isaac_sim_6_native_control_backend)
+
+    assert "_controller_joint_limits(articulation_controller)" in source
+    assert "robot.get_dof_limits()" not in source
