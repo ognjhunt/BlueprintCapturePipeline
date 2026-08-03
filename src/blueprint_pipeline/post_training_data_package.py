@@ -46,9 +46,7 @@ from .lerobot_export_validation import (
     validate_lerobot_export,
 )
 from .rl_post_training_handoff import build_rl_post_training_handoff_packet
-from .post_training_c2pa_edge import (
-    apply_post_training_c2pa_edge_stamping as _apply_c2pa_edge_stamping,
-)
+from .post_training_c2pa_edge import apply_post_training_c2pa_edge_stamping as _apply_c2pa_edge_stamping
 
 
 POST_TRAINING_DATA_PACKAGE_EXPORT_SCHEMA_VERSION = "post_training_data_package_export.v1"
@@ -66,13 +64,14 @@ DOWNSTREAM_TAKEDOWN_EXECUTION_LEDGER_SCHEMA_VERSION = (
 WEBAPP_RIGHTS_PRIVACY_TAKEDOWN_NOTICE_SCHEMA_VERSION = (
     "post_training_webapp_rights_privacy_takedown_notice.v1"
 )
-HOSTED_SESSION_TAKEDOWN_REQUEST_SCHEMA_VERSION = "post_training_hosted_session_takedown_request.v1"
-# Attempt-trace producers that never claimed to capture SC3 7D action vectors
-# (e.g. isaac_lab_arena result ingestion) legitimately have no action data at
-# all; that absence is surfaced in sc3_action_report / sc3_action_contract_status
-# but must not hard-block curation or export. Malformed action data (present but
-# invalid shape/values) still blocks.
-SC3_NO_ACTION_DATA_BLOCKERS = frozenset({"sc3_attempt_trace_missing", "sc3_action_trace_missing"})
+HOSTED_SESSION_TAKEDOWN_REQUEST_SCHEMA_VERSION = (
+    "post_training_hosted_session_takedown_request.v1"
+)
+# Producers that never claimed SC3 7D vectors may have no action data; surface
+# that absence without blocking export. Malformed present action data still blocks.
+SC3_NO_ACTION_DATA_BLOCKERS = frozenset(
+    {"sc3_attempt_trace_missing", "sc3_action_trace_missing"}
+)
 FAILURE_ATTEMPT_STATUSES = frozenset(
     {
         "aborted",
@@ -123,7 +122,6 @@ def _measured_state_fraction_floor() -> float:
         except ValueError:
             pass
     return MEASURED_STATE_FRACTION_FLOOR_DEFAULT
-
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "post_training_data_package_export",
@@ -232,21 +230,13 @@ def _clip_rows(clips: Mapping[str, Any]) -> List[Dict[str, Any]]:
             row = {"clip_id": item, "clip_path": item}
         else:
             continue
-        row.setdefault(
-            "clip_id", row.get("id") or row.get("path") or row.get("clip_path") or f"clip_{index}"
-        )
+        row.setdefault("clip_id", row.get("id") or row.get("path") or row.get("clip_path") or f"clip_{index}")
         rows.append(row)
     return rows
 
 
 def _clip_id(row: Mapping[str, Any], index: int) -> str:
-    return str(
-        row.get("clip_id")
-        or row.get("id")
-        or row.get("clip_path")
-        or row.get("path")
-        or f"clip_{index}"
-    ).strip()
+    return str(row.get("clip_id") or row.get("id") or row.get("clip_path") or row.get("path") or f"clip_{index}").strip()
 
 
 def _safe_path_component(value: Any, fallback: str) -> str:
@@ -286,19 +276,13 @@ def _action_vector_from_mapping(action: Mapping[str, Any]) -> List[float] | None
             ]
         )
     for candidate in candidates:
-        if (
-            isinstance(candidate, Sequence)
-            and not isinstance(candidate, (str, bytes, bytearray))
-            and len(candidate) == 7
-        ):
+        if isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes, bytearray)) and len(candidate) == 7:
             vector = [_finite_float(value) for value in candidate]
             if all(value is not None for value in vector):
                 return [float(value) for value in vector if value is not None]
 
     delta_position = action.get("delta_position_m") or action.get("translation_delta_m")
-    delta_rotation = action.get("delta_rotation_axis_angle") or action.get(
-        "rotation_delta_axis_angle"
-    )
+    delta_rotation = action.get("delta_rotation_axis_angle") or action.get("rotation_delta_axis_angle")
     gripper = (
         action.get("gripper_delta")
         if action.get("gripper_delta") is not None
@@ -323,11 +307,7 @@ def _action_vector_from_mapping(action: Mapping[str, Any]) -> List[float] | None
 
 
 def _sc3_action_vector(action: Any) -> List[float] | None:
-    if (
-        isinstance(action, Sequence)
-        and not isinstance(action, (str, bytes, bytearray))
-        and len(action) == 7
-    ):
+    if isinstance(action, Sequence) and not isinstance(action, (str, bytes, bytearray)) and len(action) == 7:
         values = [_finite_float(value) for value in action]
         if all(value is not None for value in values):
             return [float(value) for value in values if value is not None]
@@ -366,10 +346,7 @@ def _build_sc3_action_report(
             attempt_blockers.append("sc3_action_trace_missing")
         if len(vectors) != len(actions):
             attempt_blockers.append("sc3_7d_delta_end_effector_pose_missing_or_invalid")
-        if vectors and not any(
-            any(abs(value) > OSCAR_MIN_ACTION_MOTION_SCORE for value in vector)
-            for vector in vectors
-        ):
+        if vectors and not any(any(abs(value) > OSCAR_MIN_ACTION_MOTION_SCORE for value in vector) for vector in vectors):
             attempt_blockers.append("sc3_action_vectors_all_zero")
         blockers.extend(f"{attempt_id}:{blocker}" for blocker in attempt_blockers)
         rows.append(
@@ -502,7 +479,9 @@ def _consent_source_payload(capture_root: Path) -> Dict[str, Any]:
             signals = resolve_consent_signals(payload)
             if signals["consent_revoked"]:
                 source["consent_revoked"] = True
-                if signals["consent_revoked_at"] and not source.get("consent_revoked_at"):
+                if signals["consent_revoked_at"] and not source.get(
+                    "consent_revoked_at"
+                ):
                     source["consent_revoked_at"] = signals["consent_revoked_at"]
             elif signals["state"] == "unknown" and signals["has_consent_fields"]:
                 forced_status = signals["consent_status"]
@@ -635,7 +614,9 @@ def _data_processing_terms_review(
         "external_delivery_claim_allowed": False,
         "dpa_approval_claimed": False,
         "blockers": blockers,
-        "source": "robot_eval_dataset_rights_packet_or_consent_source" if terms else "missing",
+        "source": "robot_eval_dataset_rights_packet_or_consent_source"
+        if terms
+        else "missing",
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "data_processing_terms_are_review_metadata_not_legal_approval": True,
@@ -657,7 +638,9 @@ def _revenue_review_from_rights(
         for record in rights_packet.get("records") or []
         if isinstance(record, Mapping)
     ]
-    record_by_scope = {str(record.get("rights_scope") or "").strip(): record for record in records}
+    record_by_scope = {
+        str(record.get("rights_scope") or "").strip(): record for record in records
+    }
     commercial_record = _mapping(record_by_scope.get("commercial_licensing"))
     revenue_record = _mapping(record_by_scope.get("revenue_share"))
     exclusivity_record = _mapping(record_by_scope.get("exclusivity_limits"))
@@ -695,7 +678,9 @@ def _revenue_review_from_rights(
         "schema_version": "post_training_revenue_share_review.v1",
         "source_schema_version": packet_review.get("schema_version"),
         "generated_at": generated_at,
-        "status": "recorded_review_required" if owner_record_present else "review_required",
+        "status": "recorded_review_required"
+        if owner_record_present
+        else "review_required",
         "upstream_status": packet_review.get("status"),
         "required_before_paid_reuse_or_resale": True,
         "owner_revenue_share_record_present": owner_record_present,
@@ -730,7 +715,9 @@ def _build_consent_evidence_record(
 ) -> Dict[str, Any]:
     source = _consent_source_payload(capture_root)
     records = [
-        dict(record) for record in rights_packet.get("records") or [] if isinstance(record, Mapping)
+        dict(record)
+        for record in rights_packet.get("records") or []
+        if isinstance(record, Mapping)
     ]
     evidence_uris = _string_list(
         [
@@ -769,7 +756,9 @@ def _build_consent_evidence_record(
         source.get("consentRevokedAt"),
         rights_packet.get("consent_revoked_at"),
     )
-    consent_scope = _string_list(source.get("consent_scope") or source.get("consentScope"))
+    consent_scope = _string_list(
+        source.get("consent_scope") or source.get("consentScope")
+    )
     if not consent_scope:
         for record in records:
             consent_scope.extend(_string_list(record.get("rights_scope")))
@@ -821,11 +810,7 @@ def _build_consent_evidence_record(
     if consent_revoked:
         blockers.append("consent_revoked_takedown_required")
     consent_evidence_present = bool(consent_status and consent_scope and not blockers)
-    status = (
-        "consent_evidence_present"
-        if consent_evidence_present
-        else "blocked_missing_consent_evidence"
-    )
+    status = "consent_evidence_present" if consent_evidence_present else "blocked_missing_consent_evidence"
     if consent_revoked:
         status = "blocked_consent_revoked_takedown_required"
     revenue_share_review = _revenue_review_from_rights(
@@ -854,9 +839,13 @@ def _build_consent_evidence_record(
     ]
     downstream_takedown_artifacts = (
         {
-            "webapp_rights_privacy_takedown_notice": ("webapp_rights_privacy_takedown_notice.json"),
+            "webapp_rights_privacy_takedown_notice": (
+                "webapp_rights_privacy_takedown_notice.json"
+            ),
             "hosted_session_takedown_request": "hosted_session_takedown_request.json",
-            "downstream_takedown_execution_ledger": ("downstream_takedown_execution_ledger.json"),
+            "downstream_takedown_execution_ledger": (
+                "downstream_takedown_execution_ledger.json"
+            ),
         }
         if consent_revoked
         else {}
@@ -866,7 +855,9 @@ def _build_consent_evidence_record(
         "generated_at": generated_at,
         "scene_id": scene_id,
         "capture_id": capture_id,
-        "status": "queued_unexecuted_downstream_takedown" if consent_revoked else "not_required",
+        "status": "queued_unexecuted_downstream_takedown"
+        if consent_revoked
+        else "not_required",
         "consent_revoked": consent_revoked,
         "consent_revoked_at": consent_revoked_at or None,
         "local_package_access_revoked": consent_revoked,
@@ -893,7 +884,9 @@ def _build_consent_evidence_record(
             },
             {
                 "surface": "webapp_projection",
-                "status": "queued_unexecuted" if consent_revoked else "not_required",
+                "status": "queued_unexecuted"
+                if consent_revoked
+                else "not_required",
                 "execution_proven": False,
                 "artifact_path": "webapp_rights_privacy_takedown_notice.json"
                 if consent_revoked
@@ -902,7 +895,9 @@ def _build_consent_evidence_record(
             },
             {
                 "surface": "hosted_sessions",
-                "status": "queued_unexecuted" if consent_revoked else "not_required",
+                "status": "queued_unexecuted"
+                if consent_revoked
+                else "not_required",
                 "execution_proven": False,
                 "artifact_path": "hosted_session_takedown_request.json"
                 if consent_revoked
@@ -1140,9 +1135,7 @@ def _build_curation_report(
     clip_reports: List[Dict[str, Any]] = []
     for index, clip in enumerate(rows):
         clip_name = _clip_id(clip, index)
-        curation = _mapping(
-            clip.get("curation") or clip.get("quality") or clip.get("oscar_curation")
-        )
+        curation = _mapping(clip.get("curation") or clip.get("quality") or clip.get("oscar_curation"))
         attempt_ref = str(clip.get("attempt_id") or clip.get("scenario_id") or "").strip()
         attempt = attempts.get(attempt_ref, {})
         vectors = _sc3_action_vectors_for_attempt(attempt) if attempt else []
@@ -1190,45 +1183,35 @@ def _build_curation_report(
 
         clip_blockers: List[str] = []
         frame_passed, frame_blockers, frame_evidence = _evidence_gate(
-            explicit=curation.get("min_frame_filter_passed")
-            if "min_frame_filter_passed" in curation
-            else clip.get("min_frame_filter_passed"),
+            explicit=curation.get("min_frame_filter_passed") if "min_frame_filter_passed" in curation else clip.get("min_frame_filter_passed"),
             measured=float(frame_count) if frame_count is not None else None,
             threshold=float(OSCAR_MIN_FRAME_COUNT),
             op=">=",
             missing_blocker="min_frame_count_missing",
         )
         static_passed, static_blockers, static_evidence = _evidence_gate(
-            explicit=curation.get("static_camera_filter_passed")
-            if "static_camera_filter_passed" in curation
-            else clip.get("static_camera_filter_passed"),
+            explicit=curation.get("static_camera_filter_passed") if "static_camera_filter_passed" in curation else clip.get("static_camera_filter_passed"),
             measured=static_motion,
             threshold=OSCAR_MAX_STATIC_CAMERA_MOTION_M,
             op="<=",
             missing_blocker="static_camera_evidence_missing",
         )
         action_passed, action_blockers, action_evidence = _evidence_gate(
-            explicit=curation.get("meaningful_action_filter_passed")
-            if "meaningful_action_filter_passed" in curation
-            else clip.get("meaningful_action_filter_passed"),
+            explicit=curation.get("meaningful_action_filter_passed") if "meaningful_action_filter_passed" in curation else clip.get("meaningful_action_filter_passed"),
             measured=action_motion,
             threshold=OSCAR_MIN_ACTION_MOTION_SCORE,
             op=">=",
             missing_blocker="meaningful_action_evidence_missing",
         )
         visibility_passed, visibility_blockers, visibility_evidence = _evidence_gate(
-            explicit=curation.get("visible_skeleton_filter_passed")
-            if "visible_skeleton_filter_passed" in curation
-            else clip.get("visible_skeleton_filter_passed"),
+            explicit=curation.get("visible_skeleton_filter_passed") if "visible_skeleton_filter_passed" in curation else clip.get("visible_skeleton_filter_passed"),
             measured=visibility,
             threshold=OSCAR_MIN_VISIBLE_SKELETON_FRACTION,
             op=">=",
             missing_blocker="visible_skeleton_evidence_missing",
         )
         sharpness_passed, sharpness_blockers, sharpness_evidence = _evidence_gate(
-            explicit=curation.get("blur_filter_passed")
-            if "blur_filter_passed" in curation
-            else clip.get("blur_filter_passed"),
+            explicit=curation.get("blur_filter_passed") if "blur_filter_passed" in curation else clip.get("blur_filter_passed"),
             measured=sharpness,
             threshold=OSCAR_MIN_SHARPNESS_SCORE,
             op=">=",
@@ -1350,14 +1333,17 @@ def _build_semantic_dedup_report(
             continue
         groups.setdefault(key, []).append(clip_name)
     duplicate_groups = [
-        {"semantic_dedup_key": key, "clip_ids": ids} for key, ids in groups.items() if len(ids) > 1
+        {"semantic_dedup_key": key, "clip_ids": ids}
+        for key, ids in groups.items()
+        if len(ids) > 1
     ]
     blockers: List[str] = []
     if missing and len(rows) > 1:
         blockers.extend(f"{clip_id}:semantic_dedup_evidence_missing" for clip_id in missing)
     if duplicate_groups:
         blockers.extend(
-            f"semantic_duplicate_group:{group['semantic_dedup_key']}" for group in duplicate_groups
+            f"semantic_duplicate_group:{group['semantic_dedup_key']}"
+            for group in duplicate_groups
         )
     status = "passed" if not blockers else "blocked"
     return {
@@ -1366,8 +1352,7 @@ def _build_semantic_dedup_report(
         "status": status,
         "source": "visual_semantic_key_plus_trajectory_key",
         "accepted_input_clip_count": len(rows),
-        "deduped_clip_count": len(rows)
-        - sum(max(0, len(group["clip_ids"]) - 1) for group in duplicate_groups),
+        "deduped_clip_count": len(rows) - sum(max(0, len(group["clip_ids"]) - 1) for group in duplicate_groups),
         "duplicate_group_count": len(duplicate_groups),
         "duplicate_groups": duplicate_groups,
         "clips_missing_dedup_evidence": missing,
@@ -1399,8 +1384,12 @@ def _reviewed_zero_attestation(
     accepted_manifest: Mapping[str, Any],
     review_ledger: Mapping[str, Any],
 ) -> tuple[bool, Dict[str, Any], List[str]]:
-    accepted_attestation = _mapping(accepted_manifest.get("reviewed_zero_failures_attestation"))
-    ledger_attestation = _mapping(review_ledger.get("reviewed_zero_failures_attestation"))
+    accepted_attestation = _mapping(
+        accepted_manifest.get("reviewed_zero_failures_attestation")
+    )
+    ledger_attestation = _mapping(
+        review_ledger.get("reviewed_zero_failures_attestation")
+    )
     blockers: List[str] = []
     if not accepted_attestation:
         blockers.append("reviewed_zero_attestation_missing_from_accepted_manifest")
@@ -1452,14 +1441,18 @@ def _build_failure_evidence_review(
         blockers.append("raw_hypothesis_count_mismatch")
 
     declared_accepted_count = accepted_manifest.get("label_count")
-    if not isinstance(declared_accepted_count, int) or isinstance(declared_accepted_count, bool):
+    if not isinstance(declared_accepted_count, int) or isinstance(
+        declared_accepted_count, bool
+    ):
         blockers.append("accepted_label_count_invalid")
     elif declared_accepted_count != len(accepted_candidates):
         blockers.append("accepted_label_count_mismatch")
 
     raw_by_id: Dict[str, Dict[str, Any]] = {}
     for raw_index, row in enumerate(raw_rows, start=1):
-        label_id = str(row.get("label_id") or row.get("source_failure_label_id") or "").strip()
+        label_id = str(
+            row.get("label_id") or row.get("source_failure_label_id") or ""
+        ).strip()
         if not label_id:
             continue
         if label_id in raw_by_id:
@@ -1470,7 +1463,9 @@ def _build_failure_evidence_review(
     ledger_entries = _rows(review_ledger, "entries")
     ledger_by_id: Dict[str, Dict[str, Any]] = {}
     for entry in ledger_entries:
-        label_id = str(entry.get("label_id") or entry.get("source_failure_label_id") or "").strip()
+        label_id = str(
+            entry.get("label_id") or entry.get("source_failure_label_id") or ""
+        ).strip()
         if not label_id:
             continue
         if label_id in ledger_by_id:
@@ -1484,7 +1479,9 @@ def _build_failure_evidence_review(
     for index, candidate in enumerate(accepted_candidates, start=1):
         row_blockers: List[str] = []
         label_id = str(
-            candidate.get("label_id") or candidate.get("source_failure_label_id") or ""
+            candidate.get("label_id")
+            or candidate.get("source_failure_label_id")
+            or ""
         ).strip()
         row_ref = label_id or f"row_{index}"
         attempt_id = str(candidate.get("attempt_id") or "").strip()
@@ -1517,7 +1514,9 @@ def _build_failure_evidence_review(
             if candidate_reviewer and reviewer and candidate_reviewer != reviewer:
                 row_blockers.append("reviewer_mismatch")
         if row_blockers:
-            blockers.extend(f"accepted_label:{row_ref}:{blocker}" for blocker in row_blockers)
+            blockers.extend(
+                f"accepted_label:{row_ref}:{blocker}" for blocker in row_blockers
+            )
             continue
         assert raw_source is not None
         assert ledger_entry is not None
@@ -1530,9 +1529,13 @@ def _build_failure_evidence_review(
                 "attempt_id": attempt_id,
                 "review_status": "accepted",
                 "reviewer": str(ledger_entry.get("reviewer") or "").strip(),
-                "review_evidence_uri": str(ledger_entry.get("evidence_uri") or "").strip(),
+                "review_evidence_uri": str(
+                    ledger_entry.get("evidence_uri") or ""
+                ).strip(),
                 "source_hypothesis_sha256": sha256(
-                    json.dumps(raw_source, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    json.dumps(raw_source, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
                 ).hexdigest(),
                 "training_eligible": True,
             }
@@ -1716,9 +1719,7 @@ def _optional_export_formats() -> Dict[str, Dict[str, Any]]:
     for name, packages in dependencies.items():
         available = all(importlib.util.find_spec(package) is not None for package in packages)
         formats[name] = {
-            "status": "available_not_written"
-            if available
-            else "blocked_optional_dependency_missing",
+            "status": "available_not_written" if available else "blocked_optional_dependency_missing",
             "dependencies": list(packages),
             "format_written": False,
         }
@@ -1842,7 +1843,9 @@ def _handoff_summary(
         "customer_handoff_ready": bool(customer_handoff_ready),
         "handoff_ready": bool(customer_handoff_ready),
         "blockers": _string_list(handoff_blockers),
-        "gate_blockers": {key: _string_list(value) for key, value in gate_blockers.items()},
+        "gate_blockers": {
+            key: _string_list(value) for key, value in gate_blockers.items()
+        },
         "webapp_ids": dict(webapp_ids),
         "artifact_paths": {
             "post_training_data_package_export_manifest": (
@@ -1971,7 +1974,9 @@ def _write_handoff_manifests(
         export_ready=export_ready,
         customer_handoff_ready=customer_handoff_ready,
         review_acceptance_proven=bool(live_gate_references["review_acceptance"]["passed"]),
-        rights_privacy_scope_proven=bool(live_gate_references["rights_privacy_scope"]["passed"]),
+        rights_privacy_scope_proven=bool(
+            live_gate_references["rights_privacy_scope"]["passed"]
+        ),
         signed_delivery_access_proven=bool(
             live_gate_references["signed_delivery_access"]["passed"]
         ),
@@ -1990,7 +1995,9 @@ def _write_handoff_manifests(
             }
         )
     webapp_evidence = _mapping(
-        _mapping(_mapping(live_closure.get("gates")).get("webapp_upstream_truth")).get("evidence")
+        _mapping(_mapping(live_closure.get("gates")).get("webapp_upstream_truth")).get(
+            "evidence"
+        )
     )
     webapp_ids = _mapping(webapp_evidence.get("ids"))
     summary = _handoff_summary(
@@ -2096,9 +2103,9 @@ def _write_handoff_manifests(
         job_dir=job_dir,
         name="signed_access_manifest.json",
     )
-    signed_access_ready = (
-        bool(live_gate_references["signed_delivery_access"]["passed"]) and not consent_revoked
-    )
+    signed_access_ready = bool(
+        live_gate_references["signed_delivery_access"]["passed"]
+    ) and not consent_revoked
     signed_access_blockers = _string_list(
         [
             *gate_blockers["signed_delivery_access"],
@@ -2304,9 +2311,7 @@ def _rows_for_optional_exports(
                 "actions": attempt.get("actions") or attempt.get("action_trace") or [],
                 "sc3_7d_delta_end_effector_actions": sc3_vectors,
                 "sc3_action_contract_valid": bool(sc3_vectors),
-                "observations": attempt.get("observations")
-                or attempt.get("observation_refs")
-                or [],
+                "observations": attempt.get("observations") or attempt.get("observation_refs") or [],
                 "failure_labels": labels,
                 "package_metrics": dict(metrics),
                 "source_format": "blueprint_normalized_attempt_trace.v1",
@@ -2474,7 +2479,8 @@ def _resolve_clip_source_path(
             return None, "clip_media_extension_not_allowed"
         try:
             max_bytes = int(
-                os.environ.get("BLUEPRINT_PTDP_MAX_CLIP_BYTES") or MAX_CLIP_BYTES_DEFAULT
+                os.environ.get("BLUEPRINT_PTDP_MAX_CLIP_BYTES")
+                or MAX_CLIP_BYTES_DEFAULT
             )
         except ValueError:
             max_bytes = MAX_CLIP_BYTES_DEFAULT
@@ -2506,9 +2512,7 @@ def _resolve_clip_source_path(
             first_rejection = first_rejection or "clip_remote_uri_not_materialized"
             continue
         candidate = Path(reference)
-        candidates = (
-            [candidate] if candidate.is_absolute() else [root / candidate for root in source_roots]
-        )
+        candidates = [candidate] if candidate.is_absolute() else [root / candidate for root in source_roots]
         for rooted in candidates:
             resolved, rejection = validated_candidate(rooted)
             if resolved is not None:
@@ -2610,7 +2614,9 @@ def _atomic_copy_file(source: Path, destination: Path) -> None:
     )
     temporary_path = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "wb") as output_handle, source.open("rb") as source_handle:
+        with os.fdopen(descriptor, "wb") as output_handle, source.open(
+            "rb"
+        ) as source_handle:
             shutil.copyfileobj(source_handle, output_handle, length=1024 * 1024)
             output_handle.flush()
             os.fsync(output_handle.fileno())
@@ -2698,7 +2704,9 @@ def _materialize_video_bundle(
             package_rights.get("consent_revoked_at")
             and merged_rights.get("consent_revoked") is True
         ):
-            merged_rights["consent_revoked_at"] = package_rights.get("consent_revoked_at")
+            merged_rights["consent_revoked_at"] = package_rights.get(
+                "consent_revoked_at"
+            )
         for key in (
             "commercial_use_claim_allowed",
             "external_licensing_claim_allowed",
@@ -2710,9 +2718,11 @@ def _materialize_video_bundle(
             row["consent_scope"] = _string_list(
                 row.get("consent_scope") or merged_rights.get("consent_scope")
             )
-            row["license_status"] = row.get("license_status") or merged_rights.get("license_status")
-            row["redaction_status"] = row.get("redaction_status") or merged_rights.get(
-                "redaction_status"
+            row["license_status"] = (
+                row.get("license_status") or merged_rights.get("license_status")
+            )
+            row["redaction_status"] = (
+                row.get("redaction_status") or merged_rights.get("redaction_status")
             )
             row["fallback_redaction_used"] = _explicit_true(
                 row.get("fallback_redaction_used"),
@@ -2739,8 +2749,16 @@ def _materialize_video_bundle(
             continue
         suffix = source_path.suffix.lower() if source_path.suffix else ".mp4"
         source_sha256 = _sha_file(source_path)
-        destination = objects_dir / source_sha256[:2] / f"{source_sha256}{suffix}"
-        cache_path = content_cache_dir / source_sha256[:2] / f"{source_sha256}{suffix}"
+        destination = (
+            objects_dir
+            / source_sha256[:2]
+            / f"{source_sha256}{suffix}"
+        )
+        cache_path = (
+            content_cache_dir
+            / source_sha256[:2]
+            / f"{source_sha256}{suffix}"
+        )
         ensure_dir(cache_path.parent)
         cache_reused = cache_path.is_file()
         if cache_reused:
@@ -2868,7 +2886,9 @@ def _materialize_video_bundle(
         "missing_clip_ids": missing_clip_ids,
         "content_objects": list(content_objects.values()),
         "unique_content_object_count": len(content_objects),
-        "deduplicated_clip_reference_count": max(0, materialized_count - len(content_objects)),
+        "deduplicated_clip_reference_count": max(
+            0, materialized_count - len(content_objects)
+        ),
         "logical_video_bytes": logical_video_bytes,
         "physical_unique_video_bytes": sum(
             int(item["size_bytes"]) for item in content_objects.values()
@@ -2957,9 +2977,7 @@ def _action_vectors_for_attempt(row: Mapping[str, Any]) -> List[List[float]]:
     return vectors
 
 
-def _state_vector_for_attempt(
-    row: Mapping[str, Any], fallback_width: int
-) -> tuple[List[float], bool]:
+def _state_vector_for_attempt(row: Mapping[str, Any], fallback_width: int) -> tuple[List[float], bool]:
     for key in ("observation.state", "observation_state", "state", "robot_state"):
         vector = _numeric_vector(row.get(key))
         if vector:
@@ -3000,9 +3018,7 @@ def _parallel_timestamps(row: Mapping[str, Any], *keys: str) -> List[float | Non
         raw = row.get(key)
         if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
             return [
-                float(parsed)
-                if (parsed := _finite_float(value)) is not None and parsed >= 0
-                else None
+                float(parsed) if (parsed := _finite_float(value)) is not None and parsed >= 0 else None
                 for value in raw
             ]
     return []
@@ -3117,13 +3133,9 @@ def _joined_measured_steps(row: Mapping[str, Any]) -> tuple[List[Dict[str, Any]]
         return [], ["native_state_width_inconsistent"]
     action_timestamps = [float(step["timestamp"]) for step in action_steps]
     state_timestamps = [float(step["timestamp"]) for step in state_steps]
-    if any(
-        current <= previous for previous, current in zip(action_timestamps, action_timestamps[1:])
-    ):
+    if any(current <= previous for previous, current in zip(action_timestamps, action_timestamps[1:])):
         blockers.append("native_action_timestamps_not_strictly_monotonic")
-    if any(
-        current <= previous for previous, current in zip(state_timestamps, state_timestamps[1:])
-    ):
+    if any(current <= previous for previous, current in zip(state_timestamps, state_timestamps[1:])):
         blockers.append("native_state_timestamps_not_strictly_monotonic")
     joined: List[Dict[str, Any]] = []
     for index, (action, state) in enumerate(zip(action_steps, state_steps)):
@@ -3406,7 +3418,9 @@ def _training_export_rows(
                     "frame_index": frame_index,
                     "index": global_index,
                     "next.reward": (
-                        1.0 if row.get("success") and frame_index == len(joined_steps) - 1 else 0.0
+                        1.0
+                        if row.get("success") and frame_index == len(joined_steps) - 1
+                        else 0.0
                     ),
                     "next.done": frame_index == len(joined_steps) - 1,
                     "attempt_id": attempt_id,
@@ -3425,7 +3439,9 @@ def _training_export_rows(
                         "observation_source_is_raw_capture_evidence"
                     ],
                     "source_clip_id": source["source_clip_id"],
-                    "source_materialized_video_path": source["source_materialized_video_path"],
+                    "source_materialized_video_path": source[
+                        "source_materialized_video_path"
+                    ],
                     "source_rights_metadata_json": json.dumps(
                         rights_metadata,
                         sort_keys=True,
@@ -3463,7 +3479,9 @@ def _training_export_rows(
                 },
                 "videos/observation.images.ego_view/chunk_index": 0,
                 "videos/observation.images.ego_view/file_index": episode_index,
-                "video_frame_timestamps": [step["video_timestamp"] for step in joined_steps],
+                "video_frame_timestamps": [
+                    step["video_timestamp"] for step in joined_steps
+                ],
                 # A media end timestamp is not invented from a default FPS. The
                 # exact per-frame timestamps above remain authoritative.
                 "videos/observation.images.ego_view/from_timestamp": None,
@@ -3471,37 +3489,32 @@ def _training_export_rows(
             }
         )
     provenance_frame_rows = measured_state_rows + synthesized_state_rows
-    return (
-        frame_rows,
-        episodes,
-        tasks,
-        {
-            "state_width": state_width,
-            "action_width": action_width,
-            "synthesized_state_rows": synthesized_state_rows,
-            "measured_state_rows": measured_state_rows,
-            "synthesized_action_rows": synthesized_action_rows,
-            "measured_action_rows": measured_action_rows,
-            "real_state_fraction": (
-                measured_state_rows / provenance_frame_rows if provenance_frame_rows else 0.0
-            ),
-            "real_action_fraction": (
-                measured_action_rows / provenance_frame_rows if provenance_frame_rows else 0.0
-            ),
-            "model_derived_frame_rows": model_derived_frame_rows,
-            "raw_capture_frame_rows": raw_capture_frame_rows,
-            "rights_metadata_frame_rows": rights_metadata_frame_rows,
-            "invalid_episode_count": invalid_episode_count,
-            "native_row_blockers": sorted(set(native_row_blockers)),
-            "control_rate_hz": (
-                1.0 / observed_control_deltas[0]
-                if observed_control_deltas
-                and observed_control_deltas[0] > 0
-                and max(observed_control_deltas) - min(observed_control_deltas) <= 1e-6
-                else None
-            ),
-        },
-    )
+    return frame_rows, episodes, tasks, {
+        "state_width": state_width,
+        "action_width": action_width,
+        "synthesized_state_rows": synthesized_state_rows,
+        "measured_state_rows": measured_state_rows,
+        "synthesized_action_rows": synthesized_action_rows,
+        "measured_action_rows": measured_action_rows,
+        "real_state_fraction": (
+            measured_state_rows / provenance_frame_rows if provenance_frame_rows else 0.0
+        ),
+        "real_action_fraction": (
+            measured_action_rows / provenance_frame_rows if provenance_frame_rows else 0.0
+        ),
+        "model_derived_frame_rows": model_derived_frame_rows,
+        "raw_capture_frame_rows": raw_capture_frame_rows,
+        "rights_metadata_frame_rows": rights_metadata_frame_rows,
+        "invalid_episode_count": invalid_episode_count,
+        "native_row_blockers": sorted(set(native_row_blockers)),
+        "control_rate_hz": (
+            1.0 / observed_control_deltas[0]
+            if observed_control_deltas
+            and observed_control_deltas[0] > 0
+            and max(observed_control_deltas) - min(observed_control_deltas) <= 1e-6
+            else None
+        ),
+    }
 
 
 def _state_action_provenance_gate(
@@ -3715,7 +3728,11 @@ def _write_lerobot_v3_export(
         "state_action_provenance": state_action_provenance,
         "blockers": [
             *(["lerobot_v3_native_parquet_not_written"] if not native_parquet else []),
-            *(["lerobot_v3_video_files_missing"] if not all_episode_videos_materialized else []),
+            *(
+                ["lerobot_v3_video_files_missing"]
+                if not all_episode_videos_materialized
+                else []
+            ),
             *(["lerobot_v3_no_frame_rows"] if not frame_rows else []),
             *state_action_provenance["blockers"],
         ],
@@ -3723,8 +3740,7 @@ def _write_lerobot_v3_export(
             **dict(CLAIM_BOUNDARY),
             "lerobot_layout_is_training_format_adapter": True,
             "synthesized_zero_state_rows": shape["synthesized_state_rows"],
-            "synthesized_zero_state_is_not_robot_state_evidence": shape["synthesized_state_rows"]
-            > 0,
+            "synthesized_zero_state_is_not_robot_state_evidence": shape["synthesized_state_rows"] > 0,
             "real_state_fraction": state_action_provenance["real_state_fraction"],
             "real_action_fraction": state_action_provenance["real_action_fraction"],
             "measured_state_fraction_floor": state_action_provenance[
@@ -3906,7 +3922,11 @@ def _write_gr00t_lerobot_export(
         "state_action_provenance": state_action_provenance,
         "blockers": [
             *(["gr00t_lerobot_native_parquet_not_written"] if not native_parquet else []),
-            *(["gr00t_lerobot_video_files_missing"] if not all_episode_videos_materialized else []),
+            *(
+                ["gr00t_lerobot_video_files_missing"]
+                if not all_episode_videos_materialized
+                else []
+            ),
             *(["gr00t_lerobot_no_frame_rows"] if not frame_rows else []),
             *state_action_provenance["blockers"],
         ],
@@ -3915,8 +3935,7 @@ def _write_gr00t_lerobot_export(
             "gr00t_layout_is_training_format_adapter": True,
             "modality_json_written": True,
             "synthesized_zero_state_rows": shape["synthesized_state_rows"],
-            "synthesized_zero_state_is_not_robot_state_evidence": shape["synthesized_state_rows"]
-            > 0,
+            "synthesized_zero_state_is_not_robot_state_evidence": shape["synthesized_state_rows"] > 0,
             "real_state_fraction": state_action_provenance["real_state_fraction"],
             "real_action_fraction": state_action_provenance["real_action_fraction"],
             "measured_state_fraction_floor": state_action_provenance[
@@ -3948,8 +3967,12 @@ def _write_optional_exports(
     package_rights_metadata: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     canonical_passed = canonical_quality_pipeline.get("status") == "passed"
-    accepted_clip_ids = set(_string_list(canonical_quality_pipeline.get("accepted_clip_ids")))
-    accepted_attempt_ids = set(_string_list(canonical_quality_pipeline.get("accepted_attempt_ids")))
+    accepted_clip_ids = set(
+        _string_list(canonical_quality_pipeline.get("accepted_clip_ids"))
+    )
+    accepted_attempt_ids = set(
+        _string_list(canonical_quality_pipeline.get("accepted_attempt_ids"))
+    )
     if not canonical_passed or not accepted_clip_ids or not accepted_attempt_ids:
         formats = _optional_export_formats()
         for format_name, entry in formats.items():
@@ -3957,7 +3980,9 @@ def _write_optional_exports(
                 {
                     "status": "blocked_canonical_training_quality_pipeline",
                     "format_written": False,
-                    "blockers": _string_list(canonical_quality_pipeline.get("blockers"))
+                    "blockers": _string_list(
+                        canonical_quality_pipeline.get("blockers")
+                    )
                     or ["canonical_training_quality_pipeline_not_passed"],
                 }
             )
@@ -4147,8 +4172,12 @@ def _write_optional_exports(
         "frame_count": lerobot_v3.get("frame_count"),
         "native_parquet_written": bool(lerobot_v3.get("native_parquet_written")),
         "materialized_video_count": int(lerobot_v3.get("materialized_video_count") or 0),
-        "missing_video_episode_count": int(lerobot_v3.get("missing_video_episode_count") or 0),
-        "all_episode_videos_materialized": bool(lerobot_v3.get("all_episode_videos_materialized")),
+        "missing_video_episode_count": int(
+            lerobot_v3.get("missing_video_episode_count") or 0
+        ),
+        "all_episode_videos_materialized": bool(
+            lerobot_v3.get("all_episode_videos_materialized")
+        ),
         "consumer_layout_complete": bool(lerobot_v3.get("consumer_layout_complete")),
         "state_action_provenance": {
             key: value
@@ -4177,7 +4206,9 @@ def _write_optional_exports(
         "frame_count": gr00t_lerobot.get("frame_count"),
         "native_parquet_written": bool(gr00t_lerobot.get("native_parquet_written")),
         "materialized_video_count": int(gr00t_lerobot.get("materialized_video_count") or 0),
-        "missing_video_episode_count": int(gr00t_lerobot.get("missing_video_episode_count") or 0),
+        "missing_video_episode_count": int(
+            gr00t_lerobot.get("missing_video_episode_count") or 0
+        ),
         "all_episode_videos_materialized": bool(
             gr00t_lerobot.get("all_episode_videos_materialized")
         ),
@@ -4242,7 +4273,9 @@ def _clip_curation_summary(capture_root: Path) -> Dict[str, Any]:
         "dedup_status": "run" if dedup else "not_run",
         "accepted_clip_count": curation.get("accepted_clip_count"),
         "rejected_clip_count": (
-            rejections.get("rejected_count") if rejections else curation.get("rejected_clip_count")
+            rejections.get("rejected_count")
+            if rejections
+            else curation.get("rejected_clip_count")
         ),
         "post_dedup_clip_count": dedup_coverage.get("kept_clip_count"),
         "dedup_dropped_clip_count": dedup_coverage.get("dropped_clip_count"),
@@ -4269,13 +4302,20 @@ def _canonical_chain_signature_valid(manifest: Mapping[str, Any]) -> bool:
     signature = _mapping(manifest.get("chain_signature"))
     if (
         signature.get("algorithm") != "Ed25519"
-        or signature.get("domain") != "blueprint.canonical-training-quality.v1"
+        or signature.get("domain")
+        != "blueprint.canonical-training-quality.v1"
     ):
         return False
     try:
-        public_raw = base64.b64decode(str(signature.get("public_key") or ""), validate=True)
-        signature_raw = base64.b64decode(str(signature.get("signature") or ""), validate=True)
-        if sha256(public_raw).hexdigest() != str(signature.get("public_key_sha256") or ""):
+        public_raw = base64.b64decode(
+            str(signature.get("public_key") or ""), validate=True
+        )
+        signature_raw = base64.b64decode(
+            str(signature.get("signature") or ""), validate=True
+        )
+        if sha256(public_raw).hexdigest() != str(
+            signature.get("public_key_sha256") or ""
+        ):
             return False
         Ed25519PublicKey.from_public_bytes(public_raw).verify(
             signature_raw,
@@ -4304,8 +4344,18 @@ def _canonical_quality_pipeline_summary(
     """
 
     canonical_root = job_dir if job_dir is not None else capture_root
-    curation_path = canonical_root / "derived" / "clip_curation" / "clip_curation_manifest.json"
-    dedup_path = canonical_root / "derived" / "semantic_dedup" / "semantic_dedup_manifest.json"
+    curation_path = (
+        canonical_root
+        / "derived"
+        / "clip_curation"
+        / "clip_curation_manifest.json"
+    )
+    dedup_path = (
+        canonical_root
+        / "derived"
+        / "semantic_dedup"
+        / "semantic_dedup_manifest.json"
+    )
     caption_path = (
         canonical_root
         / "derived"
@@ -4343,7 +4393,10 @@ def _canonical_quality_pipeline_summary(
     dedup_ids = set(_string_list(dedup.get("production_accepted_clip_ids")))
     if not dedup_ids or not dedup_ids.issubset(curation_ids):
         blockers.append("canonical_semantic_dedup_accepted_ids_invalid")
-    dedup_input_ids = {_clip_id(item, index) for index, item in enumerate(_rows(dedup, "clips"))}
+    dedup_input_ids = {
+        _clip_id(item, index)
+        for index, item in enumerate(_rows(dedup, "clips"))
+    }
     if dedup_input_ids != curation_ids:
         blockers.append("canonical_semantic_dedup_input_ids_do_not_match_curation")
     if captions.get("schema_version") != "blueprint.grounded_clip_caption_manifest.v1":
@@ -4358,7 +4411,8 @@ def _canonical_quality_pipeline_summary(
     if action.get("status") != "validated":
         blockers.append("canonical_action_normalization_not_validated")
     declared_clips = {
-        _clip_id(item, index): dict(item) for index, item in enumerate(_clip_rows(clips))
+        _clip_id(item, index): dict(item)
+        for index, item in enumerate(_clip_rows(clips))
     }
     if caption_ids - set(declared_clips):
         blockers.append("canonical_accepted_clip_ids_not_in_export_clip_manifest")
@@ -4442,7 +4496,9 @@ def _canonical_quality_pipeline_summary(
         "stage_artifacts": {
             name: {
                 "path": str(path.resolve()) if path is not None else None,
-                "sha256": _sha_file(path) if path is not None and path.is_file() else None,
+                "sha256": _sha_file(path)
+                if path is not None and path.is_file()
+                else None,
             }
             for name, path in stage_paths.items()
         },
@@ -4571,8 +4627,13 @@ def _write_package_files(
         "attempt_count": len(attempts),
         "failure_label_count": len(label_rows),
         "raw_failure_hypothesis_count": len(raw_label_rows),
-        "failed_attempt_count": int(failure_evidence_review.get("failed_attempt_count") or 0),
-        "zero_failures_reviewed": failure_evidence_review.get("zero_failures_reviewed") is True,
+        "failed_attempt_count": int(
+            failure_evidence_review.get("failed_attempt_count") or 0
+        ),
+        "zero_failures_reviewed": failure_evidence_review.get(
+            "zero_failures_reviewed"
+        )
+        is True,
         "curated_clip_count": int(curation_report.get("accepted_clip_count") or 0),
         "semantic_dedup_status": semantic_dedup_report.get("status"),
         "sc3_action_contract_status": sc3_action_report.get("status"),
@@ -4583,16 +4644,16 @@ def _write_package_files(
             if canonical_quality_pipeline.get("status") == "passed"
             else "support_only"
         ),
-        "premium_quality_candidate": canonical_quality_pipeline.get("status") == "passed",
-        "native_training_export_candidate": canonical_quality_pipeline.get("status") == "passed",
+        "premium_quality_candidate": canonical_quality_pipeline.get("status")
+        == "passed",
+        "native_training_export_candidate": canonical_quality_pipeline.get("status")
+        == "passed",
         "canonical_training_accepted_clip_count": len(
             _string_list(canonical_quality_pipeline.get("accepted_clip_ids"))
         ),
         # Upstream pipeline-stage curation/dedup (pre-export gating), distinct
         # from the in-export curation_report/semantic_dedup_report QA above.
-        "clip_curation": dict(
-            clip_curation or {"curation_status": "not_run", "dedup_status": "not_run"}
-        ),
+        "clip_curation": dict(clip_curation or {"curation_status": "not_run", "dedup_status": "not_run"}),
         "source_artifacts": dict(included_artifacts),
         "proof_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -4709,7 +4770,9 @@ def _write_package_files(
             "generated_at": generated_at,
             "status": "included_external_derived_support_packet",
             "source_import_manifest": included_artifacts.get("scaniverse_import_manifest"),
-            "source_proof_boundary": included_artifacts.get("scaniverse_import_proof_boundary"),
+            "source_proof_boundary": included_artifacts.get(
+                "scaniverse_import_proof_boundary"
+            ),
             "source_import_status": scaniverse_payload.get("status"),
             "asset_count": int(scaniverse_payload.get("asset_count") or 0),
             "asset_roles": sorted(
@@ -4726,7 +4789,9 @@ def _write_package_files(
                 "Scaniverse-derived support assets; raw Blueprint capture "
                 "evidence remains authoritative."
             ),
-            "isaac_handoff_candidacy": _mapping(scaniverse_payload.get("isaac_handoff_candidacy")),
+            "isaac_handoff_candidacy": _mapping(
+                scaniverse_payload.get("isaac_handoff_candidacy")
+            ),
             "claim_boundary": {
                 **scaniverse_boundary,
                 "artifact_purpose": "post_training_scaniverse_support",
@@ -4767,7 +4832,9 @@ def _write_package_files(
         "curation_report": "curation_report.json",
         "semantic_dedup_report": "semantic_dedup_report.json",
         "sc3_action_normalization_report": "sc3_action_normalization_report.json",
-        "canonical_training_quality_pipeline": ("canonical_training_quality_pipeline.json"),
+        "canonical_training_quality_pipeline": (
+            "canonical_training_quality_pipeline.json"
+        ),
         "dataset_card": "dataset_card.json",
         "license_manifest": "license_manifest.json",
         "optional_export_manifest": "optional_export_manifest.json",
@@ -4789,7 +4856,9 @@ def _write_package_files(
     if (output_dir / "consent_evidence.json").is_file():
         package_file_index["consent_evidence"] = "consent_evidence.json"
     if (output_dir / "revocation_takedown_manifest.json").is_file():
-        package_file_index["revocation_takedown_manifest"] = "revocation_takedown_manifest.json"
+        package_file_index["revocation_takedown_manifest"] = (
+            "revocation_takedown_manifest.json"
+        )
     if (output_dir / "downstream_takedown_execution_ledger.json").is_file():
         package_file_index["downstream_takedown_execution_ledger"] = (
             "downstream_takedown_execution_ledger.json"
@@ -4805,11 +4874,15 @@ def _write_package_files(
     if (output_dir / "revenue_share_review.json").is_file():
         package_file_index["revenue_share_review"] = "revenue_share_review.json"
     if (output_dir / "data_processing_terms_review.json").is_file():
-        package_file_index["data_processing_terms_review"] = "data_processing_terms_review.json"
+        package_file_index["data_processing_terms_review"] = (
+            "data_processing_terms_review.json"
+        )
     if (output_dir / "success_claim_ledger.json").is_file():
         package_file_index["success_claim_ledger"] = "success_claim_ledger.json"
     if (output_dir / "archive_signing_preflight.json").is_file():
-        package_file_index["archive_signing_preflight"] = "archive_signing_preflight.json"
+        package_file_index["archive_signing_preflight"] = (
+            "archive_signing_preflight.json"
+        )
     existing_export_paths = set(package_file_index.values())
     exports_dir = output_dir / "exports"
     if exports_dir.is_dir():
@@ -4848,7 +4921,9 @@ def _write_package_files(
     package_index = {
         "schema_version": "post_training_data_package_index.v1",
         "generated_at": generated_at,
-        "status": "revoked_consent_takedown_required" if revocation_required else "created",
+        "status": "revoked_consent_takedown_required"
+        if revocation_required
+        else "created",
         "local_package_access_revoked": bool(revocation_required),
         "delivery_blocked_by_consent_revocation": bool(revocation_required),
         "signed_access_revoked_by_consent": bool(revocation_required),
@@ -4911,7 +4986,9 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
 
     private_key, signer_metadata, signer_blockers = _load_archive_signing_key()
     if signer_blockers or private_key is None:
-        raise RuntimeError("package_archive_identity_signing_blocked:" + ",".join(signer_blockers))
+        raise RuntimeError(
+            "package_archive_identity_signing_blocked:" + ",".join(signer_blockers)
+        )
 
     archive_dir = output_dir / "archives"
     ensure_dir(archive_dir)
@@ -4920,7 +4997,9 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
     # The new archive is published only after the temporary file passes the
     # independent extraction and signature verification below.
     archive_path.unlink(missing_ok=True)
-    revocation_takedown = _read_optional_mapping(output_dir / "revocation_takedown_manifest.json")
+    revocation_takedown = _read_optional_mapping(
+        output_dir / "revocation_takedown_manifest.json"
+    )
     revocation_required = revocation_takedown.get("status") == "takedown_required"
     finalization_names = {
         "archive_manifest.json",
@@ -4935,9 +5014,7 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
         if path.parent == output_dir and path.name in finalization_names:
             continue
         if path.is_symlink():
-            raise RuntimeError(
-                f"package_archive_symlink_forbidden:{_relative_to(output_dir, path)}"
-            )
+            raise RuntimeError(f"package_archive_symlink_forbidden:{_relative_to(output_dir, path)}")
         payload_paths.append(path)
 
     package_index_path = output_dir / "package_index.json"
@@ -4995,7 +5072,9 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
     }
     write_json(checksums_path, checksums)
 
-    member_set_sha256 = sha256(("\n".join(member_paths) + "\n").encode("utf-8")).hexdigest()
+    member_set_sha256 = sha256(
+        ("\n".join(member_paths) + "\n").encode("utf-8")
+    ).hexdigest()
     signed_content = {
         "checksums_sha256": _sha_file(checksums_path),
         "package_index_sha256": _sha_file(package_index_path),
@@ -5082,9 +5161,13 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
                 if not verification_blockers:
                     tar.extractall(extraction_root, filter="data")
             expected_member_paths = member_paths
-            for missing_member in sorted(set(expected_member_paths) - set(actual_member_paths)):
+            for missing_member in sorted(
+                set(expected_member_paths) - set(actual_member_paths)
+            ):
                 verification_blockers.append(f"archive_member_missing:{missing_member}")
-            for extra_member in sorted(set(actual_member_paths) - set(expected_member_paths)):
+            for extra_member in sorted(
+                set(actual_member_paths) - set(expected_member_paths)
+            ):
                 verification_blockers.append(f"archive_member_extra:{extra_member}")
             for artifact in checksum_files.values():
                 if _ptdp_cancellation_requested():
@@ -5100,12 +5183,14 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
             extracted_index = extraction_root / "package_index.json"
             if (
                 not extracted_checksums.is_file()
-                or _sha_file(extracted_checksums) != signed_content["checksums_sha256"]
+                or _sha_file(extracted_checksums)
+                != signed_content["checksums_sha256"]
             ):
                 verification_blockers.append("checksums_root_digest_mismatch")
             if (
                 not extracted_index.is_file()
-                or _sha_file(extracted_index) != signed_content["package_index_sha256"]
+                or _sha_file(extracted_index)
+                != signed_content["package_index_sha256"]
             ):
                 verification_blockers.append("package_index_root_digest_mismatch")
             actual_member_set_sha256 = sha256(
@@ -5130,10 +5215,9 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
                     extracted_signature_bytes = base64.b64decode(
                         str(extracted_signature.get("signature") or ""), validate=True
                     )
-                    if (
-                        sha256(extracted_public_key).hexdigest()
-                        != signer_metadata["public_key_sha256"]
-                    ):
+                    if sha256(extracted_public_key).hexdigest() != signer_metadata[
+                        "public_key_sha256"
+                    ]:
                         raise ValueError("public key fingerprint mismatch")
                     Ed25519PublicKey.from_public_bytes(extracted_public_key).verify(
                         extracted_signature_bytes,
@@ -5180,7 +5264,8 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
         "root_digest": root_digest,
         "identity_signature_present": True,
         "identity_signature_verified": not any(
-            blocker.startswith("identity_signature_") for blocker in verification_blockers
+            blocker.startswith("identity_signature_")
+            for blocker in verification_blockers
         ),
         "signature_algorithm": "Ed25519",
         "signing_key_id": signer_metadata["key_id"],
@@ -5211,7 +5296,8 @@ def _write_blocked_archive_manifest(
         if stale_path.is_file() or stale_path.is_symlink():
             stale_path.unlink()
     blockers = [
-        f"archive_signing:{blocker}" for blocker in _string_list(signing_preflight.get("blockers"))
+        f"archive_signing:{blocker}"
+        for blocker in _string_list(signing_preflight.get("blockers"))
     ]
     manifest = {
         "schema_version": "post_training_data_package_archive_manifest.v1",
@@ -5531,7 +5617,9 @@ def _build_post_training_data_package_export(
         else {}
     )
     proof_boundary = (
-        _read_optional_mapping(resolved_job_dir / "proof_boundary.json") if resolved_job_dir else {}
+        _read_optional_mapping(resolved_job_dir / "proof_boundary.json")
+        if resolved_job_dir
+        else {}
     )
     trace = (
         _read_optional_mapping(resolved_job_dir / "normalized_attempt_trace.json")
@@ -5539,7 +5627,9 @@ def _build_post_training_data_package_export(
         else {}
     )
     labels = (
-        _read_optional_mapping(resolved_job_dir / "failure_labels.json") if resolved_job_dir else {}
+        _read_optional_mapping(resolved_job_dir / "failure_labels.json")
+        if resolved_job_dir
+        else {}
     )
     accepted_failure_labels = (
         _read_optional_mapping(resolved_job_dir / "accepted_failure_labels.json")
@@ -5568,7 +5658,9 @@ def _build_post_training_data_package_export(
         resolved_output_dir / "archive_signing_preflight.json",
         archive_signing_preflight,
     )
-    included_artifacts["archive_signing_preflight"] = "archive_signing_preflight.json"
+    included_artifacts["archive_signing_preflight"] = (
+        "archive_signing_preflight.json"
+    )
     metrics = (
         _read_optional_mapping(resolved_job_dir / "arena_eval_metrics.json")
         if resolved_job_dir
@@ -5580,7 +5672,9 @@ def _build_post_training_data_package_export(
         else {}
     )
     clips = (
-        _read_optional_mapping(resolved_job_dir / "clips_manifest.json") if resolved_job_dir else {}
+        _read_optional_mapping(resolved_job_dir / "clips_manifest.json")
+        if resolved_job_dir
+        else {}
     )
     clip_source_roots = [
         *([resolved_job_dir] if resolved_job_dir else []),
@@ -5637,11 +5731,15 @@ def _build_post_training_data_package_export(
         canonical_quality_pipeline.get("status") == "passed"
         and resource_preflight.get("status") == "passed"
         and resolved_job_dir
-        and (resolved_job_dir / "simulator_command_batch_control_stream.jsonl").is_file()
+        and (
+        resolved_job_dir / "simulator_command_batch_control_stream.jsonl"
+        ).is_file()
     ):
         from .lerobot_episode_export import build_lerobot_episode_export
 
-        job_request_for_export = _read_optional_mapping(resolved_job_dir / "job_request.json")
+        job_request_for_export = _read_optional_mapping(
+            resolved_job_dir / "job_request.json"
+        )
         lerobot_export = build_lerobot_episode_export(
             job_dir=resolved_job_dir,
             output_dir=resolved_output_dir,
@@ -5657,7 +5755,11 @@ def _build_post_training_data_package_export(
                         clip
                         for index, clip in enumerate(_clip_rows(clips))
                         if _clip_id(clip, index)
-                        in set(_string_list(canonical_quality_pipeline.get("accepted_clip_ids")))
+                        in set(
+                            _string_list(
+                                canonical_quality_pipeline.get("accepted_clip_ids")
+                            )
+                        )
                     ],
                 },
                 source_roots=clip_source_roots,
@@ -5720,7 +5822,9 @@ def _build_post_training_data_package_export(
         else "export_ready_review_required"
     )
     job_request = (
-        _read_optional_mapping(resolved_job_dir / "job_request.json") if resolved_job_dir else {}
+        _read_optional_mapping(resolved_job_dir / "job_request.json")
+        if resolved_job_dir
+        else {}
     )
     webapp_projection = (
         _read_optional_mapping(resolved_job_dir / "webapp_robot_eval_status_projection.json")
@@ -5762,9 +5866,7 @@ def _build_post_training_data_package_export(
         else {}
     )
     heldout_result = (
-        _read_optional_mapping(
-            resolved_job_dir / "policy_autoresearch" / "heldout_eval_result.json"
-        )
+        _read_optional_mapping(resolved_job_dir / "policy_autoresearch" / "heldout_eval_result.json")
         if resolved_job_dir
         else {}
     )
@@ -5795,9 +5897,7 @@ def _build_post_training_data_package_export(
         write_json(resolved_output_dir / "success_claim_ledger.json", success_claim_ledger)
         included_artifacts["success_claim_ledger"] = "success_claim_ledger.json"
     product_handoff = _extract_product_handoff(webapp_projection, job_request)
-    rights_packet = _read_optional_mapping(
-        pipeline_dir / "robot_eval_dataset" / "rights_packet.json"
-    )
+    rights_packet = _read_optional_mapping(pipeline_dir / "robot_eval_dataset" / "rights_packet.json")
     consent_evidence = _build_consent_evidence_record(
         capture_root=context.capture_root,
         output_dir=resolved_output_dir,
@@ -5807,13 +5907,16 @@ def _build_post_training_data_package_export(
         generated_at=generated_at,
     )
     included_artifacts["consent_evidence"] = "consent_evidence.json"
-    included_artifacts["revocation_takedown_manifest"] = "revocation_takedown_manifest.json"
+    included_artifacts["revocation_takedown_manifest"] = (
+        "revocation_takedown_manifest.json"
+    )
     for key, relative_path in _mapping(
         consent_evidence.get("downstream_takedown_artifacts")
     ).items():
         included_artifacts[key] = str(relative_path)
     consent_gate_blockers = [
-        f"consent:{blocker}" for blocker in _string_list(consent_evidence.get("blockers"))
+        f"consent:{blocker}"
+        for blocker in _string_list(consent_evidence.get("blockers"))
     ]
     quality_gate_blockers = [*quality_gate_blockers, *consent_gate_blockers]
     status = (
@@ -5841,13 +5944,22 @@ def _build_post_training_data_package_export(
         "schema_version": "post_training_accepted_failure_labels.v1",
         "generated_at": generated_at,
         "status": failure_evidence_review.get("status"),
-        "label_count": int(failure_evidence_review.get("accepted_training_label_count") or 0),
+        "label_count": int(
+            failure_evidence_review.get("accepted_training_label_count") or 0
+        ),
         "labels": _rows(failure_evidence_review, "accepted_training_labels"),
-        "zero_failures_reviewed": failure_evidence_review.get("zero_failures_reviewed") is True,
+        "zero_failures_reviewed": failure_evidence_review.get(
+            "zero_failures_reviewed"
+        )
+        is True,
         "source_artifacts": {
             "raw_failure_hypotheses": included_artifacts.get("failure_labels"),
-            "accepted_failure_labels": included_artifacts.get("accepted_failure_labels"),
-            "review_resolution_ledger": included_artifacts.get("review_resolution_ledger"),
+            "accepted_failure_labels": included_artifacts.get(
+                "accepted_failure_labels"
+            ),
+            "review_resolution_ledger": included_artifacts.get(
+                "review_resolution_ledger"
+            ),
         },
         "claim_boundary": _mapping(failure_evidence_review.get("claim_boundary")),
     }
@@ -5933,25 +6045,36 @@ def _build_post_training_data_package_export(
             consent_evidence.get("consent_revoked_at"),
             revocation_takedown_record.get("consent_revoked_at"),
         )
-        or consent_evidence.get("status") == "blocked_consent_revoked_takedown_required"
+        or consent_evidence.get("status")
+        == "blocked_consent_revoked_takedown_required"
         or revocation_takedown_record.get("status") == "takedown_required"
     )
     handoff_records = {
         "proof_boundary_path": included_artifacts.get("proof_boundary"),
-        "live_eval_closure_manifest_path": included_artifacts.get("live_eval_closure_manifest"),
-        "live_eval_closure_evidence_path": included_artifacts.get("live_eval_closure_evidence"),
+        "live_eval_closure_manifest_path": included_artifacts.get(
+            "live_eval_closure_manifest"
+        ),
+        "live_eval_closure_evidence_path": included_artifacts.get(
+            "live_eval_closure_evidence"
+        ),
         "rights_packet_path": included_artifacts.get("rights_packet"),
-        "review_resolution_ledger_path": included_artifacts.get("review_resolution_ledger"),
-        "accepted_failure_labels_path": included_artifacts.get("accepted_failure_labels"),
+        "review_resolution_ledger_path": included_artifacts.get(
+            "review_resolution_ledger"
+        ),
+        "accepted_failure_labels_path": included_artifacts.get(
+            "accepted_failure_labels"
+        ),
         "customer_handoff_report_path": included_artifacts.get("customer_handoff_report"),
         "delivery_manifest_path": included_artifacts.get("delivery_manifest"),
         "signed_access_manifest_path": included_artifacts.get("signed_access_manifest"),
         "delivery_manifest_status": delivery_manifest.get("status"),
         "signed_access_manifest_status": signed_access_manifest.get("status"),
-        "revocation_takedown_manifest_path": included_artifacts.get("revocation_takedown_manifest"),
-        "revocation_takedown_status": _mapping(consent_evidence.get("revocation_takedown")).get(
-            "status"
+        "revocation_takedown_manifest_path": included_artifacts.get(
+            "revocation_takedown_manifest"
         ),
+        "revocation_takedown_status": _mapping(
+            consent_evidence.get("revocation_takedown")
+        ).get("status"),
         "local_package_access_revoked": manifest_consent_revoked,
         "post_training_package_export_ready": status == "export_ready_review_required",
         "customer_handoff_ready": bool(
@@ -5978,21 +6101,29 @@ def _build_post_training_data_package_export(
             canonical_quality_pipeline.get("status") == "passed"
             and semantic_dedup_report.get("status") == "passed"
         ),
-        "grounded_clip_captioning_proven": (canonical_quality_pipeline.get("status") == "passed"),
+        "grounded_clip_captioning_proven": (
+            canonical_quality_pipeline.get("status") == "passed"
+        ),
         "sc3_7d_action_contract_proven": (
             canonical_quality_pipeline.get("status") == "passed"
             and sc3_action_report.get("status") == "passed"
         ),
-        "in_export_curation_diagnostic_passed": curation_report.get("status") == "passed",
+        "in_export_curation_diagnostic_passed": curation_report.get("status")
+        == "passed",
         "in_export_semantic_dedup_diagnostic_passed": (
             semantic_dedup_report.get("status") == "passed"
         ),
-        "in_export_sc3_action_diagnostic_passed": sc3_action_report.get("status") == "passed",
+        "in_export_sc3_action_diagnostic_passed": sc3_action_report.get("status")
+        == "passed",
         "self_attested_metadata_is_canonical_stage_proof": False,
         "rejected_clips_exported": False,
         "review_acceptance_proven": live_gate_references["review_acceptance"]["passed"],
-        "rights_privacy_scope_proven": live_gate_references["rights_privacy_scope"]["passed"],
-        "signed_delivery_access_proven": live_gate_references["signed_delivery_access"]["passed"],
+        "rights_privacy_scope_proven": live_gate_references["rights_privacy_scope"][
+            "passed"
+        ],
+        "signed_delivery_access_proven": live_gate_references["signed_delivery_access"][
+            "passed"
+        ],
         "customer_handoff_ready": bool(
             _mapping(handoff_payloads.get("summary")).get("customer_handoff_ready")
         ),
@@ -6013,11 +6144,15 @@ def _build_post_training_data_package_export(
         "scaniverse_assets_are_deployment_readiness_evidence": False,
         "consent_revocation_blocks_downstream_use": manifest_consent_revoked,
         "package_delivery_is_not_revenue_share_commitment": True,
-        "failure_evidence_review_passed": failure_evidence_review.get("status") == "passed",
+        "failure_evidence_review_passed": failure_evidence_review.get("status")
+        == "passed",
         "raw_failure_hypotheses_are_training_labels": False,
         "pending_or_nonreviewable_labels_are_training_eligible": False,
         "archive_identity_signature_required": True,
-        "archive_signing_key_preflight_passed": archive_signing_preflight.get("status") == "ready",
+        "archive_signing_key_preflight_passed": archive_signing_preflight.get(
+            "status"
+        )
+        == "ready",
     }
 
     optional_exports = _mapping(package_files.get("optional_exports"))
@@ -6025,11 +6160,16 @@ def _build_post_training_data_package_export(
     video_bundle_format = _mapping(optional_formats.get("video_bundle"))
     lerobot_v3_format = _mapping(optional_formats.get("lerobot_v3"))
     gr00t_lerobot_format = _mapping(optional_formats.get("gr00t_lerobot"))
-    lerobot_state_action_provenance = _mapping(lerobot_v3_format.get("state_action_provenance"))
-    manifest_claim_boundary["measured_state_fraction_floor_passed"] = (
-        lerobot_state_action_provenance.get("measured_state_fraction_floor_passed") is True
+    lerobot_state_action_provenance = _mapping(
+        lerobot_v3_format.get("state_action_provenance")
     )
-    manifest_claim_boundary["synthesized_state_rows_are_not_measured_state_evidence"] = True
+    manifest_claim_boundary["measured_state_fraction_floor_passed"] = (
+        lerobot_state_action_provenance.get("measured_state_fraction_floor_passed")
+        is True
+    )
+    manifest_claim_boundary["synthesized_state_rows_are_not_measured_state_evidence"] = (
+        True
+    )
     downstream_takedown_execution_ledger = _read_optional_mapping(
         resolved_output_dir / "downstream_takedown_execution_ledger.json"
     )
@@ -6045,15 +6185,8 @@ def _build_post_training_data_package_export(
 
     manifest = {
         "schema_version": POST_TRAINING_DATA_PACKAGE_EXPORT_SCHEMA_VERSION,
-        "deprecation": {
-            "deprecated": True,
-            "compatibility_only": True,
-            "replacement_product": "Task Evaluation Run",
-            "evidence_use_inside_run": True,
-            "standalone_product": False,
-            "training_occurred": False,
-            "policy_improved": False,
-        },
+        "deprecation": {"deprecated": True, "compatibility_only": True, "replacement_product": "Task Evaluation Run",
+                        "evidence_use_inside_run": True, "standalone_product": False, "training_occurred": False, "policy_improved": False},
         "generated_at": generated_at,
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
@@ -6078,7 +6211,9 @@ def _build_post_training_data_package_export(
         ),
         "canonical_training_quality_pipeline": dict(canonical_quality_pipeline),
         "resource_preflight": dict(resource_preflight),
-        "canonical_training_quality_pipeline_path": ("canonical_training_quality_pipeline.json"),
+        "canonical_training_quality_pipeline_path": (
+            "canonical_training_quality_pipeline.json"
+        ),
         "blockers": [f"missing_{key}" for key in missing] + quality_gate_blockers,
         "included_artifacts": included_artifacts,
         "handoff_records": handoff_records,
@@ -6088,7 +6223,10 @@ def _build_post_training_data_package_export(
         "consent_evidence": {
             "path": "consent_evidence.json",
             "status": consent_evidence.get("status"),
-            "consent_evidence_present": consent_evidence.get("consent_evidence_present") is True,
+            "consent_evidence_present": consent_evidence.get(
+                "consent_evidence_present"
+            )
+            is True,
             "consent_revoked": manifest_consent_revoked,
             "consent_revoked_at": consent_evidence.get("consent_revoked_at"),
             "blockers": _string_list(consent_evidence.get("blockers")),
@@ -6103,13 +6241,19 @@ def _build_post_training_data_package_export(
             consent_evidence.get("downstream_takedown_artifacts")
         ),
         "revenue_share_review": _mapping(
-            _mapping(package_files.get("license_manifest")).get("revenue_share_review")
+            _mapping(package_files.get("license_manifest")).get(
+                "revenue_share_review"
+            )
         )
         or _read_optional_mapping(resolved_output_dir / "revenue_share_review.json"),
         "data_processing_terms_review": _mapping(
-            _mapping(package_files.get("license_manifest")).get("data_processing_terms_review")
+            _mapping(package_files.get("license_manifest")).get(
+                "data_processing_terms_review"
+            )
         )
-        or _read_optional_mapping(resolved_output_dir / "data_processing_terms_review.json"),
+        or _read_optional_mapping(
+            resolved_output_dir / "data_processing_terms_review.json"
+        ),
         "success_claim_ledger_path": (
             "success_claim_ledger.json" if success_claim_ledger else None
         ),
@@ -6121,11 +6265,20 @@ def _build_post_training_data_package_export(
             "raw_failure_hypothesis_count": int(
                 failure_evidence_review.get("raw_hypothesis_count") or 0
             ),
-            "failed_attempt_count": int(failure_evidence_review.get("failed_attempt_count") or 0),
-            "zero_failures_reviewed": failure_evidence_review.get("zero_failures_reviewed") is True,
+            "failed_attempt_count": int(
+                failure_evidence_review.get("failed_attempt_count") or 0
+            ),
+            "zero_failures_reviewed": failure_evidence_review.get(
+                "zero_failures_reviewed"
+            )
+            is True,
             "clip_count": int(clips.get("clip_count") or 0),
-            "materialized_clip_count": int(video_bundle_format.get("materialized_clip_count") or 0),
-            "missing_clip_file_count": int(video_bundle_format.get("missing_clip_file_count") or 0),
+            "materialized_clip_count": int(
+                video_bundle_format.get("materialized_clip_count") or 0
+            ),
+            "missing_clip_file_count": int(
+                video_bundle_format.get("missing_clip_file_count") or 0
+            ),
             "curated_clip_count": int(curation_report.get("accepted_clip_count") or 0),
             "rejected_clip_count": int(curation_report.get("rejected_clip_count") or 0),
             "semantic_duplicate_group_count": int(
@@ -6140,26 +6293,33 @@ def _build_post_training_data_package_export(
             "visual_augmentation_generated_video_count": int(
                 visual_augmentation_packet.get("generated_video_count") or 0
             ),
-            "scaniverse_support_asset_count": int(scaniverse_import.get("asset_count") or 0),
+            "scaniverse_support_asset_count": int(
+                scaniverse_import.get("asset_count") or 0
+            ),
             "rl_handoff_recoverable_failure_label_count": int(
-                _mapping(rl_post_training_handoff.get("recoverable_failure_labels")).get(
-                    "label_count"
-                )
+                _mapping(
+                    rl_post_training_handoff.get("recoverable_failure_labels")
+                ).get("label_count")
                 or 0
             ),
             "rl_handoff_intervention_event_count": int(
-                _mapping(rl_post_training_handoff.get("intervention_safety_ledger")).get(
-                    "event_count"
-                )
+                _mapping(
+                    rl_post_training_handoff.get("intervention_safety_ledger")
+                ).get("event_count")
                 or 0
             ),
         },
         "task_success_metrics": {
             "source_artifact": included_artifacts.get("simulator_command_batch_metrics"),
-            "metric_coverage_complete": batch_metrics.get("metric_coverage_complete") is True,
+            "metric_coverage_complete": batch_metrics.get("metric_coverage_complete")
+            is True,
             "required_metric_keys": _string_list(batch_metrics.get("required_metric_keys")),
-            "attempt_metric_row_count": int(batch_metrics.get("attempt_metric_row_count") or 0),
-            "missing_metric_row_count": int(batch_metrics.get("missing_metric_row_count") or 0),
+            "attempt_metric_row_count": int(
+                batch_metrics.get("attempt_metric_row_count") or 0
+            ),
+            "missing_metric_row_count": int(
+                batch_metrics.get("missing_metric_row_count") or 0
+            ),
         },
         "export_policy": {
             "curated_robot_pov_clips_required_for_richer_exports": True,
@@ -6168,26 +6328,37 @@ def _build_post_training_data_package_export(
             "scenario_eval_matrix_included": "scenario_eval_matrix" in included_artifacts,
             "policy_execution_trace_included": "policy_execution_trace" in included_artifacts,
             "normalized_eval_attempts_included": "normalized_attempt_trace" in included_artifacts,
-            "raw_failure_hypotheses_included": "failure_labels" in included_artifacts,
-            "accepted_failure_labels_included": "accepted_failure_labels" in included_artifacts,
-            "review_resolution_ledger_included": "review_resolution_ledger" in included_artifacts,
+            "raw_failure_hypotheses_included": "failure_labels"
+            in included_artifacts,
+            "accepted_failure_labels_included": "accepted_failure_labels"
+            in included_artifacts,
+            "review_resolution_ledger_included": "review_resolution_ledger"
+            in included_artifacts,
             "failure_labels_included": int(
                 failure_evidence_review.get("accepted_training_label_count") or 0
             )
             > 0,
-            "failure_labels_training_eligible": failure_evidence_review.get("status") == "passed",
+            "failure_labels_training_eligible": failure_evidence_review.get(
+                "status"
+            )
+            == "passed",
             "archive_identity_signature_required": True,
-            "archive_signing_preflight_passed": archive_signing_preflight.get("status") == "ready",
+            "archive_signing_preflight_passed": archive_signing_preflight.get(
+                "status"
+            )
+            == "ready",
             "visual_review_ledger_included": "visual_review_ledger" in included_artifacts
             or "simulator_command_batch_visual_review_ledger" in included_artifacts,
             "arena_metrics_included": bool(metrics),
             "clips_manifest_included": bool(clips),
             "consent_evidence_record_included": "consent_evidence" in included_artifacts,
-            "consent_evidence_present": consent_evidence.get("consent_evidence_present") is True,
+            "consent_evidence_present": consent_evidence.get(
+                "consent_evidence_present"
+            )
+            is True,
             "consent_revoked": manifest_consent_revoked,
             "revocation_takedown_manifest_included": (
-                "revocation_takedown_manifest"
-                in _mapping(package_files.get("package_index")).get("files", {})
+                "revocation_takedown_manifest" in _mapping(package_files.get("package_index")).get("files", {})
             ),
             "webapp_rights_privacy_takedown_notice_included": (
                 "webapp_rights_privacy_takedown_notice"
@@ -6202,8 +6373,7 @@ def _build_post_training_data_package_export(
                 in _mapping(package_files.get("package_index")).get("files", {})
             ),
             "revenue_share_review_included": (
-                "revenue_share_review"
-                in _mapping(package_files.get("package_index")).get("files", {})
+                "revenue_share_review" in _mapping(package_files.get("package_index")).get("files", {})
             ),
             "data_processing_terms_review_included": (
                 "data_processing_terms_review"
@@ -6234,11 +6404,14 @@ def _build_post_training_data_package_export(
                 canonical_quality_pipeline.get("status") == "passed"
                 and sc3_action_report.get("status") == "passed"
             ),
-            "in_export_curation_diagnostic_passed": curation_report.get("status") == "passed",
+            "in_export_curation_diagnostic_passed": curation_report.get("status")
+            == "passed",
             "in_export_semantic_dedup_diagnostic_passed": (
                 semantic_dedup_report.get("status") == "passed"
             ),
-            "in_export_sc3_action_diagnostic_passed": (sc3_action_report.get("status") == "passed"),
+            "in_export_sc3_action_diagnostic_passed": (
+                sc3_action_report.get("status") == "passed"
+            ),
             "self_attested_metadata_is_canonical_stage_proof": False,
             "rejected_clips_exported": False,
             "premium_quality_eligible": (
@@ -6248,7 +6421,8 @@ def _build_post_training_data_package_export(
             "native_training_export_eligible": (
                 status == "export_ready_review_required"
                 and canonical_quality_pipeline.get("status") == "passed"
-                and optional_exports.get("status") == "written_canonical_accepted_ids_only"
+                and optional_exports.get("status")
+                == "written_canonical_accepted_ids_only"
             ),
             "calibration_included": "calibration_report" in included_artifacts,
             "simulator_provider_adapter_included": "simulator_provider_adapter_manifest"
@@ -6264,8 +6438,12 @@ def _build_post_training_data_package_export(
             ),
             "lerobot_episode_export_included": bool(lerobot_export),
             "lerobot_episode_export_status": lerobot_export.get("status"),
-            "lerobot_episode_export_episode_count": lerobot_export.get("episode_count"),
-            "lerobot_gr00t_ready_episode_count": lerobot_export.get("gr00t_ready_episode_count"),
+            "lerobot_episode_export_episode_count": lerobot_export.get(
+                "episode_count"
+            ),
+            "lerobot_gr00t_ready_episode_count": lerobot_export.get(
+                "gr00t_ready_episode_count"
+            ),
             "materialized_video_bundle_included": int(
                 video_bundle_format.get("materialized_clip_count") or 0
             )
@@ -6287,13 +6465,18 @@ def _build_post_training_data_package_export(
                 "measured_state_fraction_floor"
             ),
             "measured_state_fraction_floor_passed": (
-                lerobot_state_action_provenance.get("measured_state_fraction_floor_passed") is True
+                lerobot_state_action_provenance.get(
+                    "measured_state_fraction_floor_passed"
+                )
+                is True
             ),
             "gr00t_lerobot_export_included": bool(gr00t_lerobot_format),
             "gr00t_lerobot_consumer_layout_complete": bool(
                 gr00t_lerobot_format.get("consumer_layout_complete")
             ),
-            "gr00t_modality_json_included": bool(gr00t_lerobot_format.get("modality_json_path")),
+            "gr00t_modality_json_included": bool(
+                gr00t_lerobot_format.get("modality_json_path")
+            ),
             "sim_vs_real_calibration_included": "sim_vs_real_calibration_report"
             in included_artifacts,
             "deployment_outcome_intake_included": "deployment_outcome_intake_manifest"
@@ -6305,11 +6488,14 @@ def _build_post_training_data_package_export(
             "real_world_validation_followup_queue_included": (
                 "real_world_validation_followup_request_queue" in included_artifacts
             ),
-            "live_eval_closure_included": "live_eval_closure_manifest" in included_artifacts,
+            "live_eval_closure_included": "live_eval_closure_manifest"
+            in included_artifacts,
             "breakage_library_included": "breakage_library" in included_artifacts,
             "robot_eval_report_included": "robot_eval_report" in included_artifacts,
             "visual_augmentation_packet_included": bool(visual_augmentation_packet),
-            "visual_augmentation_is_model_derived_support": bool(visual_augmentation_packet),
+            "visual_augmentation_is_model_derived_support": bool(
+                visual_augmentation_packet
+            ),
             "visual_augmentation_generated_videos_are_raw_capture_evidence": False,
             "scaniverse_support_assets_included": bool(scaniverse_import),
             "scaniverse_assets_are_external_derived_support": bool(scaniverse_import),
@@ -6504,9 +6690,7 @@ def build_post_training_data_package_export(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="DEPRECATED compatibility command: export rights-gated Task Evaluation Run evidence; this is not a product or training claim."
-    )
+    parser = argparse.ArgumentParser(description="DEPRECATED compatibility command: export rights-gated Task Evaluation Run evidence; this is not a product or training claim.")
     parser.add_argument("--capture-root", required=True)
     parser.add_argument("--job-dir")
     parser.add_argument("--output-dir")
