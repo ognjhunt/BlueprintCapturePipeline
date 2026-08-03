@@ -1,0 +1,65 @@
+{
+  "schema_version": "measurement_chrono_dem_source_observation.v1",
+  "observed_on": "2026-08-02",
+  "repository": "https://github.com/projectchrono/chrono.git",
+  "release_tag": "10.0.0",
+  "annotated_tag_object": "94fc98ae6f7f2bdcaf4ea8d34ee0892409ac9810",
+  "peeled_source_commit": "9faf13dd8f1128dd75ed233a9627027b0422c3f7",
+  "version_observation": {
+    "major": 10,
+    "minor": 0,
+    "patch": 0,
+    "cmake_project_version": "10.0.0",
+    "cmake_file_sha256": "113134b202974c7d296cd28db04aba8e3c35a5f4ecd6e5a8c227ddd264249180"
+  },
+  "module_observation": {
+    "release_module_name": "Chrono::DEM",
+    "source_directory": "src/chrono_dem",
+    "cmake_option": "CH_ENABLE_MODULE_DEM",
+    "requires_cuda": true,
+    "requires_eigen_minimum_version": "3.3.6",
+    "library_target": "Chrono_dem",
+    "cmake_file_sha256": "d1210d83b2ce0c3491ce85ea3dd5c0e05b7ccc5a7ab6ecf36577afebdd0f53d6",
+    "public_system_header": "src/chrono_dem/physics/ChSystemDem.h",
+    "public_system_header_sha256": "67efd0727af58d1516decee4ee4ee94bae28d5058a3b5825b80b73e7343b709d",
+    "public_system_implementation_sha256": "f3291a1afccbf2980c5e9c47c10843daf2545d202c2b42f7f606a70700f67abd",
+    "reference_unit_test": "src/tests/unit_tests/dem/utest_DEM_mini.cpp",
+    "reference_unit_test_sha256": "9dac186b4ad3c4f7650fea8b616d6f339651eea84ac6651f512e4bb893b1b994",
+    "reference_repose_demo": "src/demos/dem/demo_DEM_repose.cpp",
+    "reference_repose_demo_sha256": "76c5c8e800a172dcd62120c5086f69225b05e1cc202fb7e04957139fbc6f1187"
+  },
+  "observed_api_scope": {
+    "gpu_device_selection_in_reference_test": true,
+    "particle_initialization": true,
+    "sphere_to_sphere_and_wall_contact_parameters": true,
+    "friction_and_rolling_modes": true,
+    "gravity": true,
+    "fixed_boundary_domain": true,
+    "plane_boundary_reaction_force": true,
+    "fixed_timestep": true,
+    "simulation_advance": true,
+    "particle_output": true
+  },
+  "rights_observation": {
+    "license_file": "LICENSE",
+    "license_file_sha256": "5f625eb4c9e0ddf86db9d1ed9b6adb5b30296ea81919282b2f38c977136bf079",
+    "license_family": "BSD-style",
+    "commercial_rights_conclusion_created": false,
+    "asset_redistribution_conclusion_created": false
+  },
+  "implementation_boundary": {
+    "pychrono_core_nsc_is_chrono_dem": false,
+    "source_presence_proves_runtime": false,
+    "runtime_execution_observed": false,
+    "cuda_execution_observed": false,
+    "deterministic_replay_observed": false,
+    "physical_material_characterization_included": false,
+    "pouring_or_tool_interaction_included": false,
+    "q_gran_qualification_created": false,
+    "r5_evidence_created": false,
+    "r6_decision_created": false,
+    "r7_admission_created": false,
+    "physical_success_established": false
+  },
+  "next_encoded_action": "Build the exact peeled commit with CH_ENABLE_MODULE_DEM=ON in a digest-bound CUDA development image, run a bounded synthetic particle and boundary-force case twice, require a visible CUDA device and matching trace digests, and retain teardown/provider-zero evidence without creating Q-GRAN or production authority."
+}

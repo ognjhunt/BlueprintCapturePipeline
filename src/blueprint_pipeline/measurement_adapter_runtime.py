@@ -107,7 +107,7 @@ ADAPTER_RECIPES: dict[str, AdapterRecipe] = {
         # projectchrono conda channel or a source build, not the unrelated
         # PyPI project that can share the `pychrono` distribution name.
         benchmark_ids=("capture-to-deformation",),
-        execution_mode="isolated_external_conda",
+        execution_mode="isolated_external_conda_or_exact_source_build",
         target_version="10.0.0",
     ),
     "flash": AdapterRecipe(

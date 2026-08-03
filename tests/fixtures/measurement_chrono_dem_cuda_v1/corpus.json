@@ -1,0 +1,63 @@
+{
+  "schema_version": "measurement_chrono_dem_cuda_development_corpus.v1",
+  "corpus_id": "blueprint-chrono-dem-cuda-synthetic-development-v1",
+  "description": "Two exact-source Chrono 10.0.0 Chrono::DEM CUDA synthetic particle-settling cases. This is not characterized granular material, pouring, tool interaction, Q-GRAN, or physical evidence.",
+  "lane": "granular",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_measurements_included": false,
+  "physical_material_characterization_included": false,
+  "qualification_labels_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "adapter_protocol": "chrono_dem_cuda_synthetic_particle_settling.v1",
+    "source_commit": "9faf13dd8f1128dd75ed233a9627027b0422c3f7",
+    "module": "chrono_dem",
+    "native_length_unit": "centimeters",
+    "native_mass_unit": "grams",
+    "native_time_unit": "seconds",
+    "output_length_unit": "meters",
+    "output_force_unit": "newtons",
+    "particle_shape": "sphere",
+    "particle_size_distribution": "monodisperse",
+    "cohesion_model": "none",
+    "material_characterization_scope": "synthetic_parameters_only",
+    "count_x": 3,
+    "count_y": 3,
+    "count_z": 3,
+    "particle_radius_cm": 1.0,
+    "gravity_cm_s2": -980.0,
+    "rolling_friction": 0.01,
+    "duration_s": 0.5,
+    "timestep_s": 0.00005,
+    "settle_speed_threshold_cm_s": 2.0,
+    "minimum_settled_fraction": 0.8,
+    "minimum_spread_ratio": 0.9,
+    "maximum_spread_ratio": 4.0,
+    "maximum_penetration_m": 0.01,
+    "maximum_static_weight_relative_error": 0.75
+  },
+  "metric_definitions": {
+    "state_trajectory": "Final horizontal particle span divided by initial span.",
+    "topology_contact": "Whether Chrono::DEM reports particle contacts during the bounded run.",
+    "force": "Final tracked plane reaction force converted from native dynes to newtons.",
+    "task_outcome": "Whether replay, contact, spread, settling, penetration, and static-weight development envelopes remain satisfied."
+  },
+  "cases": [
+    {
+      "case_id": "chrono-dem-cuda-synthetic-development-001",
+      "synthetic_material_id": "low-friction-reference-density",
+      "density_g_cm3": 2.5,
+      "friction": 0.2
+    },
+    {
+      "case_id": "chrono-dem-cuda-synthetic-development-002",
+      "synthetic_material_id": "high-friction-high-density",
+      "density_g_cm3": 4.0,
+      "friction": 0.8
+    }
+  ]
+}
