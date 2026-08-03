@@ -125,7 +125,7 @@
   ],
   "cell_results": [
     {
-      "attempt_digest": "sha256:17405cc536e21341c298d588e53b122932fd53c801fca312ffa4f27a1ab1e915",
+      "attempt_digest": "sha256:65b89996d50b565fb9b5c13f82c3c9385687757c9ab16ef27d70aaa51ad5e767",
       "blockers": [],
       "candidate_id": "policy-1",
       "cell_abstention": null,
@@ -134,11 +134,11 @@
       "metric_supported": true,
       "metric_value": 1.0,
       "policy_identity_digest": "sha256:32943cd4973133d005d51746d3b106b4cc397847385767f890d834004e20e71c",
-      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_digest": "sha256:9724b15b563b531d14d6d3d2b9b656ccb3b431d9baa992c6c53512e3ba1699b0",
       "scenario_id": "nominal"
     },
     {
-      "attempt_digest": "sha256:303706d22c4bce7ff0d97d1e90bfb7c7fcaff238f3d6b6086c4c645b9d1a9986",
+      "attempt_digest": "sha256:675891aba89a7be2faa66f6dd0d8df8b7d8eb454b39b33400f70c45fccfc139f",
       "blockers": [],
       "candidate_id": "policy-2",
       "cell_abstention": null,
@@ -147,11 +147,11 @@
       "metric_supported": true,
       "metric_value": 2.0,
       "policy_identity_digest": "sha256:92982cd3e7f403317b2cd7462bc2b986fef5da4f98cb5cc989bb2b50279596e2",
-      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_digest": "sha256:9724b15b563b531d14d6d3d2b9b656ccb3b431d9baa992c6c53512e3ba1699b0",
       "scenario_id": "nominal"
     },
     {
-      "attempt_digest": "sha256:f50708d6b8d8f1bdfa18bdc66570857146a95b73b57f392d604b275b6b6623f2",
+      "attempt_digest": "sha256:736ff1752679687752ce7777c423ff3f6f6f4b5fe77edef23bd70afeee3a4ee9",
       "blockers": [],
       "candidate_id": "policy-3",
       "cell_abstention": null,
@@ -160,11 +160,11 @@
       "metric_supported": true,
       "metric_value": 3.0,
       "policy_identity_digest": "sha256:a9c0b18260c636a347279c6dfdcc3b8c63a15d3861c93df2ce4a90010c443620",
-      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_digest": "sha256:9724b15b563b531d14d6d3d2b9b656ccb3b431d9baa992c6c53512e3ba1699b0",
       "scenario_id": "nominal"
     },
     {
-      "attempt_digest": "sha256:86e4ae0b7d455016966f4ca32a019162346b661620d3f57984b5e04900c797da",
+      "attempt_digest": "sha256:facd4fb25a2264ef07e01acd671f5e438531f9910066de565cb57d96980ded6e",
       "blockers": [],
       "candidate_id": "policy-4",
       "cell_abstention": null,
@@ -173,11 +173,11 @@
       "metric_supported": true,
       "metric_value": 4.0,
       "policy_identity_digest": "sha256:b250ad13c38c1c4c3f86be5e809ea71f37c54cc6b54292152cfcdff141627f45",
-      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_digest": "sha256:9724b15b563b531d14d6d3d2b9b656ccb3b431d9baa992c6c53512e3ba1699b0",
       "scenario_id": "nominal"
     },
     {
-      "attempt_digest": "sha256:be772a5bd2383a159805e39a90db0d7da45cfbb646e9fe7e6be1f9b4448125b9",
+      "attempt_digest": "sha256:964e1cb157349120a444107bafd0f4d322e12d93cd279ea825d92e4e4b307bf8",
       "blockers": [],
       "candidate_id": "policy-5",
       "cell_abstention": null,
@@ -186,11 +186,11 @@
       "metric_supported": true,
       "metric_value": 5.0,
       "policy_identity_digest": "sha256:89f8f99fac2b9b5a0b3d55d50adb4bb341293e4b1d889cf94b25f8ad47d1a243",
-      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_digest": "sha256:9724b15b563b531d14d6d3d2b9b656ccb3b431d9baa992c6c53512e3ba1699b0",
       "scenario_id": "nominal"
     },
     {
-      "attempt_digest": "sha256:7d4756776b2cc59b05e9f3ec2fcf31533e0039b0b2a7ba48e6cf505dad8215b8",
+      "attempt_digest": "sha256:a3c4b16f8c80e2015a597fd8468231ffbc4f58d7cdea5447c522cf95c7de468a",
       "blockers": [],
       "candidate_id": "policy-1",
       "cell_abstention": null,
@@ -199,11 +199,11 @@
       "metric_supported": true,
       "metric_value": 1.1,
       "policy_identity_digest": "sha256:32943cd4973133d005d51746d3b106b4cc397847385767f890d834004e20e71c",
-      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_digest": "sha256:92e6f7b0b822890a4855b1147be2104e3c928a9675a150e80a5cbc28de6c4046",
       "scenario_id": "camera-offset"
     },
     {
-      "attempt_digest": "sha256:030a06a924a277612b9cd80aaef0b334b6c7f2fc88e94563219743794c6448d1",
+      "attempt_digest": "sha256:4d2a86c03fe702a9b487363f22ffd91351a870dc085c116b1d0b696bd5b84563",
       "blockers": [],
       "candidate_id": "policy-2",
       "cell_abstention": null,
@@ -212,11 +212,11 @@
       "metric_supported": true,
       "metric_value": 2.1,
       "policy_identity_digest": "sha256:92982cd3e7f403317b2cd7462bc2b986fef5da4f98cb5cc989bb2b50279596e2",
-      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_digest": "sha256:92e6f7b0b822890a4855b1147be2104e3c928a9675a150e80a5cbc28de6c4046",
       "scenario_id": "camera-offset"
     },
     {
-      "attempt_digest": "sha256:2b4e681c99b1c6818ca42e358386cfcbfd6ca20afa5d8f7cfc265f279e938fe3",
+      "attempt_digest": "sha256:eb6cf7e47db2fa72f262d92c228e5342a4b319a202eee516e9f17232e3c51c91",
       "blockers": [],
       "candidate_id": "policy-3",
       "cell_abstention": null,
@@ -225,11 +225,11 @@
       "metric_supported": true,
       "metric_value": 3.1,
       "policy_identity_digest": "sha256:a9c0b18260c636a347279c6dfdcc3b8c63a15d3861c93df2ce4a90010c443620",
-      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_digest": "sha256:92e6f7b0b822890a4855b1147be2104e3c928a9675a150e80a5cbc28de6c4046",
       "scenario_id": "camera-offset"
     },
     {
-      "attempt_digest": "sha256:925c2b0c7a612693644804dd779ed5e5777eccac48d081d88f723387522a375b",
+      "attempt_digest": "sha256:f29fa23005550ccb4aac9b9e03568e384cdb263a2447c407bcbd3e23c0dee7af",
       "blockers": [],
       "candidate_id": "policy-4",
       "cell_abstention": null,
@@ -238,11 +238,11 @@
       "metric_supported": true,
       "metric_value": 4.1,
       "policy_identity_digest": "sha256:b250ad13c38c1c4c3f86be5e809ea71f37c54cc6b54292152cfcdff141627f45",
-      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_digest": "sha256:92e6f7b0b822890a4855b1147be2104e3c928a9675a150e80a5cbc28de6c4046",
       "scenario_id": "camera-offset"
     },
     {
-      "attempt_digest": "sha256:95d96e77862044e76333498a0f54d7455853c49006be54caaa518b5fd6bfb092",
+      "attempt_digest": "sha256:79df291a26c694151a7d716ad08dee7588c88bf76bedf01a45084b012d9effbf",
       "blockers": [],
       "candidate_id": "policy-5",
       "cell_abstention": null,
@@ -251,11 +251,11 @@
       "metric_supported": true,
       "metric_value": 5.1,
       "policy_identity_digest": "sha256:89f8f99fac2b9b5a0b3d55d50adb4bb341293e4b1d889cf94b25f8ad47d1a243",
-      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_digest": "sha256:92e6f7b0b822890a4855b1147be2104e3c928a9675a150e80a5cbc28de6c4046",
       "scenario_id": "camera-offset"
     },
     {
-      "attempt_digest": "sha256:2e2610e171402d94f07e68c565c8ae76fba9c4be94c29d9fb2ab4b431f0273ac",
+      "attempt_digest": "sha256:2b9f0eba4db04beb01082e3d3c37f22f3f4404edc1a1e1a5c2c5e903a7b68908",
       "blockers": [],
       "candidate_id": "policy-1",
       "cell_abstention": null,
@@ -264,11 +264,11 @@
       "metric_supported": true,
       "metric_value": 1.2,
       "policy_identity_digest": "sha256:32943cd4973133d005d51746d3b106b4cc397847385767f890d834004e20e71c",
-      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_digest": "sha256:ad93a5ee88f74a330db2960309add5a509378f407f7c875e474664b6f77fcf20",
       "scenario_id": "bounded-occlusion"
     },
     {
-      "attempt_digest": "sha256:87c517c9726c7bc53652217b4741c20befa33bc9fa7efca6c960f803f869cce5",
+      "attempt_digest": "sha256:9d74a801ebf1bc1270b270e9140746001c316cce64269fc88514635d260deac7",
       "blockers": [],
       "candidate_id": "policy-2",
       "cell_abstention": null,
@@ -277,11 +277,11 @@
       "metric_supported": true,
       "metric_value": 2.2,
       "policy_identity_digest": "sha256:92982cd3e7f403317b2cd7462bc2b986fef5da4f98cb5cc989bb2b50279596e2",
-      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_digest": "sha256:ad93a5ee88f74a330db2960309add5a509378f407f7c875e474664b6f77fcf20",
       "scenario_id": "bounded-occlusion"
     },
     {
-      "attempt_digest": "sha256:16e7c2c1e4f78a23c5aff6bb741ae4669df9219b3135d4d778adeeb09d61dca4",
+      "attempt_digest": "sha256:6e302c3fe4dd561bc0a850197d89e48a5ae6b09a6a037390f953fd7ac9df3925",
       "blockers": [],
       "candidate_id": "policy-3",
       "cell_abstention": null,
@@ -290,11 +290,11 @@
       "metric_supported": true,
       "metric_value": 3.2,
       "policy_identity_digest": "sha256:a9c0b18260c636a347279c6dfdcc3b8c63a15d3861c93df2ce4a90010c443620",
-      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_digest": "sha256:ad93a5ee88f74a330db2960309add5a509378f407f7c875e474664b6f77fcf20",
       "scenario_id": "bounded-occlusion"
     },
     {
-      "attempt_digest": "sha256:c163cbf3ef5ae01f2d15e6ae53ee69a7a57b26d7af7f2d46fe2478f1b1065e31",
+      "attempt_digest": "sha256:08245cf90ae8491f9bf32551245e5259d8c654e69cf5c9298cab85fd845367ab",
       "blockers": [],
       "candidate_id": "policy-4",
       "cell_abstention": null,
@@ -303,11 +303,11 @@
       "metric_supported": true,
       "metric_value": 4.2,
       "policy_identity_digest": "sha256:b250ad13c38c1c4c3f86be5e809ea71f37c54cc6b54292152cfcdff141627f45",
-      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_digest": "sha256:ad93a5ee88f74a330db2960309add5a509378f407f7c875e474664b6f77fcf20",
       "scenario_id": "bounded-occlusion"
     },
     {
-      "attempt_digest": "sha256:f838707aa6df253ca4d2db3b50e37a0ff40e05a8bb5c0530caeebc924d548607",
+      "attempt_digest": "sha256:ab80405a4a9ab8e8e0a60b18454f513f8cf530a859dd28334d3ca8cdb5c400e6",
       "blockers": [],
       "candidate_id": "policy-5",
       "cell_abstention": null,
@@ -316,7 +316,7 @@
       "metric_supported": true,
       "metric_value": 5.2,
       "policy_identity_digest": "sha256:89f8f99fac2b9b5a0b3d55d50adb4bb341293e4b1d889cf94b25f8ad47d1a243",
-      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_digest": "sha256:ad93a5ee88f74a330db2960309add5a509378f407f7c875e474664b6f77fcf20",
       "scenario_id": "bounded-occlusion"
     }
   ],
@@ -331,7 +331,7 @@
     "task_evaluation_run_completed": true
   },
   "excluded_scenarios": [],
-  "execution_packet_digest": "sha256:0bb8023e18727408aadebc0406417e42d247028c7414bd361aa7a14535f1869d",
+  "execution_packet_digest": "sha256:a93c60cf72f5f49522710fa9b034133c00dcc3ba930e2eea5ddbd67c71058881",
   "expected_cell_count": 15,
   "matrix_evidence_type": "learned_policy_scenario_matrix",
   "observed_attempt_count": 15,
@@ -430,8 +430,8 @@
       }
     }
   ],
-  "reconstruction_digest": "sha256:a775c44d458fb031d20166270e1cace0449c69bce8970a52fe986eb3bdf7335c",
-  "request_digest": "sha256:f93f3900c042fee6494642a82199f373cc0aeb173d5b176617f51c2627412055",
+  "reconstruction_digest": "sha256:1cfe1f73d0cca3385dfd90d53cd73476788988a5521c87a3bb676913f0044316",
+  "request_digest": "sha256:73b5b6e44005202ede98c82304b9efeecb443e623268a88b8eba1b43eb46c223",
   "robot_id": "franka_panda",
   "routing_decision": {
     "abstention": null,
@@ -577,10 +577,10 @@
     "status": "route_selected",
     "taxonomy_version": "2026-08-01"
   },
-  "run_digest": "sha256:972621a757c39d734c7aca29cc0bfa422a6261dc5a368cc333ed0ce95676b180",
+  "run_digest": "sha256:97b2b3a74ff80f95211fbaaa4dfb37ead5a03b56c971de40903bd1877b0c9bcb",
   "run_id": "new-site-run-001",
   "scenario_count": 3,
-  "scenario_pack_digest": "sha256:60dab1588d9e0a432a2f8bdada42131891d81225949af7f629a8cff63daf45a5",
+  "scenario_pack_digest": "sha256:05c1f5d287356bd0d42f477432774ef7b2922208438898c5a7721d5fc6ec8c60",
   "scenario_pack_id": "inspection-pack-fixture-v1",
   "schema_version": "new_site_task_evaluation_run.v2",
   "smallest_missing_measurement": null,
