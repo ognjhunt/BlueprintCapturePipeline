@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/polycam_developer_source_declaration.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_profile",
+    "provider_identity",
+    "source_capture_identity",
+    "provider_capture_identity",
+    "provider_app_version",
+    "provider_export_timestamp",
+    "layout_profile",
+    "capture_mode",
+    "developer_mode_enabled",
+    "blueprint_remote_upload_performed",
+    "device_identity",
+    "metric_units",
+    "semantic_bindings",
+    "source_declaration_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "polycam_developer_source_declaration.v1"},
+    "source_profile": {"const": "polycam_developer_mode_lidar_raw_zip"},
+    "provider_identity": {"const": "polycam"},
+    "source_capture_identity": {"$ref": "#/$defs/opaque"},
+    "provider_capture_identity": {"$ref": "#/$defs/opaque"},
+    "provider_app_version": {"$ref": "#/$defs/opaque"},
+    "provider_export_timestamp": {"type": "string", "format": "date-time"},
+    "layout_profile": {"$ref": "#/$defs/opaque"},
+    "capture_mode": {"const": "space_lidar"},
+    "developer_mode_enabled": {"const": true},
+    "blueprint_remote_upload_performed": {"const": false},
+    "device_identity": {
+      "type": "object",
+      "required": ["manufacturer", "model", "operating_system", "lidar_capable"],
+      "properties": {
+        "manufacturer": {"const": "Apple"},
+        "model": {"$ref": "#/$defs/opaque"},
+        "operating_system": {"$ref": "#/$defs/opaque"},
+        "lidar_capable": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "metric_units": {
+      "type": "object",
+      "required": ["length_unit", "scale_to_meters", "authority"],
+      "properties": {
+        "length_unit": {"const": "meter"},
+        "scale_to_meters": {"const": 1.0},
+        "authority": {"const": "provider_declared_unqualified"}
+      },
+      "additionalProperties": false
+    },
+    "semantic_bindings": {
+      "type": "object",
+      "required": [
+        "source_rgb_frames",
+        "source_video",
+        "frame_timestamps",
+        "camera_intrinsics",
+        "camera_extrinsics",
+        "depth",
+        "confidence",
+        "mesh_geometry",
+        "mesh_info",
+        "metric_units",
+        "capture_identity",
+        "device_identity",
+        "provider_identity"
+      ],
+      "properties": {
+        "source_rgb_frames": {"$ref": "#/$defs/memberPaths"},
+        "source_video": {"$ref": "#/$defs/memberPaths"},
+        "frame_timestamps": {"$ref": "#/$defs/memberPaths"},
+        "camera_intrinsics": {"$ref": "#/$defs/memberPaths"},
+        "camera_extrinsics": {"$ref": "#/$defs/memberPaths"},
+        "depth": {"$ref": "#/$defs/memberPaths"},
+        "confidence": {"$ref": "#/$defs/memberPaths"},
+        "mesh_geometry": {"$ref": "#/$defs/memberPaths"},
+        "mesh_info": {"$ref": "#/$defs/memberPaths"},
+        "metric_units": {"$ref": "#/$defs/memberPaths"},
+        "capture_identity": {"$ref": "#/$defs/memberPaths"},
+        "device_identity": {"$ref": "#/$defs/memberPaths"},
+        "provider_identity": {"$ref": "#/$defs/memberPaths"}
+      },
+      "additionalProperties": false
+    },
+    "source_declaration_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "opaque": {"type": "string", "minLength": 1, "maxLength": 256},
+    "memberPaths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+    }
+  },
+  "additionalProperties": false
+}

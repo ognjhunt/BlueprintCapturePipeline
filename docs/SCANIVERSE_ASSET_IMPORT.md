@@ -65,10 +65,13 @@ Polycam can feed this pipeline in two distinct ways:
   qualification.
 - A LiDAR capture made after enabling Polycam Developer Mode can expose a raw
   data ZIP with cameras, confidence images, depth images, and mesh information.
-  That is materially more useful for reconstruction research, but it is still a
-  Polycam raw export, not Blueprint Raw Contract 3.2: it lacks Blueprint's
-  encoder-attempt and retained-frame evidence and must enter through a separate
-  source-profile adapter before any calibrated or metric claim.
+  `blueprint-adapt-polycam-developer-raw` now admits that ZIP through the
+  separate `polycam_developer_source_profile.v1` contract. The adapter hashes
+  the untouched archive and every regular member, binds the declared semantic
+  lanes, rejects unsafe ZIP structures, and abstains on missing lanes. The ZIP
+  is still a Polycam raw export, not Blueprint Raw Contract 3.2: it lacks
+  Blueprint's encoder-attempt and retained-frame evidence, and provider-declared
+  metric units do not independently prove scale.
 
 Polycam also documents an Enterprise Content Management API with capture
 listing, source `session.zip`, artifact download, export conversion jobs, and
