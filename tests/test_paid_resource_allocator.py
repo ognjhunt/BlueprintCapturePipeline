@@ -27,21 +27,39 @@ def test_detached_model_volume_supervisor_ignores_only_sigint(
         lambda signum, handler: calls.append((signum, handler)),
     )
 
-    assert allocator._configure_detached_supervisor_signal_policy("model-volume-run") is True
+    assert (
+        allocator.configure_or_launch_detached_gpu_canary(
+            "model-volume-run",
+            execute=False,
+            argv=[],
+            repo_root=Path.cwd(),
+        )
+        is None
+    )
     assert calls == [(signal.SIGINT, signal.SIG_IGN)]
 
 
 def test_foreground_model_volume_keeps_default_signal_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv(allocator.DETACHED_MODEL_VOLUME_SUPERVISOR_ENV, raising=False)
+    monkeypatch.delenv(
+        allocator.DETACHED_MODEL_VOLUME_SUPERVISOR_ENV, raising=False
+    )
     monkeypatch.setattr(
         allocator.signal,
         "signal",
         lambda *_args: (_ for _ in ()).throw(AssertionError("signal policy changed")),
     )
 
-    assert allocator._configure_detached_supervisor_signal_policy("model-volume-run") is False
+    assert (
+        allocator.configure_or_launch_detached_gpu_canary(
+            "model-volume-run",
+            execute=False,
+            argv=[],
+            repo_root=Path.cwd(),
+        )
+        is None
+    )
 
 
 def test_detached_cpu_build_supervisor_ignores_only_sigint(
@@ -55,7 +73,15 @@ def test_detached_cpu_build_supervisor_ignores_only_sigint(
         lambda signum, handler: calls.append((signum, handler)),
     )
 
-    assert allocator._configure_detached_supervisor_signal_policy("cpu-build-run") is True
+    assert (
+        allocator.configure_or_launch_detached_gpu_canary(
+            "cpu-build-run",
+            execute=False,
+            argv=[],
+            repo_root=Path.cwd(),
+        )
+        is None
+    )
     assert calls == [(signal.SIGINT, signal.SIG_IGN)]
 
 
@@ -70,8 +96,60 @@ def test_detached_gpu_canary_supervisor_ignores_only_sigint(
         lambda signum, handler: calls.append((signum, handler)),
     )
 
-    assert allocator._configure_detached_supervisor_signal_policy("gpu-canary") is True
+    assert (
+        allocator.configure_or_launch_detached_gpu_canary(
+            "gpu-canary",
+            execute=False,
+            argv=[],
+            repo_root=Path.cwd(),
+        )
+        is None
+    )
     assert calls == [(signal.SIGINT, signal.SIG_IGN)]
+
+
+def test_detached_gpu_canary_launcher_starts_new_session_without_recording_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[list[str], dict]] = []
+
+    class _Process:
+        pid = 12345
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return _Process()
+
+    monkeypatch.setattr(allocator.subprocess, "Popen", fake_popen)
+    secret_marker = "do-not-record-this-value"
+    result = allocator.maybe_launch_detached_gpu_canary(
+        command="gpu-canary",
+        execute=True,
+        supervisor_dir=str(tmp_path / "supervisor"),
+        argv=["gpu-canary", "--provider-launch-request", secret_marker, "--execute"],
+        repo_root=tmp_path,
+    )
+
+    assert result is not None and result["status"] == "supervisor_started"
+    assert result["pid"] == 12345
+    assert calls[0][1]["start_new_session"] is True
+    assert calls[0][1]["stdin"] is subprocess.DEVNULL
+    assert calls[0][1]["env"][allocator.DETACHED_GPU_CANARY_SUPERVISOR_ENV] == "1"
+    manifest = json.loads(
+        (
+            tmp_path / "supervisor" / allocator.DETACHED_GPU_CANARY_MANIFEST
+        ).read_text()
+    )
+    assert manifest["raw_arguments_recorded"] is False
+    assert manifest["raw_argument_values_hashed"] is False
+    assert secret_marker not in json.dumps(manifest)
+    assert (
+        tmp_path / "supervisor" / allocator.DETACHED_GPU_CANARY_LOG
+    ).stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "supervisor").stat().st_mode & 0o777 == 0o700
+    assert (
+        tmp_path / "supervisor" / allocator.DETACHED_GPU_CANARY_LOCK
+    ).stat().st_mode & 0o777 == 0o600
 
 
 def _write_inputs(tmp_path: Path, *, paid: bool = True) -> Namespace:
@@ -754,9 +832,7 @@ def test_reconstruction_pose_routes_bundle_and_receipt_through_shared_allocator(
 ) -> None:
     args = _reconstruction_args(tmp_path, execute=True)
     args.provider_bundle_url_file = str(tmp_path / "bundle-get-url.txt")
-    args.reconstruction_operation_receipt_url_file = str(
-        tmp_path / "receipt-get-url.txt"
-    )
+    args.reconstruction_operation_receipt_url_file = str(tmp_path / "receipt-get-url.txt")
     args.reconstruction_operation_bundle_receipt = str(tmp_path / "receipt.json")
     Path(args.preflight_bundle).write_text("{}", encoding="utf-8")
     operation_request_digest = "sha256:" + "1" * 64
@@ -787,9 +863,7 @@ def test_reconstruction_pose_routes_bundle_and_receipt_through_shared_allocator(
         "proof_effect": "none",
         "claim_ceiling": "candidate_operation_input_only",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     Path(args.reconstruction_operation_bundle_receipt).write_text(
         json.dumps(receipt), encoding="utf-8"
     )
@@ -835,9 +909,7 @@ def test_reconstruction_pose_routes_bundle_and_receipt_through_shared_allocator(
         }
 
     monkeypatch.setattr(allocator, "run_reconstruction_vast_operation", fake_operation)
-    result = allocator._run_reconstruction_gpu_canary(
-        args, checkout_commit="c" * 40
-    )
+    result = allocator._run_reconstruction_gpu_canary(args, checkout_commit="c" * 40)
     assert result["status"] == "completed"
     assert observed["provider"] is provider
     assert observed["bundle_receipt"] == receipt
@@ -892,9 +964,7 @@ def test_reconstruction_gpu_refreshes_read_only_vast_preflight_before_admission(
 
     monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
 
-    result = allocator._run_reconstruction_gpu_canary(
-        args, checkout_commit="c" * 40
-    )
+    result = allocator._run_reconstruction_gpu_canary(args, checkout_commit="c" * 40)
 
     assert result["status"] == "dry_run_ready"
     preflight = observed["preflight"]
