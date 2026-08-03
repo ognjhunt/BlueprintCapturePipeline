@@ -1,5 +1,26 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-08-03
+
+### Employee-Facing
+
+- Added a backwards-compatible v2 new-site Task Evaluation Run contract for a
+  frozen five-policy by three-to-five-scenario matrix. The executor preserves
+  every policy/scenario cell, excludes unsupported scenarios symmetrically from
+  paired aggregation, reports deterministic uncertainty and ties, and prevents
+  aggregate scores from hiding catastrophic cells. Scenario generation cannot
+  authorize new physics or metric claims, evaluator-only state stays out of
+  policy query payloads, and scripted-controller matrices remain a separate
+  evidence type (`src/blueprint_pipeline/new_site_task_evaluation_matrix.py`).
+- Added portable v2 request/result, scenario-pack, execution-packet, and
+  migration schemas plus exact replay examples. V1 requests still compile
+  through the unchanged v1 path; explicit migration creates only a labeled
+  one-scenario compatibility projection and no claim upgrade.
+- Retained a digest-bound ARKitScenes 40958756 pre-execution packet. It records
+  zero admitted cells and exact blockers at the real public-dataset proxy's
+  evidence ceiling rather than fabricating reconstruction, scale, collision,
+  placement, policy, physical, or deployment proof.
+
 ## 2026-08-02
 
 ### Employee-Facing

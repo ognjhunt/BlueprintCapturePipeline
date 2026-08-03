@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/new_site_policy_scenario_execution_packet.v1.schema.json",
+  "title": "Five-policy by scenario execution packet",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "request_digest",
+    "matrix_evidence_type",
+    "execution_plan",
+    "expected_cell_count",
+    "observed_cell_count",
+    "status",
+    "cells",
+    "execution_packet_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "new_site_policy_scenario_execution_packet.v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "request_digest": {"$ref": "#/$defs/digest"},
+    "matrix_evidence_type": {"const": "learned_policy_scenario_matrix"},
+    "execution_plan": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "run_id",
+        "request_digest",
+        "matrix_evidence_type",
+        "scenario_pack_id",
+        "scenario_pack_digest",
+        "policy_count",
+        "scenario_count",
+        "expected_cell_count",
+        "cells",
+        "execution_plan_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "new_site_policy_scenario_execution_plan.v1"},
+        "run_id": {"type": "string", "minLength": 1},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "matrix_evidence_type": {"const": "learned_policy_scenario_matrix"},
+        "scenario_pack_id": {"type": "string", "minLength": 1},
+        "scenario_pack_digest": {"$ref": "#/$defs/digest"},
+        "policy_count": {"const": 5},
+        "scenario_count": {"type": "integer", "minimum": 1, "maximum": 5},
+        "expected_cell_count": {"type": "integer", "minimum": 5, "maximum": 25},
+        "cells": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 25,
+          "items": {"$ref": "#/$defs/planCell"}
+        },
+        "execution_plan_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "expected_cell_count": {"type": "integer", "minimum": 5, "maximum": 25},
+    "observed_cell_count": {"type": "integer", "minimum": 0, "maximum": 25},
+    "status": {"enum": ["completed", "completed_with_failures", "abstained_pre_execution"]},
+    "cells": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {"$ref": "#/$defs/resultCell"}
+    },
+    "execution_packet_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "planCell": {
+      "type": "object",
+      "required": [
+        "cell_id",
+        "candidate_id",
+        "policy_identity_digest",
+        "scenario_id",
+        "scenario_digest",
+        "scenario_pack_digest",
+        "reset_state_digest",
+        "initial_state_observation_digest",
+        "deterministic_simulator_seed",
+        "routing_decision_digest",
+        "placement_digest",
+        "metric_spec_digest",
+        "policy_query_payload",
+        "cell_plan_digest"
+      ],
+      "properties": {
+        "cell_id": {"type": "string", "minLength": 1},
+        "candidate_id": {"type": "string", "minLength": 1},
+        "policy_identity_digest": {"$ref": "#/$defs/digest"},
+        "scenario_id": {"type": "string", "minLength": 1},
+        "scenario_digest": {"$ref": "#/$defs/digest"},
+        "scenario_pack_digest": {"$ref": "#/$defs/digest"},
+        "reset_state_digest": {"$ref": "#/$defs/digest"},
+        "initial_state_observation_digest": {"$ref": "#/$defs/digest"},
+        "deterministic_simulator_seed": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "routing_decision_digest": {"$ref": "#/$defs/digest"},
+        "placement_digest": {"$ref": "#/$defs/digest"},
+        "metric_spec_digest": {"$ref": "#/$defs/digest"},
+        "policy_query_payload": {
+          "type": "object",
+          "required": [
+            "candidate_id",
+            "policy_identity_digest",
+            "observation_schema_digest",
+            "action_schema_digest",
+            "observation_sequence_spec_digest",
+            "policy_observation_spec_digest",
+            "hidden_evaluator_data_included"
+          ],
+          "properties": {
+            "candidate_id": {"type": "string", "minLength": 1},
+            "policy_identity_digest": {"$ref": "#/$defs/digest"},
+            "observation_schema_digest": {"$ref": "#/$defs/digest"},
+            "action_schema_digest": {"$ref": "#/$defs/digest"},
+            "observation_sequence_spec_digest": {"$ref": "#/$defs/digest"},
+            "policy_observation_spec_digest": {"$ref": "#/$defs/digest"},
+            "hidden_evaluator_data_included": {"const": false}
+          },
+          "additionalProperties": false
+        },
+        "cell_plan_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "resultCell": {
+      "type": "object",
+      "required": [
+        "cell_id",
+        "candidate_id",
+        "policy_identity_digest",
+        "scenario_id",
+        "scenario_digest",
+        "cell_plan_digest",
+        "status",
+        "attempt_receipt",
+        "blockers",
+        "cell_result_digest"
+      ],
+      "properties": {
+        "cell_id": {"type": "string", "minLength": 1},
+        "candidate_id": {"type": "string", "minLength": 1},
+        "policy_identity_digest": {"$ref": "#/$defs/digest"},
+        "scenario_id": {"type": "string", "minLength": 1},
+        "scenario_digest": {"$ref": "#/$defs/digest"},
+        "cell_plan_digest": {"$ref": "#/$defs/digest"},
+        "status": {"enum": ["completed", "failed", "missing", "abstained_pre_execution"]},
+        "attempt_receipt": {"type": ["object", "null"]},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "cell_result_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
