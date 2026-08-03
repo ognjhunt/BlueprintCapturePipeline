@@ -201,6 +201,23 @@ def _reconstruction_gate(value: Any) -> tuple[dict[str, Any], dict[str, str] | N
             "instruction": "Generate a native 3DGS and register it to the capture geometry frame.",
         }
     reconstruction = _clone(dict(value))
+    if (
+        reconstruction.get("schema_version") == "registered_site_reconstruction.v1"
+        and reconstruction.get("status") == "abstained"
+    ):
+        if reconstruction.get("reconstruction_digest") != canonical_digest(
+            reconstruction, digest_field="reconstruction_digest"
+        ):
+            raise NewSiteTaskEvaluationError(["reconstruction_digest_mismatch"])
+        smallest = reconstruction.get("smallest_missing_measurement")
+        smallest = dict(smallest) if isinstance(smallest, Mapping) else {}
+        return reconstruction, {
+            "code": str(smallest.get("code") or "registered_reconstruction_missing"),
+            "instruction": str(
+                smallest.get("instruction")
+                or "Produce and independently register a native 3DGS to the site geometry."
+            ),
+        }
     for field in (
         "appearance_asset_digest",
         "geometry_asset_digest",
@@ -217,6 +234,33 @@ def _reconstruction_gate(value: Any) -> tuple[dict[str, Any], dict[str, str] | N
         reconstruction, digest_field="reconstruction_digest"
     ):
         raise NewSiteTaskEvaluationError(["reconstruction_digest_mismatch"])
+    if reconstruction.get("schema_version") == "registered_site_reconstruction.v1":
+        for field in (
+            "native_3dgs_candidate_digest",
+            "derived_site_geometry_digest",
+            "registration_transform_digest",
+            "residual_measurement_digest",
+            "registration_qualification_digest",
+        ):
+            if not _is_digest(reconstruction.get(field)):
+                raise NewSiteTaskEvaluationError([f"reconstruction_{field}_invalid"])
+        if (
+            reconstruction.get("status") != "qualified"
+            or reconstruction.get("geometry_qualification_status") != "qualified"
+        ):
+            return reconstruction, {
+                "code": "qualified_dynamics_geometry_missing",
+                "instruction": "Independently qualify the exact site geometry used for collision and dynamics.",
+            }
+        boundary = reconstruction.get("claim_boundary")
+        if (
+            not isinstance(boundary, Mapping)
+            or boundary.get("appearance_quality_is_metric_registration") is not False
+            or boundary.get("appearance_used_as_dynamics_authority") is not False
+        ):
+            raise NewSiteTaskEvaluationError(
+                ["reconstruction_appearance_geometry_claim_boundary_invalid"]
+            )
     if reconstruction.get("appearance_format") != "native_3dgs":
         return reconstruction, {
             "code": "native_3dgs_appearance_missing",
@@ -425,6 +469,12 @@ def _expected_robot(selected_target: Mapping[str, Any]) -> str:
     return "franka_panda"
 
 
+def select_robot_for_target(selected_target: Mapping[str, Any]) -> str:
+    """Return the deterministic task-bound robot without qualifying that robot."""
+
+    return _expected_robot(selected_target)
+
+
 def _placement_gate(
     value: Any, *, expected_robot: str, target_binding_digest: str
 ) -> tuple[dict[str, Any], dict[str, str] | None]:
@@ -518,6 +568,11 @@ def _route_gate(
             "instruction": "Supply the task requirements, site evidence, method catalog, and qualifications.",
         }
     route_inputs = _clone(dict(value))
+    if route_inputs.get("schema_version") == "post_capture_routing_inputs.v1" and (
+        route_inputs.get("routing_inputs_digest")
+        != canonical_digest(route_inputs, digest_field="routing_inputs_digest")
+    ):
+        raise NewSiteTaskEvaluationError(["task_site_engine_routing_inputs_digest_mismatch"])
     required = {
         "requirements",
         "site_evidence_profile",
@@ -1151,6 +1206,7 @@ __all__ = [
     "RESULT_SCHEMA_VERSION",
     "compile_new_site_task_evaluation_run",
     "main",
+    "select_robot_for_target",
 ]
 
 

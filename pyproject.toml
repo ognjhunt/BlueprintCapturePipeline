@@ -235,6 +235,7 @@ blueprint-finalize-canonical-3dgs = "blueprint_pipeline.canonical_3dgs_pipeline:
 blueprint-canonical-3dgs-transport = "blueprint_pipeline.canonical_3dgs_transport:main"
 blueprint-admit-canonical-3dgs-worker = "blueprint_pipeline.canonical_3dgs_admission:main"
 blueprint-evaluate-canonical-3dgs = "blueprint_pipeline.canonical_3dgs_evaluation:main"
+blueprint-produce-post-capture-evidence = "blueprint_pipeline.post_capture_evidence_spine:main"
 blueprint-compile-evaluation-run = "blueprint_pipeline.evaluation_run_contract:main"
 blueprint-run-evaluation-run = "blueprint_pipeline.evaluation_run_execution:main"
 blueprint-route-task-evaluation = "blueprint_pipeline.decision_evidence_cli:main"
