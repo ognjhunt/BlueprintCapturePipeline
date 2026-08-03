@@ -66,6 +66,7 @@ _EXPECTED_RESULTS = {
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
 }
+MAX_CANONICAL_RECEIPT_BYTES = 8 * 1024**2
 
 
 class ReconstructionVastOperationError(ValueError):
@@ -364,6 +365,10 @@ def run_reconstruction_vast_operation(
     hard_ttl = int(request.get("hard_ttl_seconds") or 0)
     max_spend = float(request.get("max_spend_usd") or 0)
     retry_cap = int(request.get("retry_cap") or 0)
+    container_disk_gb = max(
+        100, int(preflight.get("container_disk_bytes") or 0) // 1024**3
+    )
+    canonical_max_input_bytes = container_disk_gb * 1024**3 * 4 // 5
     if (
         _DIGEST.fullmatch(request_digest) is None
         or hard_ttl <= 0
@@ -372,6 +377,15 @@ def run_reconstruction_vast_operation(
     ):
         raise ReconstructionVastOperationError(
             ["reconstruction_vast_operation_execution_bounds_invalid"]
+        )
+    transport_bytes = receipt.get("transport_bundle_bytes")
+    if canonical_splatfacto and (
+        isinstance(transport_bytes, bool)
+        or not isinstance(transport_bytes, int)
+        or not 0 < transport_bytes <= canonical_max_input_bytes
+    ):
+        raise ReconstructionVastOperationError(
+            ["canonical_splatfacto_transport_exceeds_worker_disk_budget"]
         )
 
     root = Path(job_dir)
@@ -385,6 +399,13 @@ def run_reconstruction_vast_operation(
     if _sha256(receipt_path) != receipt_file_digest:
         raise ReconstructionVastOperationError(
             ["reconstruction_vast_operation_receipt_file_digest_mismatch"]
+        )
+    if (
+        canonical_splatfacto
+        and receipt_path.stat().st_size > MAX_CANONICAL_RECEIPT_BYTES
+    ):
+        raise ReconstructionVastOperationError(
+            ["canonical_splatfacto_transport_receipt_oversized"]
         )
     started_at = float(clock())
     watchdog = preflight.get("watchdog")
@@ -447,9 +468,6 @@ def run_reconstruction_vast_operation(
     invalid_digests: set[str] = set()
     fetch_attempts = 0
     try:
-        container_disk_gb = max(
-            100, int(preflight.get("container_disk_bytes") or 0) // 1024**3
-        )
         worker_environment = {
                 "BLUEPRINT_RECONSTRUCTION_OPERATION": operation,
                 "BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL": input_bundle_get_url,
@@ -474,7 +492,7 @@ def run_reconstruction_vast_operation(
                     "BLUEPRINT_CANONICAL_MAX_SPEND_USD": str(max_spend),
                     "BLUEPRINT_CANONICAL_HARD_TTL_SECONDS": str(hard_ttl),
                     "BLUEPRINT_CANONICAL_MAX_INPUT_BYTES": str(
-                        container_disk_gb * 1024**3 * 4 // 5
+                        canonical_max_input_bytes
                     ),
                 }
             )
