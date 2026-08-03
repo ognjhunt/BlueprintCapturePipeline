@@ -85,6 +85,14 @@ def test_runtime_release_is_exact_image_source_build_and_cuda_bound() -> None:
     jsonschema.validate(release, schema)
 
 
+def test_probe_uses_only_installed_chrono_10_headers() -> None:
+    source = (ROOT / "scripts/measurement_chrono_dem_cuda_probe.cpp").read_text(encoding="utf-8")
+    assert '"chrono/core/ChConstants.h"' not in source
+    assert '"chrono/core/ChVector3.h"' in source
+    assert '"chrono_dem/physics/ChSystemDem.h"' in source
+    assert "constexpr float kPi" in source
+
+
 def test_bundle_is_clean_commit_bound_deterministic_and_schema_checked(tmp_path: Path) -> None:
     source = _clean_source(tmp_path)
     first_path = tmp_path / "first.zip"

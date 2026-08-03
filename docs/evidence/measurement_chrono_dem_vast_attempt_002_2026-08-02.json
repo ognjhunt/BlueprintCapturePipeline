@@ -1,0 +1,67 @@
+{
+  "schema_version": "measurement_chrono_dem_vast_attempt_observation.v1",
+  "attempt": 2,
+  "status": "failed_during_blueprint_probe_compile",
+  "source_commit_sha": "e31dc3f7517f6295bd28fb12db3d0f55f2fed22f",
+  "request_digest": "sha256:c3ec7579d1fd2afbfee22c957d4826301f464351b4790279aca3e4b1ab995b55",
+  "bound_request_digest": "sha256:34f9e1d56cfbd776d61f480abd4adafc8ad436db7c93c692a400845927a6062f",
+  "input_bundle_digest": "sha256:c8ca3d41b1f71e021f5ba4ed9b4efa4d39c8e8d7438ed437844372e2571e8fa7",
+  "provider": "vast",
+  "instance_id": "46657619",
+  "gpu_model": "L40",
+  "worker_image_digest": "nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
+  "retry_cap": 0,
+  "provider_launch_count": 1,
+  "instance_started_at_epoch": 1785719035.805456,
+  "teardown_completed_at": "2026-08-03T01:24:43.716793+00:00",
+  "billable_duration_upper_bound_seconds": 1247.911325,
+  "live_inspect_rate_usd_per_hour": 0.508888888888889,
+  "estimated_cost_usd": 0.17640228,
+  "cost_is_estimate": true,
+  "runtime_observation": {
+    "python_dependency_installed_before_first_python_invocation": true,
+    "chrono_source_commit_checked_out": true,
+    "cuda_toolkit_version": "12.8.93",
+    "chrono_dem_module_configured": true,
+    "chrono_dem_cuda_sources_compiled": true,
+    "chrono_dem_library_linked": true,
+    "blueprint_probe_compiled": false,
+    "cuda_case_executed": false,
+    "runtime_result_created": false
+  },
+  "failure_observation": {
+    "provider_log_excerpt": "fatal error: chrono/core/ChConstants.h: No such file or directory",
+    "provider_log_capture_persisted": false,
+    "diagnosis": "the Blueprint probe referenced a header absent from the exact Project Chrono 10.0.0 source and installed include tree"
+  },
+  "encoded_fix": {
+    "description": "remove the nonexistent ChConstants header and use a local explicit float pi constant for the synthetic sphere-volume calculation",
+    "official_header_audit": "every remaining ChSystemDem method used by the probe was observed in the exact 10.0.0 ChSystemDem.h",
+    "regression_test": "the bundled probe must not reference ChConstants.h and must bind the installed ChVector3 and ChSystemDem headers",
+    "focused_test_result": "15 passed before formatting; targeted post-format regression passed; source governance passed"
+  },
+  "teardown": {
+    "status": "PASS",
+    "receipt_sha256": "d3fec9c85ffd8d1dd76cf5df97ea766f6f840a1de4e42806e1538cc8ec04544e",
+    "provider_zero_verified": true,
+    "independent_watchdog_status": "provider_terminal",
+    "independent_watchdog_receipt_sha256": "bf03abe6b12c4db4d7a7f5163cdcf402ab4577f095c520eebd74936b6f76ae00",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "all_objects_absent": true,
+    "signed_url_files_removed": true,
+    "cleanup_receipt_sha256": "e72bc1570b2b534f92d5fa9dc85a34853e3c402f7104361e83cad83415ae2ecc"
+  },
+  "qualification_created": false,
+  "r5_evidence_created": false,
+  "r6_decision_created": false,
+  "r7_admission_created": false,
+  "physical_success_established": false,
+  "production_route_eligible": false,
+  "proof_effect": "source_build_and_infrastructure_failure_evidence_only",
+  "claim_ceiling": "chrono_dem_library_built_probe_not_executed",
+  "raw_secret_values_recorded": false
+}
