@@ -40,6 +40,7 @@ pytest                    # fast lane (<90s): slow/gpu tests deselected via addo
 scripts/pytest_full.sh    # full suite including slow/gpu tests (equivalent: pytest -m '')
 python -m blueprint_pipeline.run_e2e
 python scripts/run_external_alpha_launch_gate.py
+python scripts/agent_workspace_gc.py   # reap stale agent scratch clones (dry-run; delete needs --apply --ack reap-agent-scratch)
 ```
 
 Test lanes (PIPE-05): heavy subprocess/Isaac/render/module-entrypoint tests are tagged
