@@ -285,11 +285,34 @@ def normalize_external_scene_isaac_verification(
     runtime_blockers = sorted(
         str(code) for code in (runtime.get("blockers") or []) if str(code)
     )
+    source_probe_blockers = {
+        "isaac_ground_contact_surface_missing",
+        "isaac_physics_probe_not_executed",
+        "isaac_test_body_contact_not_observed",
+        "isaac_test_body_fell_through_floor",
+        "isaac_test_body_pose_unavailable",
+    }
+    proxy = runtime.get("proxy_composed_evaluation")
+    proxy = proxy if isinstance(proxy, Mapping) else {}
+    policy_pair = runtime.get("articulated_policy_trace_pair")
+    policy_pair = policy_pair if isinstance(policy_pair, Mapping) else {}
+    source_probe_only_abstention = bool(
+        runtime.get("status") == "blocked"
+        and runtime_blockers
+        and set(runtime_blockers).issubset(source_probe_blockers)
+        and proxy.get("configured") is True
+        and proxy.get("source_collision_restored_for_independent_probe") is True
+        and policy_pair.get("status") == "completed"
+    )
     policy_only_abstention = bool(
         runtime.get("status") == "blocked"
         and runtime_blockers == ["isaac_articulated_policy_trace_pair_incomplete"]
     )
-    if runtime.get("status") != "completed" and not policy_only_abstention:
+    if (
+        runtime.get("status") != "completed"
+        and not policy_only_abstention
+        and not source_probe_only_abstention
+    ):
         blockers.append("external_scene_isaac_runtime_not_completed")
     for key in (
         "isaac_verification_request_digest",
@@ -343,7 +366,7 @@ def normalize_external_scene_isaac_verification(
     physics = (
         runtime.get("physics_probe") if isinstance(runtime.get("physics_probe"), Mapping) else {}
     )
-    if (
+    physics_qualified = not bool(
         physics.get("ground_contact_surface_present") is not True
         or physics.get("live_rigid_body_pose_observed") is not True
         or physics.get("test_body_fell_through_floor") is not False
@@ -353,7 +376,8 @@ def normalize_external_scene_isaac_verification(
         or not isinstance(physics.get("steps_executed"), int)
         or isinstance(physics.get("steps_executed"), bool)
         or int(physics.get("steps_executed") or 0) < int(request["physics_probe_request"]["steps"])
-    ):
+    )
+    if not physics_qualified and not source_probe_only_abstention:
         blockers.append("external_scene_isaac_physics_probe_incomplete")
     expected_probe = {
         "test_body": request["physics_probe_request"]["test_body"],
@@ -411,7 +435,11 @@ def normalize_external_scene_isaac_verification(
         raise ExternalSceneIsaacVerificationError(blockers)
     result = {
         "schema_version": "external_scene_isaac_verification_result.v1",
-        "status": "verified_derived_scene_compatibility_only",
+        "status": (
+            "verified_proxy_composed_policy_evidence_only"
+            if source_probe_only_abstention
+            else "verified_derived_scene_compatibility_only"
+        ),
         "isaac_verification_request_digest": request["isaac_verification_request_digest"],
         "isaac_runtime_result_digest": runtime["isaac_runtime_result_digest"],
         "package_digest": request["package_digest"],
@@ -426,18 +454,20 @@ def normalize_external_scene_isaac_verification(
         "physics_probe": dict(physics),
         "articulated_policy_trace_pair": runtime.get("articulated_policy_trace_pair"),
         "articulated_policy_trace_pair_qualified": bool(
-            runtime.get("status") == "completed"
-            and isinstance(runtime.get("articulated_policy_trace_pair"), Mapping)
-            and runtime["articulated_policy_trace_pair"].get("status") == "completed"
+            policy_pair.get("status") == "completed"
         ),
         "policy_lane_abstained_without_invalidating_static_evidence": policy_only_abstention,
+        "source_probe_abstained_without_invalidating_proxy_policy_evidence": (
+            source_probe_only_abstention
+        ),
+        "source_collision_contact_qualified": physics_qualified,
         "checks": {
             "exact_package_opened": True,
             "expected_prims_present": True,
             "particlefield_loaded": True,
             "collision_geometry_active": True,
-            "live_contact_observed": True,
-            "test_body_fell_through_floor": False,
+            "live_contact_observed": physics_qualified,
+            "test_body_fell_through_floor": physics.get("test_body_fell_through_floor"),
             "fixed_camera_renders_nonblank": True,
             "official_franka_loaded": bool(
                 request["robot_id"] == "franka_panda"
@@ -452,11 +482,19 @@ def normalize_external_scene_isaac_verification(
         "comparative_policy_ranking_proven": False,
         "physical_success_proven": False,
         "deployment_readiness_proven": False,
-        "proof_effect": "external_scene_isaac_load_render_contact_presence_only",
+        "proof_effect": (
+            "external_scene_proxy_composed_policy_trace_only"
+            if source_probe_only_abstention
+            else "external_scene_isaac_load_render_contact_presence_only"
+        ),
         "claim_ceiling": (
-            "derived_scene_isaac_compatibility_and_trace_observation"
-            if runtime.get("status") == "completed"
-            else "derived_scene_isaac_load_render_contact_compatibility_only"
+            "exact_proxy_composed_simulation_policy_trace_only"
+            if source_probe_only_abstention
+            else (
+                "derived_scene_isaac_compatibility_and_trace_observation"
+                if runtime.get("status") == "completed"
+                else "derived_scene_isaac_load_render_contact_compatibility_only"
+            )
         ),
     }
     result["verification_result_digest"] = canonical_digest(

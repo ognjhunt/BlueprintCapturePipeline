@@ -1199,6 +1199,31 @@ def test_external_scene_independent_qualification_preserves_verifier_digest(
     assert result["claim_ceiling"] == "isaac_load_render_compatibility"
 
 
+def test_external_scene_independent_qualification_separates_proxy_policy_from_source_contact(
+    tmp_path: Path,
+) -> None:
+    verifier_digest = "sha256:" + "d" * 64
+
+    result = _independent_qualification(
+        verification_request={
+            "isaac_verification_request_digest": "sha256:" + "e" * 64,
+        },
+        runtime_result={"isaac_runtime_result_digest": "sha256:" + "f" * 64},
+        package_root=tmp_path,
+        runtime_root=tmp_path,
+        normalizer=lambda **_: {
+            "schema_version": "external_scene_isaac_verification_result.v1",
+            "status": "verified_proxy_composed_policy_evidence_only",
+            "verification_result_digest": verifier_digest,
+        },
+    )
+
+    assert result["status"] == "verified_proxy_composed_policy_only"
+    assert result["qualified_result_digest"] == verifier_digest
+    assert result["proof_effect"] == "isaac_proxy_composed_policy_trace_only"
+    assert result["claim_ceiling"] == "exact_proxy_composed_simulation_policy_trace_only"
+
+
 def test_isaac_output_bundle_binds_policy_egocentric_observations() -> None:
     bindings = _result_artifact_bindings(
         {

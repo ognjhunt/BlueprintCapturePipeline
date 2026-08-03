@@ -613,16 +613,17 @@ def _method_profiles(
                 owner_digest=visual_digest,
             )
         )
-    qualifications.append(
-        qualification(
-            profile=contact,
-            qualification_id="qualification-exact-point-contact-v1",
-            claim_type="collision_contact",
-            evaluator_id="blueprint-independent-isaac-qualifier",
-            evaluator_digest=contact_evidence["independent_qualification_digest"],
-            owner_digest=contact_evidence["independent_qualification_digest"],
+    if contact_evidence.get("independently_qualified") is True:
+        qualifications.append(
+            qualification(
+                profile=contact,
+                qualification_id="qualification-exact-point-contact-v1",
+                claim_type="collision_contact",
+                evaluator_id="blueprint-independent-isaac-qualifier",
+                evaluator_digest=contact_evidence["independent_qualification_digest"],
+                owner_digest=contact_evidence["independent_qualification_digest"],
+            )
         )
-    )
     if trace_pair_evidence is not None:
         qualifications.append(
             qualification(

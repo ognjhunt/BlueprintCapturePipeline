@@ -71,8 +71,6 @@ def compile_external_scene_task_evaluation(
         independent_qualification,
         schema_version="reconstruction_isaac_independent_qualification.v1",
         digest_field="qualification_digest",
-        status_field="status",
-        accepted_status="verified_compatibility_only",
     )
     visual = _validate_digest_artifact(
         visual_placement_evidence,
@@ -90,16 +88,43 @@ def compile_external_scene_task_evaluation(
         robot_placement_result,
         schema_version="external_scene_robot_placement_candidate.v1",
         digest_field="placement_proposal_digest",
-        status_field="status",
-        accepted_status="runtime_visualization_candidate_only",
     )
     errors: list[str] = []
     if runtime.get("status") not in {"completed", "blocked"}:
         errors.append("external_scene_runtime_unavailable")
-    if runtime.get("status") == "blocked" and sorted(runtime.get("blockers") or []) != [
-        "isaac_articulated_policy_trace_pair_incomplete"
-    ]:
+    source_probe_blockers = {
+        "isaac_ground_contact_surface_missing",
+        "isaac_physics_probe_not_executed",
+        "isaac_test_body_contact_not_observed",
+        "isaac_test_body_fell_through_floor",
+        "isaac_test_body_pose_unavailable",
+    }
+    runtime_blockers = sorted(str(code) for code in (runtime.get("blockers") or []) if str(code))
+    proxy = runtime.get("proxy_composed_evaluation")
+    proxy = proxy if isinstance(proxy, Mapping) else {}
+    pair_value = runtime.get("articulated_policy_trace_pair")
+    pair_value = pair_value if isinstance(pair_value, Mapping) else {}
+    source_probe_only_abstention = bool(
+        runtime.get("status") == "blocked"
+        and runtime_blockers
+        and set(runtime_blockers).issubset(source_probe_blockers)
+        and proxy.get("configured") is True
+        and proxy.get("source_collision_restored_for_independent_probe") is True
+        and pair_value.get("status") == "completed"
+    )
+    policy_only_abstention = bool(
+        runtime.get("status") == "blocked"
+        and runtime_blockers == ["isaac_articulated_policy_trace_pair_incomplete"]
+    )
+    if runtime.get("status") == "blocked" and not (
+        source_probe_only_abstention or policy_only_abstention
+    ):
         errors.append("external_scene_runtime_static_evidence_not_qualifiable")
+    if independent.get("status") not in {
+        "verified_compatibility_only",
+        "verified_proxy_composed_policy_only",
+    }:
+        errors.append("external_scene_independent_qualification_status_invalid")
     if independent.get("blockers") not in ([], ()):
         errors.append("external_scene_independent_qualification_has_blockers")
     if independent.get("isaac_verification_request_digest") != request.get(
@@ -108,7 +133,12 @@ def compile_external_scene_task_evaluation(
         errors.append("external_scene_independent_request_mismatch")
     if independent.get("runtime_result_digest") != runtime.get("isaac_runtime_result_digest"):
         errors.append("external_scene_independent_runtime_mismatch")
-    if independent.get("claim_ceiling") != "isaac_load_render_compatibility":
+    expected_independent_ceiling = (
+        "exact_proxy_composed_simulation_policy_trace_only"
+        if independent.get("status") == "verified_proxy_composed_policy_only"
+        else "isaac_load_render_compatibility"
+    )
+    if independent.get("claim_ceiling") != expected_independent_ceiling:
         errors.append("external_scene_independent_ceiling_invalid")
     if target.get("target_analysis_digest") != request.get("target_analysis_digest"):
         errors.append("external_scene_target_request_mismatch")
@@ -125,6 +155,12 @@ def compile_external_scene_task_evaluation(
         errors.append("external_scene_physics_evidence_missing")
     if visual.get("status") not in {"verified_visual_placement_only", "blocked"}:
         errors.append("external_scene_visual_evidence_status_invalid")
+    if placement.get("status") not in {"runtime_visualization_candidate_only", "abstained"}:
+        errors.append("external_scene_placement_status_invalid")
+    if placement.get("status") == "abstained" and placement.get("proof_effect") != (
+        "external_scene_runtime_robot_visualization_candidate"
+    ):
+        errors.append("external_scene_abstained_placement_not_runtime_candidate")
     if errors:
         raise ExternalSceneTaskEvaluationError(errors)
 
@@ -172,6 +208,15 @@ def compile_external_scene_task_evaluation(
         visual.get("status") == "verified_visual_placement_only"
         and visual.get("visual_robot_placement_observed") is True
         and not visual.get("blockers")
+    )
+    source_point_contact_qualified = bool(
+        independent.get("status") == "verified_compatibility_only"
+        and physics.get("ground_contact_surface_present") is True
+        and physics.get("live_rigid_body_pose_observed") is True
+        and physics.get("test_body_fell_through_floor") is False
+        and isinstance(physics.get("contact_event_count"), int)
+        and not isinstance(physics.get("contact_event_count"), bool)
+        and int(physics.get("contact_event_count") or 0) >= 1
     )
     camera_evidence = visual.get("camera_evidence")
     camera_evidence = camera_evidence if isinstance(camera_evidence, list) else []
@@ -237,7 +282,7 @@ def compile_external_scene_task_evaluation(
         },
         {
             "evidence_id": "signed_isaac_point_contact",
-            "independently_qualified": True,
+            "independently_qualified": source_point_contact_qualified,
             "isaac_runtime_result_digest": runtime["isaac_runtime_result_digest"],
             "independent_qualification_digest": independent["qualification_digest"],
             "contact_event_count": physics["contact_event_count"],
@@ -381,6 +426,7 @@ def compile_external_scene_task_evaluation(
                 "deployment_readiness",
             ]
             + ([] if visual_qualified else ["visual_robot_placement"])
+            + ([] if source_point_contact_qualified else ["source_collision_contact"])
             + ([] if policy_pair else ["articulated_policy_execution"]),
             "invalidation_triggers": [
                 "package_digest_change",
@@ -497,7 +543,9 @@ def compile_external_scene_task_evaluation(
     ).to_mapping()
     profiles, qualifications = _method_profiles(testbed=testbed)
     plan = route_decision_evidence(decision_request, testbed, profiles, qualifications).to_mapping()
-    authorized_adapters = [SIGNED_ISAAC_POINT_CONTACT_ADAPTER]
+    authorized_adapters = []
+    if source_point_contact_qualified:
+        authorized_adapters.append(SIGNED_ISAAC_POINT_CONTACT_ADAPTER)
     if visual_qualified:
         authorized_adapters.append(SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER)
     if policy_pair is not None:
@@ -529,7 +577,9 @@ def compile_external_scene_task_evaluation(
     verdicts = {row["claim_id"]: row["verdict"] for row in decision["per_claim_verdicts"]}
     expected = {
         "exact-sim-robot-visibility": "supported" if visual_qualified else "abstention",
-        "exact-sim-point-contact": "supported",
+        "exact-sim-point-contact": (
+            "supported" if source_point_contact_qualified else "abstention"
+        ),
         "franka-kinematic-feasibility": "abstention",
         "franka-policy-trace-distinguishability": "supported" if policy_pair else "abstention",
         "franka-controller-ranking": (
@@ -581,7 +631,7 @@ def compile_external_scene_task_evaluation(
         "source_video_missing_is_not_pipeline_blocker": True,
         "independent_metric_scale_proven": False,
         "visual_robot_placement_qualified": visual_qualified,
-        "single_point_contact_qualified": True,
+        "single_point_contact_qualified": source_point_contact_qualified,
         "policy_trace_pair_qualified": policy_pair is not None,
         "controller_candidate_ranking_proven": bool(
             inspection_ranking and inspection_ranking["controller_candidate_ranking_proven"] is True
