@@ -14,7 +14,6 @@
 
 #include <cuda_runtime.h>
 
-#include "chrono/core/ChConstants.h"
 #include "chrono/core/ChVector3.h"
 #include "chrono_dem/physics/ChSystemDem.h"
 
@@ -31,6 +30,7 @@ namespace {
 constexpr const char* kSchema = "measurement_chrono_dem_cuda_probe_result.v1";
 constexpr const char* kChronoVersion = "10.0.0";
 constexpr const char* kSourceCommit = "9faf13dd8f1128dd75ed233a9627027b0422c3f7";
+constexpr float kPi = 3.14159265358979323846f;
 constexpr float kRadiusCm = 1.0f;
 constexpr float kGravityCmS2 = -980.0f;
 constexpr float kGroundZCm = -10.0f;
@@ -250,7 +250,7 @@ int main(int argc, char** argv) {
             maximum_contact_count = std::max(maximum_contact_count, sample.contact_count);
         }
         const float sphere_volume_cm3 =
-            4.0f / 3.0f * static_cast<float>(chrono::CH_PI) * std::pow(kRadiusCm, 3.0f);
+            4.0f / 3.0f * kPi * std::pow(kRadiusCm, 3.0f);
         const float expected_weight_n =
             kParticleCount * sphere_volume_cm3 * args.density_g_cm3 * std::abs(kGravityCmS2) * 1e-5f;
         const float minimum_surface_z_cm = system.GetMinParticleZ() - kRadiusCm;

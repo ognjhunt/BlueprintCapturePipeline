@@ -170,6 +170,14 @@ def test_bootstrap_binds_exact_source_build_cuda_bundle_and_signed_upload() -> N
     assert 'headers={"Content-Type": "application/json"}' in script
 
 
+def test_probe_uses_self_contained_pi_constant_not_uninstalled_chrono_header() -> None:
+    source = (
+        Path(__file__).parents[1] / "scripts/measurement_chrono_dem_cuda_probe.cpp"
+    ).read_text(encoding="utf-8")
+    assert '"chrono/core/ChConstants.h"' not in source
+    assert "constexpr float kPi" in source
+
+
 def test_runtime_validator_enforces_cuda_identity_and_claim_ceiling(monkeypatch) -> None:
     receipt = _receipt()
     bound = _bound_request()
