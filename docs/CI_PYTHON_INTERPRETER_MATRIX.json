@@ -13,9 +13,9 @@
   "ci_workflows": [
     {
       "path": ".github/workflows/ci.yml",
-      "check": "CI / test",
+      "check": "CI / Impacted test and sentinel gate",
       "python_version": "3.12",
-      "evidence_role": "fast unit and contract lane"
+      "evidence_role": "bounded impacted tests plus contract, security, paid-resource, and release-policy sentinels"
     },
     {
       "path": ".github/workflows/full-test-lane.yml",

@@ -36,18 +36,22 @@ Key rules (full text and precedents in `AGENTS.md`):
 Key commands:
 
 ```bash
-pytest                    # fast lane (<90s): slow/gpu tests deselected via addopts
-scripts/pytest_full.sh    # full suite including slow/gpu tests (equivalent: pytest -m '')
+python -m blueprint_pipeline.impacted_test_selection  # changed tests + sentinels, hard-capped at 120s
+ruff check <changed files>            # default build loop: changed-file lint only
+scripts/pytest_fast.sh                # bounded repository integration diagnostic
+scripts/pytest_full.sh                # explicit promotion/scheduled/cross-cutting only
 python -m blueprint_pipeline.run_e2e
 python scripts/run_external_alpha_launch_gate.py
 python scripts/agent_workspace_gc.py   # reap stale agent scratch clones (dry-run; delete needs --apply --ack reap-agent-scratch)
 ```
 
 Test lanes (PIPE-05): heavy subprocess/Isaac/render/module-entrypoint tests are tagged
-`@pytest.mark.slow` (and `gpu`); bare `pytest` deselects them, so it is the hermetic
-pre-push gate. The success-claim contract truth tests always run against the committed
-fixture in `tests/fixtures/kitchen_task_min/`; set `BLUEPRINT_TEST_LOCAL_ARTIFACTS=1`
-to additionally sweep real `output/kitchen_task_scaling_preflight_*` artifacts.
+`@pytest.mark.slow` (and `gpu`). Bare `pytest` deselects those markers but still has
+no guaranteed wall-time, so it is not the default build-loop or ordinary-PR gate.
+Use the risk-based verification contract in `AGENTS.md`. The success-claim contract
+truth tests always run against the committed fixture in
+`tests/fixtures/kitchen_task_min/`; set `BLUEPRINT_TEST_LOCAL_ARTIFACTS=1` to
+additionally sweep real `output/kitchen_task_scaling_preflight_*` artifacts.
 
 ## gstack
 

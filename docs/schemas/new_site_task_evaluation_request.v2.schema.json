@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/new_site_task_evaluation_request.v2.schema.json",
+  "title": "Provider-neutral new-site Task Evaluation Run matrix request",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "source_profile",
+    "reconstruction",
+    "target_orchestration",
+    "robot_placement",
+    "scene_composition",
+    "routing_inputs",
+    "execution_authorization",
+    "policy_evaluation",
+    "request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "new_site_task_evaluation_request.v2"},
+    "run_id": {"type": "string", "minLength": 1},
+    "source_profile": {"type": "object"},
+    "reconstruction": {"type": "object"},
+    "target_orchestration": {"type": "object"},
+    "robot_placement": {"type": "object"},
+    "scene_composition": {"type": "object"},
+    "routing_inputs": {"type": "object"},
+    "execution_authorization": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "policy_execution_authorized",
+        "physical_robot_execution_authorized",
+        "routing_decision_digest",
+        "placement_digest",
+        "metric_spec_digest",
+        "candidate_set_digest",
+        "scenario_pack_digest",
+        "aggregation_rule_digest",
+        "matrix_evidence_type",
+        "authorization_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "new_site_policy_execution_authorization.v2"},
+        "policy_execution_authorized": {"const": true},
+        "physical_robot_execution_authorized": {"const": false},
+        "routing_decision_digest": {"$ref": "#/$defs/digest"},
+        "placement_digest": {"$ref": "#/$defs/digest"},
+        "metric_spec_digest": {"$ref": "#/$defs/digest"},
+        "candidate_set_digest": {"$ref": "#/$defs/digest"},
+        "scenario_pack_digest": {"$ref": "#/$defs/digest"},
+        "aggregation_rule_digest": {"$ref": "#/$defs/digest"},
+        "matrix_evidence_type": {"const": "learned_policy_scenario_matrix"},
+        "authorization_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "policy_evaluation": {
+      "type": "object",
+      "required": ["task_metric", "policy_candidates", "scenario_pack"],
+      "properties": {
+        "task_metric": {"type": "object"},
+        "policy_candidates": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {"type": "object"}
+        },
+        "scenario_pack": {"type": "object"},
+        "matrix_execution_packet": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

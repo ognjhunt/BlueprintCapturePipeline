@@ -1,0 +1,78 @@
+{
+  "allowed_use_scope": {
+    "data_licensing_allowed": false,
+    "derived_processing_allowed": true,
+    "latest_revocation_check_required": true,
+    "provider_upload_requires_separate_downstream_authorization": true,
+    "raw_observation_indexing_allowed": true,
+    "redaction_required_before_derived_use": true,
+    "requested_outputs": ["reconstruction_candidate"]
+  },
+  "candidate_count": 1,
+  "candidate_order": "encoded_frame_index_ascending",
+  "candidates": [
+    {
+      "T_site_camera": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],
+      "T_world_camera": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],
+      "arkit_frame_row_ordinal": 0,
+      "arkit_pose_row_ordinal": 0,
+      "camera_calibration_digest": "sha256:610d1d84c67d0f3ea879011bb9c0e2563e4c0dd303d6a25650662b675f4a6b94",
+      "camera_intrinsics": {"authority":"arkit_arframe_exact_per_observation","cx":320,"cy":240,"fx":500,"fy":500,"height":480,"matrix_column_major":[500,0,0,0,500,0,320,240,1],"width":640},
+      "candidate_id": "rgb_000000",
+      "coordinate_frame_session_id": "cfs_fixture_001",
+      "decoded_frame_ordinal": 0,
+      "decoded_pts_sec": 0,
+      "decoded_source_pts_sec": 100.25,
+      "downstream_artifact_authority": false,
+      "encoded_frame_index": 0,
+      "frame_id": "000001",
+      "gravity_aligned": true,
+      "handedness": "right_handed",
+      "output_image_relative_path": "candidate_rgb/000000.png",
+      "pose_assisted_eligible": true,
+      "pose_frame_id": "000001",
+      "raw_observation_authority": true,
+      "relocalization_event": false,
+      "site_frame_definition": "arkit_world_origin_at_session_start",
+      "site_frame_id": "cfs_fixture_001",
+      "source_video_uri": "walkthrough.mov",
+      "t_capture_sec": 0,
+      "tracking_reason": null,
+      "tracking_state": "normal",
+      "transform_semantics": "row_major_camera_to_site",
+      "units": "meters",
+      "up_axis": "Y",
+      "world_mapping_status": "mapped",
+      "write_attempt_index": 0
+    }
+  ],
+  "claim_boundary": {
+    "candidate_manifest_proves_task_success": false,
+    "candidate_manifest_qualifies_collision_or_physics": false,
+    "candidate_manifest_qualifies_metric_scale": false,
+    "candidate_manifest_qualifies_reconstruction": false,
+    "raw_capture_remains_authoritative": true
+  },
+  "coordinate_frame_session_id": "cfs_fixture_001",
+  "decoded_timing_authority": "sync_map_decoded_sample_presentation_timestamps",
+  "manifest_digest": "sha256:a8f26287f7bc453ec4e8475841b00675d7269c8fb81a0117c30f5075d251e9d4",
+  "provider_neutrality": {
+    "mobile_app_direct_provider_upload_allowed": false,
+    "provider_authorization_status": "not_granted_by_capture_manifest",
+    "provider_selection_authority": "blueprint_pipeline",
+    "third_party_provider_upload_authorized": false
+  },
+  "scene_id": "scene_fixture_001",
+  "schema_version": "downstream_candidate_manifest.v1",
+  "selection_contract": {
+    "allowed_deterministic_selectors": ["explicit_encoded_frame_ordinals","profile_bound_even_decoded_pts_coverage","profile_bound_quality_filter"],
+    "capture_default_selection": null,
+    "selection_authority": "blueprint_pipeline_task_site_profile",
+    "selection_parameters_required": true,
+    "smallest_missing_input_when_unselectable": "task_site_evidence_profile_with_frame_selection_parameters"
+  },
+  "source_video_authority": "immutable_raw_capture_video",
+  "source_video_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_video_uri": "walkthrough.mov",
+  "capture_id": "capture_fixture_001"
+}

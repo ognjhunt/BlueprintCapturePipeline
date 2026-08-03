@@ -2,23 +2,25 @@
 
 Status: required merge and deploy contract for the Pipeline repo.
 
-Branch protection for `main` must require these Pipeline checks before merge:
+Branch protection for `main` requires one stable aggregate merge check:
 
 | Check | Workflow | Why it is required |
 | --- | --- | --- |
-| `CI / test` | `.github/workflows/ci.yml` | Fast unit/contract lane plus a 69.5% repository line-coverage floor. |
-| `CI / Ruff and claim lint` | `.github/workflows/ci.yml` | Zero-warning Ruff gate plus public scientific-claim lint. |
-| `CI / Typed release contract core` | `.github/workflows/ci.yml` | MyPy gate for the release/security/evidence validation core. This is a bounded typed core, not a claim that every legacy orchestration module is typed. |
-| `CI / Bandit high and reviewed-medium gate` | `.github/workflows/ci.yml` | All HIGH findings block. Existing MEDIUM exceptions require an exact fingerprint, owner, reason, review date, and expiry; new, changed, expired, and orphaned entries block. |
-| `CI / Module and critical-lane governance` | `.github/workflows/ci.yml` | Prevents large-module, CLI, and duplicate-claim growth and validates scope-to-critical-lane policy. |
-| `CI / SBOM, license, and provenance contract` | `.github/workflows/ci.yml` | Generates CycloneDX/SPDX, exact-version license review, distribution provenance, and keyless main-branch provenance plus SBOM attestations. |
-| `CI / dependency-security` | `.github/workflows/ci.yml` | Frozen runtime dependency advisory gate and SHA-bound evidence. |
-| `CI / Container production contract` | `.github/workflows/ci.yml` | Production/dev image build, Compose validation, and nonroot/read-only/no-network smoke. |
-| `CodeQL / Python security analysis` | `.github/workflows/codeql.yml` | GitHub CodeQL security-and-quality analysis. |
-| `Full Test Lane / Full pytest lane on CPU runner` | `.github/workflows/full-test-lane.yml` | Slow, integration, subprocess, render, module-entrypoint, and provider-adapter coverage via `scripts/pytest_full.sh`. |
-| `Python Compatibility / Python 3.10 compatibility` | `.github/workflows/python-compatibility.yml` | Frozen install plus bounded package/contract compatibility on advertised Python 3.10. |
-| `Python Compatibility / Python 3.11 compatibility` | `.github/workflows/python-compatibility.yml` | Frozen install plus bounded package/contract compatibility on advertised Python 3.11. |
-| `Python Compatibility / Python 3.12 compatibility` | `.github/workflows/python-compatibility.yml` | Frozen install plus bounded package/contract compatibility on advertised Python 3.12. |
+| `Impacted test and sentinel gate` | `.github/workflows/ci.yml` | Runs dependency-mapped tests plus always-on success-claim, runtime-security, paid-resource-admission, and release-policy sentinels. The ordinary lane is capped at ten minutes. If deterministic impact analysis classifies the change as cross-cutting, this aggregate waits for the reusable full lane and fails unless it passes. |
+
+Other CI, CodeQL, compatibility, container, supply-chain, and simulator jobs are
+hosted diagnostics or claim-specific release evidence. They remain visible and
+must be green when their claim or promotion scope requires them, but they are
+not blanket merge gates for every ordinary PR.
+
+`python -m blueprint_pipeline.impacted_test_selection` is the shared selector
+and runner. Its local build-loop default is a hard 120-second wall-time limit.
+CI runs the same plan
+with a 480-second test-process limit inside a ten-minute job limit, leaving time
+for frozen dependency setup and artifact upload. Every plan records changed
+files, selected tests, escalation reasons, and the protected risks. Unknown
+executable surfaces, dependency changes, or an impact set exceeding the bounded
+file/test budgets request the full lane rather than silently reducing coverage.
 
 Canonical Pipeline launch evidence uses Python `3.12`. The source of truth is
 `docs/CI_PYTHON_INTERPRETER_MATRIX.json`, documented in
@@ -29,9 +31,10 @@ workflow installs the frozen lock and runs the declared bounded suite on Python
 canonical launch/deploy proof. Python `3.13` output is non-canonical and must be
 rerun under Python `3.12` before it can support launch claims.
 
-A lock-only change triggers `CI`, `Full Test Lane`, `Sim-Only Local Gate`, and
-`Python Compatibility`: the first two are unfiltered, and the latter two list
-`uv.lock` explicitly. Every install in those workflows uses `uv sync --frozen`.
+A lock-only change triggers `CI`, `Sim-Only Local Gate`, and `Python
+Compatibility`. The impact selector classifies `uv.lock` as cross-cutting, so
+the CI aggregate invokes and waits for the reusable Full Test Lane. Every install
+in those workflows uses `uv sync --frozen`.
 `pyproject.toml` plus tracked `uv.lock` are the authoritative dependency graph;
 `requirements.txt` and `requirements-geometry.txt` are hash-pinned compatibility
 exports generated and checked by `scripts/verify_dependency_exports.py`. They
@@ -88,7 +91,7 @@ FULL_TEST_LANE_EVIDENCE_URI="https://github.com/.../actions/runs/..." \
   deploy/scripts/deploy.sh
 ```
 
-The weekly scheduled run is supplementary health evidence only; it is not deploy
+The nightly scheduled run is supplementary health evidence only; it is not deploy
 proof for a different commit. Emergency rollback remains available through
 `deploy/scripts/deploy.sh --rollback --rollback-image-tag <tag>` and has its own
 rollback verification/health checks.

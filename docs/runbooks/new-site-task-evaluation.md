@@ -113,3 +113,37 @@ matched-reset learned-policy executions exist, pass those digest-bound artifacts
 to `python -m blueprint_pipeline.new_site_task_evaluation_run`. The downstream
 compiler ranks only supported receipts and remains fail-closed; this development
 result cannot be used as a policy attempt or comparative-ranking receipt.
+
+For new work, use request v2 and freeze a three-to-five-scenario inspection
+pack before execution. Validate the pack and authorization, then call
+`build_matrix_execution_plan` or `execute_policy_scenario_matrix` from
+`blueprint_pipeline.new_site_task_evaluation_matrix`. Persist the returned
+packet before compiling it with the existing module entrypoint:
+
+```bash
+python -m blueprint_pipeline.new_site_task_evaluation_run \
+  --request <request-v2-with-matrix-execution-packet.json> \
+  --output <run-v2.json>
+```
+
+Operational sequence:
+
+1. Freeze the metric and aggregation rule before every attempt.
+2. Admit only three to five task-valid scenarios. Include nominal and a bounded
+   placement/observation perturbation; admit occlusion only with exact support.
+3. Bind the same five learned-policy identities to the scenario-pack digest.
+4. Execute every policy in every scenario from that scenario's reset and seed.
+5. Persist failed or missing cells; never trim the matrix before compilation.
+6. Compile and inspect cell abstentions, paired scenario coverage, uncertainty,
+   ties, excluded scenarios, unsupported metrics, and catastrophic failures.
+7. Replay the same request and require the same execution-plan and run digests.
+
+Do not pass evaluator-only target/distractor state to a policy endpoint. Do not
+move a scripted controller into the learned-policy candidate set. Do not add a
+geometry, material, lighting, sensor, or noise variant until its qualification
+and evidence ceiling are bound inside the frozen scenario.
+
+The committed hermetic example is replayable from
+`docs/examples/new_site_task_evaluation_request.v2.example.json`. The retained
+ARKitScenes packet is intentionally pre-execution and abstained; resolve its
+ordered blockers rather than copying fixture qualifications into it.

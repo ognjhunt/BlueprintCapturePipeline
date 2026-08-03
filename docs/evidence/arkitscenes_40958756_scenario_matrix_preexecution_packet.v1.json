@@ -1,0 +1,78 @@
+{
+  "blockers": [
+    "appearance_reconstruction_not_created",
+    "standardized_capture_qa_scorecard_missing",
+    "qualification_grade_geometry_evidence_missing",
+    "metric_scale_not_independently_validated",
+    "collider_not_compiled_or_qualified",
+    "isaac_not_verified",
+    "qualified_robot_placement_missing",
+    "task_metric_not_preregistered_for_site",
+    "frozen_scenario_pack_not_admitted",
+    "five_policy_site_attempts_not_executed"
+  ],
+  "candidate_set_status": "not_admitted_before_site_preflight",
+  "cells": [],
+  "claim_boundary": {
+    "blueprint_raw_contract_truth": false,
+    "deployment_readiness_proven": false,
+    "physical_success_proven": false,
+    "policy_attempts_executed": false,
+    "policy_ranking_proven": false,
+    "real_arkit_dataset_evidence_bound": true,
+    "scenario_pack_admitted": false
+  },
+  "expected_cell_count": 0,
+  "packet_digest": "sha256:e70c3aed9ca13a06398a2eb17206f1710d281b4f81fd728b8e97da74b3f50b1e",
+  "proposed_scenarios": [
+    {
+      "admission_status": "excluded",
+      "exclusion_rationale": "Nominal execution cannot be admitted until appearance reconstruction, metric scale, collision, placement, engine routing, and a task metric are qualified.",
+      "scenario_id": "nominal"
+    },
+    {
+      "admission_status": "excluded",
+      "exclusion_rationale": "No task-valid camera or robot-base perturbation qualification exists at the current public-dataset proxy evidence ceiling.",
+      "scenario_id": "bounded-placement-or-observation-perturbation"
+    },
+    {
+      "admission_status": "excluded",
+      "exclusion_rationale": "No target-bound visibility or occlusion qualification exists, so an occlusion stress case would exceed the retained evidence ceiling.",
+      "scenario_id": "visibility-occlusion-stress"
+    }
+  ],
+  "run_id": "arkitscenes-40958756-five-policy-scenario-matrix-preflight-20260803",
+  "scenario_pack_status": "not_frozen_no_admitted_scenarios",
+  "schema_version": "new_site_policy_scenario_preexecution_packet.v1",
+  "site_identity": {
+    "capture_profile": "public_dataset_arkitscenes_proxy",
+    "scene_id": "40958756",
+    "source_capture_digest": "sha256:bc493651dcc0950146e49bab91c9303a4d5f49c319c3e0b1048de1344d568e04"
+  },
+  "smallest_missing_measurement": {
+    "code": "appearance_reconstruction_not_created",
+    "instruction": "Create and independently validate a registered appearance reconstruction without changing the retained ARKitScenes proxy truth boundary.",
+    "stage": "reconstruction_registration"
+  },
+  "source_evidence": [
+    {
+      "file_sha256": "sha256:0dda1ea9c645c266430d9595d1f07425c5df34b5d3101643937b75dccfb1bb29",
+      "path": "docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json"
+    },
+    {
+      "file_sha256": "sha256:464084a4b149e7ac3f281046829a5d5523092f607c18bd7a0efff8363232e7ec",
+      "path": "docs/evidence/arkitscenes_observed_surface_40958756_2ad2b7df.json"
+    },
+    {
+      "artifact_digest": "sha256:241b32ca74ea4b2723378052bf3c5e73dbad578a0f98ea5fe980a5ff588ac898",
+      "file_sha256": "sha256:d5131444e8d93172fc7f3313b257630d3770862987b1cb35651656247c443ee8",
+      "path": "docs/evidence/arkitscenes_reconstruction_terminal_report_40958756_27faf763.json"
+    },
+    {
+      "artifact_digest": "sha256:cb96cbfc540ae11d81d036be51e9ef64b6d9c4f764d25612a39c30dd21a94f61",
+      "file_sha256": "sha256:2ee2d496c1807d81c687952611b4c3eb38c7e6ef52789d40de1c33c7264587fb",
+      "path": "docs/evidence/arkitscenes_colmap_training_dataset_40958756_cb96cbfc.json"
+    }
+  ],
+  "status": "abstained_pre_execution"
+}

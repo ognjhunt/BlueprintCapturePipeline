@@ -422,6 +422,81 @@ def test_discover_raw_sidecars_arkit_geometry_ready(tmp_path: Path) -> None:
     assert sidecars["pose_alignment_ok"] is True
 
 
+def test_discover_raw_sidecars_validates_v32_candidate_registry(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "capture_v32_downstream_candidate_manifest.json"
+    )
+    (raw / "downstream_candidate_manifest.json").write_text(
+        fixture.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    _write_json(raw / "hashes.json", {"artifacts": {"walkthrough.mov": "a" * 64}})
+
+    sidecars = m._discover_raw_sidecars(
+        raw_root=raw,
+        raw_prefix_uri="gs://bucket/scenes/site/captures/capture/raw",
+        manifest={
+            "capture_schema_version": "3.2.0",
+            "coordinate_frame_session_id": "cfs_fixture_001",
+            "video_uri": "raw/walkthrough.mov",
+        },
+        source="iphone",
+        source_device="iphone",
+    )
+
+    candidate = sidecars["media_metadata"]["downstream_candidate_manifest"]
+    assert candidate["validation_status"] == "validated"
+    assert candidate["blockers"] == []
+    assert candidate["digest"] == (
+        "sha256:a8f26287f7bc453ec4e8475841b00675d7269c8fb81a0117c30f5075d251e9d4"
+    )
+
+
+def test_discover_raw_sidecars_requires_v32_video_hash_evidence(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "capture_v32_downstream_candidate_manifest.json"
+    )
+    (raw / "downstream_candidate_manifest.json").write_text(
+        fixture.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    sidecars = m._discover_raw_sidecars(
+        raw_root=raw,
+        raw_prefix_uri="gs://bucket/scenes/site/captures/capture/raw",
+        manifest={"capture_schema_version": "3.2.0", "video_uri": "walkthrough.mov"},
+        source="iphone",
+        source_device="iphone",
+    )
+
+    candidate = sidecars["media_metadata"]["downstream_candidate_manifest"]
+    assert candidate["validation_status"] == "blocked"
+    assert candidate["blockers"] == ["capture_v32_source_video_hash_evidence_missing"]
+
+
+def test_discover_raw_sidecars_blocks_missing_v32_candidate_registry(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    sidecars = m._discover_raw_sidecars(
+        raw_root=raw,
+        raw_prefix_uri="gs://bucket/scenes/site/captures/capture/raw",
+        manifest={"capture_schema_version": "3.2.0"},
+        source="iphone",
+        source_device="iphone",
+    )
+    candidate = sidecars["media_metadata"]["downstream_candidate_manifest"]
+    assert candidate["validation_status"] == "blocked"
+    assert candidate["blockers"] == [
+        "capture_v32_candidate_manifest_missing"
+    ]
+
+
 def test_discover_raw_sidecars_arcore_only_and_video_uri_fallback(tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     raw.mkdir()

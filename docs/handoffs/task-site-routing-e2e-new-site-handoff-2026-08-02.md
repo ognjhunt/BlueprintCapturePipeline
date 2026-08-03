@@ -135,11 +135,14 @@ more engine breadth:
    verify the redacted projection without upgrading claims.
 8. Add the new-site E2E fixture/test so future captures follow the same contract
    rather than relying on manual steps.
-9. Run focused tests, then the repo fast lane. Reconcile any quality-ledger
-   digest changes with `scripts/rebind_quality_gap_ledger_digests.py` only after
-   inspecting the exact changed artifacts.
-10. Open a protected-main PR and run exactly one full suite on the final
-    publication SHA, per `AGENTS.md`.
+9. Run the focused tests that cover the changed claims and risks. Run the
+   repository fast lane only if dependency-boundary analysis makes that bounded
+   integration diagnostic relevant. Reconcile any quality-ledger digest changes
+   with `scripts/rebind_quality_gap_ledger_digests.py` only after inspecting the
+   exact changed artifacts.
+10. Open a protected-main PR and let hosted impacted checks gate it. Run the full
+    suite only for an explicit production/deployment promotion, a scheduled
+    integration run, or recorded cross-cutting dependency impact, per `AGENTS.md`.
 
 The important acceptance criterion is not “some simulator produced output.” It
 is: a new raw capture and task flowed through evidence auditing, deterministic

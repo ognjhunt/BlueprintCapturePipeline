@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/new_site_task_evaluation_run.v2.schema.json",
+  "title": "Provider-neutral new-site Task Evaluation Run scenario matrix result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "status",
+    "source_profile_digest",
+    "robot_id",
+    "scenario_pack_id",
+    "scenario_pack_digest",
+    "expected_cell_count",
+    "observed_attempt_count",
+    "cell_results",
+    "paired_scenario_ids",
+    "paired_scenario_count",
+    "excluded_scenarios",
+    "candidate_summaries",
+    "ranking",
+    "winner_candidate_ids",
+    "winner_candidate_id",
+    "terminal_stage",
+    "blockers",
+    "smallest_missing_measurement",
+    "claim_boundary",
+    "run_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "new_site_task_evaluation_run.v2"},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["completed", "abstained"]},
+    "request_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "source_profile_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "robot_id": {"enum": ["franka_panda", "unitree_g1", null]},
+    "scenario_pack_id": {"type": ["string", "null"]},
+    "scenario_pack_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "expected_cell_count": {"type": "integer", "minimum": 0, "maximum": 25},
+    "observed_attempt_count": {"type": "integer", "minimum": 0, "maximum": 25},
+    "cell_results": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {
+        "type": "object",
+        "required": [
+          "cell_id",
+          "candidate_id",
+          "policy_identity_digest",
+          "scenario_id",
+          "scenario_digest",
+          "cell_status",
+          "attempt_digest",
+          "metric_supported",
+          "metric_value",
+          "blockers",
+          "cell_abstention"
+        ],
+        "properties": {
+          "cell_id": {"type": "string", "minLength": 1},
+          "candidate_id": {"type": "string", "minLength": 1},
+          "policy_identity_digest": {"$ref": "#/$defs/digest"},
+          "scenario_id": {"type": "string", "minLength": 1},
+          "scenario_digest": {"$ref": "#/$defs/digest"},
+          "cell_status": {"enum": ["completed", "failed", "missing", "abstained_pre_execution"]},
+          "attempt_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+          "metric_supported": {"type": "boolean"},
+          "metric_value": {"type": ["number", "null"]},
+          "blockers": {"type": "array", "items": {"type": "string"}},
+          "cell_abstention": {"type": ["object", "null"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "paired_scenario_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "paired_scenario_count": {"type": "integer", "minimum": 0, "maximum": 5},
+    "excluded_scenarios": {"type": "array", "items": {"type": "object"}},
+    "candidate_summaries": {"type": "array", "maxItems": 5, "items": {"type": "object"}},
+    "ranking": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": [
+          "rank",
+          "candidate_id",
+          "policy_identity_digest",
+          "aggregate_score",
+          "uncertainty",
+          "paired_scenario_count",
+          "catastrophic_failure_count",
+          "eligible_for_winner"
+        ],
+        "properties": {
+          "rank": {"type": "integer", "minimum": 1, "maximum": 5},
+          "candidate_id": {"type": "string", "minLength": 1},
+          "policy_identity_digest": {"$ref": "#/$defs/digest"},
+          "aggregate_score": {"type": "number"},
+          "uncertainty": {"type": ["object", "null"]},
+          "paired_scenario_count": {"type": "integer", "minimum": 0, "maximum": 5},
+          "catastrophic_failure_count": {"type": "integer", "minimum": 0, "maximum": 5},
+          "eligible_for_winner": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "winner_candidate_ids": {
+      "type": "array",
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "winner_candidate_id": {"type": ["string", "null"]},
+    "terminal_stage": {"type": "string", "minLength": 1},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "smallest_missing_measurement": {"type": ["object", "null"]},
+    "claim_boundary": {
+      "type": "object",
+      "required": [
+        "task_evaluation_run_completed",
+        "learned_policy_attempts_observed",
+        "learned_policy_scenario_ranking_proven",
+        "scripted_controller_matrix_is_learned_policy_matrix",
+        "scenario_generation_authorized_new_claims",
+        "physical_success_proven",
+        "deployment_readiness_proven"
+      ],
+      "properties": {
+        "task_evaluation_run_completed": {"type": "boolean"},
+        "learned_policy_attempts_observed": {"type": "boolean"},
+        "learned_policy_scenario_ranking_proven": {"type": "boolean"},
+        "scripted_controller_matrix_is_learned_policy_matrix": {"const": false},
+        "scenario_generation_authorized_new_claims": {"const": false},
+        "physical_success_proven": {"const": false},
+        "deployment_readiness_proven": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "run_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
