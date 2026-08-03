@@ -1,7 +1,11 @@
 name: Measurement Linux Diagnostic
 
 on:
-  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/measurement-linux-diagnostic.yml"
+      - "src/blueprint_pipeline/measurement_adapter_execution.py"
+      - "tests/test_measurement_adapter_execution.py"
 
 permissions:
   contents: read
