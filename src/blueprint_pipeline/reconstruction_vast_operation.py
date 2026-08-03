@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,11 @@ from typing import Any, Callable, Mapping, Sequence
 import urllib.error
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .canonical_3dgs_transport import (
+    Canonical3DGSTransportError,
+    validate_canonical_3dgs_transport_receipt,
+)
+from .canonical_3dgs_vast_output import validate_canonical_3dgs_vast_output_bundle
 from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec
 from .paid_lane_guard import (
@@ -123,7 +129,53 @@ def _default_output_fetcher(url: str, destination: Path) -> SafeHttpFileTransfer
         raise
 
 
-def _bootstrap_script() -> str:
+def _bootstrap_script(*, canonical_splatfacto: bool = False) -> str:
+    if canonical_splatfacto:
+        return """set -euo pipefail
+python - <<'PY'
+import hashlib, json, os, pathlib, urllib.request, zipfile
+bundle = pathlib.Path('/tmp/canonical_3dgs_transport.zip')
+receipt = pathlib.Path('/tmp/canonical_3dgs_transport_receipt.json')
+for url_name, path in (
+    ('BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL', bundle),
+    ('BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_GET_URL', receipt),
+):
+    with urllib.request.urlopen(os.environ[url_name], timeout=300) as source, path.open('xb') as target:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            target.write(chunk)
+def digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(chunk)
+    return 'sha256:' + value.hexdigest()
+if digest(bundle) != os.environ['BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_DIGEST']:
+    raise SystemExit('canonical_transport_digest_mismatch')
+if digest(receipt) != os.environ['BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_FILE_DIGEST']:
+    raise SystemExit('canonical_receipt_file_digest_mismatch')
+control = json.loads(receipt.read_text())
+wheel_name = control.get('worker_wheel_filename')
+wheel_member = control.get('worker_wheel_archive_path')
+wheel_digest = control.get('worker_wheel_digest')
+if not wheel_name or wheel_member != 'worker/' + wheel_name:
+    raise SystemExit('canonical_worker_wheel_binding_missing')
+wheel_path = pathlib.Path('/tmp') / wheel_name
+with zipfile.ZipFile(bundle) as archive:
+    if wheel_member not in archive.namelist():
+        raise SystemExit('canonical_worker_wheel_missing')
+    wheel_path.write_bytes(archive.read(wheel_member))
+if digest(wheel_path) != wheel_digest:
+    raise SystemExit('canonical_worker_wheel_digest_mismatch')
+pathlib.Path('/tmp/canonical_worker_wheel_path').write_text(str(wheel_path))
+PY
+python -m pip install --no-deps "$(cat /tmp/canonical_worker_wheel_path)"
+export BLUEPRINT_CANONICAL_BUNDLE_PATH=/tmp/canonical_3dgs_transport.zip
+export BLUEPRINT_CANONICAL_RECEIPT_PATH=/tmp/canonical_3dgs_transport_receipt.json
+python -m blueprint_pipeline.canonical_3dgs_vast_bootstrap
+"""
     return """set -euo pipefail
 health=/tmp/blueprint_reconstruction_operation_health.json
 python -m blueprint_pipeline.reconstruction_worker_image_healthcheck --output "$health"
@@ -145,11 +197,19 @@ def _validate_bindings(
     *, bound_request: Mapping[str, Any], bundle_receipt: Mapping[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     request = json.loads(json.dumps(dict(bound_request)))
+    canonical_splatfacto = (
+        request.get("execution_adapter_id") == "canonical_splatfacto_vast_v1"
+    )
     try:
-        receipt = validate_reconstruction_gpu_operation_bundle_receipt(bundle_receipt)
-    except ReconstructionGpuOperationBundleError as exc:
+        receipt = (
+            validate_canonical_3dgs_transport_receipt(bundle_receipt)
+            if canonical_splatfacto
+            else validate_reconstruction_gpu_operation_bundle_receipt(bundle_receipt)
+        )
+    except (ReconstructionGpuOperationBundleError, Canonical3DGSTransportError) as exc:
+        codes = getattr(exc, "codes", (type(exc).__name__,))
         raise ReconstructionVastOperationError(
-            [f"reconstruction_vast_operation_receipt_invalid:{code}" for code in exc.codes]
+            [f"reconstruction_vast_operation_receipt_invalid:{code}" for code in codes]
         ) from exc
     operation = str(request.get("operation") or "")
     blockers: list[str] = []
@@ -157,17 +217,22 @@ def _validate_bindings(
         request, digest_field="bound_request_digest"
     ):
         blockers.append("reconstruction_vast_operation_bound_request_digest_mismatch")
+    expected_runtime_schema = (
+        "canonical_3dgs_vast_runtime_result.v1"
+        if canonical_splatfacto
+        else _EXPECTED_RESULTS.get(operation)
+    )
     if (
         request.get("bound_provider") != "vast"
         or request.get("provider_mutation_authorized") is not True
         or operation not in _EXPECTED_RESULTS
-        or request.get("expected_runtime_result_schema") != _EXPECTED_RESULTS.get(operation)
+        or request.get("expected_runtime_result_schema") != expected_runtime_schema
         or request.get("candidate_may_read_hidden_heldout") is not False
         or request.get("trainer_may_grade_heldout") is not False
         or request.get("proof_effect") != "none"
     ):
         blockers.append("reconstruction_vast_operation_bound_request_not_executable")
-    for request_key, receipt_key in (
+    bindings = [
         ("operation", "operation"),
         ("operation_request_digest", "operation_request_digest"),
         ("operation_input_bundle_digest", "operation_input_bundle_digest"),
@@ -176,7 +241,16 @@ def _validate_bindings(
         ("reconstruction_dataset_digest", "reconstruction_dataset_digest"),
         ("frozen_split_digest", "frozen_split_digest"),
         ("calibration_digest", "calibration_digest"),
-    ):
+    ]
+    if canonical_splatfacto:
+        bindings = [
+            ("operation_request_digest", "canonical_3dgs_execution_plan_digest"),
+            ("operation_input_bundle_digest", "transport_bundle_digest"),
+            ("source_commit_sha", "source_commit_sha"),
+            ("reconstruction_dataset_digest", "colmap_training_dataset_digest"),
+            ("frozen_split_digest", "frozen_split_digest"),
+        ]
+    for request_key, receipt_key in bindings:
         if request.get(request_key) != receipt.get(receipt_key):
             blockers.append(f"reconstruction_vast_operation_{request_key}_mismatch")
     if blockers:
@@ -200,6 +274,7 @@ def run_reconstruction_vast_operation(
     output_validator: Callable[..., tuple[dict[str, Any], dict[str, Any]]] = (
         validate_reconstruction_gpu_operation_output_bundle
     ),
+    allocator_admission: Mapping[str, Any] | None = None,
     sleeper: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.time,
     watchdog_validator: Callable[[Mapping[str, Any], float, int], bool] | None = None,
@@ -212,6 +287,13 @@ def run_reconstruction_vast_operation(
     request, receipt = _validate_bindings(
         bound_request=bound_request, bundle_receipt=bundle_receipt
     )
+    canonical_splatfacto = (
+        request.get("execution_adapter_id") == "canonical_splatfacto_vast_v1"
+    )
+    if canonical_splatfacto and not isinstance(allocator_admission, Mapping):
+        raise ReconstructionVastOperationError(
+            ["canonical_splatfacto_allocator_admission_missing"]
+        )
     try:
         for url in (
             input_bundle_get_url,
@@ -320,10 +402,7 @@ def run_reconstruction_vast_operation(
     invalid_digests: set[str] = set()
     fetch_attempts = 0
     try:
-        spec = RenderLaunchSpec(
-            name=name,
-            image=worker_image,
-            env={
+        worker_environment = {
                 "BLUEPRINT_RECONSTRUCTION_OPERATION": operation,
                 "BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL": input_bundle_get_url,
                 "BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_GET_URL": input_receipt_get_url,
@@ -335,8 +414,24 @@ def run_reconstruction_vast_operation(
                 ),
                 "BLUEPRINT_CONTAINER_IMAGE_DIGEST": worker_image,
                 "BLUEPRINT_SOURCE_COMMIT": source_commit,
-            },
-            bootstrap_argv=["-lc", _bootstrap_script()],
+        }
+        if canonical_splatfacto:
+            assert allocator_admission is not None
+            worker_environment.update(
+                {
+                    "BLUEPRINT_CANONICAL_ALLOCATOR_ADMISSION_B64": base64.b64encode(
+                        (json.dumps(dict(allocator_admission), sort_keys=True, separators=(",", ":")) + "\n").encode()
+                    ).decode(),
+                    "BLUEPRINT_CANONICAL_AUTHORITY_ID": str(request["authority_id"]),
+                    "BLUEPRINT_CANONICAL_MAX_SPEND_USD": str(max_spend),
+                    "BLUEPRINT_CANONICAL_HARD_TTL_SECONDS": str(hard_ttl),
+                }
+            )
+        spec = RenderLaunchSpec(
+            name=name,
+            image=worker_image,
+            env=worker_environment,
+            bootstrap_argv=["-lc", _bootstrap_script(canonical_splatfacto=canonical_splatfacto)],
             entrypoint=["bash"],
             container_disk_gb=max(
                 100, int(preflight.get("container_disk_bytes") or 0) // 1024**3
@@ -416,7 +511,12 @@ def run_reconstruction_vast_operation(
                     )
                     break
                 try:
-                    validated_output_receipt, runtime_result = output_validator(
+                    validator = (
+                        validate_canonical_3dgs_vast_output_bundle
+                        if canonical_splatfacto
+                        else output_validator
+                    )
+                    validated_output_receipt, runtime_result = validator(
                         bundle_path=attempt_path,
                         expected_operation=operation,
                         expected_operation_request_digest=operation_request_digest,

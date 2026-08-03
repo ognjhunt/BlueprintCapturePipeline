@@ -86,6 +86,7 @@ EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "measurement_dlo_lab_canary": "measurement_dlo_lab_cuda_vast_runtime_result.v1",
     "measurement_chrono_dem_canary": "measurement_chrono_dem_cuda_vast_runtime_result.v1",
 }
+CANONICAL_SPLATFACTO_RUNTIME_RESULT_SCHEMA = "canonical_3dgs_vast_runtime_result.v1"
 PROVIDER_NUREC_ISAAC_OPERATION = "provider_nurec_isaac_canary"
 EXTERNAL_SCENE_ISAAC_OPERATION = "external_scene_isaac_canary"
 EXTERNAL_DERIVED_ISAAC_OPERATIONS = {
@@ -95,6 +96,17 @@ EXTERNAL_DERIVED_ISAAC_OPERATIONS = {
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+
+
+def _expected_runtime_result_schema(
+    operation: str, requested_adapter: Any
+) -> str | None:
+    if (
+        operation == "trainer_canary"
+        and requested_adapter == CANONICAL_SPLATFACTO_VAST_ADAPTER_ID
+    ):
+        return CANONICAL_SPLATFACTO_RUNTIME_RESULT_SCHEMA
+    return EXPECTED_RUNTIME_RESULT_SCHEMAS.get(operation)
 
 
 def build_reconstruction_gpu_canary_request(
@@ -176,8 +188,8 @@ def build_reconstruction_gpu_canary_request(
         ):
             if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
                 errors.append(f"reconstruction_gpu_{key}_invalid")
-    if source.get("expected_runtime_result_schema") != (
-        EXPECTED_RUNTIME_RESULT_SCHEMAS.get(operation)
+    if source.get("expected_runtime_result_schema") != _expected_runtime_result_schema(
+        operation, source.get("requested_execution_adapter_id")
     ):
         errors.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
     if source.get("candidate_may_read_hidden_heldout") is not False:
@@ -221,6 +233,22 @@ def build_reconstruction_gpu_canary_request(
         raise ValueError(";".join(sorted(set(errors))))
     source["request_digest"] = canonical_digest(source, digest_field="request_digest")
     return source
+
+
+def select_reconstruction_execution_adapter_id(
+    request_path: str | Path, *, execute: bool
+) -> str | None:
+    """Select only an explicitly requested specialized adapter; never grant authority."""
+
+    if not execute:
+        return None
+    try:
+        source = _read(request_path)
+    except (OSError, TypeError, ValueError):
+        return GENERIC_VAST_OPERATION_ADAPTER_ID
+    if source.get("requested_execution_adapter_id") == CANONICAL_SPLATFACTO_VAST_ADAPTER_ID:
+        return CANONICAL_SPLATFACTO_VAST_ADAPTER_ID
+    return GENERIC_VAST_OPERATION_ADAPTER_ID
 
 
 def collect_reconstruction_vast_preflight(
@@ -373,7 +401,10 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_request_schema_invalid")
     if source.get("operation") not in OPERATIONS:
         blockers.append("reconstruction_gpu_operation_unsupported")
-    expected_result_schema = EXPECTED_RUNTIME_RESULT_SCHEMAS.get(str(source.get("operation") or ""))
+    expected_result_schema = _expected_runtime_result_schema(
+        str(source.get("operation") or ""),
+        source.get("requested_execution_adapter_id"),
+    )
     if source.get("expected_runtime_result_schema") != expected_result_schema:
         blockers.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
     if source.get("capture_profile") not in CAPTURE_PROFILES:
@@ -637,6 +668,9 @@ def build_reconstruction_gpu_canary_admission(
         ),
         "provider_mutation_authorized": bool(
             execute and operation_adapter_qualified and not blockers
+        ),
+        "execution_adapter_id": (
+            execution_adapter_id if operation_adapter_qualified else None
         ),
     }
     bound_request["bound_request_digest"] = canonical_digest(

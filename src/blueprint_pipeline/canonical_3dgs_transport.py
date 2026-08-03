@@ -23,6 +23,7 @@ import zipfile
 from .canonical_3dgs_pipeline import (
     PLAN_SCHEMA,
     Canonical3DGSPipelineError,
+    canonical_3dgs_worker_wheel_package_digest,
     verify_canonical_3dgs_plan_inputs,
 )
 from .decision_evidence_contracts import canonical_digest, canonical_json
@@ -33,6 +34,7 @@ EXTRACTION_SCHEMA = "canonical_3dgs_transport_extraction.v1"
 PLAN_MEMBER = "campaign/canonical_3dgs_execution_plan.json"
 MANIFEST_MEMBER = "campaign/canonical_3dgs_transport_manifest.json"
 DATASET_PREFIX = "campaign/dataset/"
+WHEEL_PREFIX = "worker/"
 MAX_MEMBER_COUNT = 50_000
 MAX_MEMBER_BYTES = 16 * 1024**3
 MAX_TOTAL_BYTES = 200 * 1024**3
@@ -167,6 +169,25 @@ def validate_canonical_3dgs_transport_receipt(
     ):
         if not _digest(receipt.get(key)):
             errors.append(f"transport_receipt_{key}_invalid")
+    wheel_fields = (
+        receipt.get("worker_wheel_filename"),
+        receipt.get("worker_wheel_digest"),
+        receipt.get("worker_wheel_archive_path"),
+        receipt.get("worker_wheel_bytes"),
+    )
+    if any(value is not None for value in wheel_fields):
+        filename, wheel_digest, archive_path, wheel_bytes = wheel_fields
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or not filename.endswith(".whl")
+            or not _digest(wheel_digest)
+            or archive_path != WHEEL_PREFIX + filename
+            or not isinstance(wheel_bytes, int)
+            or isinstance(wheel_bytes, bool)
+            or wheel_bytes <= 0
+        ):
+            errors.append("transport_receipt_worker_wheel_invalid")
     source_commit = str(receipt.get("source_commit_sha") or "")
     if len(source_commit) != 40 or any(character not in "0123456789abcdef" for character in source_commit):
         errors.append("transport_receipt_source_commit_sha_invalid")
@@ -199,6 +220,7 @@ def compile_canonical_3dgs_transport_bundle(
     dataset_root: str | Path,
     bundle_path: str | Path,
     receipt_path: str | Path,
+    worker_wheel_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Compile one byte-reproducible worker transport without uploading it."""
 
@@ -237,8 +259,32 @@ def compile_canonical_3dgs_transport_bundle(
     archive_paths = [row["archive_path"] for _, row in sources]
     if len(archive_paths) != len(set(archive_paths)):
         raise Canonical3DGSTransportError(["transport_input_member_duplicate"])
-    total_bytes = sum(row["bytes"] for _, row in sources)
-    if total_bytes > MAX_TOTAL_BYTES:
+    dataset_total_bytes = sum(row["bytes"] for _, row in sources)
+    if dataset_total_bytes > MAX_TOTAL_BYTES:
+        raise Canonical3DGSTransportError(["transport_input_total_oversized"])
+    wheel: Path | None = None
+    wheel_row: dict[str, Any] = {}
+    if worker_wheel_path is not None:
+        wheel = Path(worker_wheel_path).expanduser().resolve()
+        if (
+            wheel.is_symlink()
+            or not wheel.is_file()
+            or not wheel.name.endswith(".whl")
+            or canonical_3dgs_worker_wheel_package_digest(wheel)
+            != plan["worker_python_package_digest"]
+        ):
+            raise Canonical3DGSTransportError(
+                ["transport_worker_wheel_invalid_or_source_mismatch"]
+            )
+        wheel_row = {
+            "worker_wheel_filename": wheel.name,
+            "worker_wheel_digest": _sha256(wheel),
+            "worker_wheel_archive_path": WHEEL_PREFIX + wheel.name,
+            "worker_wheel_bytes": wheel.stat().st_size,
+        }
+        if wheel.stat().st_size > MAX_MEMBER_BYTES:
+            raise Canonical3DGSTransportError(["transport_worker_wheel_oversized"])
+    if dataset_total_bytes + (wheel.stat().st_size if wheel is not None else 0) > MAX_TOTAL_BYTES:
         raise Canonical3DGSTransportError(["transport_input_total_oversized"])
     plan_digest = str(plan["canonical_3dgs_execution_plan_digest"])
     manifest = {
@@ -255,13 +301,14 @@ def compile_canonical_3dgs_transport_bundle(
         "dataset_root_archive_path": DATASET_PREFIX.rstrip("/"),
         "dataset_members": [row for _, row in sorted(sources, key=lambda item: item[1]["archive_path"])],
         "dataset_member_count": len(sources),
-        "dataset_total_bytes": total_bytes,
+        "dataset_total_bytes": dataset_total_bytes,
         "hidden_heldout_pixels_included": False,
         "raw_secret_values_included": False,
         "provider_allocation_performed": False,
         "paid_execution_authorized_by_bundle": False,
         "proof_effect": "none",
         "claim_ceiling": "candidate_trainer_transport_only",
+        **wheel_row,
     }
     manifest["transport_manifest_digest"] = canonical_digest(
         manifest, digest_field="transport_manifest_digest"
@@ -279,6 +326,10 @@ def compile_canonical_3dgs_transport_bundle(
         with zipfile.ZipFile(temporary_bundle, "w", allowZip64=True) as archive:
             _write_zip_member(archive, MANIFEST_MEMBER, manifest_bytes)
             _write_zip_member(archive, PLAN_MEMBER, plan_bytes)
+            if wheel is not None:
+                _write_zip_member(
+                    archive, str(wheel_row["worker_wheel_archive_path"]), wheel
+                )
             for source, row in sorted(sources, key=lambda item: item[1]["archive_path"]):
                 _write_zip_member(archive, row["archive_path"], source)
         receipt = {
@@ -304,6 +355,8 @@ def _validated_archive_members(
     expected = {MANIFEST_MEMBER, PLAN_MEMBER} | {
         str(row["archive_path"]) for row in receipt["dataset_members"]
     }
+    if receipt.get("worker_wheel_archive_path"):
+        expected.add(str(receipt["worker_wheel_archive_path"]))
     infos = archive.infolist()
     names = [info.filename for info in infos]
     errors: list[str] = []
@@ -381,6 +434,20 @@ def extract_canonical_3dgs_transport_bundle(
                 ["transport_extracted_control_binding_invalid"]
             )
         dataset = temporary / "campaign/dataset"
+        if accepted.get("worker_wheel_archive_path"):
+            wheel = temporary.joinpath(
+                *PurePosixPath(str(accepted["worker_wheel_archive_path"])).parts
+            )
+            if (
+                not wheel.is_file()
+                or wheel.stat().st_size != accepted["worker_wheel_bytes"]
+                or _sha256(wheel) != accepted["worker_wheel_digest"]
+                or canonical_3dgs_worker_wheel_package_digest(wheel)
+                != accepted["worker_python_package_digest"]
+            ):
+                raise Canonical3DGSTransportError(
+                    ["transport_extracted_worker_wheel_invalid"]
+                )
         try:
             verify_canonical_3dgs_plan_inputs(plan=plan, dataset_root=dataset)
         except Canonical3DGSPipelineError as exc:
@@ -431,6 +498,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     package.add_argument("--dataset-root", required=True)
     package.add_argument("--bundle", required=True)
     package.add_argument("--receipt", required=True)
+    package.add_argument("--worker-wheel")
     extract = commands.add_parser("extract")
     extract.add_argument("--bundle", required=True)
     extract.add_argument("--receipt", required=True)
@@ -449,6 +517,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dataset_root=arguments.dataset_root,
                 bundle_path=arguments.bundle,
                 receipt_path=arguments.receipt,
+                worker_wheel_path=arguments.worker_wheel,
             )
         else:
             raise Canonical3DGSTransportError(["transport_receipt_json_invalid"]) from exc
@@ -463,6 +532,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dataset_root=arguments.dataset_root,
                 bundle_path=arguments.bundle,
                 receipt_path=arguments.receipt,
+                worker_wheel_path=arguments.worker_wheel,
             )
         else:
             result = extract_canonical_3dgs_transport_bundle(

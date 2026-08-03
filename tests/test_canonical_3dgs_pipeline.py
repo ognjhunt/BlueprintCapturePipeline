@@ -744,6 +744,44 @@ def test_worker_wheel_digest_rejects_stale_or_extra_python_sources(tmp_path: Pat
     ) != canonical_3dgs_worker_package_digest(package)
 
 
+def test_canonical_transport_can_embed_and_revalidate_exact_worker_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset = _dataset(dataset_root)
+    plan = build_canonical_3dgs_execution_plan(
+        preparation=_preparation(dataset),
+        dataset=dataset,
+        dataset_root=dataset_root,
+        source_commit_sha=SOURCE_COMMIT,
+    )
+    wheel = tmp_path / "blueprint_capture_pipeline-2.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("blueprint_pipeline/__init__.py", "VALUE = 1\n")
+    monkeypatch.setattr(
+        "blueprint_pipeline.canonical_3dgs_transport.canonical_3dgs_worker_wheel_package_digest",
+        lambda _path: plan["worker_python_package_digest"],
+    )
+    bundle = tmp_path / "campaign.zip"
+    receipt = compile_canonical_3dgs_transport_bundle(
+        plan=plan,
+        dataset_root=dataset_root,
+        bundle_path=bundle,
+        receipt_path=tmp_path / "receipt.json",
+        worker_wheel_path=wheel,
+    )
+    assert receipt["worker_wheel_digest"] == _digest(wheel)
+    extraction = extract_canonical_3dgs_transport_bundle(
+        bundle_path=bundle,
+        receipt=receipt,
+        output_root=tmp_path / "worker",
+    )
+    materialized = (
+        tmp_path / "worker" / extraction["transport_bundle_digest"].removeprefix("sha256:")
+    )
+    assert (materialized / receipt["worker_wheel_archive_path"]).read_bytes() == wheel.read_bytes()
+
+
 def test_canonical_transport_rejects_bundle_byte_drift(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
     dataset = _dataset(dataset_root)

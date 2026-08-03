@@ -78,6 +78,7 @@ transport:
 python -m blueprint_pipeline.canonical_3dgs_cli transport package \
   --plan /derived/<capture-id>/canonical_3dgs_execution_plan.json \
   --dataset-root /derived/<capture-id>/trainer_input/colmap_dataset_<digest> \
+  --worker-wheel /derived/<capture-id>/worker-wheel/<exact-worker.whl> \
   --bundle /derived/<capture-id>/canonical_3dgs_transport.zip \
   --receipt /derived/<capture-id>/canonical_3dgs_transport_receipt.json
 ```
@@ -250,6 +251,14 @@ The Splatfacto admission must use trainer version
 `sha256:913d5afd190a9bed736f6a978d472b58654f650d3bc173a07d8a5375d95703c6`.
 The worker derives that digest from the installed package versions and refuses
 any mismatch before `ns-train` starts.
+
+The qualified Vast adapter is `canonical_splatfacto_vast_v1`. Its request must
+name that exact adapter and use an immutable Nerfstudio image such as
+`dromni/nerfstudio@sha256:adcca86d1804a7db71dbe64648a5173cd3c8da850e20cfc1151e7149a60db6a6`.
+It verifies and installs only the wheel embedded in the candidate-only
+transport, returns `canonical_3dgs_vast_output_bundle.v1`, and has the
+controller independently decode the standard 3DGS PLY. A generic Vast adapter
+or bare adapter-qualified boolean cannot authorize this specialized worker.
 
 The worker calculates the remaining admission TTL immediately before the
 trainer subprocess and applies it as a local timeout. The independent watchdog

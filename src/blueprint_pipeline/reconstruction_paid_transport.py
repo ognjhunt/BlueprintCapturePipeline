@@ -22,6 +22,10 @@ from .reconstruction_gpu_operation_bundle import (
     ReconstructionGpuOperationBundleError,
     validate_reconstruction_gpu_operation_bundle_receipt,
 )
+from .canonical_3dgs_transport import (
+    Canonical3DGSTransportError,
+    validate_canonical_3dgs_transport_receipt,
+)
 from .reconstruction_isaac_worker_bundle import (
     IsaacWorkerBundleError,
     validate_isaac_verification_worker_bundle_receipt,
@@ -153,6 +157,8 @@ def prepare_reconstruction_paid_transport(
                     receipt = validate_measurement_dlo_lab_input_bundle_receipt(raw)
                 elif operation == "measurement_chrono_dem_canary":
                     receipt = validate_measurement_chrono_dem_input_bundle_receipt(raw)
+                elif admission.get("execution_adapter_id") == "canonical_splatfacto_vast_v1":
+                    receipt = validate_canonical_3dgs_transport_receipt(raw)
                 else:
                     receipt = validate_reconstruction_gpu_operation_bundle_receipt(raw)
             except (
@@ -164,6 +170,7 @@ def prepare_reconstruction_paid_transport(
                 MeasurementIsaacVastBundleError,
                 MeasurementDloLabVastBundleError,
                 MeasurementChronoDemVastBundleError,
+                Canonical3DGSTransportError,
             ):
                 blockers.append("reconstruction_operation_bundle_receipt_invalid")
             else:
@@ -187,6 +194,13 @@ def prepare_reconstruction_paid_transport(
                         "measurement_dlo_lab_canary",
                         "measurement_chrono_dem_canary",
                     }
+                    else (
+                        ("operation_request_digest", "canonical_3dgs_execution_plan_digest"),
+                        ("operation_input_bundle_digest", "transport_bundle_digest"),
+                        ("source_commit_sha", "source_commit_sha"),
+                    )
+                    if admission.get("execution_adapter_id")
+                    == "canonical_splatfacto_vast_v1"
                     else (
                         ("operation", "operation"),
                         ("operation_request_digest", "operation_request_digest"),
