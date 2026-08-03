@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import paid_resource_cli_support
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_oscar_infrastructure_admission import (
     MIN_BUILD_FREE_BYTES,
@@ -56,6 +57,21 @@ def test_detached_cpu_build_supervisor_ignores_only_sigint(
     )
 
     assert allocator._configure_detached_supervisor_signal_policy("cpu-build-run") is True
+    assert calls == [(signal.SIGINT, signal.SIG_IGN)]
+
+
+def test_detached_gpu_canary_supervisor_ignores_only_sigint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, object]] = []
+    monkeypatch.setenv(paid_resource_cli_support.DETACHED_GPU_CANARY_SUPERVISOR_ENV, "1")
+    monkeypatch.setattr(
+        allocator.signal,
+        "signal",
+        lambda signum, handler: calls.append((signum, handler)),
+    )
+
+    assert allocator._configure_detached_supervisor_signal_policy("gpu-canary") is True
     assert calls == [(signal.SIGINT, signal.SIG_IGN)]
 
 
