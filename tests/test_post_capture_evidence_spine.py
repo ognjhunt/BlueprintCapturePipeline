@@ -337,6 +337,7 @@ def test_canonical_registered_appearance_is_adapted_without_claim_upgrade(
             "status": "qualified",
             "source_capture_digest": source["source_capture_digest"],
             "appearance_asset_digest": _sha("6"),
+            "world_frame": "arkit_world",
             "method_id": "independent-correspondence-measurement-v1",
             "transform_appearance_to_site": [
                 [1.0, 0.0, 0.0, 0.0],
@@ -359,10 +360,21 @@ def test_canonical_registered_appearance_is_adapted_without_claim_upgrade(
             "appearance_format": "native_3dgs",
             "appearance_asset_digest": _sha("6"),
             "full_resolution_appearance_preserved": True,
+            "geometry_asset_digest": geometry["geometry_asset_digest"],
+            "world_frame": "arkit_world",
             "registration_status": "qualified",
+            "registration_transform_appearance_to_site": measurement[
+                "transform_appearance_to_site"
+            ],
+            "registration_residual_summary": measurement["residual_summary"],
+            "heldout_appearance_status": "qualified",
             "scene_registration_digest": measurement[
                 "canonical_3dgs_registration_measurement_digest"
             ],
+            "metric_geometry_proven": False,
+            "collision_geometry_validated": False,
+            "candidate_may_self_authorize": False,
+            "claim_ceiling": "registered_appearance_only",
         },
         "canonical_registered_appearance_digest",
     )
@@ -412,6 +424,9 @@ def test_teleport_receipts_bind_the_exact_native_ply_without_qualification(
             "source_capture_digest": source["source_capture_digest"],
             "provider_execution_receipt_digest": _sha("d"),
             "provider_native_output_preserved_unchanged": True,
+            "provider_success_is_blueprint_qualification": False,
+            "metric_scale_proven": False,
+            "collision_geometry_validated": False,
             "imported_assets": [
                 {
                     "artifact_kind": "splat_ply",
@@ -483,6 +498,10 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
         {
             "schema_version": "task_outcome_metric_spec.v1",
             "metric_id": "inspection-distance",
+            "units": "meters",
+            "direction": "minimize",
+            "fixed_before_execution": True,
+            "frozen_at": "2026-08-03T00:00:00Z",
         },
         "metric_spec_digest",
     )
@@ -491,6 +510,13 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
             {
                 "schema_version": "learned_policy_candidate_identity.v1",
                 "candidate_id": f"policy-{index}",
+                "candidate_kind": "learned_policy",
+                "checkpoint_digest": _sha(str(index)),
+                "endpoint_identity_digest": None,
+                "runtime_digest": _sha("a"),
+                "observation_schema_digest": _sha("b"),
+                "action_schema_digest": _sha("c"),
+                "observation_sequence_spec_digest": _sha("d"),
             },
             "policy_identity_digest",
         )
@@ -517,6 +543,13 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
     assert authorization["policy_execution_authorized"] is True
     assert authorization["physical_robot_execution_authorized"] is False
     assert authorization["agent_or_provider_self_authorized"] is False
+    spine_schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/post_capture_evidence_spine.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(authorization, spine_schema)
 
     self_authorizing_route = dict(route)
     self_authorizing_route["selected_route"] = {

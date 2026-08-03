@@ -14,6 +14,7 @@
     {"$ref": "#/$defs/qualifiedPlacement"},
     {"$ref": "#/$defs/sceneComposition"},
     {"$ref": "#/$defs/routingInputs"},
+    {"$ref": "#/$defs/executionAuthorization"},
     {"$ref": "#/$defs/authorizationDecision"},
     {"$ref": "#/$defs/runManifest"}
   ],
@@ -411,6 +412,36 @@
         "authorization_decision_digest": {"$ref": "#/$defs/digest"}
       },
       "additionalProperties": true
+    },
+    "executionAuthorization": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "policy_execution_authorized",
+        "physical_robot_execution_authorized",
+        "routing_decision_digest",
+        "placement_digest",
+        "scene_composition_digest",
+        "metric_spec_digest",
+        "candidate_set_digest",
+        "authorizer_identity",
+        "agent_or_provider_self_authorized",
+        "authorization_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "new_site_policy_execution_authorization.v1"},
+        "policy_execution_authorized": {"const": true},
+        "physical_robot_execution_authorized": {"const": false},
+        "routing_decision_digest": {"$ref": "#/$defs/digest"},
+        "placement_digest": {"$ref": "#/$defs/digest"},
+        "scene_composition_digest": {"$ref": "#/$defs/digest"},
+        "metric_spec_digest": {"$ref": "#/$defs/digest"},
+        "candidate_set_digest": {"$ref": "#/$defs/digest"},
+        "authorizer_identity": {"type": "string", "minLength": 1},
+        "agent_or_provider_self_authorized": {"const": false},
+        "authorization_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
     },
     "routingInputs": {
       "type": "object",

@@ -33,6 +33,8 @@ from .new_site_task_evaluation_run import (
     REQUEST_SCHEMA_VERSION as NEW_SITE_REQUEST_SCHEMA,
     compile_new_site_task_evaluation_run,
     select_robot_for_target,
+    validate_policy_candidates,
+    validate_task_metric,
 )
 from .rendered_scene_task_target_orchestrator import (
     run_rendered_scene_task_target_pipeline,
@@ -404,6 +406,10 @@ def build_native_3dgs_candidate_from_canonical(
         registered.get("appearance_format") != "native_3dgs"
         or registered.get("full_resolution_appearance_preserved") is not True
         or not _digest(registered.get("appearance_asset_digest"))
+        or registered.get("metric_geometry_proven") is not False
+        or registered.get("collision_geometry_validated") is not False
+        or registered.get("candidate_may_self_authorize") is not False
+        or registered.get("claim_ceiling") != "registered_appearance_only"
     ):
         raise PostCaptureEvidenceError(["canonical_registered_appearance_invalid"])
     return build_native_3dgs_candidate(
@@ -451,6 +457,11 @@ def build_native_3dgs_candidate_from_teleport(
         != imported.get("provider_execution_receipt_digest")
         or imported.get("provider_identity") != "teleport"
         or imported.get("provider_native_output_preserved_unchanged") is not True
+        or imported.get("provider_success_is_blueprint_qualification") is not False
+        or imported.get("metric_scale_proven") is not False
+        or imported.get("collision_geometry_validated") is not False
+        or run.get("metric_scale_proven") is not False
+        or run.get("collision_geometry_validated") is not False
         or len(splats) != 1
         or not _digest(splats[0].get("digest"))
     ):
@@ -521,8 +532,17 @@ def build_registration_qualification_from_canonical(
             != registered.get("appearance_asset_digest"),
             appearance.get("appearance_asset_digest")
             != measurement.get("appearance_asset_digest"),
+            geometry.get("geometry_asset_digest")
+            != registered.get("geometry_asset_digest"),
             registered.get("scene_registration_digest")
             != measurement.get("canonical_3dgs_registration_measurement_digest"),
+            registered.get("world_frame") != measurement.get("world_frame"),
+            dict(geometry.get("coordinate_frame_declaration") or {}).get("frame")
+            != measurement.get("world_frame"),
+            registered.get("registration_transform_appearance_to_site")
+            != measurement.get("transform_appearance_to_site"),
+            registered.get("registration_residual_summary")
+            != measurement.get("residual_summary"),
         )
     ):
         raise PostCaptureEvidenceError(["canonical_registration_exact_join_mismatch"])
@@ -561,6 +581,7 @@ def build_registration_qualification_from_canonical(
     qualified = (
         registered.get("status") == "qualified"
         and registered.get("registration_status") == "qualified"
+        and registered.get("heldout_appearance_status") == "qualified"
         and measurement.get("status") == "qualified"
         and measurement.get("registration_gate_passed") is True
     )
@@ -1254,7 +1275,12 @@ def build_policy_execution_decision(
         digest_field="scene_composition_digest",
         code="scene_composition",
     )
-    metric = _clone(dict(task_metric))
+    try:
+        metric = validate_task_metric(task_metric)
+    except (TypeError, ValueError) as exc:
+        raise PostCaptureEvidenceError(
+            ["policy_authorization_metric_invalid"]
+        ) from exc
     candidates = [_clone(dict(row)) for row in policy_candidates]
     authorizer = str(authorizer_identity).strip()
     selected_method_ids = {
@@ -1295,13 +1321,16 @@ def build_policy_execution_decision(
             or route.get(field) != canonical_digest(route, digest_field=field)
         ):
             raise PostCaptureEvidenceError([f"policy_authorization_{field}_invalid"])
-    if not _digest(metric.get("metric_spec_digest")) or metric.get(
-        "metric_spec_digest"
-    ) != canonical_digest(metric, digest_field="metric_spec_digest"):
-        raise PostCaptureEvidenceError(["policy_authorization_metric_invalid"])
-    identity_digests = [row.get("policy_identity_digest") for row in candidates]
-    if any(not _digest(value) for value in identity_digests):
-        raise PostCaptureEvidenceError(["policy_authorization_candidate_invalid"])
+    if missing is None:
+        try:
+            candidates = validate_policy_candidates(candidates)
+        except (TypeError, ValueError) as exc:
+            raise PostCaptureEvidenceError(
+                ["policy_authorization_candidate_invalid"]
+            ) from exc
+        identity_digests = [row["policy_identity_digest"] for row in candidates]
+    else:
+        identity_digests = [canonical_digest(row) for row in candidates]
     candidate_set_digest = canonical_digest(
         {"policy_identity_digests": sorted(str(value) for value in identity_digests)}
     )

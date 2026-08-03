@@ -526,6 +526,7 @@ def _request(*, missing_metric_scale: bool = False) -> dict:
     )
     metric = _metric()
     candidates = [_candidate(index) for index in range(1, 6)]
+    composition = _composition()
     authorization = _finalize(
         {
             "schema_version": "new_site_policy_execution_authorization.v1",
@@ -533,6 +534,7 @@ def _request(*, missing_metric_scale: bool = False) -> dict:
             "physical_robot_execution_authorized": False,
             "routing_decision_digest": route["routing_decision_digest"],
             "placement_digest": placement["placement_digest"],
+            "scene_composition_digest": composition["scene_composition_digest"],
             "metric_spec_digest": metric["metric_spec_digest"],
             "candidate_set_digest": canonical_digest(
                 {
@@ -561,7 +563,7 @@ def _request(*, missing_metric_scale: bool = False) -> dict:
         "reconstruction": reconstruction,
         "target_orchestration": target,
         "robot_placement": placement,
-        "scene_composition": _composition(),
+        "scene_composition": composition,
         "routing_inputs": routing,
         "policy_evaluation": {
             "task_metric": metric,
@@ -996,6 +998,19 @@ def test_execution_authorization_binds_exact_five_candidate_set() -> None:
         compile_new_site_task_evaluation_run(request)
 
     assert "policy_authorization_candidate_set_mismatch" in caught.value.codes
+
+
+def test_execution_authorization_binds_exact_scene_composition() -> None:
+    request = _request()
+    authorization = request["execution_authorization"]
+    authorization["scene_composition_digest"] = _sha("e")
+    _finalize(authorization, "authorization_digest")
+    _rebind_request(request)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "policy_authorization_scene_composition_mismatch" in caught.value.codes
 
 
 def test_frozen_metric_must_precede_every_attempt() -> None:

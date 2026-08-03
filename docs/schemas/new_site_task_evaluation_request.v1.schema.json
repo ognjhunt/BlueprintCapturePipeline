@@ -108,6 +108,7 @@
         "physical_robot_execution_authorized",
         "routing_decision_digest",
         "placement_digest",
+        "scene_composition_digest",
         "metric_spec_digest",
         "candidate_set_digest",
         "authorization_digest"
@@ -118,6 +119,7 @@
         "physical_robot_execution_authorized": {"const": false},
         "routing_decision_digest": {"$ref": "#/$defs/digest"},
         "placement_digest": {"$ref": "#/$defs/digest"},
+        "scene_composition_digest": {"$ref": "#/$defs/digest"},
         "metric_spec_digest": {"$ref": "#/$defs/digest"},
         "candidate_set_digest": {"$ref": "#/$defs/digest"},
         "authorization_digest": {"$ref": "#/$defs/digest"}
