@@ -106,7 +106,6 @@ def test_chrono_descriptor_is_exact_external_conda_without_false_pypi_probe() ->
     assert descriptor["probe_contract"]["executables"] == []
 
 
-@pytest.mark.external_runtime
 @pytest.mark.slow
 def test_chrono_worker_executes_both_nsc_cases_with_exact_replay() -> None:
     python = _chrono_python()

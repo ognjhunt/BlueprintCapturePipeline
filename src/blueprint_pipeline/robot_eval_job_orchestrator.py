@@ -9787,6 +9787,61 @@ def _write_inbox_quarantine_record(
     return {"path": str(record_path), **record}, marker
 
 
+JOB_TRANSPORT_SHADOW_ENV = "BLUEPRINT_JOB_TRANSPORT_SHADOW"
+JOB_TRANSPORT_SHADOW_TOPIC_ENV = "BLUEPRINT_JOB_TRANSPORT_SHADOW_TOPIC"
+JOB_TRANSPORT_SHADOW_DIRNAME = ".transport_shadow"
+
+
+def _maybe_shadow_publish_job_transport(
+    *,
+    request: Mapping[str, Any],
+    job_id: str,
+    queue_root: Path,
+) -> Dict[str, Any]:
+    """Strangler-step shadow publish of the admitted job's transport envelope.
+
+    Default off. When enabled, publishes delivery-parity evidence to Pub/Sub
+    (or the local evidence ledger when no topic is configured) WITHOUT
+    changing execution: the filesystem inbox remains the only execution
+    authority, and any failure here is contained so admission never breaks.
+    """
+
+    if str(os.getenv(JOB_TRANSPORT_SHADOW_ENV) or "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return {"status": "disabled"}
+    try:
+        from .job_transport_envelope import build_job_envelope
+        from .job_transport_shadow import (
+            InMemoryEnvelopePublisher,
+            PubsubEnvelopePublisher,
+            shadow_publish_job_envelope,
+        )
+
+        envelope = build_job_envelope(
+            job_request=request,
+            job_id=job_id,
+            source_lane="robot_eval_inbox",
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        topic = str(os.getenv(JOB_TRANSPORT_SHADOW_TOPIC_ENV) or "").strip()
+        publisher = (
+            PubsubEnvelopePublisher(topic=topic)
+            if topic
+            else InMemoryEnvelopePublisher()
+        )
+        return shadow_publish_job_envelope(
+            envelope=envelope,
+            publisher=publisher,
+            evidence_dir=Path(queue_root) / JOB_TRANSPORT_SHADOW_DIRNAME,
+        )
+    except Exception as exc:  # noqa: BLE001 - shadow transport must not break intake
+        return {"status": "shadow_failed", "error": f"{type(exc).__name__}:{exc}"}
+
+
 @_exclusive_inbox_run
 def run_robot_eval_job_request_inbox(
     *,
@@ -9975,6 +10030,9 @@ def run_robot_eval_job_request_inbox(
             queued_dir = job_queue_root / job_id
             ensure_dir(queued_dir)
             write_json(queued_dir / "job_request.json", request)
+            _maybe_shadow_publish_job_transport(
+                request=request, job_id=job_id, queue_root=job_queue_root
+            )
             result = execute_robot_eval_request_as_evaluation_run(
                 capture_root=request_context.capture_root,
                 job_request=request,

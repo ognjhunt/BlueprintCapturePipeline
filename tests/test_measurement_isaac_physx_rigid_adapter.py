@@ -143,7 +143,6 @@ def test_isaac_worker_rejects_solver_and_identity_tampering_before_import() -> N
     assert result["failure_codes"] == ["isaac_physx_rigid_implementation_id_mismatch"]
 
 
-@pytest.mark.external_runtime
 @pytest.mark.slow
 def test_isaac_external_runtime_executes_shared_cases() -> None:
     launcher = _isaac_launcher()

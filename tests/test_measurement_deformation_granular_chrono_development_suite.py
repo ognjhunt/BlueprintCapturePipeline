@@ -61,7 +61,6 @@ def test_chrono_granular_corpus_and_plan_are_schema_checked() -> None:
     jsonschema.validate(planned, json.loads(SUITE_SCHEMA_PATH.read_text(encoding="utf-8")))
 
 
-@pytest.mark.external_runtime
 @pytest.mark.slow
 def test_chrono_granular_suite_executes_bounded_deterministic_corpus() -> None:
     completed = run_capture_to_deformation_granular_chrono_development_suite(

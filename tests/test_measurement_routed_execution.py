@@ -397,7 +397,6 @@ def _drake_execution_binding(worker_python: Path) -> dict:
     }
 
 
-@pytest.mark.external_runtime
 @pytest.mark.slow
 def test_routed_drake_worker_produces_first_plan_bound_cross_engine_report() -> None:
     raw = os.environ.get("BLUEPRINT_DRAKE_PYTHON", "").strip()

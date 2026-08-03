@@ -20,6 +20,7 @@ PAID_RESOURCE_CLASSES = frozenset(
         "runpod_serverless_active_worker",
         "runpod_live_execution",
         "runpod_wam_async",
+        "skypilot_vast_pilot",
         "unitree_unifolm_runpod",
         "vast_provider_adapter",
         "vast_wam_async",

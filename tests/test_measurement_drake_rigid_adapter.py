@@ -133,7 +133,6 @@ def test_drake_descriptor_tracks_current_pip_surface_without_retired_visualizer(
     assert probe["status"] == ("available" if installed == DRAKE_VERSION else "unavailable")
 
 
-@pytest.mark.external_runtime
 def test_drake_external_runtime_has_exact_version() -> None:
     python = _drake_python()
     completed = subprocess.run(
@@ -151,7 +150,6 @@ def test_drake_external_runtime_has_exact_version() -> None:
     assert completed.stdout.strip() == DRAKE_VERSION
 
 
-@pytest.mark.external_runtime
 def test_drake_worker_executes_shared_cases_through_external_subprocess() -> None:
     python = _drake_python()
     bundles = [

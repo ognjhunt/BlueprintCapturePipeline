@@ -308,7 +308,7 @@ def test_launch_instance_submits_with_explicit_gates_and_redacts(
         def read(self) -> bytes:
             return b'{"data":{"instance_ids":["lambda-instance-1"]}}'
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["url"] = request.full_url
         captured["timeout"] = timeout
         captured["body"] = json.loads(request.data.decode("utf-8"))
@@ -318,7 +318,9 @@ def test_launch_instance_submits_with_explicit_gates_and_redacts(
         )
         return FakeResponse()
 
-    monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_lambda_provider_adapter(
         provider_launch_request_path=request_path,
@@ -409,7 +411,7 @@ def test_terminate_instances_writes_teardown_manifest(
         def read(self) -> bytes:
             return self._body
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["urls"].append(request.full_url)  # type: ignore[union-attr]
         if request.full_url.endswith("/instance-operations/terminate"):
             captured["body"] = json.loads(request.data.decode("utf-8"))
@@ -419,7 +421,9 @@ def test_terminate_instances_writes_teardown_manifest(
         assert request.full_url.endswith("/instances")
         return FakeResponse(b'{"data":{"instances":[]}}')
 
-    monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_lambda_provider_adapter(
         provider_launch_request_path=request_path,
@@ -501,7 +505,7 @@ def test_terminate_instances_stays_unverified_when_instance_is_still_active(
         def read(self) -> bytes:
             return self._body
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         if request.full_url.endswith("/instance-operations/terminate"):
             return FakeResponse(
                 b'{"data":{"terminated_instances":[{"id":"lambda-instance-1","status":"terminating"}]}}'
@@ -511,7 +515,9 @@ def test_terminate_instances_stays_unverified_when_instance_is_still_active(
             b'{"data":{"instances":[{"id":"lambda-instance-1","status":"active"}]}}'
         )
 
-    monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_lambda_provider_adapter(
         provider_launch_request_path=request_path,

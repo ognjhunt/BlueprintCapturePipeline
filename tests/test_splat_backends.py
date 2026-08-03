@@ -44,6 +44,7 @@ def test_list_by_kind() -> None:
     assert {backend["name"] for backend in list_backends("enhancer")} == {
         "artifixer",
         "difix3d",
+        "fixer",
         "harmonizer",
     }
 
@@ -94,6 +95,7 @@ def test_artifixer_installed_runtime_still_requires_exact_pins(
     ("backend_name", "expected_blocker"),
     [
         ("difix3d", "source_and_model_license_noncommercial"),
+        ("fixer", "checkpoint_digest_not_pinned_in_worker"),
         ("harmonizer", "checkpoint_digest_not_pinned_in_worker"),
     ],
 )

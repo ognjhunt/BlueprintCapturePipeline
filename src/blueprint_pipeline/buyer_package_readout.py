@@ -771,6 +771,9 @@ def build_buyer_package_readout(
         generated_media_included=generated_media_included,
         generated_media_is_raw_capture_evidence=False,
         raw_capture_is_authoritative=True,
+        c2pa_edge_stamping=(
+            _mapping(manifest.get("c2pa_edge_stamping")) or {"status": "not_attempted"}
+        ),
     )
 
     integrity_blockers: list[str] = []

@@ -40,7 +40,7 @@ def _request(method_id: str = "artifixer") -> dict:
     )
 
 
-@pytest.mark.parametrize("method_id", ["artifixer", "difix3d", "harmonizer"])
+@pytest.mark.parametrize("method_id", ["artifixer", "difix3d", "fixer", "harmonizer"])
 def test_current_generated_repair_candidates_emit_deterministic_rejection(
     method_id: str,
 ) -> None:
