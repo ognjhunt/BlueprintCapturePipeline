@@ -132,7 +132,7 @@ def _default_output_fetcher(url: str, destination: Path) -> SafeHttpFileTransfer
 def _bootstrap_script(*, canonical_splatfacto: bool = False) -> str:
     if canonical_splatfacto:
         return """set -euo pipefail
-python - <<'PY'
+python3 - <<'PY'
 import hashlib, json, os, pathlib, urllib.request, zipfile
 bundle = pathlib.Path('/tmp/canonical_3dgs_transport.zip')
 receipt = pathlib.Path('/tmp/canonical_3dgs_transport_receipt.json')
@@ -171,10 +171,10 @@ if digest(wheel_path) != wheel_digest:
     raise SystemExit('canonical_worker_wheel_digest_mismatch')
 pathlib.Path('/tmp/canonical_worker_wheel_path').write_text(str(wheel_path))
 PY
-python -m pip install --no-deps "$(cat /tmp/canonical_worker_wheel_path)"
+python3 -m pip install --no-deps "$(cat /tmp/canonical_worker_wheel_path)"
 export BLUEPRINT_CANONICAL_BUNDLE_PATH=/tmp/canonical_3dgs_transport.zip
 export BLUEPRINT_CANONICAL_RECEIPT_PATH=/tmp/canonical_3dgs_transport_receipt.json
-python -m blueprint_pipeline.canonical_3dgs_vast_bootstrap
+python3 -m blueprint_pipeline.canonical_3dgs_vast_bootstrap
 """
     return """set -euo pipefail
 health=/tmp/blueprint_reconstruction_operation_health.json

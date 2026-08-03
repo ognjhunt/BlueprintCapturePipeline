@@ -10,6 +10,7 @@ import jsonschema
 import pytest
 
 from blueprint_pipeline import canonical_3dgs_vast_output as vast_output
+from blueprint_pipeline import reconstruction_vast_operation as vast_operation
 from blueprint_pipeline.canonical_3dgs_vast_output import (
     MANIFEST_MEMBER,
     compile_canonical_3dgs_vast_output_bundle,
@@ -91,6 +92,16 @@ def _preflight() -> dict:
     }
     value["preflight_digest"] = canonical_digest(value, digest_field="preflight_digest")
     return value
+
+
+def test_canonical_vast_bootstrap_uses_container_python3_entrypoint() -> None:
+    script = vast_operation._bootstrap_script(canonical_splatfacto=True)
+
+    assert "python3 - <<'PY'" in script
+    assert "python3 -m pip install" in script
+    assert "python3 -m blueprint_pipeline.canonical_3dgs_vast_bootstrap" in script
+    assert "\npython -" not in script
+    assert "\npython -m" not in script
 
 
 def test_specialized_request_cannot_be_qualified_by_generic_boolean() -> None:
