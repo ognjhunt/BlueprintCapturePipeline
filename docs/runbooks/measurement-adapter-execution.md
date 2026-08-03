@@ -262,7 +262,25 @@ python -m blueprint_pipeline.measurement_chrono_dem_vast_bundle \
 ```
 
 The compiler refuses a dirty checkout and records no spend authority. Paid
-execution must use `python -m blueprint_pipeline.paid_resource_allocator
+transport must stage that bundle with a typed JSON output contract:
+
+```bash
+python -m blueprint_pipeline.wam_provider_object_store \
+  --job-dir /new/private/staging-directory \
+  --bundle-path /path/to/chrono-dem-input.zip \
+  --key-prefix blueprint/measurement-chrono-dem/<attempt-id> \
+  --output-content-type application/json \
+  --expiration-seconds <bounded-expiry> \
+  <file-backed-object-store-credential-arguments>
+```
+
+The staging manifest must prove a signed JSON PUT/GET/delete round trip, bind
+the bundle digest and the exact three 0600 URL files, and use a `.json` output
+key. The canonical allocator requires that manifest through
+`--measurement-chrono-dem-object-store-staging-manifest`; a generic ZIP-signed
+output URL fails closed before provider mutation.
+
+Paid execution must use `python -m blueprint_pipeline.paid_resource_allocator
 gpu-canary` with operation `measurement_chrono_dem_canary`, the exact runtime
 release, bundle receipt, sensitive URL files, a live independent watchdog using
 prefix `blueprint-measurement-chrono-dem-`, retry cap zero, and explicit spend

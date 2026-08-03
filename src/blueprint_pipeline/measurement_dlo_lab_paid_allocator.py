@@ -18,6 +18,7 @@ def add_measurement_dlo_lab_allocator_arguments(parser: Any) -> None:
 def add_measurement_chrono_dem_allocator_arguments(parser: Any) -> None:
     parser.add_argument("--measurement-chrono-dem-runtime-release")
     parser.add_argument("--measurement-chrono-dem-bundle-receipt")
+    parser.add_argument("--measurement-chrono-dem-object-store-staging-manifest")
 
 
 def add_measurement_allocator_arguments(parser: Any) -> None:

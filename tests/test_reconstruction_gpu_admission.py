@@ -914,6 +914,36 @@ def test_allocator_routes_measurement_chrono_dem_to_guarded_vast_lifecycle(tmp_p
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     bound_path.write_text(json.dumps({"request_digest": D1}), encoding="utf-8")
     preflight_path.write_text(json.dumps({"provider": "vast"}), encoding="utf-8")
+    url_paths = {
+        "provider_bundle_url_file": str(tmp_path / "input-url"),
+        "provider_output_put_url_file": str(tmp_path / "put-url"),
+        "provider_output_get_url_file": str(tmp_path / "get-url"),
+    }
+    staging_path = tmp_path / "object-store-staging.json"
+    staging_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "wam_provider_object_store_staging.v1",
+                "status": "completed",
+                "bundle_sha256": D3.removeprefix("sha256:"),
+                "output_key": "blueprint/test/runtime-output.json",
+                "object_store": {"output_content_type": "application/json"},
+                "signed_output_round_trip": {
+                    "status": "passed",
+                    "blockers": [],
+                    "put": {"status": "passed"},
+                    "get": {"status": "passed"},
+                    "cleanup": {"status": "passed"},
+                },
+                **{
+                    key: {"path": path, "present": True, "mode_is_0600": True}
+                    for key, path in url_paths.items()
+                },
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission)
     monkeypatch.setattr(
         "blueprint_pipeline.reconstruction_paid_transport."
@@ -966,10 +996,9 @@ def test_allocator_routes_measurement_chrono_dem_to_guarded_vast_lifecycle(tmp_p
         reconstruction_retry_cap=0,
         reconstruction_authority_id="user-authorized",
         execute=True,
-        provider_output_put_url_file=str(tmp_path / "put-url"),
-        provider_output_get_url_file=str(tmp_path / "get-url"),
-        provider_bundle_url_file=str(tmp_path / "input-url"),
+        **url_paths,
         measurement_chrono_dem_bundle_receipt=str(receipt_path),
+        measurement_chrono_dem_object_store_staging_manifest=str(staging_path),
     )
     result = allocator._run_reconstruction_gpu_canary(args, checkout_commit=SHA)
     assert result["status"] == "completed"
@@ -977,3 +1006,10 @@ def test_allocator_routes_measurement_chrono_dem_to_guarded_vast_lifecycle(tmp_p
     assert calls[0]["bundle_receipt"] == receipt
     assert calls[0]["job_dir"].name == "measurement_chrono_dem_vast_canary"
     assert calls[0]["input_bundle_get_url"].endswith("provider_bundle_url")
+
+    calls.clear()
+    args.measurement_chrono_dem_object_store_staging_manifest = None
+    blocked = allocator._run_reconstruction_gpu_canary(args, checkout_commit=SHA)
+    assert blocked["status"] == "blocked"
+    assert "measurement_chrono_dem_transport_manifest_missing" in blocked["blockers"]
+    assert calls == []
