@@ -20,11 +20,16 @@ from blueprint_pipeline.isaac_worker_image_manifest import (
     SCHEMA_VERSION as ISAAC_IMAGE_MANIFEST_SCHEMA_VERSION,
 )
 from blueprint_pipeline.nvidia_warehouse_native_camera_gpu_admission import (
+    CONTROL_PROBE_KIND,
     RELEASE_SCHEMA_VERSION,
     build_native_camera_gpu_admission,
     build_native_camera_gpu_provider_request,
     build_native_camera_gpu_release_evidence,
     validate_native_camera_gpu_output_archive,
+)
+from blueprint_pipeline.nvidia_warehouse_native_control_canary import (
+    CLAIM_LABEL as CONTROL_CLAIM_LABEL,
+    RESULT_SCHEMA_VERSION as CONTROL_RESULT_SCHEMA_VERSION,
 )
 from blueprint_pipeline.nvidia_warehouse_native_camera_gpu_bundle import (
     BUNDLE_SCHEMA_VERSION,
@@ -161,6 +166,120 @@ def test_native_camera_gpu_admission_passes_exact_label_free_contract() -> None:
     assert result["status"] == "admitted"
     assert result["limits"]["one_resource"] is True
     assert result["claim_boundary"]["policy_wam_loop_proven"] is False
+
+
+def test_native_control_bundle_uses_same_fail_closed_paid_lane() -> None:
+    release, bundle, preflight, spend = _inputs()
+    manifest = dict(bundle["manifest"])
+    manifest.pop("manifest_sha256")
+    manifest["purpose"] = "private_internal_nvidia_warehouse_native_control_canary"
+    manifest["canary_kind"] = "control"
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    bundle["manifest"] = manifest
+    bundle.pop("receipt_sha256")
+    bundle["receipt_sha256"] = canonical_sha256(bundle)
+
+    result = build_native_camera_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit="a" * 40,
+    )
+
+    assert result["status"] == "admitted"
+    assert result["probe_kind"] == CONTROL_PROBE_KIND
+    assert result["claim_boundary"]["native_control_experiment"] is True
+
+
+def test_native_control_allows_four_hour_ttl_but_camera_does_not() -> None:
+    release, receipt, preflight, spend = _inputs()
+    receipt["manifest"]["purpose"] = (
+        "private_internal_nvidia_warehouse_native_control_canary"
+    )
+    receipt["manifest"]["manifest_sha256"] = canonical_sha256(
+        {
+            key: value
+            for key, value in receipt["manifest"].items()
+            if key != "manifest_sha256"
+        }
+    )
+    receipt["receipt_sha256"] = canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    )
+    spend["hard_ttl_seconds"] = 14_400
+    spend["max_spend_usd"] = 10.0
+
+    control = build_native_camera_gpu_admission(
+        release=release,
+        input_bundle=receipt,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit="a" * 40,
+    )
+    assert control["status"] == "admitted"
+    assert control["limits"]["maximum_hard_ttl_seconds"] == 14_400
+
+    _, camera_receipt, _, _ = _inputs()
+    camera = build_native_camera_gpu_admission(
+        release=release,
+        input_bundle=camera_receipt,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit="a" * 40,
+    )
+    assert camera["status"] == "blocked"
+    assert "native_camera_gpu_ttl_invalid" in camera["blockers"]
+
+
+def test_native_control_output_validates_result_envelope_and_index() -> None:
+    result = {
+        "schema_version": CONTROL_RESULT_SCHEMA_VERSION,
+        "status": "failed",
+        "blockers": ["native_positive_control_failed"],
+        "claim_label": CONTROL_CLAIM_LABEL,
+        "runtime_backend": "isaac_sim_6_physx",
+        "hybrid_or_mujoco_backend_used": False,
+        "assessment": {"controller_results": []},
+        "claim_boundary": {
+            "simulation_only": True,
+            "capture_qualification": False,
+            "arkitscenes_collision_readiness": False,
+            "physical_success": False,
+            "deployment_readiness": False,
+            "safety": False,
+        },
+    }
+    result["result_sha256"] = canonical_sha256(result)
+    result_bytes = (json.dumps(result, sort_keys=True) + "\n").encode()
+    envelope_bytes = b'{"decision":"abstain"}\n'
+    index = {
+        "schema_version": "nvidia_warehouse_native_control_evidence_index.v1",
+        "files": [
+            {
+                "relative_path": "native_control_result.json",
+                "sha256": hashlib.sha256(result_bytes).hexdigest(),
+                "size_bytes": len(result_bytes),
+            },
+            {
+                "relative_path": "decision_envelope.json",
+                "sha256": hashlib.sha256(envelope_bytes).hexdigest(),
+                "size_bytes": len(envelope_bytes),
+            },
+        ],
+        "file_count": 2,
+    }
+    index["index_sha256"] = canonical_sha256(index)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("native_control_result.json", result_bytes)
+        archive.writestr("decision_envelope.json", envelope_bytes)
+        archive.writestr("evidence_index.json", json.dumps(index))
+
+    validation = validate_native_camera_gpu_output_archive(buffer.getvalue())
+
+    assert validation["status"] == "completed"
+    assert validation["canary_status"] == "failed"
 
 
 def test_native_camera_gpu_admission_allows_authorized_second_global_gpu() -> None:

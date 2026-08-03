@@ -1,0 +1,138 @@
+{
+  "schema_version": "nvidia_warehouse_native_control_spec.v1",
+  "experiment_id": "nvidia_warehouse_franka_can_to_tray_native_isaac_v1",
+  "dataset_id": "nvidia/PhysicalAI-SimReady-Warehouse-01",
+  "dataset_revision": "c7fe115cb79c7ddbd0532630d7768b5736b0ecc4",
+  "materialization_manifest_sha256": "3c2839e9847ae13686075b45fc25d67968f6b887ca142b185d3a7b11277b6c0f",
+  "seed": 260803,
+  "scene": {
+    "workcell_usd": "Props/general/SM_HeavyDutyPackingTable_C02_01/SM_HeavyDutyPackingTable_C02_01_physics.usd",
+    "spraycan_usd": "Props/general/HandManipulation/paint_container_spraycan_a/sm_paint_container_spraycan_a01_simready_01.usd",
+    "franka_asset": "/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd",
+    "spraycan_mass_kg": 0.25,
+    "tray_interior_dimensions_m": [0.36, 0.28],
+    "tray_wall_thickness_m": 0.02,
+    "placements": {
+      "workcell_translation_m": [0.0, 0.0, 0.0],
+      "franka_base_translation_m": [-0.5, 0.0, 0.995],
+      "spraycan_translation_m": [0.0, 0.075, 1.085],
+      "spraycan_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "tray_center_translation_m": [-0.05, 0.32, 1.025]
+    }
+  },
+  "physics": {
+    "physics_dt_seconds": 0.016666666666666666,
+    "rendering_dt_seconds": 0.03333333333333333,
+    "gravity_m_s2": 9.81,
+    "initial_settle_steps": 180,
+    "settle_linear_speed_max_m_s": 0.02,
+    "settle_angular_speed_max_rad_s": 0.1,
+    "maximum_initial_penetration_m": 0.01,
+    "maximum_runtime_penetration_m": 0.03,
+    "fall_through_z_m": 0.8
+  },
+  "reset_contract": {
+    "minimum_cycles": 5,
+    "settle_steps_after_reset": 30,
+    "joint_positions": [0.2897, 0.50732, -0.140016, -2.176, -0.0310497, 2.51592, -0.49251, 0.04, 0.04],
+    "joint_position_tolerance_rad": 0.002,
+    "object_position_tolerance_m": 0.002,
+    "object_orientation_tolerance_rad": 0.005,
+    "object_velocity_tolerance_m_s": 0.02,
+    "camera_transform_tolerance_m": 0.0001
+  },
+  "task": {
+    "instruction": "Pick up the spray can and place it inside the marked tray.",
+    "minimum_lift_m": 0.05,
+    "terminal_stability_steps": 120,
+    "terminal_linear_speed_max_m_s": 0.03,
+    "success_predicates": [
+      "spraycan_lifted_at_least_0_05m",
+      "spraycan_center_inside_tray_interior_aabb",
+      "spraycan_stable_for_2s",
+      "spraycan_not_in_robot_contact_at_final_state",
+      "native_gripper_spraycan_contact_observed"
+    ]
+  },
+  "trace_contract": {
+    "state_stride_steps": 5,
+    "preserve_all_attempts": true,
+    "silent_retry_forbidden": true,
+    "presentation_renders_feed_evaluation": false
+  },
+  "cameras": {
+    "external": {
+      "resolution": [640, 480],
+      "position_m": [0.75, -0.85, 2.095],
+      "look_at_m": [-0.07, 0.16, 1.165],
+      "vertical_fov_deg": 52.0,
+      "fixed_in_world": true
+    },
+    "wrist": {
+      "resolution": [640, 480],
+      "parent_link": "panda_hand",
+      "required_when_supported": true,
+      "per_frame_task_reaim_forbidden": true
+    }
+  },
+  "positive_control": {
+    "controller_id": "positive_control_nominal_pick_place",
+    "mode": "pick_place",
+    "max_steps": 1600,
+    "events_dt": [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+    "pick_offset_m": [0.0, 0.0, 0.0],
+    "place_offset_m": [0.0, 0.0, 0.08],
+    "end_effector_offset_m": [0.0, 0.0, 0.0]
+  },
+  "controllers": [
+    {
+      "controller_id": "scripted_nominal",
+      "mode": "pick_place",
+      "max_steps": 1600,
+      "events_dt": [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+      "pick_offset_m": [0.0, 0.0, 0.0],
+      "place_offset_m": [0.0, 0.0, 0.08],
+      "end_effector_offset_m": [0.0, 0.0, 0.0]
+    },
+    {
+      "controller_id": "scripted_cautious",
+      "mode": "pick_place",
+      "max_steps": 2400,
+      "events_dt": [0.006, 0.006, 0.006, 0.006, 0.006, 0.006, 0.006, 0.006, 0.006, 0.006],
+      "pick_offset_m": [0.0, 0.0, 0.0],
+      "place_offset_m": [0.0, 0.0, 0.08],
+      "end_effector_offset_m": [0.0, 0.0, 0.0]
+    },
+    {
+      "controller_id": "scripted_lateral_bias",
+      "mode": "pick_place",
+      "max_steps": 1600,
+      "events_dt": [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+      "pick_offset_m": [0.07, 0.0, 0.0],
+      "place_offset_m": [0.0, 0.0, 0.08],
+      "end_effector_offset_m": [0.0, 0.0, 0.0]
+    },
+    {
+      "controller_id": "scripted_underreach",
+      "mode": "pick_place",
+      "max_steps": 1600,
+      "events_dt": [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+      "pick_offset_m": [0.0, 0.0, 0.08],
+      "place_offset_m": [0.0, 0.0, 0.08],
+      "end_effector_offset_m": [0.0, 0.0, 0.0]
+    },
+    {
+      "controller_id": "scripted_stationary_timeout",
+      "mode": "stationary",
+      "max_steps": 600,
+      "events_dt": [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+      "pick_offset_m": [0.0, 0.0, 0.0],
+      "place_offset_m": [0.0, 0.0, 0.0],
+      "end_effector_offset_m": [0.0, 0.0, 0.0]
+    }
+  ],
+  "claim_label": "NVIDIA-authored SimReady control scene; native Isaac physics; scripted controllers; single workcell; simulation-only.",
+  "rankings_or_policy_outcomes_accessed": false,
+  "paid_gpu_execution_admitted": false,
+  "spec_sha256": "c11b07306e6354dc027be0deb72341f74454e805a0fd688ccca3413f5e3f2509"
+}

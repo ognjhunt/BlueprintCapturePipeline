@@ -79,6 +79,7 @@ from .openpi_policy_ranking_gpu_admission import (
 )
 from .openpi_policy_ranking_runpod import run_openpi_policy_ranking_campaign
 from .nvidia_warehouse_native_camera_gpu_admission import (
+    CONTROL_PROBE_KIND as NVIDIA_WAREHOUSE_NATIVE_CONTROL_PROBE_KIND,
     PROBE_KIND as NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
     run_native_camera_gpu_lane,
 )
@@ -932,6 +933,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             OPENPI_POLICY_RANKING_PROBE_KIND,
             NEW_SITE_CANARY_PROBE_KIND,
             NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
+            NVIDIA_WAREHOUSE_NATIVE_CONTROL_PROBE_KIND,
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
             RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
@@ -1273,7 +1275,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.probe_kind == NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND:
+        if args.probe_kind in {
+            NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
+            NVIDIA_WAREHOUSE_NATIVE_CONTROL_PROBE_KIND,
+        }:
             missing = [
                 name
                 for name in (

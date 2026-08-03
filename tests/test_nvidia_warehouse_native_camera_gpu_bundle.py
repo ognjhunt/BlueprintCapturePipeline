@@ -25,6 +25,9 @@ from blueprint_pipeline.nvidia_warehouse_workcell import (
     DATASET_REVISION,
     SCHEMA_VERSION as MATERIALIZATION_SCHEMA_VERSION,
 )
+from blueprint_pipeline.nvidia_warehouse_native_control_canary import (
+    SPEC_SCHEMA_VERSION as CONTROL_SPEC_SCHEMA_VERSION,
+)
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256, file_sha256
 
 
@@ -128,6 +131,27 @@ def test_gpu_bundle_round_trip_binds_source_spec_manifest_and_assets(tmp_path: P
     assert receipt["manifest"]["asset_count"] == 1
     assert Path(extracted["assets_root"], "Props/workcell.usd").read_bytes() == b"usd-fixture"
     assert receipt_path.is_file()
+
+
+def test_gpu_bundle_round_trip_accepts_frozen_native_control_spec(tmp_path: Path) -> None:
+    assets, spec_path = _inputs(tmp_path)
+    spec = json.loads(spec_path.read_text())
+    spec.pop("spec_sha256")
+    spec.pop("label_free")
+    spec["schema_version"] = CONTROL_SPEC_SCHEMA_VERSION
+    spec["spec_sha256"] = canonical_sha256(spec)
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    receipt = build_native_camera_gpu_bundle(
+        assets_root=assets,
+        spec_path=spec_path,
+        source_commit="a" * 40,
+        output_zip=tmp_path / "control.zip",
+        canary_kind="control",
+    )
+
+    assert receipt["manifest"]["canary_kind"] == "control"
+    assert receipt["manifest"]["purpose"].endswith("native_control_canary")
 
 
 def test_gpu_bundle_rejects_asset_mutation_before_packaging(tmp_path: Path) -> None:

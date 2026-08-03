@@ -65,6 +65,8 @@ RUN runuser -u blueprint -- test -r /isaac-sim \
     && runuser -u blueprint -- test -w /isaac-sim/kit/logs \
     && runuser -u blueprint -- env PYTHONPATH=/app/src /isaac-sim/python.sh -c \
     "from blueprint_pipeline.nvidia_warehouse_native_camera_canary import import_simulation_app; assert callable(import_simulation_app())"
+RUN runuser -u blueprint -- env PYTHONPATH=/app/src /isaac-sim/python.sh -c \
+    "from blueprint_pipeline.nvidia_warehouse_native_control_canary import isaac_sim_6_native_control_backend; assert callable(isaac_sim_6_native_control_backend)"
 
 ENV PYTHONPATH="/app/src" \
     HOME=/home/blueprint

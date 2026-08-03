@@ -20,6 +20,11 @@ from .nvidia_warehouse_native_camera_canary import (
     isaac_sim_6_backend,
     run_native_camera_canary,
 )
+from .nvidia_warehouse_native_control_canary import (
+    SPEC_SCHEMA_VERSION as CONTROL_SPEC_SCHEMA_VERSION,
+    isaac_sim_6_native_control_backend,
+    run_native_control_canary,
+)
 from .nvidia_warehouse_workcell import (
     CANARY_SPEC_SCHEMA_VERSION,
     DATASET_REVISION,
@@ -122,8 +127,9 @@ def build_native_camera_gpu_bundle(
     source_commit: str,
     output_zip: str | Path,
     receipt_path: str | Path | None = None,
+    canary_kind: str = "camera",
 ) -> dict[str, Any]:
-    """Package the exact materialized USD closure and prospective camera spec."""
+    """Package the exact USD closure and prospective camera/control spec."""
 
     commit = str(source_commit).strip().lower()
     if not _COMMIT.fullmatch(commit):
@@ -146,13 +152,18 @@ def build_native_camera_gpu_bundle(
 
     spec_file = Path(spec_path).expanduser().resolve()
     spec = _validated_identity(_read_object(spec_file), field="spec_sha256")
+    if canary_kind not in {"camera", "control"}:
+        raise ValueError("nvidia_warehouse_gpu_bundle_canary_kind_invalid")
+    expected_spec_schema = (
+        CANARY_SPEC_SCHEMA_VERSION if canary_kind == "camera" else CONTROL_SPEC_SCHEMA_VERSION
+    )
     if (
-        spec.get("schema_version") != CANARY_SPEC_SCHEMA_VERSION
+        spec.get("schema_version") != expected_spec_schema
         or spec.get("dataset_revision") != DATASET_REVISION
         or spec.get("materialization_manifest_sha256") != materialization.get("manifest_sha256")
-        or spec.get("label_free") is not True
         or spec.get("rankings_or_policy_outcomes_accessed") is not False
         or spec.get("paid_gpu_execution_admitted") is not False
+        or (canary_kind == "camera" and spec.get("label_free") is not True)
     ):
         raise ValueError("nvidia_warehouse_gpu_bundle_spec_invalid")
 
@@ -198,9 +209,15 @@ def build_native_camera_gpu_bundle(
         "assets": sorted(asset_rows, key=lambda row: str(row["member"])),
         "label_free": True,
         "rankings_or_policy_outcomes_accessed": False,
-        "purpose": "private_internal_nvidia_warehouse_native_camera_canary",
+        "purpose": (
+            "private_internal_nvidia_warehouse_native_camera_canary"
+            if canary_kind == "camera"
+            else "private_internal_nvidia_warehouse_native_control_canary"
+        ),
+        "canary_kind": canary_kind,
         "claim_boundary": {
-            "camera_technical_canary_only": True,
+            "camera_technical_canary_only": canary_kind == "camera",
+            "native_control_experiment": canary_kind == "control",
             "policy_wam_loop_proven": False,
             "ranking_accuracy": False,
             "physical_success": False,
@@ -244,6 +261,12 @@ def build_native_camera_gpu_bundle(
             raise FileExistsError("nvidia_warehouse_gpu_bundle_receipt_exists")
         write_json(receipt_destination, receipt)
     return receipt
+
+
+def build_native_control_gpu_bundle(**kwargs: Any) -> dict[str, Any]:
+    """Build the native-control variant through the shared hash-bound transport."""
+
+    return build_native_camera_gpu_bundle(canary_kind="control", **kwargs)
 
 
 def extract_native_camera_gpu_bundle(
@@ -364,6 +387,14 @@ def run_native_camera_gpu_bundle(
         expected_sha256=expected_sha256,
         output_dir=root / "input",
     )
+    spec = _read_object(extracted["spec_path"])
+    if spec.get("schema_version") == CONTROL_SPEC_SCHEMA_VERSION:
+        return run_native_control_canary(
+            spec_path=extracted["spec_path"],
+            assets_root=extracted["assets_root"],
+            output_dir=root / "output",
+            backend=isaac_sim_6_native_control_backend,
+        )
     return run_native_camera_canary(
         spec_path=extracted["spec_path"],
         assets_root=extracted["assets_root"],
@@ -637,6 +668,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build.add_argument("--source-commit", required=True)
     build.add_argument("--output", required=True)
     build.add_argument("--receipt", required=True)
+    build.add_argument("--canary-kind", choices=("camera", "control"), default="camera")
     run = commands.add_parser("run")
     run.add_argument("--bundle", required=True)
     run.add_argument("--expected-sha256", required=True)
@@ -652,6 +684,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_commit=args.source_commit,
             output_zip=args.output,
             receipt_path=args.receipt,
+            canary_kind=args.canary_kind,
         )
     elif args.command == "run":
         result = run_native_camera_gpu_bundle(
