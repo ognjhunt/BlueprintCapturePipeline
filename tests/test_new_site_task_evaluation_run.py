@@ -58,6 +58,7 @@ def _reconstruction(source_digest: str) -> dict:
             "appearance_asset_digest": _sha("1"),
             "geometry_asset_digest": _sha("2"),
             "scene_registration_digest": _sha("3"),
+            "source_scene_digest": _sha("2"),
             "registration_status": "qualified",
             "full_resolution_appearance_preserved": True,
             "presentation_output_used_as_evaluation_evidence": False,
@@ -93,6 +94,70 @@ def _target(
     )
 
 
+def _rendered_target(reconstruction: dict) -> dict:
+    selected = {
+        "proposal_id": "visible-object-001",
+        "object_label": "visible object",
+        "task_family": "rigid_pick_place",
+        "affordances": ["pick"],
+        "visual_confidence": 0.95,
+        "status": "authorized_metric_sim_target",
+    }
+    analysis = _finalize(
+        {
+            "schema_version": "scene_task_target_analysis_result.v1",
+            "status": "target_ready_for_bounded_sim",
+            "source_scene_digest": reconstruction["source_scene_digest"],
+            "selected_target": selected,
+        },
+        "target_analysis_digest",
+    )
+    binding = _finalize(
+        {
+            "schema_version": "splat_bbox_target_binding_result.v1",
+            "status": "candidate_bound",
+            "source_scene_digest": reconstruction["source_scene_digest"],
+            "analysis_splat_digest": reconstruction["appearance_asset_digest"],
+            "proposal_id": selected["proposal_id"],
+            "candidate_may_self_authorize": False,
+        },
+        "binding_evidence_digest",
+    )
+    task_zone_requirement = _finalize(
+        {
+            "schema_version": "task_zone_asset_requirement_candidate.v1",
+            "status": "not_required_for_inspection_only",
+            "target_region_id": selected["proposal_id"],
+            "interaction_mode": "inspection_only",
+            "interaction_mode_source": "fixture",
+            "verified_simready_asset_required": False,
+            "authoritative_asset_selection_performed": False,
+            "next_stage": "robot_placement",
+        },
+        "requirement_digest",
+    )
+    return _finalize(
+        {
+            "schema_version": "rendered_scene_task_target_orchestration.v1",
+            "status": "target_ready_for_bounded_sim",
+            "source_scene_digest": reconstruction["source_scene_digest"],
+            "analysis_splat_digest": reconstruction["appearance_asset_digest"],
+            "candidate_may_self_authorize": False,
+            "target_analysis": analysis,
+            "binding_results": [
+                {
+                    "proposal_id": selected["proposal_id"],
+                    "status": "candidate_bound",
+                    "binding": binding,
+                    "blockers": [],
+                }
+            ],
+            "task_zone_asset_requirement": task_zone_requirement,
+        },
+        "orchestration_digest",
+    )
+
+
 def _placement(target: dict, *, robot_id: str = "franka_panda", status: str = "qualified") -> dict:
     return _finalize(
         {
@@ -103,6 +168,23 @@ def _placement(target: dict, *, robot_id: str = "franka_panda", status: str = "q
             "pose_site": [0.0, 0.0, 0.0, 0.0],
         },
         "placement_digest",
+    )
+
+
+def _external_placement(*, target_binding_digest: str) -> dict:
+    return _finalize(
+        {
+            "schema_version": "external_scene_robot_placement_candidate.v1",
+            "status": "runtime_visualization_candidate_only",
+            "robot_id": "franka_panda",
+            "target_binding_digest": target_binding_digest,
+            "metric_reach_qualified": False,
+            "collision_status": "candidate_compiled",
+            "candidate_may_self_authorize": False,
+            "physical_execution_authorized": False,
+            "proof_effect": "external_scene_runtime_robot_visualization_candidate",
+        },
+        "placement_proposal_digest",
     )
 
 
@@ -471,6 +553,28 @@ def _rebind_attempt(value: dict) -> dict:
     return value
 
 
+def _replace_request_target(request: dict, rendered: dict) -> str:
+    binding_digest = rendered["binding_results"][0]["binding"]["binding_evidence_digest"]
+    request["target_orchestration"] = rendered
+    placement = request["robot_placement"]
+    placement["target_binding_digest"] = binding_digest
+    _finalize(placement, "placement_digest")
+    request["routing_inputs"].update(
+        {
+            "target_binding_digest": binding_digest,
+            "placement_digest": placement["placement_digest"],
+            "task_class": "rigid_pick_place",
+        }
+    )
+    request["execution_authorization"]["placement_digest"] = placement["placement_digest"]
+    _finalize(request["execution_authorization"], "authorization_digest")
+    for attempt in request["policy_evaluation"]["attempts"]:
+        attempt["placement_digest"] = placement["placement_digest"]
+        _rebind_attempt(attempt)
+    _rebind_request(request)
+    return binding_digest
+
+
 def test_complete_run_routes_to_best_qualified_non_default_engine_and_ranks_five() -> None:
     request = _request()
     schema_root = Path(__file__).parents[1] / "docs" / "schemas"
@@ -495,6 +599,50 @@ def test_complete_run_routes_to_best_qualified_non_default_engine_and_ranks_five
     assert result["claim_boundary"]["controller_ranking_is_learned_policy_ranking"] is False
     assert result["claim_boundary"]["provider_source_is_blueprint_raw_truth"] is False
     assert result["claim_boundary"]["physical_success_proven"] is False
+
+
+def test_existing_rendered_target_orchestration_is_admitted_without_hand_shaping() -> None:
+    request = _request()
+    rendered = _rendered_target(request["reconstruction"])
+    binding_digest = _replace_request_target(request, rendered)
+    schema_root = Path(__file__).parents[1] / "docs" / "schemas"
+    jsonschema.Draft202012Validator(
+        json.loads((schema_root / "new_site_task_evaluation_request.v1.schema.json").read_text())
+    ).validate(request)
+
+    result = compile_new_site_task_evaluation_run(request)
+
+    assert result["status"] == "completed"
+    assert result["target_orchestration_digest"] == rendered["orchestration_digest"]
+    assert result["target_binding_digest"] == binding_digest
+    assert result["task_class"] == "rigid_pick_place"
+
+
+def test_existing_external_placement_candidate_abstains_at_qualification() -> None:
+    request = _request()
+    placement = _external_placement(target_binding_digest=_sha("4"))
+    request["robot_placement"] = placement
+    _rebind_request(request)
+
+    result = compile_new_site_task_evaluation_run(request)
+
+    assert result["status"] == "abstained"
+    assert result["terminal_stage"] == "robot_placement"
+    assert result["smallest_missing_measurement"]["code"] == ("qualified_robot_placement_missing")
+    assert result["policy_attempt_count"] == 0
+
+
+def test_rendered_target_nested_analysis_digest_is_independently_verified() -> None:
+    request = _request()
+    rendered = _rendered_target(request["reconstruction"])
+    rendered["target_analysis"]["selected_target"]["object_label"] = "tampered"
+    _finalize(rendered, "orchestration_digest")
+    _replace_request_target(request, rendered)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "target_analysis_digest_mismatch" in caught.value.codes
 
 
 def test_source_abstention_propagates_smallest_measurement() -> None:

@@ -37,6 +37,11 @@ _HUMANOID_TASK_CLASSES = {
     "whole_body_humanoid",
 }
 _LEARNED_ACTION_SOURCES = {"learned_policy", "policy_endpoint", "vla_policy"}
+_RENDERED_TARGET_SCHEMA_VERSION = "rendered_scene_task_target_orchestration.v1"
+_RENDERED_TARGET_ANALYSIS_SCHEMA_VERSION = "scene_task_target_analysis_result.v1"
+_SPLAT_TARGET_BINDING_SCHEMA_VERSION = "splat_bbox_target_binding_result.v1"
+_TASK_ZONE_REQUIREMENT_SCHEMA_VERSION = "task_zone_asset_requirement_candidate.v1"
+_EXTERNAL_PLACEMENT_SCHEMA_VERSION = "external_scene_robot_placement_candidate.v1"
 
 
 class NewSiteTaskEvaluationError(ValueError):
@@ -184,6 +189,10 @@ def _reconstruction_gate(value: Any) -> tuple[dict[str, Any], dict[str, str] | N
     ):
         if not _is_digest(reconstruction.get(field)):
             raise NewSiteTaskEvaluationError([f"reconstruction_{field}_invalid"])
+    if reconstruction.get("source_scene_digest") is not None and not _is_digest(
+        reconstruction.get("source_scene_digest")
+    ):
+        raise NewSiteTaskEvaluationError(["reconstruction_source_scene_digest_invalid"])
     if reconstruction.get("reconstruction_digest") != canonical_digest(
         reconstruction, digest_field="reconstruction_digest"
     ):
@@ -209,18 +218,105 @@ def _reconstruction_gate(value: Any) -> tuple[dict[str, Any], dict[str, str] | N
 
 
 def _target_gate(
-    value: Any, *, reconstruction_digest: str, appearance_asset_digest: str
+    value: Any,
+    *,
+    reconstruction_digest: str,
+    source_scene_digest: str,
+    appearance_asset_digest: str,
 ) -> tuple[dict[str, Any], dict[str, str] | None]:
     if not isinstance(value, Mapping):
         return {}, {
             "code": "automatic_task_target_proposal_missing",
             "instruction": "Run the registered-view analyzer and deterministic 3D target binder.",
         }
-    target = _validate_canonical_artifact(
-        value,
-        label="target_orchestration",
-        digest_field="target_orchestration_digest",
-    )
+    target_schema = str(value.get("schema_version") or "")
+    if target_schema == _RENDERED_TARGET_SCHEMA_VERSION:
+        rendered = _validate_canonical_artifact(
+            value,
+            label="target_orchestration",
+            digest_field="orchestration_digest",
+            accepted_schemas={_RENDERED_TARGET_SCHEMA_VERSION},
+        )
+        if (
+            rendered.get("source_scene_digest") != source_scene_digest
+            or rendered.get("analysis_splat_digest") != appearance_asset_digest
+        ):
+            raise NewSiteTaskEvaluationError(["target_orchestration_reconstruction_mismatch"])
+        if rendered.get("candidate_may_self_authorize") is not False:
+            raise NewSiteTaskEvaluationError(["selected_target_self_authorization_forbidden"])
+        analysis = _validate_canonical_artifact(
+            rendered.get("target_analysis"),
+            label="target_analysis",
+            digest_field="target_analysis_digest",
+            accepted_schemas={_RENDERED_TARGET_ANALYSIS_SCHEMA_VERSION},
+        )
+        if analysis.get("source_scene_digest") != source_scene_digest:
+            raise NewSiteTaskEvaluationError(["target_orchestration_reconstruction_mismatch"])
+        selected = analysis.get("selected_target")
+        selected = dict(selected) if isinstance(selected, Mapping) else None
+        binding_rows = rendered.get("binding_results")
+        if not isinstance(binding_rows, list):
+            raise NewSiteTaskEvaluationError(["rendered_target_binding_results_invalid"])
+        matching_bindings = [
+            dict(row)
+            for row in binding_rows
+            if isinstance(row, Mapping)
+            and selected is not None
+            and row.get("proposal_id") == selected.get("proposal_id")
+        ]
+        if selected is not None and len(matching_bindings) != 1:
+            raise NewSiteTaskEvaluationError(["selected_target_binding_result_ambiguous"])
+        binding_result = matching_bindings[0] if matching_bindings else None
+        if binding_result is not None and (
+            binding_result.get("status") != "candidate_bound"
+            or binding_result.get("blockers") not in ([], ())
+        ):
+            raise NewSiteTaskEvaluationError(["selected_target_binding_result_not_admitted"])
+        binding = (
+            _validate_canonical_artifact(
+                binding_result.get("binding"),
+                label="target_binding",
+                digest_field="binding_evidence_digest",
+                accepted_schemas={_SPLAT_TARGET_BINDING_SCHEMA_VERSION},
+            )
+            if isinstance(binding_result, Mapping)
+            else {}
+        )
+        task_zone_requirement = _validate_canonical_artifact(
+            rendered.get("task_zone_asset_requirement"),
+            label="task_zone_asset_requirement",
+            digest_field="requirement_digest",
+            accepted_schemas={_TASK_ZONE_REQUIREMENT_SCHEMA_VERSION},
+        )
+        if task_zone_requirement.get("authoritative_asset_selection_performed") is not False:
+            raise NewSiteTaskEvaluationError(["task_zone_candidate_self_authorization_forbidden"])
+        task_family = str((selected or {}).get("task_family") or "").strip()
+        normalized_selected = (
+            {
+                **selected,
+                "task_family": task_family,
+                "task_class": str(selected.get("task_class") or task_family).strip(),
+                "target_binding_digest": binding.get("binding_evidence_digest"),
+                "candidate_self_authorized": False,
+            }
+            if selected is not None
+            else None
+        )
+        target = {
+            "schema_version": target_schema,
+            "status": rendered.get("status"),
+            "reconstruction_digest": reconstruction_digest,
+            "analysis_appearance_digest": appearance_asset_digest,
+            "selected_target": normalized_selected,
+            "task_zone_asset_requirement": task_zone_requirement,
+            "target_orchestration_digest": rendered["orchestration_digest"],
+        }
+    else:
+        target = _validate_canonical_artifact(
+            value,
+            label="target_orchestration",
+            digest_field="target_orchestration_digest",
+        )
     if (
         target.get("reconstruction_digest") != reconstruction_digest
         or target.get("analysis_appearance_digest") != appearance_asset_digest
@@ -275,11 +371,27 @@ def _placement_gate(
             "code": "qualified_robot_placement_missing",
             "instruction": f"Qualify a collision-aware {expected_robot} placement for the selected target.",
         }
-    placement = _validate_canonical_artifact(
-        value,
-        label="robot_placement",
-        digest_field="placement_digest",
-    )
+    placement_schema = str(value.get("schema_version") or "")
+    if placement_schema == _EXTERNAL_PLACEMENT_SCHEMA_VERSION:
+        external = _validate_canonical_artifact(
+            value,
+            label="robot_placement",
+            digest_field="placement_proposal_digest",
+            accepted_schemas={_EXTERNAL_PLACEMENT_SCHEMA_VERSION},
+        )
+        if external.get("status") not in {"runtime_visualization_candidate_only", "abstained"}:
+            raise NewSiteTaskEvaluationError(["external_robot_placement_status_invalid"])
+        placement = {
+            **external,
+            "status": "unqualified",
+            "placement_digest": external["placement_proposal_digest"],
+        }
+    else:
+        placement = _validate_canonical_artifact(
+            value,
+            label="robot_placement",
+            digest_field="placement_digest",
+        )
     if placement.get("robot_id") != expected_robot:
         raise NewSiteTaskEvaluationError(["robot_default_binding_mismatch"])
     if placement.get("target_binding_digest") != target_binding_digest:
@@ -702,6 +814,9 @@ def compile_new_site_task_evaluation_run(value: Mapping[str, Any]) -> dict[str, 
     target, missing = _target_gate(
         request.get("target_orchestration"),
         reconstruction_digest=reconstruction["reconstruction_digest"],
+        source_scene_digest=str(
+            reconstruction.get("source_scene_digest") or reconstruction["reconstruction_digest"]
+        ),
         appearance_asset_digest=reconstruction["appearance_asset_digest"],
     )
     if missing:
