@@ -38,6 +38,12 @@ MIN_CONTAINER_DISK_BYTES = 100 * 1024**3
 MAX_PREFLIGHT_AGE_SECONDS = 300
 MAX_TTL_SECONDS = 14_400
 MAX_RETRY_CAP = 2
+GENERIC_VAST_OPERATION_ADAPTER_ID = "reconstruction_vast_operation_v1"
+CANONICAL_SPLATFACTO_VAST_ADAPTER_ID = "canonical_splatfacto_vast_v1"
+EXECUTION_ADAPTER_IDS = {
+    GENERIC_VAST_OPERATION_ADAPTER_ID,
+    CANONICAL_SPLATFACTO_VAST_ADAPTER_ID,
+}
 CAPTURE_PROFILES = {
     "iphone_arkit_lidar",
     "camera_360_native",
@@ -197,6 +203,9 @@ def build_reconstruction_gpu_canary_request(
         errors.append("reconstruction_gpu_paid_authority_missing")
     if source.get("proof_effect") != "none":
         errors.append("reconstruction_gpu_request_proof_effect_invalid")
+    requested_adapter = source.get("requested_execution_adapter_id")
+    if requested_adapter is not None and requested_adapter not in EXECUTION_ADAPTER_IDS:
+        errors.append("reconstruction_gpu_requested_execution_adapter_invalid")
     vast_preferences = source.get("vast_preferred_gpu_keywords")
     if vast_preferences is not None and (
         not isinstance(vast_preferences, list)
@@ -341,7 +350,8 @@ def build_reconstruction_gpu_canary_admission(
     retry_cap: int | None,
     authority_id: str | None,
     execute: bool,
-    execution_adapter_qualified: bool = False,
+    execution_adapter_id: str | None = None,
+    execution_adapter_qualified: bool | None = None,
     image_release: Mapping[str, Any] | None = None,
     measurement_isaac_runtime_release: Mapping[str, Any] | None = None,
     measurement_dlo_lab_runtime_release: Mapping[str, Any] | None = None,
@@ -595,9 +605,19 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_budget_below_worst_case_cost")
 
     operation = source.get("operation")
+    # Compatibility callers may still report the legacy boolean, but it can
+    # qualify only the generic adapter. A specialized request must name and
+    # receive its exact adapter identity.
+    if execution_adapter_id is None and execution_adapter_qualified is True:
+        execution_adapter_id = GENERIC_VAST_OPERATION_ADAPTER_ID
+    requested_adapter = source.get("requested_execution_adapter_id")
     operation_adapter_qualified = bool(
-        execution_adapter_qualified and operation in EXECUTABLE_OPERATIONS
+        execution_adapter_id in EXECUTION_ADAPTER_IDS
+        and operation in EXECUTABLE_OPERATIONS
+        and (requested_adapter is None or requested_adapter == execution_adapter_id)
     )
+    if execute and requested_adapter is not None and requested_adapter != execution_adapter_id:
+        blockers.append("reconstruction_gpu_requested_execution_adapter_unavailable")
     if execute and operation not in EXECUTABLE_OPERATIONS:
         blockers.append("reconstruction_gpu_operation_execution_adapter_unavailable")
     elif execute and not operation_adapter_qualified and not blockers:
@@ -660,11 +680,7 @@ def build_reconstruction_gpu_canary_admission(
         "provider_mutations_performed": 0,
         "paid_execution_started": False,
         "execution_adapter_qualified": operation_adapter_qualified,
-        "execution_adapter_id": (
-            "reconstruction_vast_operation_v1"
-            if operation_adapter_qualified and operation in {"pose_canary", "trainer_canary"}
-            else None
-        ),
+        "execution_adapter_id": execution_adapter_id if operation_adapter_qualified else None,
         "worker_platform": "linux" if operation_adapter_qualified and provider == "vast" else None,
         "allocation_success_is_scientific_success": False,
         "proof_effect": "none",
@@ -703,7 +719,8 @@ def prepare_reconstruction_gpu_canary(
     retry_cap: int | None,
     authority_id: str | None,
     execute: bool,
-    execution_adapter_qualified: bool = False,
+    execution_adapter_id: str | None = None,
+    execution_adapter_qualified: bool | None = None,
     image_release_path: str | Path | None = None,
     measurement_isaac_runtime_release_path: str | Path | None = None,
     measurement_dlo_lab_runtime_release_path: str | Path | None = None,
@@ -737,6 +754,7 @@ def prepare_reconstruction_gpu_canary(
         retry_cap=retry_cap,
         authority_id=authority_id,
         execute=execute,
+        execution_adapter_id=execution_adapter_id,
         execution_adapter_qualified=execution_adapter_qualified,
         image_release=image_release,
         measurement_isaac_runtime_release=measurement_runtime_release,

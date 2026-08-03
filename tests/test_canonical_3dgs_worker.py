@@ -103,7 +103,7 @@ def _allocator_admission(
         "execution_adapter_id": (
             "canonical_postshot_windows_v1"
             if arm_id == "postshot-primary"
-            else "reconstruction_vast_operation_v1"
+            else "canonical_splatfacto_vast_v1"
         ),
         "worker_platform": "windows" if arm_id == "postshot-primary" else "linux",
     }

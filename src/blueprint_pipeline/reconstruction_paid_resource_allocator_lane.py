@@ -46,7 +46,9 @@ def run_reconstruction_paid_resource_allocator_lane(
         retry_cap=args.reconstruction_retry_cap,
         authority_id=args.reconstruction_authority_id,
         execute=args.execute,
-        execution_adapter_qualified=args.execute,
+        execution_adapter_id=(
+            "reconstruction_vast_operation_v1" if args.execute else None
+        ),
     )
     if not args.execute or admission.get("status") != "execute_ready":
         return admission

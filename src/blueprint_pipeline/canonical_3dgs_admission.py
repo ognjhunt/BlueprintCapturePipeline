@@ -100,14 +100,13 @@ def _allocator_blockers(
         "provider_zero_verified": True,
         "provider_mutations_performed": 0,
         "paid_execution_started": False,
-        "execution_adapter_qualified": True,
     }
     for key, expected_value in expected.items():
         if allocator.get(key) != expected_value:
             errors.append(f"canonical_3dgs_allocator_binding_mismatch:{key}")
     expected_adapter = {
         "postshot-primary": "canonical_postshot_windows_v1",
-        "splatfacto-comparison": "reconstruction_vast_operation_v1",
+        "splatfacto-comparison": "canonical_splatfacto_vast_v1",
     }.get(arm_id)
     if allocator.get("execution_adapter_id") != expected_adapter:
         errors.append("canonical_3dgs_allocator_adapter_not_platform_qualified")

@@ -91,6 +91,7 @@ from .policy_ranking_cosmos_reasoner_gpu_admission import (
 )
 from .policy_ranking_successor_retained_session import refresh_retained_session
 from .reconstruction_gpu_admission import (
+    GENERIC_VAST_OPERATION_ADAPTER_ID,
     PROBE_KIND as RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
     collect_reconstruction_vast_preflight,
     prepare_reconstruction_gpu_canary,
@@ -791,7 +792,9 @@ def _run_reconstruction_gpu_canary(
         retry_cap=args.reconstruction_retry_cap,
         authority_id=args.reconstruction_authority_id,
         execute=args.execute,
-        execution_adapter_qualified=args.execute,
+        execution_adapter_id=(
+            GENERIC_VAST_OPERATION_ADAPTER_ID if args.execute else None
+        ),
         image_release_path=getattr(
             args, "reconstruction_isaac_image_release", None
         ),

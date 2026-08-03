@@ -915,7 +915,7 @@ def test_platform_worker_receipts_finalize_into_one_bound_campaign(tmp_path: Pat
             "execution_adapter_id": (
                 "canonical_postshot_windows_v1"
                 if arm["arm_id"] == "postshot-primary"
-                else "reconstruction_vast_operation_v1"
+                else "canonical_splatfacto_vast_v1"
             ),
             "worker_platform": (
                 "windows" if arm["arm_id"] == "postshot-primary" else "linux"
