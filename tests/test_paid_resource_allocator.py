@@ -59,6 +59,21 @@ def test_detached_cpu_build_supervisor_ignores_only_sigint(
     assert calls == [(signal.SIGINT, signal.SIG_IGN)]
 
 
+def test_detached_gpu_canary_supervisor_ignores_only_sigint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, object]] = []
+    monkeypatch.setenv(allocator.DETACHED_GPU_CANARY_SUPERVISOR_ENV, "1")
+    monkeypatch.setattr(
+        allocator.signal,
+        "signal",
+        lambda signum, handler: calls.append((signum, handler)),
+    )
+
+    assert allocator._configure_detached_supervisor_signal_policy("gpu-canary") is True
+    assert calls == [(signal.SIGINT, signal.SIG_IGN)]
+
+
 def _write_inputs(tmp_path: Path, *, paid: bool = True) -> Namespace:
     packet = tmp_path / "packet.json"
     builder = tmp_path / "builder.json"

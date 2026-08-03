@@ -123,6 +123,7 @@ FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_500
 COMBINED_GPU_PLAN_SECONDS = GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
 PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
 DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
+DETACHED_GPU_CANARY_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_GPU_CANARY_SUPERVISOR"
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
 
 
@@ -388,7 +389,10 @@ def _configure_detached_supervisor_signal_policy(command: str) -> bool:
     detached_cpu_build = (
         command == "cpu-build-run" and os.getenv(DETACHED_CPU_BUILD_SUPERVISOR_ENV) == "1"
     )
-    if not (detached_model_volume or detached_cpu_build):
+    detached_gpu_canary = (
+        command == "gpu-canary" and os.getenv(DETACHED_GPU_CANARY_SUPERVISOR_ENV) == "1"
+    )
+    if not (detached_model_volume or detached_cpu_build or detached_gpu_canary):
         return False
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
