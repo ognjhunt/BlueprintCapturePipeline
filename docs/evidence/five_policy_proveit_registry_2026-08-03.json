@@ -1,0 +1,135 @@
+{
+  "schema_version": "five_policy_proveit_registry.v1",
+  "frozen_at_utc": "2026-08-03T15:35:00Z",
+  "purpose": "internal_noncommercial_identity_bound_inference_smoke",
+  "openpi": {
+    "source_url": "https://github.com/Physical-Intelligence/openpi.git",
+    "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "apache_2_license_sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+    "gemma_terms_sha256": "3e2c24001f9ef57bf7ec959a3658fbb49cdad113cdf394c264da9d16f9bdd132",
+    "droid_readme_sha256": "6f64c246a78a5c203b4b032db9b6b6daea33e98d91ecdac1a3da30a9863290d0",
+    "governing_terms": [
+      "Apache-2.0 repository license",
+      "Gemma Terms of Use for Gemma and model derivatives"
+    ],
+    "redistribution_planned": false
+  },
+  "direct_droid_execution_cohort": [
+    {
+      "candidate_id": "pi05_droid",
+      "benchmark_basis": "OpenPI names this its strongest generalist DROID policy based on RoboArena",
+      "config_name": "pi05_droid",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/pi05_droid",
+      "checkpoint_object_count": 20,
+      "checkpoint_size_bytes": 12429488598,
+      "gcs_generation_manifest_sha256": "e05905bbf23c8461297e1515111e81f884a59135bd44424aeacb6b0b6de051b1",
+      "native_action_chunk_rows": 15,
+      "native_action_dimensions": 8,
+      "embodiment_route": "direct_droid_franka"
+    },
+    {
+      "candidate_id": "pi0_fast_droid",
+      "benchmark_basis": "official OpenPI RoboArena DROID baseline",
+      "config_name": "pi0_fast_droid",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/pi0_fast_droid",
+      "checkpoint_object_count": 21,
+      "checkpoint_size_bytes": 10841351138,
+      "gcs_generation_manifest_sha256": "899ba89d9d42b5b1d0476976c4242fc3f4d84a529c892d3075f7ae307c96e844",
+      "native_action_chunk_rows": 10,
+      "native_action_dimensions": 8,
+      "embodiment_route": "direct_droid_franka"
+    },
+    {
+      "candidate_id": "pi0_droid",
+      "benchmark_basis": "official OpenPI RoboArena DROID baseline",
+      "config_name": "pi0_droid",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/pi0_droid",
+      "checkpoint_object_count": 27,
+      "checkpoint_size_bytes": 12009244513,
+      "gcs_generation_manifest_sha256": "4968277e7f19fa40b1a22ae50b4d18792950849883a8c2cec4126ffccc3ad621",
+      "native_action_chunk_rows": 10,
+      "native_action_dimensions": 8,
+      "embodiment_route": "direct_droid_franka"
+    },
+    {
+      "candidate_id": "paligemma_fast_droid",
+      "benchmark_basis": "official RoboArena PaliGemma FAST DROID baseline",
+      "config_name": "paligemma_fast_droid",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_droid",
+      "checkpoint_object_count": 19,
+      "checkpoint_size_bytes": 10850689373,
+      "gcs_generation_manifest_sha256": "18c6f95d342e50f5a26089c10d9d9020013101fa33df7fd0ce9d0dfdd2cece6c",
+      "native_action_chunk_rows": 15,
+      "native_action_dimensions": 8,
+      "embodiment_route": "direct_droid_franka"
+    },
+    {
+      "candidate_id": "paligemma_diffusion_droid",
+      "benchmark_basis": "official RoboArena PaliGemma diffusion DROID baseline",
+      "config_name": "paligemma_diffusion_droid",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_diffusion_droid",
+      "checkpoint_object_count": 19,
+      "checkpoint_size_bytes": 12007426260,
+      "gcs_generation_manifest_sha256": "ed2dabb59076e6684d7ef0a424b66ec427c8478edfa1db31731e3786c19c075e",
+      "native_action_chunk_rows": 10,
+      "native_action_dimensions": 8,
+      "embodiment_route": "direct_droid_franka"
+    }
+  ],
+  "direct_cohort_total_checkpoint_bytes": 58138199882,
+  "adapter_required_discovery": [
+    {
+      "candidate_id": "cosmos_policy_libero_predict2_2b",
+      "source_revision": "18a2accadf4e7a3531e56754102af5a24d2316da",
+      "checkpoint_repo": "nvidia/Cosmos-Policy-LIBERO-Predict2-2B",
+      "checkpoint_revision": "cb689ec0e3347c13667d70a78a3447388f5c3bb8",
+      "checkpoint_bytes": 3913017345,
+      "governing_terms": "NVIDIA One-Way Noncommercial License NSCLv1",
+      "native_contract": "LIBERO Franka 7D end-effector action chunks of 16",
+      "required_adapter": "deterministic end-effector-to-DROID-joint action adapter and horizon policy",
+      "selected_for_paid_smoke": false
+    },
+    {
+      "candidate_id": "openvla_oft_libero_combined",
+      "source_revision": "e4287e94541f459edc4feabc4e181f537cd569a8",
+      "checkpoint_repo": "moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10",
+      "checkpoint_revision": "638918f3d1c2e43a39a8a20772bdb8b91835e4b7",
+      "checkpoint_bytes": 15939168050,
+      "governing_terms": "MIT model card and repository license",
+      "native_contract": "LIBERO multi-view end-effector action policy",
+      "required_adapter": "observation mapping plus deterministic end-effector-to-DROID-joint action adapter",
+      "selected_for_paid_smoke": false
+    },
+    {
+      "candidate_id": "groot_n1_5_3b",
+      "checkpoint_repo": "nvidia/GR00T-N1.5-3B",
+      "checkpoint_revision": "869830fc749c35f34771aa5209f923ac57e4564e",
+      "checkpoint_bytes": 5448656267,
+      "governing_terms": "NVIDIA AI Foundation Model license",
+      "native_contract": "cross-embodiment base policy requiring embodiment-specific post-training",
+      "required_adapter": "qualified Franka embodiment head or post-trained checkpoint",
+      "selected_for_paid_smoke": false
+    }
+  ],
+  "gcs_manifest_algorithm": {
+    "fields": [
+      "name",
+      "generation",
+      "metageneration",
+      "size",
+      "md5Hash",
+      "crc32c",
+      "etag"
+    ],
+    "ordering": "name_then_integer_generation",
+    "serialization": "canonical_json_sort_keys_compact",
+    "digest": "sha256"
+  },
+  "claim_boundary": {
+    "benchmark_rank_is_candidate_discovery_only": true,
+    "identity_smoke_is_not_task_success": true,
+    "identity_smoke_is_not_policy_ranking": true,
+    "adapter_required_candidates_are_not_directly_comparable": true,
+    "physical_robot_execution": false
+  }
+}
