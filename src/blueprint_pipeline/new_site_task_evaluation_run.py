@@ -734,6 +734,11 @@ def validate_policy_candidates(value: Any) -> list[dict[str, Any]]:
 def _execution_authorization(
     value: Any,
     *,
+    source: Mapping[str, Any],
+    reconstruction: Mapping[str, Any],
+    target: Mapping[str, Any],
+    target_binding_digest: str,
+    routing_inputs: Mapping[str, Any],
     route: Mapping[str, Any],
     placement: Mapping[str, Any],
     composition: Mapping[str, Any],
@@ -754,10 +759,27 @@ def _execution_authorization(
         }
     )
     errors: list[str] = []
+    target_digest_field = "target_orchestration_digest"
     if authorization.get("policy_execution_authorized") is not True:
         errors.append("policy_execution_not_authorized")
     if authorization.get("routing_decision_digest") != route.get("routing_decision_digest"):
         errors.append("policy_authorization_route_mismatch")
+    if authorization.get("routing_inputs_digest") != routing_inputs.get(
+        "routing_inputs_digest"
+    ):
+        errors.append("policy_authorization_routing_inputs_mismatch")
+    if authorization.get("source_profile_digest") != source.get("source_profile_digest"):
+        errors.append("policy_authorization_source_profile_mismatch")
+    if authorization.get("reconstruction_digest") != reconstruction.get(
+        "reconstruction_digest"
+    ):
+        errors.append("policy_authorization_reconstruction_mismatch")
+    if authorization.get("target_orchestration_digest") != target.get(
+        target_digest_field
+    ):
+        errors.append("policy_authorization_target_mismatch")
+    if authorization.get("target_binding_digest") != target_binding_digest:
+        errors.append("policy_authorization_target_binding_mismatch")
     if authorization.get("placement_digest") != placement.get("placement_digest"):
         errors.append("policy_authorization_placement_mismatch")
     if authorization.get("scene_composition_digest") != composition.get(
@@ -996,8 +1018,9 @@ def compile_new_site_task_evaluation_run_v1(value: Mapping[str, Any]) -> dict[st
         result["robot_id"] = expected_robot
         result["run_digest"] = canonical_digest(result, digest_field="run_digest")
         return result
+    route_inputs = request.get("routing_inputs")
     route, missing = _route_gate(
-        request.get("routing_inputs"),
+        route_inputs,
         source_profile_digest=str(source_digest),
         target_binding_digest=selected_target["target_binding_digest"],
         placement_digest=placement["placement_digest"],
@@ -1108,6 +1131,11 @@ def compile_new_site_task_evaluation_run_v1(value: Mapping[str, Any]) -> dict[st
     candidates = _policy_candidates(candidate_values)
     _execution_authorization(
         authorization,
+        source=source,
+        reconstruction=reconstruction,
+        target=target,
+        target_binding_digest=str(selected_target["target_binding_digest"]),
+        routing_inputs=route_inputs,
         route=route,
         placement=placement,
         composition=composition,
