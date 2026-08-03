@@ -767,10 +767,48 @@ def run_measurement_chrono_dem_vast_canary(
             "status": "not_required" if instance_id is None else "not_attempted"
         }
         if instance_id is not None:
-            terminate_result = dict(provider.terminate(instance_id))
+            try:
+                terminate_result = dict(provider.terminate(instance_id))
+            except Exception as exc:  # noqa: BLE001 - preserve terminal evidence
+                terminate_result = {
+                    "status": "terminate_failed",
+                    "instance_id": instance_id,
+                    "error_type": type(exc).__name__,
+                    "raw_provider_response_recorded": False,
+                }
+                blockers.append(
+                    "measurement_chrono_dem_provider_terminate_failed:"
+                    + type(exc).__name__
+                )
             provider_mutations += 1
-        scoped_after = provider.billable_inventory(name_prefix=NAME_PREFIX)
-        global_after = provider.billable_inventory(name_prefix="")
+        try:
+            scoped_after = dict(provider.billable_inventory(name_prefix=NAME_PREFIX))
+        except Exception as exc:  # noqa: BLE001 - preserve terminal evidence
+            scoped_after = {
+                "status": "blocked",
+                "provider": provider.name,
+                "name_prefix": NAME_PREFIX,
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "blockers": ["provider_billable_inventory_failed"],
+                "error_type": type(exc).__name__,
+                "raw_provider_response_recorded": False,
+            }
+        try:
+            global_after = dict(provider.billable_inventory(name_prefix=""))
+        except Exception as exc:  # noqa: BLE001 - preserve terminal evidence
+            global_after = {
+                "status": "blocked",
+                "provider": provider.name,
+                "name_prefix": "",
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "blockers": ["provider_billable_inventory_failed"],
+                "error_type": type(exc).__name__,
+                "raw_provider_response_recorded": False,
+            }
         provider_zero = all(
             row.get("api_confirmed") is True and row.get("live_resource_count") == 0
             for row in (scoped_after, global_after)

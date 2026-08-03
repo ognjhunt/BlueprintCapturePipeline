@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -496,3 +497,37 @@ def test_canary_preserves_failed_teardown_and_provider_nonzero_evidence(tmp_path
     assert provider.launched is True
     assert (tmp_path / "canary" / "teardown_receipt.json").read_text(encoding="utf-8")
     assert (tmp_path / "canary" / "provider_zero_verification.json").read_text(encoding="utf-8")
+
+
+def test_canary_converts_raised_terminate_into_terminal_evidence(tmp_path: Path) -> None:
+    class _RaisedTeardownProvider(_Provider):
+        def terminate(self, instance_id):
+            raise RuntimeError("provider transport closed")
+
+    provider = _RaisedTeardownProvider()
+    times = iter([1000.0, 1001.0, 1002.0])
+    result = run_measurement_chrono_dem_vast_canary(
+        bound_request=_bound_request(),
+        bundle_receipt=_receipt(),
+        preflight=_preflight(),
+        job_dir=tmp_path / "canary",
+        input_bundle_get_url=INPUT_URL,
+        output_put_url=PUT_URL,
+        output_get_url=GET_URL,
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=lambda _url: {"runtime_result_digest": D3, "status": "passed"},
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+
+    assert result["status"] == "failed"
+    assert "measurement_chrono_dem_provider_terminate_failed:RuntimeError" in result["blockers"]
+    assert "measurement_chrono_dem_teardown_verification_failed" in result["blockers"]
+    teardown = json.loads(
+        (tmp_path / "canary" / "teardown_receipt.json").read_text(encoding="utf-8")
+    )
+    assert teardown["status"] == "FAIL"
+    assert teardown["terminate_result"]["error_type"] == "RuntimeError"
+    assert (tmp_path / "canary" / "provider_zero_verification.json").is_file()
