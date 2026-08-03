@@ -1,18 +1,6 @@
 name: Python Compatibility
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/python-compatibility.yml"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "requirements*.txt"
-      - "docs/CI_PYTHON_INTERPRETER_MATRIX.*"
-      - "scripts/lint_public_scientific_claims.py"
-      - "scripts/validate_python_interpreter_matrix.py"
-      - "scripts/verify_dependency_exports.py"
-      - "src/blueprint_pipeline/**"
-      - "tests/**"
   push:
     branches: ["main"]
     paths:

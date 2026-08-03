@@ -151,10 +151,10 @@ python -m pip install -e .[dev]
 Run tests:
 
 ```bash
-pytest <impacted paths/nodes>            # build loop: changed-area tests only
-ruff check <changed Python files>         # build loop: changed-file lint only
-scripts/pytest_fast.sh                    # bounded repository integration diagnostic
-scripts/pytest_full.sh                    # explicit promotion/scheduled/cross-cutting only
+python -m blueprint_pipeline.impacted_test_selection  # changed tests + sentinels, hard-capped at 120s
+ruff check <changed Python files>          # build loop: changed-file lint only
+scripts/pytest_fast.sh                     # bounded repository integration diagnostic
+scripts/pytest_full.sh                     # explicit promotion/scheduled/cross-cutting only
 ```
 
 Test lanes (PIPE-05): heavy subprocess/Isaac/render/module-entrypoint tests are tagged

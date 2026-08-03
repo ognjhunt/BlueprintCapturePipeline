@@ -36,10 +36,10 @@ Key rules (full text and precedents in `AGENTS.md`):
 Key commands:
 
 ```bash
-pytest <impacted paths/nodes>     # default build loop: changed-area tests only
-ruff check <changed files>        # default build loop: changed-file lint only
-scripts/pytest_fast.sh            # bounded repository integration diagnostic
-scripts/pytest_full.sh            # explicit promotion/scheduled/cross-cutting only
+python -m blueprint_pipeline.impacted_test_selection  # changed tests + sentinels, hard-capped at 120s
+ruff check <changed files>            # default build loop: changed-file lint only
+scripts/pytest_fast.sh                # bounded repository integration diagnostic
+scripts/pytest_full.sh                # explicit promotion/scheduled/cross-cutting only
 python -m blueprint_pipeline.run_e2e
 python scripts/run_external_alpha_launch_gate.py
 python scripts/agent_workspace_gc.py   # reap stale agent scratch clones (dry-run; delete needs --apply --ack reap-agent-scratch)

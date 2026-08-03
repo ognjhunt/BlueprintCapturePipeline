@@ -77,8 +77,15 @@ def test_uv_lock_and_frozen_exports_are_release_contracts() -> None:
 
 def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     workflow = (ROOT / ".github" / "workflows" / "full-test-lane.yml").read_text(encoding="utf-8")
+    event_block = workflow.split("jobs:", 1)[0]
 
     assert "workflow_dispatch:" in workflow
+    assert "workflow_call:" in event_block
+    assert "pull_request:" not in event_block
+    assert "push:" not in event_block
+    assert 'cron: "17 8 * * *"' in event_block
+    assert "production_deployment_promotion" in event_block
+    assert "cross_cutting_diagnostic" in event_block
     assert "cancel-in-progress: true" in workflow
     assert "pytest_args" not in workflow
     assert "inputs.pytest" not in workflow
@@ -89,6 +96,37 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "scripts/verify_full_lane_collection.py" in workflow
     assert "full-test-lane-planned.json" in workflow
     assert "full-test-lane-executed.json" in workflow
+
+
+def test_risk_based_verification_workflows_are_bounded() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "name: Determine changed test surface" in workflow
+    assert "name: Impacted tests and sentinels" in workflow
+    assert "name: Impacted test and sentinel gate" in workflow
+    assert "blueprint_pipeline.impacted_test_selection" in workflow
+    assert "--timeout-seconds 480" in workflow
+    assert "timeout-minutes: 10" in workflow
+    assert "needs.cross-cutting-full-suite.result" in workflow
+    assert "uses: ./.github/workflows/full-test-lane.yml" in workflow
+    assert "needs.impact.outputs.requires_full_suite == 'true'" in workflow
+    assert "uv run pytest -q" not in workflow
+    assert "--cov-fail-under" not in workflow
+
+    for job in (
+        "lint",
+        "foundation-prerequisites",
+        "typecheck",
+        "sast",
+        "source-governance",
+        "supply-chain",
+        "dependency-security",
+        "container-contract",
+    ):
+        match = re.search(rf"(?ms)^  {re.escape(job)}:\n(.*?)(?=^  \S|\Z)", workflow)
+        assert match is not None, job
+        job_block = match.group(1)
+        assert "if: github.event_name == 'push'" in job_block, job
 
 
 def test_core_workflows_bind_runner_temp_only_after_job_start() -> None:
@@ -106,14 +144,8 @@ def test_core_workflows_bind_runner_temp_only_after_job_start() -> None:
         assert '>> "${GITHUB_ENV}"' in workflow, workflow_name
 
 
-def test_pr_workflows_do_not_duplicate_branch_push_runs() -> None:
-    workflow_names = (
-        "ci.yml",
-        "python-compatibility.yml",
-        "sim-only-local-gate.yml",
-    )
-
-    for workflow_name in workflow_names:
+def test_only_bounded_ci_workflow_runs_for_ordinary_pull_requests() -> None:
+    for workflow_name in ("ci.yml",):
         workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
             encoding="utf-8"
         )
@@ -122,6 +154,18 @@ def test_pr_workflows_do_not_duplicate_branch_push_runs() -> None:
         assert 'branches: ["main"]' in event_block, workflow_name
         assert 'branches: ["**"]' not in event_block, workflow_name
         assert "cancel-in-progress: true" in event_block, workflow_name
+
+    for workflow_name in (
+        "codeql.yml",
+        "full-test-lane.yml",
+        "python-compatibility.yml",
+        "sim-only-local-gate.yml",
+    ):
+        workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
+            encoding="utf-8"
+        )
+        event_block = workflow.split("jobs:", 1)[0]
+        assert "pull_request:" not in event_block, workflow_name
 
 
 def test_groot_oscar_disk_admission_measures_every_write_filesystem() -> None:
@@ -211,6 +255,8 @@ def test_github_actions_are_pinned_to_full_commit_shas() -> None:
         workflow = workflow_path.read_text(encoding="utf-8")
         for action in uses_pattern.findall(workflow):
             discovered.append(action)
+            if action.startswith("./"):
+                continue
             assert "@" in action, (workflow_path, action)
             _repository, revision = action.rsplit("@", 1)
             assert sha_pattern.fullmatch(revision), (workflow_path, action)

@@ -1,12 +1,23 @@
 name: Full Test Lane
 
 on:
-  pull_request:
-  push:
-    branches: ["main"]
+  workflow_call:
+    inputs:
+      reason:
+        description: "Recorded reason the dependency boundary requires the full lane."
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why is a full lane required?"
+        required: true
+        type: choice
+        options:
+          - production_deployment_promotion
+          - cross_cutting_diagnostic
   schedule:
-    - cron: "17 8 * * 1"
+    - cron: "17 8 * * *"
 
 concurrency:
   group: full-test-lane-${{ github.workflow }}-${{ github.ref }}
@@ -26,6 +37,7 @@ jobs:
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
       CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
+      FULL_TEST_LANE_TRIGGER_REASON: ${{ inputs.reason || 'nightly_integration' }}
 
     steps:
       - name: Bind ephemeral artifact roots
