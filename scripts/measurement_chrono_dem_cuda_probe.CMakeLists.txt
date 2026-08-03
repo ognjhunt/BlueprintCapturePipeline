@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.18)
+project(blueprint_measurement_chrono_dem_cuda_probe LANGUAGES CXX CUDA)
+
+find_package(Chrono 10.0.0 EXACT COMPONENTS DEM CONFIG REQUIRED)
+
+add_executable(measurement_chrono_dem_cuda_probe measurement_chrono_dem_cuda_probe.cpp)
+target_compile_features(measurement_chrono_dem_cuda_probe PRIVATE cxx_std_17)
+target_link_libraries(measurement_chrono_dem_cuda_probe PRIVATE ${CHRONO_TARGETS})

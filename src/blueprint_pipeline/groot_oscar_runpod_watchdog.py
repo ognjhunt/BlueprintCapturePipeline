@@ -36,13 +36,12 @@ CANARY_NAME_PREFIXES = (
     "blueprint-reconstruction-",
     "blueprint-measurement-isaac-",
     "blueprint-measurement-dlo-",
+    "blueprint-measurement-chrono-dem-",
 )
 CAMPAIGN_PENDING_TEARDOWN_LANES = {
     "persistent_policy_wam_loop": "runpod_wam_async",
     "openpi_policy_ranking": "openpi_policy_ranking_gpu_canary",
-    "nvidia_warehouse_native_camera": (
-        "nvidia_warehouse_native_camera_gpu_canary"
-    ),
+    "nvidia_warehouse_native_camera": ("nvidia_warehouse_native_camera_gpu_canary"),
 }
 
 
@@ -171,16 +170,12 @@ def _vast_billable_inventory(*, provider: Any, name_prefix: str) -> dict[str, An
         resources.append(
             {
                 "instance_id": str(
-                    row.get("id")
-                    or row.get("instance_id")
-                    or row.get("contract_id")
-                    or ""
+                    row.get("id") or row.get("instance_id") or row.get("contract_id") or ""
                 ),
                 "name": label,
                 "status": status or None,
                 "gpu_name": row.get("gpu_name") or row.get("gpu_display_name"),
-                "cost_per_hour": row.get("dph_total")
-                or row.get("price_per_hour"),
+                "cost_per_hour": row.get("dph_total") or row.get("price_per_hour"),
             }
         )
     if ambiguous_live_rows:
@@ -208,17 +203,13 @@ def _vast_billable_inventory(*, provider: Any, name_prefix: str) -> dict[str, An
     }
 
 
-def _billable_inventory(
-    *, provider: Any, provider_name: str, name_prefix: str
-) -> dict[str, Any]:
+def _billable_inventory(*, provider: Any, provider_name: str, name_prefix: str) -> dict[str, Any]:
     if provider_name == "vast":
         return _vast_billable_inventory(provider=provider, name_prefix=name_prefix)
     return provider.billable_inventory(name_prefix=name_prefix)
 
 
-def _recorded_vast_instance(
-    *, armed: Mapping[str, Any], pod_name_prefix: str
-) -> dict[str, Any]:
+def _recorded_vast_instance(*, armed: Mapping[str, Any], pod_name_prefix: str) -> dict[str, Any]:
     """Read the one Vast id owned by this watchdog's attempt directory.
 
     Vast's list API intentionally excludes terminal rows.  A contract can
@@ -449,9 +440,7 @@ def terminate_canary_resources(
         isinstance(recorded_vast_instance, Mapping)
         and recorded_vast_instance.get("status") == "recorded"
     ):
-        recorded_vast_instance_id = str(
-            recorded_vast_instance.get("instance_id") or ""
-        ).strip()
+        recorded_vast_instance_id = str(recorded_vast_instance.get("instance_id") or "").strip()
     recorded_delete_proven = False
     terminated_ids: list[str] = []
     for row in resources:
@@ -470,16 +459,12 @@ def terminate_canary_resources(
         termination = {"instance_id": instance_id, **dict(result)}
         if instance_id == recorded_vast_instance_id:
             termination["ownership_source"] = VAST_STARTED_INSTANCE_ID_NAME
-            recorded_delete_proven = (
-                recorded_delete_proven
-                or _vast_delete_absence_proven(termination)
+            recorded_delete_proven = recorded_delete_proven or _vast_delete_absence_proven(
+                termination
             )
         terminations.append(termination)
         terminated_ids.append(instance_id)
-    if (
-        recorded_vast_instance_id
-        and recorded_vast_instance_id not in terminated_ids
-    ):
+    if recorded_vast_instance_id and recorded_vast_instance_id not in terminated_ids:
         try:
             result = provider.terminate(recorded_vast_instance_id)
         except Exception as exc:  # noqa: BLE001 - exact-id cleanup still gets verified
@@ -516,14 +501,10 @@ def terminate_canary_resources(
             safe_inspected = _safe_vast_inspect_evidence(inspected)
             safe_inspected["attempt"] = inspect_number
             inspect_attempts.append(safe_inspected)
-            if _vast_instance_absence_proven(
-                safe_inspected, recorded_vast_instance_id
-            ):
+            if _vast_instance_absence_proven(safe_inspected, recorded_vast_instance_id):
                 recorded_absent = True
                 break
-            if _vast_instance_presence_proven(
-                safe_inspected, recorded_vast_instance_id
-            ):
+            if _vast_instance_presence_proven(safe_inspected, recorded_vast_instance_id):
                 # A later exact-id GET overrides an earlier DELETE 404/410.
                 recorded_delete_proven = False
             if inspect_number == 1:
@@ -654,17 +635,19 @@ def run_watchdog(
                         armed=armed,
                         pod_name_prefix=pod_name_prefix,
                     )
-                    recorded_id = str(
-                        recorded_vast_instance.get("instance_id") or ""
-                    ).strip()
+                    recorded_id = str(recorded_vast_instance.get("instance_id") or "").strip()
                     cancel_id = str(cancel_candidate.get("instance_id") or "").strip()
-                    exact_inspects = [
-                        _safe_vast_inspect_evidence(cancel_provider.inspect(recorded_id)),
-                        _safe_vast_inspect_evidence(cancel_provider.inspect(recorded_id)),
-                    ] if (
-                        recorded_vast_instance.get("status") == "recorded"
-                        and recorded_id == cancel_id
-                    ) else []
+                    exact_inspects = (
+                        [
+                            _safe_vast_inspect_evidence(cancel_provider.inspect(recorded_id)),
+                            _safe_vast_inspect_evidence(cancel_provider.inspect(recorded_id)),
+                        ]
+                        if (
+                            recorded_vast_instance.get("status") == "recorded"
+                            and recorded_id == cancel_id
+                        )
+                        else []
+                    )
                     exact_contract_zero = bool(
                         len(exact_inspects) == 2
                         and all(
@@ -685,16 +668,19 @@ def run_watchdog(
                 second_zero = {}
                 second_global_zero = {}
                 exact_contract_zero = False
-            independently_zero = all(
-                inventory.get("api_confirmed") is True
-                and inventory.get("live_resource_count") == 0
-                for inventory in (
-                    first_zero,
-                    first_global_zero,
-                    second_zero,
-                    second_global_zero,
+            independently_zero = (
+                all(
+                    inventory.get("api_confirmed") is True
+                    and inventory.get("live_resource_count") == 0
+                    for inventory in (
+                        first_zero,
+                        first_global_zero,
+                        second_zero,
+                        second_global_zero,
+                    )
                 )
-            ) and exact_contract_zero
+                and exact_contract_zero
+            )
             if independently_zero:
                 owner_teardown_cancel = cancel_candidate
                 cancel_zero_result = {
@@ -712,9 +698,7 @@ def run_watchdog(
                     "raw_secret_values_recorded": False,
                 }
                 if resolved_provider == "vast":
-                    cancel_zero_result["recorded_vast_instance"] = (
-                        recorded_vast_instance
-                    )
+                    cancel_zero_result["recorded_vast_instance"] = recorded_vast_instance
                     cancel_zero_result["recorded_vast_instance_teardown"] = (
                         recorded_vast_verification
                     )
@@ -745,9 +729,7 @@ def run_watchdog(
     result["owner_teardown_cancel_requested"] = bool(owner_teardown_cancel)
     result["owner_teardown_cancel_request_valid"] = bool(owner_teardown_cancel)
     if owner_teardown_cancel:
-        result["provider_mutation_trigger"] = (
-            "owner_teardown_cancel_request_after_provider_zero"
-        )
+        result["provider_mutation_trigger"] = "owner_teardown_cancel_request_after_provider_zero"
     receipt_path = root / "provider_lane_handoff_receipt.json"
     receipt: dict[str, Any] = {}
     receipt_control_required = receipt_path.exists() or receipt_path.is_symlink()
@@ -767,10 +749,7 @@ def run_watchdog(
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):
             receipt = {}
-        if (
-            isinstance(receipt, Mapping)
-            and receipt.get("pod_name_prefix") == pod_name_prefix
-        ):
+        if isinstance(receipt, Mapping) and receipt.get("pod_name_prefix") == pod_name_prefix:
             from .paid_lane_guard import (
                 cancel_pending_teardown,
                 close_pending_teardown,
@@ -801,18 +780,14 @@ def run_watchdog(
                 and expected_pending_lane
                 and pending_record.get("lane") == expected_pending_lane
                 and pending_record.get("resource_kind") == "compute_instance"
-                and str(pending_record.get("resource_name") or "").startswith(
-                    pod_name_prefix
-                )
+                and str(pending_record.get("resource_name") or "").startswith(pod_name_prefix)
             )
             receipt_pod_id = str(receipt.get("pod_id") or "")
             pending_pod_id = str(pending_record.get("instance_id") or "")
             if receipt_pod_id and pending_pod_id and receipt_pod_id != pending_pod_id:
                 pending_valid = False
             effective_pod_id = receipt_pod_id or pending_pod_id
-            pre_provider_absent = (
-                receipt.get("pre_provider_mutation_confirmed_absent") is True
-            )
+            pre_provider_absent = receipt.get("pre_provider_mutation_confirmed_absent") is True
             if pre_provider_absent and not pending_path:
                 pending_close = {"status": "cancelled_no_allocation"}
             elif pending_valid and effective_pod_id:
@@ -863,8 +838,7 @@ def run_watchdog(
             in {"closed", "cancelled_no_allocation"}
             and (
                 result.get("provider_lane_owner_return", {}).get("status") == "restored"
-                or result.get("provider_lane_terminal_release", {}).get("status")
-                == "released"
+                or result.get("provider_lane_terminal_release", {}).get("status") == "released"
             )
         )
         if not control_terminal:
@@ -903,9 +877,7 @@ def run_watchdog(
             charged_usd = round(
                 min(
                     float(reservation["reserved_usd"]),
-                    float(reservation["max_hourly_rate_usd"])
-                    * charged_seconds
-                    / 3600.0,
+                    float(reservation["max_hourly_rate_usd"]) * charged_seconds / 3600.0,
                 ),
                 6,
             )
@@ -914,9 +886,7 @@ def run_watchdog(
                 initial_spent_usd=identity["initial_spent_usd"],
                 initial_used_gpu_seconds=identity["initial_used_gpu_seconds"],
                 total_spend_cap_usd=identity["total_spend_cap_usd"],
-                combined_gpu_wall_cap_seconds=identity[
-                    "combined_gpu_wall_cap_seconds"
-                ],
+                combined_gpu_wall_cap_seconds=identity["combined_gpu_wall_cap_seconds"],
             )
             result["campaign_budget_settlement"] = budget.settle(
                 reservation_id=budget_context["reservation_id"],

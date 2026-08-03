@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from blueprint_pipeline.measurement_adapter_execution import (
@@ -24,17 +25,20 @@ def test_native_worker_failure_is_categorized_without_persisting_content(
     ]
 
 
-def test_safe_environment_synthesizes_isolated_home_and_cache(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_safe_environment_synthesizes_isolated_home_and_cache(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", "/operator-home-must-not-leak")
     monkeypatch.setenv("XDG_CACHE_HOME", "/operator-cache-must-not-leak")
+    monkeypatch.setenv("PYTHONPATH", "relative-source" + os.pathsep + "/allowed-absolute")
 
     environment = _safe_environment(tmp_path)
 
     assert environment["HOME"] == str(tmp_path)
     assert environment["XDG_CACHE_HOME"] == str(tmp_path / ".cache")
     assert environment["TMPDIR"] == str(tmp_path)
+    pythonpath = environment["PYTHONPATH"].split(os.pathsep)
+    assert pythonpath[0] == str(Path(__file__).parents[1] / "src")
+    assert pythonpath[1] == str((Path.cwd() / "relative-source").resolve())
+    assert pythonpath[2] == "/allowed-absolute"
 
 
 def test_dlo_supervisor_classifies_abort_without_returning_stderr() -> None:

@@ -61,6 +61,7 @@ LOCAL_EXECUTION_MODES = frozenset(
     {
         "local_library",
         "isolated_external_conda",
+        "isolated_external_conda_or_exact_source_build",
         "isolated_source_checkout",
         "pipeline_native_read_only",
         "dataset_benchmark",
@@ -598,6 +599,20 @@ def _safe_environment(temporary_root: Path) -> dict[str, str]:
     result = {
         key: value for key, value in os.environ.items() if key in SAFE_ENV_KEYS and _string(value)
     }
+    # The worker must import the same source tree that produced the request's
+    # implementation digest.  Editable environments can otherwise redirect a
+    # child launched from a worktree to a different checkout.  Bind the current
+    # package root first and make any explicitly allowed caller entries absolute
+    # before changing the child working directory to ``temporary_root``.
+    package_root = str(Path(__file__).resolve().parents[1])
+    caller_pythonpath: list[str] = []
+    for raw_entry in result.get("PYTHONPATH", "").split(os.pathsep):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        path = Path(entry)
+        caller_pythonpath.append(str(path if path.is_absolute() else (Path.cwd() / path).resolve()))
+    result["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([package_root, *caller_pythonpath]))
     # Some native runtimes resolve caches during shared-library initialization
     # and abort when HOME is absent.  Never inherit the operator's real home;
     # provide a per-execution sandbox home and cache root instead.
