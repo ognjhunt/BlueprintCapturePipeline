@@ -31,6 +31,12 @@ fi
 python3 -m venv "${VENV_DIR}"
 "${VENV_DIR}/bin/pip" install --upgrade pip >/dev/null
 "${VENV_DIR}/bin/pip" install -r "${REQUIREMENTS}"
+# Install only Blueprint's package/entry points into the isolated trainer
+# environment. Nerfstudio already supplies numpy/Pillow and the other small
+# imports used by the canonical worker; resolving Blueprint's full production
+# dependency graph here would make the reconstruction runtime less isolated
+# and could perturb the pinned trainer environment.
+"${VENV_DIR}/bin/pip" install --no-deps -e "${REPO_ROOT}"
 
 GSPLAT_VERSION="$("${VENV_DIR}/bin/pip" show gsplat | awk '/^Version:/{print $2}')"
 if [[ "${GSPLAT_VERSION}" != "1.4.0" ]]; then
@@ -39,6 +45,7 @@ if [[ "${GSPLAT_VERSION}" != "1.4.0" ]]; then
 fi
 
 "${VENV_DIR}/bin/ns-train" --help >/dev/null
+"${VENV_DIR}/bin/blueprint-run-canonical-3dgs-arm" --help >/dev/null
 
 cat <<EOF
 

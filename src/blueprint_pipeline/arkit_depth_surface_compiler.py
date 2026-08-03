@@ -92,18 +92,31 @@ def _safe_input(root: Path, relative_path: Any, *, label: str) -> Path:
     return resolved
 
 
-def _prepare_output(output_root: str | Path, artifact_root: Path) -> Path:
+def _prepare_output(
+    output_root: str | Path,
+    artifact_root: Path,
+    output_reference_root: str | Path | None,
+) -> tuple[Path, Path]:
     root = artifact_root.resolve(strict=True)
+    reference = (
+        Path(output_reference_root).expanduser().resolve(strict=False)
+        if output_reference_root is not None
+        else root
+    )
+    if reference.is_symlink():
+        raise ArkitDepthSurfaceCompilerError(["output_reference_root_symlink_forbidden"])
+    reference.mkdir(parents=True, exist_ok=True)
+    reference = reference.resolve(strict=True)
     output = Path(output_root)
     if output.is_symlink():
         raise ArkitDepthSurfaceCompilerError(["output_root_symlink_forbidden"])
     resolved = output.resolve(strict=False)
-    if resolved != root and root not in resolved.parents:
-        raise ArkitDepthSurfaceCompilerError(["output_root_outside_artifact_root"])
+    if resolved != reference and reference not in resolved.parents:
+        raise ArkitDepthSurfaceCompilerError(["output_root_outside_reference_root"])
     output.mkdir(parents=True, exist_ok=True)
     if output.is_symlink() or output.resolve(strict=True) != resolved:
         raise ArkitDepthSurfaceCompilerError(["output_root_symlink_forbidden"])
-    return output
+    return output, reference
 
 
 def _load_array(path: Path, *, encoding: str, label: str) -> np.ndarray:
@@ -435,13 +448,10 @@ def build_arkit_depth_surface_compilation_request(
             "digest": calibration_digest,
             "source_metric_scaffold_digest": metric_scaffold_digest,
         },
-        "coordinate_frame_declaration": {
-            "frame": coordinate["world_frame_definition"],
-            "units": "meters",
-            "up_axis": coordinate["up_axis"],
-            "handedness": "right_handed",
-            "gravity_aligned": True,
-        },
+        # Preserve the byte-level coordinate declaration used by the camera
+        # export. The COLMAP binder intentionally refuses a merely equivalent
+        # but differently shaped declaration because that would weaken lineage.
+        "coordinate_frame_declaration": dict(coordinate),
         "authority_used": dict(authority_used),
         "timestamp": timestamp,
         "capture_profile": "iphone_arkit_lidar",
@@ -468,7 +478,11 @@ def build_arkit_depth_surface_compilation_request(
 
 
 def compile_arkit_depth_surface(
-    *, source_artifact: Mapping[str, Any], artifact_root: str | Path, output_root: str | Path
+    *,
+    source_artifact: Mapping[str, Any],
+    artifact_root: str | Path,
+    output_root: str | Path,
+    output_reference_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Back-project high-confidence captured depth without fusing or filling it."""
 
@@ -699,10 +713,14 @@ def compile_arkit_depth_surface(
         "generated_fill_used": False,
         "unseen_or_rejected_depth_filled": False,
     }
-    output = _prepare_output(output_root, root)
+    output, reference_root = _prepare_output(
+        output_root,
+        root,
+        output_reference_root,
+    )
     surface_path = output / "arkit_observed_surface.json"
     surface_digest = _write_immutable_json(surface_path, surface)
-    relative_path = surface_path.resolve().relative_to(root.resolve()).as_posix()
+    relative_path = surface_path.resolve().relative_to(reference_root).as_posix()
     is_public_proxy = request["capture_profile"] == "public_dataset_arkitscenes_proxy"
     result = {
         "schema_version": RESULT_SCHEMA,

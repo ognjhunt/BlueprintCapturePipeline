@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/canonical_3dgs_execution.v1.schema.json",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "schema_version", "status", "source_capture_digest", "source_commit_sha",
+        "worker_python_package_digest",
+        "canonical_v32_3dgs_preparation_digest", "colmap_training_dataset_digest",
+        "colmap_training_dataset_export_result_digest", "frozen_split_digest",
+        "input_artifacts", "primary_method_id", "comparison_method_ids", "arms",
+        "same_candidate_dataset_required", "hidden_heldout_pixels_included",
+        "trainer_self_grading_permitted", "independent_heldout_evaluation_required",
+        "quality_winner", "proof_effect", "claim_ceiling", "timestamp",
+        "canonical_3dgs_execution_plan_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "canonical_3dgs_execution_plan.v1"},
+        "status": {"const": "ready_for_authorized_workers"},
+        "source_capture_digest": {"$ref": "#/$defs/digest"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "worker_python_package_digest": {"$ref": "#/$defs/digest"},
+        "canonical_v32_3dgs_preparation_digest": {"$ref": "#/$defs/digest"},
+        "colmap_training_dataset_digest": {"$ref": "#/$defs/digest"},
+        "colmap_training_dataset_export_result_digest": {"$ref": "#/$defs/digest"},
+        "frozen_split_digest": {"$ref": "#/$defs/digest"},
+        "input_artifacts": {
+          "type": "array", "minItems": 4,
+          "items": {
+            "type": "object", "required": ["relative_path", "digest"],
+            "properties": {"relative_path": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/digest"}}
+          }
+        },
+        "primary_method_id": {"const": "jawset_postshot_splat3_v1"},
+        "comparison_method_ids": {"const": ["nerfstudio_splatfacto_v1_1_5"]},
+        "arms": {"type": "array", "minItems": 2, "maxItems": 2},
+        "same_candidate_dataset_required": {"const": true},
+        "hidden_heldout_pixels_included": {"const": false},
+        "trainer_self_grading_permitted": {"const": false},
+        "independent_heldout_evaluation_required": {"const": true},
+        "quality_winner": {"type": "null"},
+        "proof_effect": {"const": "authorized_candidate_training_plan_only"},
+        "claim_ceiling": {"const": "appearance_reconstruction_candidate"},
+        "canonical_3dgs_execution_plan_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": [
+        "schema_version", "status", "arm_id", "role", "method_id",
+        "source_capture_digest", "source_commit_sha", "canonical_3dgs_execution_plan_digest",
+        "colmap_training_dataset_digest", "frozen_split_digest", "runtime_identity",
+        "worker_control_binding", "command_digest", "exit_code", "artifacts", "hidden_heldout_pixels_included",
+        "candidate_self_graded", "quality_claimed", "proof_effect", "claim_ceiling",
+        "blockers", "timestamp", "canonical_3dgs_arm_result_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "canonical_3dgs_arm_result.v1"},
+        "status": {"enum": ["succeeded", "failed"]},
+        "role": {"enum": ["primary", "comparison"]},
+        "source_capture_digest": {"$ref": "#/$defs/digest"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "canonical_3dgs_execution_plan_digest": {"$ref": "#/$defs/digest"},
+        "colmap_training_dataset_digest": {"$ref": "#/$defs/digest"},
+        "frozen_split_digest": {"$ref": "#/$defs/digest"},
+        "worker_control_binding": {
+          "type": "object",
+          "required": [
+            "status", "external_worker_admission_proven",
+            "provider_zero_required_after_execution", "proof_effect"
+          ],
+          "properties": {
+            "status": {"enum": ["trusted_in_process_runner", "external_worker_admission_bound"]},
+            "external_worker_admission_proven": {"type": "boolean"},
+            "provider_zero_required_after_execution": {"type": "boolean"},
+            "transport_bundle_digest": {"$ref": "#/$defs/digest"},
+            "transport_receipt_digest": {"$ref": "#/$defs/digest"},
+            "worker_admission_digest": {"$ref": "#/$defs/digest"},
+            "allocation_binding_digest": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "command_digest": {"$ref": "#/$defs/digest"},
+        "artifacts": {"type": "array", "minItems": 1},
+        "hidden_heldout_pixels_included": {"const": false},
+        "candidate_self_graded": {"const": false},
+        "quality_claimed": {"const": false},
+        "proof_effect": {"const": "appearance_asset_candidate_only"},
+        "claim_ceiling": {"const": "appearance_reconstruction"},
+        "canonical_3dgs_arm_result_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": [
+        "schema_version", "status", "source_capture_digest", "source_commit_sha",
+        "canonical_3dgs_execution_plan_digest", "colmap_training_dataset_digest",
+        "frozen_split_digest", "primary_method_id", "primary_result_digest",
+        "comparison_result_digests", "all_arms_used_identical_candidate_dataset",
+        "hidden_heldout_pixels_included", "independent_heldout_evaluation_status",
+        "appearance_fidelity_candidate_bindings", "execution_control_summary", "next_quality_gate",
+        "quality_winner", "raw_capture_authority_upgraded",
+        "metric_collision_or_physical_claim_upgraded", "proof_effect", "claim_ceiling",
+        "timestamp", "canonical_3dgs_campaign_result_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "canonical_3dgs_campaign_result.v1"},
+        "status": {"enum": ["candidates_ready_for_independent_evaluation", "candidate_training_incomplete"]},
+        "source_capture_digest": {"$ref": "#/$defs/digest"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "canonical_3dgs_execution_plan_digest": {"$ref": "#/$defs/digest"},
+        "colmap_training_dataset_digest": {"$ref": "#/$defs/digest"},
+        "frozen_split_digest": {"$ref": "#/$defs/digest"},
+        "primary_method_id": {"const": "jawset_postshot_splat3_v1"},
+        "all_arms_used_identical_candidate_dataset": {"const": true},
+        "hidden_heldout_pixels_included": {"const": false},
+        "independent_heldout_evaluation_status": {"const": "required_not_executed"},
+        "appearance_fidelity_candidate_bindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "candidate_method_id", "candidate_role", "candidate_result_digest",
+              "asset_digest", "coordinate_basis_digest", "representation",
+              "splat_count", "sh_degree", "bounds", "global_decimation_applied",
+              "removal_reasons", "source_appearance_immutable",
+              "reference_frame_comparison_status"
+            ],
+            "properties": {
+              "candidate_result_digest": {"$ref": "#/$defs/digest"},
+              "asset_digest": {"$ref": "#/$defs/digest"},
+              "coordinate_basis_digest": {"$ref": "#/$defs/digest"},
+              "representation": {"const": "standard_3dgs_ply"},
+              "splat_count": {"type": "integer", "minimum": 1},
+              "sh_degree": {"type": "integer", "minimum": 0, "maximum": 3},
+              "global_decimation_applied": {"const": false},
+              "source_appearance_immutable": {"const": true},
+              "reference_frame_comparison_status": {"const": "required_not_executed"}
+            }
+          }
+        },
+        "execution_control_summary": {
+          "type": "object",
+          "required": [
+            "all_external_workers_admitted", "control_modes",
+            "allocation_binding_digests", "provider_zero_required_after_execution",
+            "provider_zero_verified_after_execution", "resource_closeout_is_quality_evidence"
+          ],
+          "properties": {
+            "all_external_workers_admitted": {"type": "boolean"},
+            "control_modes": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+            "allocation_binding_digests": {"type": "array", "items": {"$ref": "#/$defs/digest"}},
+            "provider_zero_required_after_execution": {"type": "boolean"},
+            "provider_zero_verified_after_execution": {"const": false},
+            "resource_closeout_is_quality_evidence": {"const": false}
+          }
+        },
+        "next_quality_gate": {
+          "type": "object",
+          "required": [
+            "schema_version", "required_metrics", "native_3dgs_exact_camera_render_required",
+            "site_task_specific_thresholds_required", "default_thresholds_assumed",
+            "selection_allowed_before_measurement"
+          ],
+          "properties": {
+            "schema_version": {"const": "appearance_fidelity_qualification.v1"},
+            "required_metrics": {"const": ["ssim", "psnr_db", "lpips"]},
+            "native_3dgs_exact_camera_render_required": {"const": true},
+            "site_task_specific_thresholds_required": {"const": true},
+            "default_thresholds_assumed": {"const": false},
+            "selection_allowed_before_measurement": {"const": false}
+          }
+        },
+        "quality_winner": {"type": "null"},
+        "raw_capture_authority_upgraded": {"const": false},
+        "metric_collision_or_physical_claim_upgraded": {"const": false},
+        "proof_effect": {"const": "candidate_generation_only"},
+        "claim_ceiling": {"const": "appearance_reconstruction_candidates"},
+        "canonical_3dgs_campaign_result_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  ]
+}
