@@ -23,7 +23,7 @@ import json
 import os
 import tempfile
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
@@ -34,7 +34,10 @@ from .arkit_depth_surface_compiler import (
     compile_arkit_depth_surface,
 )
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .canonical_3dgs_evaluation import compile_canonical_3dgs_hidden_evaluator_input
+from .canonical_3dgs_evaluation import (
+    compile_canonical_3dgs_hidden_evaluator_input,
+    compile_canonical_3dgs_proxy_hidden_evaluator_input,
+)
 from .gaussian_splat_decode import read_standard_3dgs_ply
 from .local_reconstruction_adapters import LocalArkitMetricScaffoldAdapter
 from .reconstruction_colmap_dataset import (
@@ -47,6 +50,8 @@ PLAN_SCHEMA = "canonical_3dgs_execution_plan.v1"
 ARM_RESULT_SCHEMA = "canonical_3dgs_arm_result.v1"
 CAMPAIGN_RESULT_SCHEMA = "canonical_3dgs_campaign_result.v1"
 PREPARATION_SCHEMA = "canonical_v32_3dgs_preparation.v1"
+PROXY_PREPARATION_SCHEMA = "canonical_arkitscenes_proxy_3dgs_preparation.v1"
+SOURCE_ADMISSION_SCHEMA = "canonical_3dgs_source_admission.v1"
 
 POSTSHOT_METHOD = "jawset_postshot_splat3_v1"
 SPLATFACTO_METHOD = "nerfstudio_splatfacto_v1_1_5"
@@ -231,7 +236,14 @@ def _verify_colmap_dataset(dataset: Mapping[str, Any], dataset_root: Path) -> No
         or int(dataset.get("initialization_point_count") or 0) < 1
     ):
         errors.append("colmap_dataset_not_training_ready")
-    for row in dataset.get("output_artifacts") or []:
+    output_artifacts = dataset.get("output_artifacts")
+    if not isinstance(output_artifacts, list) or len(output_artifacts) < 4:
+        errors.append("colmap_output_artifacts_missing")
+        output_artifacts = []
+    seen_paths: set[str] = set()
+    image_digests: list[dict[str, str]] = []
+    sparse_digests: dict[str, str] = {}
+    for row in output_artifacts:
         if not isinstance(row, Mapping):
             errors.append("colmap_output_artifact_invalid")
             continue
@@ -244,10 +256,149 @@ def _verify_colmap_dataset(dataset: Mapping[str, Any], dataset_root: Path) -> No
         except Canonical3DGSPipelineError as exc:
             errors.extend(exc.codes)
             continue
-        if _sha256(path) != row.get("digest"):
+        relative_path = path.relative_to(dataset_root.resolve()).as_posix()
+        if relative_path in seen_paths:
+            errors.append("colmap_output_artifact_duplicate")
+        seen_paths.add(relative_path)
+        digest = _sha256(path)
+        if digest != row.get("digest"):
             errors.append("colmap_output_artifact_digest_mismatch")
+        if row.get("artifact_type") == "candidate_image" and relative_path.startswith(
+            "images/"
+        ):
+            image_digests.append({"artifact_id": path.name, "digest": digest})
+        elif row.get("artifact_type") == "colmap_sparse_text" and relative_path.startswith(
+            "sparse/0/"
+        ):
+            sparse_digests[path.name] = digest
+        else:
+            errors.append("colmap_output_artifact_type_or_path_invalid")
+    expected_paths = {
+        path.relative_to(dataset_root.resolve()).as_posix()
+        for base in (dataset_root / "images", dataset_root / "sparse" / "0")
+        if base.is_dir()
+        for path in base.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    if seen_paths != expected_paths:
+        errors.append("colmap_output_artifact_inventory_mismatch")
+    request_digest = (
+        dataset.get("parent_artifact_or_event", {}).get("request_digest")
+        if isinstance(dataset.get("parent_artifact_or_event"), Mapping)
+        else None
+    )
+    if not _digest(request_digest):
+        errors.append("colmap_parent_request_digest_invalid")
+    elif dataset.get("colmap_training_dataset_digest") != canonical_digest(
+        {
+            "images": image_digests,
+            "sparse": dict(sorted(sparse_digests.items())),
+            "request_digest": request_digest,
+        }
+    ):
+        errors.append("colmap_training_dataset_digest_invalid")
     if errors:
         raise Canonical3DGSPipelineError(errors)
+
+
+def build_canonical_3dgs_source_admission(
+    *,
+    source_profile: str,
+    source_capture_identity: str,
+    source_capture_digest: str,
+    source_artifact_commit_sha: str,
+    frozen_split_digest: str,
+    colmap_training_dataset_digest: str,
+    hidden_evaluator_input_digest: str,
+    raw_contract_3_2_proven: bool,
+    world_frame: str,
+    coordinate_frame_declaration: Mapping[str, Any],
+    metric_scale_status: str,
+    authority_used: Mapping[str, Any],
+    input_artifacts: Sequence[Mapping[str, Any]],
+    claim_limitations: Sequence[str],
+    timestamp: str,
+) -> dict[str, Any]:
+    """Admit one exact source only for candidate training and held-out evaluation."""
+
+    errors: list[str] = []
+    if source_profile not in {"blueprint_raw_v3_2", "public_dataset_arkitscenes_proxy"}:
+        errors.append("canonical_3dgs_source_profile_invalid")
+    if not str(source_capture_identity or "").strip() or not _digest(source_capture_digest):
+        errors.append("canonical_3dgs_source_identity_invalid")
+    if len(source_artifact_commit_sha) != 40 or any(
+        character not in "0123456789abcdef" for character in source_artifact_commit_sha
+    ):
+        errors.append("canonical_3dgs_source_artifact_commit_invalid")
+    for value, code in (
+        (frozen_split_digest, "canonical_3dgs_source_split_digest_invalid"),
+        (colmap_training_dataset_digest, "canonical_3dgs_source_dataset_digest_invalid"),
+        (hidden_evaluator_input_digest, "canonical_3dgs_source_evaluator_digest_invalid"),
+    ):
+        if not _digest(value):
+            errors.append(code)
+    if raw_contract_3_2_proven != (source_profile == "blueprint_raw_v3_2"):
+        errors.append("canonical_3dgs_source_raw_contract_claim_invalid")
+    if not str(world_frame or "").strip() or not isinstance(
+        coordinate_frame_declaration, Mapping
+    ):
+        errors.append("canonical_3dgs_source_coordinate_frame_invalid")
+    if metric_scale_status not in {
+        "sensor_metric_unvalidated",
+        "independently_validated_metric",
+        "not_established",
+        "unknown",
+    }:
+        errors.append("canonical_3dgs_source_metric_scale_status_invalid")
+    if not isinstance(authority_used, Mapping) or authority_used.get(
+        "local_processing_authorized"
+    ) is not True:
+        errors.append("canonical_3dgs_source_local_authority_missing")
+    normalized_artifacts: list[dict[str, str]] = []
+    for row in input_artifacts:
+        if not isinstance(row, Mapping) or not str(row.get("artifact_id") or "").strip() or not _digest(
+            row.get("digest")
+        ):
+            errors.append("canonical_3dgs_source_input_artifact_invalid")
+            continue
+        normalized_artifacts.append(
+            {"artifact_id": str(row["artifact_id"]), "digest": str(row["digest"])}
+        )
+    if not normalized_artifacts:
+        errors.append("canonical_3dgs_source_input_artifacts_missing")
+    if errors:
+        raise Canonical3DGSPipelineError(errors)
+    result = {
+        "schema_version": SOURCE_ADMISSION_SCHEMA,
+        "status": "admitted_candidate_training_source",
+        "source_profile": source_profile,
+        "source_capture_identity": source_capture_identity,
+        "source_capture_digest": source_capture_digest,
+        "source_artifact_commit_sha": source_artifact_commit_sha,
+        "frozen_split_digest": frozen_split_digest,
+        "colmap_training_dataset_digest": colmap_training_dataset_digest,
+        "hidden_evaluator_input_digest": hidden_evaluator_input_digest,
+        "candidate_hidden_pixel_access": False,
+        "raw_contract_3_2_proven": raw_contract_3_2_proven,
+        "world_frame": world_frame,
+        "coordinate_frame_declaration": dict(coordinate_frame_declaration),
+        "metric_scale_status": metric_scale_status,
+        "metric_scale_independently_validated": (
+            metric_scale_status == "independently_validated_metric"
+        ),
+        "authority_used": dict(authority_used),
+        "input_artifacts": sorted(normalized_artifacts, key=lambda row: row["artifact_id"]),
+        "claim_limitations": sorted(set(str(value) for value in claim_limitations)),
+        "provider_upload_authorized_by_source_admission": False,
+        "paid_compute_authorized_by_source_admission": False,
+        "proof_effect": "candidate_training_source_admission_only",
+        "claim_ceiling": "appearance_reconstruction_candidate",
+        "timestamp": timestamp,
+    }
+    result["canonical_3dgs_source_admission_digest"] = canonical_digest(
+        result, digest_field="canonical_3dgs_source_admission_digest"
+    )
+    return result
 
 
 def _standard_splat_profile(splat: Any) -> dict[str, Any]:
@@ -406,12 +557,62 @@ def prepare_canonical_v32_training_dataset(
     dataset_root = trainer_input_root / str(dataset["relative_path"])
     _verify_colmap_dataset(dataset, dataset_root)
 
+    source_admission = build_canonical_3dgs_source_admission(
+        source_profile="blueprint_raw_v3_2",
+        source_capture_identity=intake_id,
+        source_capture_digest=capture_digest,
+        source_artifact_commit_sha=source_commit,
+        frozen_split_digest=dataset["frozen_split_digest"],
+        colmap_training_dataset_digest=dataset["colmap_training_dataset_digest"],
+        hidden_evaluator_input_digest=evaluator_input[
+            "canonical_3dgs_hidden_evaluator_input_digest"
+        ],
+        raw_contract_3_2_proven=True,
+        world_frame="canonical_arkit_world",
+        coordinate_frame_declaration=dict(dataset.get("coordinate_frame_declaration") or {}),
+        metric_scale_status=str(dataset.get("metric_scale_status") or "sensor_metric_unvalidated"),
+        authority_used=rights_and_retention,
+        input_artifacts=[
+            {
+                "artifact_id": "arkit_reconstruction_dataset_export",
+                "digest": arkit_export["arkit_reconstruction_dataset_export_digest"],
+            },
+            {
+                "artifact_id": "arkit_depth_surface_compilation_result",
+                "digest": surface_result["arkit_depth_surface_compilation_result_digest"],
+            },
+            {
+                "artifact_id": "arkit_observed_surface",
+                "digest": surface_result["surface_asset"]["digest"],
+            },
+            {
+                "artifact_id": "colmap_training_dataset_export_result",
+                "digest": dataset["colmap_training_dataset_export_result_digest"],
+            },
+            {
+                "artifact_id": "hidden_evaluator_input",
+                "digest": evaluator_input["canonical_3dgs_hidden_evaluator_input_digest"],
+            },
+        ],
+        claim_limitations=list(dataset.get("warnings") or [])
+        + list(dataset.get("blockers") or []),
+        timestamp=str(arkit_export["timestamp"]),
+    )
+    _write_immutable_json(
+        derived_root / "canonical_3dgs_source_admission.json", source_admission
+    )
+
     preparation = {
         "schema_version": PREPARATION_SCHEMA,
         "status": "training_dataset_ready",
+        "source_profile": "blueprint_raw_v3_2",
+        "canonical_3dgs_source_admission_digest": source_admission[
+            "canonical_3dgs_source_admission_digest"
+        ],
         "source_capture_identity": intake_id,
         "source_capture_digest": capture_digest,
         "raw_contract_version": "3.2.0",
+        "raw_contract_3_2_proven": True,
         "raw_capture_authority_preserved": True,
         "metric_scaffold_result_digest": scaffold_result[
             "reconstruction_result_digest"
@@ -435,6 +636,11 @@ def prepare_canonical_v32_training_dataset(
             if dataset.get("pose_refinement_executed") is not True
             else "qualified_refined_pose_candidate"
         ),
+        "world_frame": source_admission["world_frame"],
+        "coordinate_frame_declaration": source_admission[
+            "coordinate_frame_declaration"
+        ],
+        "metric_scale_status": source_admission["metric_scale_status"],
         "hidden_heldout_pixels_included": False,
         "hidden_evaluator_input_digest": evaluator_input[
             "canonical_3dgs_hidden_evaluator_input_digest"
@@ -457,6 +663,316 @@ def prepare_canonical_v32_training_dataset(
     return {"preparation": preparation, "dataset": dataset, "dataset_root": dataset_root}
 
 
+def prepare_canonical_arkitscenes_proxy_training_dataset(
+    *,
+    proxy_root: str | Path,
+    source_artifact_root: str | Path,
+    output_root: str | Path,
+    source_commit_sha: str,
+) -> dict[str, Any]:
+    """Admit one explicit ARKitScenes proxy and rebuild its canonical worker input.
+
+    The caller supplies the exact content-addressed proxy directory.  No newest-
+    file or scene-id search is performed, and legacy COLMAP exports are not
+    trusted: the current exporter re-materializes and rehashes every candidate
+    image and sparse text artifact.
+    """
+
+    proxy = Path(proxy_root).expanduser().resolve()
+    source_root = Path(source_artifact_root).expanduser().resolve()
+    derived_root = Path(output_root).expanduser().resolve()
+    if source_root != proxy and source_root not in proxy.parents:
+        raise Canonical3DGSPipelineError(["arkitscenes_proxy_root_binding_invalid"])
+    if len(source_commit_sha) != 40 or any(
+        character not in "0123456789abcdef" for character in source_commit_sha
+    ):
+        raise Canonical3DGSPipelineError(["source_commit_sha_invalid"])
+
+    compilation_path = proxy / "arkitscenes_raw_proxy_compilation.json"
+    reconstruction_path = next(
+        iter(sorted(proxy.glob("frozen_dataset_*/reconstruction_dataset_manifest.json"))),
+        None,
+    )
+    if reconstruction_path is None or len(
+        list(proxy.glob("frozen_dataset_*/reconstruction_dataset_manifest.json"))
+    ) != 1:
+        raise Canonical3DGSPipelineError(["arkitscenes_proxy_dataset_manifest_ambiguous"])
+    observations_path = proxy / "camera_observations_proxy.json"
+    evaluator_scaffold_path = proxy / "evaluator_hidden" / "metric_scaffold_proxy.json"
+    surface_result_path = (
+        proxy / "observed_surface_proxy_v1" / "arkit_depth_surface_proxy_result.json"
+    )
+    compilation = _load_json(compilation_path, code="arkitscenes_proxy_compilation_invalid")
+    reconstruction = _load_json(
+        reconstruction_path, code="arkitscenes_proxy_dataset_manifest_invalid"
+    )
+    observations = _load_json(
+        observations_path, code="arkitscenes_proxy_camera_observations_invalid"
+    )
+    evaluator_scaffold = _load_json(
+        evaluator_scaffold_path, code="arkitscenes_proxy_evaluator_scaffold_invalid"
+    )
+    surface_result = _load_json(
+        surface_result_path, code="arkitscenes_proxy_surface_result_invalid"
+    )
+    capture_digest = compilation.get("source_capture_digest")
+    split_digest = compilation.get("train_heldout_split_digest")
+    output_digests = compilation.get("output_digests")
+    errors: list[str] = []
+    if (
+        compilation.get("schema_version") != "arkitscenes_raw_proxy_compilation.v1"
+        or compilation.get("arkitscenes_proxy_compilation_digest")
+        != canonical_digest(compilation, digest_field="arkitscenes_proxy_compilation_digest")
+        or compilation.get("raw_contract_3_2_proven") is not False
+        or compilation.get("hidden_heldout_pixels_exposed_to_candidate") is not False
+        or not _digest(capture_digest)
+        or not _digest(split_digest)
+        or not isinstance(output_digests, Mapping)
+    ):
+        errors.append("arkitscenes_proxy_compilation_binding_invalid")
+    if (
+        reconstruction.get("schema_version") != "reconstruction_dataset_manifest.v1"
+        or reconstruction.get("dataset_manifest_digest")
+        != canonical_digest(reconstruction, digest_field="dataset_manifest_digest")
+        or reconstruction.get("source_capture_digest") != capture_digest
+        or reconstruction.get("train_heldout_split_digest") != split_digest
+        or not isinstance(output_digests, Mapping)
+        or output_digests.get("dataset_manifest_digest")
+        != reconstruction.get("dataset_manifest_digest")
+    ):
+        errors.append("arkitscenes_proxy_dataset_binding_invalid")
+    if (
+        observations.get("schema_version")
+        not in {"camera_observation_manifest.v1", "arkitscenes_camera_observations_proxy.v1"}
+        or observations.get("camera_observation_digest")
+        != canonical_digest(observations, digest_field="camera_observation_digest")
+        or observations.get("capture_digest") != capture_digest
+        or observations.get("split_digest") != split_digest
+        or observations.get("hidden_heldout_pixels_included") is not False
+        or observations.get("candidate_may_access_hidden_heldout") is not False
+    ):
+        errors.append("arkitscenes_proxy_camera_observation_binding_invalid")
+    if (
+        surface_result.get("arkit_depth_surface_compilation_result_digest")
+        != canonical_digest(
+            surface_result,
+            digest_field="arkit_depth_surface_compilation_result_digest",
+        )
+        or surface_result.get("source_capture_digest") != capture_digest
+        or surface_result.get("train_heldout_split_digest") != split_digest
+        or surface_result.get("hidden_heldout_observations_accessed") is not False
+        or surface_result.get("generated_fill_used") is not False
+        or surface_result.get("raw_arkit_poses_modified") is not False
+    ):
+        errors.append("arkitscenes_proxy_surface_binding_invalid")
+    authority = compilation.get("authority_used")
+    if not isinstance(authority, Mapping) or authority.get("local_processing_authorized") is not True:
+        errors.append("arkitscenes_proxy_authority_invalid")
+    if errors:
+        raise Canonical3DGSPipelineError(errors)
+
+    references = reconstruction.get("artifact_references")
+    candidate_reference = (
+        references.get("candidate_dataset_manifest")
+        if isinstance(references, Mapping)
+        else None
+    )
+    if not isinstance(candidate_reference, Mapping):
+        raise Canonical3DGSPipelineError(["arkitscenes_proxy_candidate_reference_missing"])
+    candidate_path = _safe_child(
+        proxy,
+        candidate_reference.get("relative_path"),
+        code="arkitscenes_proxy_candidate_path_invalid",
+    )
+    if _sha256(candidate_path) != candidate_reference.get("digest"):
+        raise Canonical3DGSPipelineError(["arkitscenes_proxy_candidate_byte_digest_mismatch"])
+    candidate = _load_json(candidate_path, code="arkitscenes_proxy_candidate_invalid")
+    if (
+        candidate.get("candidate_dataset_digest")
+        != canonical_digest(candidate, digest_field="candidate_dataset_digest")
+        or candidate.get("capture_digest") != capture_digest
+        or candidate.get("split_digest") != split_digest
+        or candidate.get("heldout_pixels_included") is not False
+    ):
+        raise Canonical3DGSPipelineError(["arkitscenes_proxy_candidate_binding_invalid"])
+
+    surface_asset = surface_result.get("surface_asset")
+    if not isinstance(surface_asset, Mapping):
+        raise Canonical3DGSPipelineError(["arkitscenes_proxy_surface_asset_missing"])
+    surface_path = _safe_child(
+        source_root,
+        surface_asset.get("relative_path"),
+        code="arkitscenes_proxy_surface_asset_path_invalid",
+    )
+    if _sha256(surface_path) != surface_asset.get("digest"):
+        raise Canonical3DGSPipelineError(["arkitscenes_proxy_surface_asset_digest_mismatch"])
+
+    timestamp = str(compilation.get("timestamp") or "")
+    request = {
+        "schema_version": "colmap_training_dataset_export_request.v1",
+        "stable_run_identity": (
+            f"canonical-{compilation['source_capture_identity']}-{source_commit_sha[:12]}"
+        ),
+        "source_capture_digest": capture_digest,
+        "source_commit_sha": source_commit_sha,
+        "reconstruction_dataset_digest": reconstruction["dataset_manifest_digest"],
+        "frozen_split_digest": split_digest,
+        "camera_observation_manifest": observations,
+        "camera_calibration_manifest": None,
+        "candidate_dataset_manifest": candidate,
+        "metric_scaffold_digest": surface_result["camera_calibration_binding"][
+            "metric_scaffold_digest"
+        ],
+        "maximum_initialization_points": 100_000,
+        "coordinate_frame_declaration": dict(
+            surface_result.get("coordinate_frame_declaration") or {}
+        ),
+        "units": "meters",
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "authority_used": dict(authority),
+        "timestamp": timestamp,
+        "blockers": [
+            "initialization_surface_not_bound",
+            "pose_refinement_not_executed",
+            "coordinate_frame_qualification_required",
+            "metric_scale_independent_validation_required",
+        ],
+    }
+    request["colmap_training_dataset_export_request_digest"] = canonical_digest(
+        request, digest_field="colmap_training_dataset_export_request_digest"
+    )
+    initialized_request = bind_colmap_initialization_surface(
+        source_artifact=request,
+        surface_compilation_result=surface_result,
+    )
+    evaluator_input_root = derived_root / "evaluator_input"
+    evaluator_input = compile_canonical_3dgs_proxy_hidden_evaluator_input(
+        reconstruction_dataset_manifest=reconstruction,
+        dataset_artifact_root=proxy,
+        evaluator_metric_scaffold=evaluator_scaffold,
+        output_root=evaluator_input_root,
+        source_commit_sha=source_commit_sha,
+        authority_used=authority,
+        timestamp=timestamp,
+    )
+    trainer_input_root = derived_root / "trainer_input"
+    dataset = export_colmap_training_dataset(
+        source_artifact=initialized_request,
+        artifact_root=proxy,
+        initialization_artifact_root=source_root,
+        output_root=trainer_input_root,
+    )
+    dataset_root = trainer_input_root / str(dataset["relative_path"])
+    _verify_colmap_dataset(dataset, dataset_root)
+
+    source_admission = build_canonical_3dgs_source_admission(
+        source_profile="public_dataset_arkitscenes_proxy",
+        source_capture_identity=str(compilation["source_capture_identity"]),
+        source_capture_digest=str(capture_digest),
+        source_artifact_commit_sha=str(compilation["source_commit_sha"]),
+        frozen_split_digest=str(split_digest),
+        colmap_training_dataset_digest=dataset["colmap_training_dataset_digest"],
+        hidden_evaluator_input_digest=evaluator_input[
+            "canonical_3dgs_hidden_evaluator_input_digest"
+        ],
+        raw_contract_3_2_proven=False,
+        world_frame="arkitscenes_official_loader_world",
+        coordinate_frame_declaration=dict(
+            surface_result.get("coordinate_frame_declaration") or {}
+        ),
+        metric_scale_status="sensor_metric_unvalidated",
+        authority_used=authority,
+        input_artifacts=[
+            {
+                "artifact_id": "arkitscenes_proxy_compilation",
+                "digest": compilation["arkitscenes_proxy_compilation_digest"],
+            },
+            {
+                "artifact_id": "reconstruction_dataset_manifest",
+                "digest": reconstruction["dataset_manifest_digest"],
+            },
+            {
+                "artifact_id": "observed_surface",
+                "digest": surface_asset["digest"],
+            },
+            {
+                "artifact_id": "colmap_training_dataset_export_result",
+                "digest": dataset["colmap_training_dataset_export_result_digest"],
+            },
+            {
+                "artifact_id": "hidden_evaluator_input",
+                "digest": evaluator_input["canonical_3dgs_hidden_evaluator_input_digest"],
+            },
+        ],
+        claim_limitations=[
+            *list(compilation.get("blockers") or []),
+            *list(compilation.get("warnings") or []),
+            *list(dataset.get("blockers") or []),
+            *list(dataset.get("warnings") or []),
+        ],
+        timestamp=timestamp,
+    )
+    _write_immutable_json(
+        derived_root / "canonical_3dgs_source_admission.json", source_admission
+    )
+    preparation = {
+        "schema_version": PROXY_PREPARATION_SCHEMA,
+        "status": "training_dataset_ready",
+        "source_profile": "public_dataset_arkitscenes_proxy",
+        "canonical_3dgs_source_admission_digest": source_admission[
+            "canonical_3dgs_source_admission_digest"
+        ],
+        "source_capture_identity": compilation["source_capture_identity"],
+        "source_capture_digest": capture_digest,
+        "raw_contract_version": None,
+        "raw_contract_3_2_proven": False,
+        "raw_capture_authority_preserved": True,
+        "proxy_compilation_digest": compilation["arkitscenes_proxy_compilation_digest"],
+        "arkit_depth_surface_compilation_result_digest": surface_result[
+            "arkit_depth_surface_compilation_result_digest"
+        ],
+        "colmap_training_dataset_export_result_digest": dataset[
+            "colmap_training_dataset_export_result_digest"
+        ],
+        "colmap_training_dataset_digest": dataset["colmap_training_dataset_digest"],
+        "frozen_split_digest": dataset["frozen_split_digest"],
+        "dataset_relative_path": dataset_root.relative_to(derived_root).as_posix(),
+        "image_count": dataset["image_count"],
+        "initialization_point_count": dataset["initialization_point_count"],
+        "pose_binding": "arkitscenes_official_trajectory_exact_timestamp",
+        "world_frame": "arkitscenes_official_loader_world",
+        "coordinate_frame_declaration": source_admission[
+            "coordinate_frame_declaration"
+        ],
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "hidden_heldout_pixels_included": False,
+        "hidden_evaluator_input_digest": evaluator_input[
+            "canonical_3dgs_hidden_evaluator_input_digest"
+        ],
+        "hidden_evaluator_input_relative_path": (
+            evaluator_input_root / "canonical_3dgs_hidden_evaluator_input.json"
+        ).relative_to(derived_root).as_posix(),
+        "trainer_self_grading_permitted": False,
+        "warnings": source_admission["claim_limitations"],
+        "proof_effect": "trainer_input_materialization_only",
+        "claim_ceiling": "reconstruction_training_request",
+        "timestamp": timestamp,
+    }
+    preparation["canonical_v32_3dgs_preparation_digest"] = canonical_digest(
+        preparation, digest_field="canonical_v32_3dgs_preparation_digest"
+    )
+    _write_immutable_json(
+        derived_root / "canonical_arkitscenes_proxy_3dgs_preparation.json", preparation
+    )
+    _write_immutable_json(derived_root / "colmap_training_dataset_export_result.json", dataset)
+    return {
+        "preparation": preparation,
+        "source_admission": source_admission,
+        "dataset": dataset,
+        "dataset_root": dataset_root,
+    }
+
+
 def build_canonical_3dgs_execution_plan(
     *,
     preparation: Mapping[str, Any],
@@ -468,13 +984,18 @@ def build_canonical_3dgs_execution_plan(
     root = Path(dataset_root).expanduser().resolve()
     _verify_colmap_dataset(dataset, root)
     if (
-        preparation.get("schema_version") != PREPARATION_SCHEMA
+        preparation.get("schema_version") not in {PREPARATION_SCHEMA, PROXY_PREPARATION_SCHEMA}
         or preparation.get("canonical_v32_3dgs_preparation_digest")
         != canonical_digest(
             preparation, digest_field="canonical_v32_3dgs_preparation_digest"
         )
         or preparation.get("colmap_training_dataset_digest")
         != dataset.get("colmap_training_dataset_digest")
+        or not _digest(preparation.get("canonical_3dgs_source_admission_digest"))
+        or preparation.get("source_profile")
+        not in {"blueprint_raw_v3_2", "public_dataset_arkitscenes_proxy"}
+        or preparation.get("raw_contract_3_2_proven")
+        != (preparation.get("source_profile") == "blueprint_raw_v3_2")
     ):
         raise Canonical3DGSPipelineError(["preparation_dataset_binding_invalid"])
     if len(source_commit_sha) != 40 or any(
@@ -491,6 +1012,11 @@ def build_canonical_3dgs_execution_plan(
         "source_capture_digest": dataset["source_capture_digest"],
         "source_commit_sha": source_commit_sha,
         "worker_python_package_digest": canonical_3dgs_worker_package_digest(),
+        "source_profile": preparation.get("source_profile"),
+        "canonical_3dgs_source_admission_digest": preparation.get(
+            "canonical_3dgs_source_admission_digest"
+        ),
+        "raw_contract_3_2_proven": preparation.get("raw_contract_3_2_proven") is True,
         "canonical_v32_3dgs_preparation_digest": preparation[
             "canonical_v32_3dgs_preparation_digest"
         ],
@@ -503,6 +1029,13 @@ def build_canonical_3dgs_execution_plan(
         "image_count": dataset["image_count"],
         "initialization_point_count": dataset["initialization_point_count"],
         "pose_binding": preparation["pose_binding"],
+        "world_frame": preparation.get("world_frame", "canonical_arkit_world"),
+        "coordinate_frame_declaration": dict(
+            preparation.get("coordinate_frame_declaration") or {}
+        ),
+        "metric_scale_status": str(
+            preparation.get("metric_scale_status") or "sensor_metric_unvalidated"
+        ),
         "primary_method_id": POSTSHOT_METHOD,
         "comparison_method_ids": [SPLATFACTO_METHOD],
         "arms": [
@@ -590,8 +1123,7 @@ def build_canonical_3dgs_execution_plan(
         "quality_winner": None,
         "proof_effect": "authorized_candidate_training_plan_only",
         "claim_ceiling": "appearance_reconstruction_candidate",
-        "timestamp": timestamp
-        or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timestamp": timestamp or str(preparation["timestamp"]),
     }
     plan["canonical_3dgs_execution_plan_digest"] = canonical_digest(
         plan, digest_field="canonical_3dgs_execution_plan_digest"
@@ -787,8 +1319,11 @@ def _validate_worker_control_binding(
             dataset_digest=str(plan.get("colmap_training_dataset_digest") or ""),
             transport_bundle_digest=str(transport.get("transport_bundle_digest") or ""),
             worker_package_digest=str(plan.get("worker_python_package_digest") or ""),
+            observed_now=datetime.fromisoformat(
+                str(receipt.get("timestamp") or "").replace("Z", "+00:00")
+            ),
         )
-    except (Canonical3DGSPipelineError, Canonical3DGSAdmissionError):
+    except (Canonical3DGSPipelineError, Canonical3DGSAdmissionError, ValueError):
         admission = {}
         errors.append(f"worker_admission_invalid:{arm_id}")
     expected_receipt = {
@@ -857,6 +1392,18 @@ def verify_canonical_3dgs_plan_inputs(
         != canonical_digest(plan, digest_field="canonical_3dgs_execution_plan_digest")
         or plan.get("worker_python_package_digest")
         != canonical_3dgs_worker_package_digest()
+        or plan.get("source_profile")
+        not in {"blueprint_raw_v3_2", "public_dataset_arkitscenes_proxy"}
+        or not _digest(plan.get("canonical_3dgs_source_admission_digest"))
+        or not str(plan.get("world_frame") or "").strip()
+        or not isinstance(plan.get("coordinate_frame_declaration"), Mapping)
+        or plan.get("metric_scale_status")
+        not in {
+            "sensor_metric_unvalidated",
+            "independently_validated_metric",
+            "not_established",
+            "unknown",
+        }
         or plan.get("hidden_heldout_pixels_included") is not False
         or plan.get("trainer_self_grading_permitted") is not False
     ):
@@ -886,9 +1433,11 @@ def _finalize_campaign(
             "source_capture_digest": plan["source_capture_digest"],
             "colmap_training_dataset_digest": plan["colmap_training_dataset_digest"],
             "pose_binding": plan["pose_binding"],
-            "world_frame": "canonical_arkit_world",
+            "world_frame": plan.get("world_frame"),
+            "coordinate_frame_declaration": plan.get("coordinate_frame_declaration"),
             "camera_axis_projection": "arkit_to_opencv_explicit_yz_flip",
             "units": "meters",
+            "metric_scale_status": plan.get("metric_scale_status"),
         }
     )
     fidelity_bindings = []
@@ -904,6 +1453,7 @@ def _finalize_campaign(
             continue
         fidelity_bindings.append(
             {
+                "candidate_arm_id": row["arm_id"],
                 "candidate_method_id": row["method_id"],
                 "candidate_role": row["role"],
                 "candidate_result_digest": row["canonical_3dgs_arm_result_digest"],
@@ -926,6 +1476,18 @@ def _finalize_campaign(
         ),
         "source_capture_digest": plan["source_capture_digest"],
         "source_commit_sha": plan["source_commit_sha"],
+        "source_profile": plan.get("source_profile"),
+        "canonical_3dgs_source_admission_digest": plan.get(
+            "canonical_3dgs_source_admission_digest"
+        ),
+        "world_frame": plan.get("world_frame"),
+        "coordinate_frame_declaration": dict(
+            plan.get("coordinate_frame_declaration") or {}
+        ),
+        "metric_scale_status": plan.get("metric_scale_status"),
+        "metric_scale_independently_validated": (
+            plan.get("metric_scale_status") == "independently_validated_metric"
+        ),
         "canonical_3dgs_execution_plan_digest": plan[
             "canonical_3dgs_execution_plan_digest"
         ],
@@ -1017,25 +1579,49 @@ def finalize_canonical_3dgs_receipts(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--capture-root", required=True)
+    parser.add_argument(
+        "--source-profile",
+        choices=("blueprint_raw_v3_2", "public_dataset_arkitscenes_proxy"),
+        default="blueprint_raw_v3_2",
+    )
+    parser.add_argument("--capture-root")
+    parser.add_argument("--proxy-root")
+    parser.add_argument("--source-artifact-root")
     parser.add_argument("--output-root", required=True)
-    parser.add_argument("--intake-id", required=True)
-    parser.add_argument("--capture-digest", required=True)
+    parser.add_argument("--intake-id")
+    parser.add_argument("--capture-digest")
     parser.add_argument("--source-commit-sha", required=True)
     parser.add_argument("--maximum-frames", type=int, default=60)
     arguments = parser.parse_args(argv)
-    prepared = prepare_canonical_v32_training_dataset(
-        capture_root=arguments.capture_root,
-        output_root=arguments.output_root,
-        intake_id=arguments.intake_id,
-        capture_digest=arguments.capture_digest,
-        rights_and_retention={
-            "local_processing_authorized": True,
-            "provider_upload_authorized": False,
-            "paid_compute_authorized": False,
-        },
-        maximum_frames=arguments.maximum_frames,
-    )
+    if arguments.source_profile == "blueprint_raw_v3_2":
+        if not all((arguments.capture_root, arguments.intake_id, arguments.capture_digest)):
+            parser.error(
+                "blueprint_raw_v3_2 requires --capture-root, --intake-id, and --capture-digest"
+            )
+        prepared = prepare_canonical_v32_training_dataset(
+            capture_root=arguments.capture_root,
+            output_root=arguments.output_root,
+            intake_id=arguments.intake_id,
+            capture_digest=arguments.capture_digest,
+            rights_and_retention={
+                "local_processing_authorized": True,
+                "provider_upload_authorized": False,
+                "paid_compute_authorized": False,
+            },
+            maximum_frames=arguments.maximum_frames,
+        )
+    else:
+        if not all((arguments.proxy_root, arguments.source_artifact_root)):
+            parser.error(
+                "public_dataset_arkitscenes_proxy requires --proxy-root and "
+                "--source-artifact-root"
+            )
+        prepared = prepare_canonical_arkitscenes_proxy_training_dataset(
+            proxy_root=arguments.proxy_root,
+            source_artifact_root=arguments.source_artifact_root,
+            output_root=arguments.output_root,
+            source_commit_sha=arguments.source_commit_sha,
+        )
     plan = build_canonical_3dgs_execution_plan(
         preparation=prepared["preparation"],
         dataset=prepared["dataset"],
@@ -1088,8 +1674,10 @@ __all__ = [
     "PREPARATION_SCHEMA",
     "SPLATFACTO_METHOD",
     "build_canonical_3dgs_execution_plan",
+    "build_canonical_3dgs_source_admission",
     "execute_canonical_3dgs_plan",
     "finalize_canonical_3dgs_receipts",
     "prepare_canonical_v32_training_dataset",
+    "prepare_canonical_arkitscenes_proxy_training_dataset",
     "verify_canonical_3dgs_plan_inputs",
 ]

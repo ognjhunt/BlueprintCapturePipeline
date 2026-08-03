@@ -11,6 +11,9 @@
       "required": [
         "schema_version", "status", "source_capture_digest", "source_commit_sha",
         "worker_python_package_digest",
+        "source_profile", "canonical_3dgs_source_admission_digest",
+        "raw_contract_3_2_proven", "world_frame",
+        "coordinate_frame_declaration", "metric_scale_status",
         "canonical_v32_3dgs_preparation_digest", "colmap_training_dataset_digest",
         "colmap_training_dataset_export_result_digest", "frozen_split_digest",
         "input_artifacts", "primary_method_id", "comparison_method_ids", "arms",
@@ -25,6 +28,14 @@
         "source_capture_digest": {"$ref": "#/$defs/digest"},
         "source_commit_sha": {"$ref": "#/$defs/commit"},
         "worker_python_package_digest": {"$ref": "#/$defs/digest"},
+        "source_profile": {"enum": ["blueprint_raw_v3_2", "public_dataset_arkitscenes_proxy"]},
+        "canonical_3dgs_source_admission_digest": {"$ref": "#/$defs/digest"},
+        "raw_contract_3_2_proven": {"type": "boolean"},
+        "world_frame": {"type": "string", "minLength": 1},
+        "coordinate_frame_declaration": {"type": "object"},
+        "metric_scale_status": {
+          "enum": ["sensor_metric_unvalidated", "independently_validated_metric", "not_established", "unknown"]
+        },
         "canonical_v32_3dgs_preparation_digest": {"$ref": "#/$defs/digest"},
         "colmap_training_dataset_digest": {"$ref": "#/$defs/digest"},
         "colmap_training_dataset_export_result_digest": {"$ref": "#/$defs/digest"},
@@ -101,6 +112,9 @@
       "required": [
         "schema_version", "status", "source_capture_digest", "source_commit_sha",
         "canonical_3dgs_execution_plan_digest", "colmap_training_dataset_digest",
+        "source_profile", "canonical_3dgs_source_admission_digest",
+        "world_frame", "coordinate_frame_declaration", "metric_scale_status",
+        "metric_scale_independently_validated",
         "frozen_split_digest", "primary_method_id", "primary_result_digest",
         "comparison_result_digests", "all_arms_used_identical_candidate_dataset",
         "hidden_heldout_pixels_included", "independent_heldout_evaluation_status",
@@ -114,6 +128,14 @@
         "status": {"enum": ["candidates_ready_for_independent_evaluation", "candidate_training_incomplete"]},
         "source_capture_digest": {"$ref": "#/$defs/digest"},
         "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "source_profile": {"enum": ["blueprint_raw_v3_2", "public_dataset_arkitscenes_proxy"]},
+        "canonical_3dgs_source_admission_digest": {"$ref": "#/$defs/digest"},
+        "world_frame": {"type": "string", "minLength": 1},
+        "coordinate_frame_declaration": {"type": "object"},
+        "metric_scale_status": {
+          "enum": ["sensor_metric_unvalidated", "independently_validated_metric", "not_established", "unknown"]
+        },
+        "metric_scale_independently_validated": {"type": "boolean"},
         "canonical_3dgs_execution_plan_digest": {"$ref": "#/$defs/digest"},
         "colmap_training_dataset_digest": {"$ref": "#/$defs/digest"},
         "frozen_split_digest": {"$ref": "#/$defs/digest"},
@@ -127,6 +149,7 @@
             "type": "object",
             "required": [
               "candidate_method_id", "candidate_role", "candidate_result_digest",
+              "candidate_arm_id",
               "asset_digest", "coordinate_basis_digest", "representation",
               "splat_count", "sh_degree", "bounds", "global_decimation_applied",
               "removal_reasons", "source_appearance_immutable",

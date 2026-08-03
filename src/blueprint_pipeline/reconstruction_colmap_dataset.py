@@ -232,6 +232,20 @@ def bind_colmap_initialization_surface(
         surface_calibration_digest = calibration_binding.get(
             "calibration_digest"
         ) or calibration_binding.get("digest")
+    observation = request.get("camera_observation_manifest")
+    proxy_observation_binding = (
+        not isinstance(calibration, Mapping)
+        and isinstance(observation, Mapping)
+        and isinstance(calibration_binding, Mapping)
+        and calibration_binding.get("camera_observation_digest")
+        == observation.get("camera_observation_digest")
+        and calibration_binding.get("metric_scaffold_digest")
+        == request.get("metric_scaffold_digest")
+    )
+    raw_calibration_binding = (
+        isinstance(calibration, Mapping)
+        and surface_calibration_digest == calibration.get("calibration_digest")
+    )
     if (
         not isinstance(surface_asset, Mapping)
         or not _is_digest(surface_asset.get("digest"))
@@ -239,8 +253,7 @@ def bind_colmap_initialization_surface(
         or surface_result.get("source_capture_digest") != request.get("source_capture_digest")
         or surface_result.get("train_heldout_split_digest")
         != request.get("frozen_split_digest")
-        or not isinstance(calibration, Mapping)
-        or surface_calibration_digest != calibration.get("calibration_digest")
+        or not (raw_calibration_binding or proxy_observation_binding)
         or canonical_json(surface_result.get("coordinate_frame_declaration"))
         != canonical_json(request.get("coordinate_frame_declaration"))
     ):
