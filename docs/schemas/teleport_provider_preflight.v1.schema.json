@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/teleport_provider_preflight.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "execute_requested", "provider_identity", "provider_execution_request_digest", "upload_packet_digest", "terms_review_digest", "blockers", "provider_mutations_performed", "raw_secret_values_recorded", "proof_effect", "claim_ceiling", "teleport_provider_preflight_digest"],
+  "properties": {
+    "schema_version": {"const": "teleport_provider_preflight.v1"},
+    "status": {"enum": ["ready", "blocked"]},
+    "execute_requested": {"type": "boolean"},
+    "provider_identity": {"const": "teleport"},
+    "provider_execution_request_digest": {"$ref": "#/$defs/digestOrNull"},
+    "upload_packet_digest": {"$ref": "#/$defs/digestOrNull"},
+    "terms_review_digest": {"$ref": "#/$defs/digestOrNull"},
+    "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "provider_mutations_performed": {"const": 0},
+    "raw_secret_values_recorded": {"const": false},
+    "proof_effect": {"const": "pre_provider_mutation_admission_only"},
+    "claim_ceiling": {"const": "none"},
+    "teleport_provider_preflight_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "digestOrNull": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}
+  },
+  "additionalProperties": false
+}

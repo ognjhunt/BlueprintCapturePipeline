@@ -363,7 +363,7 @@ appearance evidence into metric, collision, Isaac, or physical-task proof.
 
 After independent held-out evaluation selects a qualifying arm, independently
 measure appearance-to-site correspondences and freeze the similarity transform
-and residual thresholds. Then produce the registered reconstruction:
+and residual thresholds. Then produce the registered-appearance candidate:
 
 ```bash
 python -m blueprint_pipeline.canonical_3dgs_cli register \
@@ -372,15 +372,16 @@ python -m blueprint_pipeline.canonical_3dgs_cli register \
   --results-root /work/results \
   --quality-comparison /work/quality/canonical_3dgs_quality_comparison.json \
   --registration-measurement /work/registration/measurement.json \
-  --output /work/registration/registered_site_reconstruction.json
+  --output /work/registration/canonical_registered_appearance.json
 ```
 
 The producer independently decodes the selected standard 3DGS PLY, verifies
 its campaign lineage, and reports RMSE, p95, and maximum registration residuals
 in meters. It is `candidate_only` until both held-out appearance and
-registration gates qualify. Even then, its ceiling is registered appearance:
-metric geometry, collision, Isaac compatibility, and physical success remain
-false.
+registration gates qualify. Even then, its ceiling is registered appearance;
+it is not a `registered_site_reconstruction.v1` until the post-capture evidence
+spine joins it to independently qualified dynamics geometry. Metric geometry,
+collision, Isaac compatibility, and physical success remain false.
 
 ## No-authority handoff
 

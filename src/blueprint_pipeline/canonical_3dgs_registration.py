@@ -24,7 +24,7 @@ from .gaussian_splat_decode import read_standard_3dgs_ply
 
 
 REGISTRATION_MEASUREMENT_SCHEMA = "canonical_3dgs_registration_measurement.v1"
-REGISTERED_RECONSTRUCTION_SCHEMA = "registered_site_reconstruction.v1"
+CANONICAL_REGISTERED_APPEARANCE_SCHEMA = "canonical_registered_appearance.v1"
 
 
 class Canonical3DGSRegistrationError(ValueError):
@@ -183,7 +183,7 @@ def build_canonical_3dgs_registration_measurement(
     return result
 
 
-def build_registered_site_reconstruction(
+def build_canonical_registered_appearance(
     *,
     source_admission: Mapping[str, Any],
     campaign_result: Mapping[str, Any],
@@ -335,7 +335,7 @@ def build_registered_site_reconstruction(
     if registration_status != "qualified":
         blockers.append("appearance_to_site_registration_qualification_required")
     result = {
-        "schema_version": REGISTERED_RECONSTRUCTION_SCHEMA,
+        "schema_version": CANONICAL_REGISTERED_APPEARANCE_SCHEMA,
         "status": "qualified" if qualified else "candidate_only",
         "source_profile_digest": source_digest,
         "source_capture_digest": source["source_capture_digest"],
@@ -376,8 +376,8 @@ def build_registered_site_reconstruction(
         "claim_ceiling": "registered_appearance_only",
         "timestamp": campaign["timestamp"],
     }
-    result["reconstruction_digest"] = canonical_digest(
-        result, digest_field="reconstruction_digest"
+    result["canonical_registered_appearance_digest"] = canonical_digest(
+        result, digest_field="canonical_registered_appearance_digest"
     )
     return result
 
@@ -426,7 +426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise Canonical3DGSRegistrationError(["registered_reconstruction_input_invalid"])
         return value
 
-    result = build_registered_site_reconstruction(
+    result = build_canonical_registered_appearance(
         source_admission=load(arguments.source_admission) or {},
         campaign_result=load(arguments.campaign) or {},
         appearance_asset_path=arguments.appearance_ply,
@@ -446,8 +446,8 @@ if __name__ == "__main__":
 
 __all__ = [
     "Canonical3DGSRegistrationError",
-    "REGISTERED_RECONSTRUCTION_SCHEMA",
+    "CANONICAL_REGISTERED_APPEARANCE_SCHEMA",
     "REGISTRATION_MEASUREMENT_SCHEMA",
     "build_canonical_3dgs_registration_measurement",
-    "build_registered_site_reconstruction",
+    "build_canonical_registered_appearance",
 ]

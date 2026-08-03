@@ -1,0 +1,45 @@
+{
+  "schema_version": "teleport_future_customer_use_constraints.v1",
+  "status": "blocked_for_customer_or_confidential_capture",
+  "reviewed_at": "2026-08-03T17:00:00Z",
+  "terms_review_artifact": "teleport_provider_terms_review_2026-08-03.json",
+  "constraints": {
+    "training_use_carve_out": {
+      "status": "missing",
+      "required_evidence": "signed terms expressly excluding customer and Blueprint content from provider model training, testing, development, and improvement"
+    },
+    "confidential_processing_and_dpa": {
+      "status": "insufficient_for_admission",
+      "observed": "The live DPA describes Varjo as processor, confidentiality, written instructions, subprocessors, and security controls.",
+      "required_evidence": "executed DPA and enterprise terms whose confidentiality and processing purpose control over the standard Terms training license"
+    },
+    "retention_and_deletion": {
+      "status": "insufficient_for_provider_zero",
+      "observed": "The API returns only 204 for deletion; the DPA promises deletion or return within a reasonable time on termination or expiry but publishes no capture-level retention schedule or durable deletion receipt.",
+      "required_evidence": "contractual retention schedule, backup and subprocessor deletion terms, and durable deletion attestation or auditable equivalent"
+    },
+    "transferable_exportable_model_rights": {
+      "status": "blocked_by_standard_terms",
+      "observed": "The standard Terms permit use of generated Models but describe the license as non-assignable and non-transferable and restrict integration without prior written consent.",
+      "required_evidence": "written transferable, sublicensable, export, integration, benchmarking, and customer-delivery rights"
+    },
+    "derivative_blueprint_site_package_rights": {
+      "status": "not_expressly_granted",
+      "required_evidence": "written right to preserve, modify, align, combine, derive, distribute, sublicense, and commercialize Blueprint site-package artifacts from exported models"
+    },
+    "enterprise_or_on_prem_known_sensor_ingest": {
+      "status": "not_documented",
+      "observed": "The public API documents RGB image ZIP or video input. The pricing page advertises enterprise cloud and on-prem deployment but does not document endpoints for known poses, intrinsics, depth, LiDAR, or gravity.",
+      "required_evidence": "provider technical specification and qualified endpoint proof for each claimed modality: known poses, intrinsics, depth, LiDAR, and gravity"
+    }
+  },
+  "allowed_current_scope": {
+    "dataset_class": "rights-cleared public candidate images only",
+    "hidden_frames": false,
+    "confidential_or_customer_capture": false,
+    "provider_output_claim_ceiling": "appearance_reconstruction_candidate"
+  },
+  "proof_effect": "future_customer_provider_admission_constraints_only",
+  "claim_ceiling": "none",
+  "teleport_future_customer_use_constraints_digest": "sha256:b94e3900ef0ca638ce42e72277812acde2cf03201306c38a972708e52115d699"
+}

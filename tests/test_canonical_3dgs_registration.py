@@ -11,7 +11,7 @@ import pytest
 from blueprint_pipeline.canonical_3dgs_registration import (
     Canonical3DGSRegistrationError,
     build_canonical_3dgs_registration_measurement,
-    build_registered_site_reconstruction,
+    build_canonical_registered_appearance,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -110,7 +110,7 @@ def _quality(campaign: dict) -> dict:
     return value
 
 
-def test_registered_reconstruction_remains_candidate_until_both_gates_pass(
+def test_registered_appearance_remains_candidate_until_both_gates_pass(
     tmp_path: Path,
 ) -> None:
     splat = tmp_path / "candidate.ply"
@@ -119,7 +119,7 @@ def test_registered_reconstruction_remains_candidate_until_both_gates_pass(
     source = _source(geometry_digest)
     campaign = _campaign(source, asset_digest)
 
-    candidate = build_registered_site_reconstruction(
+    candidate = build_canonical_registered_appearance(
         source_admission=source,
         campaign_result=campaign,
         appearance_asset_path=splat,
@@ -157,7 +157,7 @@ def test_registered_reconstruction_remains_candidate_until_both_gates_pass(
         threshold_frozen_before_measurement=True,
         timestamp="2026-08-03T12:00:00Z",
     )
-    registered = build_registered_site_reconstruction(
+    registered = build_canonical_registered_appearance(
         source_admission=source,
         campaign_result=campaign,
         appearance_asset_path=splat,
@@ -172,7 +172,10 @@ def test_registered_reconstruction_remains_candidate_until_both_gates_pass(
     assert registered["metric_scale_proven"] is False
     assert registered["collision_geometry_validated"] is False
     schema = json.loads(
-        (Path(__file__).parents[1] / "docs/schemas/registered_site_reconstruction.v1.schema.json").read_text()
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/canonical_registered_appearance.v1.schema.json"
+        ).read_text()
     )
     jsonschema.validate(registered, schema)
 
@@ -216,7 +219,7 @@ def test_registration_computes_residuals_and_fails_closed_on_tampering(tmp_path:
         Canonical3DGSRegistrationError,
         match="registered_reconstruction_registration_binding_invalid",
     ):
-        build_registered_site_reconstruction(
+        build_canonical_registered_appearance(
             source_admission=source,
             campaign_result=campaign,
             appearance_asset_path=splat,
@@ -242,7 +245,7 @@ def test_registration_rejects_non_surface_source_artifact(tmp_path: Path) -> Non
         Canonical3DGSRegistrationError,
         match="registered_reconstruction_geometry_source_binding_invalid",
     ):
-        build_registered_site_reconstruction(
+        build_canonical_registered_appearance(
             source_admission=source,
             campaign_result=campaign,
             appearance_asset_path=splat,

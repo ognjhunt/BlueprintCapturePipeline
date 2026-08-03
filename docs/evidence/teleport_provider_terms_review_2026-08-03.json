@@ -1,0 +1,84 @@
+{
+  "api_spec_version": "FastAPI 0.1.0 live specification",
+  "delete_success_has_durable_receipt": false,
+  "depth_lidar_ingest_documented": false,
+  "dpa_version": "undated live DPA reviewed 2026-08-03",
+  "known_poses_ingest_documented": false,
+  "official_sources": [
+    {
+      "review_scope": "OAuth client credentials and one-hour token example",
+      "url": "https://teleport.varjo.com/docs/api/authentication/"
+    },
+    {
+      "review_scope": "bulk-images and video multipart upload lifecycle",
+      "url": "https://teleport.varjo.com/docs/api/upload-captures/"
+    },
+    {
+      "review_scope": "ModelV3 limits and pay-as-you-go requirement",
+      "url": "https://teleport.varjo.com/docs/api/training-parameters/"
+    },
+    {
+      "review_scope": "v2 PLY metadata, camera payload URL, and COLMAP coordinates",
+      "url": "https://teleport.varjo.com/docs/api/capture-metadata-v2/"
+    },
+    {
+      "review_scope": "capture listing and 204-only deletion behavior",
+      "url": "https://teleport.varjo.com/docs/api/manage-captures/"
+    },
+    {
+      "review_scope": "pay-per-capture image-count pricing and enterprise/on-prem offerings",
+      "url": "https://get.teleport.varjo.com/pricing"
+    },
+    {
+      "review_scope": "content training grant, model-use license, transfer and integration restrictions",
+      "url": "https://varjo.com/terms-of-service-for-teleport-by-varjo"
+    },
+    {
+      "review_scope": "processor terms, confidentiality, subprocessors, deletion and return",
+      "url": "https://varjo.com/teleport-data-processing-addendum"
+    }
+  ],
+  "pricing_findings": {
+    "custom_modelv3_requires_pay_as_you_go": true,
+    "professional_plan_priced_by_image_count": true,
+    "public_starting_purchase_usd": 30,
+    "public_exact_per_capture_rate_table_available": false
+  },
+  "public_exact_per_capture_price_published": false,
+  "reviewed_at": "2026-08-03T17:00:00Z",
+  "reviewed_by": "Codex technical review; human legal acceptance still required",
+  "rgb_images_or_video_only": true,
+  "schema_version": "teleport_provider_terms_review.v1",
+  "standard_model_license_transferable": false,
+  "standard_terms_training_use_grant_present": true,
+  "teleport_provider_terms_review_digest": "sha256:b6d36779b24f6d60506bf58ed698d190149f5b643d633a64baf2fe83617b7bfa",
+  "terms_version": "undated live Terms page reviewed 2026-08-03",
+  "technical_findings": {
+    "delete_endpoint": "DELETE /api/v1/captures/{eid} returns 204 with no body",
+    "input_formats": [
+      "bulk-images ZIP containing RGB images",
+      "video"
+    ],
+    "modelv3_limits": {
+      "level_of_detail": [
+        true,
+        false
+      ],
+      "spherical_harmonics_degrees": [
+        0,
+        3
+      ],
+      "splat_count_maximum": 10000000,
+      "splat_count_minimum": 500000,
+      "training_resolution": [
+        1600,
+        2500,
+        3200
+      ]
+    },
+    "v2_required_query": {
+      "content_profile": "ply",
+      "coord_system": "colmap"
+    }
+  }
+}

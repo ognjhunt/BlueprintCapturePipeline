@@ -7,6 +7,7 @@ import sys
 from typing import Callable, Sequence
 
 
+Command = Callable[[Sequence[str] | None], int]
 COMMANDS: dict[str, tuple[str, str]] = {
     "prepare": ("blueprint_pipeline.canonical_3dgs_pipeline", "main"),
     "run-arm": ("blueprint_pipeline.canonical_3dgs_worker", "main"),
@@ -22,6 +23,21 @@ COMMANDS: dict[str, tuple[str, str]] = {
 }
 
 
+def _lazy_command(module_name: str, handler_name: str) -> Command:
+    def invoke(arguments: Sequence[str] | None = None) -> int:
+        module = importlib.import_module(module_name)
+        handler: Command = getattr(module, handler_name)
+        return handler(arguments)
+
+    return invoke
+
+
+_COMMANDS: dict[str, Command] = {
+    command: _lazy_command(module_name, handler_name)
+    for command, (module_name, handler_name) in COMMANDS.items()
+}
+
+
 def _usage() -> str:
     commands = "|".join(COMMANDS)
     return f"usage: python -m blueprint_pipeline.canonical_3dgs_cli <{commands}> [arguments]"
@@ -31,15 +47,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments or arguments[0] in {"-h", "--help"}:
         print(_usage())
-        return 0
+        print("commands: " + ", ".join(sorted(COMMANDS)))
+        return 0 if arguments else 2
     command = arguments.pop(0)
-    target = COMMANDS.get(command)
+    target = _COMMANDS.get(command)
     if target is None:
-        print(_usage(), file=sys.stderr)
-        return 64
-    module = importlib.import_module(target[0])
-    handler: Callable[[Sequence[str] | None], int] = getattr(module, target[1])
-    return handler(arguments)
+        print(f"unknown canonical 3DGS command: {command}", file=sys.stderr)
+        return 2
+    return target(arguments)
 
 
 if __name__ == "__main__":

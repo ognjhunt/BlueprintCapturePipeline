@@ -295,7 +295,7 @@ def test_splatfacto_worker_refuses_package_pin_drift_before_execution(tmp_path: 
     assert called is False
 
 
-def test_splatfacto_setup_installs_and_smokes_blueprint_worker_entrypoint() -> None:
+def test_splatfacto_setup_installs_and_smokes_blueprint_worker_module() -> None:
     root = Path(__file__).resolve().parents[1]
     script = (root / "scripts/setup_splatfacto_venv.sh").read_text(encoding="utf-8")
 
@@ -315,7 +315,7 @@ def test_canonical_module_cli_consolidates_all_operations_without_console_script
         "register",
     }
     assert canonical_cli_main(["--help"]) == 0
-    assert canonical_cli_main(["unknown-operation"]) == 64
+    assert canonical_cli_main(["unknown-operation"]) == 2
 
 
 def test_worker_admission_binds_authority_watchdog_spend_and_exact_transport() -> None:

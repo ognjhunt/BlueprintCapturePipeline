@@ -507,6 +507,7 @@ def _request(*, missing_metric_scale: bool = False) -> dict:
     routing = _routing_inputs(missing_metric_scale=missing_metric_scale)
     routing.update(
         {
+            "schema_version": "post_capture_routing_inputs.v1",
             "source_profile_digest": source["source_profile_digest"],
             "target_binding_digest": target["selected_target"]["target_binding_digest"],
             "placement_digest": placement["placement_digest"],
@@ -514,6 +515,7 @@ def _request(*, missing_metric_scale: bool = False) -> dict:
             "task_class": target["selected_target"]["task_class"],
         }
     )
+    _finalize(routing, "routing_inputs_digest")
     # Compile once to bind attempts to the deterministic route digest.
     from blueprint_pipeline.task_site_measurement_routing import route_task_site_measurement
 
@@ -526,13 +528,22 @@ def _request(*, missing_metric_scale: bool = False) -> dict:
     )
     metric = _metric()
     candidates = [_candidate(index) for index in range(1, 6)]
+    composition = _composition()
     authorization = _finalize(
         {
             "schema_version": "new_site_policy_execution_authorization.v1",
             "policy_execution_authorized": True,
             "physical_robot_execution_authorized": False,
+            "source_profile_digest": source["source_profile_digest"],
+            "reconstruction_digest": reconstruction["reconstruction_digest"],
+            "target_orchestration_digest": target["target_orchestration_digest"],
+            "target_binding_digest": target["selected_target"][
+                "target_binding_digest"
+            ],
+            "routing_inputs_digest": routing["routing_inputs_digest"],
             "routing_decision_digest": route["routing_decision_digest"],
             "placement_digest": placement["placement_digest"],
+            "scene_composition_digest": composition["scene_composition_digest"],
             "metric_spec_digest": metric["metric_spec_digest"],
             "candidate_set_digest": canonical_digest(
                 {
@@ -561,7 +572,7 @@ def _request(*, missing_metric_scale: bool = False) -> dict:
         "reconstruction": reconstruction,
         "target_orchestration": target,
         "robot_placement": placement,
-        "scene_composition": _composition(),
+        "scene_composition": composition,
         "routing_inputs": routing,
         "policy_evaluation": {
             "task_metric": metric,
@@ -597,7 +608,15 @@ def _replace_request_target(request: dict, rendered: dict) -> str:
             "task_class": "rigid_pick_place",
         }
     )
-    request["execution_authorization"]["placement_digest"] = placement["placement_digest"]
+    _finalize(request["routing_inputs"], "routing_inputs_digest")
+    request["execution_authorization"].update(
+        {
+            "target_orchestration_digest": rendered["orchestration_digest"],
+            "target_binding_digest": binding_digest,
+            "routing_inputs_digest": request["routing_inputs"]["routing_inputs_digest"],
+            "placement_digest": placement["placement_digest"],
+        }
+    )
     _finalize(request["execution_authorization"], "authorization_digest")
     for attempt in request["policy_evaluation"]["attempts"]:
         attempt["placement_digest"] = placement["placement_digest"]
@@ -964,6 +983,7 @@ def test_request_digest_drift_is_rejected() -> None:
 def test_route_scope_must_bind_exact_source_target_placement_robot_and_task() -> None:
     request = _request()
     request["routing_inputs"]["target_binding_digest"] = _sha("e")
+    _finalize(request["routing_inputs"], "routing_inputs_digest")
     _rebind_request(request)
 
     with pytest.raises(NewSiteTaskEvaluationError) as caught:
@@ -996,6 +1016,45 @@ def test_execution_authorization_binds_exact_five_candidate_set() -> None:
         compile_new_site_task_evaluation_run(request)
 
     assert "policy_authorization_candidate_set_mismatch" in caught.value.codes
+
+
+def test_execution_authorization_binds_exact_scene_composition() -> None:
+    request = _request()
+    authorization = request["execution_authorization"]
+    authorization["scene_composition_digest"] = _sha("e")
+    _finalize(authorization, "authorization_digest")
+    _rebind_request(request)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "policy_authorization_scene_composition_mismatch" in caught.value.codes
+
+
+@pytest.mark.parametrize(
+    ("field", "expected_code"),
+    [
+        ("source_profile_digest", "policy_authorization_source_profile_mismatch"),
+        ("reconstruction_digest", "policy_authorization_reconstruction_mismatch"),
+        ("target_orchestration_digest", "policy_authorization_target_mismatch"),
+        ("target_binding_digest", "policy_authorization_target_binding_mismatch"),
+        ("routing_inputs_digest", "policy_authorization_routing_inputs_mismatch"),
+    ],
+)
+def test_execution_authorization_binds_every_prior_stage(
+    field: str,
+    expected_code: str,
+) -> None:
+    request = _request()
+    authorization = request["execution_authorization"]
+    authorization[field] = _sha("e")
+    _finalize(authorization, "authorization_digest")
+    _rebind_request(request)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert expected_code in caught.value.codes
 
 
 def test_frozen_metric_must_precede_every_attempt() -> None:

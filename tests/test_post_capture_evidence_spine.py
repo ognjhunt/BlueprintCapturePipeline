@@ -4,8 +4,10 @@ import hashlib
 import json
 from pathlib import Path
 
-import pytest
 import jsonschema
+import pytest
+
+import blueprint_pipeline.post_capture_evidence_spine as spine_module
 
 from blueprint_pipeline.arkit_raw_contract_validation import (
     build_arkit_raw_contract_validation,
@@ -17,10 +19,13 @@ from blueprint_pipeline.post_capture_evidence_spine import (
     PostCaptureEvidenceError,
     build_derived_site_geometry,
     build_native_3dgs_candidate,
+    build_native_3dgs_candidate_from_canonical,
+    build_native_3dgs_candidate_from_teleport,
     build_policy_execution_decision,
     build_qualified_robot_placement,
     build_qualified_site_geometry,
     build_registered_site_reconstruction,
+    build_registration_qualification_from_canonical,
     build_scene_composition_decision,
     build_source_profile,
     build_task_robot_selection,
@@ -322,8 +327,160 @@ def test_registration_requires_exact_independent_residual_join(tmp_path: Path) -
         )
 
 
+def test_canonical_registered_appearance_is_adapted_without_claim_upgrade(
+    tmp_path: Path,
+) -> None:
+    root, receipt = _raw_source(tmp_path)
+    source = build_source_profile(source_artifact=receipt, source_root=root)
+    geometry = _qualified_geometry(tmp_path, source)
+    measurement = _finalize(
+        {
+            "schema_version": "canonical_3dgs_registration_measurement.v1",
+            "status": "qualified",
+            "source_capture_digest": source["source_capture_digest"],
+            "appearance_asset_digest": _sha("6"),
+            "world_frame": "arkit_world",
+            "method_id": "independent-correspondence-measurement-v1",
+            "transform_appearance_to_site": [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "residual_summary": {"rmse_m": 0.001, "p95_m": 0.002},
+            "thresholds_m": {"maximum_rmse_m": 0.01, "maximum_p95_m": 0.01},
+            "registration_gate_passed": True,
+        },
+        "canonical_3dgs_registration_measurement_digest",
+    )
+    registered_appearance = _finalize(
+        {
+            "schema_version": "canonical_registered_appearance.v1",
+            "status": "qualified",
+            "source_profile_digest": _sha("c"),
+            "source_capture_digest": source["source_capture_digest"],
+            "appearance_format": "native_3dgs",
+            "appearance_asset_digest": _sha("6"),
+            "full_resolution_appearance_preserved": True,
+            "geometry_asset_digest": geometry["geometry_asset_digest"],
+            "world_frame": "arkit_world",
+            "registration_status": "qualified",
+            "registration_transform_appearance_to_site": measurement[
+                "transform_appearance_to_site"
+            ],
+            "registration_residual_summary": measurement["residual_summary"],
+            "heldout_appearance_status": "qualified",
+            "scene_registration_digest": measurement[
+                "canonical_3dgs_registration_measurement_digest"
+            ],
+            "metric_geometry_proven": False,
+            "collision_geometry_validated": False,
+            "candidate_may_self_authorize": False,
+            "claim_ceiling": "registered_appearance_only",
+        },
+        "canonical_registered_appearance_digest",
+    )
+    appearance = build_native_3dgs_candidate_from_canonical(
+        source_profile=source,
+        registered_appearance=registered_appearance,
+    )
+    assert appearance["appearance_is_geometry_authority"] is False
+    qualification = build_registration_qualification_from_canonical(
+        source_profile=source,
+        appearance_candidate=appearance,
+        site_geometry=geometry,
+        registered_appearance=registered_appearance,
+        registration_measurement=measurement,
+    )
+    reconstruction = build_registered_site_reconstruction(
+        source_profile=source,
+        appearance_candidate=appearance,
+        site_geometry=geometry,
+        registration_qualification=qualification,
+    )
+    assert reconstruction["status"] == "qualified"
+    assert reconstruction["claim_boundary"]["appearance_used_as_dynamics_authority"] is False
+
+    tampered = dict(measurement)
+    tampered["registration_gate_passed"] = False
+    with pytest.raises(PostCaptureEvidenceError, match="canonical_registration_measurement_invalid"):
+        build_registration_qualification_from_canonical(
+            source_profile=source,
+            appearance_candidate=appearance,
+            site_geometry=geometry,
+            registered_appearance=registered_appearance,
+            registration_measurement=tampered,
+        )
+
+
+def test_teleport_receipts_bind_the_exact_native_ply_without_qualification(
+    tmp_path: Path,
+) -> None:
+    root, receipt = _raw_source(tmp_path)
+    source = build_source_profile(source_artifact=receipt, source_root=root)
+    imported = _finalize(
+        {
+            "schema_version": "provider_splat_import_receipt.v1",
+            "status": "imported_provider_appearance_candidate_only",
+            "provider_identity": "teleport",
+            "source_capture_digest": source["source_capture_digest"],
+            "provider_execution_receipt_digest": _sha("d"),
+            "provider_native_output_preserved_unchanged": True,
+            "provider_success_is_blueprint_qualification": False,
+            "metric_scale_proven": False,
+            "collision_geometry_validated": False,
+            "imported_assets": [
+                {
+                    "artifact_kind": "splat_ply",
+                    "digest": _sha("e"),
+                    "relative_path": "provider-import/native.ply",
+                }
+            ],
+        },
+        "provider_splat_import_receipt_digest",
+    )
+    run = _finalize(
+        {
+            "schema_version": "teleport_provider_run_receipt.v1",
+            "status": "succeeded_unqualified",
+            "provider_identity": "teleport",
+            "provider_execution_receipt_digest": _sha("d"),
+            "provider_splat_import_receipt_digest": imported[
+                "provider_splat_import_receipt_digest"
+            ],
+            "metric_scale_proven": False,
+            "collision_geometry_validated": False,
+        },
+        "teleport_provider_run_receipt_digest",
+    )
+    candidate = build_native_3dgs_candidate_from_teleport(
+        source_profile=source,
+        run_receipt=run,
+        import_receipt=imported,
+    )
+    assert candidate["appearance_asset_digest"] == _sha("e")
+    assert candidate["claim_boundary"]["appearance_quality_qualified"] is False
+    assert candidate["appearance_is_geometry_authority"] is False
+
+    wrong_source = dict(imported)
+    wrong_source["source_capture_digest"] = _sha("f")
+    wrong_source = _finalize(wrong_source, "provider_splat_import_receipt_digest")
+    rebound_run = dict(run)
+    rebound_run["provider_splat_import_receipt_digest"] = wrong_source[
+        "provider_splat_import_receipt_digest"
+    ]
+    rebound_run = _finalize(rebound_run, "teleport_provider_run_receipt_digest")
+    with pytest.raises(PostCaptureEvidenceError, match="native_3dgs_source_capture_mismatch"):
+        build_native_3dgs_candidate_from_teleport(
+            source_profile=source,
+            run_receipt=rebound_run,
+            import_receipt=wrong_source,
+        )
+
+
 def test_target_robot_placement_scene_and_authorization_are_independent(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, receipt = _raw_source(tmp_path)
     source = build_source_profile(source_artifact=receipt, source_root=root)
@@ -344,6 +501,10 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
         {
             "schema_version": "task_outcome_metric_spec.v1",
             "metric_id": "inspection-distance",
+            "units": "meters",
+            "direction": "minimize",
+            "fixed_before_execution": True,
+            "frozen_at": "2026-08-03T00:00:00Z",
         },
         "metric_spec_digest",
     )
@@ -352,6 +513,13 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
             {
                 "schema_version": "learned_policy_candidate_identity.v1",
                 "candidate_id": f"policy-{index}",
+                "candidate_kind": "learned_policy",
+                "checkpoint_digest": _sha(str(index)),
+                "endpoint_identity_digest": None,
+                "runtime_digest": _sha("a"),
+                "observation_schema_digest": _sha("b"),
+                "action_schema_digest": _sha("c"),
+                "observation_sequence_spec_digest": _sha("d"),
             },
             "policy_identity_digest",
         )
@@ -367,7 +535,32 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
         },
         "routing_decision_digest",
     )
+    monkeypatch.setattr(
+        spine_module,
+        "route_task_site_measurement",
+        lambda *_args, **_kwargs: route,
+    )
+    routing_inputs = _finalize(
+        {
+            "schema_version": "post_capture_routing_inputs.v1",
+            "requirements": {},
+            "site_evidence_profile": {},
+            "method_capability_profiles": [],
+            "measurement_qualifications": [],
+            "catalog_snapshot_hash": _sha("f"),
+            "routing_as_of": "2026-08-03",
+            "source_profile_digest": source["source_profile_digest"],
+            "target_binding_digest": selection["target_binding_digest"],
+            "placement_digest": placement["placement_digest"],
+            "robot_id": selection["robot_id"],
+        },
+        "routing_inputs_digest",
+    )
     authorization = build_policy_execution_decision(
+        source_profile=source,
+        registered_reconstruction=reconstruction,
+        target_orchestration=target,
+        routing_inputs=routing_inputs,
         routing_decision=route,
         qualified_placement=placement,
         scene_composition=composition,
@@ -378,6 +571,13 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
     assert authorization["policy_execution_authorized"] is True
     assert authorization["physical_robot_execution_authorized"] is False
     assert authorization["agent_or_provider_self_authorized"] is False
+    spine_schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/post_capture_evidence_spine.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(authorization, spine_schema)
 
     self_authorizing_route = dict(route)
     self_authorizing_route["selected_route"] = {
@@ -386,6 +586,10 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
     _finalize(self_authorizing_route, "routing_decision_digest")
     with pytest.raises(PostCaptureEvidenceError, match="policy_authorizer_independence_invalid"):
         build_policy_execution_decision(
+            source_profile=source,
+            registered_reconstruction=reconstruction,
+            target_orchestration=target,
+            routing_inputs=routing_inputs,
             routing_decision=self_authorizing_route,
             qualified_placement=placement,
             scene_composition=composition,
@@ -562,6 +766,12 @@ def test_produced_artifacts_validate_against_spine_schema(tmp_path: Path) -> Non
             / "docs/schemas/post_capture_evidence_spine.v1.schema.json"
         ).read_text(encoding="utf-8")
     )
+    reconstruction_schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/registered_site_reconstruction.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
     root, receipt = _raw_source(tmp_path)
     source = build_source_profile(source_artifact=receipt, source_root=root)
     reconstruction = _registered(tmp_path, source)
@@ -579,6 +789,13 @@ def test_produced_artifacts_validate_against_spine_schema(tmp_path: Path) -> Non
     )
     for artifact in (source, reconstruction, selection, placement, composition, result["manifest"]):
         jsonschema.validate(artifact, schema)
+    jsonschema.validate(reconstruction, reconstruction_schema)
+    abstained_reconstruction = json.loads(
+        (
+            Path(result["run_root"]) / "04_registered_site_reconstruction.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(abstained_reconstruction, reconstruction_schema)
 
 
 @pytest.mark.slow
@@ -592,11 +809,19 @@ def test_real_retained_arkitscenes_40958756_reaches_scientific_abstention(
     if not (source_root / "source/40958756.mov").is_file():
         pytest.skip("retained real ARKitScenes 40958756 source bytes are not installed")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    depth_result_path = (
+        source_root
+        / "compiled/arkitscenes_proxy_c38599abc46a0e27"
+        / "observed_surface_proxy_v1/arkit_depth_surface_proxy_result.json"
+    )
+    depth_result = json.loads(depth_result_path.read_text(encoding="utf-8"))
     result = run_post_capture_evidence_spine(
         run_id="arkitscenes-40958756-real-post-capture",
         source_artifact=receipt,
         source_root=source_root,
         output_root=tmp_path / "real-runs",
+        depth_surface_result=depth_result,
+        depth_surface_root=source_root,
     )
     source = json.loads(
         (Path(result["run_root"]) / "01_source_profile.json").read_text(encoding="utf-8")
@@ -609,8 +834,20 @@ def test_real_retained_arkitscenes_40958756_reaches_scientific_abstention(
         "native_3dgs_appearance_missing"
     )
     assert result["manifest"]["fixture_evidence_used"] is False
+    geometry = json.loads(
+        (Path(result["run_root"]) / "03_derived_site_geometry.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert geometry["geometry_asset_digest"] == (
+        "sha256:f3085b732a4ccf4b80f7f587f8775b5b69fe64596bb280d2a8dda730c979923d"
+    )
+    assert geometry["coverage_and_uncertainty"]["unsupported_region_ids"] == [
+        "arkitscenes-unobserved-regions"
+    ]
+    assert geometry["qualification_state"]["collision_geometry"] == "unqualified"
     retained_root = (
-        repo / "docs/evidence/arkitscenes_40958756_post_capture_a42a9edf"
+        repo / "docs/evidence/arkitscenes_40958756_post_capture_bda23f88"
     )
     assert result["manifest"] == json.loads(
         (retained_root / "post_capture_evidence_run.json").read_text(encoding="utf-8")
