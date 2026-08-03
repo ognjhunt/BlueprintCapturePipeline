@@ -31,7 +31,7 @@ fi
 python3 -m venv "${VENV_DIR}"
 "${VENV_DIR}/bin/pip" install --upgrade pip >/dev/null
 "${VENV_DIR}/bin/pip" install -r "${REQUIREMENTS}"
-# Install only Blueprint's package into the isolated trainer
+# Install only Blueprint's package/modules into the isolated trainer
 # environment. Nerfstudio already supplies numpy/Pillow and the other small
 # imports used by the canonical worker; resolving Blueprint's full production
 # dependency graph here would make the reconstruction runtime less isolated

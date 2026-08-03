@@ -18,7 +18,12 @@ REQUEST_SCHEMA = "canonical_3dgs_execution_request.v1"
 
 
 def build_canonical_3dgs_execution_request(
-    *, plan: Mapping[str, Any], transport_receipt: Mapping[str, Any], timestamp: str
+    *,
+    plan: Mapping[str, Any],
+    transport_receipt: Mapping[str, Any],
+    worker_wheel_digest: str,
+    worker_wheel_filename: str,
+    timestamp: str,
 ) -> dict[str, Any]:
     """Bind retained bytes and name every missing fact without inventing authority."""
 
@@ -41,6 +46,17 @@ def build_canonical_3dgs_execution_request(
     for key, expected in bindings.items():
         if transport.get(key) != expected:
             errors.append(f"canonical_3dgs_execution_request_transport_mismatch:{key}")
+    if not (
+        len(worker_wheel_digest) == 71
+        and worker_wheel_digest.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in worker_wheel_digest[7:])
+    ):
+        errors.append("canonical_3dgs_execution_request_wheel_digest_invalid")
+    if (
+        not worker_wheel_filename.endswith(".whl")
+        or Path(worker_wheel_filename).name != worker_wheel_filename
+    ):
+        errors.append("canonical_3dgs_execution_request_wheel_filename_invalid")
     if errors:
         raise ValueError(";".join(sorted(set(errors))))
     common = [
@@ -100,6 +116,8 @@ def build_canonical_3dgs_execution_request(
             "canonical_3dgs_execution_plan_digest"
         ],
         "worker_python_package_digest": source["worker_python_package_digest"],
+        "worker_wheel_digest": worker_wheel_digest,
+        "worker_wheel_filename": worker_wheel_filename,
         "colmap_training_dataset_digest": source["colmap_training_dataset_digest"],
         "frozen_split_digest": source["frozen_split_digest"],
         "transport_bundle_digest": transport["transport_bundle_digest"],
@@ -145,12 +163,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", required=True)
     parser.add_argument("--transport-receipt", required=True)
+    parser.add_argument("--worker-wheel-digest", required=True)
+    parser.add_argument("--worker-wheel-filename", required=True)
     parser.add_argument("--timestamp", required=True)
     parser.add_argument("--output", required=True)
     arguments = parser.parse_args(argv)
     result = build_canonical_3dgs_execution_request(
         plan=json.loads(Path(arguments.plan).read_text()),
         transport_receipt=json.loads(Path(arguments.transport_receipt).read_text()),
+        worker_wheel_digest=arguments.worker_wheel_digest,
+        worker_wheel_filename=arguments.worker_wheel_filename,
         timestamp=arguments.timestamp,
     )
     _write_immutable(Path(arguments.output).resolve(), result)
