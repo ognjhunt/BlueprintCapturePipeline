@@ -5059,6 +5059,22 @@ def test_vast_adapter_io_zip_poll_and_validation_edges(
         == "running"
     )
 
+    never_started_payload = {
+        "actual_status": "created",
+        "cur_state": "stopped",
+        "intended_status": "stopped",
+        "uptime": None,
+    }
+    monkeypatch.setattr(vpa, "_api_json", lambda **_: (200, never_started_payload))
+    stopped_status, stopped_observations, _ = vpa._poll_instance(
+        instance_id=3,
+        api_key="k",
+        timeout_seconds=10,
+        poll_interval_seconds=0,
+    )
+    assert stopped_status == "stopped_before_start"
+    assert stopped_observations[0]["status"] == "stopped_before_start"
+
     monkeypatch.setattr(
         vpa,
         "_api_json",
