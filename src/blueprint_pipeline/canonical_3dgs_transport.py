@@ -167,6 +167,9 @@ def validate_canonical_3dgs_transport_receipt(
     ):
         if not _digest(receipt.get(key)):
             errors.append(f"transport_receipt_{key}_invalid")
+    source_commit = str(receipt.get("source_commit_sha") or "")
+    if len(source_commit) != 40 or any(character not in "0123456789abcdef" for character in source_commit):
+        errors.append("transport_receipt_source_commit_sha_invalid")
     members = receipt.get("dataset_members")
     if (
         not isinstance(members, list)

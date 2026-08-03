@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import struct
@@ -51,6 +52,7 @@ def _transport_receipt() -> dict:
         "colmap_training_dataset_digest": "sha256:" + "4" * 64,
         "source_capture_digest": "sha256:" + "5" * 64,
         "frozen_split_digest": "sha256:" + "6" * 64,
+        "source_commit_sha": "a" * 40,
         "dataset_members": [
             {
                 "relative_path": "images/frame.png",
@@ -67,6 +69,32 @@ def _transport_receipt() -> dict:
         "proof_effect": "none",
     }
     value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    return value
+
+
+def _allocator_admission(transport: dict, *, worker_image: str, authority: str = "operator-approved-run-1") -> dict:
+    value = {
+        "schema_version": "reconstruction_gpu_canary_admission.v1",
+        "status": "execute_ready",
+        "blockers": [],
+        "operation": "trainer_canary",
+        "operation_request_digest": transport["canonical_3dgs_execution_plan_digest"],
+        "operation_input_bundle_digest": transport["transport_bundle_digest"],
+        "reconstruction_dataset_digest": transport["colmap_training_dataset_digest"],
+        "frozen_split_digest": transport["frozen_split_digest"],
+        "source_commit_sha": transport["source_commit_sha"],
+        "worker_image_digest": worker_image,
+        "max_spend_usd": 15.0,
+        "hard_ttl_seconds": 7200,
+        "retry_cap": 0,
+        "authority_id": authority,
+        "watchdog_armed": True,
+        "provider_zero_verified": True,
+        "provider_mutations_performed": 0,
+        "paid_execution_started": False,
+        "execution_adapter_qualified": True,
+    }
+    value["admission_digest"] = canonical_digest(value, digest_field="admission_digest")
     return value
 
 
@@ -264,11 +292,13 @@ def test_splatfacto_setup_installs_and_smokes_blueprint_worker_entrypoint() -> N
 
 def test_worker_admission_binds_authority_watchdog_spend_and_exact_transport() -> None:
     transport = _transport_receipt()
+    worker_image = "blueprint/postshot-worker@sha256:" + "a" * 64
     admission = build_canonical_3dgs_worker_admission(
         transport_receipt=transport,
         arm_id="postshot-primary",
         worker_platform="windows",
-        allocation_binding_digest="sha256:" + "8" * 64,
+        paid_allocator_admission=_allocator_admission(transport, worker_image=worker_image),
+        worker_image_digest=worker_image,
         trainer_runtime_digest="sha256:" + "9" * 64,
         trainer_runtime_version="fixture-trainer-1.0",
         authority_id="operator-approved-run-1",
@@ -289,6 +319,7 @@ def test_worker_admission_binds_authority_watchdog_spend_and_exact_transport() -
         dataset_digest=transport["colmap_training_dataset_digest"],
         transport_bundle_digest=transport["transport_bundle_digest"],
         worker_package_digest=transport["worker_python_package_digest"],
+        observed_now=datetime(2026, 8, 3, 12, 30, tzinfo=timezone.utc),
     )
     assert accepted["retry_cap"] == 0
     assert accepted["provider_zero_required_after_execution"] is True
@@ -296,11 +327,13 @@ def test_worker_admission_binds_authority_watchdog_spend_and_exact_transport() -
 
 def test_worker_admission_blocks_missing_authority_and_cannot_cross_arm() -> None:
     transport = _transport_receipt()
+    worker_image = "blueprint/postshot-worker@sha256:" + "a" * 64
     blocked = build_canonical_3dgs_worker_admission(
         transport_receipt=transport,
         arm_id="postshot-primary",
         worker_platform="windows",
-        allocation_binding_digest="sha256:" + "8" * 64,
+        paid_allocator_admission=_allocator_admission(transport, worker_image=worker_image),
+        worker_image_digest=worker_image,
         trainer_runtime_digest="invalid",
         trainer_runtime_version="",
         authority_id="",
@@ -327,7 +360,8 @@ def test_worker_admission_blocks_missing_authority_and_cannot_cross_arm() -> Non
         transport_receipt=transport,
         arm_id="postshot-primary",
         worker_platform="windows",
-        allocation_binding_digest="sha256:" + "8" * 64,
+        paid_allocator_admission=_allocator_admission(transport, worker_image=worker_image),
+        worker_image_digest=worker_image,
         trainer_runtime_digest="sha256:" + "9" * 64,
         trainer_runtime_version="fixture-trainer-1.0",
         authority_id="operator-approved-run-1",
@@ -347,4 +381,60 @@ def test_worker_admission_blocks_missing_authority_and_cannot_cross_arm() -> Non
             dataset_digest=transport["colmap_training_dataset_digest"],
             transport_bundle_digest=transport["transport_bundle_digest"],
             worker_package_digest=transport["worker_python_package_digest"],
+            observed_now=datetime(2026, 8, 3, 12, 30, tzinfo=timezone.utc),
+        )
+
+
+def test_worker_admission_rejects_allocator_tamper_and_expiry() -> None:
+    transport = _transport_receipt()
+    worker_image = "blueprint/splatfacto-worker@sha256:" + "b" * 64
+    allocator = _allocator_admission(transport, worker_image=worker_image)
+    allocator["retry_cap"] = 1
+    admission = build_canonical_3dgs_worker_admission(
+        transport_receipt=transport,
+        arm_id="splatfacto-comparison",
+        worker_platform="linux",
+        paid_allocator_admission=allocator,
+        worker_image_digest=worker_image,
+        trainer_runtime_digest="sha256:" + "9" * 64,
+        trainer_runtime_version="nerfstudio=1.1.5;gsplat=1.4.0",
+        authority_id="operator-approved-run-1",
+        max_spend_usd=15.0,
+        hard_ttl_seconds=7200,
+        provider_upload_authorized=True,
+        paid_compute_authorized=True,
+        watchdog_armed=True,
+        provider_zero_before_allocation=True,
+        timestamp="2026-08-03T12:00:00Z",
+    )
+    assert admission["status"] == "blocked"
+    assert any("retry_cap" in code for code in admission["blockers"])
+
+    valid_allocator = _allocator_admission(transport, worker_image=worker_image)
+    admitted = build_canonical_3dgs_worker_admission(
+        transport_receipt=transport,
+        arm_id="splatfacto-comparison",
+        worker_platform="linux",
+        paid_allocator_admission=valid_allocator,
+        worker_image_digest=worker_image,
+        trainer_runtime_digest="sha256:" + "9" * 64,
+        trainer_runtime_version="nerfstudio=1.1.5;gsplat=1.4.0",
+        authority_id="operator-approved-run-1",
+        max_spend_usd=15.0,
+        hard_ttl_seconds=7200,
+        provider_upload_authorized=True,
+        paid_compute_authorized=True,
+        watchdog_armed=True,
+        provider_zero_before_allocation=True,
+        timestamp="2026-08-03T12:00:00Z",
+    )
+    with pytest.raises(Canonical3DGSAdmissionError, match="expired"):
+        require_canonical_3dgs_worker_admission(
+            admitted,
+            arm_id="splatfacto-comparison",
+            plan_digest=transport["canonical_3dgs_execution_plan_digest"],
+            dataset_digest=transport["colmap_training_dataset_digest"],
+            transport_bundle_digest=transport["transport_bundle_digest"],
+            worker_package_digest=transport["worker_python_package_digest"],
+            observed_now=datetime(2026, 8, 3, 14, 0, 1, tzinfo=timezone.utc),
         )

@@ -46,8 +46,9 @@ AI and engineer orientation maps live under [`docs/architecture/`](docs/architec
 - [`TASK_EVALUATION_SUPERVISOR_RUNBOOK.md`](docs/TASK_EVALUATION_SUPERVISOR_RUNBOOK.md)
 
 The operational iPhone/LiDAR reconstruction path—canonical Raw Contract V3.2
-input, deterministic cross-platform worker transport, Postshot Splat3 primary
-training, Splatfacto comparison, and digest-bound receipt finalization—is documented in
+or explicitly bounded ARKitScenes proxy input, deterministic cross-platform
+worker transport, allocator-bound Postshot/Splatfacto training, exact-camera
+evaluation, and registered-appearance production—is documented in
 [`docs/CANONICAL_V32_TO_3DGS.md`](docs/CANONICAL_V32_TO_3DGS.md).
 
 Provider-neutral Task Evaluation Run control-plane commands:

@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import tempfile
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from .canonical_3dgs_transport import validate_canonical_3dgs_transport_receipt
@@ -26,6 +27,7 @@ ARM_PLATFORMS = {
     "splatfacto-comparison": "linux",
 }
 MAX_TTL_SECONDS = 14_400
+PAID_ALLOCATOR_ADMISSION_SCHEMA = "reconstruction_gpu_canary_admission.v1"
 
 
 class Canonical3DGSAdmissionError(ValueError):
@@ -50,6 +52,60 @@ def _positive_number(value: Any) -> bool:
         and math.isfinite(float(value))
         and float(value) > 0.0
     )
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _allocator_blockers(
+    value: Mapping[str, Any],
+    *,
+    transport: Mapping[str, Any],
+    worker_image_digest: str,
+    authority_id: str,
+    max_spend_usd: float,
+    hard_ttl_seconds: int,
+) -> list[str]:
+    allocator = json.loads(canonical_json(dict(value)))
+    errors: list[str] = []
+    if allocator.get("schema_version") != PAID_ALLOCATOR_ADMISSION_SCHEMA:
+        errors.append("canonical_3dgs_allocator_admission_schema_invalid")
+    if allocator.get("admission_digest") != canonical_digest(
+        allocator, digest_field="admission_digest"
+    ):
+        errors.append("canonical_3dgs_allocator_admission_digest_mismatch")
+    expected = {
+        "status": "execute_ready",
+        "operation": "trainer_canary",
+        "operation_request_digest": transport["canonical_3dgs_execution_plan_digest"],
+        "operation_input_bundle_digest": transport["transport_bundle_digest"],
+        "reconstruction_dataset_digest": transport["colmap_training_dataset_digest"],
+        "frozen_split_digest": transport["frozen_split_digest"],
+        "source_commit_sha": transport["source_commit_sha"],
+        "worker_image_digest": worker_image_digest,
+        "max_spend_usd": float(max_spend_usd),
+        "hard_ttl_seconds": hard_ttl_seconds,
+        "retry_cap": 0,
+        "authority_id": authority_id,
+        "watchdog_armed": True,
+        "provider_zero_verified": True,
+        "provider_mutations_performed": 0,
+        "paid_execution_started": False,
+        "execution_adapter_qualified": True,
+    }
+    for key, expected_value in expected.items():
+        if allocator.get(key) != expected_value:
+            errors.append(f"canonical_3dgs_allocator_binding_mismatch:{key}")
+    if allocator.get("blockers") != []:
+        errors.append("canonical_3dgs_allocator_admission_blocked")
+    return errors
 
 
 def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -84,7 +140,8 @@ def build_canonical_3dgs_worker_admission(
     transport_receipt: Mapping[str, Any],
     arm_id: str,
     worker_platform: str,
-    allocation_binding_digest: str,
+    paid_allocator_admission: Mapping[str, Any],
+    worker_image_digest: str,
     trainer_runtime_digest: str,
     trainer_runtime_version: str,
     authority_id: str,
@@ -102,8 +159,10 @@ def build_canonical_3dgs_worker_admission(
         blockers.append("canonical_3dgs_admission_arm_invalid")
     elif worker_platform != ARM_PLATFORMS[arm_id]:
         blockers.append("canonical_3dgs_admission_platform_mismatch")
-    if not _digest(allocation_binding_digest):
-        blockers.append("canonical_3dgs_admission_allocation_binding_invalid")
+    if "@sha256:" not in str(worker_image_digest) or not _digest(
+        "sha256:" + str(worker_image_digest).rsplit("@sha256:", 1)[-1]
+    ):
+        blockers.append("canonical_3dgs_admission_worker_image_digest_invalid")
     if not _digest(trainer_runtime_digest):
         blockers.append("canonical_3dgs_admission_trainer_runtime_digest_invalid")
     if not str(trainer_runtime_version or "").strip():
@@ -129,8 +188,20 @@ def build_canonical_3dgs_worker_admission(
     ):
         if value is not True:
             blockers.append(code)
-    if not str(timestamp or "").strip():
+    issued_at = _parse_utc(timestamp)
+    if issued_at is None:
         blockers.append("canonical_3dgs_admission_timestamp_missing")
+    blockers.extend(
+        _allocator_blockers(
+            paid_allocator_admission,
+            transport=transport,
+            worker_image_digest=worker_image_digest,
+            authority_id=str(authority_id),
+            max_spend_usd=max_spend_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+        )
+    )
+    allocator_digest = str(paid_allocator_admission.get("admission_digest") or "")
     result = {
         "schema_version": ADMISSION_SCHEMA,
         "status": "admitted" if not blockers else "blocked",
@@ -147,7 +218,9 @@ def build_canonical_3dgs_worker_admission(
         ],
         "transport_bundle_digest": transport["transport_bundle_digest"],
         "transport_receipt_digest": transport["receipt_digest"],
-        "allocation_binding_digest": allocation_binding_digest,
+        "paid_allocator_admission_digest": allocator_digest,
+        "allocation_binding_digest": allocator_digest,
+        "worker_image_digest": worker_image_digest,
         "trainer_runtime_digest": trainer_runtime_digest,
         "trainer_runtime_version": str(trainer_runtime_version),
         "authority_id": str(authority_id),
@@ -165,6 +238,13 @@ def build_canonical_3dgs_worker_admission(
         "quality_or_scientific_result_inferred": False,
         "proof_effect": "worker_execution_authority_only",
         "timestamp": str(timestamp),
+        "expires_at": (
+            (issued_at + timedelta(seconds=hard_ttl_seconds))
+            .isoformat()
+            .replace("+00:00", "Z")
+            if issued_at is not None and isinstance(hard_ttl_seconds, int)
+            else None
+        ),
     }
     result["canonical_3dgs_worker_admission_digest"] = canonical_digest(
         result, digest_field="canonical_3dgs_worker_admission_digest"
@@ -180,6 +260,7 @@ def require_canonical_3dgs_worker_admission(
     dataset_digest: str,
     transport_bundle_digest: str,
     worker_package_digest: str,
+    observed_now: datetime | None = None,
 ) -> dict[str, Any]:
     admission = json.loads(canonical_json(dict(value)))
     errors: list[str] = []
@@ -215,6 +296,13 @@ def require_canonical_3dgs_worker_admission(
         errors.append("canonical_3dgs_worker_admission_retry_cap_invalid")
     if not _digest(admission.get("allocation_binding_digest")):
         errors.append("canonical_3dgs_worker_admission_allocation_binding_invalid")
+    if admission.get("paid_allocator_admission_digest") != admission.get(
+        "allocation_binding_digest"
+    ):
+        errors.append("canonical_3dgs_worker_admission_allocator_binding_invalid")
+    image = str(admission.get("worker_image_digest") or "")
+    if "@sha256:" not in image or not _digest("sha256:" + image.rsplit("@sha256:", 1)[-1]):
+        errors.append("canonical_3dgs_worker_admission_image_digest_invalid")
     if not _digest(admission.get("trainer_runtime_digest")):
         errors.append("canonical_3dgs_worker_admission_trainer_runtime_digest_invalid")
     if not str(admission.get("trainer_runtime_version") or "").strip():
@@ -226,6 +314,10 @@ def require_canonical_3dgs_worker_admission(
         errors.append("canonical_3dgs_worker_admission_ttl_invalid")
     if not str(admission.get("authority_id") or "").strip():
         errors.append("canonical_3dgs_worker_admission_authority_missing")
+    expires = _parse_utc(admission.get("expires_at"))
+    now = observed_now or datetime.now(timezone.utc)
+    if expires is None or now.astimezone(timezone.utc) >= expires:
+        errors.append("canonical_3dgs_worker_admission_expired")
     if errors:
         raise Canonical3DGSAdmissionError(errors)
     return admission
@@ -236,7 +328,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--transport-receipt", required=True)
     parser.add_argument("--arm", choices=tuple(ARM_PLATFORMS), required=True)
     parser.add_argument("--worker-platform", choices=("windows", "linux"), required=True)
-    parser.add_argument("--allocation-binding-digest", required=True)
+    parser.add_argument("--paid-allocator-admission", required=True)
+    parser.add_argument("--worker-image-digest", required=True)
     parser.add_argument("--trainer-runtime-digest", required=True)
     parser.add_argument("--trainer-runtime-version", required=True)
     parser.add_argument("--authority-id", required=True)
@@ -253,6 +346,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         transport = json.loads(
             Path(arguments.transport_receipt).read_text(encoding="utf-8")
         )
+        allocator_admission = json.loads(
+            Path(arguments.paid_allocator_admission).read_text(encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError) as exc:
         raise Canonical3DGSAdmissionError(
             ["canonical_3dgs_admission_transport_receipt_invalid"]
@@ -261,7 +357,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         transport_receipt=transport,
         arm_id=arguments.arm,
         worker_platform=arguments.worker_platform,
-        allocation_binding_digest=arguments.allocation_binding_digest,
+        paid_allocator_admission=allocator_admission,
+        worker_image_digest=arguments.worker_image_digest,
         trainer_runtime_digest=arguments.trainer_runtime_digest,
         trainer_runtime_version=arguments.trainer_runtime_version,
         authority_id=arguments.authority_id,

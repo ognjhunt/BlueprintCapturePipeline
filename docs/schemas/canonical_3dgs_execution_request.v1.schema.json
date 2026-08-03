@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/canonical_3dgs_execution_request.v1.schema.json",
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "type": "object",
+  "required": [
+    "schema_version", "status", "source_profile", "source_capture_digest",
+    "source_commit_sha", "canonical_3dgs_source_admission_digest",
+    "canonical_3dgs_execution_plan_digest", "worker_python_package_digest",
+    "colmap_training_dataset_digest", "frozen_split_digest",
+    "transport_bundle_digest", "transport_receipt_digest", "arms",
+    "provider_launch_entrypoint", "provider_specific_launcher_permitted",
+    "paid_execution_authorized", "provider_upload_authorized", "worker_retry_cap",
+    "quality_winner", "candidate_generated", "proof_effect", "claim_ceiling",
+    "timestamp", "canonical_3dgs_execution_request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "canonical_3dgs_execution_request.v1"},
+    "status": {"const": "admission_ready_missing_authority"},
+    "source_profile": {"enum": ["blueprint_raw_v3_2", "public_dataset_arkitscenes_proxy"]},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "canonical_3dgs_source_admission_digest": {"$ref": "#/$defs/digest"},
+    "canonical_3dgs_execution_plan_digest": {"$ref": "#/$defs/digest"},
+    "worker_python_package_digest": {"$ref": "#/$defs/digest"},
+    "colmap_training_dataset_digest": {"$ref": "#/$defs/digest"},
+    "frozen_split_digest": {"$ref": "#/$defs/digest"},
+    "transport_bundle_digest": {"$ref": "#/$defs/digest"},
+    "transport_receipt_digest": {"$ref": "#/$defs/digest"},
+    "arms": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["arm_id", "worker_platform", "worker_image_digest", "trainer_runtime_digest", "trainer_runtime_version", "allocator_operation", "retry_cap", "blockers"],
+        "properties": {
+          "allocator_operation": {"const": "trainer_canary"},
+          "retry_cap": {"const": 0},
+          "blockers": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+        }
+      }
+    },
+    "provider_specific_launcher_permitted": {"const": false},
+    "paid_execution_authorized": {"const": false},
+    "provider_upload_authorized": {"const": false},
+    "worker_retry_cap": {"const": 0},
+    "quality_winner": {"type": "null"},
+    "candidate_generated": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "admission_ready_request_only"},
+    "canonical_3dgs_execution_request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": true
+}

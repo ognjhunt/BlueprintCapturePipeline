@@ -19,11 +19,15 @@ from blueprint_pipeline.canonical_3dgs_admission import (
 from blueprint_pipeline.canonical_3dgs_pipeline import (
     Canonical3DGSPipelineError,
     build_canonical_3dgs_execution_plan,
+    build_canonical_3dgs_source_admission,
     canonical_3dgs_worker_package_digest,
     canonical_3dgs_worker_wheel_package_digest,
     execute_canonical_3dgs_plan,
     finalize_canonical_3dgs_receipts,
     prepare_canonical_v32_training_dataset,
+)
+from blueprint_pipeline.canonical_3dgs_execution_request import (
+    build_canonical_3dgs_execution_request,
 )
 from blueprint_pipeline.canonical_3dgs_transport import (
     Canonical3DGSTransportError,
@@ -40,6 +44,10 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 CAPTURE_DIGEST = "sha256:" + "a" * 64
 SPLIT_DIGEST = "sha256:" + "b" * 64
 SOURCE_COMMIT = "c" * 40
+
+
+def _sha(character: str) -> str:
+    return "sha256:" + character * 64
 
 
 def _digest(path: Path) -> str:
@@ -90,8 +98,21 @@ def _dataset(root: Path) -> dict:
                     "digest": _digest(path),
                 }
             )
+    request_digest = _sha("9")
     dataset_digest = canonical_digest(
-        {"files": [{"path": row["relative_path"], "digest": row["digest"]} for row in rows]}
+        {
+            "images": [
+                {"artifact_id": Path(row["relative_path"]).name, "digest": row["digest"]}
+                for row in rows
+                if row["artifact_type"] == "candidate_image"
+            ],
+            "sparse": {
+                Path(row["relative_path"]).name: row["digest"]
+                for row in rows
+                if row["artifact_type"] == "colmap_sparse_text"
+            },
+            "request_digest": request_digest,
+        }
     )
     result = {
         "schema_version": "colmap_training_dataset_export_result.v1",
@@ -105,6 +126,7 @@ def _dataset(root: Path) -> dict:
         "hidden_heldout_pixels_included": False,
         "trainer_self_grading_permitted": False,
         "raw_input_poses_modified": False,
+        "parent_artifact_or_event": {"request_digest": request_digest},
     }
     result["colmap_training_dataset_export_result_digest"] = canonical_digest(
         result, digest_field="colmap_training_dataset_export_result_digest"
@@ -115,13 +137,21 @@ def _dataset(root: Path) -> dict:
 def _preparation(dataset: dict) -> dict:
     value = {
         "schema_version": "canonical_v32_3dgs_preparation.v1",
+        "status": "training_dataset_ready",
+        "source_profile": "blueprint_raw_v3_2",
+        "canonical_3dgs_source_admission_digest": _sha("8"),
         "source_capture_digest": CAPTURE_DIGEST,
+        "raw_contract_3_2_proven": True,
         "colmap_training_dataset_digest": dataset["colmap_training_dataset_digest"],
         "colmap_training_dataset_export_result_digest": dataset[
             "colmap_training_dataset_export_result_digest"
         ],
         "frozen_split_digest": SPLIT_DIGEST,
         "pose_binding": "raw_arkit_pose_baseline",
+        "world_frame": "canonical_arkit_world",
+        "coordinate_frame_declaration": {"frame": "canonical_arkit_world"},
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "timestamp": "2026-08-03T05:00:00Z",
     }
     value["canonical_v32_3dgs_preparation_digest"] = canonical_digest(
         value, digest_field="canonical_v32_3dgs_preparation_digest"
@@ -719,6 +749,64 @@ def test_canonical_transport_receipt_cannot_grant_paid_authority(tmp_path: Path)
         validate_canonical_3dgs_transport_receipt(tampered)
 
 
+def test_proxy_source_admission_cannot_claim_raw_contract() -> None:
+    common = {
+        "source_profile": "public_dataset_arkitscenes_proxy",
+        "source_capture_identity": "ARKitScenes:40958756",
+        "source_capture_digest": _sha("1"),
+        "source_artifact_commit_sha": SOURCE_COMMIT,
+        "frozen_split_digest": _sha("2"),
+        "colmap_training_dataset_digest": _sha("3"),
+        "hidden_evaluator_input_digest": _sha("4"),
+        "world_frame": "arkitscenes_official_loader_world",
+        "coordinate_frame_declaration": {"units": "meters"},
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "authority_used": {"local_processing_authorized": True},
+        "input_artifacts": [{"artifact_id": "proxy", "digest": _sha("5")}],
+        "claim_limitations": ["public_dataset_proxy_not_blueprint_raw_capture"],
+        "timestamp": "2026-08-03T05:00:00Z",
+    }
+    admission = build_canonical_3dgs_source_admission(
+        **common, raw_contract_3_2_proven=False
+    )
+    assert admission["raw_contract_3_2_proven"] is False
+    assert admission["provider_upload_authorized_by_source_admission"] is False
+    with pytest.raises(Canonical3DGSPipelineError, match="raw_contract_claim_invalid"):
+        build_canonical_3dgs_source_admission(
+            **common, raw_contract_3_2_proven=True
+        )
+
+
+def test_execution_request_names_missing_authority_without_a_winner(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset = _dataset(dataset_root)
+    plan = build_canonical_3dgs_execution_plan(
+        preparation=_preparation(dataset),
+        dataset=dataset,
+        dataset_root=dataset_root,
+        source_commit_sha=SOURCE_COMMIT,
+        timestamp="2026-08-03T05:00:00Z",
+    )
+    transport = compile_canonical_3dgs_transport_bundle(
+        plan=plan,
+        dataset_root=dataset_root,
+        bundle_path=tmp_path / "transport.zip",
+        receipt_path=tmp_path / "transport.json",
+    )
+    request = build_canonical_3dgs_execution_request(
+        plan=plan, transport_receipt=transport, timestamp="2026-08-03T05:00:00Z"
+    )
+    schema = json.loads(
+        (Path(__file__).parents[1] / "docs/schemas/canonical_3dgs_execution_request.v1.schema.json").read_text()
+    )
+    jsonschema.validate(request, schema)
+    assert request["paid_execution_authorized"] is False
+    assert request["quality_winner"] is None
+    assert request["candidate_generated"] is False
+    assert all(arm["retry_cap"] == 0 and arm["blockers"] for arm in request["arms"])
+    assert "paid_resource_allocator gpu-canary" in request["provider_launch_entrypoint"]
+
+
 def test_platform_worker_receipts_finalize_into_one_bound_campaign(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
     dataset = _dataset(dataset_root)
@@ -736,6 +824,7 @@ def test_platform_worker_receipts_finalize_into_one_bound_campaign(tmp_path: Pat
         receipt_path=tmp_path / "transport.json",
     )
     results_root = tmp_path / "results"
+    allocator_digests: list[str] = []
     for arm in plan["arms"]:
         run_root = results_root / arm["arm_id"]
         run_root.mkdir(parents=True)
@@ -751,15 +840,42 @@ def test_platform_worker_receipts_finalize_into_one_bound_campaign(tmp_path: Pat
         receipt["canonical_3dgs_execution_plan_digest"] = plan[
             "canonical_3dgs_execution_plan_digest"
         ]
+        worker_image = "blueprint/canonical-3dgs-worker@sha256:" + (
+            "1" if arm["arm_id"] == "postshot-primary" else "2"
+        ) * 64
+        allocator_admission = {
+            "schema_version": "reconstruction_gpu_canary_admission.v1",
+            "status": "execute_ready",
+            "blockers": [],
+            "operation": "trainer_canary",
+            "operation_request_digest": plan["canonical_3dgs_execution_plan_digest"],
+            "operation_input_bundle_digest": transport["transport_bundle_digest"],
+            "reconstruction_dataset_digest": plan["colmap_training_dataset_digest"],
+            "frozen_split_digest": plan["frozen_split_digest"],
+            "source_commit_sha": plan["source_commit_sha"],
+            "worker_image_digest": worker_image,
+            "max_spend_usd": 10.0,
+            "hard_ttl_seconds": 3600,
+            "retry_cap": 0,
+            "authority_id": "fixture-authority",
+            "watchdog_armed": True,
+            "provider_zero_verified": True,
+            "provider_mutations_performed": 0,
+            "paid_execution_started": False,
+            "execution_adapter_qualified": True,
+        }
+        allocator_admission["admission_digest"] = canonical_digest(
+            allocator_admission, digest_field="admission_digest"
+        )
+        allocator_digests.append(allocator_admission["admission_digest"])
         admission = build_canonical_3dgs_worker_admission(
             transport_receipt=transport,
             arm_id=arm["arm_id"],
             worker_platform=(
                 "windows" if arm["arm_id"] == "postshot-primary" else "linux"
             ),
-            allocation_binding_digest="sha256:" + (
-                "1" if arm["arm_id"] == "postshot-primary" else "2"
-            ) * 64,
+            paid_allocator_admission=allocator_admission,
+            worker_image_digest=worker_image,
             trainer_runtime_digest="sha256:" + "9" * 64,
             trainer_runtime_version="fixture-trainer-1.0",
             authority_id="fixture-authority",
@@ -814,10 +930,7 @@ def test_platform_worker_receipts_finalize_into_one_bound_campaign(tmp_path: Pat
     assert result["campaign"]["execution_control_summary"] == {
         "all_external_workers_admitted": True,
         "control_modes": ["external_worker_admission_bound"],
-        "allocation_binding_digests": [
-            "sha256:" + "1" * 64,
-            "sha256:" + "2" * 64,
-        ],
+        "allocation_binding_digests": sorted(allocator_digests),
         "provider_zero_required_after_execution": True,
         "provider_zero_verified_after_execution": False,
         "resource_closeout_is_quality_evidence": False,
