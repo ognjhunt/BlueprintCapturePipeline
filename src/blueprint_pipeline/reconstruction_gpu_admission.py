@@ -660,6 +660,12 @@ def build_reconstruction_gpu_canary_admission(
         "provider_mutations_performed": 0,
         "paid_execution_started": False,
         "execution_adapter_qualified": operation_adapter_qualified,
+        "execution_adapter_id": (
+            "reconstruction_vast_operation_v1"
+            if operation_adapter_qualified and operation in {"pose_canary", "trainer_canary"}
+            else None
+        ),
+        "worker_platform": "linux" if operation_adapter_qualified and provider == "vast" else None,
         "allocation_success_is_scientific_success": False,
         "proof_effect": "none",
         "claim_ceiling": "paid_gpu_admission_only",

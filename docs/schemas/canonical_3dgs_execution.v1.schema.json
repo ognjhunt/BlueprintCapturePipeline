@@ -16,6 +16,7 @@
         "coordinate_frame_declaration", "metric_scale_status",
         "canonical_v32_3dgs_preparation_digest", "colmap_training_dataset_digest",
         "colmap_training_dataset_export_result_digest", "frozen_split_digest",
+        "hidden_evaluator_input_digest",
         "input_artifacts", "primary_method_id", "comparison_method_ids", "arms",
         "same_candidate_dataset_required", "hidden_heldout_pixels_included",
         "trainer_self_grading_permitted", "independent_heldout_evaluation_required",
@@ -40,6 +41,7 @@
         "colmap_training_dataset_digest": {"$ref": "#/$defs/digest"},
         "colmap_training_dataset_export_result_digest": {"$ref": "#/$defs/digest"},
         "frozen_split_digest": {"$ref": "#/$defs/digest"},
+        "hidden_evaluator_input_digest": {"$ref": "#/$defs/digest"},
         "input_artifacts": {
           "type": "array", "minItems": 4,
           "items": {
@@ -116,6 +118,7 @@
         "world_frame", "coordinate_frame_declaration", "metric_scale_status",
         "metric_scale_independently_validated",
         "frozen_split_digest", "primary_method_id", "primary_result_digest",
+        "hidden_evaluator_input_digest",
         "comparison_result_digests", "all_arms_used_identical_candidate_dataset",
         "hidden_heldout_pixels_included", "independent_heldout_evaluation_status",
         "appearance_fidelity_candidate_bindings", "execution_control_summary", "next_quality_gate",
@@ -139,6 +142,7 @@
         "canonical_3dgs_execution_plan_digest": {"$ref": "#/$defs/digest"},
         "colmap_training_dataset_digest": {"$ref": "#/$defs/digest"},
         "frozen_split_digest": {"$ref": "#/$defs/digest"},
+        "hidden_evaluator_input_digest": {"$ref": "#/$defs/digest"},
         "primary_method_id": {"const": "jawset_postshot_splat3_v1"},
         "all_arms_used_identical_candidate_dataset": {"const": true},
         "hidden_heldout_pixels_included": {"const": false},

@@ -611,6 +611,7 @@ def prepare_canonical_v32_training_dataset(
         ],
         "source_capture_identity": intake_id,
         "source_capture_digest": capture_digest,
+        "pipeline_source_commit_sha": source_commit,
         "raw_contract_version": "3.2.0",
         "raw_contract_3_2_proven": True,
         "raw_capture_authority_preserved": True,
@@ -924,6 +925,7 @@ def prepare_canonical_arkitscenes_proxy_training_dataset(
         ],
         "source_capture_identity": compilation["source_capture_identity"],
         "source_capture_digest": capture_digest,
+        "pipeline_source_commit_sha": source_commit_sha,
         "raw_contract_version": None,
         "raw_contract_3_2_proven": False,
         "raw_capture_authority_preserved": True,
@@ -996,6 +998,7 @@ def build_canonical_3dgs_execution_plan(
         not in {"blueprint_raw_v3_2", "public_dataset_arkitscenes_proxy"}
         or preparation.get("raw_contract_3_2_proven")
         != (preparation.get("source_profile") == "blueprint_raw_v3_2")
+        or preparation.get("pipeline_source_commit_sha") != source_commit_sha
     ):
         raise Canonical3DGSPipelineError(["preparation_dataset_binding_invalid"])
     if len(source_commit_sha) != 40 or any(
@@ -1025,6 +1028,9 @@ def build_canonical_3dgs_execution_plan(
             "colmap_training_dataset_export_result_digest"
         ],
         "frozen_split_digest": dataset["frozen_split_digest"],
+        "hidden_evaluator_input_digest": preparation[
+            "hidden_evaluator_input_digest"
+        ],
         "input_artifacts": input_artifacts,
         "image_count": dataset["image_count"],
         "initialization_point_count": dataset["initialization_point_count"],
@@ -1395,6 +1401,7 @@ def verify_canonical_3dgs_plan_inputs(
         or plan.get("source_profile")
         not in {"blueprint_raw_v3_2", "public_dataset_arkitscenes_proxy"}
         or not _digest(plan.get("canonical_3dgs_source_admission_digest"))
+        or not _digest(plan.get("hidden_evaluator_input_digest"))
         or not str(plan.get("world_frame") or "").strip()
         or not isinstance(plan.get("coordinate_frame_declaration"), Mapping)
         or plan.get("metric_scale_status")
@@ -1493,6 +1500,7 @@ def _finalize_campaign(
         ],
         "colmap_training_dataset_digest": plan["colmap_training_dataset_digest"],
         "frozen_split_digest": plan["frozen_split_digest"],
+        "hidden_evaluator_input_digest": plan["hidden_evaluator_input_digest"],
         "primary_method_id": plan["primary_method_id"],
         "primary_result_digest": (
             primary["canonical_3dgs_arm_result_digest"] if primary else None

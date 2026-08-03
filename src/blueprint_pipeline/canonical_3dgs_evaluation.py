@@ -389,7 +389,7 @@ def compile_canonical_3dgs_proxy_hidden_evaluator_input(
         cameras.append(
             {
                 "camera_id": camera_id,
-                "trajectory": "arkitscenes_proxy_heldout",
+                "trajectory": "author_heldout",
                 "t_video_sec": float(raw["t_video_sec"]),
                 "capture_pose_frame_id": camera_id,
                 "T_world_camera_provider_frame": _opencv_camera_to_world(
@@ -518,8 +518,13 @@ def evaluate_canonical_3dgs_campaign(
     if (
         evaluator["source_capture_digest"] != campaign["source_capture_digest"]
         or evaluator["frozen_split_digest"] != campaign["frozen_split_digest"]
+        or evaluator["source_commit_sha"] != campaign["source_commit_sha"]
+        or evaluator["canonical_3dgs_hidden_evaluator_input_digest"]
+        != campaign.get("hidden_evaluator_input_digest")
     ):
-        raise Canonical3DGSEvaluationError(["canonical_quality_capture_or_split_mismatch"])
+        raise Canonical3DGSEvaluationError(
+            ["canonical_quality_source_or_evaluator_binding_mismatch"]
+        )
     required_thresholds = {
         "minimum_mean_psnr_db",
         "minimum_mean_global_ssim",

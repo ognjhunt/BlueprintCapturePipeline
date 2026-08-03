@@ -72,6 +72,8 @@ def _allocator_blockers(
     authority_id: str,
     max_spend_usd: float,
     hard_ttl_seconds: int,
+    arm_id: str,
+    worker_platform: str,
 ) -> list[str]:
     allocator = json.loads(canonical_json(dict(value)))
     errors: list[str] = []
@@ -103,6 +105,14 @@ def _allocator_blockers(
     for key, expected_value in expected.items():
         if allocator.get(key) != expected_value:
             errors.append(f"canonical_3dgs_allocator_binding_mismatch:{key}")
+    expected_adapter = {
+        "postshot-primary": "canonical_postshot_windows_v1",
+        "splatfacto-comparison": "reconstruction_vast_operation_v1",
+    }.get(arm_id)
+    if allocator.get("execution_adapter_id") != expected_adapter:
+        errors.append("canonical_3dgs_allocator_adapter_not_platform_qualified")
+    if allocator.get("worker_platform") != worker_platform:
+        errors.append("canonical_3dgs_allocator_worker_platform_mismatch")
     if allocator.get("blockers") != []:
         errors.append("canonical_3dgs_allocator_admission_blocked")
     return errors
@@ -199,6 +209,8 @@ def build_canonical_3dgs_worker_admission(
             authority_id=str(authority_id),
             max_spend_usd=max_spend_usd,
             hard_ttl_seconds=hard_ttl_seconds,
+            arm_id=arm_id,
+            worker_platform=worker_platform,
         )
     )
     allocator_digest = str(paid_allocator_admission.get("admission_digest") or "")

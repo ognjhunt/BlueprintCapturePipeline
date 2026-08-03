@@ -36,6 +36,7 @@ from blueprint_pipeline.canonical_3dgs_transport import (
     validate_canonical_3dgs_transport_receipt,
 )
 from blueprint_pipeline.canonical_3dgs_evaluation import (
+    Canonical3DGSEvaluationError,
     evaluate_canonical_3dgs_campaign,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -141,12 +142,14 @@ def _preparation(dataset: dict) -> dict:
         "source_profile": "blueprint_raw_v3_2",
         "canonical_3dgs_source_admission_digest": _sha("8"),
         "source_capture_digest": CAPTURE_DIGEST,
+        "pipeline_source_commit_sha": SOURCE_COMMIT,
         "raw_contract_3_2_proven": True,
         "colmap_training_dataset_digest": dataset["colmap_training_dataset_digest"],
         "colmap_training_dataset_export_result_digest": dataset[
             "colmap_training_dataset_export_result_digest"
         ],
         "frozen_split_digest": SPLIT_DIGEST,
+        "hidden_evaluator_input_digest": _sha("7"),
         "pose_binding": "raw_arkit_pose_baseline",
         "world_frame": "canonical_arkit_world",
         "coordinate_frame_declaration": {"frame": "canonical_arkit_world"},
@@ -478,7 +481,7 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
         preparation=prepared["preparation"],
         dataset=prepared["dataset"],
         dataset_root=prepared["dataset_root"],
-        source_commit_sha=SOURCE_COMMIT,
+        source_commit_sha=prepared["preparation"]["pipeline_source_commit_sha"],
         timestamp="2026-08-03T05:00:00Z",
     )
     assert plan["primary_method_id"] == "jawset_postshot_splat3_v1"
@@ -579,6 +582,48 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
         row["appearance_fidelity_status"] == "qualified"
         for row in comparison["candidate_reports"]
     )
+    stale_evaluator = dict(evaluator)
+    stale_evaluator["source_commit_sha"] = "d" * 40
+    stale_evaluator["canonical_3dgs_hidden_evaluator_input_digest"] = canonical_digest(
+        stale_evaluator,
+        digest_field="canonical_3dgs_hidden_evaluator_input_digest",
+    )
+    with pytest.raises(
+        Canonical3DGSEvaluationError,
+        match="canonical_quality_source_or_evaluator_binding_mismatch",
+    ):
+        evaluate_canonical_3dgs_campaign(
+            campaign_result=campaign_result["campaign"],
+            results_root=results_root,
+            evaluator_input=stale_evaluator,
+            evaluator_root=evaluator_root,
+            thresholds={
+                "minimum_mean_psnr_db": 25.0,
+                "minimum_mean_global_ssim": 0.8,
+                "minimum_mean_windowed_ssim": 0.8,
+                "maximum_mean_absolute_error": 0.1,
+                "maximum_mean_lpips": 0.2,
+            },
+            lpips_model={
+                "model_id": "lpips_alex_v0.1",
+                "checkpoint_digest": "sha256:" + "9" * 64,
+            },
+            output_root=tmp_path / "stale-quality",
+            renderer=fake_renderer,
+            appearance_evaluator=fake_evaluator,
+        )
+
+
+def test_plan_rejects_pipeline_source_commit_mismatch(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset = _dataset(dataset_root)
+    with pytest.raises(Canonical3DGSPipelineError, match="preparation_dataset_binding_invalid"):
+        build_canonical_3dgs_execution_plan(
+            preparation=_preparation(dataset),
+            dataset=dataset,
+            dataset_root=dataset_root,
+            source_commit_sha="d" * 40,
+        )
 
 
 def test_canonical_plan_rejects_dataset_byte_drift_before_any_runner(tmp_path: Path) -> None:
@@ -867,6 +912,14 @@ def test_platform_worker_receipts_finalize_into_one_bound_campaign(tmp_path: Pat
             "provider_mutations_performed": 0,
             "paid_execution_started": False,
             "execution_adapter_qualified": True,
+            "execution_adapter_id": (
+                "canonical_postshot_windows_v1"
+                if arm["arm_id"] == "postshot-primary"
+                else "reconstruction_vast_operation_v1"
+            ),
+            "worker_platform": (
+                "windows" if arm["arm_id"] == "postshot-primary" else "linux"
+            ),
         }
         allocator_admission["admission_digest"] = canonical_digest(
             allocator_admission, digest_field="admission_digest"

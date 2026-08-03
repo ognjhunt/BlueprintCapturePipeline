@@ -225,3 +225,27 @@ def test_registration_computes_residuals_and_fails_closed_on_tampering(tmp_path:
             quality_comparison=_quality(campaign),
             registration_measurement=tampered,
         )
+
+
+def test_registration_rejects_non_surface_source_artifact(tmp_path: Path) -> None:
+    splat = tmp_path / "candidate.ply"
+    asset_digest = _write_standard_splat(splat)
+    source = _source(_sha("e"))
+    source["input_artifacts"].append(
+        {"artifact_id": "hidden_evaluator_input", "digest": _sha("f")}
+    )
+    source["canonical_3dgs_source_admission_digest"] = canonical_digest(
+        source, digest_field="canonical_3dgs_source_admission_digest"
+    )
+    campaign = _campaign(source, asset_digest)
+    with pytest.raises(
+        Canonical3DGSRegistrationError,
+        match="registered_reconstruction_geometry_source_binding_invalid",
+    ):
+        build_registered_site_reconstruction(
+            source_admission=source,
+            campaign_result=campaign,
+            appearance_asset_path=splat,
+            appearance_asset_reference="candidate.ply",
+            geometry_asset_digest=_sha("f"),
+        )
