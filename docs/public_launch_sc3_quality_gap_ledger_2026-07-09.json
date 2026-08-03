@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:b70197b311531e3c63d3fc9cb6f99a23279f2fc60b2f418d2c3f960052d6702f",
+              "sha256": "sha256:094e4ffa4df3c036a2672750c9a6aba32c4fe7ae5e9772929eaf7021964b323b",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",

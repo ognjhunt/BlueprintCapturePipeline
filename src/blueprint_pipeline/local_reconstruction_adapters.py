@@ -1149,6 +1149,7 @@ class LocalArkitMetricScaffoldAdapter:
                 "handedness": "right_handed",
                 "gravity_aligned": True,
                 "up_axis": up_axis or None,
+                "camera_axis_convention": "arkit_x_right_y_up_z_backward",
             },
             "intrinsics": normalized_intrinsics,
             "camera_frames": [
@@ -1298,9 +1299,18 @@ class LocalArkitMetricScaffoldAdapter:
                     "decoded_observation_index": decoded_result["asset_references"][
                         "decoded_observation_index"
                     ],
+                    "reconstruction_dataset_manifest": decoded_result["asset_references"][
+                        "reconstruction_dataset_manifest"
+                    ],
+                    "candidate_dataset_manifest": decoded_result["asset_references"][
+                        "candidate_dataset_manifest"
+                    ],
                     "metric_scaffold": {
                         "uri": f"local-reconstruction://{scaffold_digest[7:]}",
                         "digest": scaffold_digest,
+                        "relative_path": (artifact_root / "arkit_metric_scaffold.json")
+                        .relative_to(output_root.expanduser().resolve())
+                        .as_posix(),
                     },
                     "arkit_reconstruction_dataset_export": {
                         "uri": (
@@ -1310,6 +1320,14 @@ class LocalArkitMetricScaffoldAdapter:
                         "digest": arkit_export[
                             "arkit_reconstruction_dataset_export_digest"
                         ],
+                        "relative_path": (
+                            artifact_root
+                            / "reconstruction_dataset_export"
+                            / f"arkit_export_{arkit_export['deterministic_configuration_digest'][7:23]}"
+                            / "arkit_reconstruction_dataset_export.json"
+                        )
+                        .relative_to(output_root.expanduser().resolve())
+                        .as_posix(),
                     },
                     "arkit_raw_contract_validation": {
                         "uri": (

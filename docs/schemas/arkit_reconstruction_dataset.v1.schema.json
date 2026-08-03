@@ -108,10 +108,13 @@
         "depth_confidence_binding": {"type": ["object", "null"]},
         "camera": {
           "type": "object",
-          "required": ["camera_model", "T_world_camera", "rgb_intrinsics"],
+          "required": [
+            "camera_model", "T_world_camera", "camera_axis_convention", "rgb_intrinsics"
+          ],
           "properties": {
             "camera_model": {"const": "PINHOLE"},
             "T_world_camera": {"$ref": "#/$defs/matrix4"},
+            "camera_axis_convention": {"const": "arkit_x_right_y_up_z_backward"},
             "rgb_intrinsics": {
               "type": "object",
               "required": ["fx", "fy", "cx", "cy", "width", "height"]

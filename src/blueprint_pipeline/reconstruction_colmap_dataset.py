@@ -162,6 +162,17 @@ def _camera_line(observation: Mapping[str, Any], camera_id: int) -> tuple[str, s
             raise ValueError
         if not np.allclose(rotation_camera_world.T @ rotation_camera_world, np.eye(3), atol=1e-4):
             raise ValueError
+        camera_axis_convention = str(
+            camera.get("camera_axis_convention")
+            or "opencv_x_right_y_down_z_forward"
+        )
+        if camera_axis_convention == "arkit_x_right_y_up_z_backward":
+            # ARKit and COLMAP share camera +X. Their local +Y/+Z axes are
+            # opposite, so convert camera-to-world without changing the
+            # canonical ARKit world frame or camera center.
+            rotation_camera_world = rotation_camera_world @ np.diag([1.0, -1.0, -1.0])
+        elif camera_axis_convention != "opencv_x_right_y_down_z_forward":
+            raise ValueError
         rotation_world_camera = rotation_camera_world.T
         translation_world_camera = -(rotation_world_camera @ translation_camera_world)
         quaternion = _rotation_to_quaternion(rotation_world_camera)
