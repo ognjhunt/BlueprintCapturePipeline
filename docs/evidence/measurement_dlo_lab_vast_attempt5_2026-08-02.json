@@ -1,0 +1,73 @@
+{
+  "schema_version": "measurement_dlo_lab_vast_attempt_evidence.v1",
+  "attempt_id": "measurement-dlo-lab-vast-attempt5-2026-08-02",
+  "status": "failed_execution_preserved",
+  "blueprint_source_commit": "5aaab18c71643bf1dd726e63a98eb551155c60a0",
+  "dlo_lab_source_commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+  "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385",
+  "runtime_release_digest": "sha256:84d9be435c4b892561537505ad976320ca83a11141120706f05a7f14f8db209f",
+  "input_bundle_digest": "sha256:fe3362f7fa25f63d82ea852e236a0885346de9731a107d851a73474c40129eef",
+  "bundle_manifest_digest": "sha256:2a1848313fc9e8597c30790e53985e7500570e54feb5293033fc62249d7f8aa6",
+  "provider": "vast",
+  "instance_id": "46644087",
+  "gpu_name": "RTX A6000",
+  "hourly_rate_usd": 0.5024444444444445,
+  "duration_seconds": 441.82529401779175,
+  "estimated_cost_usd": 0.07381937011161459,
+  "runtime_result_digest": "sha256:f3f9a6416e35a219a4072bc42b25a6c38c331b6bc9066b61199ea88412e95089",
+  "execution_result_digest": "sha256:c605ca5456d5494a112923ee3011654d8c521e9d21ca5daac55536bee564a5ac",
+  "observed_failure": {
+    "execution_bundle_count": 2,
+    "python_version": "3.12.11",
+    "torch_distribution_version": "2.9.1+cu128",
+    "quadrants_distribution_version": "0.8.0",
+    "common_exit_code": -6,
+    "common_signal": 6,
+    "common_last_phase": "native_import_probe:quadrants",
+    "common_failure_codes": [
+      "dlo_lab_adapter_native_assertion",
+      "dlo_lab_adapter_native_import_probe_failed:quadrants",
+      "dlo_lab_adapter_native_termination",
+      "dlo_lab_adapter_supervised_worker_exit_nonzero:-6",
+      "dlo_lab_adapter_supervised_worker_signal:6"
+    ],
+    "stderr_content_persisted": false,
+    "executions": [
+      {
+        "execution_id": "dlo-lab-cuda-cable-001-dlo-lab-cable-development-001",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:f90ef77b4c7f80dc30dce3189432359c627e52a880161fc68c711ee38ad6f599"
+      },
+      {
+        "execution_id": "dlo-lab-cuda-cable-002-dlo-lab-cable-development-002",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:285005f4441caab0e3c4080eae73b31d0e86b05a8d67bef33e95ca9bb56f8677"
+      }
+    ]
+  },
+  "teardown": {
+    "status": "PASS",
+    "teardown_receipt_digest": "sha256:a88dfc67b74b36a9d70fb9419418183b6735116e2576b66b5775f5445f72ab55",
+    "provider_zero_status": "PASS",
+    "provider_zero_digest": "sha256:afd8294799b5465adc48d53ebba0210172c23fbe98ac7163fec2e7ea2f3edd96",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "watchdog_status": "provider_terminal"
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "claim_boundary": {
+    "development_execution_completed": false,
+    "qualification_created": false,
+    "r5_evidence": false,
+    "r6_decision": false,
+    "r7_admission": false,
+    "physical_success_established": false,
+    "proof_effect": "failed_provider_execution_with_python_3_12_direct_quadrants_import_boundary"
+  },
+  "next_encoded_action": "Keep source, Python 3.12, CUDA 12.8, Torch, and Quadrants fixed and collect a bounded sanitized native debugger backtrace for the direct Quadrants import before considering another compatibility change."
+}

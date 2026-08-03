@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-observation-qualification.v1.schema.json",
+  "title": "Blueprint task/site observation qualification contracts",
+  "oneOf": [
+    {"$ref": "#/$defs/scope"},
+    {"$ref": "#/$defs/case"},
+    {"$ref": "#/$defs/report"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "modalities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["rgb", "depth", "lidar", "event_camera"]}
+    },
+    "materials": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "opaque_control",
+          "transparent",
+          "reflective",
+          "dark",
+          "small",
+          "thin",
+          "occluded"
+        ]
+      }
+    },
+    "lighting": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["controlled", "natural", "adverse"]}
+    },
+    "digestMap": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/digest"}
+    },
+    "governance": {
+      "type": "object",
+      "properties": {
+        "visual_similarity_is_primary": {"const": false},
+        "q_sensor_qualification_created": {"const": false},
+        "r6_decision_created": {"const": false},
+        "r7_admission_created": {"const": false},
+        "production_route_eligible": {"const": false},
+        "physical_success_established": {"const": false},
+        "agent_may_approve": {"const": false}
+      }
+    },
+    "scope": {
+      "allOf": [
+        {"$ref": "#/$defs/governance"},
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "scope_id",
+            "benchmark_spec_digest",
+            "task_id",
+            "site_id",
+            "task_request_digest",
+            "site_evidence_profile_digest",
+            "source_capture_digest",
+            "sensor_pairing_digest",
+            "required_modalities",
+            "synthetic_method_ids",
+            "policy_checkpoints",
+            "required_material_challenges",
+            "required_lighting_challenges",
+            "required_metric_ids",
+            "minimum_repeated_trials_per_policy",
+            "paired_physical_synthetic_required",
+            "visual_similarity_is_primary",
+            "downstream_task_validity_is_primary",
+            "q_sensor_qualification_created",
+            "r6_decision_created",
+            "r7_admission_created",
+            "production_route_eligible",
+            "physical_success_established",
+            "agent_may_approve",
+            "scope_digest"
+          ],
+          "properties": {
+            "schema_version": {"const": "measurement_observation_qualification_scope.v1"},
+            "benchmark_spec_digest": {"$ref": "#/$defs/digest"},
+            "task_request_digest": {"$ref": "#/$defs/digest"},
+            "site_evidence_profile_digest": {"$ref": "#/$defs/digest"},
+            "source_capture_digest": {"$ref": "#/$defs/digest"},
+            "sensor_pairing_digest": {"$ref": "#/$defs/digest"},
+            "required_modalities": {"$ref": "#/$defs/modalities"},
+            "synthetic_method_ids": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "policy_checkpoints": {
+              "type": "object",
+              "minProperties": 3,
+              "additionalProperties": {"$ref": "#/$defs/digest"}
+            },
+            "required_material_challenges": {"$ref": "#/$defs/materials"},
+            "required_lighting_challenges": {"$ref": "#/$defs/lighting"},
+            "required_metric_ids": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "minimum_repeated_trials_per_policy": {"type": "integer", "minimum": 2},
+            "paired_physical_synthetic_required": {"const": true},
+            "downstream_task_validity_is_primary": {"const": true},
+            "scope_digest": {"$ref": "#/$defs/digest"}
+          }
+        }
+      ]
+    },
+    "policyTrial": {
+      "type": "object",
+      "required": [
+        "policy_id",
+        "policy_digest",
+        "replicate_id",
+        "physical_outcome_digest",
+        "synthetic_outcome_digests"
+      ],
+      "properties": {
+        "policy_id": {"type": "string", "minLength": 1},
+        "policy_digest": {"$ref": "#/$defs/digest"},
+        "replicate_id": {"type": "string", "minLength": 1},
+        "physical_outcome_digest": {"$ref": "#/$defs/digest"},
+        "synthetic_outcome_digests": {"$ref": "#/$defs/digestMap"}
+      },
+      "additionalProperties": false
+    },
+    "case": {
+      "allOf": [
+        {"$ref": "#/$defs/governance"},
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "case_id",
+            "scope_digest",
+            "benchmark_spec_digest",
+            "task_id",
+            "site_id",
+            "split",
+            "material_challenges",
+            "lighting_challenges",
+            "physical_observation_artifacts",
+            "synthetic_observation_artifacts",
+            "policy_trials",
+            "sealed_physical_labels_included",
+            "visual_similarity_is_primary",
+            "q_sensor_qualification_created",
+            "r6_decision_created",
+            "r7_admission_created",
+            "production_route_eligible",
+            "physical_success_established",
+            "agent_may_approve",
+            "case_digest"
+          ],
+          "properties": {
+            "schema_version": {"const": "measurement_observation_challenge_case.v1"},
+            "scope_digest": {"$ref": "#/$defs/digest"},
+            "benchmark_spec_digest": {"$ref": "#/$defs/digest"},
+            "split": {"enum": ["development", "qualification"]},
+            "material_challenges": {"$ref": "#/$defs/materials"},
+            "lighting_challenges": {"$ref": "#/$defs/lighting"},
+            "physical_observation_artifacts": {"$ref": "#/$defs/digestMap"},
+            "synthetic_observation_artifacts": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {"$ref": "#/$defs/digestMap"}
+            },
+            "policy_trials": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "#/$defs/policyTrial"}
+            },
+            "sealed_physical_labels_included": {"const": false},
+            "case_digest": {"$ref": "#/$defs/digest"}
+          }
+        }
+      ]
+    },
+    "report": {
+      "allOf": [
+        {"$ref": "#/$defs/governance"},
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "scope_digest",
+            "benchmark_spec_digest",
+            "task_id",
+            "site_id",
+            "split",
+            "evaluator_id",
+            "evaluator_independent_of_candidates",
+            "case_count",
+            "case_digests",
+            "coverage",
+            "blockers",
+            "matrix_complete",
+            "qualification_matrix_ready",
+            "status",
+            "visual_similarity_is_primary",
+            "q_sensor_qualification_created",
+            "r6_decision_created",
+            "r7_admission_created",
+            "production_route_eligible",
+            "physical_success_established",
+            "agent_may_approve",
+            "report_digest"
+          ],
+          "properties": {
+            "schema_version": {"const": "measurement_observation_challenge_report.v1"},
+            "scope_digest": {"$ref": "#/$defs/digest"},
+            "benchmark_spec_digest": {"$ref": "#/$defs/digest"},
+            "split": {"enum": ["development", "qualification"]},
+            "case_count": {"type": "integer", "minimum": 0},
+            "case_digests": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"$ref": "#/$defs/digest"}
+            },
+            "coverage": {"type": "object"},
+            "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+            "matrix_complete": {"type": "boolean"},
+            "qualification_matrix_ready": {"type": "boolean"},
+            "status": {"enum": ["blocked", "development_matrix_complete", "qualification_matrix_ready"]},
+            "report_digest": {"$ref": "#/$defs/digest"}
+          }
+        }
+      ]
+    }
+  }
+}

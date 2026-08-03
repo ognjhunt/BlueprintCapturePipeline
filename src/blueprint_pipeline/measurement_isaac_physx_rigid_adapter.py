@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import importlib.metadata
 import json
 import math
+import os
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+import sys
+from typing import Any, Callable, Mapping, Sequence
 
 from .measurement_adapter_execution import (
     MeasurementAdapterExecutionError,
@@ -32,6 +35,104 @@ ISAAC_VERSION = "6.0.1"
 WORKER_SCRIPT = Path(__file__).parents[2] / "scripts/measurement_isaac_physx_rigid_worker.py"
 
 
+class _SimulationAppImportError(ImportError):
+    def __init__(self, diagnostics: Mapping[str, Any]) -> None:
+        super().__init__("isaac_physx_rigid_simulation_app_not_callable")
+        self.diagnostics = json.loads(json.dumps(dict(diagnostics)))
+
+
+def _installed_simulation_app_extension_roots(
+    isaac_root: Path = Path("/isaac-sim"),
+) -> list[Path]:
+    """Find only pinned-image extension roots that contain SimulationApp."""
+
+    try:
+        resolved_isaac_root = isaac_root.resolve(strict=True)
+    except OSError:
+        return []
+    raw_candidates = [resolved_isaac_root / "exts/isaacsim.simulation_app"]
+    for base_name in ("exts", "extscache"):
+        base = resolved_isaac_root / base_name
+        try:
+            raw_candidates.extend(sorted(base.glob("isaacsim.simulation_app*")))
+        except OSError:
+            continue
+    roots: list[Path] = []
+    for candidate in raw_candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(resolved_isaac_root)
+        except (OSError, ValueError):
+            continue
+        package = resolved / "isaacsim/simulation_app"
+        if package.is_dir() and (package / "__init__.py").is_file() and resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _enable_installed_simulation_app_extension() -> list[str]:
+    """Expose the shipped extension through the image's wrapper package."""
+
+    extension_roots = _installed_simulation_app_extension_roots()
+    if not extension_roots:
+        return []
+    root_package = importlib.import_module("isaacsim")
+    package_path = getattr(root_package, "__path__", None)
+    if package_path is None or not hasattr(package_path, "append"):
+        return []
+    enabled: list[str] = []
+    for extension_root in extension_roots:
+        namespace_path = str(extension_root / "isaacsim")
+        if namespace_path not in package_path:
+            package_path.append(namespace_path)
+        root_text = str(extension_root)
+        if root_text not in sys.path:
+            sys.path.insert(0, root_text)
+        enabled.append(root_text)
+    importlib.invalidate_caches()
+    return enabled
+
+
+def _bind_isaac_runtime_environment(
+    isaac_root: Path = Path("/isaac-sim"),
+) -> dict[str, str]:
+    """Bind required app paths to directories inside the pinned image root."""
+
+    try:
+        resolved_root = isaac_root.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("isaac_physx_rigid_image_root_unavailable") from exc
+    required = {
+        "ISAAC_PATH": resolved_root,
+        "EXP_PATH": resolved_root / "apps",
+        "CARB_APP_PATH": resolved_root / "kit",
+    }
+    bound: dict[str, str] = {}
+    missing: list[str] = []
+    for name, expected in required.items():
+        try:
+            resolved_expected = expected.resolve(strict=True)
+            resolved_expected.relative_to(resolved_root)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"isaac_physx_rigid_{name.lower()}_unavailable") from exc
+        if not resolved_expected.is_dir():
+            raise RuntimeError(f"isaac_physx_rigid_{name.lower()}_unavailable")
+        existing = os.environ.get(name, "").strip()
+        if existing:
+            try:
+                resolved_existing = Path(existing).resolve(strict=True)
+            except OSError as exc:
+                raise RuntimeError(f"isaac_physx_rigid_{name.lower()}_invalid") from exc
+            if resolved_existing != resolved_expected:
+                raise RuntimeError(f"isaac_physx_rigid_{name.lower()}_mismatch")
+        else:
+            missing.append(name)
+        bound[name] = str(resolved_expected)
+    for name in missing:
+        os.environ[name] = bound[name]
+    return bound
+
+
 def implementation_digest() -> str:
     hasher = hashlib.sha256()
     for label, path in (("adapter", Path(__file__)), ("worker", WORKER_SCRIPT)):
@@ -40,6 +141,103 @@ def implementation_digest() -> str:
         hasher.update(path.read_bytes())
         hasher.update(b"\0")
     return "sha256:" + hasher.hexdigest()
+
+
+def _import_simulation_app() -> Any:
+    """Resolve a callable Isaac launcher across supported packaging layouts."""
+
+    enabled_extension_roots = _enable_installed_simulation_app_extension()
+    candidates: list[dict[str, Any]] = []
+    for module_name in (
+        "isaacsim.simulation_app",
+        "isaacsim",
+        "omni.isaac.kit",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as exc:  # noqa: BLE001 - report and try the next supported layout
+            candidates.append(
+                {
+                    "module": module_name,
+                    "status": "import_failed",
+                    "error_type": type(exc).__name__,
+                    "error": repr(exc)[:500],
+                }
+            )
+            continue
+        simulation_app = getattr(module, "SimulationApp", None)
+        candidates.append(
+            {
+                "module": module_name,
+                "status": "callable" if callable(simulation_app) else "noncallable",
+                "module_file": str(getattr(module, "__file__", None) or "unavailable")[:500],
+                "symbol_present": hasattr(module, "SimulationApp"),
+                "symbol_type": type(simulation_app).__name__,
+                "symbol_callable": callable(simulation_app),
+            }
+        )
+        if callable(simulation_app):
+            return simulation_app
+    raise _SimulationAppImportError(
+        {
+            "python_executable": str(sys.executable)[:500],
+            "working_directory": str(Path.cwd())[:500],
+            "isaac_root_present": Path("/isaac-sim").is_dir(),
+            "isaac_python_launcher_present": Path("/isaac-sim/python.sh").is_file(),
+            "enabled_extension_roots": enabled_extension_roots,
+            "candidates": candidates,
+        }
+    )
+
+
+def _observe_isaac_runtime_identity(
+    simulation_app: Any,
+    *,
+    version_getter: Callable[[], Any] | None = None,
+) -> dict[str, str]:
+    """Read Isaac identity from the running app rather than pip metadata.
+
+    NVIDIA's container distribution does not necessarily install a normal
+    ``isaacsim`` dist-info record.  Isaac's supported version API reads the
+    application's own VERSION file, while the live Kit application supplies
+    useful secondary app/build observations.  The VERSION-file value is the
+    authoritative engine version used by this adapter's fail-closed gate.
+    """
+
+    package_version = "unavailable"
+    try:
+        package_version = importlib.metadata.version("isaacsim")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+
+    if version_getter is None:
+        from isaacsim.core.version import get_version  # type: ignore
+
+        version_getter = get_version
+    raw_version = version_getter()
+    if not isinstance(raw_version, (tuple, list)) or len(raw_version) < 1:
+        raise RuntimeError("isaac_physx_rigid_runtime_version_observation_invalid")
+    engine_version = str(raw_version[0]).strip()
+    if not engine_version:
+        raise RuntimeError("isaac_physx_rigid_runtime_version_observation_invalid")
+
+    app = getattr(simulation_app, "app", None)
+    app_version = "unavailable"
+    build_version = "unavailable"
+    if app is not None:
+        get_app_version = getattr(app, "get_app_version", None)
+        if callable(get_app_version):
+            app_version = str(get_app_version()).strip() or "unavailable"
+        get_build_version = getattr(app, "get_build_version", None)
+        if callable(get_build_version):
+            build_version = str(get_build_version()).strip() or "unavailable"
+    return {
+        "engine_version": engine_version,
+        "engine_version_source": "isaacsim.core.version.get_version_app_VERSION_file",
+        "observed_package_version": package_version,
+        "observed_app_version": app_version,
+        "observed_build_version": build_version,
+    }
 
 
 def _number(
@@ -205,9 +403,7 @@ def _simulate(point: Mapping[str, Any], solver: Mapping[str, Any]) -> dict[str, 
         body_xform = UsdGeom.Xformable(body.GetPrim())
         body_xform.AddScaleOp().Set(Gf.Vec3f(*point["size"]))
         body_prim = body.GetPrim()
-    UsdGeom.Xformable(body_prim).AddTranslateOp().Set(
-        Gf.Vec3d(0.0, 0.0, point["initial_height_m"])
-    )
+    UsdGeom.Xformable(body_prim).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, point["initial_height_m"]))
     UsdPhysics.CollisionAPI.Apply(body_prim)
     UsdPhysics.RigidBodyAPI.Apply(body_prim)
     UsdPhysics.MassAPI.Apply(body_prim).CreateMassAttr().Set(point["mass_kg"])
@@ -279,15 +475,41 @@ def _simulate(point: Mapping[str, Any], solver: Mapping[str, Any]) -> dict[str, 
         "penetration_m": penetration,
         "position_trace_m": positions,
     }
-    trace["trace_digest"] = "sha256:" + hashlib.sha256(
-        json.dumps(trace, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    trace["trace_digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(trace, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
     if callable(clear_instance):
         clear_instance()
     return trace
 
 
-def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) -> dict[str, Any]:
+def _persist_worker_result(path: Path, result: Mapping[str, Any]) -> None:
+    """Durably publish a worker result before Isaac's process-ending shutdown."""
+
+    output = path.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+    payload = json.dumps(dict(result), indent=2, sort_keys=True) + "\n"
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, output)
+    directory_fd = os.open(output.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def run_isaac_physx_rigid_measurement_request(
+    request_value: Mapping[str, Any],
+    *,
+    checkpoint_output: Path | None = None,
+) -> dict[str, Any]:
     request = validate_measurement_adapter_execution_request(request_value)
     runtime = request["runtime_configuration"]
     observations: dict[str, Any] = {
@@ -296,6 +518,15 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         "precision": runtime["precision"],
         "seed": runtime["seed"],
     }
+    simulation_app: Any | None = None
+
+    def finish(result: dict[str, Any]) -> dict[str, Any]:
+        if checkpoint_output is not None:
+            _persist_worker_result(checkpoint_output, result)
+        if simulation_app is not None:
+            simulation_app.close()
+        return result
+
     implementation = request["implementation"]
     for key, expected, code in (
         ("implementation_id", IMPLEMENTATION_ID, "implementation_id_mismatch"),
@@ -303,22 +534,26 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         ("implementation_digest", implementation_digest(), "implementation_digest_mismatch"),
     ):
         if implementation[key] != expected:
-            return build_measurement_adapter_worker_result(
+            return finish(
+                build_measurement_adapter_worker_result(
+                    request,
+                    status="blocked",
+                    observed_metrics={},
+                    unsafe_condition_predicted=None,
+                    runtime_observations=observations,
+                    failure_codes=[f"isaac_physx_rigid_{code}"],
+                )
+            )
+    if runtime["target_engine_version"] != ISAAC_VERSION:
+        return finish(
+            build_measurement_adapter_worker_result(
                 request,
                 status="blocked",
                 observed_metrics={},
                 unsafe_condition_predicted=None,
                 runtime_observations=observations,
-                failure_codes=[f"isaac_physx_rigid_{code}"],
+                failure_codes=["isaac_physx_rigid_target_version_mismatch"],
             )
-    if runtime["target_engine_version"] != ISAAC_VERSION:
-        return build_measurement_adapter_worker_result(
-            request,
-            status="blocked",
-            observed_metrics={},
-            unsafe_condition_predicted=None,
-            runtime_observations=observations,
-            failure_codes=["isaac_physx_rigid_target_version_mismatch"],
         )
     if runtime["backend_id"] != "isaac-physx-cpu-tgs-rigid":
         raise MeasurementAdapterExecutionError("isaac_physx_rigid_backend_invalid")
@@ -345,44 +580,74 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         value = solver[key]
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 255:
             raise MeasurementAdapterExecutionError(f"isaac_physx_rigid_{key}_invalid")
-    try:
-        installed = importlib.metadata.version("isaacsim")
-    except importlib.metadata.PackageNotFoundError:
-        installed = "unavailable"
-    if installed != ISAAC_VERSION:
-        return build_measurement_adapter_worker_result(
-            request,
-            status="blocked",
-            observed_metrics={},
-            unsafe_condition_predicted=None,
-            runtime_observations={**observations, "observed_package_version": installed},
-            failure_codes=["isaac_physx_rigid_package_or_version_unavailable"],
-        )
     point = _operating_point(request)
-    simulation_app: Any | None = None
     try:
-        from isaacsim import SimulationApp  # type: ignore
-
-        simulation_app = SimulationApp({"headless": True})
+        runtime_environment = _bind_isaac_runtime_environment()
+        SimulationApp = _import_simulation_app()
+        observations.update(
+            {
+                "simulation_app_class_module": str(
+                    getattr(SimulationApp, "__module__", "unavailable")
+                ),
+                "simulation_app_extension_roots": [
+                    str(path) for path in _installed_simulation_app_extension_roots()
+                ],
+                "runtime_environment_paths": runtime_environment,
+            }
+        )
+        simulation_app = SimulationApp({"headless": True, "fast_shutdown": True})
+        try:
+            runtime_identity = _observe_isaac_runtime_identity(simulation_app)
+        except Exception as exc:  # noqa: BLE001
+            return finish(
+                build_measurement_adapter_worker_result(
+                    request,
+                    status="blocked",
+                    observed_metrics={},
+                    unsafe_condition_predicted=None,
+                    runtime_observations={
+                        **observations,
+                        "runtime_identity_error_type": type(exc).__name__,
+                        "runtime_identity_error": repr(exc)[:800],
+                    },
+                    failure_codes=["isaac_physx_rigid_runtime_identity_unavailable"],
+                )
+            )
+        observations.update(runtime_identity)
+        if runtime_identity["engine_version"] != ISAAC_VERSION:
+            return finish(
+                build_measurement_adapter_worker_result(
+                    request,
+                    status="blocked",
+                    observed_metrics={},
+                    unsafe_condition_predicted=None,
+                    runtime_observations=observations,
+                    failure_codes=["isaac_physx_rigid_runtime_version_mismatch"],
+                )
+            )
         first = _simulate(point, solver)
         second = _simulate(point, solver)
     except Exception as exc:  # noqa: BLE001
-        return build_measurement_adapter_worker_result(
-            request,
-            status="failed",
-            observed_metrics={},
-            unsafe_condition_predicted=None,
-            runtime_observations={
-                **observations,
-                "observed_package_version": installed,
-                "execution_error_type": type(exc).__name__,
-                "execution_error": repr(exc)[:800],
-            },
-            failure_codes=["isaac_physx_rigid_execution_failed"],
+        simulation_app_diagnostics = (
+            {"simulation_app_import_diagnostics": exc.diagnostics}
+            if isinstance(exc, _SimulationAppImportError)
+            else {}
         )
-    finally:
-        if simulation_app is not None:
-            simulation_app.close()
+        return finish(
+            build_measurement_adapter_worker_result(
+                request,
+                status="failed",
+                observed_metrics={},
+                unsafe_condition_predicted=None,
+                runtime_observations={
+                    **observations,
+                    "execution_error_type": type(exc).__name__,
+                    "execution_error": repr(exc)[:800],
+                    **simulation_app_diagnostics,
+                },
+                failure_codes=["isaac_physx_rigid_execution_failed"],
+            )
+        )
     replay_match = first["trace_digest"] == second["trace_digest"]
     contact_observed = first["first_contact_step"] is not None
     available_metrics = {
@@ -393,7 +658,6 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
     metrics = {key: value for key, value in available_metrics.items() if key in requested}
     observations.update(
         {
-            "engine_version": installed,
             "implementation_id": IMPLEMENTATION_ID,
             "implementation_version": IMPLEMENTATION_VERSION,
             "implementation_digest": implementation_digest(),
@@ -405,10 +669,15 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
             "enhanced_determinism": True,
             "renderer_used": False,
             "rtx_sensor_used": False,
+            "fast_shutdown": True,
             "contact_source": "physx_contact_report",
             "penetration_source": "rest_height_minus_minimum_live_center_height",
             "timestep_s": point["timestep_s"],
-            **{key: value for key, value in first.items() if key not in {"trace_digest", "position_trace_m"}},
+            **{
+                key: value
+                for key, value in first.items()
+                if key not in {"trace_digest", "position_trace_m"}
+            },
             "trace_digest": first["trace_digest"],
             "repeat_trace_digest": second["trace_digest"],
             "deterministic_replay_match": replay_match,
@@ -419,17 +688,19 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         failure_codes.append("isaac_physx_rigid_replay_mismatch")
     if not contact_observed:
         failure_codes.append("isaac_physx_rigid_contact_not_observed")
-    return build_measurement_adapter_worker_result(
-        request,
-        status="failed" if failure_codes else "completed",
-        observed_metrics=metrics,
-        unsafe_condition_predicted=(
-            first["penetration_m"] > point["penetration_unsafe_threshold_m"]
-            if not failure_codes
-            else None
-        ),
-        runtime_observations=observations,
-        failure_codes=failure_codes,
+    return finish(
+        build_measurement_adapter_worker_result(
+            request,
+            status="failed" if failure_codes else "completed",
+            observed_metrics=metrics,
+            unsafe_condition_predicted=(
+                first["penetration_m"] > point["penetration_unsafe_threshold_m"]
+                if not failure_codes
+                else None
+            ),
+            runtime_observations=observations,
+            failure_codes=failure_codes,
+        )
     )
 
 
@@ -444,12 +715,17 @@ def _load_object(path: Path) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run an Isaac/PhysX rigid-contact development case")
+    parser = argparse.ArgumentParser(
+        description="Run an Isaac/PhysX rigid-contact development case"
+    )
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
-    result = run_isaac_physx_rigid_measurement_request(_load_object(args.request))
-    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    result = run_isaac_physx_rigid_measurement_request(
+        _load_object(args.request),
+        checkpoint_output=args.output,
+    )
+    _persist_worker_result(args.output, result)
     return 0
 
 

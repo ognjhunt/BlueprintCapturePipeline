@@ -1,0 +1,126 @@
+{
+  "schema_version": "measurement_dlo_lab_vast_attempt_evidence.v1",
+  "attempt_id": "measurement-dlo-lab-vast-attempt7-2026-08-02",
+  "status": "failed_native_cause_inferred_from_frames_and_reference_source",
+  "blueprint_source_commit": "73166cbedb4c7b14707495ba4d7d515e39a029e3",
+  "dlo_lab_source_commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+  "quadrants_reference_source_commit": "a22cc2dedd3458dc88cca287a8e2faf74430a251",
+  "quadrants_reference_tag": "v0.8.0",
+  "wheel_to_reference_source_commit_identity_proven": false,
+  "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385",
+  "runtime_release_digest": "sha256:84d9be435c4b892561537505ad976320ca83a11141120706f05a7f14f8db209f",
+  "input_bundle_digest": "sha256:e4ed3c8ae9f7ff3d7eee079f84eb2a34cf60d00ca5d44f59da4886613a5a417e",
+  "bundle_manifest_digest": "sha256:10e1770906f8c935305882df57eb27dc570429bc3957f082b12b0bf945b70ffb",
+  "request_digest": "sha256:12309127ddd65c9dff6c2eb0ebc309392616c9fd4d06cd3ee6cb01a6788a2b6b",
+  "provider": "vast",
+  "instance_id": "46646571",
+  "gpu_name": "L40S",
+  "hourly_rate_usd": 0.6014814814814815,
+  "provider_inventory_hourly_rate_observed_usd": 0.6222222222222222,
+  "duration_seconds": 759.5953431129456,
+  "estimated_cost_usd": 0.12691181452833578,
+  "runtime_result_digest": "sha256:d3d85fa6764dbcafc060edd804f23b5bb5059ec1c305af88577b59ffc81ae8c1",
+  "execution_result_digest": "sha256:c67913bebb8ee2c38134cbd468e218858fd45dbac2323208bd6a99da47552728",
+  "observed_failure": {
+    "execution_bundle_count": 2,
+    "python_version": "3.12.11",
+    "torch_distribution_version": "2.9.1+cu128",
+    "quadrants_distribution_version": "0.8.0",
+    "common_exit_code": -6,
+    "common_signal": 6,
+    "common_last_phase": "native_import_probe:quadrants",
+    "common_failure_codes": [
+      "dlo_lab_adapter_native_assertion",
+      "dlo_lab_adapter_native_import_probe_failed:quadrants",
+      "dlo_lab_adapter_native_termination",
+      "dlo_lab_adapter_supervised_worker_exit_nonzero:-6",
+      "dlo_lab_adapter_supervised_worker_signal:6"
+    ],
+    "native_diagnostic_mode": "gdb_first_case_only",
+    "native_diagnostic_request_bound": true,
+    "native_diagnostic_status": "captured",
+    "native_diagnostic_tool": "gdb",
+    "native_diagnostic_return_code": 0,
+    "native_diagnostic_frame_count": 32,
+    "native_diagnostic_decisive_frames": [
+      {
+        "index": 0,
+        "module": "quadrants_python.cpython-312-x86_64-linux-gnu.so",
+        "symbol": "__cxa_throw"
+      },
+      {
+        "index": 1,
+        "module": "quadrants_python.cpython-312-x86_64-linux-gnu.so",
+        "symbol": "quadrants::Logger::error"
+      },
+      {
+        "index": 2,
+        "module": "quadrants_python.cpython-312-x86_64-linux-gnu.so",
+        "symbol": "quadrants::get_repo_dir_abi:cxx11_"
+      },
+      {
+        "index": 3,
+        "module": "quadrants_python.cpython-312-x86_64-linux-gnu.so",
+        "symbol": "quadrants::lang::CompileConfig::CompileConfig"
+      },
+      {
+        "index": 4,
+        "module": "quadrants_python.cpython-312-x86_64-linux-gnu.so",
+        "symbol": "_GLOBAL__sub_I_lang_util.cpp"
+      }
+    ],
+    "native_diagnostic_raw_output_digest": "sha256:828a46301ec74ffa068c04053073d9dff23af9bac06ed92fec6f5024303ef8f6",
+    "native_diagnostic_raw_output_bytes": 5011,
+    "native_diagnostic_raw_output_persisted": false,
+    "stderr_content_persisted": false,
+    "executions": [
+      {
+        "execution_id": "dlo-lab-cuda-cable-001-dlo-lab-cable-development-001",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:f76f942efb5bcd563424270825cc806eff39377d9b6172c7af782d89bb972822",
+        "native_diagnostic_captured": true
+      },
+      {
+        "execution_id": "dlo-lab-cuda-cable-002-dlo-lab-cable-development-002",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:65ba3a340062195db9293b557a86f85199fdab6bec04761b54582856b8949155",
+        "native_diagnostic_captured": false
+      }
+    ]
+  },
+  "source_localization": {
+    "quadrants_tag": "v0.8.0",
+    "source_role": "version-matched_upstream_reference_source",
+    "wheel_build_commit_identity_proven": false,
+    "get_repo_dir_behavior": "Reads XDG_CACHE_HOME, otherwise requires HOME and aborts when HOME is absent.",
+    "compile_config_behavior": "Constructs offline_cache_file_path from get_repo_dir during shared-library initialization.",
+    "blueprint_executor_observation": "Inherited HOME and XDG_CACHE_HOME were intentionally absent from the sanitized adapter environment.",
+    "localized_cause_inference": "The native frame sequence and version-matched reference source indicate that Quadrants global CompileConfig initialization aborts before CUDA or DLO-Lab execution because the sanitized worker environment provides neither XDG_CACHE_HOME nor HOME.",
+    "cuda_kernel_failure_observed": false
+  },
+  "teardown": {
+    "status": "PASS",
+    "teardown_receipt_digest": "sha256:08b2fc700118c5b3f8c6e883a0355032e873737af5bb566c86894e8488f9f971",
+    "provider_zero_status": "PASS",
+    "provider_zero_digest": "sha256:8f3fa59a08ad7d73264c1d885468df1dce19db8c32055648b47ca06911b6a49a",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "watchdog_status": "provider_terminal"
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "claim_boundary": {
+    "development_execution_completed": false,
+    "qualification_created": false,
+    "r5_evidence": false,
+    "r6_decision": false,
+    "r7_admission": false,
+    "physical_success_established": false,
+    "proof_effect": "failed_diagnostic_execution_with_sanitized_native_cause_inference"
+  },
+  "next_encoded_action": "Synthesize HOME and XDG_CACHE_HOME inside the generic executor's per-run temporary root without inheriting operator paths, focused-test the sandbox invariant, and rerun the same fixed compatibility tuple once."
+}

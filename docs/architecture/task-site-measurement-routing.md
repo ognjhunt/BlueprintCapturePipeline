@@ -108,9 +108,20 @@ loop:
   method-neutral sphere/box corpus. The worker starts `SimulationApp` before
   Isaac imports, creates a fresh metric Z-up USD stage, observes the live body
   pose and PhysX contact report, repeats the complete trace, and binds the
-  runtime and solver without invoking RTX sensors or a renderer. Plan-time
-  validation is complete; actual Isaac execution remains false until an exact
-  external runtime returns both checked receipts;
+  runtime and solver without invoking RTX sensors or a renderer. A digest-bound
+  Vast development canary on 2026-08-02 executed both checked receipts in the
+  exact Isaac Sim 6.0.1 image, observed deterministic replay and PhysX contact,
+  and separately rendered a non-empty 64x64 RayTracedLighting frame on an RTX
+  GPU. The redacted evidence summary is
+  [`measurement_isaac_physx_rtx_development_canary_2026-08-02.json`](../evidence/measurement_isaac_physx_rtx_development_canary_2026-08-02.json).
+  A subsequent request-bound multimodal canary also authored a labeled OpenUSD
+  scene and observed non-empty RGB, positive finite depth, and semantic output
+  with the expected label; its checked summary is
+  [`measurement_isaac_rtx_multimodal_development_canary_2026-08-02.json`](../evidence/measurement_isaac_rtx_multimodal_development_canary_2026-08-02.json).
+  This proves only bounded development runtime execution and RTX startup/pixel
+  and structured-output production; it creates no calibrated sensor match,
+  Q-SENSOR qualification, R5-R7 evidence, production route, captured-site
+  accuracy, policy result, task success, or physical claim;
 - `blueprint_pipeline.measurement_sapien_rigid_adapter` and
   `blueprint_pipeline.measurement_geometry_contact_sapien_development_suite`
   — an exact-pinned SAPIEN 3.0.3/PhysX CPU development worker and checked
@@ -201,6 +212,17 @@ loop:
   labels, computing deterministic metrics, and producing R4/R5 evidence
   candidates. A passing report cannot make the R6 human decision or R7 catalog
   admission;
+- `blueprint_pipeline.measurement_sensor_stream_pairing` and
+  `blueprint_pipeline.measurement_observation_qualification` — the task/site
+  Q-SENSOR evidence-preparation lane. The first binds raw calibrated sensor
+  samples and timing; the second requires the full transparent, reflective,
+  dark, small, thin, occluded, and opaque-control taxonomy under controlled,
+  natural, and adverse lighting for the exact task, site, accepted sensor
+  pairing, synthetic methods, and three-or-more exact policy checkpoints. Every
+  material/lighting pair must carry all task-required physical and synthetic
+  modalities plus repeated paired policy outcomes. A generic observation
+  benchmark report cannot produce R5 stage data without this matrix, and the
+  joined result remains only an R5 evidence candidate pending R6/R7;
 - `blueprint_pipeline.measurement_research_monitoring` (with
   `scripts/measurement_research_monitor.py`) — release monitoring that emits
   version-change alerts, stale-profile flags, R0 intake drafts, regression
@@ -528,15 +550,121 @@ Implemented and hermetically tested:
   supported Python runtime, exact implementation/solver/case/receipt binding,
   and deterministic double replay. It does not establish hydroelastic contact,
   general robot/task support, captured-site accuracy, or qualification;
+- a paid, digest-bound Vast execution of the exact Isaac Sim 6.0.1 development
+  bundle: both CPU PhysX/TGS/SAP sphere/box cases completed with deterministic
+  replay and live contact reports, then a separate RTX 6000 Ada process started
+  RayTracedLighting and produced a non-empty 64x64 RGBA frame. The checked
+  redacted summary preserves request, bundle, runtime, result, teardown, and
+  provider-zero digests. This is development runtime evidence only: Q-SENSOR,
+  R5/R6/R7, production routing, policy/task success, site accuracy, and physical
+  success all remain false;
+- a second digest-bound Isaac RTX multimodal development canary whose input
+  contract binds task-requested output kinds. It authored a labeled synthetic
+  OpenUSD cube and required nonzero RGB, positive finite camera-distance depth,
+  and semantic segmentation containing the expected label before passing. This
+  closes runtime plumbing—not calibration: no real/synthetic sensor residual,
+  Q-SENSOR decision, perception-policy rank fidelity, or site-specific sensor
+  qualification was created;
 - a real OpenCV 4.11 calibrated Capture-to-Observation development worker plus
   a schema-checked two-trial synthetic corpus and aggregate corpus runner, with
   exact nanosecond timestamp handling, non-coplanar target enforcement,
   deterministic replay, and nonqualification flags at the corpus, receipt,
   prediction, suite, and supervisor boundaries;
+- a task-scoped raw RGB/depth/LiDAR/optional-event-camera pairing contract and
+  site-evidence bridge.
+  It binds exact samples, artifact/calibration/intrinsic/extrinsic digests,
+  clock domains, explicit offsets, uncertainty-aware synchronization limits,
+  and the modalities derived for the task. Missing, reused, cross-clock, or
+  out-of-tolerance samples reject rather than nearest-neighbor filling. Only
+  independently verified signed physical calibration records can validate the
+  site profile's `sensor_calibration` and `sensor_timing` evidence; the bridge
+  never creates Q-SENSOR or R5-R7 authority;
+- a task/site-specific Capture-to-Observation challenge matrix that binds the
+  accepted sensor-pairing record, exact policy checkpoints, physical and
+  per-method synthetic modality artifacts, and repeated paired policy outcomes.
+  Qualification coverage is the Cartesian product of opaque-control,
+  transparent, reflective, dark, small, thin, and occluded conditions with
+  controlled, natural, and adverse lighting. The matrix fails closed on a
+  missing condition, modality, method, checkpoint, or repeat. It makes
+  downstream task validity primary, blocks the generic observation R5 builder,
+  and allows only a combined independently executed held-out benchmark with
+  every required observation metric to become an R5 evidence candidate;
 - a real PyElastica 0.3.3.post2 Capture-to-Deformation cable development
   worker, schema-checked two-regime Cosserat-rod corpus, and aggregate runner,
   including exact material/geometry/load/timestep binding, sampled trajectory
   replay, and displacement/strain/force summaries;
+- an exact-source DLO-Lab intake update bound to upstream commit
+  `c5026a9416b03c6bc5186eba13cd4ffd4c0e7796`. The checked source declares
+  `genesis-world` 1.0.0, contains the GPU ROD solver and parameterized-rod
+  examples, and carries an Apache-2.0 license file, while the task assets remain
+  a separate download. Its adapter now requires an isolated source checkout;
+  the generic `genesis-world` distribution identity cannot prove that the
+  DLO-Lab fork is installed. Source and rights feasibility remain separate from
+  the exact-source CUDA development execution described below; neither proves
+  material accuracy or Q-DLO qualification;
+- a CUDA-only exact-source DLO-Lab development worker. Its request binds the
+  implementation digest, upstream commit, `genesis-world` distribution version,
+  solver parameters, seed, precision, task case, and two-replay requirement.
+  It refuses generic Genesis identity and CPU fallback, samples the fixed-free
+  parameterized-rod trajectory, compares replay digests, and emits only the
+  generic nonqualifying adapter-worker result. Attempt 10 completed both
+  synthetic cases on one CUDA device without CPU fallback, and each case
+  reproduced an identical trace on replay. This proves the exact-source
+  development worker and replay contract, not characterized cable physics,
+  Q-DLO, production routing, or physical success;
+- a deterministic clean-commit DLO-Lab Vast input-bundle compiler and in-worker
+  controller. The bundle contains two bounded cable cases, exact request and
+  source-file digests, the exact DLO-Lab upstream commit, and the digest-pinned
+  PyTorch 2.9.1/CUDA 12.8 runtime image. This replaced the CUDA 13.0 image used
+  by the first three failed diagnostics and matches the CUDA line exercised by
+  the Quadrants 0.8.0 release workflow. A fourth paid diagnostic still aborted
+  at direct Quadrants import under Python 3.11.14, so CUDA-line compatibility is
+  not a sufficient fix. A fifth diagnostic held the exact source, CUDA 12.8,
+  Torch 2.9.1+cu128, and Quadrants 0.8.0 fixed while moving to the README-prescribed
+  Python 3.12.11 environment; direct Quadrants import again aborted in both cases
+  before CUDA execution. Python version is therefore not a sufficient fix either.
+  A bounded diagnostic then held those compatibility variables fixed and
+  collected a sanitized native debugger backtrace. The first debugger attempt
+  exposed an infrastructure boundary before collection: the generic adapter
+  executor stripped the bootstrap-only diagnostic flag along with its intentionally
+  narrow environment. The diagnostic mode is now digest-bound in the execution
+  request instead of expanding that environment; signed transport URLs remain
+  stripped, and no compatibility conclusion was inferred from the missing
+  backtrace. The next paid attempt captured the decisive native sequence
+  `Logger::error -> get_repo_dir -> CompileConfig` during Quadrants shared-library
+  initialization. Version-matched v0.8.0 reference source requires
+  `XDG_CACHE_HOME` or `HOME`, while the sanitized adapter process inherited
+  neither; the published wheel's exact build commit is not asserted. The executor now synthesizes
+  both paths inside its per-execution temporary root without exposing an operator
+  home or widening the inherited-environment allowlist. The fixed-tuple rerun
+  cleared every earlier Quadrants/Torch import probe in both cases and advanced
+  to a code-1 exit at `torch -> genesis`, with no signal, timeout, stderr, or
+  CUDA kernel observation. Exact Genesis source installs an exception hook that
+  prints uncaught Python tracebacks to stdout; Attempt 8 did not retain that
+  import-probe stream, so neither a Python exception nor a native crash is yet
+  established. A request-bound first-case Python import/exception audit now
+  retains only sanitized module names, exception type, a bounded integer
+  `SystemExit` code, and raw-output digest metadata to localize the later failure
+  without persisting host paths, exception messages, or secrets. The next paid
+  run captured `builtins.AttributeError` after 2,918 audited imports, ending at
+  `pyglet.libs.x11.xrender`. A separately downloaded current Pyglet 2.1.16
+  reference shows that its XRender module can leave an optional native-library
+  handle null and then dereference it while binding `XRenderFindVisualFormat`;
+  Attempt 9 recorded neither the installed Pyglet version nor the exact exception
+  message, so the missing-XRender explanation remains a source-backed hypothesis.
+  Because the cable case does not use an interactive
+  viewer, the execution request now binds `PYGLET_HEADLESS=1` and
+  `PYOPENGL_PLATFORM=egl` through `display_mode=pyglet_headless_egl`, without
+  inheriting a host display. The runtime release also binds `libegl1` and an
+  explicit pre-import `libEGL` check. Attempt 10 then completed both synthetic
+  cable cases on one CUDA device without CPU fallback. Each case's repeated
+  trace digest matched exactly and both remained inside their development
+  deformation envelopes. This proves only the exact two-case DLO-Lab CUDA
+  development path; it is not material-accuracy, task/site qualification,
+  physical, or policy-ranking evidence. The controller rechecks every source
+  digest and preserves all Q-DLO, R5-R7, production, physical, and
+  policy-ranking claims as false. Bundle creation itself performs no provider
+  allocation;
 - a separate real MuJoCo 3.11 Capture-to-Deformation cloth worker,
   schema-checked sag/contact corpus, and aggregate runner for the
   `elastic2d=stretch` flex formulation, with solver-warning rejection and
@@ -618,10 +746,12 @@ Not established by this repository change:
 - a completed Capture-to-Geometry-and-Contact, Capture-to-Observation, or
   Capture-to-Deformation physical benchmark using independently collected
   held-out labels. The observation lane now has a complete two-case synthetic
-  development execution corpus; the geometry/contact lane has complete
-  two-case MuJoCo sphere/box drop, door/drawer articulation, and clear-versus-
-  interference square-peg insertion development corpora; and the deformation
-  cable lane has a
+  development execution corpus and a full task/site challenge-matrix contract,
+  but no physical/synthetic challenge artifacts, repeated real-policy outcomes,
+  or independent held-out report satisfying that contract. The geometry/contact
+  lane has complete two-case MuJoCo sphere/box drop, door/drawer articulation,
+  and clear-versus-interference square-peg insertion development corpora; and
+  the deformation cable lane has a
   complete two-regime PyElastica development corpus. The cloth lane also has a
   complete two-regime MuJoCo flex stretch-only development corpus. The
   granular lane has a complete two-regime rigid-sphere column-collapse
@@ -636,6 +766,11 @@ Not established by this repository change:
   direct tactile development corpus validates sequence reduction and slip-rule
   plumbing only; it contains no real calibration, physical labels, TacSL or
   DiffTactile predictions, or independent evaluator receipt;
+- a held-out or qualifying DLO-Lab GPU benchmark. The exact source commit has
+  completed the bounded two-case synthetic CUDA development corpus with matching
+  replay traces, but the separate benchmark assets are not retained and no
+  captured cable/hose material, physical labels, independent evaluator receipt,
+  Q-DLO decision, or R7 admission is present;
 - a completed held-out world-model policy-ranking benchmark. The action-
   fidelity development suite has no provider output, real-policy outcomes,
   ranking labels, action-motion correlation, or ranking-regret measurement and
@@ -653,11 +788,10 @@ Not established by this repository change:
 - independent R6 human decisions or R7 production catalog admissions for the
   research candidates;
 - policy-ranking validity (the current verdict remains `thesis_not_supported`);
-- a completed Isaac/PhysX Vast development execution. The exact official
-  Isaac 6.0.1 NGC digest, clean-commit input bundle, canonical paid allocator,
-  zero-retry spend/TTL gate, independent watchdog, output validator, teardown,
-  and provider-zero code paths are implemented, but no provider result may be
-  claimed until the paid canary returns and those receipts validate;
+- an Isaac/PhysX/RTX production qualification. The paid Isaac 6.0.1 development
+  executions and their PhysX/contact plus RGB/depth/semantic RTX receipts are
+  retained and validated, but they do not contain captured-site calibration,
+  the physical observation challenge matrix, an R6 decision, or R7 admission;
 - physical task success, deployment readiness, or safety certification.
 
 Those are evidence-generation gates, not reasons to weaken the router.

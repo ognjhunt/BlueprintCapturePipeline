@@ -7196,7 +7196,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:9c752c0aa3e054e93919ca5d3080fd69c1feb6659872062c4a469f984c09825c",
+              "sha256": "sha256:d4f76bc0b75e90b80962c3918a097b4014802a7b139d7f5a6404be9351c3d5eb",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:d77da495ce654710add9729dd5fd27fc337b2ab33124fb0b142f5bb4b7fb8744",
+              "sha256": "sha256:b70197b311531e3c63d3fc9cb6f99a23279f2fc60b2f418d2c3f960052d6702f",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",

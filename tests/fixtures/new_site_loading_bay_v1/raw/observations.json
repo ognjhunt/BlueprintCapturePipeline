@@ -1,0 +1,48 @@
+{
+  "schema_version": "new_site_observation_manifest.v1",
+  "capture_mode": "iphone_arkit_lidar_fixture",
+  "metric_scale_observed": true,
+  "coordinate_frame": {
+    "site_frame": "site",
+    "camera_frame": "camera",
+    "units": "m",
+    "handedness": "right",
+    "up_axis": "Y"
+  },
+  "frames": [
+    {
+      "frame_id": "loading-bay-frame-000",
+      "timestamp_ns": 1000000000,
+      "rgb_path": "frame-000.rgb.bin",
+      "depth_path": "frame-000.depth.bin",
+      "camera_to_site_transform": [
+        1, 0, 0, 0,
+        0, 1, 0, 1.2,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+      ]
+    },
+    {
+      "frame_id": "loading-bay-frame-001",
+      "timestamp_ns": 1033333333,
+      "rgb_path": "frame-001.rgb.bin",
+      "depth_path": "frame-001.depth.bin",
+      "camera_to_site_transform": [
+        1, 0, 0, 0.1,
+        0, 1, 0, 1.2,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+      ]
+    }
+  ],
+  "observed_volume": {
+    "minimum_site_m": [-0.5, 0.0, -0.5],
+    "maximum_site_m": [3.0, 2.5, 2.5],
+    "supporting_frame_ids": ["loading-bay-frame-000", "loading-bay-frame-001"]
+  },
+  "proof_boundary": {
+    "fixture_only": true,
+    "physical_task_success_observed": false,
+    "deployment_readiness_observed": false
+  }
+}

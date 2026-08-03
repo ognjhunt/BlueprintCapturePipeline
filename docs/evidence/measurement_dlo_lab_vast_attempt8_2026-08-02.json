@@ -1,0 +1,89 @@
+{
+  "schema_version": "measurement_dlo_lab_vast_attempt_evidence.v1",
+  "attempt_id": "measurement-dlo-lab-vast-attempt8-2026-08-02",
+  "status": "failed_later_import_stage_observed",
+  "blueprint_source_commit": "7eecf463db4ebb18d383982fe0e3ca65250870b3",
+  "dlo_lab_source_commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+  "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385",
+  "runtime_release_digest": "sha256:84d9be435c4b892561537505ad976320ca83a11141120706f05a7f14f8db209f",
+  "input_bundle_digest": "sha256:bbecf75f8fa79880c88b230c91b38c56aaf56c90c80987208ae1f6e53cd2071a",
+  "bundle_manifest_digest": "sha256:39c53b45938edd6a015861b5f5245121417d1155ce9848ae8e34a0254f14f872",
+  "request_digest": "sha256:4de251be74a72a699e7389f7830a55203866d539b93f01eaa792e49f0657c74f",
+  "bound_request_digest": "sha256:6f6c689070b126ca9994a7d7c2d5a78d41e0f88bb952c71c4e8b1a91ea7c9097",
+  "provider": "vast",
+  "instance_id": "46648961",
+  "gpu_name": "L40S",
+  "hourly_rate_usd": 0.6155555555555556,
+  "provider_inventory_hourly_rate_observed_usd": 0.6222222222222222,
+  "duration_seconds": 1459.7194328308105,
+  "estimated_cost_usd": 0.24959400178650282,
+  "runtime_result_digest": "sha256:eb21c9ba633f51881859441b6a12aa7b71adec8b023c11613e221157593d908e",
+  "execution_result_digest": "sha256:96b9f1d97910e364722b5028ef42fe19d377cc662b7758fafe7f0eb768877a5c",
+  "observed_failure": {
+    "execution_bundle_count": 2,
+    "python_version": "3.12.11",
+    "torch_distribution_version": "2.9.1+cu128",
+    "quadrants_distribution_version": "0.8.0",
+    "successful_import_probes": [
+      "quadrants",
+      "torch",
+      "quadrants_then_torch",
+      "torch_then_quadrants"
+    ],
+    "common_exit_code": 1,
+    "common_signal": null,
+    "common_last_phase": "native_import_probe:torch_then_genesis",
+    "common_failure_codes": [
+      "dlo_lab_adapter_native_import_probe_failed:torch_then_genesis",
+      "dlo_lab_adapter_supervised_worker_exit_nonzero:1"
+    ],
+    "stderr_bytes": 0,
+    "stderr_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_content_persisted": false,
+    "native_signal_observed": false,
+    "timed_out": false,
+    "cuda_kernel_failure_observed": false
+  },
+  "diagnostic_effect": {
+    "sandbox_home_fix_cleared_prior_direct_quadrants_abort": true,
+    "direct_quadrants_import_succeeded": true,
+    "torch_then_quadrants_import_succeeded": true,
+    "genesis_import_succeeded": false,
+    "failure_stage_advanced": true,
+    "cause_localized": false,
+    "next_diagnostic": "request_bound_first_case_python_import_and_exception_audit"
+  },
+  "source_backed_failure_mechanism": {
+    "exact_source_file": "genesis/__init__.py",
+    "exact_source_file_digest": "sha256:d7f88dba8de7fd461a6f392b60fae29447024b905032c99c7e23266c4dcc53cb",
+    "custom_exception_hook_prints_to_stdout": true,
+    "attempt8_probe_stdout_metadata_recorded": false,
+    "native_crash_established": false,
+    "inference": "An uncaught Python exception can explain exit code 1 with empty stderr because the exact Genesis source installs an exception hook that prints the traceback to stdout. Attempt 8 did not retain or digest the import probe stdout, so the exception class and failing import remain unproven."
+  },
+  "teardown": {
+    "status": "PASS",
+    "teardown_receipt_digest": "sha256:bdb3e7bbd41b721e662cfaf95220e702d97612f12a163321f115118d858e6041",
+    "provider_zero_status": "PASS",
+    "provider_zero_digest": "sha256:3a22c962a0fd8b89f85058772464fe4cbb49a57c3e91c76ebe604bfd72aceeef",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "watchdog_status": "provider_terminal"
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "claim_boundary": {
+    "development_execution_completed": false,
+    "qualification_created": false,
+    "r5_evidence": false,
+    "r6_decision": false,
+    "r7_admission": false,
+    "physical_success_established": false,
+    "proof_effect": "failed_diagnostic_execution_with_later_import_stage_observed"
+  },
+  "next_encoded_action": "Bind a first-case-only Python import and exception audit to the execution request, retain only sanitized module names, exception type, bounded integer SystemExit code, and raw-output digest metadata, then rerun the fixed compatibility tuple once without an unchanged retry."
+}

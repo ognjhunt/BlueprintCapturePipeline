@@ -1,0 +1,62 @@
+{
+  "schema_version": "measurement_chrono_dem_vast_attempt_observation.v1",
+  "attempt": 1,
+  "status": "failed_before_bundle_download",
+  "source_commit_sha": "e4dfeff990e4315ab0c089af5efd0d39d6cdbd45",
+  "request_digest": "sha256:2672a4afe33237789c3cf249e6ef8aec437957b65af43571a08e335a593eddfe",
+  "bound_request_digest": "sha256:f8d44b6134c5a96b955718c572e56dfcc544f574d653f48deeeccce06f6b5cb2",
+  "input_bundle_digest": "sha256:a94f78e97c0764bf644de00a91e828c89bf15dd4d4b18d897c747a4e02d6a956",
+  "provider": "vast",
+  "instance_id": "46656754",
+  "gpu_model": "L40",
+  "worker_image_digest": "nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
+  "retry_cap": 0,
+  "provider_launch_count": 1,
+  "instance_started_at_epoch": 1785718193.062901,
+  "teardown_completed_at": "2026-08-03T00:52:04.408902+00:00",
+  "billable_duration_upper_bound_seconds": 131.346001,
+  "selected_offer_rate_usd_per_hour": 0.5777777777777778,
+  "live_inspect_rate_usd_per_hour": 0.64,
+  "estimated_cost_usd_at_selected_offer_rate": 0.02108023,
+  "estimated_cost_usd_at_live_inspect_rate": 0.02335041,
+  "cost_is_estimate": true,
+  "failure_observation": {
+    "provider_log_excerpt": "bash: line 14: python3: command not found",
+    "provider_log_capture_persisted": false,
+    "diagnosis": "the bootstrap invoked python3 before installing the declared python3 package",
+    "chrono_source_cloned": false,
+    "chrono_built": false,
+    "cuda_probe_executed": false,
+    "runtime_result_created": false
+  },
+  "encoded_fix": {
+    "description": "install the pinned Debian dependency set before the first python3 invocation",
+    "regression_test": "bootstrap package installation must precede bundle download",
+    "focused_test_result": "75 passed"
+  },
+  "teardown": {
+    "status": "PASS",
+    "receipt_sha256": "05a8ec3c95697b1c91be80f9863168ae56983c875913047bcee3fa994bad9916",
+    "provider_zero_verified": true,
+    "provider_zero_receipt_sha256": "facc49adb8f2ba65775e5a7fe661e98c7dc0a00ce2b1afcfb3ce169b92b53d75",
+    "independent_watchdog_status": "provider_terminal",
+    "independent_watchdog_receipt_sha256": "b4e3c9695e7b91ca17b52b201cb287a3678d6e73b5c7f7b901170033845df240",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "all_objects_absent": true,
+    "signed_url_files_removed": true,
+    "cleanup_receipt_sha256": "dcb0fe91c1a1fb13037bc710f75a26ae5eb53d07bf7d9e31b7dcfd96f918ed41"
+  },
+  "qualification_created": false,
+  "r5_evidence_created": false,
+  "r6_decision_created": false,
+  "r7_admission_created": false,
+  "physical_success_established": false,
+  "production_route_eligible": false,
+  "proof_effect": "infrastructure_failure_and_teardown_evidence_only",
+  "claim_ceiling": "no_chrono_runtime_execution_evidence",
+  "raw_secret_values_recorded": false
+}

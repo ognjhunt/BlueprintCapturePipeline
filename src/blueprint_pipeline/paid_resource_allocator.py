@@ -96,7 +96,7 @@ from .reconstruction_gpu_admission import (
     prepare_reconstruction_gpu_canary,
 )
 from .reconstruction_isaac_vast_operation import run_reconstruction_isaac_vast_operation
-from . import measurement_isaac_paid_allocator
+from . import measurement_dlo_lab_paid_allocator
 from .reconstruction_paid_transport import prepare_reconstruction_paid_transport
 from .reconstruction_vast_operation import run_reconstruction_vast_operation
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
@@ -123,6 +123,13 @@ FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_500
 COMBINED_GPU_PLAN_SECONDS = GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
 PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
 DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
+DETACHED_GPU_CANARY_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_GPU_CANARY_SUPERVISOR"
+LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR_ENV = (
+    "BLUEPRINT_LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR"
+)
+DETACHED_GPU_CANARY_MANIFEST = "detached_gpu_canary_supervisor.json"
+DETACHED_GPU_CANARY_LOG = "detached_gpu_canary_supervisor.log"
+DETACHED_GPU_CANARY_LOCK = "detached_gpu_canary_supervisor.lock"
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
 
 
@@ -388,13 +395,153 @@ def _configure_detached_supervisor_signal_policy(command: str) -> bool:
     detached_cpu_build = (
         command == "cpu-build-run" and os.getenv(DETACHED_CPU_BUILD_SUPERVISOR_ENV) == "1"
     )
-    if not (detached_model_volume or detached_cpu_build):
+    detached_gpu_canary = (
+        command == "gpu-canary" and os.getenv(DETACHED_GPU_CANARY_SUPERVISOR_ENV) == "1"
+    )
+    if not (detached_model_volume or detached_cpu_build or detached_gpu_canary):
         return False
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
     except (AttributeError, OSError, ValueError):
         return False
     return True
+
+
+def maybe_launch_detached_gpu_canary(
+    *,
+    command: str,
+    execute: bool,
+    supervisor_dir: str | None,
+    argv: Sequence[str],
+    repo_root: Path,
+) -> dict[str, Any] | None:
+    """Detach the canonical allocator without recording raw arguments or secrets."""
+
+    if command != "gpu-canary" or not supervisor_dir:
+        return None
+    if os.getenv(DETACHED_GPU_CANARY_SUPERVISOR_ENV) == "1":
+        return None
+    if not execute:
+        return {
+            "status": "blocked",
+            "blockers": ["detached_gpu_canary_requires_execute"],
+            "provider_mutations_performed": 0,
+        }
+    declared = Path(supervisor_dir).expanduser()
+    if declared.exists() and declared.is_symlink():
+        return {
+            "status": "blocked",
+            "blockers": ["detached_gpu_canary_supervisor_dir_symlink_forbidden"],
+            "provider_mutations_performed": 0,
+        }
+    root = declared.resolve()
+    ensure_dir(root)
+    os.chmod(root, 0o700)
+    manifest_path = root / DETACHED_GPU_CANARY_MANIFEST
+    log_path = root / DETACHED_GPU_CANARY_LOG
+    lock_path = root / DETACHED_GPU_CANARY_LOCK
+    if manifest_path.exists() or log_path.exists() or lock_path.exists():
+        return {
+            "status": "blocked",
+            "blockers": ["detached_gpu_canary_supervisor_artifact_exists"],
+            "provider_mutations_performed": 0,
+        }
+    try:
+        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return {
+            "status": "blocked",
+            "blockers": ["detached_gpu_canary_supervisor_already_starting"],
+            "provider_mutations_performed": 0,
+        }
+    os.close(lock_fd)
+    raw_arguments = [str(value) for value in argv]
+    argument_shape = [
+        value.split("=", 1)[0]
+        for index, value in enumerate(raw_arguments)
+        if index == 0 or value.startswith("--")
+    ]
+    argument_shape_digest = (
+        "sha256:" + hashlib.sha256("\0".join(argument_shape).encode("utf-8")).hexdigest()
+    )
+    pending = {
+        "schema_version": "detached_gpu_canary_supervisor.v1",
+        "status": "launch_pending",
+        "argument_shape_digest": argument_shape_digest,
+        "argument_count": len(raw_arguments),
+        "raw_arguments_recorded": False,
+        "raw_argument_values_hashed": False,
+        "raw_secret_values_recorded": False,
+        "provider_mutations_performed_by_launcher": 0,
+    }
+    write_json(manifest_path, pending)
+    os.chmod(manifest_path, 0o600)
+    log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    child_env = dict(os.environ)
+    child_env[DETACHED_GPU_CANARY_SUPERVISOR_ENV] = "1"
+    try:
+        with os.fdopen(log_fd, "ab", closefd=True) as log:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "blueprint_pipeline.paid_resource_allocator",
+                    *raw_arguments,
+                ],
+                cwd=str(repo_root),
+                env=child_env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+    except BaseException:
+        write_json(
+            manifest_path,
+            {
+                **pending,
+                "status": "launch_failed",
+                "blockers": ["detached_gpu_canary_supervisor_launch_failed"],
+            },
+        )
+        os.chmod(manifest_path, 0o600)
+        raise
+    result = {
+        **pending,
+        "status": "supervisor_started",
+        "pid": process.pid,
+        "independent_process": True,
+        "start_new_session": True,
+        "sigint_ignored_by_child": True,
+        "log_path": str(log_path),
+    }
+    write_json(manifest_path, result)
+    os.chmod(manifest_path, 0o600)
+    return result
+
+
+def configure_or_launch_detached_gpu_canary(
+    command: str,
+    *,
+    execute: bool,
+    argv: Sequence[str],
+    repo_root: Path,
+) -> int | None:
+    """Detach a requested GPU canary, otherwise configure child signal policy."""
+
+    detached = maybe_launch_detached_gpu_canary(
+        command=command,
+        execute=execute,
+        supervisor_dir=os.getenv(LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR_ENV),
+        argv=argv,
+        repo_root=repo_root,
+    )
+    if detached is not None:
+        print(json.dumps(detached, sort_keys=True))
+        return 0 if detached.get("status") == "supervisor_started" else 2
+    _configure_detached_supervisor_signal_policy(command)
+    return None
 
 
 def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: bool = True) -> None:
@@ -649,6 +796,11 @@ def _run_reconstruction_gpu_canary(
             args, "reconstruction_isaac_image_release", None
         ),
         measurement_isaac_runtime_release_path=getattr(args, "measurement_isaac_runtime_release", None),
+        measurement_dlo_lab_runtime_release_path=getattr(
+            args, "measurement_dlo_lab_runtime_release", None
+        ),
+        measurement_chrono_dem_runtime_release_path=getattr(
+            args, "measurement_chrono_dem_runtime_release", None),
     )
     if not args.execute or admission.get("status") != "execute_ready":
         return admission
@@ -684,9 +836,10 @@ def _run_reconstruction_gpu_canary(
         }
         write_json(adapter_path, result)
         return result
-
-    if operation == "measurement_isaac_canary":
-        result = measurement_isaac_paid_allocator.run_measurement_isaac_from_canonical_allocator(
+    if operation in {"measurement_dlo_lab_canary", "measurement_isaac_canary",
+                     "measurement_chrono_dem_canary"}:
+        result = measurement_dlo_lab_paid_allocator.run_measurement_canary_from_canonical_allocator(
+            operation=operation,
             args=args,
             bundle_receipt=operation_bundle_receipt,
             resolved_urls=resolved_urls,
@@ -813,7 +966,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-operation-bundle-receipt")
     gpu.add_argument("--reconstruction-operation-receipt-url-file")
     gpu.add_argument("--reconstruction-isaac-image-release")
-    measurement_isaac_paid_allocator.add_measurement_isaac_allocator_arguments(gpu)
+    measurement_dlo_lab_paid_allocator.add_measurement_allocator_arguments(gpu)
     gpu.add_argument("--provider-bootstrap-url-file")
     gpu.add_argument("--finetune-provider-bundle")
     gpu.add_argument("--openpi-input-bundle-receipt")
@@ -1030,7 +1183,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--campaign-spent-to-date-usd", type=float)
         model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
-    _configure_detached_supervisor_signal_policy(args.command)
+    detached_exit = configure_or_launch_detached_gpu_canary(
+        args.command,
+        execute=bool(getattr(args, "execute", False)),
+        argv=list(argv) if argv is not None else sys.argv[1:],
+        repo_root=ROOT,
+    )
+    if detached_exit is not None:
+        return detached_exit
     if args.command in {"model-volume", "model-volume-run"} and not (
         args.command == "model-volume" and args.retain_existing_output
     ):
