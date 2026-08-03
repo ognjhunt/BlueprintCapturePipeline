@@ -10,7 +10,6 @@ the smallest measurement needed to continue.
 
 from __future__ import annotations
 
-import argparse
 from datetime import date
 import hashlib
 import json
@@ -1944,148 +1943,10 @@ def run_post_capture_evidence_spine(
     return {"run_root": str(run_root), "manifest": manifest, "terminal": terminal}
 
 
-def _load(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PostCaptureEvidenceError(["post_capture_input_file_invalid"]) from exc
-    if not isinstance(value, dict):
-        raise PostCaptureEvidenceError(["post_capture_input_file_invalid"])
-    return value
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--source-artifact", required=True, type=Path)
-    parser.add_argument("--source-root", required=True, type=Path)
-    parser.add_argument("--output-root", required=True, type=Path)
-    parser.add_argument("--appearance-candidate", type=Path)
-    parser.add_argument("--canonical-registered-appearance", type=Path)
-    parser.add_argument("--canonical-registration-measurement", type=Path)
-    parser.add_argument("--teleport-run-receipt", type=Path)
-    parser.add_argument("--teleport-import-receipt", type=Path)
-    parser.add_argument("--depth-surface-result", type=Path)
-    parser.add_argument("--depth-surface-root", type=Path)
-    parser.add_argument("--geometry-qualification", type=Path)
-    parser.add_argument("--registration-qualification", type=Path)
-    parser.add_argument("--target-orchestration", type=Path)
-    parser.add_argument("--target-pipeline-request", type=Path)
-    parser.add_argument("--placement-candidate", type=Path)
-    parser.add_argument("--placement-request", type=Path)
-    parser.add_argument("--collision-glb", type=Path)
-    parser.add_argument("--placement-qualification", type=Path)
-    parser.add_argument("--simready-task-zone-qualification", type=Path)
-    parser.add_argument("--routing-bundle", type=Path)
-    parser.add_argument("--task-metric", type=Path)
-    parser.add_argument("--policy-candidate", action="append", default=[], type=Path)
-    parser.add_argument("--policy-attempt", action="append", default=[], type=Path)
-    parser.add_argument(
-        "--authorizer-identity", default="blueprint-post-capture-admission"
-    )
-    arguments = parser.parse_args(argv)
-    result = run_post_capture_evidence_spine(
-        run_id=arguments.run_id,
-        source_artifact=_load(arguments.source_artifact),
-        source_root=arguments.source_root,
-        output_root=arguments.output_root,
-        appearance_candidate=(
-            _load(arguments.appearance_candidate)
-            if arguments.appearance_candidate
-            else None
-        ),
-        canonical_registered_appearance=(
-            _load(arguments.canonical_registered_appearance)
-            if arguments.canonical_registered_appearance
-            else None
-        ),
-        canonical_registration_measurement=(
-            _load(arguments.canonical_registration_measurement)
-            if arguments.canonical_registration_measurement
-            else None
-        ),
-        teleport_run_receipt=(
-            _load(arguments.teleport_run_receipt)
-            if arguments.teleport_run_receipt
-            else None
-        ),
-        teleport_import_receipt=(
-            _load(arguments.teleport_import_receipt)
-            if arguments.teleport_import_receipt
-            else None
-        ),
-        depth_surface_result=(
-            _load(arguments.depth_surface_result)
-            if arguments.depth_surface_result
-            else None
-        ),
-        depth_surface_root=arguments.depth_surface_root,
-        geometry_qualification=(
-            _load(arguments.geometry_qualification)
-            if arguments.geometry_qualification
-            else None
-        ),
-        registration_qualification=(
-            _load(arguments.registration_qualification)
-            if arguments.registration_qualification
-            else None
-        ),
-        target_orchestration=(
-            _load(arguments.target_orchestration)
-            if arguments.target_orchestration
-            else None
-        ),
-        target_pipeline_request=(
-            _load(arguments.target_pipeline_request)
-            if arguments.target_pipeline_request
-            else None
-        ),
-        placement_candidate=(
-            _load(arguments.placement_candidate)
-            if arguments.placement_candidate
-            else None
-        ),
-        placement_request=(
-            _load(arguments.placement_request) if arguments.placement_request else None
-        ),
-        collision_glb_path=arguments.collision_glb,
-        placement_qualification=(
-            _load(arguments.placement_qualification)
-            if arguments.placement_qualification
-            else None
-        ),
-        simready_task_zone_qualification=(
-            _load(arguments.simready_task_zone_qualification)
-            if arguments.simready_task_zone_qualification
-            else None
-        ),
-        routing_bundle=(
-            _load(arguments.routing_bundle) if arguments.routing_bundle else None
-        ),
-        task_metric=(
-            _load(arguments.task_metric) if arguments.task_metric else None
-        ),
-        policy_candidates=[_load(path) for path in arguments.policy_candidate],
-        policy_attempts=[_load(path) for path in arguments.policy_attempt],
-        authorizer_identity=arguments.authorizer_identity,
-    )
-    print(
-        json.dumps(
-            {
-                "run_root": result["run_root"],
-                "status": result["terminal"]["status"],
-                "terminal_stage": result["terminal"]["terminal_stage"],
-                "smallest_missing_measurement": result["terminal"][
-                    "smallest_missing_measurement"
-                ],
-                "run_digest": result["manifest"][
-                    "post_capture_evidence_run_digest"
-                ],
-            },
-            sort_keys=True,
-        )
-    )
-    return 0 if result["terminal"]["status"] == "completed" else 2
+    from .post_capture_evidence_cli import main as cli_main
+
+    return cli_main(argv)
 
 
 __all__ = [
