@@ -22,9 +22,8 @@ provider-zero checks.
 - Supersedes the older `codex/measurement-isaac-vast-20260802` branch.
 - No pull request exists yet.
 
-The original implementation report is attached outside the repository at:
-
-`/Users/nijelhunt_1/.codex/attachments/96a19a60-77b4-4f6e-8da6-f6389b65150e/pasted-text.txt`
+The original implementation report was supplied as a session attachment and is
+intentionally not referenced by a workstation-local path.
 
 ## What is implemented
 
