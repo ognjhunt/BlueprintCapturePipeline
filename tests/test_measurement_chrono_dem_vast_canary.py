@@ -192,6 +192,9 @@ def test_bootstrap_binds_exact_source_build_cuda_bundle_and_signed_upload() -> N
     assert "measurement_chrono_dem_source_digest_mismatch" in script
     assert SOURCE_REPOSITORY in script
     assert SOURCE_TAG_OBJECT in script
+    assert "timeout --signal=TERM --kill-after=30s 600s" in script
+    assert "fetch --filter=blob:none --depth=1 origin tag" in script
+    assert "git clone" not in script
     assert 'checkout --detach "$BLUEPRINT_MEASUREMENT_CHRONO_DEM_SOURCE_UPSTREAM_COMMIT"' in script
     assert (
         "apt-get install -y --no-install-recommends " + " ".join(REQUIRED_DEBIAN_PACKAGES) in script
