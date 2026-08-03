@@ -13,6 +13,19 @@ an analyzer result can qualify itself. Appearance quality, metric registration,
 collision geometry, robot placement, scene composition, routing, and execution
 authorization remain independent gates.
 
+The canonical producer can be connected directly with
+`--canonical-registered-appearance` and
+`--canonical-registration-measurement`. The spine normalizes its appearance
+candidate and rebinds the frozen registration measurement to the exact
+independently qualified geometry. A canonical registered-appearance artifact
+alone is deliberately not a qualified site reconstruction.
+
+Teleport enters with the exact successful lifecycle receipt and the matching
+provider-splat import receipt via `--teleport-run-receipt` and
+`--teleport-import-receipt`. The join verifies the source capture and the one
+preserved native PLY. It remains an unqualified appearance candidate even when
+the provider job succeeded.
+
 ## Real retained ARKitScenes command
 
 From the repository root, with the retained ARKitScenes 40958756 bytes present:
@@ -80,6 +93,11 @@ To execute the current registered-view analyzer instead of supplying a recorded
 target orchestration, use `--target-pipeline-request`. Supplying both target
 inputs is rejected.
 
+To invoke the existing Franka placement producer rather than supply a recorded
+candidate, use `--placement-request` with `--collision-glb`. Supplying both
+placement inputs is rejected. The resulting proposal still requires the
+independent `--placement-qualification` artifact.
+
 ## Artifact order
 
 The content-addressed run directory contains the available prefix:
@@ -88,6 +106,7 @@ The content-addressed run directory contains the available prefix:
 01_source_profile.json
 02_native_3dgs_candidate.json
 03_derived_site_geometry.json
+03b_scene_registration_qualification.json
 04_registered_site_reconstruction.json
 05_target_orchestration.json
 06_task_robot_selection.json

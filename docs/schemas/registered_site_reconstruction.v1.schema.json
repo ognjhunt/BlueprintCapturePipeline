@@ -1,8 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://blueprint.example/schemas/registered_site_reconstruction.v1.schema.json",
+  "title": "Qualified appearance and dynamics-geometry reconstruction",
   "$defs": {
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nullableDigest": {
+      "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+    },
+    "missingMeasurement": {
+      "type": "object",
+      "required": ["code", "instruction", "stage"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "instruction": {"type": "string", "minLength": 1},
+        "stage": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
   },
   "type": "object",
   "required": [
@@ -10,115 +24,95 @@
     "status",
     "source_profile_digest",
     "source_capture_digest",
-    "canonical_3dgs_campaign_result_digest",
+    "native_3dgs_candidate_digest",
     "appearance_format",
-    "appearance_asset_reference",
     "appearance_asset_digest",
-    "appearance_splat_count",
-    "appearance_sh_degree",
-    "appearance_coordinate_basis_digest",
-    "geometry_asset_digest",
-    "source_scene_digest",
-    "scene_registration_digest",
-    "registration_status",
-    "registration_transform_appearance_to_site",
-    "registration_residual_summary",
-    "heldout_appearance_status",
-    "heldout_quality_comparison_digest",
-    "world_frame",
-    "coordinate_frame_declaration",
-    "metric_scale_status",
-    "metric_scale_proven",
     "full_resolution_appearance_preserved",
+    "derived_site_geometry_digest",
+    "geometry_asset_digest",
+    "geometry_qualification_status",
+    "scene_registration_digest",
+    "registration_transform_digest",
+    "residual_measurement_digest",
+    "registration_qualification_digest",
+    "registration_status",
+    "source_scene_digest",
     "presentation_output_used_as_evaluation_evidence",
-    "metric_geometry_proven",
-    "collision_geometry_validated",
-    "isaac_compatibility_proven",
-    "physical_success_proven",
-    "candidate_may_self_authorize",
-    "blockers",
-    "proof_effect",
-    "claim_ceiling",
-    "timestamp",
+    "claim_boundary",
+    "smallest_missing_measurement",
     "reconstruction_digest"
   ],
   "properties": {
     "schema_version": {"const": "registered_site_reconstruction.v1"},
-    "status": {"enum": ["candidate_only", "qualified"]},
+    "status": {"enum": ["qualified", "abstained"]},
     "source_profile_digest": {"$ref": "#/$defs/digest"},
     "source_capture_digest": {"$ref": "#/$defs/digest"},
-    "canonical_3dgs_campaign_result_digest": {"$ref": "#/$defs/digest"},
+    "native_3dgs_candidate_digest": {"$ref": "#/$defs/nullableDigest"},
     "appearance_format": {"const": "native_3dgs"},
-    "appearance_asset_reference": {"type": "string", "minLength": 1},
-    "appearance_asset_digest": {"$ref": "#/$defs/digest"},
-    "appearance_splat_count": {"type": "integer", "minimum": 1},
-    "appearance_sh_degree": {"type": "integer", "minimum": 0, "maximum": 3},
-    "appearance_coordinate_basis_digest": {"$ref": "#/$defs/digest"},
-    "geometry_asset_digest": {"$ref": "#/$defs/digest"},
-    "source_scene_digest": {"$ref": "#/$defs/digest"},
-    "scene_registration_digest": {
-      "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+    "appearance_asset_digest": {"$ref": "#/$defs/nullableDigest"},
+    "full_resolution_appearance_preserved": {"type": "boolean"},
+    "derived_site_geometry_digest": {"$ref": "#/$defs/nullableDigest"},
+    "geometry_asset_digest": {"$ref": "#/$defs/nullableDigest"},
+    "geometry_qualification_status": {
+      "enum": ["qualified", "unqualified", "missing"]
     },
-    "registration_status": {
-      "enum": ["required_not_executed", "failed_residual_gate", "qualified"]
-    },
-    "registration_transform_appearance_to_site": {
-      "oneOf": [
-        {
-          "type": "array",
-          "minItems": 4,
-          "maxItems": 4,
-          "items": {
-            "type": "array",
-            "minItems": 4,
-            "maxItems": 4,
-            "items": {"type": "number"}
-          }
-        },
-        {"type": "null"}
-      ]
-    },
-    "registration_residual_summary": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["rmse_m", "p95_m", "maximum_residual_m", "minimum_residual_m"]
-        },
-        {"type": "null"}
-      ]
-    },
-    "heldout_appearance_status": {"enum": ["required_not_executed", "qualified"]},
-    "heldout_quality_comparison_digest": {
-      "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
-    },
-    "world_frame": {"type": "string", "minLength": 1},
-    "coordinate_frame_declaration": {"type": "object"},
-    "metric_scale_status": {
-      "enum": [
-        "sensor_metric_unvalidated",
-        "independently_validated_metric",
-        "not_established",
-        "unknown"
-      ]
-    },
-    "metric_scale_proven": {"type": "boolean"},
-    "full_resolution_appearance_preserved": {"const": true},
+    "scene_registration_digest": {"$ref": "#/$defs/nullableDigest"},
+    "registration_transform_digest": {"$ref": "#/$defs/nullableDigest"},
+    "residual_measurement_digest": {"$ref": "#/$defs/nullableDigest"},
+    "registration_qualification_digest": {"$ref": "#/$defs/nullableDigest"},
+    "registration_status": {"enum": ["qualified", "abstained"]},
+    "source_scene_digest": {"$ref": "#/$defs/nullableDigest"},
     "presentation_output_used_as_evaluation_evidence": {"const": false},
-    "metric_geometry_proven": {"const": false},
-    "collision_geometry_validated": {"const": false},
-    "isaac_compatibility_proven": {"const": false},
-    "physical_success_proven": {"const": false},
-    "candidate_may_self_authorize": {"const": false},
-    "blockers": {"type": "array", "items": {"type": "string"}},
-    "proof_effect": {
-      "enum": [
-        "registered_appearance_reconstruction",
-        "registered_appearance_candidate_only"
-      ]
+    "claim_boundary": {
+      "type": "object",
+      "required": [
+        "appearance_quality_is_metric_registration",
+        "appearance_used_as_dynamics_authority",
+        "collision_geometry_proven",
+        "registration_proven",
+        "physical_success_proven"
+      ],
+      "properties": {
+        "appearance_quality_is_metric_registration": {"const": false},
+        "appearance_used_as_dynamics_authority": {"const": false},
+        "collision_geometry_proven": {"type": "boolean"},
+        "registration_proven": {"type": "boolean"},
+        "physical_success_proven": {"const": false}
+      },
+      "additionalProperties": false
     },
-    "claim_ceiling": {"const": "registered_appearance_only"},
-    "timestamp": {"type": "string", "minLength": 1},
+    "smallest_missing_measurement": {
+      "oneOf": [{"$ref": "#/$defs/missingMeasurement"}, {"type": "null"}]
+    },
     "reconstruction_digest": {"$ref": "#/$defs/digest"}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "qualified"}}},
+      "then": {
+        "properties": {
+          "native_3dgs_candidate_digest": {"$ref": "#/$defs/digest"},
+          "appearance_asset_digest": {"$ref": "#/$defs/digest"},
+          "full_resolution_appearance_preserved": {"const": true},
+          "derived_site_geometry_digest": {"$ref": "#/$defs/digest"},
+          "geometry_asset_digest": {"$ref": "#/$defs/digest"},
+          "geometry_qualification_status": {"const": "qualified"},
+          "scene_registration_digest": {"$ref": "#/$defs/digest"},
+          "registration_transform_digest": {"$ref": "#/$defs/digest"},
+          "residual_measurement_digest": {"$ref": "#/$defs/digest"},
+          "registration_qualification_digest": {"$ref": "#/$defs/digest"},
+          "registration_status": {"const": "qualified"},
+          "source_scene_digest": {"$ref": "#/$defs/digest"},
+          "smallest_missing_measurement": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "registration_status": {"const": "abstained"},
+          "smallest_missing_measurement": {"$ref": "#/$defs/missingMeasurement"}
+        }
+      }
+    }
+  ],
   "additionalProperties": false
 }
