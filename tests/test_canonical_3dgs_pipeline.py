@@ -26,6 +26,7 @@ from blueprint_pipeline.canonical_3dgs_pipeline import (
     finalize_canonical_3dgs_receipts,
     prepare_canonical_v32_training_dataset,
 )
+from blueprint_pipeline.capture_v32_candidate_admission import MISSING_SELECTION_PROFILE
 from blueprint_pipeline.canonical_3dgs_execution_request import (
     build_canonical_3dgs_execution_request,
 )
@@ -307,7 +308,134 @@ def _canonical_v32_fixture(root: Path, frame_count: int = 8) -> list[float]:
             "frames": confidence_rows,
         },
     )
+    candidates = []
+    for index, frame_id in enumerate(frame_ids):
+        intrinsics = {
+            "authority": "arkit_arframe_exact_per_observation",
+            "fx": 50,
+            "fy": 50,
+            "cx": 32,
+            "cy": 24,
+            "width": 64,
+            "height": 48,
+            "matrix_column_major": [50, 0, 0, 0, 50, 0, 32, 24, 1],
+        }
+        candidates.append(
+            {
+                "candidate_id": f"rgb_{index:06d}",
+                "source_video_uri": "walkthrough.mov",
+                "output_image_relative_path": f"candidate_rgb/{index:06d}.png",
+                "decoded_frame_ordinal": index,
+                "encoded_frame_index": index,
+                "decoded_pts_sec": times[index],
+                "decoded_source_pts_sec": times[index],
+                "t_capture_sec": times[index],
+                "write_attempt_index": index,
+                "frame_id": frame_id,
+                "pose_frame_id": frame_id,
+                "coordinate_frame_session_id": "fixture-session",
+                "site_frame_id": "fixture-session",
+                "site_frame_definition": "arkit_world_origin_at_session_start",
+                "transform_semantics": "row_major_camera_to_site",
+                "units": "meters",
+                "handedness": "right_handed",
+                "up_axis": "Y",
+                "gravity_aligned": True,
+                "T_site_camera": poses[index]["T_world_camera"],
+                "T_world_camera": poses[index]["T_world_camera"],
+                "camera_intrinsics": intrinsics,
+                "camera_calibration_digest": canonical_digest(intrinsics),
+                "tracking_state": "normal",
+                "tracking_reason": None,
+                "world_mapping_status": "mapped",
+                "relocalization_event": False,
+                "arkit_frame_row_ordinal": index,
+                "arkit_pose_row_ordinal": index,
+                "pose_assisted_eligible": True,
+                "raw_observation_authority": True,
+                "downstream_artifact_authority": False,
+                "depth_path": f"arkit/depth/{frame_id}.png",
+                "confidence_path": f"arkit/confidence/{frame_id}.png",
+            }
+        )
+    candidate_manifest = {
+        "schema_version": "downstream_candidate_manifest.v1",
+        "capture_id": "capture-fixture",
+        "scene_id": "scene-fixture",
+        "source_video_uri": "walkthrough.mov",
+        "source_video_sha256": _digest(root / "walkthrough.mov")[7:],
+        "source_video_authority": "immutable_raw_capture_video",
+        "decoded_timing_authority": (
+            "sync_map_decoded_sample_presentation_timestamps"
+        ),
+        "coordinate_frame_session_id": "fixture-session",
+        "candidate_order": "encoded_frame_index_ascending",
+        "candidate_count": frame_count,
+        "candidates": candidates,
+        "selection_contract": {
+            "selection_authority": "blueprint_pipeline_task_site_profile",
+            "capture_default_selection": None,
+            "selection_parameters_required": True,
+            "allowed_deterministic_selectors": [
+                "explicit_encoded_frame_ordinals",
+                "profile_bound_even_decoded_pts_coverage",
+                "profile_bound_quality_filter",
+            ],
+            "smallest_missing_input_when_unselectable": MISSING_SELECTION_PROFILE,
+        },
+        "provider_neutrality": {
+            "mobile_app_direct_provider_upload_allowed": False,
+            "third_party_provider_upload_authorized": False,
+            "provider_selection_authority": "blueprint_pipeline",
+            "provider_authorization_status": "not_granted_by_capture_manifest",
+        },
+        "allowed_use_scope": {
+            "raw_observation_indexing_allowed": True,
+            "derived_processing_allowed": True,
+            "data_licensing_allowed": False,
+            "latest_revocation_check_required": True,
+            "provider_upload_requires_separate_downstream_authorization": True,
+            "redaction_required_before_derived_use": False,
+            "requested_outputs": ["reconstruction_candidate"],
+        },
+        "claim_boundary": {
+            "raw_capture_remains_authoritative": True,
+            "candidate_manifest_qualifies_reconstruction": False,
+            "candidate_manifest_qualifies_metric_scale": False,
+            "candidate_manifest_qualifies_collision_or_physics": False,
+            "candidate_manifest_proves_task_success": False,
+        },
+    }
+    candidate_manifest["manifest_digest"] = canonical_digest(
+        candidate_manifest, digest_field="manifest_digest"
+    )
+    _write_json(root / "downstream_candidate_manifest.json", candidate_manifest)
     return times
+
+
+def _selection_profile(capture_root: Path, ordinals: list[int]) -> dict:
+    manifest = json.loads(
+        (capture_root / "downstream_candidate_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    profile = {
+        "schema_version": "task_site_frame_selection_profile.v1",
+        "site_id": "site-fixture",
+        "task_id": "task-fixture",
+        "candidate_manifest_digest": manifest["manifest_digest"],
+        "selector": "explicit_encoded_frame_ordinals",
+        "parameters": {"encoded_frame_ordinals": ordinals},
+        "rights_authorization": {
+            "status": "authorized",
+            "latest_revocation_check_status": "clear",
+            "rights_evidence_digest": _sha("d"),
+        },
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    return profile
 
 
 def _stub_v32_media(monkeypatch: pytest.MonkeyPatch, times: list[float]) -> None:
@@ -434,6 +562,7 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
     capture_root = tmp_path / "capture"
     times = _canonical_v32_fixture(capture_root)
     _stub_v32_media(monkeypatch, times)
+    selection_profile = _selection_profile(capture_root, [0, 2, 5, 7])
 
     prepared = prepare_canonical_v32_training_dataset(
         capture_root=capture_root,
@@ -445,10 +574,15 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
             "provider_upload_authorized": False,
             "paid_compute_authorized": False,
         },
-        maximum_frames=8,
+        task_site_selection_profile=selection_profile,
     )
 
     assert prepared["preparation"]["status"] == "training_dataset_ready"
+    assert prepared["preparation"]["selected_decoded_frame_ordinals"] == [0, 2, 5, 7]
+    assert prepared["preparation"]["frame_selection_default_used"] is False
+    assert prepared["preparation"]["task_site_frame_selection_profile_digest"] == (
+        selection_profile["profile_digest"]
+    )
     assert prepared["dataset"]["image_count"] >= 3
     assert prepared["dataset"]["initialization_point_count"] > 0
     assert prepared["dataset"]["hidden_heldout_pixels_included"] is False
@@ -579,6 +713,48 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
         row["appearance_fidelity_status"] == "qualified"
         for row in comparison["candidate_reports"]
     )
+
+
+def test_v32_preparation_abstains_without_task_site_selection_profile(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(Canonical3DGSPipelineError) as exc:
+        prepare_canonical_v32_training_dataset(
+            capture_root=tmp_path / "capture",
+            output_root=tmp_path / "derived",
+            intake_id="fixture-intake",
+            capture_digest=CAPTURE_DIGEST,
+            rights_and_retention={"local_processing_authorized": True},
+            task_site_selection_profile=None,
+        )
+    assert exc.value.codes == (MISSING_SELECTION_PROFILE,)
+
+
+def test_v32_preparation_rejects_candidate_video_identity_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture_root = tmp_path / "capture"
+    times = _canonical_v32_fixture(capture_root)
+    _stub_v32_media(monkeypatch, times)
+    (capture_root / "alternate.mov").write_bytes(
+        (capture_root / "walkthrough.mov").read_bytes()
+    )
+    video_track = json.loads((capture_root / "video_track.json").read_text())
+    video_track["video_file"] = "alternate.mov"
+    _write_json(capture_root / "video_track.json", video_track)
+
+    with pytest.raises(
+        adapters.LocalReconstructionAdapterError,
+        match="metric_scaffold:selection_capture_binding_mismatch",
+    ):
+        prepare_canonical_v32_training_dataset(
+            capture_root=capture_root,
+            output_root=tmp_path / "derived",
+            intake_id="fixture-intake",
+            capture_digest=CAPTURE_DIGEST,
+            rights_and_retention={"local_processing_authorized": True},
+            task_site_selection_profile=_selection_profile(capture_root, [0, 2, 5, 7]),
+        )
 
 
 def test_canonical_plan_rejects_dataset_byte_drift_before_any_runner(tmp_path: Path) -> None:

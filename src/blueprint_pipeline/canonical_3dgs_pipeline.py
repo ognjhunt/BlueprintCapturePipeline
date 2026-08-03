@@ -33,6 +33,11 @@ from .arkit_depth_surface_compiler import (
     build_arkit_depth_surface_compilation_request,
     compile_arkit_depth_surface,
 )
+from .capture_v32_candidate_admission import (
+    CaptureV32CandidateAdmissionError,
+    MISSING_SELECTION_PROFILE,
+    build_capture_v32_reconstruction_admission,
+)
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .canonical_3dgs_evaluation import (
     compile_canonical_3dgs_hidden_evaluator_input,
@@ -433,20 +438,71 @@ def prepare_canonical_v32_training_dataset(
     intake_id: str,
     capture_digest: str,
     rights_and_retention: Mapping[str, Any],
-    maximum_frames: int = 60,
+    task_site_selection_profile: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Compile a strict V3.2 bundle into one depth-seeded COLMAP dataset."""
 
     raw_root = Path(capture_root).expanduser().resolve()
     derived_root = Path(output_root).expanduser().resolve()
     derived_root.mkdir(parents=True, exist_ok=True)
+    if task_site_selection_profile is None:
+        raise Canonical3DGSPipelineError([MISSING_SELECTION_PROFILE])
+    candidate_manifest = _load_json(
+        raw_root / "downstream_candidate_manifest.json",
+        code="capture_v32_candidate_manifest_missing_or_invalid",
+    )
+    source_video_relative_path = str(
+        candidate_manifest.get("source_video_uri") or ""
+    ).removeprefix("raw/")
+    source_video_path = _safe_child(
+        raw_root,
+        source_video_relative_path,
+        code="capture_v32_candidate_source_video_path_invalid",
+    )
+    if not source_video_path.is_file():
+        raise Canonical3DGSPipelineError(
+            ["capture_v32_candidate_source_video_missing"]
+        )
+    try:
+        frame_selection_admission = build_capture_v32_reconstruction_admission(
+            candidate_manifest=candidate_manifest,
+            task_site_selection_profile=task_site_selection_profile,
+            expected_source_video_digest=_sha256(source_video_path),
+        )
+    except CaptureV32CandidateAdmissionError as exc:
+        raise Canonical3DGSPipelineError(exc.codes) from exc
+    if frame_selection_admission.get("status") != "admitted":
+        raise Canonical3DGSPipelineError(
+            list(frame_selection_admission.get("blockers") or [
+                "capture_v32_frame_selection_not_admitted"
+            ])
+        )
+    selected_frame_indexes = [
+        int(row["decoded_frame_ordinal"])
+        for row in frame_selection_admission["selected_candidates"]
+    ]
+    selection_binding = {
+        "admission_digest": frame_selection_admission["admission_digest"],
+        "candidate_manifest_digest": frame_selection_admission[
+            "candidate_manifest_digest"
+        ],
+        "task_site_selection_profile_digest": frame_selection_admission[
+            "task_site_selection_profile_digest"
+        ],
+        "source_video_relative_path": source_video_relative_path,
+        "source_video_digest": frame_selection_admission["source_video_digest"],
+        "coordinate_frame_session_id": frame_selection_admission[
+            "coordinate_frame_session_id"
+        ],
+    }
     scaffold_result = LocalArkitMetricScaffoldAdapter().execute(
         intake_id=intake_id,
         capture_digest=capture_digest,
         capture_root=raw_root,
         output_root=derived_root,
         rights_and_retention=rights_and_retention,
-        maximum_frames=maximum_frames,
+        selected_frame_indexes=selected_frame_indexes,
+        selection_binding=selection_binding,
     )
     references = scaffold_result["asset_references"]
     scaffold_path = _safe_child(
@@ -593,6 +649,18 @@ def prepare_canonical_v32_training_dataset(
                 "artifact_id": "hidden_evaluator_input",
                 "digest": evaluator_input["canonical_3dgs_hidden_evaluator_input_digest"],
             },
+            {
+                "artifact_id": "capture_v32_reconstruction_admission",
+                "digest": selection_binding["admission_digest"],
+            },
+            {
+                "artifact_id": "downstream_candidate_manifest",
+                "digest": selection_binding["candidate_manifest_digest"],
+            },
+            {
+                "artifact_id": "task_site_frame_selection_profile",
+                "digest": selection_binding["task_site_selection_profile_digest"],
+            },
         ],
         claim_limitations=list(dataset.get("warnings") or [])
         + list(dataset.get("blockers") or []),
@@ -614,6 +682,17 @@ def prepare_canonical_v32_training_dataset(
         "raw_contract_version": "3.2.0",
         "raw_contract_3_2_proven": True,
         "raw_capture_authority_preserved": True,
+        "capture_v32_reconstruction_admission_digest": selection_binding[
+            "admission_digest"
+        ],
+        "downstream_candidate_manifest_digest": selection_binding[
+            "candidate_manifest_digest"
+        ],
+        "task_site_frame_selection_profile_digest": selection_binding[
+            "task_site_selection_profile_digest"
+        ],
+        "selected_decoded_frame_ordinals": selected_frame_indexes,
+        "frame_selection_default_used": False,
         "metric_scaffold_result_digest": scaffold_result[
             "reconstruction_result_digest"
         ],
@@ -1590,14 +1669,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--intake-id")
     parser.add_argument("--capture-digest")
+    parser.add_argument("--task-site-selection-profile")
     parser.add_argument("--source-commit-sha", required=True)
-    parser.add_argument("--maximum-frames", type=int, default=60)
     arguments = parser.parse_args(argv)
     if arguments.source_profile == "blueprint_raw_v3_2":
-        if not all((arguments.capture_root, arguments.intake_id, arguments.capture_digest)):
-            parser.error(
-                "blueprint_raw_v3_2 requires --capture-root, --intake-id, and --capture-digest"
+        if not all(
+            (
+                arguments.capture_root,
+                arguments.intake_id,
+                arguments.capture_digest,
+                arguments.task_site_selection_profile,
             )
+        ):
+            parser.error(
+                "blueprint_raw_v3_2 requires --capture-root, --intake-id, "
+                "--capture-digest, and --task-site-selection-profile"
+            )
+        task_site_selection_profile = _load_json(
+            Path(arguments.task_site_selection_profile).expanduser().resolve(),
+            code="task_site_frame_selection_profile_invalid",
+        )
         prepared = prepare_canonical_v32_training_dataset(
             capture_root=arguments.capture_root,
             output_root=arguments.output_root,
@@ -1608,7 +1699,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "provider_upload_authorized": False,
                 "paid_compute_authorized": False,
             },
-            maximum_frames=arguments.maximum_frames,
+            task_site_selection_profile=task_site_selection_profile,
         )
     else:
         if not all((arguments.proxy_root, arguments.source_artifact_root)):
