@@ -809,11 +809,19 @@ def test_real_retained_arkitscenes_40958756_reaches_scientific_abstention(
     if not (source_root / "source/40958756.mov").is_file():
         pytest.skip("retained real ARKitScenes 40958756 source bytes are not installed")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    depth_result_path = (
+        source_root
+        / "compiled/arkitscenes_proxy_c38599abc46a0e27"
+        / "observed_surface_proxy_v1/arkit_depth_surface_proxy_result.json"
+    )
+    depth_result = json.loads(depth_result_path.read_text(encoding="utf-8"))
     result = run_post_capture_evidence_spine(
         run_id="arkitscenes-40958756-real-post-capture",
         source_artifact=receipt,
         source_root=source_root,
         output_root=tmp_path / "real-runs",
+        depth_surface_result=depth_result,
+        depth_surface_root=source_root,
     )
     source = json.loads(
         (Path(result["run_root"]) / "01_source_profile.json").read_text(encoding="utf-8")
@@ -826,8 +834,20 @@ def test_real_retained_arkitscenes_40958756_reaches_scientific_abstention(
         "native_3dgs_appearance_missing"
     )
     assert result["manifest"]["fixture_evidence_used"] is False
+    geometry = json.loads(
+        (Path(result["run_root"]) / "03_derived_site_geometry.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert geometry["geometry_asset_digest"] == (
+        "sha256:f3085b732a4ccf4b80f7f587f8775b5b69fe64596bb280d2a8dda730c979923d"
+    )
+    assert geometry["coverage_and_uncertainty"]["unsupported_region_ids"] == [
+        "arkitscenes-unobserved-regions"
+    ]
+    assert geometry["qualification_state"]["collision_geometry"] == "unqualified"
     retained_root = (
-        repo / "docs/evidence/arkitscenes_40958756_post_capture_2f8e5921"
+        repo / "docs/evidence/arkitscenes_40958756_post_capture_bda23f88"
     )
     assert result["manifest"] == json.loads(
         (retained_root / "post_capture_evidence_run.json").read_text(encoding="utf-8")
