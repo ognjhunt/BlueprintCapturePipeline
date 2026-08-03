@@ -42,9 +42,10 @@
     "provider_log_capture_persisted": false
   },
   "encoded_fix": {
-    "commit": "f992ed836fe6ab7ea7ff9b702d73088927213b02",
-    "description": "send application/zip for both normal and structured-failure PUTs while retaining the canonical JSON body, matching the shared signed transport contract",
-    "regression_test": "the bootstrap must contain exactly two application/zip output headers and no application/json output header",
+    "initial_compatibility_commit": "f992ed836fe6ab7ea7ff9b702d73088927213b02",
+    "typed_transport_commit": "d8e6560a2df644ac4367b384571fd44e09c48b09",
+    "description": "parameterize the shared object-store signer, stage this lane's output as application/json with a .json key, exercise a signed JSON PUT/GET preflight, and retain application/json in both normal and structured-failure workers",
+    "regression_test": "the staging signer binds application/json to the output PUT and the bootstrap contains exactly two application/json output headers",
     "focused_validation": "17 focused tests passed; bootstrap shell syntax valid; Ruff and git diff checks passed"
   },
   "cleanup": {
