@@ -719,11 +719,24 @@ def _policy_candidates(value: Any) -> list[dict[str, Any]]:
     return candidates
 
 
+def validate_task_metric(value: Any) -> dict[str, Any]:
+    """Validate and return the frozen metric artifact used by authorization."""
+
+    return _metric_spec(value)[0]
+
+
+def validate_policy_candidates(value: Any) -> list[dict[str, Any]]:
+    """Validate the exact five immutable learned-policy identities."""
+
+    return _policy_candidates(value)
+
+
 def _execution_authorization(
     value: Any,
     *,
     route: Mapping[str, Any],
     placement: Mapping[str, Any],
+    composition: Mapping[str, Any],
     metric: Mapping[str, Any],
     candidates: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
@@ -747,6 +760,10 @@ def _execution_authorization(
         errors.append("policy_authorization_route_mismatch")
     if authorization.get("placement_digest") != placement.get("placement_digest"):
         errors.append("policy_authorization_placement_mismatch")
+    if authorization.get("scene_composition_digest") != composition.get(
+        "scene_composition_digest"
+    ):
+        errors.append("policy_authorization_scene_composition_mismatch")
     if authorization.get("metric_spec_digest") != metric.get("metric_spec_digest"):
         errors.append("policy_authorization_metric_mismatch")
     if authorization.get("candidate_set_digest") != expected_candidate_set_digest:
@@ -1093,6 +1110,7 @@ def compile_new_site_task_evaluation_run_v1(value: Mapping[str, Any]) -> dict[st
         authorization,
         route=route,
         placement=placement,
+        composition=composition,
         metric=metric,
         candidates=candidates,
     )
@@ -1264,6 +1282,8 @@ __all__ = [
     "compile_new_site_task_evaluation_run_v1",
     "main",
     "select_robot_for_target",
+    "validate_policy_candidates",
+    "validate_task_metric",
 ]
 
 
