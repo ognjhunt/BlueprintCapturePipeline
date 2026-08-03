@@ -1,0 +1,11 @@
+# SkyPilot pilot lane — ISOLATED environment only (never the Blueprint runtime).
+#
+# Installing skypilot into the primary environment would downgrade Click,
+# Uvicorn, and Pillow (verified by dry-run on 2026-08-02), so this file is
+# consumed exclusively by scripts/setup_skypilot_venv.sh, which creates
+# .venvs/skypilot and exposes the CLI via BLUEPRINT_SKYPILOT_BIN.
+#
+# License review: docs/architecture/isolated-component-license-inventory.md
+# (Apache-2.0, released 2026-07-22). Exact pin required — SkyPilot behavior
+# (lifecycle hooks, max_hourly_cost, Vast backend) is version-specific.
+skypilot[vast]==0.13.0

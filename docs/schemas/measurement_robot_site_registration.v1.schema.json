@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-robot-site-registration.v1.schema.json",
+  "title": "Blueprint measured robot-to-site registration",
+  "type": "object",
+  "required": [
+    "schema_version", "registration_id", "source_capture_digest",
+    "metric_geometry_manifest_digest", "collider_qualification_digest",
+    "robot_model_digest", "tool_geometry_digest", "site_frame_id",
+    "robot_base_frame_id", "site_from_robot_base_transform",
+    "measurement_method", "independent_measurement_digest",
+    "independent_evaluator", "measurement_signature_status",
+    "evaluator_approval_signature_id", "candidate_self_graded",
+    "agent_generated_measurements", "thresholds_modified_after_measurement",
+    "measurement_sample_count",
+    "translation_rms_error_m", "rotation_rms_error_deg",
+    "maximum_translation_rms_error_m", "maximum_rotation_rms_error_deg",
+    "task_region_ids", "blockers", "metric_scale_verified",
+    "collider_qualification_decision", "physical_measurements_included",
+    "development_only", "decision", "agent_may_approve", "r5_evidence",
+    "r6_decision", "r7_admission", "physical_success_established",
+    "deployment_readiness_established", "safety_established", "proof_effect",
+    "claim_ceiling", "registration_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "measurement_robot_site_registration.v1"},
+    "registration_id": {"type": "string", "minLength": 1},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "metric_geometry_manifest_digest": {"$ref": "#/$defs/digest"},
+    "collider_qualification_digest": {"$ref": "#/$defs/digest"},
+    "robot_model_digest": {"$ref": "#/$defs/digest"},
+    "tool_geometry_digest": {"$ref": "#/$defs/digest"},
+    "site_frame_id": {"type": "string", "minLength": 1},
+    "robot_base_frame_id": {"type": "string", "minLength": 1},
+    "site_from_robot_base_transform": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "array", "minItems": 4, "maxItems": 4,
+        "items": {"type": "number"}
+      }
+    },
+    "measurement_method": {"type": "string", "minLength": 1},
+    "independent_measurement_digest": {"$ref": "#/$defs/digest"},
+    "independent_evaluator": {
+      "type": "object",
+      "required": ["evaluator_id", "candidate_method_independent", "agent_is_evaluator"],
+      "properties": {
+        "evaluator_id": {"type": "string", "minLength": 1},
+        "candidate_method_independent": {"const": true},
+        "agent_is_evaluator": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "measurement_signature_status": {"enum": ["verified", "unverified"]},
+    "evaluator_approval_signature_id": {"type": "string"},
+    "candidate_self_graded": {"const": false},
+    "agent_generated_measurements": {"const": false},
+    "thresholds_modified_after_measurement": {"const": false},
+    "measurement_sample_count": {"type": "integer", "minimum": 3},
+    "translation_rms_error_m": {"type": "number", "minimum": 0},
+    "rotation_rms_error_deg": {"type": "number", "minimum": 0},
+    "maximum_translation_rms_error_m": {"type": "number", "minimum": 0},
+    "maximum_rotation_rms_error_deg": {"type": "number", "minimum": 0},
+    "task_region_ids": {"type": "array", "minItems": 1, "uniqueItems": true},
+    "blockers": {"type": "array"},
+    "metric_scale_verified": {"type": "boolean"},
+    "collider_qualification_decision": {"enum": ["accepted_bounded_navigation", "rejected"]},
+    "physical_measurements_included": {"type": "boolean"},
+    "development_only": {"type": "boolean"},
+    "decision": {"enum": ["accepted", "rejected", "development_only"]},
+    "agent_may_approve": {"const": false},
+    "r5_evidence": {"const": false},
+    "r6_decision": {"const": false},
+    "r7_admission": {"const": false},
+    "physical_success_established": {"const": false},
+    "deployment_readiness_established": {"const": false},
+    "safety_established": {"const": false},
+    "proof_effect": {"const": "robot_site_registration_evidence"},
+    "claim_ceiling": {"const": "C2"},
+    "registration_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

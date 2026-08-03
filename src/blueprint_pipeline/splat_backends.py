@@ -386,6 +386,16 @@ def _register_builtins() -> None:
     )
     register_backend(
         SplatBackend(
+            "fixer",
+            "enhancer",
+            "NVIDIA Fixer V2 (Cosmos): deterministic rejection pending pinned runtime qualification",
+            ("pinned_worker", "checkpoint", "cosmos_base_model"),
+            lambda: False,
+            lambda **kwargs: _rejected_enhancer_run("fixer", **kwargs),
+        )
+    )
+    register_backend(
+        SplatBackend(
             "harmonizer",
             "enhancer",
             "NVIDIA DiffusionHarmonizer: deterministic rejection pending pinned runtime qualification",

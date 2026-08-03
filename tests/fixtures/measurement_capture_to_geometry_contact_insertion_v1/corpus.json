@@ -1,0 +1,48 @@
+{
+  "schema_version": "capture_to_geometry_contact_insertion_development_corpus.v1",
+  "corpus_id": "blueprint-mujoco-square-peg-insertion-development-v1",
+  "description": "Synthetic centered-clearance and lateral-interference square-peg cases for insertion-boundary development plumbing; not instrumented physical insertion evidence.",
+  "lane": "peg_insertion",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_measurements_included": false,
+  "instrumented_force_included": false,
+  "qualification_labels_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "adapter_protocol": "mujoco_square_peg_insertion_boundary.v1",
+    "geometry_origin": "synthetic_public_primitives",
+    "instrumented_force_measurement": false,
+    "length_unit": "meters",
+    "force_unit": "newtons",
+    "time_unit": "seconds",
+    "peg_half_width_m": 0.04,
+    "peg_half_height_m": 0.1,
+    "hole_half_width_m": 0.045,
+    "wall_thickness_m": 0.05,
+    "wall_half_height_m": 0.1,
+    "initial_center_height_m": 0.35,
+    "target_insertion_depth_m": 0.15,
+    "success_tolerance_m": 0.002,
+    "peg_mass_kg": 1.0,
+    "applied_force_n": 10.0,
+    "joint_damping": 1.0,
+    "penetration_unsafe_threshold_m": 0.001,
+    "duration_s": 0.5,
+    "timestep_s": 0.001
+  },
+  "metric_definitions": {
+    "minimum_clearance_error": "Predicted signed minimum lateral clearance in meters for comparison with a future hidden physical label.",
+    "contact_sequence": "Whether side contact occurred during insertion.",
+    "penetration": "Maximum negative MuJoCo contact distance converted to nonnegative meters.",
+    "insertion_success_boundary": "Whether the final insertion depth reached the public target within tolerance.",
+    "replay": "Exact digest agreement across two complete executions of each case."
+  },
+  "cases": [
+    {"case_id": "mujoco-square-peg-clear-development-001", "lateral_offset_m": 0.0},
+    {"case_id": "mujoco-square-peg-interference-development-002", "lateral_offset_m": 0.008}
+  ]
+}

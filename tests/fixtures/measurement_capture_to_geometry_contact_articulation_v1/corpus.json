@@ -1,0 +1,50 @@
+{
+  "schema_version": "capture_to_geometry_contact_articulation_development_corpus.v1",
+  "corpus_id": "blueprint-mujoco-articulation-development-v1",
+  "description": "Synthetic MuJoCo hinge-door and slide-drawer travel cases for Q-ART development plumbing; not captured joints or instrumented force evidence.",
+  "lane": "articulated_rigid_contact",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_measurements_included": false,
+  "instrumented_force_included": false,
+  "qualification_labels_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "adapter_protocol": "mujoco_articulated_joint_travel.v1",
+    "reference_origin": "synthetic_public_target",
+    "physical_force_measurement": false,
+    "position_unit": "joint_native_radian_or_meter",
+    "effort_unit": "joint_native_newton_meter_or_newton",
+    "time_unit": "seconds",
+    "body_mass_kg": 5.0,
+    "duration_s": 0.5,
+    "timestep_s": 0.001,
+    "maximum_travel_error": 0.01
+  },
+  "metric_definitions": {
+    "drawer_door_force_travel_error": "Absolute difference between final simulated joint position and the public synthetic target.",
+    "contact_sequence": "Whether the bounded trajectory reached the configured joint limit.",
+    "replay": "Exact digest agreement across two complete executions of each case."
+  },
+  "cases": [
+    {
+      "case_id": "mujoco-door-hinge-development-001",
+      "articulation_type": "door_hinge",
+      "joint_limit": 1.57,
+      "joint_damping": 0.2,
+      "applied_effort": 2.0,
+      "target_joint_position": 0.55
+    },
+    {
+      "case_id": "mujoco-drawer-slide-development-002",
+      "articulation_type": "drawer_slide",
+      "joint_limit": 0.4,
+      "joint_damping": 1.0,
+      "applied_effort": 5.0,
+      "target_joint_position": 0.12
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "schema_version": "capture_to_deformation_cable_development_corpus.v1",
+  "corpus_id": "blueprint-pyelastica-cable-development-v1",
+  "description": "Synthetic fixed-free Cosserat-rod cases for exercising the Q-DLO cable development protocol; not characterized physical cable evidence.",
+  "lane": "cable",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_measurements_included": false,
+  "qualification_labels_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "adapter_protocol": "pyelastica_cantilever_cable.v1",
+    "length_unit": "meters",
+    "mass_unit": "kilograms",
+    "time_unit": "seconds",
+    "n_elements": 12,
+    "start_m": [0.0, 0.0, 0.0],
+    "direction": [1.0, 0.0, 0.0],
+    "normal": [0.0, 0.0, 1.0],
+    "gravity_m_s2": [0.0, -9.81, 0.0],
+    "duration_s": 0.05,
+    "timestep_s": 0.00002,
+    "damping_constant": 2.0,
+    "maximum_segment_strain": 0.2
+  },
+  "metric_definitions": {
+    "state_trajectory": "Final tip displacement magnitude in meters from the undeformed fixed-free pose.",
+    "force": "Magnitude in newtons of the known total applied gravity load.",
+    "task_outcome": "Whether the configured displacement and strain envelope was exceeded."
+  },
+  "cases": [
+    {
+      "case_id": "pyelastica-cable-development-001",
+      "base_length_m": 0.5,
+      "base_radius_m": 0.005,
+      "density_kg_m3": 1000.0,
+      "youngs_modulus_pa": 1000000.0,
+      "maximum_tip_displacement_m": 0.5
+    },
+    {
+      "case_id": "pyelastica-cable-development-002",
+      "base_length_m": 0.4,
+      "base_radius_m": 0.004,
+      "density_kg_m3": 1200.0,
+      "youngs_modulus_pa": 2000000.0,
+      "maximum_tip_displacement_m": 0.4
+    }
+  ]
+}

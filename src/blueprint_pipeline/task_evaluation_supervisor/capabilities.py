@@ -18,6 +18,23 @@ from ..decision_evidence_contracts import (
     canonical_digest,
 )
 from ..decision_evidence_router import route_decision_evidence
+from ..measurement_method_research_catalog import (
+    TASK_CLASS_QUALIFICATION_PROTOCOLS,
+    qualification_benchmark_blueprints,
+)
+from ..measurement_adapter_runtime import validate_measurement_adapter_descriptor
+from ..measurement_adapter_execution import (
+    validate_measurement_adapter_execution_bundle,
+)
+from ..measurement_qualification_benchmarks import (
+    validate_qualification_benchmark_spec,
+)
+from ..measurement_research_monitor import validate_monitor_report
+from ..task_site_measurement_routing import (
+    TAXONOMY_VERSION,
+    audit_site_evidence_profile,
+    derive_task_measurement_requirements,
+)
 from .contracts import (
     ActionProposal,
     CapabilityKind,
@@ -36,6 +53,10 @@ class SupervisorContext:
     testbed: Mapping[str, Any] | None = None
     method_profiles: Sequence[Mapping[str, Any]] = ()
     qualifications: Sequence[Mapping[str, Any]] = ()
+    measurement_adapter_descriptors: Sequence[Mapping[str, Any]] = ()
+    measurement_adapter_execution_bundles: Sequence[Mapping[str, Any]] = ()
+    measurement_benchmark_specs: Sequence[Mapping[str, Any]] = ()
+    measurement_research_monitor_report: Mapping[str, Any] | None = None
     evidence_plan: Mapping[str, Any] | None = None
     evidence_results: Sequence[Mapping[str, Any]] = ()
     decision_envelope: Mapping[str, Any] | None = None
@@ -183,11 +204,15 @@ def _result(
 class DeterministicClaimTaskInterpreter:
     kind = CapabilityKind.CLAIM_TASK_INTERPRETER
     adapter_id = "deterministic_claim_task_interpreter"
-    adapter_version = "1"
+    adapter_version = "2"
     instruction = (
         "Propose a claim graph from customer intent. Never select evidence, set proof, "
         "or invent measurable thresholds. Return clarification when the supplied "
-        "DecisionEvidenceRequest is absent or invalid."
+        "DecisionEvidenceRequest is absent or invalid. When the testbed carries a site "
+        "evidence profile, also propose non-authoritative task measurement requirements "
+        "per claim from the controlled taxonomy; distinguish reach, open, rank-on-site, "
+        "and safety claims; request the smallest clarification for an unknown task class "
+        "or a generic material word such as 'deformable' or an ambiguous 'bag'."
     )
 
     def propose(self, context: SupervisorContext) -> CapabilityResult:
@@ -256,49 +281,106 @@ class DeterministicClaimTaskInterpreter:
             )
 
         request = DecisionEvidenceRequest.from_mapping(context.decision_request).to_mapping()
+        testbed_value = (
+            MaintainedSiteTaskTestbed.from_mapping(context.testbed).to_mapping()
+            if context.testbed is not None
+            else None
+        )
+        measurement_aware = bool(
+            testbed_value is not None
+            and isinstance(testbed_value.get("site_evidence_profile"), Mapping)
+        )
+        measurement_gaps: dict[str, list[str]] = {}
         claims = []
         for claim in sorted(
             _rows(request.get("claims")), key=lambda row: _string(row.get("claim_id"))
         ):
-            claims.append(
+            row = {
+                "claim_id": claim.get("claim_id"),
+                "claim_type": claim.get("claim_type"),
+                "subject": claim.get("subject"),
+                "measurable_threshold": claim.get("measurable_threshold"),
+                "false_safe_consequence": claim.get("false_safe_consequence"),
+                "acceptable_false_safe_risk": claim.get("acceptable_false_safe_risk"),
+                "permitted_abstention_behavior": claim.get("permitted_abstention_behavior"),
+                "source": "validated_decision_evidence_request",
+                "agent_inferred": False,
+            }
+            if measurement_aware and testbed_value is not None:
+                # Interpretation may propose a controlled measurement scope; it
+                # can never authorize one. Unknown task classes and generic
+                # material words are clarification gaps, not guesses.
+                try:
+                    row["proposed_task_measurement_requirements"] = (
+                        derive_task_measurement_requirements(claim, testbed_value)
+                    )
+                    row["measurement_interpretation_blockers"] = []
+                except (TypeError, ValueError) as exc:
+                    codes = sorted(getattr(exc, "codes", ()) or [str(exc)])
+                    row["proposed_task_measurement_requirements"] = None
+                    row["measurement_interpretation_blockers"] = codes
+                    measurement_gaps[_string(claim.get("claim_id"))] = codes
+            claims.append(row)
+        proposals = [
+            _proposal(
+                context=context,
+                capability=self.kind,
+                ordinal=0,
+                action_type="validate_proposed_claim_graph",
+                reasons=["customer_request_has_contract_valid_seed_claims"],
+                tool_id="validate_proposed_claim_graph",
+                parameters={"request_digest": request["request_digest"]},
+                evidence_refs=[
+                    {"artifact": "decision_evidence_request", "digest": request["request_digest"]}
+                ],
+            )
+        ]
+        if measurement_gaps:
+            proposals.append(
+                _proposal(
+                    context=context,
+                    capability=self.kind,
+                    ordinal=1,
+                    action_type="request_measurement_scope_clarification",
+                    reasons=[
+                        f"measurement_scope_gap:{claim_id}:{code}"
+                        for claim_id, codes in sorted(measurement_gaps.items())
+                        for code in codes
+                    ],
+                    parameters={
+                        "request_digest": request["request_digest"],
+                        "claim_ids": sorted(measurement_gaps),
+                        "controlled_taxonomy_version": TAXONOMY_VERSION,
+                    },
+                )
+            )
+        artifact = {
+            "schema_version": "proposed_claim_graph.v1",
+            "customer_question": context.customer_question,
+            "claims": claims,
+            "clarification_required": False,
+            "validated_by_deterministic_contract": True,
+            "request_digest": request["request_digest"],
+            "agent_may_change_thresholds": False,
+        }
+        if measurement_aware:
+            artifact.update(
                 {
-                    "claim_id": claim.get("claim_id"),
-                    "claim_type": claim.get("claim_type"),
-                    "subject": claim.get("subject"),
-                    "measurable_threshold": claim.get("measurable_threshold"),
-                    "false_safe_consequence": claim.get("false_safe_consequence"),
-                    "acceptable_false_safe_risk": claim.get("acceptable_false_safe_risk"),
-                    "permitted_abstention_behavior": claim.get("permitted_abstention_behavior"),
-                    "source": "validated_decision_evidence_request",
-                    "agent_inferred": False,
+                    "measurement_taxonomy_version": TAXONOMY_VERSION,
+                    "measurement_requirements_proposed": not measurement_gaps,
+                    "measurement_scope_gaps": {
+                        claim_id: codes
+                        for claim_id, codes in sorted(measurement_gaps.items())
+                    },
+                    "measurement_interpretation_authoritative": False,
                 }
             )
-        proposal = _proposal(
-            context=context,
-            capability=self.kind,
-            ordinal=0,
-            action_type="validate_proposed_claim_graph",
-            reasons=["customer_request_has_contract_valid_seed_claims"],
-            tool_id="validate_proposed_claim_graph",
-            parameters={"request_digest": request["request_digest"]},
-            evidence_refs=[
-                {"artifact": "decision_evidence_request", "digest": request["request_digest"]}
-            ],
-        )
         return _result(
             context=context,
             capability=self.kind,
             status="proposed",
-            artifact={
-                "schema_version": "proposed_claim_graph.v1",
-                "customer_question": context.customer_question,
-                "claims": claims,
-                "clarification_required": False,
-                "validated_by_deterministic_contract": True,
-                "request_digest": request["request_digest"],
-                "agent_may_change_thresholds": False,
-            },
-            proposals=[proposal],
+            artifact=artifact,
+            proposals=proposals,
             evidence_refs=[
                 {"artifact": "decision_evidence_request", "digest": request["request_digest"]}
             ],
@@ -308,10 +390,15 @@ class DeterministicClaimTaskInterpreter:
 class DeterministicCaptureTestbedSupervisor:
     kind = CapabilityKind.CAPTURE_TESTBED_SUPERVISOR
     adapter_id = "deterministic_capture_testbed_supervisor"
-    adapter_version = "1"
+    adapter_version = "2"
     instruction = (
         "Inspect validated capture/testbed facts and propose the smallest follow-up. "
-        "Never infer missing samples, collision quality, calibration, or rights clearance."
+        "Never infer missing samples, collision quality, calibration, or rights clearance. "
+        "When a site evidence profile exists, run the deterministic capture-evidence audit "
+        "and propose the smallest per-gap measurement (metric-scale check, registration, "
+        "collider validation, articulation measurement, material identification, sensor "
+        "calibration, force/tactile collection, targeted recapture). A splat or mesh is "
+        "appearance evidence, never collision, articulation, material, mass, or force truth."
     )
 
     def propose(self, context: SupervisorContext) -> CapabilityResult:
@@ -390,6 +477,12 @@ class DeterministicCaptureTestbedSupervisor:
             )
         testbed = MaintainedSiteTaskTestbed.from_mapping(context.testbed).to_mapping()
         recapture_reinspection = dict(context.recapture_reinspection or {})
+        site_profile = testbed.get("site_evidence_profile")
+        site_audit = (
+            audit_site_evidence_profile(site_profile)
+            if isinstance(site_profile, Mapping)
+            else None
+        )
         inventory = {
             _string(row.get("evidence_id")) for row in _rows(testbed.get("evidence_inventory"))
         }
@@ -477,6 +570,30 @@ class DeterministicCaptureTestbedSupervisor:
                     parameters={"testbed_digest": testbed["testbed_digest"]},
                 )
             )
+        if site_audit is not None and site_audit["gaps"]:
+            # Capture-evidence auditor output: propose the smallest per-gap
+            # measurement; never infer mass, friction, collision validity,
+            # articulation, material behavior, or rights from appearance.
+            proposals.append(
+                _proposal(
+                    context=context,
+                    capability=self.kind,
+                    ordinal=len(proposals),
+                    action_type="request_targeted_site_measurement",
+                    reasons=[
+                        f"site_evidence_gap:{gap['evidence_id']}:{gap['smallest_next_action']}"
+                        for gap in site_audit["gaps"]
+                    ],
+                    parameters={
+                        "testbed_digest": testbed["testbed_digest"],
+                        "site_evidence_profile_id": site_audit["profile_id"],
+                        "site_evidence_audit_digest": site_audit[
+                            "site_evidence_audit_digest"
+                        ],
+                        "gaps": list(site_audit["gaps"]),
+                    },
+                )
+            )
         return _result(
             context=context,
             capability=self.kind,
@@ -501,6 +618,11 @@ class DeterministicCaptureTestbedSupervisor:
                 "recapture_gap_resolution_claimed_by_agent": False,
                 "capture_reconstruction_route": reconstruction_route,
                 "capture_profile_controls_reconstruction_method_eligibility": True,
+                "site_evidence_audit": site_audit,
+                "site_evidence_gap_count": (
+                    site_audit["gap_count"] if site_audit is not None else None
+                ),
+                "appearance_evidence_is_not_physical_evidence": True,
             },
             proposals=proposals,
             blockers=[*governance_blockers, *recapture_blockers],
@@ -525,8 +647,9 @@ class DeterministicEvaluationMethodRouter:
     adapter_id = "deterministic_evaluation_method_router"
     adapter_version = "1"
     instruction = (
-        "Invoke Blueprint's deterministic Decision/Evidence router and summarize its plan. "
-        "Provider identity and agent preference never qualify a method."
+        "Invoke Blueprint's deterministic Decision/Evidence and task/site measurement router, "
+        "then summarize its plan, exact scope, rejections, claim boundary, and smallest next "
+        "action. Provider identity, visual realism, and agent preference never qualify a method."
     )
 
     def propose(self, context: SupervisorContext) -> CapabilityResult:
@@ -562,7 +685,24 @@ class DeterministicEvaluationMethodRouter:
             for row in _rows(plan.get("claim_plans"))
             if row.get("status") == "abstention_planned"
         ]
-        proposal = _proposal(
+        descriptors = [
+            validate_measurement_adapter_descriptor(row)
+            for row in context.measurement_adapter_descriptors
+        ]
+        benchmark_specs = [
+            validate_qualification_benchmark_spec(row)
+            for row in context.measurement_benchmark_specs
+        ]
+        execution_bundles = [
+            validate_measurement_adapter_execution_bundle(row)
+            for row in context.measurement_adapter_execution_bundles
+        ]
+        monitor_report = (
+            validate_monitor_report(context.measurement_research_monitor_report)
+            if context.measurement_research_monitor_report is not None
+            else None
+        )
+        proposals = [_proposal(
             context=context,
             capability=self.kind,
             ordinal=0,
@@ -571,7 +711,54 @@ class DeterministicEvaluationMethodRouter:
             tool_id="compile_deterministic_evidence_plan",
             parameters={"plan_digest": plan["plan_digest"]},
             evidence_refs=[{"artifact": "evidence_plan", "digest": plan["plan_digest"]}],
-        )
+        )]
+        if monitor_report is not None and monitor_report["alerts"]:
+            proposals.append(
+                _proposal(
+                    context=context,
+                    capability=self.kind,
+                    ordinal=1,
+                    action_type="review_measurement_research_changes",
+                    reasons=[
+                        f"research_change:{row['candidate_id']}:{row['change_type']}"
+                        for row in monitor_report["alerts"]
+                    ],
+                    parameters={
+                        "monitor_report_digest": monitor_report[
+                            "monitor_report_digest"
+                        ],
+                        "human_review_required": True,
+                        "automatic_catalog_promotion": False,
+                    },
+                )
+            )
+        failed_executions = [
+            row for row in execution_bundles
+            if row["receipt"]["status"] != "completed"
+        ]
+        if failed_executions:
+            proposals.append(
+                _proposal(
+                    context=context,
+                    capability=self.kind,
+                    ordinal=len(proposals),
+                    action_type="review_measurement_adapter_execution",
+                    reasons=[
+                        "adapter_execution:"
+                        f"{row['receipt']['candidate_id']}:"
+                        f"{row['receipt']['status']}"
+                        for row in failed_executions
+                    ],
+                    parameters={
+                        "execution_bundle_digests": [
+                            row["execution_bundle_digest"]
+                            for row in failed_executions
+                        ],
+                        "human_review_required": True,
+                        "automatic_retry_authorized": False,
+                    },
+                )
+            )
         return _result(
             context=context,
             capability=self.kind,
@@ -584,8 +771,51 @@ class DeterministicEvaluationMethodRouter:
                 "planned_abstention_claim_ids": sorted(abstentions),
                 "agent_selected_provider": False,
                 "agent_qualified_method": False,
+                "research_adapter_descriptors": [
+                    {
+                        "candidate_id": row["candidate_id"],
+                        "adapter_reference": row["adapter_reference"],
+                        "adapter_descriptor_digest": row[
+                            "adapter_descriptor_digest"
+                        ],
+                        "production_route_eligible": False,
+                        "execution_authorized": False,
+                    }
+                    for row in descriptors
+                ],
+                "qualification_benchmark_specs": [
+                    {
+                        "benchmark_id": row["benchmark_id"],
+                        "benchmark_spec_digest": row["benchmark_spec_digest"],
+                        "r6_human_decision_required": True,
+                        "r7_catalog_admission_required": True,
+                    }
+                    for row in benchmark_specs
+                ],
+                "measurement_adapter_execution_receipts": [
+                    {
+                        "execution_id": row["receipt"]["execution_id"],
+                        "candidate_id": row["receipt"]["candidate_id"],
+                        "status": row["receipt"]["status"],
+                        "evidence_class": row["receipt"]["evidence_class"],
+                        "execution_receipt_digest": row["receipt"][
+                            "execution_receipt_digest"
+                        ],
+                        "production_route_eligible": False,
+                        "qualification_created": False,
+                        "agent_may_retry": False,
+                    }
+                    for row in execution_bundles
+                ],
+                "research_monitor_report": monitor_report,
+                "research_monitor_may_mutate_catalog": False,
+                "measurement_routing_decisions": [
+                    row.get("measurement_routing_decision")
+                    for row in _rows(plan.get("claim_plans"))
+                    if row.get("measurement_routing_decision") is not None
+                ],
             },
-            proposals=[proposal],
+            proposals=proposals,
             evidence_refs=[{"artifact": "evidence_plan", "digest": plan["plan_digest"]}],
         )
 
@@ -701,10 +931,15 @@ class DeterministicRuntimeFailureRecovery:
 class DeterministicScenarioAdversarialProposer:
     kind = CapabilityKind.SCENARIO_ADVERSARIAL_PROPOSER
     adapter_id = "deterministic_scenario_adversarial_proposer"
-    adapter_version = "1"
+    adapter_version = "2"
     instruction = (
         "Propose task-relevant adversarial scenarios before held-out evaluation. "
-        "Never access hidden labels, change frozen scenarios, or react to candidate ranking."
+        "Never access hidden labels, change frozen scenarios, or react to candidate "
+        "ranking. When measurement capability profiles are present, also draft frozen "
+        "qualification-benchmark preregistrations (splits, physical measurements, "
+        "metrics, thresholds, failure criteria) under the matching Q-protocols. You may "
+        "recommend a benchmark; you may never approve your own experiment, reveal "
+        "held-out labels or material parameters, or grade vendor-submitted results."
     )
 
     _SCENARIOS = {
@@ -745,34 +980,132 @@ class DeterministicScenarioAdversarialProposer:
                     "accepted_into_frozen_pack": False,
                 }
         scenarios = [proposed[key] for key in sorted(proposed)]
-        proposal = _proposal(
-            context=context,
-            capability=self.kind,
-            ordinal=0,
-            action_type="review_and_freeze_scenario_proposals",
-            reasons=["claim_relevant_variations_proposed_before_heldout"],
-            tool_id="propose_adversarial_scenarios",
-            parameters={
-                "request_digest": request["request_digest"],
-                "scenarios": scenarios,
-                "candidate_results_observed": False,
-            },
+        proposals = [
+            _proposal(
+                context=context,
+                capability=self.kind,
+                ordinal=0,
+                action_type="review_and_freeze_scenario_proposals",
+                reasons=["claim_relevant_variations_proposed_before_heldout"],
+                tool_id="propose_adversarial_scenarios",
+                parameters={
+                    "request_digest": request["request_digest"],
+                    "scenarios": scenarios,
+                    "candidate_results_observed": False,
+                },
+            )
+        ]
+        benchmark_drafts: list[dict[str, Any]] = []
+        measurement_profiles = [
+            dict(profile["measurement_capability_profile"])
+            for profile in context.method_profiles
+            if isinstance(profile, Mapping)
+            and isinstance(profile.get("measurement_capability_profile"), Mapping)
+        ]
+        research_descriptors = [
+            validate_measurement_adapter_descriptor(row)
+            for row in context.measurement_adapter_descriptors
+        ]
+        testbed_value = (
+            MaintainedSiteTaskTestbed.from_mapping(context.testbed).to_mapping()
+            if context.testbed is not None
+            else None
         )
+        if (measurement_profiles or research_descriptors) and testbed_value is not None:
+            # Qualification-design role: recommend a frozen benchmark; never
+            # approve it, never expose held-out labels or material parameters.
+            blueprints = qualification_benchmark_blueprints()
+            for claim in _rows(request.get("claims")):
+                claim_id = _string(claim.get("claim_id"))
+                try:
+                    requirements = derive_task_measurement_requirements(
+                        claim, testbed_value
+                    )
+                except (TypeError, ValueError):
+                    continue
+                task_class = _string(requirements.get("task_class"))
+                protocols = TASK_CLASS_QUALIFICATION_PROTOCOLS.get(task_class, ())
+                benchmark_drafts.append(
+                    {
+                        "draft_id": f"{context.run_id}-{claim_id}-preregistration",
+                        "claim_id": claim_id,
+                        "task_class": task_class,
+                        "qualification_protocols": list(protocols),
+                        "candidate_method_ids": sorted(
+                            {
+                                *(
+                                    _string(profile.get("method_id"))
+                                    for profile in measurement_profiles
+                                ),
+                                *(
+                                    _string(row.get("method_id"))
+                                    for row in research_descriptors
+                                ),
+                            }
+                        ),
+                        "matching_benchmark_blueprints": [
+                            blueprint["benchmark_id"]
+                            for blueprint in blueprints
+                            if set(blueprint["protocols"]) & set(protocols)
+                        ],
+                        "frozen_fields_required": [
+                            "task_site_classes", "development_split_hash",
+                            "qualification_split_hash", "robot_controller_digests",
+                            "capture_bundle_hashes", "metrics",
+                            "acceptance_thresholds", "comparison_methods",
+                            "compute_budget", "failure_criteria",
+                            "statistical_method", "claim_ceiling",
+                        ],
+                        "approval_required_roles": [
+                            "benchmark_owner", "independent_reviewer",
+                        ],
+                        "heldout_labels_exposed": False,
+                        "agent_may_approve": False,
+                        "research_descriptors_are_qualification": False,
+                    }
+                )
+            if benchmark_drafts:
+                proposals.append(
+                    _proposal(
+                        context=context,
+                        capability=self.kind,
+                        ordinal=1,
+                        action_type="draft_qualification_benchmark_preregistration",
+                        reasons=[
+                            f"qualification_benchmark_recommended:{draft['claim_id']}"
+                            for draft in benchmark_drafts
+                        ],
+                        parameters={
+                            "request_digest": request["request_digest"],
+                            "benchmark_drafts": benchmark_drafts,
+                            "vendor_self_grading_prohibited": True,
+                        },
+                    )
+                )
+        artifact = {
+            "schema_version": "scenario_proposal_set.v1",
+            "request_digest": request["request_digest"],
+            "scenarios": scenarios,
+            "generated_before_heldout": True,
+            "frozen": False,
+            "hidden_labels_accessed": False,
+            "candidate_results_observed": False,
+            "agent_may_freeze_scenarios": False,
+        }
+        if benchmark_drafts:
+            artifact.update(
+                {
+                    "qualification_benchmark_drafts": benchmark_drafts,
+                    "qualification_design_authoritative": False,
+                    "vendor_self_grading_prohibited": True,
+                }
+            )
         return _result(
             context=context,
             capability=self.kind,
             status="proposed",
-            artifact={
-                "schema_version": "scenario_proposal_set.v1",
-                "request_digest": request["request_digest"],
-                "scenarios": scenarios,
-                "generated_before_heldout": True,
-                "frozen": False,
-                "hidden_labels_accessed": False,
-                "candidate_results_observed": False,
-                "agent_may_freeze_scenarios": False,
-            },
-            proposals=[proposal],
+            artifact=artifact,
+            proposals=proposals,
         )
 
 

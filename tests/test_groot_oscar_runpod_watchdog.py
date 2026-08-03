@@ -6,6 +6,7 @@ import pytest
 
 from blueprint_pipeline import groot_oscar_runpod_watchdog as watchdog_module
 from blueprint_pipeline.groot_oscar_runpod_watchdog import (
+    arm_watchdog,
     run_watchdog,
     terminate_canary_resources,
 )
@@ -42,6 +43,22 @@ def test_watchdog_arms_reconstruction_prefix_with_executor_alias(tmp_path) -> No
     assert result["status"] == "armed"
     assert result["pod_name_prefix"] == "blueprint-reconstruction-"
     assert result["name_prefix"] == "blueprint-reconstruction-"
+    assert result["provider"] == "vast"
+
+
+def test_watchdog_arms_measurement_isaac_canary_prefix(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
+
+    result = arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix="blueprint-measurement-isaac-",
+        deadline_epoch=3_000.0,
+        pid=os.getpid(),
+        provider_name="vast",
+    )
+
+    assert result["status"] == "armed"
+    assert result["pod_name_prefix"] == "blueprint-measurement-isaac-"
     assert result["provider"] == "vast"
 
 

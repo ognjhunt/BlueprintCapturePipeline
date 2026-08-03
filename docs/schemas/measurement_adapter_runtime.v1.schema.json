@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-adapter-runtime.v1.schema.json",
+  "title": "Blueprint measurement adapter research-to-execution boundary",
+  "oneOf": [
+    {"$ref": "#/$defs/descriptor"},
+    {"$ref": "#/$defs/probe"},
+    {"$ref": "#/$defs/capabilityDraft"},
+    {"$ref": "#/$defs/admissionPacket"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "descriptor": {
+      "type": "object",
+      "required": ["schema_version", "adapter_id", "adapter_reference", "candidate_id", "candidate_digest", "method_id", "method_family", "target_version", "required_qualification_protocols", "benchmark_ids", "probe_contract", "execution_mode", "execution_contract", "access_required", "capability_semantics", "production_execution_authorized", "production_route_eligible", "physical_robot_execution_authorized", "agent_may_authorize", "adapter_descriptor_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_adapter_descriptor.v1"},
+        "candidate_digest": {"$ref": "#/$defs/digest"},
+        "execution_contract": {
+          "type": "object",
+          "required": ["request_schema_version", "worker_result_schema_version", "receipt_schema_version", "worker_arguments", "shell_allowed", "explicit_execution_gate_required", "local_runner_scope"],
+          "properties": {
+            "shell_allowed": {"const": false},
+            "explicit_execution_gate_required": {"const": true},
+            "local_runner_scope": {"const": "development_only"}
+          }
+        },
+        "production_execution_authorized": {"const": false},
+        "production_route_eligible": {"const": false},
+        "physical_robot_execution_authorized": {"const": false},
+        "agent_may_authorize": {"const": false},
+        "adapter_descriptor_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "probe": {
+      "type": "object",
+      "required": ["schema_version", "adapter_id", "adapter_descriptor_digest", "candidate_id", "host", "status", "probes", "observed_versions", "target_version", "target_version_observed", "package_imported", "process_launched", "credentials_inspected", "capabilities_established", "qualification_established", "production_route_eligible", "execution_authorized", "adapter_probe_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_adapter_probe.v1"},
+        "status": {"enum": ["available", "partial", "unavailable", "access_required", "manual_review"]},
+        "adapter_descriptor_digest": {"$ref": "#/$defs/digest"},
+        "package_imported": {"const": false},
+        "process_launched": {"const": false},
+        "credentials_inspected": {"const": false},
+        "capabilities_established": {"const": false},
+        "qualification_established": {"const": false},
+        "production_route_eligible": {"const": false},
+        "execution_authorized": {"const": false},
+        "adapter_probe_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "capabilityDraft": {
+      "type": "object",
+      "required": ["schema_version", "candidate_id", "method_id", "adapter_descriptor_digest", "adapter_probe_digest", "capabilities", "unknown_is_wildcard", "research_dossier_is_capability_evidence", "install_probe_is_qualification", "production_route_eligible", "agent_may_promote", "capability_draft_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_capability_draft.v1"},
+        "adapter_descriptor_digest": {"$ref": "#/$defs/digest"},
+        "adapter_probe_digest": {"$ref": "#/$defs/digest"},
+        "unknown_is_wildcard": {"const": false},
+        "research_dossier_is_capability_evidence": {"const": false},
+        "install_probe_is_qualification": {"const": false},
+        "production_route_eligible": {"const": false},
+        "agent_may_promote": {"const": false},
+        "capability_draft_digest": {"$ref": "#/$defs/digest"},
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["state", "evidence_refs", "independently_verified"],
+            "properties": {
+              "state": {"enum": ["supported", "unsupported", "unknown"]},
+              "evidence_refs": {"type": "array", "items": {"type": "string"}},
+              "independently_verified": {"type": "boolean"}
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "admissionPacket": {
+      "type": "object",
+      "required": ["schema_version", "candidate_id", "method_id", "adapter_descriptor_digest", "adapter_probe_digest", "capability_draft_digest", "source_snapshot_digest", "benchmark_ids", "required_qualification_protocols", "r1_source_verification_complete", "r2_rights_review_complete", "r3_adapter_feasibility_complete", "r4_benchmark_preregistered", "r5_independent_heldout_complete", "r6_human_decision_complete", "r7_catalog_admitted", "production_route_eligible", "execution_authorized", "adapter_admission_packet_digest"],
+      "properties": {
+        "schema_version": {"const": "measurement_adapter_admission_packet.v1"},
+        "adapter_descriptor_digest": {"$ref": "#/$defs/digest"},
+        "adapter_probe_digest": {"$ref": "#/$defs/digest"},
+        "capability_draft_digest": {"$ref": "#/$defs/digest"},
+        "source_snapshot_digest": {"$ref": "#/$defs/digest"},
+        "r1_source_verification_complete": {"const": false},
+        "r2_rights_review_complete": {"const": false},
+        "r3_adapter_feasibility_complete": {"const": false},
+        "r4_benchmark_preregistered": {"const": false},
+        "r5_independent_heldout_complete": {"const": false},
+        "r6_human_decision_complete": {"const": false},
+        "r7_catalog_admitted": {"const": false},
+        "production_route_eligible": {"const": false},
+        "execution_authorized": {"const": false},
+        "adapter_admission_packet_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

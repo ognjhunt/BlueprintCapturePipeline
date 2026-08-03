@@ -1,0 +1,10 @@
+# Bakeoff arm G2 — Splatfacto-MCMC. ISOLATED venv only, created by
+# scripts/setup_splatfacto_venv.sh g2; never the Blueprint runtime.
+#
+# The MCMC strategy (SplatfactoModelConfig.strategy = "mcmc", importing
+# gsplat.strategy.MCMCStrategy) exists only past the 1.1.5 PyPI release, so
+# this arm pins an exact nerfstudio main commit (verified 2026-08-02 to
+# expose the strategy field and still pin gsplat==1.4.0).
+# License review: docs/architecture/isolated-component-license-inventory.md.
+nerfstudio @ git+https://github.com/nerfstudio-project/nerfstudio.git@50e0e3c70c775e89333256213363badbf074f29d
+gsplat==1.4.0

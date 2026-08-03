@@ -921,10 +921,10 @@ def _http_json(
     timeout_seconds: int,
     method: str,
 ) -> tuple[int, Dict[str, Any]]:
-    body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    request = urllib.request.Request(
-        url,
-        data=body,
+    from .provider_transport import provider_json_request
+
+    return provider_json_request(
+        url=url,
         method=method,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -932,14 +932,9 @@ def _http_json(
             "Accept": "application/json",
             "User-Agent": LAMBDA_API_USER_AGENT,
         },
+        body_json=payload,
+        timeout_seconds=timeout_seconds,
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        status_code = int(getattr(response, "status", 200))
-        response_text = response.read().decode("utf-8", errors="replace")
-    if not response_text.strip():
-        return status_code, {}
-    parsed = json.loads(response_text)
-    return status_code, dict(parsed) if isinstance(parsed, Mapping) else {"response": parsed}
 
 
 def _lambda_instance_records(response: Mapping[str, Any]) -> list[dict[str, Any]]:

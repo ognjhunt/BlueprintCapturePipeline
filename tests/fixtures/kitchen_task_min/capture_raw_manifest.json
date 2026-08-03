@@ -1,0 +1,20 @@
+{
+  "schema_version": "capture_raw_manifest.v1",
+  "scene_id": "kitchen-task-min-fixture-site",
+  "capture_id": "kitchen-task-min-fixture-capture",
+  "capture_source": "repo_synthetic_fixture",
+  "capture_modality": "synthetic_manifest_fixture_no_real_capture",
+  "evidence_tier": "fixture_only",
+  "capture_capabilities": {
+    "walkthrough_video": false,
+    "rgb": false,
+    "camera_pose": false,
+    "intrinsics": false,
+    "depth": false
+  },
+  "proof_boundary": {
+    "synthetic_fixture_only": true,
+    "real_capture_upload_proven": false,
+    "public_claim_upgrade_allowed": false
+  }
+}

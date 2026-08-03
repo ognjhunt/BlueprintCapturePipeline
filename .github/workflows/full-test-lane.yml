@@ -85,7 +85,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           uv lock --check
-          uv sync --frozen --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation
+          uv sync --frozen --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
+            --extra sapien-development --extra exact-geometry-development
           uv pip install -e BlueprintContracts
 
       - name: Validate Python interpreter matrix
@@ -117,9 +118,13 @@ jobs:
           BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: planned
         run: |
           mkdir -p "${{ runner.temp }}/blueprint-ci"
+          # Exact Drake/Chrono/Isaac runtimes are separately provisioned by
+          # the measurement-research monitor (or a dedicated Isaac worker).
+          # Keep unavailable external runtimes out of this hermetic CPU lane
+          # instead of converting their honest absence into a skip blocker.
           uv run python -m pytest \
             -p blueprint_pipeline.pytest_full_lane_evidence \
-            -m "" --collect-only -q \
+            -m "not external_runtime" --collect-only -q \
             > "${{ runner.temp }}/blueprint-ci/full-test-lane-collection.txt"
 
       - name: Run full lane
@@ -130,7 +135,8 @@ jobs:
           set -euo pipefail
           uv run scripts/pytest_full.sh \
             -p blueprint_pipeline.pytest_full_lane_evidence \
-            --junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"
+            --junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml" \
+            -m "not external_runtime"
 
       - name: Verify exact full-lane collection
         if: always()

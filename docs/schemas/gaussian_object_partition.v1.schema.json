@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/gaussian-object-partition.v1.schema.json",
+  "title": "Blueprint Gaussian object selection and exact partition contracts",
+  "oneOf": [
+    {"$ref": "#/$defs/selection"},
+    {"$ref": "#/$defs/partition"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "transform": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "array", "minItems": 4, "maxItems": 4,
+        "items": {"type": "number"}
+      }
+    },
+    "selection": {
+      "type": "object",
+      "required": ["schema_version", "selection_id", "object_id", "source_splat_digest", "source_gaussian_count", "selected_gaussian_ids", "selected_gaussian_ids_digest", "method", "semantic_completeness_validated", "physics_authority_granted", "gaussian_object_selection_digest"],
+      "properties": {
+        "schema_version": {"const": "gaussian_object_selection.v1"},
+        "selection_id": {"type": "string", "minLength": 1},
+        "object_id": {"type": "string", "minLength": 1},
+        "source_splat_digest": {"$ref": "#/$defs/digest"},
+        "source_gaussian_count": {"type": "integer", "minimum": 2},
+        "selected_gaussian_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 0}
+        },
+        "selected_gaussian_ids_digest": {"$ref": "#/$defs/digest"},
+        "method": {
+          "type": "object",
+          "required": ["method_id", "method_version", "method_output_digest"],
+          "properties": {
+            "method_id": {"type": "string", "minLength": 1},
+            "method_version": {"type": "string", "minLength": 1},
+            "method_output_digest": {"$ref": "#/$defs/digest"}
+          },
+          "additionalProperties": true
+        },
+        "semantic_completeness_validated": {"const": false},
+        "physics_authority_granted": {"const": false},
+        "gaussian_object_selection_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "partition": {
+      "type": "object",
+      "required": ["schema_version", "partition_id", "object_id", "source", "artifacts", "counts", "partition", "object_frame", "background_completion", "semantic_completeness_validated", "physics_authority_granted", "gaussian_object_partition_digest"],
+      "properties": {
+        "schema_version": {"const": "gaussian_object_partition.v1"},
+        "partition_id": {"type": "string", "minLength": 1},
+        "object_id": {"type": "string", "minLength": 1},
+        "counts": {
+          "type": "object",
+          "required": ["source", "background", "object"],
+          "properties": {
+            "source": {"type": "integer", "minimum": 2},
+            "background": {"type": "integer", "minimum": 1},
+            "object": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        "partition": {
+          "type": "object",
+          "required": ["selected_gaussian_ids", "selected_gaussian_ids_digest", "selected_ids_unique", "background_object_disjoint", "source_exhaustive", "background_excludes_selected_object"],
+          "properties": {
+            "selected_gaussian_ids": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 0}
+            },
+            "selected_gaussian_ids_digest": {"$ref": "#/$defs/digest"},
+            "selected_ids_unique": {"const": true},
+            "background_object_disjoint": {"const": true},
+            "source_exhaustive": {"const": true},
+            "background_excludes_selected_object": {"const": true}
+          },
+          "additionalProperties": true
+        },
+        "object_frame": {
+          "type": "object",
+          "required": ["convention", "T_world_object_at_extraction"],
+          "properties": {
+            "convention": {"const": "world_aligned_translation_only_at_extraction.v1"},
+            "T_world_object_at_extraction": {"$ref": "#/$defs/transform"}
+          },
+          "additionalProperties": true
+        },
+        "semantic_completeness_validated": {"const": false},
+        "physics_authority_granted": {"const": false},
+        "gaussian_object_partition_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}
