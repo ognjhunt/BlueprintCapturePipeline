@@ -634,6 +634,200 @@ def _author_fixed_base_support_mount(stage, options: dict, *, Gf, UsdGeom, UsdPh
     return report
 
 
+def _author_bounded_floor_proxy(stage, options: dict, *, Gf, UsdGeom, UsdPhysics, Sdf):
+    """Author a disclosed local floor patch for a proxy-composed policy lane."""
+
+    raw = options.get("bounded_floor_proxy")
+    if raw is None:
+        return {"requested": False}
+    report = {"requested": True, "authored": False, "blockers": []}
+    if not isinstance(raw, dict):
+        report["blockers"] = ["bounded_floor_proxy_invalid"]
+        return report
+
+    def finite_vector(value, length):
+        return (
+            isinstance(value, list)
+            and len(value) == length
+            and all(
+                not isinstance(item, bool)
+                and isinstance(item, (int, float))
+                and math.isfinite(float(item))
+                for item in value
+            )
+        )
+
+    errors = []
+    path_text = str(raw.get("prim_path") or "")
+    path = Sdf.Path(path_text)
+    center = raw.get("center_xyz_collision_stage")
+    half_extents = raw.get("half_extents_xy_stage_units")
+    thickness = raw.get("thickness_stage_units")
+    top_z = raw.get("top_z_collision_stage")
+    if raw.get("schema_version") != "bounded_floor_proxy_candidate.v1":
+        errors.append("bounded_floor_proxy_schema_invalid")
+    if raw.get("status") != "simulator_support_candidate_only_requires_qualification":
+        errors.append("bounded_floor_proxy_status_invalid")
+    if (
+        not path.IsAbsolutePath()
+        or not path.IsPrimPath()
+        or not path_text.startswith("/World/BlueprintDerivedSupport/")
+        or ".." in path_text.split("/")
+    ):
+        errors.append("bounded_floor_proxy_prim_path_invalid")
+    if not finite_vector(center, 3):
+        errors.append("bounded_floor_proxy_center_invalid")
+    if not finite_vector(half_extents, 2) or any(
+        float(value) <= 0.0 or float(value) > 5.0 for value in (half_extents or [])
+    ):
+        errors.append("bounded_floor_proxy_half_extents_invalid")
+    if (
+        isinstance(thickness, bool)
+        or not isinstance(thickness, (int, float))
+        or not 0.01 <= float(thickness) <= 0.5
+    ):
+        errors.append("bounded_floor_proxy_thickness_invalid")
+    if (
+        isinstance(top_z, bool)
+        or not isinstance(top_z, (int, float))
+        or not math.isfinite(float(top_z))
+    ):
+        errors.append("bounded_floor_proxy_top_z_invalid")
+    if (
+        finite_vector(center, 3)
+        and isinstance(thickness, (int, float))
+        and not isinstance(thickness, bool)
+    ):
+        expected_top = float(center[2]) + 0.5 * float(thickness)
+        if not isinstance(top_z, (int, float)) or abs(expected_top - float(top_z)) > 1e-5:
+            errors.append("bounded_floor_proxy_top_z_mismatch")
+    if raw.get("bounded_to_robot_support_zone") is not True:
+        errors.append("bounded_floor_proxy_unbounded")
+    if raw.get("exclude_from_source_collider_physics_probe") is not True:
+        errors.append("bounded_floor_proxy_probe_exclusion_required")
+    if raw.get("physical_floor_continuity_qualified") is not False:
+        errors.append("bounded_floor_proxy_physical_claim_forbidden")
+    if errors:
+        report["blockers"] = sorted(set(errors))
+        return report
+
+    parent = path.GetParentPath()
+    if parent and parent != Sdf.Path.absoluteRootPath:
+        UsdGeom.Xform.Define(stage, parent)
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(2.0)
+    cube.CreateDisplayColorAttr([(0.12, 0.14, 0.18)])
+    cube.CreateDisplayOpacityAttr([0.0])
+    xformable = UsdGeom.Xformable(cube.GetPrim())
+    xformable.ClearXformOpOrder()
+    xformable.AddTranslateOp().Set(Gf.Vec3d(*[float(value) for value in center]))
+    xformable.AddScaleOp().Set(
+        Gf.Vec3d(
+            float(half_extents[0]),
+            float(half_extents[1]),
+            0.5 * float(thickness),
+        )
+    )
+    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    report.update(
+        authored=True,
+        blockers=[],
+        prim_path=path_text,
+        center_xyz_collision_stage=[round(float(value), 9) for value in center],
+        half_extents_xyz_stage_units=[
+            round(float(half_extents[0]), 9),
+            round(float(half_extents[1]), 9),
+            round(0.5 * float(thickness), 9),
+        ],
+        top_z_collision_stage=round(float(top_z), 9),
+        static_collision_authored=True,
+        source_package_modified=False,
+        source_collider_contact_qualification_effect="none",
+        physical_floor_continuity_qualified=False,
+        claim_boundary=(
+            "Derived bounded Isaac floor support only; not captured-floor continuity, "
+            "metric-scale, levelness, load-capacity, or physical-site evidence."
+        ),
+    )
+    return report
+
+
+def _configure_proxy_composed_policy_lane(
+    stage, options: dict, floor_proxy_report: dict, *, Sdf
+) -> dict:
+    """Disable a conflicting source collider only for the disclosed policy lane."""
+
+    raw = options.get("proxy_composed_evaluation_plan")
+    if raw is None:
+        return {"requested": False}
+    report = {"requested": True, "configured": False, "blockers": []}
+    if not isinstance(raw, dict):
+        report["blockers"] = ["proxy_composed_evaluation_plan_invalid"]
+        return report
+    if raw.get("status") != "required_before_policy_evaluation":
+        return {"requested": False, "status": raw.get("status")}
+    errors = []
+    source_path = str(raw.get("source_collision_prim_path") or "")
+    if raw.get("schema_version") != "external_scene_proxy_composed_evaluation_plan.v1":
+        errors.append("proxy_composed_evaluation_plan_schema_invalid")
+    if source_path != "/World/BlueprintReconstruction/Collision/ExternalSceneMesh":
+        errors.append("proxy_composed_evaluation_source_path_invalid")
+    if raw.get("source_collision_enabled_in_policy_lane") is not False:
+        errors.append("proxy_composed_evaluation_source_collision_enabled")
+    if raw.get("source_collision_qualification_preserved_separately") is not True:
+        errors.append("proxy_composed_evaluation_source_qualification_missing")
+    if raw.get("bounded_floor_proxy_required") is not True:
+        errors.append("proxy_composed_evaluation_floor_proxy_required")
+    if not floor_proxy_report.get("authored"):
+        errors.append("proxy_composed_evaluation_floor_proxy_unavailable")
+    source_prim = stage.GetPrimAtPath(Sdf.Path(source_path)) if source_path else None
+    if not source_prim or not source_prim.IsValid() or not source_prim.IsActive():
+        errors.append("proxy_composed_evaluation_source_collision_prim_unavailable")
+    if errors:
+        report["blockers"] = sorted(set(errors))
+        return report
+    source_prim.SetActive(False)
+    report.update(
+        configured=True,
+        blockers=[],
+        source_collision_prim_path=source_path,
+        source_collision_deactivated_for_policy_lane=True,
+        source_collision_qualification_preserved_separately=True,
+        policy_result_claim_ceiling="exact_proxy_composed_simulation_only",
+        physical_site_claim_effect="none",
+    )
+    return report
+
+
+def _restore_source_collision_after_proxy_policy_lane(stage, proxy_report: dict, *, Sdf) -> None:
+    path = str(proxy_report.get("source_collision_prim_path") or "")
+    if not proxy_report.get("configured") or not path:
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(path))
+    if prim and prim.IsValid():
+        prim.SetActive(True)
+        proxy_report["source_collision_restored_for_independent_probe"] = True
+
+
+def _exclude_floor_proxy_from_environment_physics_probe(
+    stage, floor_proxy_report: dict, *, Sdf
+) -> None:
+    path = str(floor_proxy_report.get("prim_path") or "")
+    if not floor_proxy_report.get("authored") or not path:
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(path))
+    if not prim or not prim.IsValid():
+        floor_proxy_report["excluded_from_environment_physics_probe"] = False
+        return
+    prim.SetActive(False)
+    floor_proxy_report.update(
+        excluded_from_environment_physics_probe=True,
+        physics_probe_claim_boundary=(
+            "derived_floor_proxy_excluded_so_probe_measures_source_environment_collision_only"
+        ),
+    )
+
+
 def _ensure_robot_only_lights(stage, lights_path: str, *, Sdf, UsdGeom, UsdLux):
     """Return a hidden light rig for the robot evidence renders.
 
@@ -2057,8 +2251,38 @@ def _render(args) -> int:
                 "runner_fixed_base_support_mount_authored",
                 fixed_base_support_mount=support_mount_report,
             )
+        floor_proxy_report = _author_bounded_floor_proxy(
+            stage,
+            render_options,
+            Gf=Gf,
+            UsdGeom=UsdGeom,
+            UsdPhysics=UsdPhysics,
+            Sdf=Sdf,
+        )
+        if floor_proxy_report.get("requested"):
+            _phase(
+                result_path,
+                base,
+                "runner_bounded_floor_proxy_authored",
+                bounded_floor_proxy=floor_proxy_report,
+            )
+        proxy_composition_report = _configure_proxy_composed_policy_lane(
+            stage,
+            render_options,
+            floor_proxy_report,
+            Sdf=Sdf,
+        )
+        if proxy_composition_report.get("requested"):
+            _phase(
+                result_path,
+                base,
+                "runner_proxy_composed_policy_lane_configured",
+                proxy_composed_evaluation=proxy_composition_report,
+            )
         robot_report = _composite_robot(stage, render_options, Gf=Gf, UsdGeom=UsdGeom, Sdf=Sdf)
         robot_report["fixed_base_support_mount"] = support_mount_report
+        robot_report["bounded_floor_proxy"] = floor_proxy_report
+        robot_report["proxy_composed_evaluation"] = proxy_composition_report
         robot_lights_prim = None
         if robot_report.get("requested"):
             _phase(result_path, base, "runner_robot_composited", robot=robot_report)
@@ -2382,6 +2606,11 @@ def _render(args) -> int:
         physics_probe = {}
         blockers = []
         if qualification_mode:
+            _restore_source_collision_after_proxy_policy_lane(
+                stage,
+                proxy_composition_report,
+                Sdf=Sdf,
+            )
             _exclude_robot_from_environment_physics_probe(
                 stage,
                 robot_report,
@@ -2390,6 +2619,11 @@ def _render(args) -> int:
             _exclude_support_mount_from_environment_physics_probe(
                 stage,
                 support_mount_report,
+                Sdf=Sdf,
+            )
+            _exclude_floor_proxy_from_environment_physics_probe(
+                stage,
+                floor_proxy_report,
                 Sdf=Sdf,
             )
             physics_probe = _run_qualification_physics_probe(
@@ -2416,6 +2650,12 @@ def _render(args) -> int:
                 blockers.append("isaac_articulated_policy_trace_pair_incomplete")
             if support_mount_report.get("requested") and not support_mount_report.get("authored"):
                 blockers.append("isaac_fixed_base_support_mount_incomplete")
+            if floor_proxy_report.get("requested") and not floor_proxy_report.get("authored"):
+                blockers.append("isaac_bounded_floor_proxy_incomplete")
+            if proxy_composition_report.get("requested") and not proxy_composition_report.get(
+                "configured"
+            ):
+                blockers.append("isaac_proxy_composed_policy_lane_incomplete")
             blockers = sorted(set(blockers))
             ok = not blockers
         else:
@@ -2438,6 +2678,8 @@ def _render(args) -> int:
             "mp4": mp4,
             "robot": robot_report,
             "fixed_base_support_mount": support_mount_report,
+            "bounded_floor_proxy": floor_proxy_report,
+            "proxy_composed_evaluation": proxy_composition_report,
             "articulated_policy_trace_pair": policy_trace_result,
             "blockers": blockers,
             "cost_usd": 0.0,
@@ -2446,6 +2688,10 @@ def _render(args) -> int:
                 "captured_scene_displayed_in_isaac_rtx": bool(visual_ok),
                 "robot_visual_composited_at_stance": bool(robot_report.get("composited")),
                 "derived_static_support_mount_authored": bool(support_mount_report.get("authored")),
+                "derived_bounded_floor_proxy_authored": bool(floor_proxy_report.get("authored")),
+                "source_collision_disabled_for_proxy_policy_lane": bool(
+                    proxy_composition_report.get("source_collision_deactivated_for_policy_lane")
+                ),
                 "articulated_policy_execution_observed": bool(
                     policy_trace_result.get("status") == "completed"
                 ),

@@ -873,6 +873,9 @@ def propose_external_scene_robot_placement(
             ),
             "appearance_source": "immutable_full_resolution_splat",
             "source_collision_qualification_preserved_separately": True,
+            "source_collision_prim_path": (
+                "/World/BlueprintReconstruction/Collision/ExternalSceneMesh"
+            ),
             "source_collision_enabled_in_policy_lane": not source_collision_exclusion_required,
             "bounded_floor_proxy_required": bool(floor_proxy is not None),
             "task_zone_simready_asset_required": bool(
