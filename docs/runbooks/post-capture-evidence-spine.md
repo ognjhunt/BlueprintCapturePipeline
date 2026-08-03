@@ -47,7 +47,7 @@ smallest missing measurement: native_3dgs_appearance_missing
 
 That is an expected exit status of `2`, not a command failure. The retained
 content-addressed result is under
-`docs/evidence/arkitscenes_40958756_post_capture_a42a9edf/`. It binds the six
+`docs/evidence/arkitscenes_40958756_post_capture_2f8e5921/`. It binds the six
 real source files (including `40958756.mov`) and explicitly remains
 provider-derived public-dataset support, never Blueprint Raw Contract V3.2 or
 fixture R7 evidence.
