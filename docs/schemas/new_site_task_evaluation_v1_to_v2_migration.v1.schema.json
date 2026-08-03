@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/new_site_task_evaluation_v1_to_v2_migration.v1.schema.json",
+  "title": "Explicit v1 single-reset to v2 legacy scenario projection",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_request_digest",
+    "source_run_digest",
+    "status",
+    "scenario_pack",
+    "claim_boundary",
+    "migration_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "new_site_task_evaluation_v1_to_v2_migration.v1"},
+    "source_request_digest": {"$ref": "#/$defs/digest"},
+    "source_run_digest": {"$ref": "#/$defs/digest"},
+    "status": {"const": "projected_without_claim_upgrade"},
+    "scenario_pack": {"type": "object"},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["multi_scenario_evidence_created", "v1_source_preserved", "ranking_claim_upgraded"],
+      "properties": {
+        "multi_scenario_evidence_created": {"const": false},
+        "v1_source_preserved": {"const": true},
+        "ranking_claim_upgraded": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "migration_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

@@ -1,0 +1,596 @@
+{
+  "aggregation_rule_digest": "sha256:19dc067224b44cbdc5a0bb423d94bc05ef65487a151657e80ab5d4253b9d99e5",
+  "blockers": [],
+  "candidate_summaries": [
+    {
+      "aggregate_does_not_hide_catastrophic_failures": true,
+      "aggregate_score": 1.0999999999999999,
+      "attempt_coverage": 1.0,
+      "candidate_id": "policy-1",
+      "catastrophic_cell_ids": [],
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "observed_attempt_count": 3,
+      "paired_metric_count": 3,
+      "paired_scenario_coverage": 1.0,
+      "policy_identity_digest": "sha256:32943cd4973133d005d51746d3b106b4cc397847385767f890d834004e20e71c",
+      "supported_metric_count": 3,
+      "supported_metric_coverage": 1.0,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 1.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 1.2
+      },
+      "unsupported_metrics": []
+    },
+    {
+      "aggregate_does_not_hide_catastrophic_failures": true,
+      "aggregate_score": 2.1,
+      "attempt_coverage": 1.0,
+      "candidate_id": "policy-2",
+      "catastrophic_cell_ids": [],
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "observed_attempt_count": 3,
+      "paired_metric_count": 3,
+      "paired_scenario_coverage": 1.0,
+      "policy_identity_digest": "sha256:92982cd3e7f403317b2cd7462bc2b986fef5da4f98cb5cc989bb2b50279596e2",
+      "supported_metric_count": 3,
+      "supported_metric_coverage": 1.0,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 2.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 2.2
+      },
+      "unsupported_metrics": []
+    },
+    {
+      "aggregate_does_not_hide_catastrophic_failures": true,
+      "aggregate_score": 3.1,
+      "attempt_coverage": 1.0,
+      "candidate_id": "policy-3",
+      "catastrophic_cell_ids": [],
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "observed_attempt_count": 3,
+      "paired_metric_count": 3,
+      "paired_scenario_coverage": 1.0,
+      "policy_identity_digest": "sha256:a9c0b18260c636a347279c6dfdcc3b8c63a15d3861c93df2ce4a90010c443620",
+      "supported_metric_count": 3,
+      "supported_metric_coverage": 1.0,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 3.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 3.2000000000000006
+      },
+      "unsupported_metrics": []
+    },
+    {
+      "aggregate_does_not_hide_catastrophic_failures": true,
+      "aggregate_score": 4.1000000000000005,
+      "attempt_coverage": 1.0,
+      "candidate_id": "policy-4",
+      "catastrophic_cell_ids": [],
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "observed_attempt_count": 3,
+      "paired_metric_count": 3,
+      "paired_scenario_coverage": 1.0,
+      "policy_identity_digest": "sha256:b250ad13c38c1c4c3f86be5e809ea71f37c54cc6b54292152cfcdff141627f45",
+      "supported_metric_count": 3,
+      "supported_metric_coverage": 1.0,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 4.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 4.2
+      },
+      "unsupported_metrics": []
+    },
+    {
+      "aggregate_does_not_hide_catastrophic_failures": true,
+      "aggregate_score": 5.1000000000000005,
+      "attempt_coverage": 1.0,
+      "candidate_id": "policy-5",
+      "catastrophic_cell_ids": [],
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "observed_attempt_count": 3,
+      "paired_metric_count": 3,
+      "paired_scenario_coverage": 1.0,
+      "policy_identity_digest": "sha256:89f8f99fac2b9b5a0b3d55d50adb4bb341293e4b1d889cf94b25f8ad47d1a243",
+      "supported_metric_count": 3,
+      "supported_metric_coverage": 1.0,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 5.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 5.2
+      },
+      "unsupported_metrics": []
+    }
+  ],
+  "cell_results": [
+    {
+      "attempt_digest": "sha256:17405cc536e21341c298d588e53b122932fd53c801fca312ffa4f27a1ab1e915",
+      "blockers": [],
+      "candidate_id": "policy-1",
+      "cell_abstention": null,
+      "cell_id": "policy-1::nominal",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 1.0,
+      "policy_identity_digest": "sha256:32943cd4973133d005d51746d3b106b4cc397847385767f890d834004e20e71c",
+      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_id": "nominal"
+    },
+    {
+      "attempt_digest": "sha256:303706d22c4bce7ff0d97d1e90bfb7c7fcaff238f3d6b6086c4c645b9d1a9986",
+      "blockers": [],
+      "candidate_id": "policy-2",
+      "cell_abstention": null,
+      "cell_id": "policy-2::nominal",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 2.0,
+      "policy_identity_digest": "sha256:92982cd3e7f403317b2cd7462bc2b986fef5da4f98cb5cc989bb2b50279596e2",
+      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_id": "nominal"
+    },
+    {
+      "attempt_digest": "sha256:f50708d6b8d8f1bdfa18bdc66570857146a95b73b57f392d604b275b6b6623f2",
+      "blockers": [],
+      "candidate_id": "policy-3",
+      "cell_abstention": null,
+      "cell_id": "policy-3::nominal",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 3.0,
+      "policy_identity_digest": "sha256:a9c0b18260c636a347279c6dfdcc3b8c63a15d3861c93df2ce4a90010c443620",
+      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_id": "nominal"
+    },
+    {
+      "attempt_digest": "sha256:86e4ae0b7d455016966f4ca32a019162346b661620d3f57984b5e04900c797da",
+      "blockers": [],
+      "candidate_id": "policy-4",
+      "cell_abstention": null,
+      "cell_id": "policy-4::nominal",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 4.0,
+      "policy_identity_digest": "sha256:b250ad13c38c1c4c3f86be5e809ea71f37c54cc6b54292152cfcdff141627f45",
+      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_id": "nominal"
+    },
+    {
+      "attempt_digest": "sha256:be772a5bd2383a159805e39a90db0d7da45cfbb646e9fe7e6be1f9b4448125b9",
+      "blockers": [],
+      "candidate_id": "policy-5",
+      "cell_abstention": null,
+      "cell_id": "policy-5::nominal",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 5.0,
+      "policy_identity_digest": "sha256:89f8f99fac2b9b5a0b3d55d50adb4bb341293e4b1d889cf94b25f8ad47d1a243",
+      "scenario_digest": "sha256:ae6eae90171d89be37ca95bab6f9fae5053103e8e4ceda061cc9ad74a80ab479",
+      "scenario_id": "nominal"
+    },
+    {
+      "attempt_digest": "sha256:7d4756776b2cc59b05e9f3ec2fcf31533e0039b0b2a7ba48e6cf505dad8215b8",
+      "blockers": [],
+      "candidate_id": "policy-1",
+      "cell_abstention": null,
+      "cell_id": "policy-1::camera-offset",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 1.1,
+      "policy_identity_digest": "sha256:32943cd4973133d005d51746d3b106b4cc397847385767f890d834004e20e71c",
+      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_id": "camera-offset"
+    },
+    {
+      "attempt_digest": "sha256:030a06a924a277612b9cd80aaef0b334b6c7f2fc88e94563219743794c6448d1",
+      "blockers": [],
+      "candidate_id": "policy-2",
+      "cell_abstention": null,
+      "cell_id": "policy-2::camera-offset",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 2.1,
+      "policy_identity_digest": "sha256:92982cd3e7f403317b2cd7462bc2b986fef5da4f98cb5cc989bb2b50279596e2",
+      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_id": "camera-offset"
+    },
+    {
+      "attempt_digest": "sha256:2b4e681c99b1c6818ca42e358386cfcbfd6ca20afa5d8f7cfc265f279e938fe3",
+      "blockers": [],
+      "candidate_id": "policy-3",
+      "cell_abstention": null,
+      "cell_id": "policy-3::camera-offset",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 3.1,
+      "policy_identity_digest": "sha256:a9c0b18260c636a347279c6dfdcc3b8c63a15d3861c93df2ce4a90010c443620",
+      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_id": "camera-offset"
+    },
+    {
+      "attempt_digest": "sha256:925c2b0c7a612693644804dd779ed5e5777eccac48d081d88f723387522a375b",
+      "blockers": [],
+      "candidate_id": "policy-4",
+      "cell_abstention": null,
+      "cell_id": "policy-4::camera-offset",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 4.1,
+      "policy_identity_digest": "sha256:b250ad13c38c1c4c3f86be5e809ea71f37c54cc6b54292152cfcdff141627f45",
+      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_id": "camera-offset"
+    },
+    {
+      "attempt_digest": "sha256:95d96e77862044e76333498a0f54d7455853c49006be54caaa518b5fd6bfb092",
+      "blockers": [],
+      "candidate_id": "policy-5",
+      "cell_abstention": null,
+      "cell_id": "policy-5::camera-offset",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 5.1,
+      "policy_identity_digest": "sha256:89f8f99fac2b9b5a0b3d55d50adb4bb341293e4b1d889cf94b25f8ad47d1a243",
+      "scenario_digest": "sha256:a1031810729fb8ead274af4af72de12ed62877bb56d6d67fb32eaa5854a6a67a",
+      "scenario_id": "camera-offset"
+    },
+    {
+      "attempt_digest": "sha256:2e2610e171402d94f07e68c565c8ae76fba9c4be94c29d9fb2ab4b431f0273ac",
+      "blockers": [],
+      "candidate_id": "policy-1",
+      "cell_abstention": null,
+      "cell_id": "policy-1::bounded-occlusion",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 1.2,
+      "policy_identity_digest": "sha256:32943cd4973133d005d51746d3b106b4cc397847385767f890d834004e20e71c",
+      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_id": "bounded-occlusion"
+    },
+    {
+      "attempt_digest": "sha256:87c517c9726c7bc53652217b4741c20befa33bc9fa7efca6c960f803f869cce5",
+      "blockers": [],
+      "candidate_id": "policy-2",
+      "cell_abstention": null,
+      "cell_id": "policy-2::bounded-occlusion",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 2.2,
+      "policy_identity_digest": "sha256:92982cd3e7f403317b2cd7462bc2b986fef5da4f98cb5cc989bb2b50279596e2",
+      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_id": "bounded-occlusion"
+    },
+    {
+      "attempt_digest": "sha256:16e7c2c1e4f78a23c5aff6bb741ae4669df9219b3135d4d778adeeb09d61dca4",
+      "blockers": [],
+      "candidate_id": "policy-3",
+      "cell_abstention": null,
+      "cell_id": "policy-3::bounded-occlusion",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 3.2,
+      "policy_identity_digest": "sha256:a9c0b18260c636a347279c6dfdcc3b8c63a15d3861c93df2ce4a90010c443620",
+      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_id": "bounded-occlusion"
+    },
+    {
+      "attempt_digest": "sha256:c163cbf3ef5ae01f2d15e6ae53ee69a7a57b26d7af7f2d46fe2478f1b1065e31",
+      "blockers": [],
+      "candidate_id": "policy-4",
+      "cell_abstention": null,
+      "cell_id": "policy-4::bounded-occlusion",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 4.2,
+      "policy_identity_digest": "sha256:b250ad13c38c1c4c3f86be5e809ea71f37c54cc6b54292152cfcdff141627f45",
+      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_id": "bounded-occlusion"
+    },
+    {
+      "attempt_digest": "sha256:f838707aa6df253ca4d2db3b50e37a0ff40e05a8bb5c0530caeebc924d548607",
+      "blockers": [],
+      "candidate_id": "policy-5",
+      "cell_abstention": null,
+      "cell_id": "policy-5::bounded-occlusion",
+      "cell_status": "completed",
+      "metric_supported": true,
+      "metric_value": 5.2,
+      "policy_identity_digest": "sha256:89f8f99fac2b9b5a0b3d55d50adb4bb341293e4b1d889cf94b25f8ad47d1a243",
+      "scenario_digest": "sha256:295bc5b326e7da30d5083aed3aebbc25a80fbed14b405d0c08000536f7de300a",
+      "scenario_id": "bounded-occlusion"
+    }
+  ],
+  "claim_boundary": {
+    "aggregate_hides_catastrophic_failures": false,
+    "deployment_readiness_proven": false,
+    "learned_policy_attempts_observed": true,
+    "learned_policy_scenario_ranking_proven": true,
+    "physical_success_proven": false,
+    "scenario_generation_authorized_new_claims": false,
+    "scripted_controller_matrix_is_learned_policy_matrix": false,
+    "task_evaluation_run_completed": true
+  },
+  "excluded_scenarios": [],
+  "execution_packet_digest": "sha256:0bb8023e18727408aadebc0406417e42d247028c7414bd361aa7a14535f1869d",
+  "expected_cell_count": 15,
+  "matrix_evidence_type": "learned_policy_scenario_matrix",
+  "observed_attempt_count": 15,
+  "paired_scenario_count": 3,
+  "paired_scenario_ids": [
+    "nominal",
+    "camera-offset",
+    "bounded-occlusion"
+  ],
+  "placement_digest": "sha256:965c3a5b06ad650e29d3f4b07387445c777c3d00abe8a4369ee4388b69471277",
+  "policy_count": 5,
+  "ranking": [
+    {
+      "aggregate_score": 5.1000000000000005,
+      "candidate_id": "policy-5",
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "paired_scenario_count": 3,
+      "policy_identity_digest": "sha256:89f8f99fac2b9b5a0b3d55d50adb4bb341293e4b1d889cf94b25f8ad47d1a243",
+      "rank": 1,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 5.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 5.2
+      }
+    },
+    {
+      "aggregate_score": 4.1000000000000005,
+      "candidate_id": "policy-4",
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "paired_scenario_count": 3,
+      "policy_identity_digest": "sha256:b250ad13c38c1c4c3f86be5e809ea71f37c54cc6b54292152cfcdff141627f45",
+      "rank": 2,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 4.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 4.2
+      }
+    },
+    {
+      "aggregate_score": 3.1,
+      "candidate_id": "policy-3",
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "paired_scenario_count": 3,
+      "policy_identity_digest": "sha256:a9c0b18260c636a347279c6dfdcc3b8c63a15d3861c93df2ce4a90010c443620",
+      "rank": 3,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 3.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 3.2000000000000006
+      }
+    },
+    {
+      "aggregate_score": 2.1,
+      "candidate_id": "policy-2",
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "paired_scenario_count": 3,
+      "policy_identity_digest": "sha256:92982cd3e7f403317b2cd7462bc2b986fef5da4f98cb5cc989bb2b50279596e2",
+      "rank": 4,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 2.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 2.2
+      }
+    },
+    {
+      "aggregate_score": 1.0999999999999999,
+      "candidate_id": "policy-1",
+      "catastrophic_failure_count": 0,
+      "eligible_for_winner": true,
+      "paired_scenario_count": 3,
+      "policy_identity_digest": "sha256:32943cd4973133d005d51746d3b106b4cc397847385767f890d834004e20e71c",
+      "rank": 5,
+      "uncertainty": {
+        "bootstrap_replicates": 200,
+        "bootstrap_seed": 1729,
+        "confidence_level": 0.95,
+        "lower": 1.0,
+        "method": "deterministic_paired_bootstrap_percentile_95",
+        "upper": 1.2
+      }
+    }
+  ],
+  "reconstruction_digest": "sha256:a775c44d458fb031d20166270e1cace0449c69bce8970a52fe986eb3bdf7335c",
+  "request_digest": "sha256:f93f3900c042fee6494642a82199f373cc0aeb173d5b176617f51c2627412055",
+  "robot_id": "franka_panda",
+  "routing_decision": {
+    "abstention": null,
+    "agent_qualified_method": false,
+    "agent_selected_route": false,
+    "candidates_considered": [
+      {
+        "capability_profile_digest": "sha256:54796a5d3bf6d41ee8fc1ae6d34298e84f59a44fda6c0cb7a351157050c09101",
+        "claim_ceiling": "C3",
+        "covered_capabilities": [
+          "contact_compliance_supported",
+          "continuous_collision_supported",
+          "dynamic_collision_supported",
+          "dynamic_friction_supported",
+          "metric_scale_supported",
+          "static_friction_supported"
+        ],
+        "eligible": true,
+        "expected_cost_usd": 0.1,
+        "expected_latency_seconds": 1.0,
+        "method_family": "traditional_simulation",
+        "method_id": "qualified-isaac-stack",
+        "qualification_digest": "sha256:989888c4d998f022f22ca9626d9c21dbb19b1cbabfce1cc9d448e18452853b6b",
+        "qualification_id": "q-qualified-isaac-stack",
+        "rank": [
+          0.02,
+          0.02,
+          0.0,
+          0.001,
+          -1.0,
+          -1.0,
+          1.0,
+          0.1
+        ],
+        "rejection_codes": [],
+        "residual_uncertainty": 0.02
+      },
+      {
+        "capability_profile_digest": "sha256:d1f8ddf659ee26f93670645571b23cc7c615d6b6692775248aaf8d410f942d43",
+        "claim_ceiling": "C3",
+        "covered_capabilities": [
+          "contact_compliance_supported",
+          "continuous_collision_supported",
+          "dynamic_collision_supported",
+          "dynamic_friction_supported",
+          "metric_scale_supported",
+          "static_friction_supported"
+        ],
+        "eligible": true,
+        "expected_cost_usd": 0.1,
+        "expected_latency_seconds": 1.0,
+        "method_family": "traditional_simulation",
+        "method_id": "qualified-mujoco-stack",
+        "qualification_digest": "sha256:d06f6f34eb7cca4532c68ee5cd6072552ffcd5e44eac61b4e20ee5054d60bc5a",
+        "qualification_id": "q-qualified-mujoco-stack",
+        "rank": [
+          0.01,
+          0.01,
+          0.0,
+          0.001,
+          -1.0,
+          -1.0,
+          1.0,
+          0.1
+        ],
+        "rejection_codes": [],
+        "residual_uncertainty": 0.01
+      }
+    ],
+    "catalog_snapshot_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "claim_boundary": {
+      "deployment_readiness_established": false,
+      "permitted_claim": "C3",
+      "physical_success_established": false,
+      "prohibited_claims": [
+        "C4",
+        "C5",
+        "C6",
+        "C7",
+        "C8"
+      ],
+      "safety_certification_established": false
+    },
+    "decision_explanation": "deterministic policy task_site_measurement_policy.2026-08-02 selected 1 qualified stage(s) covering 6 required capability field(s) and 0 alternative group(s) for claim C3 at site new-site-fixture-v1; execution remains unauthorized",
+    "deterministic_policy_signature": "sha256:259156249ca45f0aff1f1a1e8cee2b9dcfde32ada8fbf833ac90a1c46bad0231",
+    "evidence_package": {
+      "bundle_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "bundle_id": "capture-fixture",
+      "evidence_record_ids": [
+        "evidence-friction_contact",
+        "evidence-mass_inertia",
+        "evidence-material_parameters",
+        "evidence-metric_scale",
+        "evidence-robot_site_registration",
+        "evidence-validated_collider"
+      ],
+      "site_evidence_profile_id": "new-site-fixture-v1"
+    },
+    "execution_authorized": false,
+    "policy_version": "task_site_measurement_policy.2026-08-02",
+    "projected_cost_usd": 0.1,
+    "projected_latency_seconds": 1.0,
+    "request_id": "new-site-task-outcome",
+    "requirements_digest": "sha256:2290857405e2390ed9e18487addc37380afbc7c502b6f75624db5cebe773be9b",
+    "route_claim_ceiling": "C3",
+    "routing_decision_digest": "sha256:aee800c8169cf27ed0a2de7713ab86b6c2b445903b6cb219627d6a479fe9b699",
+    "routing_id": "new-site-task-outcome-measurement-route",
+    "schema_version": "task_site_measurement_routing_decision.v1",
+    "selected_route": {
+      "stages": [
+        {
+          "capability_profile_digest": "sha256:d1f8ddf659ee26f93670645571b23cc7c615d6b6692775248aaf8d410f942d43",
+          "covered_capabilities": [
+            "contact_compliance_supported",
+            "continuous_collision_supported",
+            "dynamic_collision_supported",
+            "dynamic_friction_supported",
+            "metric_scale_supported",
+            "static_friction_supported"
+          ],
+          "input_site_evidence_record_ids": [
+            "evidence-friction_contact",
+            "evidence-mass_inertia",
+            "evidence-material_parameters",
+            "evidence-metric_scale",
+            "evidence-robot_site_registration",
+            "evidence-validated_collider"
+          ],
+          "method_family": "traditional_simulation",
+          "method_id": "qualified-mujoco-stack",
+          "permitted_metrics": [],
+          "purpose": "measure:contact_compliance_supported,continuous_collision_supported,dynamic_collision_supported,dynamic_friction_supported,metric_scale_supported,static_friction_supported",
+          "qualification_digest": "sha256:d06f6f34eb7cca4532c68ee5cd6072552ffcd5e44eac61b4e20ee5054d60bc5a",
+          "qualification_id": "q-qualified-mujoco-stack",
+          "residual_uncertainty": 0.01,
+          "stage_index": 0
+        }
+      ],
+      "type": "single_method"
+    },
+    "site_evidence_digest": "sha256:71723d1b5ad2f8a42f2ba357e9baff7234f707a151e821ffa6901a2bf1b80518",
+    "site_evidence_profile_id": "new-site-fixture-v1",
+    "status": "route_selected",
+    "taxonomy_version": "2026-08-01"
+  },
+  "run_digest": "sha256:972621a757c39d734c7aca29cc0bfa422a6261dc5a368cc333ed0ce95676b180",
+  "run_id": "new-site-run-001",
+  "scenario_count": 3,
+  "scenario_pack_digest": "sha256:60dab1588d9e0a432a2f8bdada42131891d81225949af7f629a8cff63daf45a5",
+  "scenario_pack_id": "inspection-pack-fixture-v1",
+  "schema_version": "new_site_task_evaluation_run.v2",
+  "smallest_missing_measurement": null,
+  "source_profile_digest": "sha256:978c14a2518f1e356f578f2dfaba5b20b03633fef88193190d1815bd574bd3db",
+  "source_truth_class": "provider_derived_support",
+  "status": "completed",
+  "target_binding_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "terminal_stage": "paired_scenario_aggregation",
+  "winner_candidate_id": "policy-5",
+  "winner_candidate_ids": [
+    "policy-5"
+  ]
+}

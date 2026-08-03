@@ -991,6 +991,11 @@ deterministically authorized task target and robot placement, the best exactly
 qualified task/site engine route, and five matched-reset learned-policy
 attempts—or emits the smallest fail-closed abstention. See
 [`docs/NEW_SITE_TASK_EVALUATION_RUN.md`](docs/NEW_SITE_TASK_EVALUATION_RUN.md).
+Request v2 freezes a three-to-five-scenario inspection pack and executes the
+same five learned policies across the complete grid. It retains missing and
+failed cells, uses paired-scenario aggregation with deterministic uncertainty,
+and surfaces ties, exclusions, unsupported metrics, and catastrophic failures.
+The v1 single-reset reader remains supported.
 The capture-materialization and explicit-task development acceptance command
 `python -m blueprint_pipeline.new_site_task_evaluation` is an upstream,
 non-ranking lane; its result cannot substitute for the five learned-policy

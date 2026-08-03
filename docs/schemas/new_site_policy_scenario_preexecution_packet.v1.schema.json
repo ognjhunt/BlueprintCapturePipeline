@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/new_site_policy_scenario_preexecution_packet.v1.schema.json",
+  "title": "Evidence-bound pre-execution scenario matrix packet",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "status",
+    "site_identity",
+    "source_evidence",
+    "candidate_set_status",
+    "scenario_pack_status",
+    "proposed_scenarios",
+    "expected_cell_count",
+    "cells",
+    "blockers",
+    "smallest_missing_measurement",
+    "claim_boundary",
+    "packet_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "new_site_policy_scenario_preexecution_packet.v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"const": "abstained_pre_execution"},
+    "site_identity": {"type": "object"},
+    "source_evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "file_sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "file_sha256": {"$ref": "#/$defs/digest"},
+          "artifact_digest": {"$ref": "#/$defs/digest"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "candidate_set_status": {"const": "not_admitted_before_site_preflight"},
+    "scenario_pack_status": {"const": "not_frozen_no_admitted_scenarios"},
+    "proposed_scenarios": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["scenario_id", "admission_status", "exclusion_rationale"],
+        "properties": {
+          "scenario_id": {"type": "string", "minLength": 1},
+          "admission_status": {"const": "excluded"},
+          "exclusion_rationale": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "expected_cell_count": {"const": 0},
+    "cells": {"type": "array", "maxItems": 0},
+    "blockers": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "smallest_missing_measurement": {
+      "type": "object",
+      "required": ["code", "instruction", "stage"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "instruction": {"type": "string", "minLength": 1},
+        "stage": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "claim_boundary": {
+      "type": "object",
+      "required": [
+        "real_arkit_dataset_evidence_bound",
+        "blueprint_raw_contract_truth",
+        "scenario_pack_admitted",
+        "policy_attempts_executed",
+        "policy_ranking_proven",
+        "physical_success_proven",
+        "deployment_readiness_proven"
+      ],
+      "properties": {
+        "real_arkit_dataset_evidence_bound": {"const": true},
+        "blueprint_raw_contract_truth": {"const": false},
+        "scenario_pack_admitted": {"const": false},
+        "policy_attempts_executed": {"const": false},
+        "policy_ranking_proven": {"const": false},
+        "physical_success_proven": {"const": false},
+        "deployment_readiness_proven": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "packet_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

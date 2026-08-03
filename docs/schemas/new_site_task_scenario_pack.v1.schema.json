@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/new_site_task_scenario_pack.v1.schema.json",
+  "title": "Frozen new-site task scenario pack",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "scenario_pack_id",
+    "scenario_pack_digest",
+    "pack_kind",
+    "bindings",
+    "frozen_before_execution",
+    "frozen_at",
+    "matrix_evidence_type",
+    "scripted_controller_matrix_separate",
+    "scenario_generation_may_authorize_new_claims",
+    "preregistered_metric",
+    "aggregation_rule",
+    "scenario_count",
+    "scenario_definitions",
+    "excluded_scenarios"
+  ],
+  "properties": {
+    "schema_version": {"const": "new_site_task_scenario_pack.v1"},
+    "scenario_pack_id": {"type": "string", "minLength": 1},
+    "scenario_pack_digest": {"$ref": "#/$defs/digest"},
+    "pack_kind": {"enum": ["inspection", "legacy_single_scenario_projection"]},
+    "legacy_projection": {"type": "boolean"},
+    "bindings": {"$ref": "#/$defs/bindings"},
+    "frozen_before_execution": {"const": true},
+    "frozen_at": {"type": "string", "format": "date-time"},
+    "matrix_evidence_type": {"const": "learned_policy_scenario_matrix"},
+    "scripted_controller_matrix_separate": {"const": true},
+    "scenario_generation_may_authorize_new_claims": {"const": false},
+    "preregistered_metric": {"type": "object"},
+    "aggregation_rule": {"$ref": "#/$defs/aggregationRule"},
+    "scenario_count": {"type": "integer", "minimum": 1, "maximum": 5},
+    "scenario_definitions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {"$ref": "#/$defs/scenario"}
+    },
+    "excluded_scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scenario_id", "exclusion_rationale"],
+        "properties": {
+          "scenario_id": {"type": "string", "minLength": 1},
+          "exclusion_rationale": {"type": "string", "minLength": 1},
+          "smallest_missing_measurement": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "bindings": {
+      "type": "object",
+      "required": [
+        "site_id",
+        "task_id",
+        "source_profile_digest",
+        "reconstruction_digest",
+        "target_binding_digest",
+        "robot_id",
+        "placement_digest",
+        "task_class"
+      ],
+      "properties": {
+        "site_id": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "source_profile_digest": {"$ref": "#/$defs/digest"},
+        "reconstruction_digest": {"$ref": "#/$defs/digest"},
+        "target_binding_digest": {"$ref": "#/$defs/digest"},
+        "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
+        "placement_digest": {"$ref": "#/$defs/digest"},
+        "task_class": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "aggregationRule": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "metric_spec_digest",
+        "method",
+        "direction",
+        "minimum_paired_scenarios",
+        "uncertainty_method",
+        "bootstrap_replicates",
+        "bootstrap_seed",
+        "tie_tolerance",
+        "catastrophic_failure_threshold",
+        "catastrophic_rule",
+        "unsupported_metric_policy",
+        "aggregate_may_mask_catastrophic_failure",
+        "aggregation_rule_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "paired_scenario_aggregation_rule.v1"},
+        "metric_spec_digest": {"$ref": "#/$defs/digest"},
+        "method": {"const": "paired_complete_scenario_mean"},
+        "direction": {"enum": ["maximize", "minimize"]},
+        "minimum_paired_scenarios": {"type": "integer", "minimum": 1, "maximum": 5},
+        "uncertainty_method": {"const": "deterministic_paired_bootstrap_percentile_95"},
+        "bootstrap_replicates": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "bootstrap_seed": {"type": "integer", "minimum": 0},
+        "tie_tolerance": {"type": "number", "minimum": 0},
+        "catastrophic_failure_threshold": {"type": "number"},
+        "catastrophic_rule": {"const": "any_supported_cell_at_or_beyond_threshold"},
+        "unsupported_metric_policy": {"const": "exclude_scenario_from_paired_ranking"},
+        "aggregate_may_mask_catastrophic_failure": {"const": false},
+        "aggregation_rule_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "perturbation": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["not_applied", "bounded_qualified"]},
+        "translation_meters": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"}
+        },
+        "rotation_degrees": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"}
+        },
+        "maximum_norm": {"type": "number", "exclusiveMinimum": 0},
+        "task_valid": {"type": "boolean"},
+        "qualification_digest": {"$ref": "#/$defs/digest"},
+        "evidence_ceiling_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "state": {
+      "type": "object",
+      "required": ["state_digest", "policy_visibility"],
+      "properties": {
+        "state_digest": {"$ref": "#/$defs/digest"},
+        "policy_visibility": {"enum": ["observed", "not_directly_observed"]},
+        "description": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "scenario": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "scenario_id",
+        "scenario_pack_id",
+        "scenario_kind",
+        "admission_status",
+        "bindings",
+        "metric_spec_digest",
+        "frozen_before_execution",
+        "frozen_at",
+        "reset_state_digest",
+        "initial_state_observation_digest",
+        "deterministic_simulator_seed",
+        "target_state",
+        "distractor_state",
+        "perturbations",
+        "observation_settings",
+        "geometry_material_variants",
+        "policy_observation_spec_digest",
+        "evaluator_only_state_digest",
+        "hidden_evaluator_data_in_policy_input",
+        "scenario_generation_may_authorize_new_claims",
+        "inclusion_rationale",
+        "scenario_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "new_site_task_scenario.v1"},
+        "scenario_id": {"type": "string", "minLength": 1},
+        "scenario_pack_id": {"type": "string", "minLength": 1},
+        "scenario_kind": {
+          "enum": [
+            "nominal",
+            "bounded_placement_observation_perturbation",
+            "visibility_occlusion_stress"
+          ]
+        },
+        "admission_status": {"const": "admitted"},
+        "bindings": {"$ref": "#/$defs/bindings"},
+        "metric_spec_digest": {"$ref": "#/$defs/digest"},
+        "frozen_before_execution": {"const": true},
+        "frozen_at": {"type": "string", "format": "date-time"},
+        "reset_state_digest": {"$ref": "#/$defs/digest"},
+        "initial_state_observation_digest": {"$ref": "#/$defs/digest"},
+        "deterministic_simulator_seed": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "target_state": {"$ref": "#/$defs/state"},
+        "distractor_state": {"$ref": "#/$defs/state"},
+        "perturbations": {
+          "type": "object",
+          "required": ["robot_base", "camera"],
+          "properties": {
+            "robot_base": {"$ref": "#/$defs/perturbation"},
+            "camera": {"$ref": "#/$defs/perturbation"}
+          },
+          "additionalProperties": false
+        },
+        "observation_settings": {
+          "type": "object",
+          "required": [
+            "lighting",
+            "sensor",
+            "noise",
+            "evidence_ceiling_digest",
+            "settings_may_authorize_new_claims",
+            "settings_digest"
+          ],
+          "properties": {
+            "lighting": {"type": "object"},
+            "sensor": {"type": "object"},
+            "noise": {"type": "object"},
+            "evidence_ceiling_digest": {"$ref": "#/$defs/digest"},
+            "settings_may_authorize_new_claims": {"const": false},
+            "settings_digest": {"$ref": "#/$defs/digest"}
+          },
+          "additionalProperties": true
+        },
+        "geometry_material_variants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "variant_id",
+              "variant_kind",
+              "status",
+              "asset_digest",
+              "qualification_digest",
+              "evidence_ceiling_digest",
+              "variant_may_authorize_new_claims"
+            ],
+            "properties": {
+              "variant_id": {"type": "string", "minLength": 1},
+              "variant_kind": {"enum": ["geometry", "material"]},
+              "status": {"const": "qualified_within_evidence_ceiling"},
+              "asset_digest": {"$ref": "#/$defs/digest"},
+              "qualification_digest": {"$ref": "#/$defs/digest"},
+              "evidence_ceiling_digest": {"$ref": "#/$defs/digest"},
+              "variant_may_authorize_new_claims": {"const": false}
+            },
+            "additionalProperties": false
+          }
+        },
+        "policy_observation_spec_digest": {"$ref": "#/$defs/digest"},
+        "evaluator_only_state_digest": {"$ref": "#/$defs/digest"},
+        "hidden_evaluator_data_in_policy_input": {"const": false},
+        "scenario_generation_may_authorize_new_claims": {"const": false},
+        "inclusion_rationale": {"type": "string", "minLength": 1},
+        "scenario_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
