@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import jsonschema
 
+from blueprint_pipeline import reconstruction_vast_operation as vast_operation
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
@@ -258,6 +259,107 @@ def test_operation_retrieves_validates_then_tears_down_and_replays_offline(
         replay,
     ):
         jsonschema.validate(artifact, schema)
+
+
+def test_canonical_operation_replay_uses_canonical_output_validator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _bound_request()
+    request.update(
+        {
+            "operation": "trainer_canary",
+            "execution_adapter_id": "canonical_splatfacto_vast_v1",
+            "expected_runtime_result_schema": (
+                "canonical_3dgs_vast_runtime_result.v1"
+            ),
+        }
+    )
+    request["bound_request_digest"] = canonical_digest(
+        request, digest_field="bound_request_digest"
+    )
+    attempts = tmp_path / "retrieval_attempts"
+    attempts.mkdir()
+    output_path = attempts / "output_0001.zip"
+    output_path.write_bytes(b"canonical-output")
+    output_digest = "sha256:" + hashlib.sha256(output_path.read_bytes()).hexdigest()
+    validated_receipt = {
+        "schema_version": "canonical_3dgs_vast_output_bundle.v1",
+        "operation_output_bundle_digest": output_digest,
+        "proof_effect": "appearance_asset_candidate_only",
+    }
+    validated_receipt["output_bundle_receipt_digest"] = canonical_digest(
+        validated_receipt, digest_field="output_bundle_receipt_digest"
+    )
+    validated_runtime = {
+        "schema_version": "canonical_3dgs_vast_runtime_result.v1",
+        "status": "succeeded",
+    }
+    execution = {
+        "status": "completed",
+        "bound_request_digest": request["bound_request_digest"],
+        "canonical_allocator_admission_digest": D[6],
+        "operation_output_bundle_digest": output_digest,
+        "output_bundle_receipt_digest": validated_receipt[
+            "output_bundle_receipt_digest"
+        ],
+        "output_retrieved_before_teardown": True,
+        "scientific_qualification_inferred": False,
+        "operation_result_status": "succeeded",
+    }
+    execution["execution_result_digest"] = canonical_digest(
+        execution, digest_field="execution_result_digest"
+    )
+    teardown = {
+        "status": "PASS",
+        "output_retrieved_before_teardown": True,
+        "provider_zero_verified": True,
+    }
+    teardown["teardown_receipt_digest"] = canonical_digest(
+        teardown, digest_field="teardown_receipt_digest"
+    )
+    provider_zero = {
+        "status": "PASS",
+        "api_confirmed": True,
+        "scoped_live_resource_count": 0,
+        "global_live_resource_count": 0,
+    }
+    provider_zero["provider_zero_digest"] = canonical_digest(
+        provider_zero, digest_field="provider_zero_digest"
+    )
+    for name, value in (
+        ("reconstruction_vast_operation_execution.json", execution),
+        ("teardown_receipt.json", teardown),
+        ("provider_zero_verification.json", provider_zero),
+        ("validated_output_bundle_receipt.json", validated_receipt),
+        ("provider_runtime_result.json", validated_runtime),
+    ):
+        (tmp_path / name).write_text(json.dumps(value), encoding="utf-8")
+    calls: list[dict] = []
+
+    def canonical_validator(**kwargs):
+        calls.append(kwargs)
+        return validated_receipt, validated_runtime
+
+    monkeypatch.setattr(
+        vast_operation,
+        "validate_canonical_3dgs_vast_output_bundle",
+        canonical_validator,
+    )
+
+    def generic_validator(**_kwargs):
+        raise AssertionError("generic validator must not handle canonical replay")
+
+    replay = replay_reconstruction_vast_operation(
+        job_dir=tmp_path,
+        bound_request=request,
+        output_validator=generic_validator,
+    )
+
+    assert replay["status"] == "replay_verified"
+    assert len(calls) == 1
+    assert calls[0]["expected_transport_bundle_digest"] == D[2]
+    assert calls[0]["expected_reconstruction_dataset_digest"] == D[3]
+    assert calls[0]["expected_allocator_admission_digest"] == D[6]
 
 
 def test_repeated_identical_invalid_output_stops_and_preserves_failures(

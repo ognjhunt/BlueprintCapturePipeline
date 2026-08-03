@@ -29,6 +29,9 @@ from blueprint_pipeline.reconstruction_gpu_admission import (
 
 SOURCE = "a" * 40
 IMAGE = "dromni/nerfstudio@sha256:" + "b" * 64
+TRANSPORT = "sha256:" + "4" * 64
+DATASET = "sha256:" + "5" * 64
+PACKAGE = "sha256:" + "6" * 64
 
 
 def _write_splat(path: Path) -> None:
@@ -94,6 +97,124 @@ def _preflight() -> dict:
     return value
 
 
+def _write_worker_controls(root: Path, splat: Path) -> dict:
+    transport = {
+        "schema_version": "canonical_3dgs_transport_bundle.v1",
+        "status": "compiled",
+        "transport_bundle_digest": TRANSPORT,
+        "transport_bundle_bytes": 1024,
+        "transport_manifest_digest": "sha256:" + "7" * 64,
+        "canonical_3dgs_execution_plan_digest": "sha256:" + "3" * 64,
+        "worker_python_package_digest": PACKAGE,
+        "colmap_training_dataset_digest": DATASET,
+        "source_capture_digest": "sha256:" + "8" * 64,
+        "frozen_split_digest": "sha256:" + "9" * 64,
+        "source_commit_sha": SOURCE,
+        "dataset_members": [
+            {
+                "archive_path": "campaign/dataset/images/frame.png",
+                "digest": "sha256:" + "a" * 64,
+                "bytes": 1,
+            }
+        ],
+        "dataset_member_count": 1,
+        "hidden_heldout_pixels_included": False,
+        "raw_secret_values_included": False,
+        "provider_allocation_performed": False,
+        "paid_execution_authorized_by_bundle": False,
+        "proof_effect": "none",
+    }
+    transport["receipt_digest"] = canonical_digest(
+        transport, digest_field="receipt_digest"
+    )
+    allocator = {
+        "status": "execute_ready",
+        "execution_adapter_id": "canonical_splatfacto_vast_v1",
+        "operation_request_digest": "sha256:" + "3" * 64,
+        "operation_input_bundle_digest": TRANSPORT,
+        "reconstruction_dataset_digest": DATASET,
+        "worker_image_digest": IMAGE,
+        "source_commit_sha": SOURCE,
+        "max_spend_usd": 10.0,
+        "hard_ttl_seconds": 7200,
+        "authority_id": "explicit-user-authority",
+    }
+    allocator["admission_digest"] = canonical_digest(
+        allocator, digest_field="admission_digest"
+    )
+    admission = {
+        "schema_version": "canonical_3dgs_worker_admission.v1",
+        "status": "admitted",
+        "blockers": [],
+        "arm_id": "splatfacto-comparison",
+        "worker_platform": "linux",
+        "canonical_3dgs_execution_plan_digest": "sha256:" + "3" * 64,
+        "colmap_training_dataset_digest": DATASET,
+        "transport_bundle_digest": TRANSPORT,
+        "worker_python_package_digest": PACKAGE,
+        "provider_upload_authorized": True,
+        "paid_compute_authorized": True,
+        "watchdog_armed_before_execution": True,
+        "provider_zero_verified_before_allocation": True,
+        "provider_zero_required_after_execution": True,
+        "retry_cap": 0,
+        "allocation_binding_digest": allocator["admission_digest"],
+        "paid_allocator_admission_digest": allocator["admission_digest"],
+        "worker_image_digest": IMAGE,
+        "trainer_runtime_digest": "sha256:" + "d" * 64,
+        "trainer_runtime_version": "nerfstudio-1.1.5+gsplat-1.4.0",
+        "max_spend_usd": 10.0,
+        "hard_ttl_seconds": 7200,
+        "authority_id": "explicit-user-authority",
+        "timestamp": "2026-08-03T05:00:00Z",
+        "expires_at": "2026-08-03T07:00:00Z",
+    }
+    admission["canonical_3dgs_worker_admission_digest"] = canonical_digest(
+        admission, digest_field="canonical_3dgs_worker_admission_digest"
+    )
+    receipt = {
+        "exit_code": 0,
+        "timestamp": "2026-08-03T06:00:00Z",
+        "canonical_3dgs_execution_plan_digest": "sha256:" + "3" * 64,
+        "transport_bundle_digest": TRANSPORT,
+        "transport_receipt_digest": transport["receipt_digest"],
+        "canonical_3dgs_worker_admission_digest": admission[
+            "canonical_3dgs_worker_admission_digest"
+        ],
+        "allocation_binding_digest": admission["allocation_binding_digest"],
+        "provider_zero_required_after_execution": True,
+        "runtime_identity": {
+            "worker_image_digest": IMAGE,
+            "source_commit_sha_bound_by_plan": SOURCE,
+            "worker_python_package_digest": PACKAGE,
+            "trainer_runtime_digest": admission["trainer_runtime_digest"],
+            "trainer_runtime_version": admission["trainer_runtime_version"],
+        },
+        "artifacts": [
+            {
+                "kind": "standard_3dgs_ply",
+                "relative_path": "candidate.ply",
+                "digest": "sha256:" + hashlib.sha256(splat.read_bytes()).hexdigest(),
+            },
+            {"kind": "training_log", "relative_path": "training.log"},
+        ],
+    }
+    receipt["canonical_3dgs_worker_receipt_digest"] = canonical_digest(
+        receipt, digest_field="canonical_3dgs_worker_receipt_digest"
+    )
+    for name, value in (
+        ("canonical_3dgs_transport_receipt.json", transport),
+        ("canonical_3dgs_worker_admission.json", admission),
+        ("paid_allocator_admission.json", allocator),
+        ("worker_receipt.json", receipt),
+    ):
+        (root / name).write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+    return receipt
+
+
 def test_canonical_vast_bootstrap_uses_container_python3_entrypoint() -> None:
     script = vast_operation._bootstrap_script(canonical_splatfacto=True)
 
@@ -102,6 +223,11 @@ def test_canonical_vast_bootstrap_uses_container_python3_entrypoint() -> None:
     assert "python3 -m blueprint_pipeline.canonical_3dgs_vast_bootstrap" in script
     assert "\npython -" not in script
     assert "\npython -m" not in script
+    assert script.index("INPUT_RECEIPT_GET_URL") < script.index("INPUT_BUNDLE_GET_URL")
+    assert "transport_bundle_bytes" in script
+    assert "BLUEPRINT_CANONICAL_MAX_INPUT_BYTES" in script
+    assert "canonical_download_stream_oversized" in script
+    assert "archive.read(wheel_member)" not in script
 
 
 def test_specialized_request_cannot_be_qualified_by_generic_boolean() -> None:
@@ -153,26 +279,7 @@ def test_canonical_vast_output_independently_decodes_standard_ply(
     _write_splat(splat)
     log = root / "training.log"
     log.write_text("complete\n", encoding="utf-8")
-    receipt = {
-        "exit_code": 0,
-        "canonical_3dgs_execution_plan_digest": "sha256:" + "3" * 64,
-        "transport_bundle_digest": "sha256:" + "4" * 64,
-        "runtime_identity": {
-            "worker_image_digest": IMAGE,
-            "source_commit_sha_bound_by_plan": SOURCE,
-        },
-        "artifacts": [
-            {
-                "kind": "standard_3dgs_ply",
-                "relative_path": "candidate.ply",
-                "digest": "sha256:" + hashlib.sha256(splat.read_bytes()).hexdigest(),
-            },
-            {"kind": "training_log", "relative_path": "training.log"},
-        ],
-    }
-    receipt["canonical_3dgs_worker_receipt_digest"] = canonical_digest(
-        receipt, digest_field="canonical_3dgs_worker_receipt_digest"
-    )
+    receipt = _write_worker_controls(root, splat)
     output = tmp_path / "output.zip"
     compiled = compile_canonical_3dgs_vast_output_bundle(
         result_root=root,
@@ -201,6 +308,9 @@ def test_canonical_vast_output_independently_decodes_standard_ply(
         bundle_path=output,
         expected_operation="trainer_canary",
         expected_operation_request_digest="sha256:" + "3" * 64,
+        expected_transport_bundle_digest=TRANSPORT,
+        expected_reconstruction_dataset_digest=DATASET,
+        expected_allocator_admission_digest=receipt["allocation_binding_digest"],
         expected_worker_image_digest=IMAGE,
         expected_source_commit_sha=SOURCE,
     )
@@ -217,6 +327,72 @@ def test_canonical_vast_output_rejects_tampering(tmp_path: Path) -> None:
             bundle_path=tmp_path / "missing.zip",
             expected_operation="trainer_canary",
             expected_operation_request_digest="sha256:" + "3" * 64,
+            expected_transport_bundle_digest=TRANSPORT,
+            expected_reconstruction_dataset_digest=DATASET,
+            expected_allocator_admission_digest="sha256:" + "c" * 64,
+            expected_worker_image_digest=IMAGE,
+            expected_source_commit_sha=SOURCE,
+        )
+
+
+def test_canonical_vast_output_rejects_self_consistent_tampered_worker_receipt(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "result"
+    root.mkdir()
+    splat = root / "candidate.ply"
+    _write_splat(splat)
+    (root / "training.log").write_text("complete\n", encoding="utf-8")
+    receipt = _write_worker_controls(root, splat)
+    output = tmp_path / "output.zip"
+    compile_canonical_3dgs_vast_output_bundle(
+        result_root=root,
+        worker_receipt=receipt,
+        output_path=output,
+        worker_image_digest=IMAGE,
+        source_commit_sha=SOURCE,
+    )
+    with zipfile.ZipFile(output) as archive:
+        payloads = {name: archive.read(name) for name in archive.namelist()}
+    worker = json.loads(payloads["results/worker_receipt.json"])
+    worker["transport_bundle_digest"] = "sha256:" + "e" * 64
+    worker["canonical_3dgs_worker_receipt_digest"] = canonical_digest(
+        worker, digest_field="canonical_3dgs_worker_receipt_digest"
+    )
+    worker_bytes = (
+        json.dumps(worker, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    payloads["results/worker_receipt.json"] = worker_bytes
+    manifest = json.loads(payloads[MANIFEST_MEMBER])
+    manifest["worker_receipt_digest"] = worker[
+        "canonical_3dgs_worker_receipt_digest"
+    ]
+    worker_row = next(
+        row
+        for row in manifest["members"]
+        if row["archive_path"] == "results/worker_receipt.json"
+    )
+    worker_row["digest"] = "sha256:" + hashlib.sha256(worker_bytes).hexdigest()
+    worker_row["bytes"] = len(worker_bytes)
+    manifest["output_bundle_receipt_digest"] = canonical_digest(
+        manifest, digest_field="output_bundle_receipt_digest"
+    )
+    payloads[MANIFEST_MEMBER] = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    tampered = tmp_path / "tampered.zip"
+    with zipfile.ZipFile(tampered, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name, payload in payloads.items():
+            archive.writestr(name, payload)
+
+    with pytest.raises(ReconstructionGpuOperationOutputError):
+        validate_canonical_3dgs_vast_output_bundle(
+            bundle_path=tampered,
+            expected_operation="trainer_canary",
+            expected_operation_request_digest="sha256:" + "3" * 64,
+            expected_transport_bundle_digest=TRANSPORT,
+            expected_reconstruction_dataset_digest=DATASET,
+            expected_allocator_admission_digest=receipt["allocation_binding_digest"],
             expected_worker_image_digest=IMAGE,
             expected_source_commit_sha=SOURCE,
         )
@@ -235,6 +411,9 @@ def test_canonical_vast_output_caps_manifest_before_json_parse(
             bundle_path=bundle,
             expected_operation="trainer_canary",
             expected_operation_request_digest="sha256:" + "3" * 64,
+            expected_transport_bundle_digest=TRANSPORT,
+            expected_reconstruction_dataset_digest=DATASET,
+            expected_allocator_admission_digest="sha256:" + "c" * 64,
             expected_worker_image_digest=IMAGE,
             expected_source_commit_sha=SOURCE,
         )

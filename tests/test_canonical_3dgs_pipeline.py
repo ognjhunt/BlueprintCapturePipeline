@@ -13,6 +13,7 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline import local_reconstruction_adapters as adapters
+from blueprint_pipeline import canonical_3dgs_pipeline as canonical_pipeline
 from blueprint_pipeline.canonical_3dgs_admission import (
     build_canonical_3dgs_worker_admission,
 )
@@ -859,6 +860,15 @@ def test_proxy_source_admission_cannot_claim_raw_contract() -> None:
         build_canonical_3dgs_source_admission(
             **common, raw_contract_3_2_proven=True
         )
+
+
+def test_proxy_coordinate_basis_records_preserved_opencv_axes() -> None:
+    assert canonical_pipeline._camera_axis_projection(
+        {"source_profile": "public_dataset_arkitscenes_proxy"}
+    ) == "source_opencv_preserved_no_axis_flip"
+    assert canonical_pipeline._camera_axis_projection(
+        {"source_profile": "blueprint_raw_v3_2"}
+    ) == "arkit_to_opencv_explicit_yz_flip"
 
 
 def test_proxy_hidden_evaluator_preserves_opencv_camera_pose(tmp_path: Path) -> None:

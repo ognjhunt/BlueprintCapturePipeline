@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
@@ -12,6 +13,14 @@ from typing import Any, Mapping
 import zipfile
 
 from .gaussian_splat_decode import read_standard_3dgs_ply
+from .canonical_3dgs_admission import (
+    Canonical3DGSAdmissionError,
+    require_canonical_3dgs_worker_admission,
+)
+from .canonical_3dgs_transport import (
+    Canonical3DGSTransportError,
+    validate_canonical_3dgs_transport_receipt,
+)
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .reconstruction_gpu_operation_output import ReconstructionGpuOperationOutputError
 
@@ -22,6 +31,11 @@ MAX_TOTAL_BYTES = 96 * 1024**3
 MAX_MEMBER_COUNT = 20_000
 MAX_MANIFEST_BYTES = 8 * 1024**2
 MANIFEST_MEMBER = "canonical_3dgs_vast_output_manifest.json"
+MAX_CONTROL_MEMBER_BYTES = 8 * 1024**2
+WORKER_RECEIPT_MEMBER = "results/worker_receipt.json"
+TRANSPORT_RECEIPT_MEMBER = "results/canonical_3dgs_transport_receipt.json"
+WORKER_ADMISSION_MEMBER = "results/canonical_3dgs_worker_admission.json"
+ALLOCATOR_ADMISSION_MEMBER = "results/paid_allocator_admission.json"
 
 
 def _sha256(path: Path) -> str:
@@ -73,6 +87,23 @@ def _hash_archive_member(
     return "sha256:" + digest.hexdigest(), total
 
 
+def _read_json_member(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo
+) -> dict[str, Any]:
+    if info.file_size <= 0 or info.file_size > MAX_CONTROL_MEMBER_BYTES:
+        raise ValueError("control_member_size")
+    payload = bytearray()
+    with archive.open(info, "r") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            payload.extend(chunk)
+            if len(payload) > MAX_CONTROL_MEMBER_BYTES:
+                raise ValueError("control_member_size")
+    value = json.loads(payload)
+    if not isinstance(value, Mapping):
+        raise ValueError("control_member_not_object")
+    return dict(value)
+
+
 def compile_canonical_3dgs_vast_output_bundle(
     *,
     result_root: str | Path,
@@ -105,6 +136,27 @@ def compile_canonical_3dgs_vast_output_bundle(
     ]
     if len(splats) != 1:
         errors.append("canonical_vast_output_standard_ply_missing")
+    control_paths = {
+        WORKER_RECEIPT_MEMBER: root / "worker_receipt.json",
+        TRANSPORT_RECEIPT_MEMBER: root / "canonical_3dgs_transport_receipt.json",
+        WORKER_ADMISSION_MEMBER: root / "canonical_3dgs_worker_admission.json",
+        ALLOCATOR_ADMISSION_MEMBER: root / "paid_allocator_admission.json",
+    }
+    try:
+        persisted_worker_receipt = json.loads(
+            control_paths[WORKER_RECEIPT_MEMBER].read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        persisted_worker_receipt = None
+    if persisted_worker_receipt != receipt:
+        errors.append("canonical_vast_output_worker_receipt_snapshot_invalid")
+    if any(
+        not path.is_file()
+        or path.is_symlink()
+        or path.stat().st_size > MAX_CONTROL_MEMBER_BYTES
+        for path in control_paths.values()
+    ):
+        errors.append("canonical_vast_output_control_snapshot_invalid")
     if errors:
         raise ReconstructionGpuOperationOutputError(errors)
     files: list[tuple[Path, dict[str, Any]]] = []
@@ -207,6 +259,9 @@ def validate_canonical_3dgs_vast_output_bundle(
     bundle_path: str | Path,
     expected_operation: str,
     expected_operation_request_digest: str,
+    expected_transport_bundle_digest: str,
+    expected_reconstruction_dataset_digest: str,
+    expected_allocator_admission_digest: str,
     expected_worker_image_digest: str,
     expected_source_commit_sha: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -273,6 +328,40 @@ def validate_canonical_3dgs_vast_output_bundle(
                     or digest != row.get("digest")
                 ):
                     raise ValueError("digest")
+            for control_name in (
+                WORKER_RECEIPT_MEMBER,
+                TRANSPORT_RECEIPT_MEMBER,
+                WORKER_ADMISSION_MEMBER,
+                ALLOCATOR_ADMISSION_MEMBER,
+            ):
+                if control_name not in info_by_name:
+                    raise ValueError("control_member_missing")
+            worker_receipt = _read_json_member(
+                archive, info_by_name[WORKER_RECEIPT_MEMBER]
+            )
+            transport_receipt = validate_canonical_3dgs_transport_receipt(
+                _read_json_member(archive, info_by_name[TRANSPORT_RECEIPT_MEMBER])
+            )
+            worker_admission_value = _read_json_member(
+                archive, info_by_name[WORKER_ADMISSION_MEMBER]
+            )
+            allocator_admission = _read_json_member(
+                archive, info_by_name[ALLOCATOR_ADMISSION_MEMBER]
+            )
+            receipt_timestamp = datetime.fromisoformat(
+                str(worker_receipt.get("timestamp") or "").replace("Z", "+00:00")
+            )
+            worker_admission = require_canonical_3dgs_worker_admission(
+                worker_admission_value,
+                arm_id="splatfacto-comparison",
+                plan_digest=expected_operation_request_digest,
+                dataset_digest=expected_reconstruction_dataset_digest,
+                transport_bundle_digest=expected_transport_bundle_digest,
+                worker_package_digest=str(
+                    transport_receipt.get("worker_python_package_digest") or ""
+                ),
+                observed_now=receipt_timestamp,
+            )
             splat_rows = [
                 row
                 for row in members
@@ -280,6 +369,20 @@ def validate_canonical_3dgs_vast_output_bundle(
             ]
             if len(splat_rows) != 1:
                 raise ValueError("splat")
+            worker_splats = [
+                row
+                for row in worker_receipt.get("artifacts") or []
+                if isinstance(row, Mapping)
+                and row.get("kind") == "standard_3dgs_ply"
+            ]
+            if (
+                len(worker_splats) != 1
+                or worker_splats[0].get("digest")
+                != manifest.get("standard_3dgs_ply_digest")
+                or "results/" + str(worker_splats[0].get("relative_path") or "")
+                != splat_rows[0].get("archive_path")
+            ):
+                raise ValueError("worker_receipt_splat_binding")
             with tempfile.TemporaryDirectory(prefix="canonical-vast-ply-") as tmp:
                 splat_path = Path(tmp) / "candidate.ply"
                 with archive.open(
@@ -287,7 +390,15 @@ def validate_canonical_3dgs_vast_output_bundle(
                 ) as source, splat_path.open("wb") as destination:
                     shutil.copyfileobj(source, destination, length=1024 * 1024)
                 decoded_count = read_standard_3dgs_ply(splat_path).count
-    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+    except (
+        Canonical3DGSAdmissionError,
+        Canonical3DGSTransportError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        zipfile.BadZipFile,
+    ) as exc:
         raise ReconstructionGpuOperationOutputError(
             ["canonical_vast_output_bundle_invalid"]
         ) from exc
@@ -297,6 +408,8 @@ def validate_canonical_3dgs_vast_output_bundle(
         or manifest.get("operation") != expected_operation
         or manifest.get("canonical_3dgs_execution_plan_digest")
         != expected_operation_request_digest
+        or manifest.get("transport_bundle_digest")
+        != expected_transport_bundle_digest
         or manifest.get("worker_image_digest") != expected_worker_image_digest
         or manifest.get("source_commit_sha") != expected_source_commit_sha
         or manifest.get("output_bundle_receipt_digest")
@@ -306,6 +419,71 @@ def validate_canonical_3dgs_vast_output_bundle(
         or manifest.get("hidden_heldout_pixels_included") is not False
         or manifest.get("candidate_self_graded") is not False
         or manifest.get("quality_winner") is not None
+        or transport_receipt.get("transport_bundle_digest")
+        != expected_transport_bundle_digest
+        or transport_receipt.get("canonical_3dgs_execution_plan_digest")
+        != expected_operation_request_digest
+        or transport_receipt.get("colmap_training_dataset_digest")
+        != expected_reconstruction_dataset_digest
+        or transport_receipt.get("source_commit_sha") != expected_source_commit_sha
+        or worker_receipt.get("canonical_3dgs_worker_receipt_digest")
+        != canonical_digest(
+            worker_receipt, digest_field="canonical_3dgs_worker_receipt_digest"
+        )
+        or worker_receipt.get("canonical_3dgs_worker_receipt_digest")
+        != manifest.get("worker_receipt_digest")
+        or worker_receipt.get("exit_code") != 0
+        or worker_receipt.get("canonical_3dgs_execution_plan_digest")
+        != expected_operation_request_digest
+        or worker_receipt.get("transport_bundle_digest")
+        != expected_transport_bundle_digest
+        or worker_receipt.get("transport_receipt_digest")
+        != transport_receipt.get("receipt_digest")
+        or worker_receipt.get("canonical_3dgs_worker_admission_digest")
+        != worker_admission.get("canonical_3dgs_worker_admission_digest")
+        or worker_receipt.get("allocation_binding_digest")
+        != worker_admission.get("allocation_binding_digest")
+        or worker_receipt.get("provider_zero_required_after_execution") is not True
+        or worker_receipt.get("runtime_identity", {}).get("worker_image_digest")
+        != expected_worker_image_digest
+        or worker_receipt.get("runtime_identity", {}).get(
+            "source_commit_sha_bound_by_plan"
+        )
+        != expected_source_commit_sha
+        or worker_receipt.get("runtime_identity", {}).get(
+            "worker_python_package_digest"
+        )
+        != transport_receipt.get("worker_python_package_digest")
+        or worker_receipt.get("runtime_identity", {}).get("trainer_runtime_digest")
+        != worker_admission.get("trainer_runtime_digest")
+        or worker_receipt.get("runtime_identity", {}).get("trainer_runtime_version")
+        != worker_admission.get("trainer_runtime_version")
+        or allocator_admission.get("admission_digest")
+        != canonical_digest(allocator_admission, digest_field="admission_digest")
+        or allocator_admission.get("admission_digest")
+        != expected_allocator_admission_digest
+        or allocator_admission.get("status") != "execute_ready"
+        or allocator_admission.get("execution_adapter_id")
+        != "canonical_splatfacto_vast_v1"
+        or allocator_admission.get("operation_request_digest")
+        != expected_operation_request_digest
+        or allocator_admission.get("operation_input_bundle_digest")
+        != expected_transport_bundle_digest
+        or allocator_admission.get("reconstruction_dataset_digest")
+        != expected_reconstruction_dataset_digest
+        or allocator_admission.get("worker_image_digest")
+        != expected_worker_image_digest
+        or allocator_admission.get("source_commit_sha") != expected_source_commit_sha
+        or worker_admission.get("paid_allocator_admission_digest")
+        != expected_allocator_admission_digest
+        or worker_admission.get("worker_image_digest")
+        != expected_worker_image_digest
+        or worker_admission.get("max_spend_usd")
+        != allocator_admission.get("max_spend_usd")
+        or worker_admission.get("hard_ttl_seconds")
+        != allocator_admission.get("hard_ttl_seconds")
+        or worker_admission.get("authority_id")
+        != allocator_admission.get("authority_id")
     ):
         errors.append("canonical_vast_output_binding_invalid")
     if errors:

@@ -94,6 +94,8 @@ def run_canonical_3dgs_vast_bootstrap(
         / extraction["transport_bundle_digest"].removeprefix("sha256:")
     )
     result_root = root / "results" / "splatfacto-comparison"
+    result_root.mkdir(parents=True, exist_ok=True)
+    write_json(result_root / "paid_allocator_admission.json", allocator)
     worker_receipt_path = result_root / "worker_receipt.json"
     os.environ["BLUEPRINT_WORKER_IMAGE_DIGEST"] = image
     exit_code = run_worker_main(

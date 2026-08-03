@@ -1427,6 +1427,12 @@ def verify_canonical_3dgs_plan_inputs(
     return data_root
 
 
+def _camera_axis_projection(plan: Mapping[str, Any]) -> str:
+    if plan.get("source_profile") == "public_dataset_arkitscenes_proxy":
+        return "source_opencv_preserved_no_axis_flip"
+    return "arkit_to_opencv_explicit_yz_flip"
+
+
 def _finalize_campaign(
     *, plan: Mapping[str, Any], destination: Path, results: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
@@ -1442,7 +1448,7 @@ def _finalize_campaign(
             "pose_binding": plan["pose_binding"],
             "world_frame": plan.get("world_frame"),
             "coordinate_frame_declaration": plan.get("coordinate_frame_declaration"),
-            "camera_axis_projection": "arkit_to_opencv_explicit_yz_flip",
+            "camera_axis_projection": _camera_axis_projection(plan),
             "units": "meters",
             "metric_scale_status": plan.get("metric_scale_status"),
         }
