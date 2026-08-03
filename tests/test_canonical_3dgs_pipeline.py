@@ -534,23 +534,103 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
     def fake_evaluator(*, source_artifact: dict, output_root: Path) -> dict:
         del output_root
         postshot = source_artifact["candidate_method_id"] == "jawset_postshot_splat3_v1"
+        psnr = 31.0 if postshot else 28.0
+        global_ssim = 0.96 if postshot else 0.91
+        windowed_ssim = 0.95 if postshot else 0.90
+        mean_absolute_error = 0.02 if postshot else 0.04
+        lpips = 0.04 if postshot else 0.08
+        rows = [
+            {
+                "view_id": pair["view_id"],
+                "trajectory": pair["trajectory"],
+                "real_view_digest": pair["real_view_digest"],
+                "candidate_render_digest": pair["candidate_render_digest"],
+                "psnr_db": psnr,
+                "global_ssim": global_ssim,
+                "windowed_ssim": windowed_ssim,
+                "mean_absolute_error": mean_absolute_error,
+                "lpips": lpips,
+            }
+            for pair in source_artifact["pairs"]
+        ]
         aggregate = {
-            "view_count": len(source_artifact["pairs"]),
-            "mean_psnr_db": 31.0 if postshot else 28.0,
-            "mean_global_ssim": 0.96 if postshot else 0.91,
-            "mean_windowed_ssim": 0.95 if postshot else 0.90,
-            "mean_absolute_error": 0.02 if postshot else 0.04,
-            "mean_lpips": 0.04 if postshot else 0.08,
+            "view_count": len(rows),
+            "mean_psnr_db": psnr,
+            "mean_global_ssim": global_ssim,
+            "mean_windowed_ssim": windowed_ssim,
+            "mean_absolute_error": mean_absolute_error,
+            "mean_lpips": lpips,
             "thresholds_passed": True,
         }
         report = {
             "schema_version": "visual_heldout_evaluation_report.v2",
+            "stable_run_identity": source_artifact["stable_run_identity"],
+            "source_capture_identity": source_artifact["source_capture_identity"],
+            "source_capture_digest": source_artifact["source_capture_digest"],
+            "reconstruction_dataset_digest": source_artifact[
+                "reconstruction_dataset_digest"
+            ],
+            "frozen_split_digest": source_artifact["frozen_split_digest"],
+            "candidate_reconstruction_result_digest": source_artifact[
+                "candidate_reconstruction_result_digest"
+            ],
+            "evaluation_request_digest": source_artifact[
+                "heldout_appearance_evaluation_request_digest"
+            ],
             "candidate_method_id": source_artifact["candidate_method_id"],
+            "candidate_provider_identity": source_artifact[
+                "candidate_provider_identity"
+            ],
+            "evaluator_identity": source_artifact["evaluator_identity"],
+            "evaluator_provider_identity": source_artifact[
+                "evaluator_provider_identity"
+            ],
+            "evaluator_implementation_digest": source_artifact[
+                "evaluator_implementation_digest"
+            ],
+            "source_commit_sha": source_artifact["source_commit_sha"],
+            "coordinate_frame_declaration": source_artifact[
+                "coordinate_frame_declaration"
+            ],
+            "metric_definitions": {"fixture": "exact-test-values"},
+            "lpips_runtime": {
+                "model_id": "lpips_alex_v0.1",
+                "checkpoint_digest": source_artifact["lpips_model"][
+                    "checkpoint_digest"
+                ],
+            },
+            "rows": rows,
             "by_trajectory": {
                 "author_heldout": aggregate,
                 "independent_short": {"view_count": 0, "thresholds_passed": None},
             },
+            "measured_trajectories": ["author_heldout"],
+            "thresholds": source_artifact["thresholds"],
+            "all_measured_trajectories_passed": True,
             "status": "passed_appearance_only",
+            "heldout_observation_count": len(rows),
+            "candidate_had_hidden_access": False,
+            "candidate_selected_heldout": False,
+            "candidate_self_graded": False,
+            "cost_usd": 0.0,
+            "authority_used": source_artifact["authority_used"],
+            "warnings": [],
+            "blockers": [],
+            "proof_effect": "independent_heldout_appearance_evaluation_only",
+            "claim_ceiling": "appearance_reconstruction",
+            "metric_scale_proven": False,
+            "metric_geometry_proven": False,
+            "collision_geometry_proven": False,
+            "physics_readiness_proven": False,
+            "physical_task_success_proven": False,
+            "deployment_readiness_proven": False,
+            "parent_artifact_or_event": {
+                "candidate_reconstruction_result_digest": source_artifact[
+                    "candidate_reconstruction_result_digest"
+                ],
+                "frozen_split_digest": source_artifact["frozen_split_digest"],
+            },
+            "timestamp": source_artifact["timestamp"],
         }
         report["visual_heldout_evaluation_report_digest"] = canonical_digest(
             report, digest_field="visual_heldout_evaluation_report_digest"
@@ -584,6 +664,41 @@ def test_v32_bundle_prepares_depth_seeded_candidate_only_dataset_end_to_end(
         row["appearance_fidelity_status"] == "qualified"
         for row in comparison["candidate_reports"]
     )
+
+    def stale_report_evaluator(*, source_artifact: dict, output_root: Path) -> dict:
+        report = fake_evaluator(
+            source_artifact=source_artifact, output_root=output_root
+        )
+        report["evaluation_request_digest"] = _sha("e")
+        report["visual_heldout_evaluation_report_digest"] = canonical_digest(
+            report, digest_field="visual_heldout_evaluation_report_digest"
+        )
+        return report
+
+    with pytest.raises(
+        Canonical3DGSEvaluationError,
+        match="canonical_quality_report_request_binding_mismatch",
+    ):
+        evaluate_canonical_3dgs_campaign(
+            campaign_result=campaign_result["campaign"],
+            results_root=results_root,
+            evaluator_input=evaluator,
+            evaluator_root=evaluator_root,
+            thresholds={
+                "minimum_mean_psnr_db": 25.0,
+                "minimum_mean_global_ssim": 0.8,
+                "minimum_mean_windowed_ssim": 0.8,
+                "maximum_mean_absolute_error": 0.1,
+                "maximum_mean_lpips": 0.2,
+            },
+            lpips_model={
+                "model_id": "lpips_alex_v0.1",
+                "checkpoint_digest": "sha256:" + "9" * 64,
+            },
+            output_root=tmp_path / "stale-report-quality",
+            renderer=fake_renderer,
+            appearance_evaluator=stale_report_evaluator,
+        )
     stale_evaluator = dict(evaluator)
     stale_evaluator["source_commit_sha"] = "d" * 40
     stale_evaluator["canonical_3dgs_hidden_evaluator_input_digest"] = canonical_digest(

@@ -11,6 +11,7 @@ import pytest
 
 from blueprint_pipeline import canonical_3dgs_vast_output as vast_output
 from blueprint_pipeline import reconstruction_vast_operation as vast_operation
+from blueprint_pipeline import reconstruction_paid_transport as paid_transport
 from blueprint_pipeline.canonical_3dgs_vast_output import (
     MANIFEST_MEMBER,
     compile_canonical_3dgs_vast_output_bundle,
@@ -230,6 +231,24 @@ def test_canonical_vast_bootstrap_uses_container_python3_entrypoint() -> None:
     assert "archive.read(wheel_member)" not in script
 
 
+def test_canonical_paid_transport_requires_embedded_worker_wheel() -> None:
+    assert paid_transport._canonical_worker_wheel_blockers(
+        {}, canonical_splatfacto=True
+    ) == ["canonical_splatfacto_worker_wheel_missing"]
+    assert paid_transport._canonical_worker_wheel_blockers(
+        {
+            "worker_wheel_filename": "worker.whl",
+            "worker_wheel_digest": "sha256:" + "a" * 64,
+            "worker_wheel_archive_path": "worker/worker.whl",
+            "worker_wheel_bytes": 1,
+        },
+        canonical_splatfacto=True,
+    ) == []
+    assert paid_transport._canonical_worker_wheel_blockers(
+        {}, canonical_splatfacto=False
+    ) == []
+
+
 def test_specialized_request_cannot_be_qualified_by_generic_boolean() -> None:
     blocked, bound = build_reconstruction_gpu_canary_admission(
         request=_request(),
@@ -405,6 +424,26 @@ def test_canonical_vast_output_caps_manifest_before_json_parse(
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr(MANIFEST_MEMBER, b"{" + b" " * 64 + b"}")
     monkeypatch.setattr(vast_output, "MAX_MANIFEST_BYTES", 16)
+
+    with pytest.raises(ReconstructionGpuOperationOutputError):
+        validate_canonical_3dgs_vast_output_bundle(
+            bundle_path=bundle,
+            expected_operation="trainer_canary",
+            expected_operation_request_digest="sha256:" + "3" * 64,
+            expected_transport_bundle_digest=TRANSPORT,
+            expected_reconstruction_dataset_digest=DATASET,
+            expected_allocator_admission_digest="sha256:" + "c" * 64,
+            expected_worker_image_digest=IMAGE,
+            expected_source_commit_sha=SOURCE,
+        )
+
+
+def test_canonical_vast_output_rejects_non_object_manifest_through_typed_error(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "array-manifest.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr(MANIFEST_MEMBER, b"[]")
 
     with pytest.raises(ReconstructionGpuOperationOutputError):
         validate_canonical_3dgs_vast_output_bundle(

@@ -16,7 +16,9 @@ import numpy as np
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .appearance_fidelity import build_appearance_fidelity_qualification
 from .heldout_appearance_evaluation_v2 import (
+    HeldoutAppearanceV2Error,
     build_heldout_appearance_evaluation_request_v2,
+    build_visual_heldout_evaluation_report_v2,
     evaluate_heldout_appearance_v2,
 )
 from .sealed_camera_render import render_splat_at_exact_cameras
@@ -84,6 +86,78 @@ def _load_jsonl(path: Path, *, code: str) -> list[dict[str, Any]]:
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise Canonical3DGSEvaluationError([code]) from exc
     return rows
+
+
+def _validated_report_for_request(
+    value: Any, *, request: Mapping[str, Any], arm_id: str
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise Canonical3DGSEvaluationError(
+            [f"canonical_quality_report_invalid:{arm_id}"]
+        )
+    try:
+        report = build_visual_heldout_evaluation_report_v2(value)
+    except (HeldoutAppearanceV2Error, TypeError, ValueError) as exc:
+        raise Canonical3DGSEvaluationError(
+            [f"canonical_quality_report_invalid:{arm_id}"]
+        ) from exc
+    bindings = (
+        ("stable_run_identity", "stable_run_identity"),
+        ("source_capture_identity", "source_capture_identity"),
+        ("source_capture_digest", "source_capture_digest"),
+        ("reconstruction_dataset_digest", "reconstruction_dataset_digest"),
+        ("frozen_split_digest", "frozen_split_digest"),
+        (
+            "candidate_reconstruction_result_digest",
+            "candidate_reconstruction_result_digest",
+        ),
+        ("candidate_method_id", "candidate_method_id"),
+        ("candidate_provider_identity", "candidate_provider_identity"),
+        ("evaluator_identity", "evaluator_identity"),
+        ("evaluator_provider_identity", "evaluator_provider_identity"),
+        ("evaluator_implementation_digest", "evaluator_implementation_digest"),
+        ("source_commit_sha", "source_commit_sha"),
+        ("coordinate_frame_declaration", "coordinate_frame_declaration"),
+        ("thresholds", "thresholds"),
+        ("authority_used", "authority_used"),
+        ("timestamp", "timestamp"),
+    )
+    if (
+        report.get("evaluation_request_digest")
+        != request.get("heldout_appearance_evaluation_request_digest")
+        or any(report.get(report_key) != request.get(request_key) for report_key, request_key in bindings)
+    ):
+        raise Canonical3DGSEvaluationError(
+            [f"canonical_quality_report_request_binding_mismatch:{arm_id}"]
+        )
+    request_pairs = {
+        str(row.get("view_id")): row
+        for row in request.get("pairs") or []
+        if isinstance(row, Mapping)
+    }
+    report_rows = {
+        str(row.get("view_id")): row
+        for row in report.get("rows") or []
+        if isinstance(row, Mapping)
+    }
+    if (
+        len(request_pairs) != len(request.get("pairs") or [])
+        or len(report_rows) != len(report.get("rows") or [])
+        or set(report_rows) != set(request_pairs)
+        or any(
+            report_rows[view_id].get(key) != request_pairs[view_id].get(key)
+            for view_id in request_pairs
+            for key in (
+                "trajectory",
+                "real_view_digest",
+                "candidate_render_digest",
+            )
+        )
+    ):
+        raise Canonical3DGSEvaluationError(
+            [f"canonical_quality_report_pair_binding_mismatch:{arm_id}"]
+        )
+    return report
 
 
 def _reference(
@@ -666,8 +740,12 @@ def evaluate_canonical_3dgs_campaign(
             "timestamp": campaign["timestamp"],
         }
         request = build_heldout_appearance_evaluation_request_v2(request)
-        report = dict(
-            appearance_evaluator(source_artifact=request, output_root=destination / arm_id)
+        report = _validated_report_for_request(
+            appearance_evaluator(
+                source_artifact=request, output_root=destination / arm_id
+            ),
+            request=request,
+            arm_id=arm_id,
         )
         _immutable_json(destination / arm_id / "heldout_evaluation_request.json", request)
         _immutable_json(destination / arm_id / "heldout_evaluation_report.json", report)

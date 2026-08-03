@@ -289,7 +289,10 @@ def validate_canonical_3dgs_vast_output_bundle(
                 > MAX_TOTAL_BYTES + MAX_MANIFEST_BYTES
             ):
                 raise ValueError("archive_size")
-            manifest = json.loads(archive.read(manifest_info))
+            manifest_value = json.loads(archive.read(manifest_info))
+            if not isinstance(manifest_value, Mapping):
+                raise ValueError("manifest_not_object")
+            manifest = dict(manifest_value)
             members = manifest.get("members")
             if (
                 not isinstance(members, list)
