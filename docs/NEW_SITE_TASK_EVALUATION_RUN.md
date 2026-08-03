@@ -56,6 +56,22 @@ supported are ranked. A completed attempt with incomplete outcome evidence is
 retained but excluded from ranking. Equal best metric values produce an explicit
 set of shared winners and no sole `winner_candidate_id`.
 
+For the Franka inspection lane, use
+`blueprint_pipeline.franka_inspection_learned_policy_lane`. It freezes the
+embodiment, two-camera 224x224 DROID observation, per-step observation sequence,
+8-D DROID action conversion, 15 Hz control, matched reset, inspection-coverage
+metric, and provider-neutral runtime interface. The runtime queries the learned
+policy anew for every control step, retains the complete native chunk, and
+executes only native row zero before observing again.
+
+Real executions enter this compiler through
+`learned_policy_execution_bundle.v1`. The compiler recomputes every embedded
+observation, native output, normalized action, simulator action, contact,
+collision, terminal-observation, metric, and attempt digest. When that bundle is
+present, caller-supplied parallel candidates, attempts, or metrics are rejected;
+the top-level authorization must byte-match the authorization inside the bundle.
+Hermetic fake receipts are refused by the real bundle builder.
+
 Run the compiler with:
 
 ```bash

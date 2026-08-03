@@ -111,7 +111,6 @@
     },
     "policy_evaluation": {
       "type": "object",
-      "required": ["task_metric", "policy_candidates", "attempts"],
       "properties": {
         "task_metric": {"$ref": "#/$defs/digestArtifact"},
         "policy_candidates": {
@@ -125,8 +124,38 @@
           "minItems": 5,
           "maxItems": 5,
           "items": {"$ref": "#/$defs/digestArtifact"}
+        },
+        "learned_policy_execution_bundle": {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "policy_candidates",
+            "execution_authorization",
+            "task_metric",
+            "attempts",
+            "candidate_set_digest",
+            "evidence_derived_receipts",
+            "caller_generated_digest_placeholders_allowed",
+            "bundle_digest"
+          ],
+          "properties": {
+            "schema_version": {"const": "learned_policy_execution_bundle.v1"},
+            "policy_candidates": {"type": "array", "minItems": 5, "maxItems": 5},
+            "execution_authorization": {"$ref": "#/$defs/digestArtifact"},
+            "task_metric": {"$ref": "#/$defs/digestArtifact"},
+            "attempts": {"type": "array", "minItems": 5, "maxItems": 5},
+            "candidate_set_digest": {"$ref": "#/$defs/digest"},
+            "evidence_derived_receipts": {"const": true},
+            "caller_generated_digest_placeholders_allowed": {"const": false},
+            "bundle_digest": {"$ref": "#/$defs/digest"}
+          },
+          "additionalProperties": false
         }
       },
+      "oneOf": [
+        {"required": ["task_metric", "policy_candidates", "attempts"]},
+        {"required": ["learned_policy_execution_bundle"]}
+      ],
       "additionalProperties": false
     },
     "request_digest": {"$ref": "#/$defs/digest"}
