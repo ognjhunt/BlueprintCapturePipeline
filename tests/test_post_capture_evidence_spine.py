@@ -582,6 +582,7 @@ def test_produced_artifacts_validate_against_spine_schema(tmp_path: Path) -> Non
 
 
 @pytest.mark.slow
+@pytest.mark.external_data
 def test_real_retained_arkitscenes_40958756_reaches_scientific_abstention(
     tmp_path: Path,
 ) -> None:

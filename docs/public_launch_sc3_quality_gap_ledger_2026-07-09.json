@@ -7462,7 +7462,7 @@
             {
               "artifact_id": "REL-15-AC-01-EV-01",
               "path": ".github/workflows/full-test-lane.yml",
-              "sha256": "sha256:ef01be93c9a27a390b2b0f523639cef656996e13049cb79100452c5f2aa6bda2",
+              "sha256": "sha256:248dd1c8c4246f82b3aee9e7f355184a2fb84c6385aabf2704f0132b548f83da",
               "role": "workflow_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:b72c7e58863d233683e2c0ffe7bc7ed48e016aad375b6846693ef83a0eab3cbd",
+              "sha256": "sha256:9c867d45523a09ebb72bf6a912524ef497349060af1177c022aaa87e0b33d285",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",

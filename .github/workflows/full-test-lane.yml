@@ -118,13 +118,13 @@ jobs:
           BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: planned
         run: |
           mkdir -p "${{ runner.temp }}/blueprint-ci"
-          # Exact Drake/Chrono/Isaac runtimes are separately provisioned by
-          # the measurement-research monitor (or a dedicated Isaac worker).
-          # Keep unavailable external runtimes out of this hermetic CPU lane
-          # instead of converting their honest absence into a skip blocker.
+          # Exact Drake/Chrono/Isaac runtimes and retained real-dataset bytes
+          # are separately provisioned by their evidence lanes. Keep those
+          # unavailable inputs out of this hermetic CPU lane instead of
+          # converting their honest absence into a skip blocker.
           uv run python -m pytest \
             -p blueprint_pipeline.pytest_full_lane_evidence \
-            -m "not external_runtime" --collect-only -q \
+            -m "not external_runtime and not external_data" --collect-only -q \
             > "${{ runner.temp }}/blueprint-ci/full-test-lane-collection.txt"
 
       - name: Run full lane
@@ -136,7 +136,7 @@ jobs:
           uv run scripts/pytest_full.sh \
             -p blueprint_pipeline.pytest_full_lane_evidence \
             --junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml" \
-            -m "not external_runtime"
+            -m "not external_runtime and not external_data"
 
       - name: Verify exact full-lane collection
         if: always()
