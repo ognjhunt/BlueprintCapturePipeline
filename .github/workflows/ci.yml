@@ -40,7 +40,7 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
 
       - name: Upload impact plan
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: impacted-test-plan-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/impacted-test-plan.json
@@ -113,7 +113,7 @@ jobs:
 
       - name: Upload impacted test evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: impacted-tests-${{ github.sha }}
           path: |
@@ -190,7 +190,7 @@ jobs:
 
       - name: Upload prerequisite evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: groot-oscar-prerequisites-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/groot_oscar_live_prerequisites.json
@@ -284,7 +284,7 @@ jobs:
 
       - name: Upload SAST evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sast-${{ github.sha }}
           path: |
@@ -397,7 +397,7 @@ jobs:
 
       - name: Upload supply-chain evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: supply-chain-${{ github.sha }}
           path: |
@@ -426,7 +426,7 @@ jobs:
 
       - name: Upload dependency evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dependency-security-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/dependency-security-gate.json
@@ -523,7 +523,7 @@ jobs:
 
       - name: Upload container-production evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: container-production-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/container-production
