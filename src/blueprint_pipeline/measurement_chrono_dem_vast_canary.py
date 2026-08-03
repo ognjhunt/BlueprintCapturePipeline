@@ -179,6 +179,10 @@ probe_source="$work/probe"
 probe_build="$work/probe-build"
 result="$work/result.json"
 mkdir -p "$bundle" "$probe_source"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends __REQUIRED_DEBIAN_PACKAGES__
+rm -rf /var/lib/apt/lists/*
 python3 - "$archive" "$bundle" <<'PY'
 import hashlib, json, os, stat, sys, urllib.request, zipfile
 from pathlib import Path
@@ -210,10 +214,6 @@ for row in manifest.get("source_files", []):
     if observed != row["digest"]:
         raise SystemExit("measurement_chrono_dem_source_digest_mismatch")
 PY
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends __REQUIRED_DEBIAN_PACKAGES__
-rm -rf /var/lib/apt/lists/*
 git clone --filter=blob:none --no-checkout __SOURCE_REPOSITORY__ "$chrono_source"
 git -C "$chrono_source" checkout --detach "$BLUEPRINT_MEASUREMENT_CHRONO_DEM_SOURCE_UPSTREAM_COMMIT"
 test "$(git -C "$chrono_source" rev-parse HEAD^{commit})" = \
@@ -560,12 +560,16 @@ def run_measurement_chrono_dem_vast_canary(
                 except (FileNotFoundError, TimeoutError):
                     if float(clock()) - started_at >= hard_ttl:
                         break
-                    sleeper(
-                        min(
-                            10.0,
-                            max(0.0, hard_ttl - (float(clock()) - started_at)),
+                    try:
+                        sleeper(
+                            min(
+                                10.0,
+                                max(0.0, hard_ttl - (float(clock()) - started_at)),
+                            )
                         )
-                    )
+                    except KeyboardInterrupt:
+                        blockers.append("measurement_chrono_dem_controller_interrupted")
+                        break
                 except Exception as exc:  # noqa: BLE001
                     blockers.append(
                         f"measurement_chrono_dem_output_fetch_failed:{type(exc).__name__}"
