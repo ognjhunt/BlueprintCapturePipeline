@@ -4,6 +4,16 @@
 
 ### Employee-Facing
 
+- Added a frozen, provider-neutral five-policy lane for one Franka work-surface
+  inspection task. It pins five distinct official OpenPI RoboArena DROID
+  checkpoint object sets, requires a fresh identity-bound learned query at every
+  15 Hz control step, derives complete execution receipts from retained evidence,
+  and connects those receipts to the new-site compiler without caller digest
+  placeholders. The current terminal artifact admits zero policies because the
+  separately hosted checkpoint objects lack checkpoint-specific rights evidence;
+  no GPU/provider spend or real policy execution is claimed
+  (`src/blueprint_pipeline/franka_inspection_learned_policy_lane.py`,
+  `docs/FRANKA_INSPECTION_FIVE_POLICY_LANE.md`).
 - Added a provider-neutral new-site Task Evaluation Run compiler that binds an
   admitted capture source, registered full-resolution native 3DGS and separate
   dynamics geometry, automatic deterministic 3D target authorization, robot

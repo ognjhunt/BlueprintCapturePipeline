@@ -978,8 +978,41 @@ def compile_new_site_task_evaluation_run(value: Mapping[str, Any]) -> dict[str, 
         result["robot_id"] = expected_robot
         result["run_digest"] = canonical_digest(result, digest_field="run_digest")
         return result
-    candidate_values = evaluation.get("policy_candidates")
-    attempt_values = evaluation.get("attempts")
+    execution_bundle = evaluation.get("learned_policy_execution_bundle")
+    if execution_bundle is not None:
+        if not isinstance(execution_bundle, Mapping):
+            raise NewSiteTaskEvaluationError(["learned_policy_execution_bundle_invalid"])
+        if any(
+            key in evaluation
+            for key in ("task_metric", "policy_candidates", "attempts")
+        ):
+            raise NewSiteTaskEvaluationError(
+                ["caller_policy_evidence_forbidden_with_execution_bundle"]
+            )
+        try:
+            from .franka_inspection_learned_policy_lane import (
+                LearnedPolicyLaneError,
+                unpack_execution_bundle,
+            )
+
+            derived = unpack_execution_bundle(execution_bundle)
+        except LearnedPolicyLaneError as exc:
+            raise NewSiteTaskEvaluationError(
+                [f"learned_policy_execution_bundle:{code}" for code in exc.codes]
+            ) from exc
+        bundle_authorization = dict(derived["execution_authorization"])
+        if authorization != bundle_authorization:
+            raise NewSiteTaskEvaluationError(
+                ["execution_authorization_bundle_binding_mismatch"]
+            )
+        candidate_values = derived["policy_candidates"]
+        attempt_values = derived["attempts"]
+        metric_value = derived["task_metric"]
+        authorization = bundle_authorization
+    else:
+        candidate_values = evaluation.get("policy_candidates")
+        attempt_values = evaluation.get("attempts")
+        metric_value = evaluation.get("task_metric")
     candidate_count = len(candidate_values) if isinstance(candidate_values, list) else 0
     attempt_count = len(attempt_values) if isinstance(attempt_values, list) else 0
     if candidate_count != EXPECTED_POLICY_CANDIDATES or attempt_count != EXPECTED_POLICY_CANDIDATES:
@@ -999,7 +1032,7 @@ def compile_new_site_task_evaluation_run(value: Mapping[str, Any]) -> dict[str, 
         result["policy_attempt_count"] = min(attempt_count, EXPECTED_POLICY_CANDIDATES)
         result["run_digest"] = canonical_digest(result, digest_field="run_digest")
         return result
-    metric, metric_frozen_at = _metric_spec(evaluation.get("task_metric"))
+    metric, metric_frozen_at = _metric_spec(metric_value)
     candidates = _policy_candidates(candidate_values)
     _execution_authorization(
         authorization,
