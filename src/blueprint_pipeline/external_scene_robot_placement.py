@@ -467,6 +467,7 @@ def _select_supported_physics_probe(
         floor_z=floor_z,
         height_tolerance=height_tolerance,
     )
+    best_candidate: dict[str, Any] | None = None
     for point, height in zip(points, heights, strict=True):
         if height is None:
             continue
@@ -476,19 +477,29 @@ def _select_supported_physics_probe(
             yaw=0.0,
             half_extent_xy=(0.075, 0.075),
         )
+        candidate = {
+            "schema_version": "external_scene_physics_probe_candidate.v1",
+            "selection_status": "derived_geometry_candidate_unverified_in_isaac",
+            "selection_method": (
+                "supported_floor_ring_outside_robot_mount"
+                if obstacle_hits == 0
+                else "supported_floor_ring_minimum_source_collision_complexity"
+            ),
+            "probe_xy_m": [round(float(point[0]), 9), round(float(point[1]), 9)],
+            "ground_height_m": round(float(height), 9),
+            "source_surface_support_observed": True,
+            "obstacle_overlap_probe_hits": int(obstacle_hits),
+            "probe_may_intersect_non_floor_source_geometry": bool(obstacle_hits > 0),
+            "manufacture_ground_plane": False,
+            "live_contact_qualified": False,
+        }
         if obstacle_hits == 0:
-            return {
-                "schema_version": "external_scene_physics_probe_candidate.v1",
-                "selection_status": "derived_geometry_candidate_unverified_in_isaac",
-                "selection_method": "supported_floor_ring_outside_robot_mount",
-                "probe_xy_m": [round(float(point[0]), 9), round(float(point[1]), 9)],
-                "ground_height_m": round(float(height), 9),
-                "source_surface_support_observed": True,
-                "obstacle_overlap_probe_hits": 0,
-                "manufacture_ground_plane": False,
-                "live_contact_qualified": False,
-            }
-    return None
+            return candidate
+        if best_candidate is None or obstacle_hits < int(
+            best_candidate["obstacle_overlap_probe_hits"]
+        ):
+            best_candidate = candidate
+    return best_candidate
 
 
 def build_external_scene_robot_placement_request(value: Mapping[str, Any]) -> dict[str, Any]:

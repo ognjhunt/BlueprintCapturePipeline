@@ -11,6 +11,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.external_scene_robot_placement import (
     _footprint_overlap_counts,
     _infer_horizontal_support_surface,
+    _select_supported_physics_probe,
     _triangle_footprint_overlap_count,
     propose_external_scene_robot_placement,
 )
@@ -377,3 +378,31 @@ def test_supported_stance_with_source_collision_conflict_requires_proxy_composit
     assert plan["status"] == "required_before_policy_evaluation"
     assert plan["source_collision_enabled_in_policy_lane"] is False
     assert plan["task_zone_simready_asset_required"] is False
+
+
+def test_physics_probe_keeps_supported_minimum_conflict_candidate() -> None:
+    support = np.asarray(
+        [
+            [[-2.0, -2.0, 0.0], [2.0, -2.0, 0.0], [2.0, 2.0, 0.0]],
+            [[-2.0, -2.0, 0.0], [2.0, 2.0, 0.0], [-2.0, 2.0, 0.0]],
+        ],
+        dtype=np.float64,
+    )
+    obstacle = np.asarray(
+        [[[-2.0, -2.0], [2.0, -2.0], [0.0, 2.0]]],
+        dtype=np.float64,
+    )
+
+    candidate = _select_supported_physics_probe(
+        support_triangles=support,
+        obstacle_triangles_xy=obstacle,
+        position=(0.0, 0.0, 0.0),
+        half_extent_xy=(0.18, 0.18),
+        floor_z=0.0,
+        height_tolerance=0.05,
+    )
+
+    assert candidate is not None
+    assert candidate["source_surface_support_observed"] is True
+    assert candidate["obstacle_overlap_probe_hits"] == 1
+    assert candidate["probe_may_intersect_non_floor_source_geometry"] is True
