@@ -39,6 +39,7 @@
         "appearance_asset_digest": {"$ref": "#/$defs/digest"},
         "geometry_asset_digest": {"$ref": "#/$defs/digest"},
         "scene_registration_digest": {"$ref": "#/$defs/digest"},
+        "source_scene_digest": {"$ref": "#/$defs/digest"},
         "registration_status": {"enum": ["qualified", "unqualified", "abstained"]},
         "full_resolution_appearance_preserved": {"type": "boolean"},
         "presentation_output_used_as_evaluation_evidence": {"const": false},
@@ -46,7 +47,12 @@
       },
       "additionalProperties": true
     },
-    "target_orchestration": {"$ref": "#/$defs/targetOrchestration"},
+    "target_orchestration": {
+      "oneOf": [
+        {"$ref": "#/$defs/targetOrchestration"},
+        {"$ref": "#/$defs/renderedTargetOrchestration"}
+      ]
+    },
     "robot_placement": {"$ref": "#/$defs/digestArtifact"},
     "scene_composition": {"$ref": "#/$defs/digestArtifact"},
     "routing_inputs": {
@@ -152,6 +158,41 @@
           "type": ["object", "null"]
         },
         "target_orchestration_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "renderedTargetOrchestration": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "source_scene_digest",
+        "analysis_splat_digest",
+        "candidate_may_self_authorize",
+        "target_analysis",
+        "binding_results",
+        "task_zone_asset_requirement",
+        "orchestration_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "rendered_scene_task_target_orchestration.v1"},
+        "status": {"enum": ["target_ready_for_bounded_sim", "abstained"]},
+        "source_scene_digest": {"$ref": "#/$defs/digest"},
+        "analysis_splat_digest": {"$ref": "#/$defs/digest"},
+        "candidate_may_self_authorize": {"const": false},
+        "target_analysis": {
+          "type": "object",
+          "required": ["schema_version", "robot_id", "target_analysis_digest"],
+          "properties": {
+            "schema_version": {"const": "scene_task_target_analysis_result.v1"},
+            "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
+            "target_analysis_digest": {"$ref": "#/$defs/digest"}
+          },
+          "additionalProperties": true
+        },
+        "binding_results": {"type": "array"},
+        "task_zone_asset_requirement": {"type": "object"},
+        "orchestration_digest": {"$ref": "#/$defs/digest"}
       },
       "additionalProperties": true
     }

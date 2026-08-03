@@ -32,6 +32,22 @@ The compiler binds, in order:
 7. exactly five immutable learned-policy identities and five execution receipts
    under one frozen reset and observation/action contract.
 
+The target stage accepts the canonical output of
+`rendered_scene_task_target_orchestrator` directly. It verifies both the outer
+orchestration digest and nested target-analysis digest, joins the source scene
+and native splat to the registered reconstruction, and derives the selected
+binding only from the matching digest-bound binding result. The compiler maps
+the versioned analyzer task-family vocabulary into the measurement router's
+controlled task classes and preserves the analyzer's Franka/G1 robot binding.
+An unknown family, robot/family mismatch, foreign scene/splat binding, or
+ambiguous task-zone interaction mode fails closed before placement. The
+placement stage likewise recognizes
+`external_scene_robot_placement_candidate.v1`, but that
+artifact remains an analytic/runtime-visualization candidate: it produces a
+`qualified_robot_placement_missing` abstention until an independent placement
+qualification exists. No caller-side, site-specific JSON reshaping upgrades
+either artifact.
+
 The task outcome metric is digest-bound and timestamped before execution. Each
 attempt must bind the selected route and placement, show at least one fresh
 learned-policy query and action, and preserve reset, observation, action,
