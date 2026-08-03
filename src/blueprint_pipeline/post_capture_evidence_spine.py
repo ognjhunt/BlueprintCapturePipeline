@@ -47,6 +47,10 @@ SOURCE_PROFILE_SCHEMA = "post_capture_source_profile.v1"
 GEOMETRY_SCHEMA = "derived_site_geometry.v1"
 GEOMETRY_QUALIFICATION_SCHEMA = "site_geometry_qualification.v1"
 NATIVE_3DGS_SCHEMA = "native_3dgs_candidate.v1"
+CANONICAL_REGISTERED_APPEARANCE_SCHEMA = "canonical_registered_appearance.v1"
+CANONICAL_REGISTRATION_MEASUREMENT_SCHEMA = "canonical_3dgs_registration_measurement.v1"
+TELEPORT_RUN_RECEIPT_SCHEMA = "teleport_provider_run_receipt.v1"
+PROVIDER_SPLAT_IMPORT_RECEIPT_SCHEMA = "provider_splat_import_receipt.v1"
 REGISTRATION_QUALIFICATION_SCHEMA = "scene_registration_qualification.v1"
 REGISTERED_RECONSTRUCTION_SCHEMA = "registered_site_reconstruction.v1"
 ROBOT_SELECTION_SCHEMA = "task_robot_selection.v1"
@@ -381,6 +385,212 @@ def build_native_3dgs_candidate(
         },
     }
     return _finalize(candidate, "native_3dgs_candidate_digest")
+
+
+def build_native_3dgs_candidate_from_canonical(
+    *,
+    source_profile: Mapping[str, Any],
+    registered_appearance: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Adapt the canonical producer without treating appearance as geometry authority."""
+
+    registered = _validate_artifact(
+        registered_appearance,
+        schema=CANONICAL_REGISTERED_APPEARANCE_SCHEMA,
+        digest_field="canonical_registered_appearance_digest",
+        code="canonical_registered_appearance",
+    )
+    if (
+        registered.get("appearance_format") != "native_3dgs"
+        or registered.get("full_resolution_appearance_preserved") is not True
+        or not _digest(registered.get("appearance_asset_digest"))
+    ):
+        raise PostCaptureEvidenceError(["canonical_registered_appearance_invalid"])
+    return build_native_3dgs_candidate(
+        source_profile=source_profile,
+        provider_receipt=registered,
+        appearance_asset_digest=registered["appearance_asset_digest"],
+        provider_identity="canonical_3dgs",
+        provider_receipt_digest_field="canonical_registered_appearance_digest",
+        full_resolution_appearance_preserved=True,
+    )
+
+
+def build_native_3dgs_candidate_from_teleport(
+    *,
+    source_profile: Mapping[str, Any],
+    run_receipt: Mapping[str, Any],
+    import_receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Normalize exact Teleport lifecycle and imported native PLY receipts."""
+
+    run = _validate_artifact(
+        run_receipt,
+        schema=TELEPORT_RUN_RECEIPT_SCHEMA,
+        digest_field="teleport_provider_run_receipt_digest",
+        code="teleport_provider_run_receipt",
+    )
+    imported = _validate_artifact(
+        import_receipt,
+        schema=PROVIDER_SPLAT_IMPORT_RECEIPT_SCHEMA,
+        digest_field="provider_splat_import_receipt_digest",
+        code="provider_splat_import_receipt",
+    )
+    splats = [
+        row
+        for row in imported.get("imported_assets") or []
+        if isinstance(row, Mapping) and row.get("artifact_kind") == "splat_ply"
+    ]
+    if (
+        run.get("status") != "succeeded_unqualified"
+        or run.get("provider_identity") != "teleport"
+        or run.get("provider_splat_import_receipt_digest")
+        != imported.get("provider_splat_import_receipt_digest")
+        or imported.get("provider_identity") != "teleport"
+        or imported.get("provider_native_output_preserved_unchanged") is not True
+        or len(splats) != 1
+        or not _digest(splats[0].get("digest"))
+    ):
+        raise PostCaptureEvidenceError(["teleport_native_3dgs_join_invalid"])
+    candidate = build_native_3dgs_candidate(
+        source_profile=source_profile,
+        provider_receipt=imported,
+        appearance_asset_digest=str(splats[0]["digest"]),
+        provider_identity="teleport",
+        provider_receipt_digest_field="provider_splat_import_receipt_digest",
+        full_resolution_appearance_preserved=True,
+    )
+    candidate["teleport_provider_run_receipt_digest"] = run[
+        "teleport_provider_run_receipt_digest"
+    ]
+    candidate["claim_boundary"]["appearance_quality_qualified"] = False
+    candidate.pop("native_3dgs_candidate_digest")
+    return _finalize(candidate, "native_3dgs_candidate_digest")
+
+
+def build_registration_qualification_from_canonical(
+    *,
+    source_profile: Mapping[str, Any],
+    appearance_candidate: Mapping[str, Any],
+    site_geometry: Mapping[str, Any],
+    registered_appearance: Mapping[str, Any],
+    registration_measurement: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind the canonical measurement to the exact normalized appearance and geometry."""
+
+    source = _validate_artifact(
+        source_profile,
+        schema=SOURCE_PROFILE_SCHEMA,
+        digest_field="source_profile_digest",
+        code="source_profile",
+    )
+    appearance = _validate_artifact(
+        appearance_candidate,
+        schema=NATIVE_3DGS_SCHEMA,
+        digest_field="native_3dgs_candidate_digest",
+        code="native_3dgs_candidate",
+    )
+    geometry = _validate_artifact(
+        site_geometry,
+        schema=GEOMETRY_SCHEMA,
+        digest_field="derived_site_geometry_digest",
+        code="derived_site_geometry",
+    )
+    registered = _validate_artifact(
+        registered_appearance,
+        schema=CANONICAL_REGISTERED_APPEARANCE_SCHEMA,
+        digest_field="canonical_registered_appearance_digest",
+        code="canonical_registered_appearance",
+    )
+    measurement = _validate_artifact(
+        registration_measurement,
+        schema=CANONICAL_REGISTRATION_MEASUREMENT_SCHEMA,
+        digest_field="canonical_3dgs_registration_measurement_digest",
+        code="canonical_registration_measurement",
+    )
+    if any(
+        (
+            source.get("source_capture_digest")
+            != registered.get("source_capture_digest"),
+            source.get("source_capture_digest")
+            != measurement.get("source_capture_digest"),
+            appearance.get("appearance_asset_digest")
+            != registered.get("appearance_asset_digest"),
+            appearance.get("appearance_asset_digest")
+            != measurement.get("appearance_asset_digest"),
+            registered.get("scene_registration_digest")
+            != measurement.get("canonical_3dgs_registration_measurement_digest"),
+        )
+    ):
+        raise PostCaptureEvidenceError(["canonical_registration_exact_join_mismatch"])
+    measurement_digest = measurement["canonical_3dgs_registration_measurement_digest"]
+    transform_digest = canonical_digest(
+        {
+            "schema_version": "scene_registration_transform.v1",
+            "canonical_registration_measurement_digest": measurement_digest,
+            "transform_appearance_to_site": measurement.get(
+                "transform_appearance_to_site"
+            ),
+        }
+    )
+    residual_digest = canonical_digest(
+        {
+            "schema_version": "scene_registration_residual_measurement.v1",
+            "canonical_registration_measurement_digest": measurement_digest,
+            "residual_summary": measurement.get("residual_summary"),
+            "thresholds_m": measurement.get("thresholds_m"),
+        }
+    )
+    scene_registration_digest = canonical_digest(
+        {
+            "schema_version": "scene_registration.v1",
+            "source_profile_digest": source["source_profile_digest"],
+            "native_3dgs_candidate_digest": appearance[
+                "native_3dgs_candidate_digest"
+            ],
+            "derived_site_geometry_digest": geometry[
+                "derived_site_geometry_digest"
+            ],
+            "registration_transform_digest": transform_digest,
+            "residual_measurement_digest": residual_digest,
+        }
+    )
+    qualified = (
+        registered.get("status") == "qualified"
+        and registered.get("registration_status") == "qualified"
+        and measurement.get("status") == "qualified"
+        and measurement.get("registration_gate_passed") is True
+    )
+    result = {
+        "schema_version": REGISTRATION_QUALIFICATION_SCHEMA,
+        "status": "qualified" if qualified else "unqualified",
+        "source_profile_digest": source["source_profile_digest"],
+        "native_3dgs_candidate_digest": appearance[
+            "native_3dgs_candidate_digest"
+        ],
+        "appearance_asset_digest": appearance["appearance_asset_digest"],
+        "derived_site_geometry_digest": geometry["derived_site_geometry_digest"],
+        "geometry_asset_digest": geometry["geometry_asset_digest"],
+        "canonical_registered_appearance_digest": registered[
+            "canonical_registered_appearance_digest"
+        ],
+        "canonical_registration_measurement_digest": measurement_digest,
+        "scene_registration_digest": scene_registration_digest,
+        "registration_transform_digest": transform_digest,
+        "residual_measurement_digest": residual_digest,
+        "qualifier_identity": "canonical-registration:" + str(measurement["method_id"]),
+        "candidate_may_self_qualify": False,
+        "smallest_missing_measurement": (
+            None
+            if qualified
+            else {
+                "code": "splat_metric_frame_registration_missing",
+                "instruction": "Pass the frozen canonical appearance-to-site residual gate.",
+                "stage": "reconstruction_registration",
+            }
+        ),
+    }
+    return _finalize(result, "registration_qualification_digest")
 
 
 def build_qualified_site_geometry(
@@ -1141,6 +1351,10 @@ def run_post_capture_evidence_spine(
     source_root: str | Path,
     output_root: str | Path,
     appearance_candidate: Mapping[str, Any] | None = None,
+    canonical_registered_appearance: Mapping[str, Any] | None = None,
+    canonical_registration_measurement: Mapping[str, Any] | None = None,
+    teleport_run_receipt: Mapping[str, Any] | None = None,
+    teleport_import_receipt: Mapping[str, Any] | None = None,
     depth_surface_result: Mapping[str, Any] | None = None,
     depth_surface_root: str | Path | None = None,
     geometry_qualification: Mapping[str, Any] | None = None,
@@ -1163,6 +1377,23 @@ def run_post_capture_evidence_spine(
     if not str(run_id).strip():
         raise PostCaptureEvidenceError(["post_capture_run_id_missing"])
     source = build_source_profile(source_artifact=source_artifact, source_root=source_root)
+    appearance_input_count = sum(
+        value is not None
+        for value in (
+            appearance_candidate,
+            canonical_registered_appearance,
+            teleport_run_receipt,
+        )
+    )
+    if appearance_input_count > 1:
+        raise PostCaptureEvidenceError(["native_3dgs_input_ambiguous"])
+    if (teleport_run_receipt is None) != (teleport_import_receipt is None):
+        raise PostCaptureEvidenceError(["teleport_receipt_pair_incomplete"])
+    if (
+        registration_qualification is not None
+        and canonical_registration_measurement is not None
+    ):
+        raise PostCaptureEvidenceError(["registration_qualification_input_ambiguous"])
     invocation = {
         "schema_version": "post_capture_evidence_invocation.v1",
         "run_id": str(run_id),
@@ -1170,6 +1401,30 @@ def run_post_capture_evidence_spine(
         "appearance_candidate_digest": (
             appearance_candidate.get("native_3dgs_candidate_digest")
             if isinstance(appearance_candidate, Mapping)
+            else None
+        ),
+        "canonical_registered_appearance_digest": (
+            canonical_registered_appearance.get(
+                "canonical_registered_appearance_digest"
+            )
+            if isinstance(canonical_registered_appearance, Mapping)
+            else None
+        ),
+        "canonical_registration_measurement_digest": (
+            canonical_registration_measurement.get(
+                "canonical_3dgs_registration_measurement_digest"
+            )
+            if isinstance(canonical_registration_measurement, Mapping)
+            else None
+        ),
+        "teleport_provider_run_receipt_digest": (
+            teleport_run_receipt.get("teleport_provider_run_receipt_digest")
+            if isinstance(teleport_run_receipt, Mapping)
+            else None
+        ),
+        "teleport_provider_splat_import_receipt_digest": (
+            teleport_import_receipt.get("provider_splat_import_receipt_digest")
+            if isinstance(teleport_import_receipt, Mapping)
             else None
         ),
         "depth_surface_result_digest": (
@@ -1247,12 +1502,27 @@ def run_post_capture_evidence_spine(
     _write_immutable(source_path, source)
     artifacts = [_artifact_reference(source_path, source, "source_profile_digest")]
     appearance = None
-    if appearance_candidate is not None:
-        appearance = _validate_artifact(
-            appearance_candidate,
-            schema=NATIVE_3DGS_SCHEMA,
-            digest_field="native_3dgs_candidate_digest",
-            code="native_3dgs_candidate",
+    if appearance_input_count:
+        appearance = (
+            build_native_3dgs_candidate_from_teleport(
+                source_profile=source,
+                run_receipt=teleport_run_receipt or {},
+                import_receipt=teleport_import_receipt or {},
+            )
+            if teleport_run_receipt is not None
+            else (
+                build_native_3dgs_candidate_from_canonical(
+                    source_profile=source,
+                    registered_appearance=canonical_registered_appearance or {},
+                )
+                if canonical_registered_appearance is not None
+                else _validate_artifact(
+                    appearance_candidate or {},
+                    schema=NATIVE_3DGS_SCHEMA,
+                    digest_field="native_3dgs_candidate_digest",
+                    code="native_3dgs_candidate",
+                )
+            )
         )
         appearance_path = run_root / "02_native_3dgs_candidate.json"
         _write_immutable(appearance_path, appearance)
@@ -1282,11 +1552,45 @@ def run_post_capture_evidence_spine(
                 geometry_path, geometry, "derived_site_geometry_digest"
             )
         )
+    effective_registration_qualification = registration_qualification
+    if canonical_registration_measurement is not None:
+        if canonical_registered_appearance is None:
+            raise PostCaptureEvidenceError(
+                ["canonical_registered_appearance_required_for_measurement"]
+            )
+        if appearance is None or geometry is None:
+            effective_registration_qualification = None
+        else:
+            effective_registration_qualification = (
+                build_registration_qualification_from_canonical(
+                    source_profile=source,
+                    appearance_candidate=appearance,
+                    site_geometry=geometry,
+                    registered_appearance=canonical_registered_appearance,
+                    registration_measurement=canonical_registration_measurement,
+                )
+            )
+    if effective_registration_qualification is not None:
+        effective_registration_qualification = _validate_artifact(
+            effective_registration_qualification,
+            schema=REGISTRATION_QUALIFICATION_SCHEMA,
+            digest_field="registration_qualification_digest",
+            code="scene_registration_qualification",
+        )
+        registration_path = run_root / "03b_scene_registration_qualification.json"
+        _write_immutable(registration_path, effective_registration_qualification)
+        artifacts.append(
+            _artifact_reference(
+                registration_path,
+                effective_registration_qualification,
+                "registration_qualification_digest",
+            )
+        )
     reconstruction = build_registered_site_reconstruction(
         source_profile=source,
         appearance_candidate=appearance,
         site_geometry=geometry,
-        registration_qualification=registration_qualification,
+        registration_qualification=effective_registration_qualification,
     )
     reconstruction_path = run_root / "04_registered_site_reconstruction.json"
     _write_immutable(reconstruction_path, reconstruction)
@@ -1513,6 +1817,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-root", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--appearance-candidate", type=Path)
+    parser.add_argument("--canonical-registered-appearance", type=Path)
+    parser.add_argument("--canonical-registration-measurement", type=Path)
+    parser.add_argument("--teleport-run-receipt", type=Path)
+    parser.add_argument("--teleport-import-receipt", type=Path)
     parser.add_argument("--depth-surface-result", type=Path)
     parser.add_argument("--depth-surface-root", type=Path)
     parser.add_argument("--geometry-qualification", type=Path)
@@ -1540,6 +1848,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         appearance_candidate=(
             _load(arguments.appearance_candidate)
             if arguments.appearance_candidate
+            else None
+        ),
+        canonical_registered_appearance=(
+            _load(arguments.canonical_registered_appearance)
+            if arguments.canonical_registered_appearance
+            else None
+        ),
+        canonical_registration_measurement=(
+            _load(arguments.canonical_registration_measurement)
+            if arguments.canonical_registration_measurement
+            else None
+        ),
+        teleport_run_receipt=(
+            _load(arguments.teleport_run_receipt)
+            if arguments.teleport_run_receipt
+            else None
+        ),
+        teleport_import_receipt=(
+            _load(arguments.teleport_import_receipt)
+            if arguments.teleport_import_receipt
             else None
         ),
         depth_surface_result=(
@@ -1618,6 +1946,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "AUTHORIZATION_DECISION_SCHEMA",
+    "CANONICAL_REGISTERED_APPEARANCE_SCHEMA",
+    "CANONICAL_REGISTRATION_MEASUREMENT_SCHEMA",
     "GEOMETRY_SCHEMA",
     "GEOMETRY_QUALIFICATION_SCHEMA",
     "NATIVE_3DGS_SCHEMA",
@@ -1634,11 +1964,14 @@ __all__ = [
     "build_derived_site_geometry",
     "build_automatic_task_target",
     "build_native_3dgs_candidate",
+    "build_native_3dgs_candidate_from_canonical",
+    "build_native_3dgs_candidate_from_teleport",
     "build_qualified_site_geometry",
     "build_policy_execution_decision",
     "build_robot_placement_candidate",
     "build_qualified_robot_placement",
     "build_registered_site_reconstruction",
+    "build_registration_qualification_from_canonical",
     "build_routing_inputs_and_decision",
     "build_scene_composition_decision",
     "build_source_profile",
