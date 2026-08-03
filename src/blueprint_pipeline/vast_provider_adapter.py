@@ -3226,6 +3226,29 @@ def _instance_status(instance_payload: Mapping[str, Any]) -> str:
     )
 
 
+def _instance_stopped_before_start(instance_payload: Mapping[str, Any]) -> bool:
+    """Detect Vast contracts that stopped before their container ever ran.
+
+    Vast can leave ``actual_status`` at ``created`` after the image is loaded even
+    though both the current and intended states are already ``stopped``.  Giving
+    ``actual_status`` unconditional precedence makes the startup poll burn its
+    whole timeout on a contract that cannot make progress.
+    """
+
+    instances = instance_payload.get("instances")
+    data = instances if isinstance(instances, Mapping) else instance_payload
+    actual_status = _string(data.get("actual_status")).lower()
+    current_state = _string(data.get("cur_state")).lower()
+    intended_status = _string(data.get("intended_status")).lower()
+    uptime = _number(data.get("uptime"))
+    return bool(
+        actual_status in {"", "created", "creating", "loading"}
+        and current_state == "stopped"
+        and intended_status == "stopped"
+        and (uptime is None or uptime <= 0)
+    )
+
+
 def _instance_list_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     instances = payload.get("instances")
     if isinstance(instances, list):
@@ -3343,7 +3366,11 @@ def _poll_instance(
             timeout_seconds=30,
         )
         last_payload = payload
-        status = _instance_status(payload)
+        status = (
+            "stopped_before_start"
+            if _instance_stopped_before_start(payload)
+            else _instance_status(payload)
+        )
         observations.append(
             {
                 "observed_at": utc_now_iso(),
@@ -3357,7 +3384,13 @@ def _poll_instance(
                 else payload.get("cur_state"),
             }
         )
-        if status.lower() in {"running", "exited", "stopped", "failed"}:
+        if status.lower() in {
+            "running",
+            "exited",
+            "stopped",
+            "stopped_before_start",
+            "failed",
+        }:
             return status, observations, last_payload
         time.sleep(poll_interval_seconds)
     return _instance_status(last_payload), observations, last_payload
