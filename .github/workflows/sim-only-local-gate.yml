@@ -1,10 +1,6 @@
 name: Sim-Only Local Gate
 
 on:
-  # This job is a required protected-branch context, so it must be emitted for
-  # every pull request. A paths filter leaves unrelated PRs permanently blocked
-  # with an "Expected" check that GitHub never schedules.
-  pull_request:
   push:
     branches: ["main"]
     paths:

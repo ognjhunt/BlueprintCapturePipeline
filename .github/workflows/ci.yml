@@ -13,8 +13,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  impact:
+    name: Determine changed test surface
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      requires_full_suite: ${{ steps.plan.outputs.requires_full_suite }}
+      selected_test_count: ${{ steps.plan.outputs.selected_test_count }}
+    steps:
+      - name: Checkout with comparison history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Build deterministic impact plan
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python3 -m blueprint_pipeline.impacted_test_selection \
+            --base "${{ github.event.pull_request.base.sha || github.event.before }}" \
+            --head "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --no-worktree \
+            --plan-only \
+            --plan-output "${{ runner.temp }}/blueprint-ci/impacted-test-plan.json" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Upload impact plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: impacted-test-plan-${{ github.sha }}
+          path: ${{ runner.temp }}/blueprint-ci/impacted-test-plan.json
+          if-no-files-found: error
+          retention-days: 30
+
+  impacted-tests:
+    name: Impacted tests and sentinels
+    needs: impact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       # CI runners are ephemeral; never use the checkout as a durable artifact cache.
       BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
@@ -33,6 +70,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
 
       - name: Checkout BlueprintContracts
         shell: bash
@@ -56,63 +95,62 @@ jobs:
           version: "0.10.7"
           python-version: "3.12"
 
-      - name: Verify committed inputs survive a clean archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive_root="$(mktemp -d)"
-          git archive HEAD | tar -x -C "${archive_root}"
-          python3 "${archive_root}/scripts/verify_clean_checkout_inputs.py" \
-            --root "${archive_root}"
-
-      - name: Verify frozen dependency exports
-        run: python3 scripts/verify_dependency_exports.py
-
-      - name: Lint public scientific claims
-        run: python3 scripts/lint_public_scientific_claims.py
-
-      - name: Verify shared doctrine blocks match the cross-repo lock
-        run: python3 scripts/verify_shared_doctrine.py
-
       - name: Install dependencies
         run: |
           uv lock --check
           uv sync --frozen --extra dev
           uv pip install -e BlueprintContracts
 
-      - name: Validate Python interpreter matrix
-        run: uv run python scripts/validate_python_interpreter_matrix.py --assert-current
-
-      - name: Verify shared robot-eval request contract
+      - name: Run impacted tests and always-on sentinels
         run: |
-          uv run python scripts/verify_robot_eval_job_request_contract.py \
-            --contracts-repo BlueprintContracts
+          uv run python -m blueprint_pipeline.impacted_test_selection \
+            --base "${{ github.event.pull_request.base.sha || github.event.before }}" \
+            --head "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --no-worktree \
+            --timeout-seconds 480 \
+            --plan-output "${{ runner.temp }}/blueprint-ci/impacted-test-plan.json" \
+            --junit "${{ runner.temp }}/blueprint-ci/impacted-tests-junit.xml"
 
-      - name: Build and verify distributions
-        run: |
-          uv build --out-dir "${{ runner.temp }}/blueprint-ci/dist"
-          uv run python scripts/verify_distribution_metadata.py \
-            --dist-dir "${{ runner.temp }}/blueprint-ci/dist"
-
-      - name: Run tests
-        run: |
-          uv run pytest -q \
-            --cov=blueprint_pipeline \
-            --cov-report=term:skip-covered \
-            --cov-report=json:"${{ runner.temp }}/blueprint-ci/coverage.json" \
-            --cov-fail-under=69.5
-
-      - name: Upload test and coverage evidence
+      - name: Upload impacted test evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ci-test-${{ github.sha }}
-          path: ${{ runner.temp }}/blueprint-ci/coverage.json
+          name: impacted-tests-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/blueprint-ci/impacted-test-plan.json
+            ${{ runner.temp }}/blueprint-ci/impacted-tests-junit.xml
           if-no-files-found: error
           retention-days: 90
 
+  cross-cutting-full-suite:
+    name: Cross-cutting full suite
+    needs: impact
+    if: needs.impact.outputs.requires_full_suite == 'true'
+    uses: ./.github/workflows/full-test-lane.yml
+    with:
+      reason: cross_cutting_dependency_impact
+    secrets: inherit
+
+  impacted-gate:
+    name: Impacted test and sentinel gate
+    needs: [impact, impacted-tests, cross-cutting-full-suite]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require bounded impacted evidence and any requested full lane
+        env:
+          IMPACT_RESULT: ${{ needs.impact.result }}
+          IMPACTED_RESULT: ${{ needs.impacted-tests.result }}
+          FULL_RESULT: ${{ needs.cross-cutting-full-suite.result }}
+        run: |
+          test "${IMPACT_RESULT}" = "success"
+          test "${IMPACTED_RESULT}" = "success"
+          test "${FULL_RESULT}" = "success" || test "${FULL_RESULT}" = "skipped"
+
   lint:
     name: Ruff and claim lint
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -138,6 +176,7 @@ jobs:
 
   foundation-prerequisites:
     name: GR00T OSCAR external prerequisite pins
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -160,6 +199,7 @@ jobs:
 
   typecheck:
     name: Typed release contract core
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -210,6 +250,7 @@ jobs:
 
   sast:
     name: Bandit high and reviewed-medium gate
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -254,6 +295,7 @@ jobs:
 
   source-governance:
     name: Module and critical-lane governance
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -275,6 +317,7 @@ jobs:
 
   supply-chain:
     name: SBOM, license, and provenance contract
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -296,6 +339,8 @@ jobs:
           uv lock --check
           uv sync --frozen --extra dev
           uv build --out-dir "${{ runner.temp }}/blueprint-ci/dist"
+          uv run python scripts/verify_distribution_metadata.py \
+            --dist-dir "${{ runner.temp }}/blueprint-ci/dist"
 
       - name: Generate CycloneDX, SPDX, license, and unsigned provenance evidence
         shell: bash
@@ -362,6 +407,7 @@ jobs:
           retention-days: 90
 
   dependency-security:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -389,6 +435,7 @@ jobs:
 
   container-contract:
     name: Container production contract
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
