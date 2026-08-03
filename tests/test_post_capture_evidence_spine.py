@@ -410,6 +410,7 @@ def test_teleport_receipts_bind_the_exact_native_ply_without_qualification(
             "status": "imported_provider_appearance_candidate_only",
             "provider_identity": "teleport",
             "source_capture_digest": source["source_capture_digest"],
+            "provider_execution_receipt_digest": _sha("d"),
             "provider_native_output_preserved_unchanged": True,
             "imported_assets": [
                 {
@@ -426,6 +427,7 @@ def test_teleport_receipts_bind_the_exact_native_ply_without_qualification(
             "schema_version": "teleport_provider_run_receipt.v1",
             "status": "succeeded_unqualified",
             "provider_identity": "teleport",
+            "provider_execution_receipt_digest": _sha("d"),
             "provider_splat_import_receipt_digest": imported[
                 "provider_splat_import_receipt_digest"
             ],

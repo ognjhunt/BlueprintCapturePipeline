@@ -446,6 +446,9 @@ def build_native_3dgs_candidate_from_teleport(
         or run.get("provider_identity") != "teleport"
         or run.get("provider_splat_import_receipt_digest")
         != imported.get("provider_splat_import_receipt_digest")
+        or not _digest(run.get("provider_execution_receipt_digest"))
+        or run.get("provider_execution_receipt_digest")
+        != imported.get("provider_execution_receipt_digest")
         or imported.get("provider_identity") != "teleport"
         or imported.get("provider_native_output_preserved_unchanged") is not True
         or len(splats) != 1
