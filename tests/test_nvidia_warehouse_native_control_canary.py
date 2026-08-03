@@ -174,3 +174,11 @@ def test_native_backend_enables_bundled_franka_compatibility_extension_first() -
     assert source.index(enable) < source.index(controller_import)
     between = source[source.index(enable) : source.index(franka_import)]
     assert "simulation_app.update()" in between
+
+
+def test_native_backend_uses_franka_compatible_numpy_articulation_adapter() -> None:
+    source = inspect.getsource(control.isaac_sim_6_native_control_backend)
+
+    assert 'backend="numpy"' in source
+    assert 'device="cpu"' in source
+    assert 'backend="torch"' not in source

@@ -275,8 +275,13 @@ def isaac_sim_6_native_control_backend(
             stage_units_in_meters=1.0,
             physics_dt=float(spec["physics"]["physics_dt_seconds"]),
             rendering_dt=float(spec["physics"]["rendering_dt_seconds"]),
-            backend="torch",
-            device="cuda:0",
+            # Isaac Sim 6's bundled legacy Franka extension initializes its
+            # ParallelGripper through NumPy. A CUDA Torch articulation backend
+            # reaches ``Tensor.__array__`` and fails before the first reset.
+            # This selects the compatible articulation data adapter only;
+            # scene dynamics remain native Isaac/PhysX.
+            backend="numpy",
+            device="cpu",
         )
         stage = world.stage
         scene = spec["scene"]
