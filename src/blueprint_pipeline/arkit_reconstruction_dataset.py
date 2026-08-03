@@ -25,6 +25,7 @@ ARKIT_RECONSTRUCTION_DATASET_REQUEST_SCHEMA_VERSION = (
 CAMERA_OBSERVATION_SCHEMA_VERSION = "camera_observation_manifest.v1"
 CAMERA_CALIBRATION_SCHEMA_VERSION = "camera_calibration_manifest.v1"
 POSE_REFINEMENT_REQUEST_SCHEMA_VERSION = "pose_refinement_request.v1"
+ARKIT_CAMERA_AXIS_CONVENTION = "arkit_x_right_y_up_z_backward"
 
 
 class ArkitReconstructionDatasetError(ValueError):
@@ -247,6 +248,10 @@ def compile_arkit_reconstruction_dataset(
     coordinate_system = metric_scaffold.get("coordinate_system")
     if not isinstance(intrinsics, Mapping) or not isinstance(coordinate_system, Mapping):
         raise ArkitReconstructionDatasetError(["arkit_export_calibration_missing"])
+    coordinate_system = {
+        **dict(coordinate_system),
+        "camera_axis_convention": ARKIT_CAMERA_AXIS_CONVENTION,
+    }
     calibration = {
         "schema_version": CAMERA_CALIBRATION_SCHEMA_VERSION,
         "capture_digest": capture_digest,
@@ -314,6 +319,7 @@ def compile_arkit_reconstruction_dataset(
                 "camera": {
                     "camera_model": "PINHOLE",
                     "T_world_camera": camera.get("T_world_camera"),
+                    "camera_axis_convention": ARKIT_CAMERA_AXIS_CONVENTION,
                     "rgb_intrinsics": dict(intrinsics),
                 },
                 "calibration_digest": calibration["calibration_digest"],
