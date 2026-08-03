@@ -440,6 +440,7 @@ filterwarnings = [
     "ignore::UserWarning",
 ]
 markers = [
+    "external_runtime: marks tests requiring a separately provisioned exact external runtime; excluded from the hermetic CPU full lane",
     "gpu: marks tests requiring GPU",
     "integration: marks integration tests",
     "slow: marks slow tests",
