@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import jsonschema
@@ -11,6 +12,12 @@ from blueprint_pipeline.new_site_task_evaluation_run import (
     NewSiteTaskEvaluationError,
     compile_new_site_task_evaluation_run,
     main,
+)
+from blueprint_pipeline.new_site_task_evaluation_matrix import (
+    execute_policy_scenario_matrix,
+    migrate_v1_request_to_v2,
+    project_v2_result_to_v1,
+    validate_scenario_pack,
 )
 from blueprint_pipeline.task_site_measurement_routing import (
     ALL_CAPABILITY_FIELDS,
@@ -1022,3 +1029,632 @@ def test_g1_cannot_be_requested_for_non_humanoid_task() -> None:
         compile_new_site_task_evaluation_run(request)
 
     assert "g1_requires_humanoid_task" in caught.value.codes
+
+
+def _matrix_settings(*, occlusion: bool = False) -> dict:
+    return _finalize(
+        {
+            "lighting": {
+                "mode": "fixed_fixture",
+                "illuminance_lux": 450 if not occlusion else 300,
+            },
+            "sensor": {"mode": "frozen_rgbd", "exposure": "fixed"},
+            "noise": {"mode": "none"},
+            "occlusion": {
+                "status": "qualified_bounded" if occlusion else "not_applied",
+                "maximum_target_mask_fraction": 0.2 if occlusion else 0.0,
+                "qualification_digest": _sha("6") if occlusion else None,
+            },
+            "evidence_ceiling_digest": _sha("8" if occlusion else "7"),
+            "settings_may_authorize_new_claims": False,
+        },
+        "settings_digest",
+    )
+
+
+def _matrix_scenario(
+    *,
+    scenario_id: str,
+    scenario_kind: str,
+    pack_id: str,
+    bindings: dict,
+    metric_digest: str,
+    seed: int,
+    camera_perturbation: bool = False,
+    occlusion: bool = False,
+) -> dict:
+    camera = (
+        {
+            "status": "bounded_qualified",
+            "translation_meters": [0.01, 0.0, 0.0],
+            "rotation_degrees": [0.0, 1.0, 0.0],
+            "maximum_norm": 0.02,
+            "task_valid": True,
+            "qualification_digest": _sha("9"),
+            "evidence_ceiling_digest": _sha("a"),
+        }
+        if camera_perturbation
+        else {"status": "not_applied"}
+    )
+    return _finalize(
+        {
+            "schema_version": "new_site_task_scenario.v1",
+            "scenario_id": scenario_id,
+            "scenario_pack_id": pack_id,
+            "scenario_kind": scenario_kind,
+            "admission_status": "admitted",
+            "bindings": bindings,
+            "metric_spec_digest": metric_digest,
+            "frozen_before_execution": True,
+            "frozen_at": "2026-08-03T00:00:00Z",
+            "reset_state_digest": canonical_digest({"reset": scenario_id}),
+            "initial_state_observation_digest": canonical_digest(
+                {"initial_observation": scenario_id}
+            ),
+            "deterministic_simulator_seed": seed,
+            "target_state": {
+                "state_digest": canonical_digest({"target": scenario_id}),
+                "policy_visibility": "observed",
+            },
+            "distractor_state": {
+                "state_digest": canonical_digest({"distractor": scenario_id}),
+                "policy_visibility": "not_directly_observed",
+            },
+            "perturbations": {
+                "robot_base": {"status": "not_applied"},
+                "camera": camera,
+            },
+            "observation_settings": _matrix_settings(occlusion=occlusion),
+            "geometry_material_variants": [],
+            "policy_observation_spec_digest": canonical_digest(
+                {"public_observation": scenario_id}
+            ),
+            "evaluator_only_state_digest": canonical_digest(
+                {"held_out_success_state": scenario_id}
+            ),
+            "hidden_evaluator_data_in_policy_input": False,
+            "scenario_generation_may_authorize_new_claims": False,
+            "inclusion_rationale": f"Preregistered bounded case: {scenario_id}.",
+        },
+        "scenario_digest",
+    )
+
+
+def _matrix_request(*, scenario_count: int = 3, minimum_paired: int = 2) -> dict:
+    request = _request()
+    metric = request["policy_evaluation"]["task_metric"]
+    candidates = request["policy_evaluation"]["policy_candidates"]
+    target = request["target_orchestration"]["selected_target"]
+    bindings = {
+        "site_id": request["routing_inputs"]["site_evidence_profile"]["profile_id"],
+        "task_id": target["proposal_id"],
+        "source_profile_digest": request["source_profile"]["source_profile_digest"],
+        "reconstruction_digest": request["reconstruction"]["reconstruction_digest"],
+        "target_binding_digest": target["target_binding_digest"],
+        "robot_id": "franka_panda",
+        "placement_digest": request["robot_placement"]["placement_digest"],
+        "task_class": target["task_class"],
+    }
+    rule = _finalize(
+        {
+            "schema_version": "paired_scenario_aggregation_rule.v1",
+            "metric_spec_digest": metric["metric_spec_digest"],
+            "method": "paired_complete_scenario_mean",
+            "direction": metric["direction"],
+            "minimum_paired_scenarios": minimum_paired,
+            "uncertainty_method": "deterministic_paired_bootstrap_percentile_95",
+            "bootstrap_replicates": 200,
+            "bootstrap_seed": 1729,
+            "tie_tolerance": 1e-9,
+            "catastrophic_failure_threshold": 0.5,
+            "catastrophic_rule": "any_supported_cell_at_or_beyond_threshold",
+            "unsupported_metric_policy": "exclude_scenario_from_paired_ranking",
+            "aggregate_may_mask_catastrophic_failure": False,
+        },
+        "aggregation_rule_digest",
+    )
+    pack_id = "inspection-pack-fixture-v1"
+    scenarios = [
+        _matrix_scenario(
+            scenario_id="nominal",
+            scenario_kind="nominal",
+            pack_id=pack_id,
+            bindings=bindings,
+            metric_digest=metric["metric_spec_digest"],
+            seed=11,
+        ),
+        _matrix_scenario(
+            scenario_id="camera-offset",
+            scenario_kind="bounded_placement_observation_perturbation",
+            pack_id=pack_id,
+            bindings=bindings,
+            metric_digest=metric["metric_spec_digest"],
+            seed=12,
+            camera_perturbation=True,
+        ),
+        _matrix_scenario(
+            scenario_id="bounded-occlusion",
+            scenario_kind="visibility_occlusion_stress",
+            pack_id=pack_id,
+            bindings=bindings,
+            metric_digest=metric["metric_spec_digest"],
+            seed=13,
+            occlusion=True,
+        ),
+    ]
+    if scenario_count == 4:
+        scenarios.append(
+            _matrix_scenario(
+                scenario_id="alternate-lighting",
+                scenario_kind="visibility_occlusion_stress",
+                pack_id=pack_id,
+                bindings=bindings,
+                metric_digest=metric["metric_spec_digest"],
+                seed=14,
+                occlusion=True,
+            )
+        )
+    pack = _finalize(
+        {
+            "schema_version": "new_site_task_scenario_pack.v1",
+            "scenario_pack_id": pack_id,
+            "pack_kind": "inspection",
+            "bindings": bindings,
+            "frozen_before_execution": True,
+            "frozen_at": "2026-08-03T00:00:00Z",
+            "matrix_evidence_type": "learned_policy_scenario_matrix",
+            "scripted_controller_matrix_separate": True,
+            "scenario_generation_may_authorize_new_claims": False,
+            "preregistered_metric": metric,
+            "aggregation_rule": rule,
+            "scenario_count": len(scenarios),
+            "scenario_definitions": scenarios,
+            "excluded_scenarios": [
+                {
+                    "scenario_id": "unqualified-material-swap",
+                    "exclusion_rationale": (
+                        "No material qualification supports a changed friction claim."
+                    ),
+                }
+            ],
+        },
+        "scenario_pack_digest",
+    )
+    authorization = _finalize(
+        {
+            "schema_version": "new_site_policy_execution_authorization.v2",
+            "policy_execution_authorized": True,
+            "physical_robot_execution_authorized": False,
+            "routing_decision_digest": request["execution_authorization"][
+                "routing_decision_digest"
+            ],
+            "placement_digest": request["robot_placement"]["placement_digest"],
+            "metric_spec_digest": metric["metric_spec_digest"],
+            "candidate_set_digest": canonical_digest(
+                {
+                    "policy_identity_digests": sorted(
+                        row["policy_identity_digest"] for row in candidates
+                    )
+                }
+            ),
+            "scenario_pack_digest": pack["scenario_pack_digest"],
+            "aggregation_rule_digest": rule["aggregation_rule_digest"],
+            "matrix_evidence_type": "learned_policy_scenario_matrix",
+        },
+        "authorization_digest",
+    )
+    request["schema_version"] = "new_site_task_evaluation_request.v2"
+    request["policy_evaluation"] = {
+        "task_metric": metric,
+        "policy_candidates": candidates,
+        "scenario_pack": pack,
+    }
+    request["execution_authorization"] = authorization
+    request["request_digest"] = canonical_digest(
+        {key: value for key, value in request.items() if key != "request_digest"}
+    )
+    return request
+
+
+def _matrix_runner(
+    cell: dict,
+    *,
+    missing_cell_id: str | None = None,
+    failed_cell_id: str | None = None,
+    tied: bool = False,
+    catastrophic_candidate: str | None = None,
+) -> dict | None:
+    assert "evaluator_only_state_digest" not in cell["policy_query_payload"]
+    assert cell["policy_query_payload"]["hidden_evaluator_data_included"] is False
+    if cell["cell_id"] == missing_cell_id:
+        return None
+    candidate_number = int(str(cell["candidate_id"]).split("-")[-1])
+    scenario_number = {
+        "nominal": 0,
+        "camera-offset": 1,
+        "bounded-occlusion": 2,
+        "alternate-lighting": 3,
+    }[cell["scenario_id"]]
+    value = float(candidate_number) + scenario_number / 10.0
+    if tied and candidate_number in {4, 5}:
+        value = 5.0 + scenario_number / 10.0
+    if catastrophic_candidate == cell["candidate_id"] and cell["scenario_id"] == "nominal":
+        value = 0.0
+    failed = cell["cell_id"] == failed_cell_id
+    receipt = {
+        "schema_version": "learned_policy_scenario_attempt_receipt.v2",
+        "cell_id": cell["cell_id"],
+        "cell_plan_digest": cell["cell_plan_digest"],
+        "candidate_id": cell["candidate_id"],
+        "policy_identity_digest": cell["policy_identity_digest"],
+        "scenario_id": cell["scenario_id"],
+        "scenario_digest": cell["scenario_digest"],
+        "scenario_pack_digest": cell["scenario_pack_digest"],
+        "reset_state_digest": cell["reset_state_digest"],
+        "deterministic_simulator_seed": cell["deterministic_simulator_seed"],
+        "routing_decision_digest": cell["routing_decision_digest"],
+        "placement_digest": cell["placement_digest"],
+        "execution_receipt_digest": canonical_digest({"execution": cell["cell_id"]}),
+        "initial_state_observation_digest": cell["initial_state_observation_digest"],
+        "observation_trace_digest": canonical_digest({"observation": cell["cell_id"]}),
+        "action_trace_digest": canonical_digest({"action": cell["cell_id"]}),
+        "contact_evidence_digest": canonical_digest({"contact": cell["cell_id"]}),
+        "collision_evidence_digest": canonical_digest({"collision": cell["cell_id"]}),
+        "action_source": "learned_policy",
+        "hidden_evaluator_data_accessed": False,
+        "started_at": "2026-08-03T00:01:00Z",
+        "ended_at": "2026-08-03T00:02:00Z",
+        "fresh_policy_query_count": 1,
+        "learned_policy_action_count": 1,
+        "learned_policy_action_proven": True,
+        "reset_observed": True,
+        "status": "failed" if failed else "completed",
+        "blockers": ["simulator_timeout"] if failed else [],
+        "task_metric_result": {
+            "metric_spec_digest": cell["metric_spec_digest"],
+            "value": value,
+            "supported_for_ranking": not failed,
+            "blockers": ["terminal_observation_missing"] if failed else [],
+        },
+    }
+    return _finalize(receipt, "attempt_digest")
+
+
+def _execute_matrix_request(request: dict, **runner_options: object) -> dict:
+    packet = execute_policy_scenario_matrix(
+        request,
+        lambda cell: _matrix_runner(dict(cell), **runner_options),
+    )
+    request["policy_evaluation"]["matrix_execution_packet"] = packet
+    return request
+
+
+def test_v2_hermetic_five_by_three_matrix_is_complete_and_deterministic() -> None:
+    request = _matrix_request()
+    schema_root = Path(__file__).parents[1] / "docs" / "schemas"
+    jsonschema.Draft202012Validator(
+        json.loads((schema_root / "new_site_task_scenario_pack.v1.schema.json").read_text())
+    ).validate(request["policy_evaluation"]["scenario_pack"])
+    jsonschema.Draft202012Validator(
+        json.loads((schema_root / "new_site_task_evaluation_request.v2.schema.json").read_text())
+    ).validate(request)
+    first_packet = execute_policy_scenario_matrix(request, lambda cell: _matrix_runner(dict(cell)))
+    second_packet = execute_policy_scenario_matrix(request, lambda cell: _matrix_runner(dict(cell)))
+    assert first_packet == second_packet
+    assert first_packet["expected_cell_count"] == 15
+    assert len(first_packet["cells"]) == 15
+    request["policy_evaluation"]["matrix_execution_packet"] = first_packet
+    jsonschema.Draft202012Validator(
+        json.loads(
+            (
+                schema_root
+                / "new_site_policy_scenario_execution_packet.v1.schema.json"
+            ).read_text()
+        )
+    ).validate(first_packet)
+
+    first_result = compile_new_site_task_evaluation_run(request)
+    second_result = compile_new_site_task_evaluation_run(request)
+
+    assert first_result == second_result
+    jsonschema.Draft202012Validator(
+        json.loads((schema_root / "new_site_task_evaluation_run.v2.schema.json").read_text())
+    ).validate(first_result)
+    assert first_result["status"] == "completed"
+    assert first_result["expected_cell_count"] == 15
+    assert first_result["observed_attempt_count"] == 15
+    assert first_result["paired_scenario_ids"] == [
+        "nominal",
+        "camera-offset",
+        "bounded-occlusion",
+    ]
+    assert first_result["winner_candidate_ids"] == ["policy-5"]
+    assert first_result["candidate_summaries"][4]["uncertainty"]["lower"] <= 5.1
+    assert first_result["claim_boundary"]["aggregate_hides_catastrophic_failures"] is False
+
+
+def test_v2_missing_cell_remains_visible_and_causes_terminal_abstention() -> None:
+    request = _execute_matrix_request(
+        _matrix_request(), missing_cell_id="policy-3::camera-offset"
+    )
+
+    result = compile_new_site_task_evaluation_run(request)
+
+    assert result["status"] == "abstained"
+    assert result["smallest_missing_measurement"]["code"] == "matrix_missing_attempt_cells"
+    missing = [row for row in result["cell_results"] if row["cell_status"] == "missing"]
+    assert [row["cell_id"] for row in missing] == ["policy-3::camera-offset"]
+    assert missing[0]["cell_abstention"]["code"] == "attempt_receipt_missing"
+    assert result["paired_scenario_ids"] == ["nominal", "bounded-occlusion"]
+
+
+def test_v2_missing_execution_packet_emits_exact_abstention_for_all_cells() -> None:
+    result = compile_new_site_task_evaluation_run(_matrix_request())
+
+    assert result["status"] == "abstained"
+    assert result["expected_cell_count"] == 15
+    assert result["observed_attempt_count"] == 0
+    assert len(result["cell_results"]) == 15
+    assert {row["cell_abstention"]["code"] for row in result["cell_results"]} == {
+        "matrix_execution_packet_missing"
+    }
+    assert result["smallest_missing_measurement"]["code"] == (
+        "matrix_execution_packet_missing"
+    )
+
+
+def test_v2_omitted_packet_cell_is_synthesized_as_visible_missing_cell() -> None:
+    request = _execute_matrix_request(_matrix_request())
+    packet = request["policy_evaluation"]["matrix_execution_packet"]
+    removed = packet["cells"].pop(7)
+    packet["observed_cell_count"] = len(packet["cells"])
+    packet["status"] = "completed_with_failures"
+    _finalize(packet, "execution_packet_digest")
+
+    result = compile_new_site_task_evaluation_run(request)
+
+    assert result["status"] == "abstained"
+    missing = [row for row in result["cell_results"] if row["cell_status"] == "missing"]
+    assert [row["cell_id"] for row in missing] == [removed["cell_id"]]
+    assert missing[0]["cell_abstention"]["code"] == (
+        "matrix_cell_missing_from_execution_packet"
+    )
+
+
+def test_v2_failed_cell_is_retained_and_excludes_whole_paired_scenario() -> None:
+    request = _execute_matrix_request(
+        _matrix_request(), failed_cell_id="policy-2::bounded-occlusion"
+    )
+
+    result = compile_new_site_task_evaluation_run(request)
+
+    assert result["status"] == "completed"
+    assert result["paired_scenario_ids"] == ["nominal", "camera-offset"]
+    assert result["excluded_scenarios"] == [
+        {
+            "scenario_id": "bounded-occlusion",
+            "reason": "not_supported_for_all_paired_policies",
+            "unsupported_cell_ids": ["policy-2::bounded-occlusion"],
+        }
+    ]
+    policy_two = next(
+        row for row in result["candidate_summaries"] if row["candidate_id"] == "policy-2"
+    )
+    assert policy_two["attempt_coverage"] == 1.0
+    assert policy_two["supported_metric_coverage"] == pytest.approx(2 / 3)
+    assert policy_two["unsupported_metrics"][0]["cell_status"] == "failed"
+
+
+def test_v2_reset_mismatch_is_rejected_even_when_nested_digests_are_rebound() -> None:
+    request = _execute_matrix_request(_matrix_request())
+    packet = request["policy_evaluation"]["matrix_execution_packet"]
+    cell = packet["cells"][0]
+    cell["attempt_receipt"]["reset_state_digest"] = _sha("e")
+    _finalize(cell["attempt_receipt"], "attempt_digest")
+    _finalize(cell, "cell_result_digest")
+    _finalize(packet, "execution_packet_digest")
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "matrix_attempt_scope_binding_mismatch" in caught.value.codes
+
+
+def test_v2_tampered_scenario_pack_is_rejected() -> None:
+    request = _matrix_request()
+    request["policy_evaluation"]["scenario_pack"]["scenario_definitions"][0][
+        "inclusion_rationale"
+    ] = "tampered"
+    request["request_digest"] = canonical_digest(
+        {key: value for key, value in request.items() if key != "request_digest"}
+    )
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        execute_policy_scenario_matrix(request, lambda cell: _matrix_runner(dict(cell)))
+
+    assert "scenario_pack_digest_mismatch" in caught.value.codes
+
+
+def test_v2_catastrophic_cell_cannot_be_hidden_by_aggregate_score() -> None:
+    request = _execute_matrix_request(
+        _matrix_request(), catastrophic_candidate="policy-5"
+    )
+
+    result = compile_new_site_task_evaluation_run(request)
+
+    policy_five = next(
+        row for row in result["candidate_summaries"] if row["candidate_id"] == "policy-5"
+    )
+    assert policy_five["aggregate_score"] > 3.0
+    assert policy_five["catastrophic_failure_count"] == 1
+    assert policy_five["eligible_for_winner"] is False
+    assert result["winner_candidate_ids"] == ["policy-4"]
+    assert next(row for row in result["ranking"] if row["candidate_id"] == "policy-5")[
+        "catastrophic_failure_count"
+    ] == 1
+
+
+def test_v2_ties_report_shared_winners_and_no_sole_winner() -> None:
+    request = _execute_matrix_request(_matrix_request(), tied=True)
+
+    result = compile_new_site_task_evaluation_run(request)
+
+    assert result["winner_candidate_ids"] == ["policy-4", "policy-5"]
+    assert result["winner_candidate_id"] is None
+    assert {
+        row["candidate_id"] for row in result["ranking"] if row["rank"] == 1
+    } == {"policy-4", "policy-5"}
+
+
+def test_v2_unqualified_geometry_variant_cannot_self_authorize() -> None:
+    request = _matrix_request()
+    scenario = request["policy_evaluation"]["scenario_pack"]["scenario_definitions"][0]
+    scenario["geometry_material_variants"] = [
+        {
+            "variant_id": "invented-friction",
+            "variant_kind": "material",
+            "status": "candidate",
+            "asset_digest": _sha("1"),
+            "qualification_digest": _sha("2"),
+            "evidence_ceiling_digest": _sha("3"),
+            "variant_may_authorize_new_claims": False,
+        }
+    ]
+    _finalize(scenario, "scenario_digest")
+    _finalize(request["policy_evaluation"]["scenario_pack"], "scenario_pack_digest")
+    authorization = request["execution_authorization"]
+    authorization["scenario_pack_digest"] = request["policy_evaluation"]["scenario_pack"][
+        "scenario_pack_digest"
+    ]
+    _finalize(authorization, "authorization_digest")
+    request["request_digest"] = canonical_digest(
+        {key: value for key, value in request.items() if key != "request_digest"}
+    )
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        execute_policy_scenario_matrix(request, lambda cell: _matrix_runner(dict(cell)))
+
+    assert "scenario_geometry_material_variant_unqualified" in caught.value.codes
+
+
+def test_v1_to_v2_migration_is_explicitly_single_scenario_and_no_claim_upgrade() -> None:
+    request = _request()
+
+    migration = migrate_v1_request_to_v2(request)
+    schema_root = Path(__file__).parents[1] / "docs" / "schemas"
+    jsonschema.Draft202012Validator(
+        json.loads(
+            (
+                schema_root
+                / "new_site_task_evaluation_v1_to_v2_migration.v1.schema.json"
+            ).read_text()
+        )
+    ).validate(migration)
+    jsonschema.Draft202012Validator(
+        json.loads((schema_root / "new_site_task_scenario_pack.v1.schema.json").read_text())
+    ).validate(migration["scenario_pack"])
+    source_result = compile_new_site_task_evaluation_run(request)
+    validate_scenario_pack(
+        migration["scenario_pack"],
+        expected_bindings={
+            "site_id": request["routing_inputs"]["site_evidence_profile"]["profile_id"],
+            "task_id": request["target_orchestration"]["selected_target"][
+                "proposal_id"
+            ],
+            "source_profile_digest": source_result["source_profile_digest"],
+            "reconstruction_digest": source_result["reconstruction_digest"],
+            "target_binding_digest": source_result["target_binding_digest"],
+            "robot_id": source_result["robot_id"],
+            "placement_digest": source_result["placement_digest"],
+            "task_class": source_result["task_class"],
+        },
+        metric=request["policy_evaluation"]["task_metric"],
+    )
+
+    assert migration["status"] == "projected_without_claim_upgrade"
+    assert migration["scenario_pack"]["pack_kind"] == "legacy_single_scenario_projection"
+    assert migration["scenario_pack"]["scenario_count"] == 1
+    assert migration["claim_boundary"] == {
+        "multi_scenario_evidence_created": False,
+        "v1_source_preserved": True,
+        "ranking_claim_upgraded": False,
+    }
+
+
+def test_v2_result_has_v1_readable_compatibility_projection() -> None:
+    result = compile_new_site_task_evaluation_run(
+        _execute_matrix_request(_matrix_request())
+    )
+
+    projection = project_v2_result_to_v1(result)
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs"
+            / "schemas"
+            / "new_site_task_evaluation_run.v1.schema.json"
+        ).read_text()
+    )
+    jsonschema.Draft202012Validator(schema).validate(projection)
+    assert projection["schema_version"] == "new_site_task_evaluation_run.v1"
+    assert projection["claim_boundary"]["v1_projection_of_v2_matrix"] is True
+    assert projection["v2_scenario_pack_digest"] == result["scenario_pack_digest"]
+
+
+def test_committed_v2_example_replays_to_exact_result() -> None:
+    root = Path(__file__).parents[1]
+    request = json.loads(
+        (root / "docs/examples/new_site_task_evaluation_request.v2.example.json").read_text()
+    )
+    expected = json.loads(
+        (root / "docs/examples/new_site_task_evaluation_run.v2.example.json").read_text()
+    )
+
+    assert compile_new_site_task_evaluation_run(request) == expected
+
+
+def test_cli_replays_v2_matrix_example(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = Path(__file__).parents[1]
+    request_path = root / "docs/examples/new_site_task_evaluation_request.v2.example.json"
+    output_path = tmp_path / "run-v2.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "new-site-task-eval",
+            "--request",
+            str(request_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert main() == 0
+    assert json.loads(output_path.read_text()) == json.loads(
+        (root / "docs/examples/new_site_task_evaluation_run.v2.example.json").read_text()
+    )
+
+
+def test_real_arkitscenes_preexecution_packet_is_retained_and_digest_bound() -> None:
+    root = Path(__file__).parents[1]
+    packet_path = (
+        root
+        / "docs/evidence/arkitscenes_40958756_scenario_matrix_preexecution_packet.v1.json"
+    )
+    packet = json.loads(packet_path.read_text())
+    schema = json.loads(
+        (
+            root
+            / "docs/schemas/new_site_policy_scenario_preexecution_packet.v1.schema.json"
+        ).read_text()
+    )
+
+    jsonschema.Draft202012Validator(schema).validate(packet)
+    assert packet["packet_digest"] == canonical_digest(packet, digest_field="packet_digest")
+    assert packet["status"] == "abstained_pre_execution"
+    assert packet["expected_cell_count"] == 0
+    assert len(packet["proposed_scenarios"]) == 3
+    for evidence in packet["source_evidence"]:
+        payload = (root / evidence["path"]).read_bytes()
+        assert evidence["file_sha256"] == f"sha256:{hashlib.sha256(payload).hexdigest()}"

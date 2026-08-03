@@ -92,6 +92,70 @@ The portable schemas are:
 - `docs/schemas/new_site_task_evaluation_request.v1.schema.json`
 - `docs/schemas/new_site_task_evaluation_run.v1.schema.json`
 
+## Frozen policy-by-scenario matrix (v2)
+
+V2 preserves the complete v1 reader and replaces the single shared reset with
+an immutable five-policy by scenario matrix. An inspection pack contains three
+to five admitted scenarios and binds the task, source/site, reconstruction,
+target, robot, placement, metric, and aggregation rule. Each scenario freezes
+its own reset-state digest and simulator seed, target and distractor state,
+public observation contract, evaluator-only state digest, observation settings,
+and any task-valid perturbation or qualified geometry/material variant.
+
+The smallest recommended inspection pack is:
+
+1. nominal;
+2. one evidence-bounded robot-base or camera/observation perturbation; and
+3. one visibility/occlusion stress case only when target visibility and the
+   observation change are qualified within the exact evidence ceiling.
+
+Unsupported variants belong in `excluded_scenarios` with a rationale. Scenario
+generation always records `scenario_generation_may_authorize_new_claims=false`;
+it cannot create scale, physics, material, collision, sensor, or metric
+authority.
+
+`execute_policy_scenario_matrix` constructs the exact 5 x N grid and invokes
+every cell in deterministic scenario/candidate order. A runner exception,
+failed receipt, or missing receipt becomes a terminal cell record; later cells
+still run. The policy query payload omits evaluator-only state. Every returned
+receipt must bind both immutable policy identity and scenario identity, plus the
+scenario-specific reset, seed, route, placement, metric, and execution traces.
+The v2 `request_digest` covers the frozen pre-execution request projection and
+therefore excludes only `matrix_execution_packet`; the packet binds that digest
+and has its own digest, avoiding a circular self-reference.
+
+Aggregation uses only scenarios supported for all five policies. It reports
+the excluded scenarios and exact cells, attempt/supported/paired coverage per
+candidate, a deterministic paired-bootstrap interval, preregistered ties, and
+supported versus unsupported metrics. A catastrophic cell is always listed and
+makes that candidate ineligible for a winner claim even when its mean is high.
+Missing cells, insufficient paired coverage, or an all-catastrophic cohort
+produce a terminal abstention while retaining the diagnostic matrix.
+
+The v2 contracts and replayable hermetic examples are:
+
+- `docs/schemas/new_site_task_scenario_pack.v1.schema.json`
+- `docs/schemas/new_site_task_evaluation_request.v2.schema.json`
+- `docs/schemas/new_site_policy_scenario_execution_packet.v1.schema.json`
+- `docs/schemas/new_site_task_evaluation_run.v2.schema.json`
+- `docs/examples/new_site_task_evaluation_request.v2.example.json`
+- `docs/examples/new_site_task_evaluation_run.v2.example.json`
+
+`migrate_v1_request_to_v2` emits an explicitly labeled one-scenario legacy
+projection. It preserves readability but states that no multi-scenario evidence
+or ranking upgrade was created. `project_v2_result_to_v1` provides a v1-shaped
+compatibility projection whose matrix provenance remains visible. Learned-policy
+and scripted-controller matrices are separate evidence types; a controller
+candidate cannot enter this contract.
+
+The retained ARKitScenes 40958756 packet at
+`docs/evidence/arkitscenes_40958756_scenario_matrix_preexecution_packet.v1.json`
+is a real public-dataset evidence binding and an exact pre-execution abstention.
+It has zero admitted cells because appearance reconstruction, independent metric
+scale, collision, placement, engine, and site metric gates remain missing. It is
+not a completed real-site matrix and does not reinterpret ARKitScenes as
+Blueprint Raw Contract truth.
+
 ## Fail-closed behavior
 
 The result is either `completed` or `abstained`. An abstention identifies the

@@ -891,7 +891,7 @@ def _rank(attempts: Sequence[Mapping[str, Any]], *, direction: str) -> list[dict
     return ranking
 
 
-def compile_new_site_task_evaluation_run(value: Mapping[str, Any]) -> dict[str, Any]:
+def compile_new_site_task_evaluation_run_v1(value: Mapping[str, Any]) -> dict[str, Any]:
     """Compile one complete new-site run or the smallest fail-closed abstention."""
 
     if not isinstance(value, Mapping):
@@ -1184,6 +1184,29 @@ def compile_new_site_task_evaluation_run(value: Mapping[str, Any]) -> dict[str, 
     return result
 
 
+def compile_new_site_task_evaluation_run(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Compile a v1 single-reset run or a v2 frozen scenario matrix.
+
+    The v1 implementation remains byte-for-byte behaviorally compatible.  The
+    import is deliberately lazy so the v2 module can reuse the established
+    source, reconstruction, target, placement, route, and policy validators
+    without creating an import cycle during module initialization.
+    """
+
+    if not isinstance(value, Mapping):
+        raise NewSiteTaskEvaluationError(["new_site_request_invalid"])
+    schema_version = value.get("schema_version")
+    if schema_version == REQUEST_SCHEMA_VERSION:
+        return compile_new_site_task_evaluation_run_v1(value)
+    if schema_version == "new_site_task_evaluation_request.v2":
+        from .new_site_task_evaluation_matrix import (
+            compile_new_site_task_evaluation_run_v2,
+        )
+
+        return compile_new_site_task_evaluation_run_v2(value)
+    raise NewSiteTaskEvaluationError(["new_site_request_schema_invalid"])
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -1238,6 +1261,7 @@ __all__ = [
     "REQUEST_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION",
     "compile_new_site_task_evaluation_run",
+    "compile_new_site_task_evaluation_run_v1",
     "main",
     "select_robot_for_target",
 ]
