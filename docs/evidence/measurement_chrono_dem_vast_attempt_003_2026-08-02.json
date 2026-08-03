@@ -34,7 +34,8 @@
     "terminal_provider_zero_receipt_written": false,
     "pending_teardown_record_status": "open",
     "pending_teardown_record_sha256": "97a167a3d38e46e4340e96605a30a60c1785bbdd4208d0deb88e27699f766d1a",
-    "controller_process_reaped_before_finally": true,
+    "controller_process_missing_before_finally": true,
+    "controller_exit_cause": "unknown_no_persisted_traceback_or_exit_status",
     "duplicate_provider_allocation_created": false
   },
   "cleanup_observation": {
@@ -52,7 +53,7 @@
   },
   "encoded_fixes": {
     "terminal_provider_polling_commit": "38503c9ff",
-    "terminal_provider_polling_description": "stop local output polling when the provider API confirms that the workload is stopped, failed, deleted, or absent",
+    "terminal_provider_polling_description": "stop local output polling when the provider API confirms that the workload is stopped, failed, deleted, or absent; this reduces the time exposed to an interrupted or failed controller",
     "structured_provider_failure_commit": "eb8b44660",
     "structured_provider_failure_description": "upload the exact failing stage, nonzero exit code, and bounded redacted provider log excerpt before runtime-result creation",
     "focused_validation": "65 passed; bootstrap shell syntax valid; Ruff and git diff checks passed"
