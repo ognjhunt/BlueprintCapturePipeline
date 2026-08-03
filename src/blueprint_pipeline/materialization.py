@@ -31,6 +31,7 @@ from .capture_orientation import (  # noqa: F401 - preserve established helper i
     _resolve_capture_orientation,
     _size_payload,
 )
+from .capture_v32_candidate_admission import attach_capture_v32_candidate_sidecar
 from .common import (
     PipelineError,
     ensure_dir,
@@ -1261,7 +1262,6 @@ def _discover_raw_sidecars(
         if (raw_root / "motion.jsonl").is_file()
         else None
     )
-
     video_candidates = _raw_video_candidates(raw_root)
     raw_video_uri = (
         join_gs_uri(raw_prefix_uri, video_candidates[0])
@@ -1326,7 +1326,7 @@ def _discover_raw_sidecars(
             pose_alignment_ok and pose_alignment.get("temporal_alignment_status") == "verified"
         )
 
-    return {
+    return attach_capture_v32_candidate_sidecar({
         "has_metric_arkit_bundle": has_metric_arkit_bundle,
         "arkit_poses_uri": arkit_poses_uri,
         "arkit_intrinsics_uri": arkit_intrinsics_uri,
@@ -1363,7 +1363,7 @@ def _discover_raw_sidecars(
         "temporal_alignment_blockers": pose_alignment.get("temporal_alignment_blockers") or [],
         "temporal_alignment": pose_alignment.get("temporal_alignment"),
         "pose_alignment_declaration": pose_alignment_declaration,
-    }
+    }, raw_root=raw_root, raw_prefix_uri=raw_prefix_uri, manifest=manifest, source=source)
 
 
 def _compute_world_model_candidacy_decision(
