@@ -1,0 +1,27 @@
+{
+  "schema_version": "decision_envelope.v1",
+  "decision": "abstain",
+  "claim": "blueprint_downstream_native_isaac_controller_evaluation_path_works_in_known_simready_workcell",
+  "claim_label": "NVIDIA-authored SimReady control scene; native Isaac physics; scripted controllers; single workcell; simulation-only.",
+  "evidence_result_sha256": "c905bca15677dfe9eff8467b6028a7fd72dd85cbe77b18d1de0a4d51065e6ecf",
+  "blockers": [
+    "native_isaac_rtx_camera_initialization_failed_before_scientific_gates",
+    "scene_settle_contact_support_and_overlap_evidence_missing",
+    "five_cycle_reset_evidence_missing",
+    "positive_control_not_executed",
+    "five_controller_outcomes_and_ranking_missing"
+  ],
+  "explicitly_denied_claims": [
+    "blueprint_downstream_native_isaac_controller_evaluation_path_works_in_known_simready_workcell",
+    "blueprint_capture_qualification",
+    "arkitscenes_collision_readiness",
+    "customer_site_validity",
+    "learned_policy_quality",
+    "sim_to_real_transfer",
+    "physical_success",
+    "deployment_readiness",
+    "safety"
+  ],
+  "smallest_missing_measurement": "successful_native_isaac_rtx_camera_prim_validity_and_uniqueness_probe_then_frozen_settle_contact_reset_positive_control_and_five_controller_sequence",
+  "envelope_sha256": "03073856225458c712110d67369dd3c926a15f25246a2ae60703c1edbb92a2af"
+}

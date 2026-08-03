@@ -1,0 +1,141 @@
+{
+  "schema_version": "nvidia_warehouse_native_control_terminal_evidence_index.v1",
+  "execution_source_commit": "75d35c0715507d58efe06aa18ab3890d8bfb30fe",
+  "external_evidence_root": "/Users/nijelhunt_1/workspace/policy_ranking_new_site_smoke_nvidia_warehouse_20260729_harness_v9_offline",
+  "files": [
+    {
+      "label": "attempt_1_provider_start_failure",
+      "path": "warehouse_native_control_b2b08622_attempt1/gpu_paid_attempt2/provider_start_failure_preserved.json",
+      "sha256": "4129834062a574ea48c0d7d843b4d757edd4ec165ecf6ae9c9e9b5cf7a08c673",
+      "size_bytes": 826
+    },
+    {
+      "label": "attempt_2_signed_failure_archive",
+      "path": "warehouse_native_control_b2b08622_attempt1/gpu_paid_attempt4/nvidia_warehouse_native_camera_provider_output.zip",
+      "sha256": "909b2857e7f13a97b5f20c73343a07d95dec95c11a90486c97ab20e294b85900",
+      "size_bytes": 1495
+    },
+    {
+      "label": "attempt_3_transport_failure",
+      "path": "warehouse_native_control_619f8181_attempt3/gpu_paid_attempt1/transport_failure_preserved.json",
+      "sha256": "5b78d7e17bf22af4e297990447f95d0a84a8a65cd4f603bcee86396c63479592",
+      "size_bytes": 6356
+    },
+    {
+      "label": "attempt_4_signed_failure_archive",
+      "path": "warehouse_native_control_619f8181_attempt3/gpu_paid_attempt2/nvidia_warehouse_native_camera_provider_output.zip",
+      "sha256": "4d69112ab03a12556192a8f8d3ecc402a9a3ff054bbfc82f3d5dc095b07dee6c",
+      "size_bytes": 1423
+    },
+    {
+      "label": "attempt_5_signed_failure_archive",
+      "path": "warehouse_native_control_67028de6_attempt4/gpu_paid_attempt3/nvidia_warehouse_native_camera_provider_output.zip",
+      "sha256": "ea31a0b2a0a478af84e30061466ed7fd2bf1e7c219419f03005052e46860f54f",
+      "size_bytes": 1841
+    },
+    {
+      "label": "attempt_6_signed_failure_archive",
+      "path": "warehouse_native_control_64992aa7_attempt5/gpu_paid_attempt4/nvidia_warehouse_native_camera_provider_output.zip",
+      "sha256": "2a03dfec6946947c4b22b1489f25f43d1a20dc67043d1350155a358365e3095b",
+      "size_bytes": 1671
+    },
+    {
+      "label": "attempt_7_signed_failure_archive",
+      "path": "warehouse_native_control_75d35c07_attempt6/gpu_paid_attempt5/nvidia_warehouse_native_camera_provider_output.zip",
+      "sha256": "d02dcfa26578965d635c0cbb5a9740376d326253e6440cd1416c0c9d13c79c5e",
+      "size_bytes": 1740
+    },
+    {
+      "label": "attempt_7_worker_result",
+      "path": "warehouse_native_control_75d35c07_attempt6/gpu_paid_attempt5/extracted_output/native_camera_canary_result.json",
+      "sha256": "f514e289929b8dfffa455ae0a43fc54670a5eb6d518600a31ec6d0b1b97697a5",
+      "size_bytes": 2543
+    },
+    {
+      "label": "attempt_7_worker_failure",
+      "path": "warehouse_native_control_75d35c07_attempt6/gpu_paid_attempt5/extracted_output/failure/worker_failure.json",
+      "sha256": "9b160ed0520e76265f5bab73e0f3e0736699fa4f6285cee826945130ef50c076",
+      "size_bytes": 1670
+    },
+    {
+      "label": "attempt_7_output_validation",
+      "path": "warehouse_native_control_75d35c07_attempt6/gpu_paid_attempt5/nvidia_warehouse_native_camera_output_validation.json",
+      "sha256": "c7e9e187135622362cc921611293cc4d4b33058c59d69a3f61d1034924c644ef",
+      "size_bytes": 3104
+    },
+    {
+      "label": "attempt_7_monitor_and_teardown",
+      "path": "warehouse_native_control_75d35c07_attempt6/gpu_paid_attempt5/nvidia_warehouse_native_camera_monitor.json",
+      "sha256": "0490dad9444dbc4e0f99b62837f8c1ace39d4255294f632696b3fec735bd3d9c",
+      "size_bytes": 7237
+    },
+    {
+      "label": "attempt_7_independent_watchdog",
+      "path": "warehouse_native_control_75d35c07_attempt6/gpu_paid_attempt5/groot_oscar_runpod_canary_watchdog.json",
+      "sha256": "b4d3096c1c4bb9278156c09291d7977efcedfae15be0567330e7374554608cdf",
+      "size_bytes": 4958
+    },
+    {
+      "label": "campaign_budget_terminal",
+      "path": "warehouse_native_control_75d35c07_attempt6/gpu_paid_attempt5/campaign_budget.json",
+      "sha256": "65724b83cc00145a41a1c48af8edffd0c91e672148a4427e1c77ece5b1feacaf",
+      "size_bytes": 952
+    },
+    {
+      "label": "runtime_release_evidence",
+      "path": "warehouse_native_control_75d35c07_attempt6/gpu_release_evidence.json",
+      "sha256": "a7d9f136828b1a1b7afbfa69a393e02590ca6d046aa73c887ae08d7c55277520",
+      "size_bytes": 1023
+    },
+    {
+      "label": "input_bundle_receipt",
+      "path": "warehouse_native_control_75d35c07_attempt6/native_control_input_receipt.json",
+      "sha256": "5a77e8f3fbcab9e2239e2eb96dc3d53ab732b0a1bf70b8624ee9fda874bdd381",
+      "size_bytes": 65403
+    },
+    {
+      "label": "input_bundle",
+      "path": "warehouse_native_control_75d35c07_attempt6/native_control_input_75d35c07.zip",
+      "sha256": "c866f7661b1dfad74559cd48e62d2994e7fbede617695e8543d884063cc21a97",
+      "size_bytes": 1745364163
+    },
+    {
+      "label": "final_cpu_builder_result",
+      "path": "warehouse_native_control_75d35c07_attempt6/cpu_build_attempt1/builder_run_result.json",
+      "sha256": "d694c4cc29da03aa8ec539caec3dfc6624c602bb1584bc4cec944d825f1b7192",
+      "size_bytes": 779
+    },
+    {
+      "label": "object_store_cleanup",
+      "path": "warehouse_native_control_75d35c07_attempt6/object_store/wam_provider_object_store_cleanup.json",
+      "sha256": "468d487cf55c41b2d52b99a2a899ccc58fa1736fc7a49e6c4a572b73c40ed869",
+      "size_bytes": 943
+    },
+    {
+      "label": "final_runtime_log",
+      "path": "warehouse_native_control_75d35c07_attempt6/gpu_paid_attempt5/manual_readonly_log_snapshot_3.txt",
+      "sha256": "e78af8c0d3148468c19e367cb338e62398a9b4316e43695d0dcb0f8c8288199c",
+      "size_bytes": 53080
+    },
+    {
+      "label": "decision_envelope",
+      "path": "repo:docs/experiments/warehouse_native_isaac_control_20260803/decision_envelope.json",
+      "sha256": "7a59b5ff1822a976a0e1e99a9c42f20c6ff0eba8737d467d976cae94a6d9d28f",
+      "size_bytes": 1350
+    },
+    {
+      "label": "terminal_adjudication",
+      "path": "repo:docs/experiments/warehouse_native_isaac_control_20260803/terminal_adjudication.json",
+      "sha256": "4604fb84e9a4eb655301117e7740371a8282bd497f80e81fcdb11c27882f1d43",
+      "size_bytes": 9973
+    },
+    {
+      "label": "provider_zero",
+      "path": "repo:docs/experiments/warehouse_native_isaac_control_20260803/provider_zero.json",
+      "sha256": "c3cbe5036daed4b6796b97ad4fb374938fb35bd3f3d7b3f4eb986ebd18b75a4a",
+      "size_bytes": 1001
+    }
+  ],
+  "file_count": 22,
+  "index_sha256": "114c8ceebb51cd49d39df9ce6e60d3e6c5eceb42a60fc3bac0eb9648cebfb4dc"
+}

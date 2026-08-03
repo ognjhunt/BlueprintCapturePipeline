@@ -1,0 +1,180 @@
+{
+  "schema_version": "nvidia_warehouse_native_control_terminal_adjudication.v1",
+  "status": "terminal",
+  "primary_verdict": "warehouse_native_isaac_downstream_fail",
+  "plain_english_meaning": "A downstream native-Isaac integration defect prevented the known NVIDIA workcell from reaching task execution. This does not localize the current blockage to capture-derived collision geometry.",
+  "claim_label": "NVIDIA-authored SimReady control scene; native Isaac physics; scripted controllers; single workcell; simulation-only.",
+  "execution_identity": {
+    "branch": "codex/warehouse-native-isaac-control-20260803",
+    "source_commit": "75d35c0715507d58efe06aa18ab3890d8bfb30fe",
+    "source_tree_clean_and_pushed_before_execution": true,
+    "isaac_sim_version": "6.0.1",
+    "runtime_image": "docker.io/nijelhunt/blueprint-isaac-eval-worker@sha256:02fdfc07be83a380714017675a838b62dda600fc62ba5747c443dbdf5c87861d",
+    "runtime_base_image": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9",
+    "release_sha256": "9e06c2d07cbb15aa910307d83b009e99c6a3fbe6da839008ce2eb8b914ac5321",
+    "seed": 260803
+  },
+  "scene_and_input_identity": {
+    "dataset_id": "nvidia/PhysicalAI-SimReady-Warehouse-01",
+    "dataset_revision": "c7fe115cb79c7ddbd0532630d7768b5736b0ecc4",
+    "license": "CC-BY-4.0",
+    "asset_access_revalidated": true,
+    "materialization_manifest_canonical_sha256": "3c2839e9847ae13686075b45fc25d67968f6b887ca142b185d3a7b11277b6c0f",
+    "materialization_manifest_file_sha256": "3490439ddb8e2581a629453faadb9ed68d9f2dc706ed325fa9e87769eb82fe9c",
+    "asset_file_count": 168,
+    "asset_size_bytes": 1829324881,
+    "workcell_usd_sha256": "7c7348b37d7be04eafabcaf20f1f5a05c7a9c0633bc1ba7048ff4fae2ba005c5",
+    "spraycan_usd_sha256": "fe34476927334e5cb6cba9b90cfa3b442e46580af8150bda1ae867827b3c40a2",
+    "spec_canonical_sha256": "14e35751a4d82d504ad384ce30ece7db30ecde5628589fff29ed4c8f9666c9cb",
+    "spec_file_sha256": "2004c96c9f5119aa80a225da9fbda7f6b98bd7e05cb963b50cb3c8c88cc1ed60",
+    "input_bundle_sha256": "c866f7661b1dfad74559cd48e62d2994e7fbede617695e8543d884063cc21a97",
+    "input_bundle_size_bytes": 1745364163
+  },
+  "native_backend_proof": {
+    "isaac_sim_6_started": true,
+    "physx_parser_executed": true,
+    "official_franka_extension_started": true,
+    "world_reset_reached": true,
+    "mujoco_or_synthetic_fallback_in_runtime_module": false,
+    "native_task_dynamics_executed": false,
+    "qualification_boundary": "Native Isaac and PhysX startup were observed; native manipulation, task contacts, and task-state transitions were not observed."
+  },
+  "terminal_failure": {
+    "phase": "native_camera_execution",
+    "error_type": "ValueError",
+    "traceback_leaf": "rtx_camera.py:105 -> _sensor_base.py:199",
+    "source_frame": "nvidia_warehouse_native_control_canary.py:412",
+    "failure_before_frames": true,
+    "worker_result_sha256": "c905bca15677dfe9eff8467b6028a7fd72dd85cbe77b18d1de0a4d51065e6ecf",
+    "worker_failure_sha256": "9b160ed0520e76265f5bab73e0f3e0736699fa4f6285cee826945130ef50c076",
+    "spraycan_collision_caveat": "PhysX rejected three dynamic triangle-mesh child collisions and substituted convex-hull approximations before the camera failure.",
+    "shutdown_caveat": "The signed failure output uploaded successfully, then Isaac python segfaulted during extension shutdown."
+  },
+  "required_gates": {
+    "A_scene_and_physics_qualification": "failed_incomplete",
+    "B_franka_and_reproducible_reset": "failed_incomplete",
+    "C_positive_control": "not_executed",
+    "D_five_controller_execution": "not_executed",
+    "E_camera_and_trace_evidence": "failed_partial",
+    "F_ranking_and_decision_envelope": "abstain"
+  },
+  "positive_control": {
+    "controller_id": "positive_control_nominal_pick_place",
+    "result": "not_executed",
+    "predicate_weakened": false
+  },
+  "controller_results": [
+    {"controller_id": "scripted_nominal", "result": "not_executed"},
+    {"controller_id": "scripted_cautious", "result": "not_executed"},
+    {"controller_id": "scripted_lateral_bias", "result": "not_executed"},
+    {"controller_id": "scripted_underreach", "result": "not_executed"},
+    {"controller_id": "scripted_stationary_timeout", "result": "not_executed"}
+  ],
+  "ranking": {
+    "decision": "abstain",
+    "ranked_rows": [],
+    "reason": "No frozen controller episode executed; inventing a tie or ordering would manufacture evidence."
+  },
+  "paid_execution": {
+    "canonical_allocator_used": true,
+    "provider": "vast",
+    "gpu_types_across_attempts": ["L40", "L40S", "RTX A6000"],
+    "final_gpu_type": "RTX A6000",
+    "nonzero_gpu_reservations": 7,
+    "allocator_accounted_gpu_seconds": 6739,
+    "allocator_accounted_gpu_spend_usd": 1.403959,
+    "completed_cpu_builds": 7,
+    "cpu_build_recorded_maximum_spend_usd": 0.152480313982699329,
+    "total_recorded_compute_spend_or_upper_bound_usd": 1.556439313982699329,
+    "authorized_total_incremental_cap_usd": 10.0,
+    "continuing_spend": false
+  },
+  "attempt_ledger": [
+    {
+      "attempt": 1,
+      "source_commit": "b2b0862288d5f5cc5de12abfc16a35efd7598c4f",
+      "gpu_type": "L40",
+      "charged_gpu_seconds": 961,
+      "charged_usd": 0.200208,
+      "terminal_outcome": "provider_start_failure_host_docker_runtime_unsupported",
+      "evidence_root": "/Users/nijelhunt_1/workspace/policy_ranking_new_site_smoke_nvidia_warehouse_20260729_harness_v9_offline/warehouse_native_control_b2b08622_attempt1/gpu_paid_attempt2"
+    },
+    {
+      "attempt": 2,
+      "source_commit": "b2b0862288d5f5cc5de12abfc16a35efd7598c4f",
+      "gpu_type": "L40S",
+      "charged_gpu_seconds": 182,
+      "charged_usd": 0.037917,
+      "terminal_outcome": "missing_isaacsim_robot_manipulators_examples_module",
+      "failure_archive_sha256": "909b2857e7f13a97b5f20c73343a07d95dec95c11a90486c97ab20e294b85900",
+      "evidence_root": "/Users/nijelhunt_1/workspace/policy_ranking_new_site_smoke_nvidia_warehouse_20260729_harness_v9_offline/warehouse_native_control_b2b08622_attempt1/gpu_paid_attempt4"
+    },
+    {
+      "attempt": 3,
+      "source_commit": "619f818113f5bdcb340f99fe0d94dced0c790633",
+      "gpu_type": "L40",
+      "charged_gpu_seconds": 2774,
+      "charged_usd": 0.577917,
+      "terminal_outcome": "cross_region_transport_failure_preserved",
+      "evidence_root": "/Users/nijelhunt_1/workspace/policy_ranking_new_site_smoke_nvidia_warehouse_20260729_harness_v9_offline/warehouse_native_control_619f8181_attempt3/gpu_paid_attempt1"
+    },
+    {
+      "attempt": 4,
+      "source_commit": "619f818113f5bdcb340f99fe0d94dced0c790633",
+      "gpu_type": "L40S",
+      "charged_gpu_seconds": 513,
+      "charged_usd": 0.106875,
+      "terminal_outcome": "physx_contact_impulse_type_error",
+      "failure_archive_sha256": "4d69112ab03a12556192a8f8d3ecc402a9a3ff054bbfc82f3d5dc095b07dee6c",
+      "evidence_root": "/Users/nijelhunt_1/workspace/policy_ranking_new_site_smoke_nvidia_warehouse_20260729_harness_v9_offline/warehouse_native_control_619f8181_attempt3/gpu_paid_attempt2"
+    },
+    {
+      "attempt": 5,
+      "source_commit": "67028de6ce8a12c8c3e54bd409a3a107a074a06f",
+      "gpu_type": "RTX A6000",
+      "charged_gpu_seconds": 973,
+      "charged_usd": 0.202708,
+      "terminal_outcome": "franka_gripper_tensor_to_numpy_world_reset_type_error",
+      "failure_archive_sha256": "ea31a0b2a0a478af84e30061466ed7fd2bf1e7c219419f03005052e46860f54f",
+      "evidence_root": "/Users/nijelhunt_1/workspace/policy_ranking_new_site_smoke_nvidia_warehouse_20260729_harness_v9_offline/warehouse_native_control_67028de6_attempt4/gpu_paid_attempt3"
+    },
+    {
+      "attempt": 6,
+      "source_commit": "64992aa7200ffa5ecd27d0ebc31f17929c43c399",
+      "gpu_type": "RTX A6000",
+      "charged_gpu_seconds": 683,
+      "charged_usd": 0.142292,
+      "terminal_outcome": "single_articulation_get_dof_limits_attribute_error",
+      "failure_archive_sha256": "2a03dfec6946947c4b22b1489f25f43d1a20dc67043d1350155a358365e3095b",
+      "evidence_root": "/Users/nijelhunt_1/workspace/policy_ranking_new_site_smoke_nvidia_warehouse_20260729_harness_v9_offline/warehouse_native_control_64992aa7_attempt5/gpu_paid_attempt4"
+    },
+    {
+      "attempt": 7,
+      "source_commit": "75d35c0715507d58efe06aa18ab3890d8bfb30fe",
+      "gpu_type": "RTX A6000",
+      "charged_gpu_seconds": 653,
+      "charged_usd": 0.136042,
+      "terminal_outcome": "rtx_camera_sensor_base_value_error_before_frames",
+      "failure_archive_sha256": "d02dcfa26578965d635c0cbb5a9740376d326253e6440cd1416c0c9d13c79c5e",
+      "evidence_root": "/Users/nijelhunt_1/workspace/policy_ranking_new_site_smoke_nvidia_warehouse_20260729_harness_v9_offline/warehouse_native_control_75d35c07_attempt6/gpu_paid_attempt5"
+    }
+  ],
+  "teardown": {
+    "final_vast_instance_id": "46736649",
+    "final_vast_instance_absent": true,
+    "vast_provider_global_live_resource_count": 0,
+    "runpod_provider_global_live_resource_count": 0,
+    "all_digitalocean_build_droplets_absent": true,
+    "object_store_exact_object_count_deleted": 2,
+    "object_store_all_objects_absent": true,
+    "provider_zero_proven": true
+  },
+  "decision_envelope_path": "decision_envelope.json",
+  "smallest_missing_measurement": "Preserve the unsanitized RTX-camera ValueError and prove the camera prim exists uniquely so CameraSensor initializes; then run the frozen settle/contact, five-reset, positive-control, and five-controller sequence.",
+  "remaining_defects": [
+    "Isaac 6 RTX camera/evidence wrapper fails before scientific evidence capture.",
+    "The task object's dynamic collision composition triggers PhysX convex-hull fallback and still requires contact/support qualification.",
+    "Worker failure sanitization discarded the ValueError message needed to distinguish missing versus multiply matched camera prims.",
+    "Isaac extension shutdown segfaulted after the signed failure packet uploaded."
+  ]
+}
