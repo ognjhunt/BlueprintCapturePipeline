@@ -45,7 +45,7 @@ Run this on the trusted Pipeline host after the canonical bundle has been
 materialized:
 
 ```bash
-blueprint-prepare-canonical-3dgs \
+python -m blueprint_pipeline.canonical_3dgs_cli prepare \
   --capture-root /captures/<capture-id> \
   --output-root /derived/<capture-id> \
   --intake-id <intake-id> \
@@ -73,7 +73,7 @@ For an already compiled ARKitScenes proxy, name both retained roots explicitly;
 the command never searches for a "newest" artifact:
 
 ```bash
-blueprint-prepare-canonical-3dgs \
+python -m blueprint_pipeline.canonical_3dgs_cli prepare \
   --source-profile public_dataset_arkitscenes_proxy \
   --proxy-root /retained/40958756/compiled/arkitscenes_proxy_<digest> \
   --source-artifact-root /retained/40958756 \
@@ -85,7 +85,7 @@ Package the exact plan and candidate-only dataset once for cross-platform
 transport:
 
 ```bash
-blueprint-canonical-3dgs-transport package \
+python -m blueprint_pipeline.canonical_3dgs_cli transport package \
   --plan /derived/<capture-id>/canonical_3dgs_execution_plan.json \
   --dataset-root /derived/<capture-id>/trainer_input/colmap_dataset_<digest> \
   --bundle /derived/<capture-id>/canonical_3dgs_transport.zip \
@@ -139,7 +139,7 @@ and `retry_cap=0`. A provider-specific launcher is forbidden. Then bind that
 allocator receipt plus the measured trainer digest into the arm admission:
 
 ```bash
-blueprint-admit-canonical-3dgs-worker \
+python -m blueprint_pipeline.canonical_3dgs_cli admit-worker \
   --transport-receipt /derived/<capture-id>/canonical_3dgs_transport_receipt.json \
   --arm postshot-primary \
   --worker-platform windows \
@@ -175,12 +175,12 @@ $env:BLUEPRINT_WORKER_IMAGE_DIGEST = "<image-name>@sha256:<64-hex>"
 ```
 
 ```powershell
-blueprint-canonical-3dgs-transport extract `
+python -m blueprint_pipeline.canonical_3dgs_cli transport extract `
   --bundle C:\work\canonical_3dgs_transport.zip `
   --receipt C:\work\canonical_3dgs_transport_receipt.json `
   --output-root C:\work\materialized
 
-blueprint-run-canonical-3dgs-arm `
+python -m blueprint_pipeline.canonical_3dgs_cli run-arm `
   --arm postshot-primary `
   --plan C:\work\materialized\<bundle-digest>\campaign\canonical_3dgs_execution_plan.json `
   --dataset-root C:\work\materialized\<bundle-digest>\campaign\dataset `
@@ -204,7 +204,7 @@ installs Blueprint itself with `--no-deps`, so it does not perturb the pinned
 Nerfstudio/gsplat resolver):
 
 ```bash
-blueprint-admit-canonical-3dgs-worker \
+python -m blueprint_pipeline.canonical_3dgs_cli admit-worker \
   --transport-receipt /derived/<capture-id>/canonical_3dgs_transport_receipt.json \
   --arm splatfacto-comparison \
   --worker-platform linux \
@@ -228,12 +228,12 @@ Then execute:
 ```bash
 export BLUEPRINT_WORKER_IMAGE_DIGEST='<image-name>@sha256:<64-hex>'
 
-.venvs/splatfacto-g1/bin/blueprint-canonical-3dgs-transport extract \
+.venvs/splatfacto-g1/bin/python -m blueprint_pipeline.canonical_3dgs_cli transport extract \
   --bundle /work/canonical_3dgs_transport.zip \
   --receipt /work/canonical_3dgs_transport_receipt.json \
   --output-root /work/materialized
 
-.venvs/splatfacto-g1/bin/blueprint-run-canonical-3dgs-arm \
+.venvs/splatfacto-g1/bin/python -m blueprint_pipeline.canonical_3dgs_cli run-arm \
   --arm splatfacto-comparison \
   --plan /work/materialized/<bundle-digest>/campaign/canonical_3dgs_execution_plan.json \
   --dataset-root /work/materialized/<bundle-digest>/campaign/dataset \
@@ -270,7 +270,7 @@ remains mandatory because a local process timeout is not provider teardown.
 After copying each complete arm directory beneath the same results root:
 
 ```bash
-blueprint-finalize-canonical-3dgs \
+python -m blueprint_pipeline.canonical_3dgs_cli finalize \
   --plan /work/canonical_3dgs_execution_plan.json \
   --dataset-root /work/dataset \
   --results-root /work/results
@@ -333,7 +333,7 @@ Then run on the independent evaluator host with the repository's pinned Spark
 native-3DGS exact-camera renderer and the `evaluation` Python extra installed:
 
 ```bash
-blueprint-evaluate-canonical-3dgs \
+python -m blueprint_pipeline.canonical_3dgs_cli evaluate \
   --campaign /work/results/canonical_3dgs_campaign_result.json \
   --results-root /work/results \
   --evaluator-input /derived/<capture-id>/evaluator_input/canonical_3dgs_hidden_evaluator_input.json \
@@ -354,24 +354,25 @@ appearance evidence into metric, collision, Isaac, or physical-task proof.
 
 After independent held-out evaluation selects a qualifying arm, independently
 measure appearance-to-site correspondences and freeze the similarity transform
-and residual thresholds. Then produce the registered reconstruction:
+and residual thresholds. Then produce the registered-appearance candidate:
 
 ```bash
-blueprint-register-canonical-3dgs \
+python -m blueprint_pipeline.canonical_3dgs_cli register \
   --source-admission /derived/<capture-id>/canonical_3dgs_source_admission.json \
   --campaign /work/results/canonical_3dgs_campaign_result.json \
   --results-root /work/results \
   --quality-comparison /work/quality/canonical_3dgs_quality_comparison.json \
   --registration-measurement /work/registration/measurement.json \
-  --output /work/registration/registered_site_reconstruction.json
+  --output /work/registration/canonical_registered_appearance.json
 ```
 
 The producer independently decodes the selected standard 3DGS PLY, verifies
 its campaign lineage, and reports RMSE, p95, and maximum registration residuals
 in meters. It is `candidate_only` until both held-out appearance and
-registration gates qualify. Even then, its ceiling is registered appearance:
-metric geometry, collision, Isaac compatibility, and physical success remain
-false.
+registration gates qualify. Even then, its ceiling is registered appearance;
+it is not a `registered_site_reconstruction.v1` until the post-capture evidence
+spine joins it to independently qualified dynamics geometry. Metric geometry,
+collision, Isaac compatibility, and physical success remain false.
 
 ## No-authority handoff
 
@@ -379,7 +380,7 @@ When paid execution has not been authorized, compile the immutable request
 instead of launching anything:
 
 ```bash
-blueprint-request-canonical-3dgs-execution \
+python -m blueprint_pipeline.canonical_3dgs_cli request-execution \
   --plan /derived/<capture-id>/canonical_3dgs_execution_plan.json \
   --transport-receipt /derived/<capture-id>/canonical_3dgs_transport_receipt.json \
   --timestamp <UTC-ISO8601> \

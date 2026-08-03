@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/teleport_provider_cost_receipt.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "provider_identity", "provider_execution_request_digest", "currency", "authorized_spend_cap_usd", "preapproved_provider_quote_usd", "provider_billing_api_available", "observed_final_charge_usd", "within_authorized_ceiling", "reconciliation_status", "provider_deletion_receipt_digest", "limitations", "timestamp", "proof_effect", "claim_ceiling", "teleport_provider_cost_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "teleport_provider_cost_receipt.v1"},
+    "provider_identity": {"const": "teleport"},
+    "provider_billing_api_available": {"const": false},
+    "observed_final_charge_usd": {"type": "null"},
+    "reconciliation_status": {"const": "quote_bounded_final_provider_charge_unobservable"},
+    "proof_effect": {"const": "cost_bound_and_reconciliation_limitation_only"},
+    "claim_ceiling": {"const": "none"},
+    "teleport_provider_cost_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

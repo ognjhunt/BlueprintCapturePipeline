@@ -59,6 +59,7 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
+    "src/blueprint_pipeline/teleport_paid_allocator.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
@@ -74,6 +75,7 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/qualification_control_admission.py",
     "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
+    "src/blueprint_pipeline/teleport_paid_allocator.py",
 }
 APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS = {
     (
@@ -160,6 +162,12 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         signals.add("gcp_instance_create")
     if ".upload_file(" in source or ".delete_object(" in source:
         signals.add("s3_object_write_or_delete")
+    if (
+        "teleport.varjo.com" in source
+        and "/api/v1/captures" in source
+        and any(method in source for method in ('"POST"', '"PUT"', '"DELETE"'))
+    ):
+        signals.add("teleport_capture_create_upload_or_delete")
     return signals
 
 
@@ -383,7 +391,10 @@ def verify() -> list[str]:
         blockers.append("legacy_cpu_builder_not_hard_disabled")
     if "legacy_gpu_canary_launcher_disabled" not in gpu:
         blockers.append("legacy_gpu_canary_not_hard_disabled")
-    if not all(item in canonical for item in ("cpu-build", "model-volume", "gpu-canary")):
+    if not all(
+        item in canonical
+        for item in ("cpu-build", "model-volume", "gpu-canary", "provider-reconstruction")
+    ):
         blockers.append("canonical_allocator_subcommands_missing")
     if "run_storage_model_volume(" not in canonical:
         blockers.append("canonical_allocator_missing_model_volume_route")

@@ -71,6 +71,15 @@ blueprint-route-task-evaluation supervise --capture-build /path/to/completed-cap
 authorization, performs no provider discovery, paid compute, or physical run,
 and fails closed otherwise.
 
+The Teleport reconstruction API is available only as a candidate-only external
+appearance lane through the canonical paid allocator. It uploads an immutable
+RGB-only public-data ZIP, retrieves provider-native PLY and COLMAP camera
+metadata, aligns from candidate camera correspondences, evaluates sealed
+held-out views only after retrieval, and always attempts deletion. A Teleport
+`READY` state does not prove metric scale, collision geometry, Isaac
+compatibility, task success, physical truth, or deployment readiness. See the
+[`Teleport provider reconstruction runbook`](docs/runbooks/teleport-provider-reconstruction.md).
+
 `supervise` uses OpenAI Agents SDK as the required harness for the durable
 manager and all six registered specialist agents. The manager observes each
 validated specialist result and selects only the next specialist whose
@@ -991,8 +1000,7 @@ python3 scripts/stage_capture_bundle.py \
 ## Entry Points
 
 The production post-capture producer is
-`python -m blueprint_pipeline.post_capture_evidence_spine` (installed as
-`blueprint-produce-post-capture-evidence`). It verifies ARKit/Raw V3.2 bytes and
+`python -m blueprint_pipeline.post_capture_evidence_cli`. It verifies ARKit/Raw V3.2 bytes and
 connects the existing reconstruction, geometry, automatic-target, placement,
 scene-composition, routing, and policy-admission lanes into one
 content-addressed run. It emits the first scientifically valid abstention when

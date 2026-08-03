@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/teleport_provider_progress.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "events", "raw_secret_values_recorded", "teleport_provider_progress_digest"],
+  "properties": {
+    "schema_version": {"const": "teleport_provider_progress.v1"},
+    "events": {"type": "array", "items": {"type": "object", "required": ["sequence", "timestamp", "phase"], "properties": {"sequence": {"type": "integer", "minimum": 1}, "timestamp": {"type": "string", "minLength": 1}, "phase": {"type": "string", "minLength": 1}}, "additionalProperties": true}},
+    "raw_secret_values_recorded": {"const": false},
+    "teleport_provider_progress_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": false
+}

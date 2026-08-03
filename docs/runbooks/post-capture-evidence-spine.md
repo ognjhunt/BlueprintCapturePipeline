@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`blueprint-produce-post-capture-evidence` turns an admitted ARKit source into
+`python -m blueprint_pipeline.post_capture_evidence_cli` turns an admitted ARKit source into
 the typed prerequisites consumed by `new_site_task_evaluation_run`. It verifies
 native producer artifacts and exact file bytes; callers provide paths to typed
 receipts, not site-specific reshaped JSON.
@@ -13,15 +13,30 @@ an analyzer result can qualify itself. Appearance quality, metric registration,
 collision geometry, robot placement, scene composition, routing, and execution
 authorization remain independent gates.
 
+The canonical producer can be connected directly with
+`--canonical-registered-appearance` and
+`--canonical-registration-measurement`. The spine normalizes its appearance
+candidate and rebinds the frozen registration measurement to the exact
+independently qualified geometry. A canonical registered-appearance artifact
+alone is deliberately not a qualified site reconstruction.
+
+Teleport enters with the exact successful lifecycle receipt and the matching
+provider-splat import receipt via `--teleport-run-receipt` and
+`--teleport-import-receipt`. The join verifies the source capture and the one
+preserved native PLY. It remains an unqualified appearance candidate even when
+the provider job succeeded.
+
 ## Real retained ARKitScenes command
 
 From the repository root, with the retained ARKitScenes 40958756 bytes present:
 
 ```bash
-blueprint-produce-post-capture-evidence \
+python -m blueprint_pipeline.post_capture_evidence_cli \
   --run-id arkitscenes-40958756-real-post-capture \
   --source-artifact docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json \
   --source-root output/public_dataset_smokes/arkitscenes/40958756 \
+  --depth-surface-result output/public_dataset_smokes/arkitscenes/40958756/compiled/arkitscenes_proxy_c38599abc46a0e27/observed_surface_proxy_v1/arkit_depth_surface_proxy_result.json \
+  --depth-surface-root output/public_dataset_smokes/arkitscenes/40958756 \
   --output-root output/post_capture_evidence_runs
 ```
 
@@ -34,8 +49,10 @@ smallest missing measurement: native_3dgs_appearance_missing
 
 That is an expected exit status of `2`, not a command failure. The retained
 content-addressed result is under
-`docs/evidence/arkitscenes_40958756_post_capture_a42a9edf/`. It binds the six
-real source files (including `40958756.mov`) and explicitly remains
+`docs/evidence/arkitscenes_40958756_post_capture_bda23f88/`. It binds the six
+real source files (including `40958756.mov`) plus the retained 66 MB observed
+depth surface. Its explicit unsupported-region record remains unfilled and its
+metric/collision state remains unqualified. The run explicitly remains
 provider-derived public-dataset support, never Blueprint Raw Contract V3.2 or
 fixture R7 evidence.
 
@@ -44,7 +61,7 @@ fixture R7 evidence.
 Add only native typed artifacts that have actually been produced:
 
 ```bash
-blueprint-produce-post-capture-evidence \
+python -m blueprint_pipeline.post_capture_evidence_cli \
   --run-id <site-task-run-id> \
   --source-artifact <arkit-proxy-or-raw-v3.2-validation.json> \
   --source-root <retained-source-root> \
@@ -80,6 +97,11 @@ To execute the current registered-view analyzer instead of supplying a recorded
 target orchestration, use `--target-pipeline-request`. Supplying both target
 inputs is rejected.
 
+To invoke the existing Franka placement producer rather than supply a recorded
+candidate, use `--placement-request` with `--collision-glb`. Supplying both
+placement inputs is rejected. The resulting proposal still requires the
+independent `--placement-qualification` artifact.
+
 ## Artifact order
 
 The content-addressed run directory contains the available prefix:
@@ -88,6 +110,7 @@ The content-addressed run directory contains the available prefix:
 01_source_profile.json
 02_native_3dgs_candidate.json
 03_derived_site_geometry.json
+03b_scene_registration_qualification.json
 04_registered_site_reconstruction.json
 05_target_orchestration.json
 06_task_robot_selection.json

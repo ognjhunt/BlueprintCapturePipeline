@@ -72,6 +72,7 @@ from .paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
+from .paid_resource_cli_arguments import add_cpu_arguments as _add_cpu_arguments
 from .openpi_policy_ranking_gpu_admission import (
     NEW_SITE_CANARY_PROBE_KIND,
     PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
@@ -110,6 +111,11 @@ from .single_g1_kitchen_qualification_session import (
     PROBE_KIND as SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
     SESSION_ACTIONS as QUALIFICATION_SESSION_ACTIONS,
     run_qualification_session,
+)
+from .teleport_paid_allocator import (
+    add_teleport_provider_arguments,
+    load_teleport_credentials,
+    run_teleport_provider,
 )
 
 
@@ -544,30 +550,6 @@ def configure_or_launch_detached_gpu_canary(
     return None
 
 
-def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: bool = True) -> None:
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--packet-manifest", required=True)
-    parser.add_argument("--builder-evidence", required=True)
-    parser.add_argument("--spend", required=True)
-    parser.add_argument("--token-file", default="~/.blueprint-secrets/digitalocean_api_token")
-    parser.add_argument("--docker-username-file", default="~/.blueprint-secrets/docker_username")
-    parser.add_argument("--docker-password-file", default="~/.blueprint-secrets/docker_pat")
-    parser.add_argument("--hf-token-file", default="~/.blueprint-secrets/hf_token")
-    parser.add_argument(
-        "--runpod-s3-access-key-file",
-        default="~/.blueprint-secrets/runpod_s3_access_key",
-    )
-    parser.add_argument(
-        "--runpod-s3-secret-key-file",
-        default="~/.blueprint-secrets/runpod_s3_secret_key",
-    )
-    parser.add_argument("--login-private-key", required=require_provider)
-    parser.add_argument("--host-private-key", required=require_provider)
-    parser.add_argument("--ssh-key-id", required=require_provider, type=int)
-    parser.add_argument("--region", default="sfo3")
-    parser.add_argument("--allow-paid", action="store_true")
-
-
 def _cpu_vector(args: argparse.Namespace) -> list[str]:
     values = [
         "--output-dir",
@@ -890,6 +872,7 @@ def _run_reconstruction_gpu_canary(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    add_teleport_provider_arguments(commands, root=ROOT)
     cpu = commands.add_parser("cpu-build")
     _add_cpu_arguments(cpu, require_provider=False)
     cpu.add_argument("--execution-plane", choices=("digitalocean", "local"), default="digitalocean")
@@ -1215,7 +1198,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if runtime_bundle_requested and not args.runtime_source_release_evidence:
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
-    if args.command == "cpu-build":
+    if args.command == "provider-reconstruction":
+        result = run_teleport_provider(
+            args,
+            load_json=_load,
+            source_checkout_blockers=_source_checkout_blockers,
+            credential_loader=load_teleport_credentials,
+        )
+        success = result.get("status") in {"dry_run_ready", "succeeded_unqualified"}
+    elif args.command == "cpu-build":
         if args.execution_plane == "local":
             missing = [
                 name
