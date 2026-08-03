@@ -288,6 +288,156 @@ def compile_canonical_3dgs_hidden_evaluator_input(
     return result
 
 
+def compile_canonical_3dgs_proxy_hidden_evaluator_input(
+    *,
+    reconstruction_dataset_manifest: Mapping[str, Any],
+    dataset_artifact_root: str | Path,
+    evaluator_metric_scaffold: Mapping[str, Any],
+    output_root: str | Path,
+    source_commit_sha: str,
+    authority_used: Mapping[str, Any],
+    timestamp: str,
+) -> dict[str, Any]:
+    """Compile evaluator-only cameras for an admitted ARKitScenes proxy.
+
+    ARKitScenes does not carry Blueprint's ``sync_map.jsonl`` and Raw V3.2
+    sidecars.  Its proxy compiler instead freezes the exact hidden camera
+    bindings in a separately scoped metric scaffold.  This adapter validates
+    that scaffold and never reads the candidate-camera manifest.
+    """
+
+    dataset_root = Path(dataset_artifact_root).expanduser().resolve()
+    hidden_path, hidden = _reference(
+        reconstruction_dataset_manifest,
+        "hidden_heldout_evaluator_manifest",
+        dataset_root,
+    )
+    _, split = _reference(
+        reconstruction_dataset_manifest,
+        "frozen_split_manifest",
+        dataset_root,
+    )
+    scaffold = json.loads(canonical_json(dict(evaluator_metric_scaffold)))
+    if (
+        hidden.get("schema_version") != "hidden_heldout_evaluator_manifest.v1"
+        or hidden.get("access_scope") != "independent_evaluator_only"
+        or hidden.get("candidate_method_access_allowed") is not False
+        or hidden.get("hidden_heldout_digest")
+        != canonical_digest(hidden, digest_field="hidden_heldout_digest")
+        or split.get("split_digest")
+        != canonical_digest(split, digest_field="split_digest")
+        or hidden.get("split_digest") != split.get("split_digest")
+        or scaffold.get("schema_version") != "arkitscenes_metric_scaffold_proxy.v1"
+        or scaffold.get("access_scope") != "independent_evaluator_only"
+        or scaffold.get("metric_scaffold_digest")
+        != canonical_digest(scaffold, digest_field="metric_scaffold_digest")
+        or scaffold.get("capture_digest")
+        != reconstruction_dataset_manifest.get("source_capture_digest")
+        or scaffold.get("split_digest") != split.get("split_digest")
+    ):
+        raise Canonical3DGSEvaluationError(["evaluator_proxy_hidden_binding_invalid"])
+    hidden_rows = hidden.get("frames")
+    camera_rows = scaffold.get("camera_frames")
+    if not isinstance(hidden_rows, list) or not hidden_rows:
+        raise Canonical3DGSEvaluationError(["evaluator_hidden_frames_missing"])
+    if not isinstance(camera_rows, list) or len(camera_rows) != len(hidden_rows):
+        raise Canonical3DGSEvaluationError(["evaluator_proxy_camera_set_invalid"])
+    camera_by_id = {
+        str(row.get("frame_id")): row
+        for row in camera_rows
+        if isinstance(row, Mapping) and str(row.get("frame_id") or "")
+    }
+    if len(camera_by_id) != len(camera_rows):
+        raise Canonical3DGSEvaluationError(["evaluator_proxy_camera_set_invalid"])
+
+    destination = Path(output_root).expanduser().resolve()
+    cameras: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in hidden_rows:
+        if not isinstance(raw, Mapping):
+            raise Canonical3DGSEvaluationError(["evaluator_hidden_frame_invalid"])
+        camera_id = str(raw.get("frame_id") or "")
+        camera = camera_by_id.get(camera_id)
+        if not camera_id or camera_id in seen or not isinstance(camera, Mapping):
+            raise Canonical3DGSEvaluationError(
+                [f"evaluator_proxy_camera_missing:{camera_id or 'unknown'}"]
+            )
+        if abs(float(raw.get("t_video_sec")) - float(camera.get("t_video_sec"))) > 1e-6:
+            raise Canonical3DGSEvaluationError(
+                [f"evaluator_proxy_camera_sync_invalid:{camera_id}"]
+            )
+        intrinsics = camera.get("rgb_intrinsics")
+        if not isinstance(intrinsics, Mapping):
+            raise Canonical3DGSEvaluationError(
+                [f"evaluator_proxy_intrinsics_missing:{camera_id}"]
+            )
+        try:
+            camera_intrinsics = {
+                key: float(intrinsics[key]) for key in ("fx", "fy", "cx", "cy")
+            } | {"width": int(intrinsics["width"]), "height": int(intrinsics["height"])}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise Canonical3DGSEvaluationError(
+                [f"evaluator_proxy_intrinsics_invalid:{camera_id}"]
+            ) from exc
+        source = _safe_file(
+            hidden_path.parent.parent,
+            raw.get("evaluator_relative_path"),
+            code=f"evaluator_hidden_frame_path_invalid:{camera_id}",
+        )
+        relative = f"reference_frames/{camera_id}.png"
+        _copy_immutable(source, destination / relative, str(raw.get("frame_digest") or ""))
+        cameras.append(
+            {
+                "camera_id": camera_id,
+                "trajectory": "arkitscenes_proxy_heldout",
+                "t_video_sec": float(raw["t_video_sec"]),
+                "capture_pose_frame_id": camera_id,
+                "T_world_camera_provider_frame": _opencv_camera_to_world(
+                    camera.get("T_world_camera")
+                ),
+                "intrinsics": camera_intrinsics,
+                "reference_relative_path": relative,
+                "reference_digest": str(raw.get("frame_digest")),
+                "excluded_from_training": True,
+            }
+        )
+        seen.add(camera_id)
+
+    result = {
+        "schema_version": EVALUATOR_INPUT_SCHEMA,
+        "status": "ready_for_independent_exact_camera_evaluation",
+        "source_profile": "public_dataset_arkitscenes_proxy",
+        "source_capture_identity": reconstruction_dataset_manifest["source_capture_identity"],
+        "source_capture_digest": reconstruction_dataset_manifest["source_capture_digest"],
+        "source_commit_sha": source_commit_sha,
+        "reconstruction_dataset_digest": reconstruction_dataset_manifest[
+            "dataset_manifest_digest"
+        ],
+        "frozen_split_digest": split["split_digest"],
+        "hidden_heldout_digest": hidden["hidden_heldout_digest"],
+        "evaluator_metric_scaffold_digest": scaffold["metric_scaffold_digest"],
+        "camera_axis_convention": "opencv_x_right_y_down_z_forward",
+        "world_frame": "arkitscenes_official_loader_world",
+        "units": "meters",
+        "metric_scale_status": str(scaffold.get("metric_scale_status") or "unknown"),
+        "raw_contract_3_2_proven": False,
+        "cameras": cameras,
+        "camera_count": len(cameras),
+        "candidate_access_allowed": False,
+        "trainer_transport_contains_this_manifest": False,
+        "trainer_transport_contains_hidden_pixels": False,
+        "authority_used": dict(authority_used),
+        "proof_effect": "evaluator_input_only",
+        "claim_ceiling": "independent_appearance_evaluation_request",
+        "timestamp": timestamp,
+    }
+    result["canonical_3dgs_hidden_evaluator_input_digest"] = canonical_digest(
+        result, digest_field="canonical_3dgs_hidden_evaluator_input_digest"
+    )
+    _immutable_json(destination / "canonical_3dgs_hidden_evaluator_input.json", result)
+    return result
+
+
 def _validated_evaluator_input(value: Mapping[str, Any]) -> dict[str, Any]:
     result = json.loads(canonical_json(dict(value)))
     if (
@@ -683,6 +833,7 @@ __all__ = [
     "QUALITY_COMPARISON_SCHEMA",
     "Canonical3DGSEvaluationError",
     "compile_canonical_3dgs_hidden_evaluator_input",
+    "compile_canonical_3dgs_proxy_hidden_evaluator_input",
     "evaluate_canonical_3dgs_campaign",
 ]
 

@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -81,13 +82,20 @@ def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> None:
 def _execute(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as stream:
-        completed = subprocess.run(
-            list(arguments),
-            cwd=cwd,
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+        deadline = float(os.environ.get("BLUEPRINT_CANONICAL_3DGS_DEADLINE_EPOCH", "0"))
+        timeout = max(0.001, deadline - time.time()) if deadline > 0 else None
+        try:
+            completed = subprocess.run(
+                list(arguments),
+                cwd=cwd,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            stream.write(b"canonical_3dgs_worker_hard_ttl_expired\n")
+            return 124
     return int(completed.returncode)
 
 
@@ -222,6 +230,16 @@ def validate_trainer_runtime_binding(
         "trainer_runtime_digest": digest,
         "trainer_runtime_version": str(admission["trainer_runtime_version"]),
     }
+
+
+def validate_worker_image_binding(
+    admission: Mapping[str, Any], environment: Mapping[str, str]
+) -> str:
+    observed = str(environment.get("BLUEPRINT_WORKER_IMAGE_DIGEST") or "")
+    expected = str(admission.get("worker_image_digest") or "")
+    if not observed or observed != expected:
+        raise Canonical3DGSPipelineError(["worker_image_digest_mismatch"])
+    return observed
 
 
 def run_splatfacto_arm(
@@ -392,6 +410,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     trainer_runtime = validate_trainer_runtime_binding(
         arguments.arm, admission, os.environ
     )
+    worker_image_digest = validate_worker_image_binding(admission, os.environ)
+    expires = datetime.fromisoformat(str(admission["expires_at"]).replace("Z", "+00:00"))
+    os.environ["BLUEPRINT_CANONICAL_3DGS_DEADLINE_EPOCH"] = str(expires.timestamp())
     matches = [row for row in plan.get("arms") or [] if row.get("arm_id") == arguments.arm]
     if len(matches) != 1:
         raise Canonical3DGSPipelineError([f"worker_arm_missing:{arguments.arm}"])
@@ -406,6 +427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     runtime_identity["source_commit_sha_bound_by_plan"] = plan["source_commit_sha"]
     runtime_identity.update(trainer_runtime)
+    runtime_identity["worker_image_digest"] = worker_image_digest
     receipt["runtime_identity"] = runtime_identity
     receipt["canonical_3dgs_execution_plan_digest"] = plan[
         "canonical_3dgs_execution_plan_digest"
@@ -445,4 +467,5 @@ __all__ = [
     "run_postshot_arm",
     "run_splatfacto_arm",
     "validate_trainer_runtime_binding",
+    "validate_worker_image_binding",
 ]

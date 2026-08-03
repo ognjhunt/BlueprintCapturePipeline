@@ -1,4 +1,4 @@
-# Canonical Blueprint V3.2 to 3DGS
+# Canonical Blueprint V3.2 / ARKitScenes proxy to 3DGS
 
 The service that turns the capture into a 3D Gaussian Splat is the
 **reconstruction worker**, not the iOS app and not Niantic NSDK:
@@ -14,7 +14,7 @@ The service that turns the capture into a 3D Gaussian Splat is the
 ## Data path
 
 ```text
-BlueprintCapture V3.2 bundle
+BlueprintCapture V3.2 bundle OR explicitly admitted ARKitScenes proxy
   -> strict decoded-PTS / retention / ARKit / intrinsics validation
   -> frozen training / validation / evaluator-hidden split
   -> candidate RGB + raw ARKit camera bindings
@@ -31,6 +31,12 @@ or exposes evaluator-hidden pixels to either trainer. Captured LiDAR depth is an
 initialization surface; it does not itself prove independent metric accuracy,
 complete geometry, collision suitability, Isaac compatibility, or physical
 task success.
+
+The ARKitScenes path is a public-dataset proxy lane, not Blueprint Raw V3.2.
+Its source admission records `raw_contract_3_2_proven=false`, binds the exact
+retained compilation and official-loader world frame, and preserves the same
+candidate/hidden separation. It cannot upgrade proxy data into raw-capture
+truth.
 
 ## 1. Prepare the immutable training plan
 
@@ -52,6 +58,18 @@ preparation result, the COLMAP export result, a content-bound
 `canonical_3dgs_execution_plan.json`. The plan freezes Postshot as `primary`
 and Splatfacto as `comparison`, hashes every input artifact, records the frozen
 split and capture digest, and leaves `quality_winner` unset.
+
+For an already compiled ARKitScenes proxy, name both retained roots explicitly;
+the command never searches for a "newest" artifact:
+
+```bash
+blueprint-prepare-canonical-3dgs \
+  --source-profile public_dataset_arkitscenes_proxy \
+  --proxy-root /retained/40958756/compiled/arkitscenes_proxy_<digest> \
+  --source-artifact-root /retained/40958756 \
+  --output-root /derived/40958756 \
+  --source-commit-sha <40-hex>
+```
 
 Package the exact plan and candidate-only dataset once for cross-platform
 transport:
@@ -102,15 +120,21 @@ pinned NumPy/Pillow runtime needed by these worker entry points, installs the
 exact Blueprint wheel with `--no-deps`, smoke-checks both commands, and emits
 the actual Postshot executable digest without starting training.
 
-Before execution, bind that digest plus the exact worker identity, watchdog,
-upload authority, spend ceiling, and plan transport into an arm admission:
+Before execution, obtain an `execute_ready`
+`reconstruction_gpu_canary_admission.v1` through
+`python -m blueprint_pipeline.paid_resource_allocator gpu-canary`. It must use
+operation `trainer_canary` and bind the plan digest, transport bundle, dataset,
+split, commit, image, authority, budget, TTL, watchdog, provider-zero preflight,
+and `retry_cap=0`. A provider-specific launcher is forbidden. Then bind that
+allocator receipt plus the measured trainer digest into the arm admission:
 
 ```bash
 blueprint-admit-canonical-3dgs-worker \
   --transport-receipt /derived/<capture-id>/canonical_3dgs_transport_receipt.json \
   --arm postshot-primary \
   --worker-platform windows \
-  --allocation-binding-digest sha256:<64-hex> \
+  --paid-allocator-admission /control/postshot-allocator-admission.json \
+  --worker-image-digest <image-name>@sha256:<64-hex> \
   --trainer-runtime-digest sha256:<Postshot-CLI-exe-digest> \
   --trainer-runtime-version <observed-Postshot-version> \
   --authority-id <explicit-authority-id> \
@@ -124,14 +148,21 @@ blueprint-admit-canonical-3dgs-worker \
   --output /derived/<capture-id>/postshot-worker-admission.json
 ```
 
-Omitting any authorization or watchdog flag produces a blocked record. The
-admission is arm-specific, has `retry_cap=0`, and requires provider-zero proof
-again after execution.
+Omitting any authorization or watchdog flag produces a blocked record. An
+arbitrary allocation hash is not accepted. The admission is arm-specific,
+expires at its issued timestamp plus its TTL, has `retry_cap=0`, and requires
+provider-zero proof again after execution. The current Vast-first allocator is
+Linux-oriented; until a Windows `trainer_canary` adapter is qualified, the
+Postshot arm remains explicitly blocked rather than bypassing the allocator.
 
 Set `POSTSHOT_LOGIN_EMAIL` and `POSTSHOT_LOGIN_PASSWORD` in the worker's secret
 environment. They are passed as Postshot global flags, redacted from the
 receipt, and never written into the plan. The worker rehashes the Postshot
 executable against the admission immediately before training. Then run:
+
+```powershell
+$env:BLUEPRINT_WORKER_IMAGE_DIGEST = "<image-name>@sha256:<64-hex>"
+```
 
 ```powershell
 blueprint-canonical-3dgs-transport extract `
@@ -167,7 +198,8 @@ blueprint-admit-canonical-3dgs-worker \
   --transport-receipt /derived/<capture-id>/canonical_3dgs_transport_receipt.json \
   --arm splatfacto-comparison \
   --worker-platform linux \
-  --allocation-binding-digest sha256:<64-hex> \
+  --paid-allocator-admission /control/splatfacto-allocator-admission.json \
+  --worker-image-digest <image-name>@sha256:<64-hex> \
   --trainer-runtime-digest sha256:913d5afd190a9bed736f6a978d472b58654f650d3bc173a07d8a5375d95703c6 \
   --trainer-runtime-version nerfstudio-1.1.5+gsplat-1.4.0 \
   --authority-id <explicit-authority-id> \
@@ -184,6 +216,8 @@ blueprint-admit-canonical-3dgs-worker \
 Then execute:
 
 ```bash
+export BLUEPRINT_WORKER_IMAGE_DIGEST='<image-name>@sha256:<64-hex>'
+
 .venvs/splatfacto-g1/bin/blueprint-canonical-3dgs-transport extract \
   --bundle /work/canonical_3dgs_transport.zip \
   --receipt /work/canonical_3dgs_transport_receipt.json \
@@ -216,6 +250,10 @@ The Splatfacto admission must use trainer version
 `sha256:913d5afd190a9bed736f6a978d472b58654f650d3bc173a07d8a5375d95703c6`.
 The worker derives that digest from the installed package versions and refuses
 any mismatch before `ns-train` starts.
+
+The worker calculates the remaining admission TTL immediately before the
+trainer subprocess and applies it as a local timeout. The independent watchdog
+remains mandatory because a local process timeout is not provider teardown.
 
 ## 4. Finalize the two receipts
 
@@ -301,6 +339,47 @@ windowed/global SSIM, PSNR, MAE, and pinned LPIPS, writes one
 that pass the frozen thresholds. Its deterministic tie order is LPIPS, PSNR,
 then windowed SSIM. If neither arm qualifies it abstains; it never upgrades
 appearance evidence into metric, collision, Isaac, or physical-task proof.
+
+## 6. Register one evaluated appearance candidate
+
+After independent held-out evaluation selects a qualifying arm, independently
+measure appearance-to-site correspondences and freeze the similarity transform
+and residual thresholds. Then produce the registered reconstruction:
+
+```bash
+blueprint-register-canonical-3dgs \
+  --source-admission /derived/<capture-id>/canonical_3dgs_source_admission.json \
+  --campaign /work/results/canonical_3dgs_campaign_result.json \
+  --results-root /work/results \
+  --quality-comparison /work/quality/canonical_3dgs_quality_comparison.json \
+  --registration-measurement /work/registration/measurement.json \
+  --output /work/registration/registered_site_reconstruction.json
+```
+
+The producer independently decodes the selected standard 3DGS PLY, verifies
+its campaign lineage, and reports RMSE, p95, and maximum registration residuals
+in meters. It is `candidate_only` until both held-out appearance and
+registration gates qualify. Even then, its ceiling is registered appearance:
+metric geometry, collision, Isaac compatibility, and physical success remain
+false.
+
+## No-authority handoff
+
+When paid execution has not been authorized, compile the immutable request
+instead of launching anything:
+
+```bash
+blueprint-request-canonical-3dgs-execution \
+  --plan /derived/<capture-id>/canonical_3dgs_execution_plan.json \
+  --transport-receipt /derived/<capture-id>/canonical_3dgs_transport_receipt.json \
+  --timestamp <UTC-ISO8601> \
+  --output /derived/<capture-id>/canonical_3dgs_execution_request.json
+```
+
+The request binds the exact retained bytes, authorizes neither upload nor
+spend, sets no winner, and names the missing per-arm authority, budget, TTL,
+image/runtime identities, watchdog, provider-zero preflight, credentials, and
+allocator adapter/admission evidence.
 
 ## End-to-end test boundary
 
