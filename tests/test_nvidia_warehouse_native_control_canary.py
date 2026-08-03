@@ -85,6 +85,10 @@ def test_injected_native_backend_emits_result_envelope_and_integrity_index(
                 "settle_stable": True,
                 "support_contact_proven": True,
                 "initial_overlap_clear": True,
+                "franka_articulation_valid": True,
+                "franka_joint_limits_valid": True,
+                "franka_controller_binding_valid": True,
+                "franka_collision_behavior_valid": True,
             },
             "reset_evidence": {"cycle_count": 5, "within_tolerances": True},
             "positive_control": {"success": True},
@@ -123,6 +127,10 @@ def test_positive_control_failure_blocks_five_controller_claim(tmp_path: Path) -
                     "settle_stable",
                     "support_contact_proven",
                     "initial_overlap_clear",
+                    "franka_articulation_valid",
+                    "franka_joint_limits_valid",
+                    "franka_controller_binding_valid",
+                    "franka_collision_behavior_valid",
                 )
             },
             "reset_evidence": {"cycle_count": 5, "within_tolerances": True},
@@ -141,4 +149,3 @@ def test_positive_control_failure_blocks_five_controller_claim(tmp_path: Path) -
     assert result["status"] == "failed"
     assert result["blockers"] == ["native_positive_control_failed"]
     assert result["assessment"]["controller_results"] == []
-

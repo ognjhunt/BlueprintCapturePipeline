@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -167,6 +168,10 @@ def assess_native_control_backend_result(
         "settle_stable",
         "support_contact_proven",
         "initial_overlap_clear",
+        "franka_articulation_valid",
+        "franka_joint_limits_valid",
+        "franka_controller_binding_valid",
+        "franka_collision_behavior_valid",
     )
     for field in required_physics:
         if physics.get(field) is not True:
@@ -228,6 +233,7 @@ def isaac_sim_6_native_control_backend(
         from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera
         from isaacsim.storage.native import get_assets_root_path
         from omni.physx import get_physx_simulation_interface
+        import torch
         from pxr import (
             Gf,
             PhysicsSchemaTools,
@@ -240,6 +246,9 @@ def isaac_sim_6_native_control_backend(
         )
 
         output_dir.mkdir(parents=True, exist_ok=True)
+        np.random.seed(int(spec["seed"]))
+        torch.manual_seed(int(spec["seed"]))
+        torch.cuda.manual_seed_all(int(spec["seed"]))
         trace_dir = output_dir / "traces"
         frame_dir = output_dir / "frames"
         trace_dir.mkdir()
@@ -323,6 +332,7 @@ def isaac_sim_6_native_control_backend(
             Franka(
                 prim_path="/World/Franka",
                 name="native_control_franka",
+                usd_path=franka_asset,
                 position=np.asarray(placements["franka_base_translation_m"], dtype=float),
             )
         )
@@ -351,7 +361,13 @@ def isaac_sim_6_native_control_backend(
         wrist_prim.CreateFocalLengthAttr(9.0)
         set_pose(wrist_path, (0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0))
         world.reset()
+        dof_limits = _backend_array_to_numpy(robot.get_dof_limits()).astype(float)
+        if dof_limits.ndim == 3:
+            dof_limits = dof_limits[0]
+        expected_dofs = len(spec["reset_contract"]["joint_positions"])
+        articulation_controller = robot.get_articulation_controller()
         camera = CameraSensor(RtxCamera(camera_path), resolution=(480, 640), annotators=["rgba", "distance_to_camera"])
+        external_pose_view = XformPrim(camera_path)
         wrist_pose_view = XformPrim(wrist_path)
         physics_view = world.physics_sim_view
         if physics_view is None:
@@ -429,6 +445,7 @@ def isaac_sim_6_native_control_backend(
             obj_pos, obj_quat = spray.get_world_pose()
             return {
                 "physics_step": int(world.current_time_step_index),
+                "simulation_time_seconds": float(world.current_time),
                 "joint_positions": joints.tolist(),
                 "joint_velocities": joint_vel.tolist(),
                 "object_position_m": _backend_array_to_numpy(obj_pos).astype(float).tolist(),
@@ -524,6 +541,11 @@ def isaac_sim_6_native_control_backend(
                 "blueprint_marked_tray": "runtime_static_collision_target",
             },
         }
+        franka_collision_prim_count = sum(
+            1
+            for prim in Usd.PrimRange(stage.GetPrimAtPath("/World/Franka"))
+            if prim.HasAPI(UsdPhysics.CollisionAPI)
+        )
         scene_physics = {
             "meters_per_unit": float(UsdGeom.GetStageMetersPerUnit(stage)),
             "meters_per_unit_valid": abs(float(UsdGeom.GetStageMetersPerUnit(stage)) - 1.0) < 1e-12,
@@ -588,6 +610,34 @@ def isaac_sim_6_native_control_backend(
             "franka_asset": franka_asset,
             "franka_dof_count": int(getattr(robot, "num_dof", getattr(robot, "num_dofs", -1))),
             "franka_dof_names": list(robot.dof_names),
+            "franka_dof_limits": dof_limits.tolist(),
+            "franka_articulation_valid": bool(
+                int(getattr(robot, "num_dof", getattr(robot, "num_dofs", -1)))
+                == expected_dofs
+                and len(robot.dof_names) == expected_dofs
+                and stage.GetPrimAtPath("/World/Franka").IsValid()
+            ),
+            "franka_joint_limits_valid": bool(
+                dof_limits.shape == (expected_dofs, 2)
+                and np.isfinite(dof_limits).all()
+                and np.all(dof_limits[:, 0] < dof_limits[:, 1])
+                and np.all(initial_joints >= dof_limits[:, 0])
+                and np.all(initial_joints <= dof_limits[:, 1])
+            ),
+            "franka_controller_binding_valid": bool(
+                articulation_controller is not None
+                and robot.gripper is not None
+                and callable(robot.apply_action)
+            ),
+            "franka_collision_prim_count": franka_collision_prim_count,
+            "franka_collision_behavior_valid": bool(
+                franka_collision_prim_count > 0
+                and not (
+                    "Franka" in contact_text
+                    and "SprayCan" in contact_text
+                )
+            ),
+            "deterministic_seed": int(spec["seed"]),
         }
         _write_jsonl(trace_dir / "settle_contacts.jsonl", settle_contacts)
 
@@ -713,16 +763,26 @@ def isaac_sim_6_native_control_backend(
         write_json(trace_dir / "reset_evidence.json", reset_evidence)
 
         def save_frame(run_id: str, phase: str) -> list[dict[str, Any]]:
-            sync_wrist()
+            wrist_matrix = sync_wrist()
+            external_matrix = _unified_world_pose_matrix(external_pose_view)
             for _ in range(2):
                 world.render()
             saved = []
-            for view_id, sensor in (("external", camera), ("wrist", wrist_camera)):
+            for view_id, sensor, world_matrix in (
+                ("external", camera, external_matrix),
+                ("wrist", wrist_camera, wrist_matrix),
+            ):
                 frame = _camera_sensor_annotator_frame(sensor=sensor, annotator="rgba")
                 rgba = np.asarray(frame["data"])
                 path = frame_dir / f"{run_id}_{phase}_{view_id}.png"
                 Image.fromarray(np.asarray(rgba[:, :, :3], dtype=np.uint8)).save(path)
-                saved.append({"view": view_id, "phase": phase, "relative_path": str(path.relative_to(output_dir)), "sha256": file_sha256(path), "physics_step": int(world.current_time_step_index), "resolution": [640, 480]})
+                saved.append({"view": view_id, "modality": "rgb", "phase": phase, "relative_path": str(path.relative_to(output_dir)), "sha256": file_sha256(path), "physics_step": int(world.current_time_step_index), "simulation_time_seconds": float(world.current_time), "resolution": [640, 480], "camera_world_matrix": world_matrix.tolist(), "feeds_evaluation": False})
+                depth_frame = _camera_sensor_annotator_frame(
+                    sensor=sensor, annotator="distance_to_camera"
+                )
+                depth_path = frame_dir / f"{run_id}_{phase}_{view_id}_depth.npy"
+                np.save(depth_path, np.asarray(depth_frame["data"], dtype=np.float32))
+                saved.append({"view": view_id, "modality": "metric_depth", "phase": phase, "relative_path": str(depth_path.relative_to(output_dir)), "sha256": file_sha256(depth_path), "physics_step": int(world.current_time_step_index), "simulation_time_seconds": float(world.current_time), "resolution": [640, 480], "camera_world_matrix": world_matrix.tolist(), "feeds_evaluation": False})
             return saved
 
         def run_controller(definition: Mapping[str, Any], *, positive: bool) -> dict[str, Any]:
@@ -782,15 +842,23 @@ def isaac_sim_6_native_control_backend(
                 if definition.get("mode") != "stationary" and controller.is_done():
                     terminated = "controller_done"
                     break
+            terminal_states: list[dict[str, Any]] = []
             for _ in range(int(spec["task"]["terminal_stability_steps"])):
                 world.step(render=False)
+                terminal_states.append(state())
             final = state()
             frames.extend(save_frame(run_id, "terminal"))
             final_pos = np.asarray(final["object_position_m"], dtype=float)
             half = tray_dims[:2] / 2.0
             inside = bool(np.all(np.abs(final_pos[:2] - tray_center[:2]) <= half))
             lifted = max_lift >= float(spec["task"]["minimum_lift_m"])
-            stable = float(np.linalg.norm(final["object_linear_velocity_m_s"])) <= float(spec["task"]["terminal_linear_speed_max_m_s"])
+            terminal_speed_max = max(
+                float(np.linalg.norm(row["object_linear_velocity_m_s"]))
+                for row in terminal_states
+            )
+            stable = terminal_speed_max <= float(
+                spec["task"]["terminal_linear_speed_max_m_s"]
+            )
             run_contacts = contacts[start_contact:]
             contact_blob = json.dumps(run_contacts)
             gripper_contact = "SprayCan" in contact_blob and ("finger" in contact_blob.lower() or "hand" in contact_blob.lower())
@@ -818,7 +886,7 @@ def isaac_sim_6_native_control_backend(
                 "max_lift_m": max_lift,
                 "initial_distance_to_tray_xy_m": initial_distance,
                 "final_distance_to_tray_xy_m": final_distance,
-                "predicate_inputs": {"lifted": lifted, "inside_tray": inside, "stable": stable, "gripper_contact": gripper_contact, "not_in_robot_contact_final": not final_robot_contact},
+                "predicate_inputs": {"lifted": lifted, "inside_tray": inside, "stable_for_frozen_duration": stable, "terminal_stability_steps": len(terminal_states), "terminal_max_linear_speed_m_s": terminal_speed_max, "gripper_contact": gripper_contact, "not_in_robot_contact_final": not final_robot_contact},
                 "contact_event_count": len(run_contacts),
                 "safety_violation": any((row.get("minimum_separation_m") or 0.0) < -float(spec["physics"]["maximum_runtime_penetration_m"]) for row in run_contacts),
                 "frames": frames,
@@ -835,6 +903,13 @@ def isaac_sim_6_native_control_backend(
             "runtime_backend": "isaac_sim_6_physx",
             "hybrid_or_mujoco_backend_used": False,
             "isaac_sim_version": "6.0.1",
+            "gpu_identity": {
+                "device_name": torch.cuda.get_device_name(0),
+                "device_capability": list(torch.cuda.get_device_capability(0)),
+                "cuda_available": bool(torch.cuda.is_available()),
+            },
+            "source_commit_from_image": os.environ.get("BLUEPRINT_SOURCE_COMMIT"),
+            "physics_engine": "PhysX",
             "scene_physics": scene_physics,
             "reset_evidence": reset_evidence,
             "positive_control": positive,
