@@ -251,6 +251,7 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
         bucket_file=bucket_file,
         region="nyc3",
         key_prefix="blueprint/wam-test",
+        output_content_type="application/json",
         expiration_seconds=600,
         generated_at="now",
     )
@@ -292,9 +293,22 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     assert binding["staging_binding_sha256"] == manifest["staging_binding_sha256"]
     assert re.fullmatch(
         f"blueprint/wam-test/{object_store._job_key_component((tmp_path / 'job').resolve())}"
-        r"/runpod_provider_runtime_output_[0-9a-f]{32}\.zip",
+        r"/runpod_provider_runtime_output_[0-9a-f]{32}\.json",
         manifest["output_key"],
     )
+    actual_output_put_params = [
+        params
+        for operation, params in fake_client.presign_params
+        if operation == "put_object" and params.get("Key") == manifest["output_key"]
+    ]
+    assert actual_output_put_params == [
+        {
+            "Bucket": "blueprint-wam",
+            "Key": manifest["output_key"],
+            "ContentType": "application/json",
+        }
+    ]
+    assert manifest["object_store"]["output_content_type"] == "application/json"
     round_trip = manifest["signed_output_round_trip"]
     assert round_trip["status"] == "passed"
     assert round_trip["put"]["status"] == "passed"
