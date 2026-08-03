@@ -392,6 +392,7 @@ blueprint-run-production-gpu-warm-watchdog = "blueprint_pipeline.production_gpu_
 blueprint-build-production-gpu-launch-qualification = "blueprint_pipeline.production_gpu_launch_qualification:main"
 blueprint-run-production-gpu-rollback-drill = "blueprint_pipeline.production_gpu_rollback_drill:main"
 blueprint-run-production-gpu-replenishment-probe = "blueprint_pipeline.production_gpu_replenishment_probe:main"
+blueprint-qualify-capture-reconstruction = "blueprint_pipeline.capture_reconstruction_qualification:main"
 
 [project.urls]
 Homepage = "https://tryblueprint.io"
