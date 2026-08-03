@@ -65,8 +65,8 @@ dependent step as blocked instead of guessing.
 - Preserve raw bundle truth and downstream compatibility with other Blueprint repos.
 - Do not hardwire the company to one model family, checkpoint, or provider.
 - Keep cross-repo contracts explicit when changing bundle, runtime, or sync behavior.
-- Never resolve a failure only by hand or by a one-off workaround. Use two
-  verification lanes:
+- Never resolve a failure only by hand or by a one-off workaround. Use
+  risk-based verification:
   - **Experimental/canary lane:** before paid mutation, bind the run to a clean
     immutable commit (a protected experiment branch or `main`) and immutable
     input hashes; run focused hermetic tests for every changed scientific,
@@ -75,9 +75,34 @@ dependent step as blocked instead of guessing.
     hosted-check completion, and merge to `main` are not prerequisites for the
     canary. Preserve failures and publish the encoded fix before a production
     release or terminal scientific claim.
-  - **Release/production lane:** run the repository fast lane once per coherent
-    release candidate, treat hosted checks as integration diagnostics, and run
-    exactly one full suite on the final publication SHA.
+  - **Build loop (target: under 2 minutes):** run only the deterministic tests,
+    schema checks, replay fixtures, and changed-file lint that cover the edited
+    surface. Do not run a repository-wide lane merely because a change is ready
+    to commit.
+  - **PR gate (target: under 10 minutes):** gate ordinary pull requests with
+    impacted tests plus the small always-on contract, security, and paid-resource
+    sentinel set. The PR description or check output must record why each command
+    covers a changed claim or risk.
+  - **Repository fast lane:** this is a bounded integration diagnostic, not the
+    default build-loop or ordinary-PR command. Every multi-minute, subprocess,
+    simulator, render, module-entrypoint, or external-runtime test belongs in a
+    slower lane, and CI must enforce the lane's wall-time budget. A marker
+    expression alone is not proof that the lane is fast.
+  - **Full suite:** run only for an explicit production/deployment promotion, a
+    scheduled integration run, or a recorded dependency-boundary analysis that
+    finds the change cross-cutting. Do not require it for an ordinary PR or merely
+    because a commit is called a release candidate. Run the smallest deterministic
+    set that covers the changed contracts; hosted impacted checks gate PRs.
+  - **GPU tests:** run only when the changed path reaches a qualified GPU gate or
+    an explicit promotion requires that gate. A `gpu` marker by itself neither
+    authorizes paid execution nor makes GPU coverage relevant.
+  - **Failure handling:** rerun one isolated, apparently unrelated failure only in
+    isolation and diagnose it. Do not automatically restart a broad or full suite.
+  Every reported verification command must name the claim or risk it protects;
+  "run everything" is not evidence by itself. For non-paid commands expected to
+  exceed two minutes, run them in the background or CI and report only start,
+  meaningful milestones or failures, and the final result. Paid runs retain their
+  stricter monitoring, spend, watchdog, and teardown requirements.
   A manual action taken to save a live run remains a stopgap; encode and focus-
   test the equivalent in the same session (precedents: PR #180 builder swap,
   PR #181 compute-cap ceiling).
@@ -123,18 +148,21 @@ Install:
 python -m pip install -e .[dev]
 ```
 
-Run release tests:
+Run tests:
 
 ```bash
-pytest                    # fast lane (<90s): slow/gpu tests deselected via addopts
-scripts/pytest_full.sh    # full suite including slow/gpu tests (equivalent: pytest -m '')
+pytest <impacted paths/nodes>            # build loop: changed-area tests only
+ruff check <changed Python files>         # build loop: changed-file lint only
+scripts/pytest_fast.sh                    # bounded repository integration diagnostic
+scripts/pytest_full.sh                    # explicit promotion/scheduled/cross-cutting only
 ```
 
 Test lanes (PIPE-05): heavy subprocess/Isaac/render/module-entrypoint tests are tagged
-`@pytest.mark.slow` (and `gpu`); bare `pytest` deselects them, so it is the hermetic
-release pre-push gate. Experimental canaries may instead run the focused hermetic
-tests required by the canary-lane rule above. The success-claim contract truth tests
-always run against the committed
+`@pytest.mark.slow` (and `gpu`). Bare `pytest` currently deselects those markers,
+but it still selects the repository-wide non-slow collection and has no guaranteed
+wall-time; do not use it as the default build-loop or ordinary-PR gate. Experimental
+canaries use the focused hermetic tests required by the canary-lane rule above. The
+success-claim contract truth tests always run against the committed
 fixture in `tests/fixtures/kitchen_task_min/`; set `BLUEPRINT_TEST_LOCAL_ARTIFACTS=1`
 to additionally sweep real `output/kitchen_task_scaling_preflight_*` artifacts.
 
