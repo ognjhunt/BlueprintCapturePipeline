@@ -4,13 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 from statistics import fmean
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.claim_contract_keys import PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
 from blueprint_pipeline.measurement_adapter_execution import (
     run_measurement_adapter_execution,
     validate_measurement_adapter_execution_request,
@@ -22,7 +26,7 @@ from blueprint_pipeline.measurement_isaac_runtime_release import (
 )
 
 
-RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_vast_runtime_result.v1"
+RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_vast_runtime_result.v3"
 
 
 def _read_object(path: Path) -> dict:
@@ -39,10 +43,114 @@ def _environment(name: str) -> str:
     return value
 
 
+def _sha256_json(value: dict) -> str:
+    normalized = dict(value)
+    normalized.pop("preflight_result_digest", None)
+    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _safe_process_tail(value: str) -> str:
+    tail = value[-4000:]
+    tail = re.sub(r"https?://\S+", "<redacted-url>", tail)
+    return tail.replace("\x00", "")
+
+
+def _run_rtx_preflight(
+    bundle_root: Path, *, required_output_kinds: list[str]
+) -> tuple[dict, list[str]]:
+    output = bundle_root / "rtx_openusd_runtime_preflight.json"
+    command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.isaac_worker_runtime_preflight",
+        "--output",
+        str(output),
+        "--require-nvidia-smi",
+        "--require-rtx-render",
+        "--smoke-steps",
+        "2",
+    ]
+    for kind in required_output_kinds:
+        command.extend(["--required-output-kind", kind])
+    timed_out = False
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=360,
+        )
+        exit_code = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        exit_code = 124
+        stdout = (
+            exc.stdout.decode("utf-8", "replace")
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode("utf-8", "replace")
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")
+        )
+    process_observation = {
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "timeout_seconds": 360,
+        "stdout_bytes": len(stdout.encode("utf-8", "replace")),
+        "stderr_bytes": len(stderr.encode("utf-8", "replace")),
+        "stdout_digest": "sha256:" + hashlib.sha256(stdout.encode("utf-8", "replace")).hexdigest(),
+        "stderr_digest": "sha256:" + hashlib.sha256(stderr.encode("utf-8", "replace")).hexdigest(),
+        "stdout_tail": _safe_process_tail(stdout),
+        "stderr_tail": _safe_process_tail(stderr),
+        "raw_secret_values_recorded": False,
+    }
+    if not output.is_file() or output.is_symlink() or output.stat().st_size > 1024 * 1024:
+        result = {
+            "schema_version": "isaac_worker_runtime_preflight.v1",
+            "status": "blocked",
+            "checks": [],
+            "blockers": ["rtx_preflight_result_missing_or_unsafe"],
+            "subprocess_observation": process_observation,
+            "raw_secret_values_recorded": False,
+            "proof_boundary": {
+                "rtx_pixels_rendered": False,
+                "rtx_rgb_rendered": False,
+                "rtx_depth_output_observed": False,
+                "rtx_semantic_segmentation_observed": False,
+                "requested_sensor_modalities_observed": False,
+                "calibrated_sensor_match_proven": False,
+                "q_sensor_qualification_created": False,
+                PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
+            },
+        }
+        result["preflight_result_digest"] = _sha256_json(result)
+        return result, ["measurement_isaac_rtx_preflight_result_missing_or_unsafe"]
+    try:
+        result = _read_object(output)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}, ["measurement_isaac_rtx_preflight_result_invalid"]
+    result["subprocess_observation"] = process_observation
+    result["preflight_result_digest"] = _sha256_json(result)
+    blockers: list[str] = []
+    if exit_code != 0:
+        blockers.append(f"measurement_isaac_rtx_preflight_exit_nonzero:{exit_code}")
+    if result.get("status") != "passed" or result.get("blockers") != []:
+        blockers.append("measurement_isaac_rtx_preflight_reported_blockers")
+    return result, blockers
+
+
 def run_bundle(bundle_root: Path) -> dict:
     manifest = _read_object(bundle_root / "bundle_manifest.json")
     blockers: list[str] = []
-    if manifest.get("schema_version") != "measurement_isaac_physx_input_bundle.v1":
+    if manifest.get("schema_version") != "measurement_isaac_physx_rtx_input_bundle.v3":
         blockers.append("measurement_isaac_bundle_manifest_schema_invalid")
     supplied_manifest_digest = manifest.get("bundle_manifest_digest")
     if supplied_manifest_digest != canonical_digest(
@@ -52,7 +160,9 @@ def run_bundle(bundle_root: Path) -> dict:
     expected_bindings = {
         "source_commit_sha": _environment("BLUEPRINT_MEASUREMENT_ISAAC_SOURCE_COMMIT"),
         "runtime_image_digest": _environment("BLUEPRINT_MEASUREMENT_ISAAC_RUNTIME_IMAGE"),
-        "runtime_release_digest": _environment("BLUEPRINT_MEASUREMENT_ISAAC_RUNTIME_RELEASE_DIGEST"),
+        "runtime_release_digest": _environment(
+            "BLUEPRINT_MEASUREMENT_ISAAC_RUNTIME_RELEASE_DIGEST"
+        ),
         "input_bundle_digest": _environment("BLUEPRINT_MEASUREMENT_ISAAC_INPUT_BUNDLE_DIGEST"),
     }
     for key, expected in expected_bindings.items():
@@ -67,6 +177,17 @@ def run_bundle(bundle_root: Path) -> dict:
         blockers.append("measurement_isaac_bundle_version_mismatch")
     if manifest.get("runtime_image_digest") != RUNTIME_IMAGE:
         blockers.append("measurement_isaac_bundle_image_mismatch")
+    required_output_kinds = manifest.get("rtx_required_output_kinds")
+    if (
+        manifest.get("rtx_openusd_runtime_preflight_required") is not True
+        or manifest.get("rtx_renderer") != "RayTracedLighting"
+        or manifest.get("rtx_smoke_resolution") != [64, 64]
+        or not isinstance(required_output_kinds, list)
+        or not required_output_kinds
+        or "rgb" not in required_output_kinds
+        or not set(required_output_kinds) <= {"rgb", "depth", "semantic_segmentation"}
+    ):
+        blockers.append("measurement_isaac_bundle_rtx_contract_invalid")
 
     requests: list[dict] = []
     request_files = manifest.get("request_files")
@@ -89,6 +210,7 @@ def run_bundle(bundle_root: Path) -> dict:
             requests.append(request)
 
     bundles: list[dict] = []
+    rtx_preflight: dict = {}
     if not blockers:
         for request in requests:
             bundles.append(
@@ -103,10 +225,15 @@ def run_bundle(bundle_root: Path) -> dict:
     )
     if bundles and not completed:
         blockers.extend(
-            code
-            for bundle in bundles
-            for code in bundle["receipt"].get("failure_codes", [])
+            code for bundle in bundles for code in bundle["receipt"].get("failure_codes", [])
         )
+    if completed and not blockers:
+        rtx_preflight, rtx_blockers = _run_rtx_preflight(
+            bundle_root,
+            required_output_kinds=list(required_output_kinds),
+        )
+        blockers.extend(rtx_blockers)
+    development_execution_completed = bool(completed and rtx_preflight and not blockers)
     metrics = [
         dict(bundle["prediction"]["observed_metrics"])
         for bundle in bundles
@@ -124,7 +251,7 @@ def run_bundle(bundle_root: Path) -> dict:
         }
     result = {
         "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
-        "status": "passed" if completed and not blockers else "failed",
+        "status": "passed" if development_execution_completed else "failed",
         "source_commit_sha": expected_bindings["source_commit_sha"],
         "runtime_image_digest": expected_bindings["runtime_image_digest"],
         "runtime_release_digest": expected_bindings["runtime_release_digest"],
@@ -134,6 +261,9 @@ def run_bundle(bundle_root: Path) -> dict:
         "execution_bundle_count": len(bundles),
         "execution_bundles": bundles,
         "aggregate_metrics": aggregate_metrics,
+        "rtx_openusd_runtime_preflight": rtx_preflight,
+        "rtx_runtime_preflight_completed": development_execution_completed,
+        "q_sensor_qualification_created": False,
         "blockers": sorted(set(blockers)),
         "development_only": True,
         "synthetic_fixture": True,
@@ -147,12 +277,16 @@ def run_bundle(bundle_root: Path) -> dict:
         "physical_success_established": False,
         "comparative_policy_ranking_verdict": "thesis_not_supported",
         "raw_secret_values_recorded": False,
-        "proof_effect": "development_execution_only" if completed else "none",
-        "claim_ceiling": "isaac_physx_synthetic_rigid_contact_development",
+        "proof_effect": (
+            "development_execution_only" if development_execution_completed else "none"
+        ),
+        "claim_ceiling": (
+            "isaac_physx_rigid_contact_plus_rtx_multimodal_startup_development"
+            if development_execution_completed
+            else "no_execution_evidence"
+        ),
     }
-    result["runtime_result_digest"] = canonical_digest(
-        result, digest_field="runtime_result_digest"
-    )
+    result["runtime_result_digest"] = canonical_digest(result, digest_field="runtime_result_digest")
     return result
 
 

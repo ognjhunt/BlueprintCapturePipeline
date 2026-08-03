@@ -244,6 +244,62 @@ synthetic development regression, not characterized-material DEM,
 Chrono::Granular GPU evidence, pouring/tool interaction, physical accuracy,
 R5, R6, or R7.
 
+### Chrono::DEM exact-source CUDA development canary
+
+The CUDA lane is deliberately separate from the PyChrono NSC worker. It builds
+the exact Chrono 10.0.0 peeled commit with `CH_ENABLE_MODULE_DEM=ON` and runs two
+public synthetic 27-sphere cases. First compile a bundle from a clean immutable
+commit:
+
+```bash
+python -m blueprint_pipeline.measurement_chrono_dem_vast_bundle \
+  --repo-root . \
+  --corpus tests/fixtures/measurement_chrono_dem_cuda_v1/corpus.json \
+  --qualification-split-digest sha256:<64-hex-preregistered-heldout-split> \
+  --controller-scope-digest sha256:<64-hex-controller-scope> \
+  --bundle-output /path/to/chrono-dem-input.zip \
+  --receipt-output /path/to/chrono-dem-input-receipt.json
+```
+
+The compiler refuses a dirty checkout and records no spend authority. Paid
+transport must stage that bundle with a typed JSON output contract:
+
+```bash
+python -m blueprint_pipeline.wam_provider_object_store \
+  --job-dir /new/private/staging-directory \
+  --bundle-path /path/to/chrono-dem-input.zip \
+  --key-prefix blueprint/measurement-chrono-dem/<attempt-id> \
+  --output-content-type application/json \
+  --expiration-seconds <bounded-expiry> \
+  <file-backed-object-store-credential-arguments>
+```
+
+The staging manifest must prove a signed JSON PUT/GET/delete round trip, bind
+the bundle digest and the exact three 0600 URL files, and use a `.json` output
+key. The canonical allocator requires that manifest through
+`--measurement-chrono-dem-object-store-staging-manifest`; a generic ZIP-signed
+output URL fails closed before provider mutation.
+
+Paid execution must use `python -m blueprint_pipeline.paid_resource_allocator
+gpu-canary` with operation `measurement_chrono_dem_canary`, the exact runtime
+release, bundle receipt, sensitive URL files, a live independent watchdog using
+prefix `blueprint-measurement-chrono-dem-`, retry cap zero, and explicit spend
+and hard-TTL bounds. Provider adapters and the canary module are not launchers.
+
+For a long-running canary, set
+`BLUEPRINT_LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR` to a new private evidence
+directory on that same canonical allocator command. The allocator starts an
+OS-detached child with a private log and manifest, so an interactive terminal or
+agent turn ending cannot interrupt provider polling and teardown. The manifest
+records the argument shape but neither values nor value hashes. The child still
+requires the independent provider watchdog, zero-retry request, spend cap, and
+hard TTL; detachment grants no authority and bypasses no admission gate.
+
+A returned result may establish only the digest-bound synthetic CUDA
+development run and exact replay. It cannot establish characterized-material
+accuracy, pouring or tool interaction, Q-GRAN, R5-R7, production routing,
+physical success, deployment, or safety.
+
 ## SAPIEN PhysX rigid-contact development worker
 
 Install the explicit physics-development extra with the frozen environment:

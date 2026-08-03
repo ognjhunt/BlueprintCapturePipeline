@@ -8,7 +8,7 @@ import math
 from datetime import date
 from typing import Any, Mapping, Sequence
 
-from .measurement_site_evidence_contracts import site_geometry_bridge_validation_errors
+from .measurement_site_evidence_contracts import site_evidence_bridge_validation_errors
 from .task_site_measurement_taxonomy import (
     CAPABILITY_SITE_EVIDENCE,
     EVIDENCE_SMALLEST_ACTION,
@@ -1006,7 +1006,7 @@ def validate_site_evidence_profile(value: Mapping[str, Any]) -> dict[str, Any]:
             for claim in _strings(forbidden):
                 if claim not in CLAIM_LEVELS and claim not in CLAIM_TYPE_LEVEL:
                     errors.append(f"limitations_forbidden_claim_unknown:{claim}")
-    errors.extend(site_geometry_bridge_validation_errors(result))
+    errors.extend(site_evidence_bridge_validation_errors(result))
     if errors:
         raise MeasurementRoutingError(*errors)
     return result

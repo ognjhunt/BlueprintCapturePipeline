@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from blueprint_pipeline import isaac_worker_runtime_preflight as worker_preflight
 from blueprint_pipeline.isaac_worker_runtime_preflight import (
@@ -83,27 +84,38 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
             closed.append(True)
 
     class FakeAnnotator:
-        def __init__(self) -> None:
+        def __init__(self, name: str) -> None:
+            self.name = name
             self.attached = []
 
         def attach(self, render_products):
             self.attached.append(list(render_products))
 
         def get_data(self):
-            return np.ones((64, 64, 3), dtype=np.uint8)
+            if self.name == "rgb":
+                return np.ones((64, 64, 4), dtype=np.uint8)
+            if self.name == "distance_to_camera":
+                return np.ones((64, 64), dtype=np.float32)
+            return {
+                "data": np.ones((64, 64), dtype=np.uint32),
+                "info": {"idToLabels": {"1": {"class": "blueprint_smoke_cube"}}},
+            }
 
-    fake_annot = FakeAnnotator()
+    fake_annots = {
+        name: FakeAnnotator(name)
+        for name in ("rgb", "distance_to_camera", "semantic_segmentation")
+    }
     fake_core = types.ModuleType("omni.replicator.core")
     fake_core.create = types.SimpleNamespace(
+        cube=lambda **_kwargs: object(),
+        light=lambda **_kwargs: object(),
         camera=lambda **_kwargs: object(),
         render_product=lambda _camera, _resolution: "render_product",
     )
     fake_core.AnnotatorRegistry = types.SimpleNamespace(
-        get_annotator=lambda _name: fake_annot
+        get_annotator=lambda name: fake_annots[name]
     )
-    fake_core.orchestrator = types.SimpleNamespace(
-        step=lambda: orchestrator_steps.append(True)
-    )
+    fake_core.orchestrator = types.SimpleNamespace(step=lambda: orchestrator_steps.append(True))
     fake_replicator = types.ModuleType("omni.replicator")
     fake_replicator.core = fake_core
     fake_omni = types.ModuleType("omni")
@@ -114,6 +126,24 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
     monkeypatch.setitem(sys.modules, "omni", fake_omni)
     monkeypatch.setitem(sys.modules, "omni.replicator", fake_replicator)
     monkeypatch.setitem(sys.modules, "omni.replicator.core", fake_core)
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_physx_rigid_adapter._bind_isaac_runtime_environment",
+        lambda: {
+            "ISAAC_PATH": "/isaac-sim",
+            "EXP_PATH": "/isaac-sim/apps",
+            "CARB_APP_PATH": "/isaac-sim/kit",
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_physx_rigid_adapter._observe_isaac_runtime_identity",
+        lambda _app: {
+            "engine_version": "6.0.1",
+            "engine_version_source": "test",
+            "observed_package_version": "unavailable",
+            "observed_app_version": "6.0.1",
+            "observed_build_version": "test",
+        },
+    )
 
     result = run_isaac_worker_runtime_preflight(
         output_path=output_path,
@@ -132,9 +162,29 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
     assert checks["rtx_smoke_frame_render"]["height"] == 64
     assert checks["rtx_smoke_frame_render"]["max_steps"] == 2
     assert checks["rtx_smoke_frame_render"]["steps_executed"] == 1
+    assert checks["rtx_smoke_frame_render"]["required_output_kinds"] == [
+        "rgb",
+        "depth",
+        "semantic_segmentation",
+    ]
+    summaries = checks["rtx_smoke_frame_render"]["output_summaries"]
+    assert summaries["depth"]["positive_finite_value_count"] == 4096
+    assert summaries["semantic_segmentation"]["metadata_present"] is True
     assert orchestrator_steps == [True]
-    assert fake_annot.attached == [["render_product"]]
+    assert all(annot.attached == [["render_product"]] for annot in fake_annots.values())
+    assert result["proof_boundary"]["requested_sensor_modalities_observed"] is True
+    assert result["proof_boundary"]["rtx_depth_output_observed"] is True
+    assert result["proof_boundary"]["rtx_semantic_segmentation_observed"] is True
     assert closed == [True]
+
+
+def test_isaac_worker_runtime_preflight_rejects_unknown_output_kind(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="isaac_rtx_output_kinds_invalid:lidar"):
+        run_isaac_worker_runtime_preflight(
+            output_path=tmp_path / "preflight.json",
+            required_output_kinds=["rgb", "lidar"],
+            env={"PATH": ""},
+        )
 
 
 def test_isaac_worker_runtime_preflight_cli_writes_output(
@@ -151,7 +201,9 @@ def test_isaac_worker_runtime_preflight_cli_writes_output(
 
 
 def test_isaac_worker_runtime_preflight_nvidia_check_branches(monkeypatch) -> None:
-    monkeypatch.setattr(worker_preflight.shutil, "which", lambda _name, path=None: "/bin/nvidia-smi")
+    monkeypatch.setattr(
+        worker_preflight.shutil, "which", lambda _name, path=None: "/bin/nvidia-smi"
+    )
     monkeypatch.setattr(
         worker_preflight.subprocess,
         "run",

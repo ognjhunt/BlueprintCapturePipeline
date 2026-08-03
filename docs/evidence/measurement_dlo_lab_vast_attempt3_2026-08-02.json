@@ -1,0 +1,71 @@
+{
+  "schema_version": "measurement_dlo_lab_vast_attempt_evidence.v1",
+  "attempt_id": "measurement-dlo-lab-vast-attempt3-2026-08-02",
+  "status": "failed_execution_preserved",
+  "blueprint_source_commit": "946c80e4c8b9d97c02117b69513f4a44aef55409",
+  "dlo_lab_source_commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+  "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime@sha256:60f22fb80755fd0b470fb47928dbd55816aa9f847edd95cf43c93253507a9ddf",
+  "runtime_release_digest": "sha256:39e21d90fafbb51f9277977732cde72acaff8a3b7886bbc0ac114f0611b87166",
+  "input_bundle_digest": "sha256:304c07b909f6904f8b45f7898e6e4f3371cbdff10182ade0a247c90311014e84",
+  "bundle_manifest_digest": "sha256:bb0553749795fd7932dc0317e922897f0d0942b90e730044de466ff0f6506047",
+  "provider": "vast",
+  "instance_id": "46638767",
+  "gpu_name": "L40",
+  "hourly_rate_usd": 0.508888888888889,
+  "duration_seconds": 564.4995489120483,
+  "estimated_cost_usd": 0.09059869303526702,
+  "runtime_result_digest": "sha256:e49332e94327cbd002445dab13311dda2b49a414406efce86ed941933335124d",
+  "execution_result_digest": "sha256:e4a33c054ae2a5974dc401af6044fef6b2a5e37b53a44056fc3758dea3b2f443",
+  "observed_failure": {
+    "execution_bundle_count": 2,
+    "torch_import_succeeded": true,
+    "common_exit_code": -6,
+    "common_signal": 6,
+    "common_last_phase": "native_import_probe:torch_then_quadrants",
+    "common_failure_codes": [
+      "dlo_lab_adapter_native_assertion",
+      "dlo_lab_adapter_native_import_probe_failed:torch_then_quadrants",
+      "dlo_lab_adapter_native_termination",
+      "dlo_lab_adapter_supervised_worker_exit_nonzero:-6",
+      "dlo_lab_adapter_supervised_worker_signal:6"
+    ],
+    "stderr_content_persisted": false,
+    "executions": [
+      {
+        "execution_id": "dlo-lab-cuda-cable-001-dlo-lab-cable-development-001",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:7589c35a350d48b1d09dc44e65f89457e577139a63f4044afa9dbb9aa1b2f123"
+      },
+      {
+        "execution_id": "dlo-lab-cuda-cable-002-dlo-lab-cable-development-002",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:9a718ea9f5f5fd35b08b558e9a8ed448bd1b3ec69268a84ba50bffcbfacf6e55"
+      }
+    ]
+  },
+  "teardown": {
+    "status": "PASS",
+    "teardown_receipt_digest": "sha256:7ef9329501d30598f2a8f3ac99a59b48e8c461bdb1965d4c53d6c79768fb6c0f",
+    "provider_zero_status": "PASS",
+    "provider_zero_digest": "sha256:134a43cfd6a7ae967385513ee5aa0cb214f6467b497ef824f4dff20cf1f0717e",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "watchdog_status": "provider_terminal"
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "claim_boundary": {
+    "development_execution_completed": false,
+    "qualification_created": false,
+    "r5_evidence": false,
+    "r6_decision": false,
+    "r7_admission": false,
+    "physical_success_established": false,
+    "proof_effect": "failed_provider_execution_with_native_import_boundary"
+  },
+  "next_encoded_action": "Run the exact Quadrants-only and Torch-to-Quadrants probes on the digest-pinned PyTorch 2.9.1 CUDA 12.8 runtime selected from the Quadrants 0.8.0 CUDA release workflow; do not qualify DLO-Lab unless CUDA double replay completes."
+}

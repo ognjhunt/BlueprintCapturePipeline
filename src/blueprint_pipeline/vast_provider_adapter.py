@@ -3217,6 +3217,14 @@ def _instance_status(instance_payload: Mapping[str, Any]) -> str:
         data = instances
     else:
         data = instance_payload
+    uptime = _number(data.get("uptime"))
+    if (
+        _string(data.get("actual_status")).lower() in {"", "created", "creating", "loading"}
+        and _string(data.get("cur_state")).lower() == "stopped"
+        and _string(data.get("intended_status")).lower() == "stopped"
+        and (uptime is None or uptime <= 0)
+    ):
+        return "stopped_before_start"
     return (
         _string(data.get("actual_status"))
         or _string(data.get("cur_state"))
@@ -3357,7 +3365,13 @@ def _poll_instance(
                 else payload.get("cur_state"),
             }
         )
-        if status.lower() in {"running", "exited", "stopped", "failed"}:
+        if status.lower() in {
+            "running",
+            "exited",
+            "stopped",
+            "stopped_before_start",
+            "failed",
+        }:
             return status, observations, last_payload
         time.sleep(poll_interval_seconds)
     return _instance_status(last_payload), observations, last_payload

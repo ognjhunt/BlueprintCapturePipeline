@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .claim_contract_keys import PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
 from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec
 from .measurement_adapter_execution import validate_measurement_adapter_execution_bundle
@@ -35,9 +36,13 @@ from .paid_resource_admission import (
     require_paid_resource_admission_grant,
 )
 from .safe_outbound_http import presigned_transfer_policy, request as safe_http_request
+from .watchdog_owner_teardown_contract import (
+    WATCHDOG_EVIDENCE_NAME,
+    write_owner_teardown_cancel_request,
+)
 
 
-RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_vast_runtime_result.v1"
+RUNTIME_RESULT_SCHEMA_VERSION = "measurement_isaac_physx_rtx_vast_runtime_result.v3"
 EXECUTION_SCHEMA_VERSION = "measurement_isaac_physx_vast_execution.v1"
 TEARDOWN_SCHEMA_VERSION = "measurement_isaac_physx_vast_teardown.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "measurement_isaac_physx_vast_provider_zero.v1"
@@ -48,6 +53,7 @@ MAX_RESULT_BYTES = 64 * 1024**2
 
 INPUT_GET_ENV = "BLUEPRINT_MEASUREMENT_ISAAC_INPUT_GET_URL"
 OUTPUT_PUT_ENV = "BLUEPRINT_MEASUREMENT_ISAAC_OUTPUT_PUT_URL"
+WATCHDOG_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
 
 
 class MeasurementIsaacVastCanaryError(ValueError):
@@ -86,8 +92,7 @@ def _watchdog_valid(
     if (
         watchdog.get("status") != "armed"
         or watchdog.get("independent_process") is not True
-        or str(watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or "")
-        != NAME_PREFIX
+        or str(watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or "") != NAME_PREFIX
         or pid <= 0
         or deadline < now_epoch + hard_ttl_seconds
     ):
@@ -96,17 +101,69 @@ def _watchdog_valid(
         os.kill(pid, 0)
     except OSError:
         return False
+    root_value = str(watchdog.get("watchdog_out_dir") or "").strip()
+    if not root_value:
+        return False
+    declared_root = Path(root_value).expanduser()
+    root = declared_root.resolve()
+    evidence_path = root / WATCHDOG_EVIDENCE_NAME
+    try:
+        root_stat = declared_root.lstat()
+        evidence_stat = evidence_path.lstat()
+        persisted = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if (
+        declared_root.is_symlink()
+        or not root.is_dir()
+        or evidence_path.is_symlink()
+        or not evidence_path.is_file()
+        or root_stat.st_uid != os.getuid()
+        or evidence_stat.st_uid != os.getuid()
+        or evidence_stat.st_size > 64 * 1024
+        or not isinstance(persisted, Mapping)
+    ):
+        return False
+    for key in (
+        "status",
+        "independent_process",
+        "pid",
+        "deadline_epoch",
+        "provider",
+        "pod_name_prefix",
+        "watchdog_out_dir",
+    ):
+        if persisted.get(key) != watchdog.get(key):
+            return False
     return True
+
+
+def _watchdog_root(watchdog: Mapping[str, Any]) -> Path | None:
+    value = str(watchdog.get("watchdog_out_dir") or "").strip()
+    return Path(value).expanduser().resolve() if value else None
+
+
+def _record_watchdog_instance_id(*, watchdog: Mapping[str, Any], instance_id: str) -> None:
+    root = _watchdog_root(watchdog)
+    if root is None:
+        return
+    path = root / WATCHDOG_STARTED_INSTANCE_ID_NAME
+    if path.exists() or path.is_symlink():
+        raise MeasurementIsaacVastCanaryError(
+            "measurement_isaac_watchdog_instance_id_already_exists"
+        )
+    path.write_text(instance_id, encoding="utf-8")
+    os.chmod(path, 0o600)
 
 
 def _bootstrap_script() -> str:
     return r"""set -euo pipefail
-work=/work/measurement_isaac
+work="$(mktemp -d "${TMPDIR:-/tmp}/blueprint-measurement-isaac.XXXXXX")"
 archive="$work/input.zip"
 bundle="$work/bundle"
 result="$work/result.json"
 mkdir -p "$bundle"
-python3 - "$archive" "$bundle" <<'PY'
+/isaac-sim/python.sh - "$archive" "$bundle" <<'PY'
 import hashlib, json, os, shutil, stat, sys, urllib.request, zipfile
 from pathlib import Path
 archive = Path(sys.argv[1])
@@ -148,7 +205,7 @@ set -e
 if [ ! -s "$result" ]; then
   exit "$worker_status"
 fi
-python3 - "$result" <<'PY'
+/isaac-sim/python.sh - "$result" <<'PY'
 import os, sys, urllib.request
 from pathlib import Path
 payload = Path(sys.argv[1]).read_bytes()
@@ -190,6 +247,8 @@ def validate_measurement_isaac_vast_runtime_result(
         "bundle_manifest_digest": bundle_receipt.get("bundle_manifest_digest"),
         "isaac_sim_version": ISAAC_VERSION,
         "execution_bundle_count": 2,
+        "rtx_runtime_preflight_completed": True,
+        "q_sensor_qualification_created": False,
         "development_only": True,
         "synthetic_fixture": True,
         "held_out": False,
@@ -203,7 +262,7 @@ def validate_measurement_isaac_vast_runtime_result(
         "comparative_policy_ranking_verdict": "thesis_not_supported",
         "raw_secret_values_recorded": False,
         "proof_effect": "development_execution_only",
-        "claim_ceiling": "isaac_physx_synthetic_rigid_contact_development",
+        "claim_ceiling": "isaac_physx_rigid_contact_plus_rtx_multimodal_startup_development",
     }
     for key, expected_value in expected.items():
         if result.get(key) != expected_value:
@@ -234,6 +293,81 @@ def validate_measurement_isaac_vast_runtime_result(
         or not isinstance(metrics.get("maximum_penetration_m"), (int, float))
     ):
         blockers.append("measurement_isaac_runtime_aggregate_metrics_invalid")
+    rtx = result.get("rtx_openusd_runtime_preflight")
+    if not isinstance(rtx, Mapping):
+        blockers.append("measurement_isaac_rtx_preflight_invalid")
+    else:
+        checks = rtx.get("checks")
+        checks = checks if isinstance(checks, list) else []
+        by_name = {
+            str(row.get("name")): row
+            for row in checks
+            if isinstance(row, Mapping) and row.get("name")
+        }
+        frame = by_name.get("rtx_smoke_frame_render", {})
+        identity = by_name.get("isaac_runtime_identity", {})
+        boundary = rtx.get("proof_boundary")
+        boundary = boundary if isinstance(boundary, Mapping) else {}
+        required_outputs_value = bundle_receipt.get("rtx_required_output_kinds")
+        required_outputs = (
+            list(required_outputs_value) if isinstance(required_outputs_value, list) else []
+        )
+        output_summaries = frame.get("output_summaries")
+        output_summaries = output_summaries if isinstance(output_summaries, Mapping) else {}
+        modality_outputs_valid = bool(required_outputs) and all(
+            isinstance(output_summaries.get(kind), Mapping)
+            and output_summaries[kind].get("nonempty") is True
+            and isinstance(output_summaries[kind].get("element_count"), int)
+            and output_summaries[kind].get("element_count", 0) > 0
+            for kind in required_outputs
+        )
+        if (
+            rtx.get("preflight_result_digest")
+            != canonical_digest(rtx, digest_field="preflight_result_digest")
+            or rtx.get("status") != "passed"
+            or rtx.get("blockers") != []
+            or identity.get("status") != "passed"
+            or identity.get("engine_version") != ISAAC_VERSION
+            or frame.get("status") != "passed"
+            or frame.get("renderer") != "RayTracedLighting"
+            or frame.get("width") != 64
+            or frame.get("height") != 64
+            or not isinstance(frame.get("pixel_count"), int)
+            or frame.get("pixel_count", 0) <= 0
+            or frame.get("required_output_kinds") != required_outputs
+            or not modality_outputs_valid
+            or output_summaries.get("rgb", {}).get("nonzero_value_count", 0) <= 0
+            or boundary.get("requested_sensor_modalities_observed") is not True
+            or boundary.get("rtx_pixels_rendered") is not True
+            or (
+                "rgb" in required_outputs
+                and boundary.get("rtx_rgb_rendered") is not True
+            )
+            or (
+                "depth" in required_outputs
+                and (
+                    output_summaries.get("depth", {}).get(
+                        "positive_finite_value_count", 0
+                    )
+                    <= 0
+                    or boundary.get("rtx_depth_output_observed") is not True
+                )
+            )
+            or (
+                "semantic_segmentation" in required_outputs
+                and (
+                    output_summaries.get("semantic_segmentation", {}).get(
+                        "expected_label_present"
+                    )
+                    is not True
+                    or boundary.get("rtx_semantic_segmentation_observed") is not True
+                )
+            )
+            or boundary.get("calibrated_sensor_match_proven") is not False
+            or boundary.get("q_sensor_qualification_created") is not False
+            or boundary.get(PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY) is not False
+        ):
+            blockers.append("measurement_isaac_rtx_preflight_observation_invalid")
     if result.get("blockers") != []:
         blockers.append("measurement_isaac_runtime_reported_blockers")
     if blockers:
@@ -296,9 +430,7 @@ def run_measurement_isaac_vast_canary(
     watchdog = preflight.get("watchdog")
     watchdog = watchdog if isinstance(watchdog, Mapping) else {}
     validator = watchdog_validator or (
-        lambda value, now, ttl: _watchdog_valid(
-            value, now_epoch=now, hard_ttl_seconds=ttl
-        )
+        lambda value, now, ttl: _watchdog_valid(value, now_epoch=now, hard_ttl_seconds=ttl)
     )
     if not validator(watchdog, started_at, hard_ttl):
         raise MeasurementIsaacVastCanaryError("measurement_isaac_independent_watchdog_not_live")
@@ -349,9 +481,7 @@ def run_measurement_isaac_vast_canary(
             "BLUEPRINT_MEASUREMENT_ISAAC_RUNTIME_RELEASE_DIGEST": str(
                 request["measurement_isaac_runtime_release_digest"]
             ),
-            "BLUEPRINT_MEASUREMENT_ISAAC_INPUT_BUNDLE_DIGEST": str(
-                receipt["input_bundle_digest"]
-            ),
+            "BLUEPRINT_MEASUREMENT_ISAAC_INPUT_BUNDLE_DIGEST": str(receipt["input_bundle_digest"]),
             "ACCEPT_EULA": "Y",
             "PRIVACY_CONSENT": "Y",
         }
@@ -369,6 +499,11 @@ def run_measurement_isaac_vast_canary(
             vast_launch_mode="args",
         )
         provider_request = provider.build_request(spec, root)
+        vast_preferences = request.get("vast_preferred_gpu_keywords")
+        if isinstance(vast_preferences, list) and vast_preferences:
+            provider_request["preferred_gpu_keywords"] = [
+                str(item).strip() for item in vast_preferences
+            ]
         provider_request["prelaunch_spend_guard"] = {
             "schema_version": "measurement_isaac_gpu_prelaunch_spend_guard.v1",
             "required_before_provider_launch": True,
@@ -407,6 +542,7 @@ def run_measurement_isaac_vast_canary(
             instance_id = str(launch_result["instance_id"])
             provider_mutations += 1
             bind_pending_teardown_instance(pending_path, instance_id)
+            _record_watchdog_instance_id(watchdog=watchdog, instance_id=instance_id)
             raw_result: dict[str, Any] | None = None
             while float(clock()) - started_at <= hard_ttl:
                 try:
@@ -417,9 +553,7 @@ def run_measurement_isaac_vast_canary(
                         break
                     sleeper(min(10.0, max(0.0, hard_ttl - (float(clock()) - started_at))))
                 except Exception as exc:  # noqa: BLE001 - preserve teardown evidence
-                    blockers.append(
-                        f"measurement_isaac_output_fetch_failed:{type(exc).__name__}"
-                    )
+                    blockers.append(f"measurement_isaac_output_fetch_failed:{type(exc).__name__}")
                     break
             if raw_result is None:
                 if not any(
@@ -520,6 +654,14 @@ def run_measurement_isaac_vast_canary(
             provider_zero_receipt, digest_field="provider_zero_digest"
         )
         write_json(root / "provider_zero_verification.json", provider_zero_receipt)
+        watchdog_root = _watchdog_root(watchdog)
+        if instance_id is not None and teardown_passed and watchdog_root is not None:
+            write_owner_teardown_cancel_request(
+                root=watchdog_root,
+                pod_name_prefix=NAME_PREFIX,
+                provider_name="vast",
+                instance_id=instance_id,
+            )
 
     duration = max(0.0, float(clock()) - started_at)
     hourly = float(preflight.get("on_demand_price_usd_per_hour") or 0)
@@ -557,7 +699,7 @@ def run_measurement_isaac_vast_canary(
         "raw_secret_values_recorded": False,
         "proof_effect": "development_execution_only" if validated_result else "none",
         "claim_ceiling": (
-            "isaac_physx_synthetic_rigid_contact_development"
+            "isaac_physx_rigid_contact_plus_rtx_multimodal_startup_development"
             if validated_result
             else "provider_execution_evidence_only"
         ),
