@@ -12,6 +12,7 @@ from blueprint_pipeline.canonical_3dgs_admission import (
     build_canonical_3dgs_worker_admission,
     require_canonical_3dgs_worker_admission,
 )
+from blueprint_pipeline.canonical_3dgs_cli import COMMANDS, main as canonical_cli_main
 from blueprint_pipeline.canonical_3dgs_pipeline import (
     POSTSHOT_METHOD,
     SPLATFACTO_METHOD,
@@ -287,7 +288,22 @@ def test_splatfacto_setup_installs_and_smokes_blueprint_worker_entrypoint() -> N
     script = (root / "scripts/setup_splatfacto_venv.sh").read_text(encoding="utf-8")
 
     assert 'pip" install --no-deps -e "${REPO_ROOT}"' in script
-    assert 'blueprint-run-canonical-3dgs-arm" --help' in script
+    assert "canonical_3dgs_cli run-arm --help" in script
+
+
+def test_canonical_module_cli_consolidates_all_operations_without_console_scripts() -> None:
+    assert set(COMMANDS) == {
+        "prepare",
+        "run-arm",
+        "finalize",
+        "transport",
+        "admit-worker",
+        "request-execution",
+        "evaluate",
+        "register",
+    }
+    assert canonical_cli_main(["--help"]) == 0
+    assert canonical_cli_main(["unknown-operation"]) == 64
 
 
 def test_worker_admission_binds_authority_watchdog_spend_and_exact_transport() -> None:

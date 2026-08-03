@@ -19,14 +19,12 @@ $postshotCli = (Resolve-Path -LiteralPath $PostshotCliPath).Path
 & $PythonCommand -m venv $VenvRoot
 $venvPython = Join-Path $VenvRoot "Scripts\python.exe"
 $venvPip = Join-Path $VenvRoot "Scripts\pip.exe"
-$transportCli = Join-Path $VenvRoot "Scripts\blueprint-canonical-3dgs-transport.exe"
-$workerCli = Join-Path $VenvRoot "Scripts\blueprint-run-canonical-3dgs-arm.exe"
 
 & $venvPython -m pip install --upgrade "pip==26.1.2"
 & $venvPip install "numpy==2.4.6" "Pillow==12.3.0"
 & $venvPip install --no-deps $wheel
-& $transportCli --help | Out-Null
-& $workerCli --help | Out-Null
+& $venvPython -m blueprint_pipeline.canonical_3dgs_cli transport --help | Out-Null
+& $venvPython -m blueprint_pipeline.canonical_3dgs_cli run-arm --help | Out-Null
 
 [ordered]@{
   schema_version = "canonical_postshot_worker_runtime_preflight.v1"
