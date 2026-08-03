@@ -1,0 +1,58 @@
+{
+  "schema_version": "measurement_chrono_dem_vast_attempt_observation.v1",
+  "attempt": 5,
+  "status": "source_clone_stalled_before_build",
+  "source_commit_sha": "d8e6560a2df644ac4367b384571fd44e09c48b09",
+  "request_digest": "sha256:1a7b598223d07613f605a20a42d0a401e86ec7a514121df71816858d716a5323",
+  "bound_request_digest": "sha256:67e041918295622452a75397906c60746cd8473e2beb340973950cfe728136fe",
+  "input_bundle_digest": "sha256:cb9a2ee7cd1042ead78a27166e34a66e63ed08a70eedb737de6b1324bc80620e",
+  "bundle_manifest_digest": "sha256:8956dbbecdf0e977c4e7e47feeaa4011d57ad0898c3ef4634f8ba79ea49457c9",
+  "bundle_receipt_digest": "sha256:8dac7ac4a970652f278623ba27956a637bd809b981066044bae0daf4284c30eb",
+  "provider": "vast",
+  "instance_id": "46662917",
+  "gpu_model": "L40",
+  "retry_cap": 0,
+  "provider_launch_count": 1,
+  "duration_seconds": 648.3560621738434,
+  "estimated_cost_usd": 0.10405714578098722,
+  "runtime_observation": {
+    "json_signed_output_round_trip_passed": true,
+    "full_repository_clone_completed": false,
+    "chrono_dem_module_built": false,
+    "cuda_case_executed": false,
+    "runtime_result_created": false,
+    "blocker": "measurement_chrono_dem_provider_terminal_without_output"
+  },
+  "failure_observation": {
+    "diagnosis": "the unbounded full Git clone made no useful progress during the bounded canary window"
+  },
+  "encoded_fix": {
+    "description": "initialize an empty repository, fetch only the exact 10.0.0 tag with depth one and blob filtering under a 600-second TERM/KILL timeout, then detach at the expected peeled commit"
+  },
+  "teardown": {
+    "status": "PASS",
+    "provider_zero_verified": true,
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "teardown_artifact_sha256": "sha256:782302d9732aa683a044c12c3cfc682133d38990a3d30e1772096bb22afcc0c2",
+    "provider_zero_artifact_sha256": "sha256:ea1e4a935df98710dbdf899b3530a6b142369c35fa773e810bf68ecf2cf70023",
+    "watchdog_status": "provider_terminal",
+    "watchdog_artifact_sha256": "sha256:04b44dfd98a6d2280c6375a7be4b943ced12b8ef942ba5245a7e337311adf6b7"
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true,
+    "cleanup_artifact_sha256": "sha256:225495163456c1b08bd8e5d7a3c6d9286ffa321032145bd17a432d2ee79b2a95"
+  },
+  "qualification_created": false,
+  "r5_evidence_created": false,
+  "r6_decision_created": false,
+  "r7_admission_created": false,
+  "physical_success_established": false,
+  "production_route_eligible": false,
+  "proof_effect": "source_transport_failure_and_cleanup_evidence_only",
+  "claim_ceiling": "no_runtime_execution_evidence",
+  "raw_secret_values_recorded": false
+}

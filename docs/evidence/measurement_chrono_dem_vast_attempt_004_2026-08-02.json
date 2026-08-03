@@ -1,0 +1,59 @@
+{
+  "schema_version": "measurement_chrono_dem_vast_attempt_observation.v1",
+  "attempt": 4,
+  "status": "runtime_completed_output_upload_rejected",
+  "source_commit_sha": "1ea658e5110cd604939c697e6f211fd6ad7ff62a",
+  "request_digest": "sha256:161357fcae8743c6b91819a0a5ca671a825e5114575c616484657aaa4171b10e",
+  "bound_request_digest": "sha256:9f4c977e99c91aa10f19be1bf8e2493a77d9442781e33efda54454290e736d11",
+  "input_bundle_digest": "sha256:df0f2a133121229a1e9338a622830118c6bda9ee2a7b23384108b2bcfb3d12e8",
+  "bundle_manifest_digest": "sha256:ab43da289addc1b287988871f8155a0797afbc968ed6bd0a3328e49d9d764f74",
+  "bundle_receipt_digest": "sha256:77231c6cdc5d925bbd966ac236dbb917daf55c17cc5e16f407d4d199ff9dc9ff",
+  "provider": "vast",
+  "instance_id": "46661470",
+  "gpu_model": "RTX 6000 Ada",
+  "retry_cap": 0,
+  "provider_launch_count": 1,
+  "duration_seconds": 927.6019859313965,
+  "estimated_cost_usd": 0.15498206020088354,
+  "runtime_observation": {
+    "chrono_source_commit_checked_out": true,
+    "chrono_dem_module_built_and_installed": true,
+    "blueprint_probe_built": true,
+    "provider_output_uploaded": false,
+    "provider_output_http_status": 403,
+    "runtime_result_created_locally": false,
+    "blocker": "measurement_chrono_dem_provider_terminal_without_output"
+  },
+  "failure_observation": {
+    "diagnosis": "the signed output PUT was bound to application/zip while the Chrono worker uploaded application/json"
+  },
+  "encoded_fix": {
+    "description": "bind the output object suffix, signed PUT content type, manifest, and signed round-trip preflight to application/json"
+  },
+  "teardown": {
+    "status": "PASS",
+    "provider_zero_verified": true,
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "teardown_artifact_sha256": "sha256:4122938916c892a654e4808e268b9cbbd6a8379d3f4eb42a46e8c0478b3e7907",
+    "provider_zero_artifact_sha256": "sha256:6c6bd5e2d6a87d740201999fc33b51e7b7c7fa4013055d6c532e3dedb07cec2f",
+    "watchdog_status": "provider_terminal",
+    "watchdog_artifact_sha256": "sha256:380dbd9a11a4fb240f46e7b1e58bf24551bd73688b9f654fc36cd68101d5d0b9"
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true,
+    "cleanup_artifact_sha256": "sha256:6a9014b7d5097d1596e3bcca38e599a24a2d57ae7cdd8e1b3bafc3993ee39c3a"
+  },
+  "qualification_created": false,
+  "r5_evidence_created": false,
+  "r6_decision_created": false,
+  "r7_admission_created": false,
+  "physical_success_established": false,
+  "production_route_eligible": false,
+  "proof_effect": "provider_execution_and_transport_failure_evidence_only",
+  "claim_ceiling": "chrono_dem_built_probe_output_not_retrieved",
+  "raw_secret_values_recorded": false
+}

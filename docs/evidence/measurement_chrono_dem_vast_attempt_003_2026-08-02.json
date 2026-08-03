@@ -1,0 +1,58 @@
+{
+  "schema_version": "measurement_chrono_dem_vast_attempt_observation.v1",
+  "attempt": 3,
+  "status": "provider_stopped_before_container_start",
+  "source_commit_sha": "bac0735b24a1b3e721aa8fb51c1fdc497d8e16e4",
+  "request_digest": "sha256:5ff43386d198a3c14067bfea763bea1ba16776ccfd0f7df6fdd9d82f10e14c7b",
+  "bound_request_digest": "sha256:6ac86f4089dff333c86b3d0b9ba92d6dceb31a420d89b146674aa47640444ebf",
+  "input_bundle_digest": "sha256:8b528146264690e5a097044efc388bb43d80420bebbe2a111748ee82380674c2",
+  "bundle_manifest_digest": "sha256:72d25f510640334b50b55a6a2ee70c196e2e236a510ceea07be8b3aef1f9c42e",
+  "bundle_receipt_digest": "sha256:23cef31eb1655ff2ce4e5a1cd5aac24f89399c17aa258527b15f6c296405e493",
+  "provider": "vast",
+  "instance_id": "46659530",
+  "gpu_model": "L40S",
+  "retry_cap": 0,
+  "provider_launch_count": 1,
+  "estimated_cost_usd_upper_bound": 0.09,
+  "cost_is_estimate": true,
+  "runtime_observation": {
+    "provider_status": "stopped",
+    "container_started": false,
+    "runtime_execution_started": false,
+    "runtime_result_created": false,
+    "blocker": "vast_instance_stopped_before_container_start"
+  },
+  "encoded_fix": {
+    "description": "treat a terminal Vast status observed before startup as an immediate structured failure instead of polling until timeout",
+    "terminal_polling": "the Chrono supervisor now exits when the provider becomes terminal without output"
+  },
+  "teardown": {
+    "status": "PASS",
+    "manual_exact_id_destroy": true,
+    "provider_zero_verified": true,
+    "pending_teardown_closed": true,
+    "paid_lane_lease_released": true,
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "teardown_artifact_sha256": "sha256:cc18e50644ba0824445db51bc644d5171f42eb71ed866a19cd6697819b7ff1ed",
+    "provider_zero_artifact_sha256": "sha256:e247fff93fb4f170dea92ccd5b2d9e040102f64b9d48e05eae73d9841960fcf2",
+    "watchdog_status": "provider_terminal",
+    "watchdog_artifact_sha256": "sha256:b35d186c52cfb607942b1b1c26cf815265666e25df308035faf9b78eee1c79f6"
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true,
+    "cleanup_artifact_sha256": "sha256:96bad91707e1d2fca735256327277ace7a9019716598559da5099990ce01b2c7"
+  },
+  "qualification_created": false,
+  "r5_evidence_created": false,
+  "r6_decision_created": false,
+  "r7_admission_created": false,
+  "physical_success_established": false,
+  "production_route_eligible": false,
+  "proof_effect": "provider_failure_and_cleanup_evidence_only",
+  "claim_ceiling": "no_runtime_execution_evidence",
+  "raw_secret_values_recorded": false
+}
