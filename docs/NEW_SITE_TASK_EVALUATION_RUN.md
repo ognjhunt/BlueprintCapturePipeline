@@ -27,7 +27,8 @@ attempt must bind the selected route and placement, show at least one fresh
 learned-policy query and action, and preserve reset, observation, action,
 contact, collision, and metric evidence. Only attempts whose task metric is
 supported are ranked. A completed attempt with incomplete outcome evidence is
-retained but excluded from ranking.
+retained but excluded from ranking. Equal best metric values produce an explicit
+set of shared winners and no sole `winner_candidate_id`.
 
 Run the compiler with:
 

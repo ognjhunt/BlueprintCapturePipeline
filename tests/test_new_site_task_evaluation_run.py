@@ -31,6 +31,7 @@ def _finalize(value: dict, field: str) -> dict:
 
 
 def _source(*, status: str = "admitted_provider_derived_support") -> dict:
+    is_blueprint_raw = status == "admitted_blueprint_raw_contract"
     value = {
         "schema_version": "fixture_source_profile.v1",
         "status": status,
@@ -41,8 +42,8 @@ def _source(*, status: str = "admitted_provider_derived_support") -> dict:
             else {"code": "camera_intrinsics_missing", "instruction": "Export intrinsics."}
         ),
         "claim_boundary": {
-            "provider_derived_support": True,
-            "blueprint_raw_contract_truth": False,
+            "provider_derived_support": not is_blueprint_raw,
+            "blueprint_raw_contract_truth": is_blueprint_raw,
         },
     }
     return _finalize(value, "source_profile_digest")
@@ -488,6 +489,7 @@ def test_complete_run_routes_to_best_qualified_non_default_engine_and_ranks_five
     ]
     assert result["policy_attempt_count"] == 5
     assert result["supported_ranking_candidate_count"] == 5
+    assert result["winner_candidate_ids"] == ["policy-5"]
     assert result["winner_candidate_id"] == "policy-5"
     assert result["claim_boundary"]["learned_policy_ranking_proven"] is True
     assert result["claim_boundary"]["controller_ranking_is_learned_policy_ranking"] is False
@@ -505,6 +507,23 @@ def test_source_abstention_propagates_smallest_measurement() -> None:
     assert result["status"] == "abstained"
     assert result["terminal_stage"] == "capture_source_admission"
     assert result["smallest_missing_measurement"]["code"] == "camera_intrinsics_missing"
+
+
+def test_blueprint_raw_source_cannot_use_provider_derived_truth_boundary() -> None:
+    request = _request()
+    source = _source(status="admitted_blueprint_raw_contract")
+    source["claim_boundary"] = {
+        "provider_derived_support": True,
+        "blueprint_raw_contract_truth": False,
+    }
+    _finalize(source, "source_profile_digest")
+    request["source_profile"] = source
+    _rebind_request(request)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "blueprint_raw_source_truth_boundary_invalid" in caught.value.codes
 
 
 def test_metric_scale_gap_abstains_before_policy_execution() -> None:
@@ -551,6 +570,40 @@ def test_scripted_controller_cannot_impersonate_learned_policy() -> None:
     assert "scripted_controller_candidate_forbidden" in caught.value.codes
 
 
+def test_same_checkpoint_cannot_impersonate_two_policy_candidates() -> None:
+    request = _request()
+    candidates = request["policy_evaluation"]["policy_candidates"]
+    candidates[1]["checkpoint_digest"] = candidates[0]["checkpoint_digest"]
+    _finalize(candidates[1], "policy_identity_digest")
+    request["policy_evaluation"]["attempts"][1]["policy_identity_digest"] = candidates[1][
+        "policy_identity_digest"
+    ]
+    _rebind_attempt(request["policy_evaluation"]["attempts"][1])
+    _rebind_request(request)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "policy_candidate_immutable_identity_duplicate" in caught.value.codes
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["fresh_policy_query_count", "learned_policy_action_count"],
+)
+def test_boolean_cannot_impersonate_positive_policy_execution_count(field: str) -> None:
+    request = _request()
+    attempt = request["policy_evaluation"]["attempts"][0]
+    attempt[field] = True
+    _rebind_attempt(attempt)
+    _rebind_request(request)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "policy_attempt_real_execution_not_proven" in caught.value.codes
+
+
 def test_mismatched_reset_blocks_comparative_ranking() -> None:
     request = _request()
     attempt = request["policy_evaluation"]["attempts"][4]
@@ -578,6 +631,32 @@ def test_all_five_attempts_run_but_unsupported_candidate_is_not_ranked() -> None
     assert result["supported_ranking_candidate_count"] == 4
     assert result["unsupported_policy_candidate_ids"] == ["policy-3"]
     assert "policy-3" not in {row["candidate_id"] for row in result["ranking"]}
+
+
+def test_tied_first_place_reports_shared_winners_without_sole_winner() -> None:
+    request = _request()
+    attempt = request["policy_evaluation"]["attempts"][3]
+    attempt["task_metric_result"]["value"] = 5.0
+    _rebind_attempt(attempt)
+    _rebind_request(request)
+
+    result = compile_new_site_task_evaluation_run(request)
+    result_schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs"
+            / "schemas"
+            / "new_site_task_evaluation_run.v1.schema.json"
+        ).read_text()
+    )
+    jsonschema.Draft202012Validator(result_schema).validate(result)
+
+    assert result["winner_candidate_ids"] == ["policy-4", "policy-5"]
+    assert result["winner_candidate_id"] is None
+    assert {row["candidate_id"] for row in result["ranking"] if row["rank"] == 1} == {
+        "policy-4",
+        "policy-5",
+    }
 
 
 def test_simready_task_zone_is_required_only_for_interaction_semantics() -> None:

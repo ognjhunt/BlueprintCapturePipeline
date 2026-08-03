@@ -71,6 +71,19 @@
         "additionalProperties": false
       }
     },
+    "winner_candidate_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "winner_candidate_id": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {"type": "null"}
+      ]
+    },
     "claim_boundary": {
       "type": "object",
       "required": [
@@ -91,6 +104,17 @@
     },
     "run_digest": {"$ref": "#/$defs/digest"}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "completed"}},
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["winner_candidate_ids", "winner_candidate_id"]
+      }
+    }
+  ],
   "additionalProperties": true,
   "$defs": {
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}

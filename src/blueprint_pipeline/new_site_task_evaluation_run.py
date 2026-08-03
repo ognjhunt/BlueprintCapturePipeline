@@ -161,6 +161,11 @@ def _source_gate(request: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, 
             or boundary.get("blueprint_raw_contract_truth") is not False
         ):
             raise NewSiteTaskEvaluationError(["provider_source_truth_boundary_invalid"])
+    elif (
+        boundary.get("provider_derived_support") is not False
+        or boundary.get("blueprint_raw_contract_truth") is not True
+    ):
+        raise NewSiteTaskEvaluationError(["blueprint_raw_source_truth_boundary_invalid"])
     return source, None
 
 
@@ -432,6 +437,7 @@ def _policy_candidates(value: Any) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     identifiers: set[str] = set()
     identity_digests: set[str] = set()
+    immutable_policy_references: set[tuple[str, str]] = set()
     contract_triples: set[tuple[str, str, str]] = set()
     for index, raw in enumerate(value):
         candidate = _validate_canonical_artifact(
@@ -451,6 +457,14 @@ def _policy_candidates(value: Any) -> list[dict[str, Any]]:
         ]
         if sum(_is_digest(row) for row in immutable) != 1:
             raise NewSiteTaskEvaluationError(["policy_candidate_immutable_identity_invalid"])
+        immutable_reference = (
+            ("checkpoint", str(candidate["checkpoint_digest"]))
+            if _is_digest(candidate.get("checkpoint_digest"))
+            else ("endpoint", str(candidate["endpoint_identity_digest"]))
+        )
+        if immutable_reference in immutable_policy_references:
+            raise NewSiteTaskEvaluationError(["policy_candidate_immutable_identity_duplicate"])
+        immutable_policy_references.add(immutable_reference)
         for field in (
             "runtime_digest",
             "observation_schema_digest",
@@ -572,9 +586,15 @@ def _attempts(
         reset_bindings.add(
             (attempt["matched_reset_digest"], attempt["initial_state_observation_digest"])
         )
+        fresh_query_count = attempt.get("fresh_policy_query_count")
+        learned_action_count = attempt.get("learned_policy_action_count")
         if (
-            attempt.get("fresh_policy_query_count", 0) < 1
-            or attempt.get("learned_policy_action_count", 0) < 1
+            isinstance(fresh_query_count, bool)
+            or not isinstance(fresh_query_count, int)
+            or fresh_query_count < 1
+            or isinstance(learned_action_count, bool)
+            or not isinstance(learned_action_count, int)
+            or learned_action_count < 1
             or attempt.get("learned_policy_action_proven") is not True
             or attempt.get("reset_observed") is not True
         ):
@@ -836,6 +856,7 @@ def compile_new_site_task_evaluation_run(value: Mapping[str, Any]) -> dict[str, 
         result["run_digest"] = canonical_digest(result, digest_field="run_digest")
         return result
     ranking = _rank(supported, direction=str(metric["direction"]))
+    winner_candidate_ids = sorted(str(row["candidate_id"]) for row in ranking if row["rank"] == 1)
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "run_id": run_id,
@@ -874,7 +895,10 @@ def compile_new_site_task_evaluation_run(value: Mapping[str, Any]) -> dict[str, 
         "unsupported_policy_candidate_ids": unsupported,
         "policy_attempt_digests": sorted(row["attempt_digest"] for row in attempts),
         "ranking": ranking,
-        "winner_candidate_id": ranking[0]["candidate_id"],
+        "winner_candidate_ids": winner_candidate_ids,
+        "winner_candidate_id": (
+            winner_candidate_ids[0] if len(winner_candidate_ids) == 1 else None
+        ),
         "terminal_stage": "task_metric_ranking",
         "blockers": [],
         "smallest_missing_measurement": None,
