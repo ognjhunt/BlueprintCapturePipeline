@@ -1402,6 +1402,23 @@ def build_policy_execution_decision(
             or route.get(field) != canonical_digest(route, digest_field=field)
         ):
             raise PostCaptureEvidenceError([f"policy_authorization_{field}_invalid"])
+    try:
+        expected_route = route_task_site_measurement(
+            route_inputs["requirements"],
+            route_inputs["site_evidence_profile"],
+            route_inputs["method_capability_profiles"],
+            route_inputs["measurement_qualifications"],
+            catalog_snapshot_hash=str(route_inputs["catalog_snapshot_hash"]),
+            as_of=date.fromisoformat(str(route_inputs["routing_as_of"])),
+        )
+    except (KeyError, MeasurementRoutingError, TypeError, ValueError) as exc:
+        raise PostCaptureEvidenceError(
+            ["policy_authorization_routing_inputs_invalid"]
+        ) from exc
+    if expected_route.get("routing_decision_digest") != route.get(
+        "routing_decision_digest"
+    ):
+        raise PostCaptureEvidenceError(["policy_authorization_route_replay_mismatch"])
     if missing is None:
         try:
             candidates = validate_policy_candidates(candidates)
