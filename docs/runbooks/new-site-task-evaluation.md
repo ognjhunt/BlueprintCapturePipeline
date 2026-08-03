@@ -103,3 +103,13 @@ paid evaluator, stop at its abstention and use only the canonical
 `python -m blueprint_pipeline.paid_resource_allocator gpu-canary ...` lifecycle
 with an explicit cap, TTL, independent watchdog, immutable inputs/results, exact
 teardown, object cleanup, and provider-zero verification.
+
+## Downstream five-policy run
+
+This command is capture admission, explicit-task routing, and development
+evidence—not the five-policy Task Evaluation Run compiler. After independently
+qualified reconstruction, target binding, placement, engine routing, and five
+matched-reset learned-policy executions exist, pass those digest-bound artifacts
+to `python -m blueprint_pipeline.new_site_task_evaluation_run`. The downstream
+compiler ranks only supported receipts and remains fail-closed; this development
+result cannot be used as a policy attempt or comparative-ranking receipt.

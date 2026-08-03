@@ -4,6 +4,16 @@
 
 ### Employee-Facing
 
+- Added a provider-neutral new-site Task Evaluation Run compiler that binds an
+  admitted capture source, registered full-resolution native 3DGS and separate
+  dynamics geometry, automatic deterministic 3D target authorization, robot
+  defaults, qualified scene composition, task/site engine routing, and exactly
+  five immutable learned-policy attempts under matched resets. It ranks only
+  task-metric-supported attempts and otherwise names the smallest missing
+  measurement; synthetic contract tests do not establish a real new-site run,
+  learned-policy outcome, physical success, or deployment readiness
+  (`src/blueprint_pipeline/new_site_task_evaluation_run.py`,
+  `docs/NEW_SITE_TASK_EVALUATION_RUN.md`).
 - Added a fail-closed Franka reset-stability admission gate to external-scene
   Isaac policy traces. Exact-scene runs now record reset position error and
   joint velocity, and block policy execution when the robot is unstable after
