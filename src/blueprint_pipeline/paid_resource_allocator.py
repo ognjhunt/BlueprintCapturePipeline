@@ -18,7 +18,6 @@ from typing import Any, Sequence
 
 from .common import ensure_dir, write_json
 from .groot_oscar_digitalocean_builder import (
-    DETACHED_CPU_BUILD_SUPERVISOR_ENV,
     launch_detached_builder,
     observe_local_machine,
     run_builder,
@@ -74,7 +73,7 @@ from .paid_resource_admission import (
 )
 from .paid_resource_cli_support import (
     add_cpu_arguments as _add_cpu_arguments,
-    configure_detached_supervisor_signal_policy,
+    configure_or_launch_detached_gpu_canary,
     cpu_builder_kwargs,
     cpu_prerequisite_blocked_result,
     cpu_vector as _cpu_vector,
@@ -129,7 +128,6 @@ STRICT_POLICY_SMOKE_RESERVATION_SECONDS = 480
 FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_500
 COMBINED_GPU_PLAN_SECONDS = GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
 PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
-DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
 
 
@@ -380,14 +378,6 @@ def _write_blocked_qualification_allocation_outputs(args: argparse.Namespace, re
         value = getattr(args, attribute, None)
         if value:
             write_json(Path(value), result)
-
-
-def _configure_detached_supervisor_signal_policy(command: str) -> bool:
-    return configure_detached_supervisor_signal_policy(
-        command,
-        detached_model_volume_env=DETACHED_MODEL_VOLUME_SUPERVISOR_ENV,
-        detached_cpu_build_env=DETACHED_CPU_BUILD_SUPERVISOR_ENV,
-    )
 
 
 def _run_cpu(args: argparse.Namespace) -> dict:
@@ -932,7 +922,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--campaign-spent-to-date-usd", type=float)
         model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
-    _configure_detached_supervisor_signal_policy(args.command)
+    detached_exit = configure_or_launch_detached_gpu_canary(
+        args.command,
+        execute=bool(getattr(args, "execute", False)),
+        argv=list(argv) if argv is not None else sys.argv[1:],
+        repo_root=ROOT,
+    )
+    if detached_exit is not None:
+        return detached_exit
     if args.command in {"model-volume", "model-volume-run"} and not (
         args.command == "model-volume" and args.retain_existing_output
     ):

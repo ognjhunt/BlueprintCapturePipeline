@@ -268,6 +268,15 @@ release, bundle receipt, sensitive URL files, a live independent watchdog using
 prefix `blueprint-measurement-chrono-dem-`, retry cap zero, and explicit spend
 and hard-TTL bounds. Provider adapters and the canary module are not launchers.
 
+For a long-running canary, set
+`BLUEPRINT_LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR` to a new private evidence
+directory on that same canonical allocator command. The allocator starts an
+OS-detached child with a private log and manifest, so an interactive terminal or
+agent turn ending cannot interrupt provider polling and teardown. The manifest
+records the argument shape but neither values nor value hashes. The child still
+requires the independent provider watchdog, zero-retry request, spend cap, and
+hard TTL; detachment grants no authority and bypasses no admission gate.
+
 A returned result may establish only the digest-bound synthetic CUDA
 development run and exact replay. It cannot establish characterized-material
 accuracy, pouring or tool interaction, Q-GRAN, R5-R7, production routing,
