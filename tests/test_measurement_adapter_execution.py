@@ -129,8 +129,8 @@ def test_subprocess_environment_isolates_home_and_cache(tmp_path, monkeypatch) -
     assert environment["TMPDIR"] == str(tmp_path)
     assert environment["MUJOCO_GL"] == "disable"
 
-    monkeypatch.setenv("MUJOCO_GL", "osmesa")
-    assert _safe_environment(tmp_path)["MUJOCO_GL"] == "osmesa"
+    monkeypatch.setenv("MUJOCO_GL", "egl")
+    assert _safe_environment(tmp_path)["MUJOCO_GL"] == "disable"
 
 
 def test_real_mujoco_311_development_adapter_executes_and_replays() -> None:
