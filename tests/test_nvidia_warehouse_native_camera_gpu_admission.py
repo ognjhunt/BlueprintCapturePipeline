@@ -67,7 +67,13 @@ def _inputs():
         "provider": "vast",
         "provider_api_verified": True,
         "observed_at_epoch": time.time(),
+        "blockers": [],
         "provider_inventory_verified_zero": True,
+        "attempt_billable_inventory": {
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        },
         "single_gpu_available": True,
         "gpu_memory_bytes": 24 * 1024**3,
         "gpu_type_id": "RTX 4090",
@@ -157,8 +163,59 @@ def test_native_camera_gpu_admission_passes_exact_label_free_contract() -> None:
     assert result["claim_boundary"]["policy_wam_loop_proven"] is False
 
 
+def test_native_camera_gpu_admission_allows_authorized_second_global_gpu() -> None:
+    release, bundle, preflight, spend = _inputs()
+    preflight.update(
+        {
+            "provider_inventory_verified_zero": False,
+            "provider_inventory_below_global_ceiling": True,
+            "maximum_concurrent_paid_gpus_global": 2,
+            "global_paid_gpu_inventory": {
+                "status": "verified",
+                "total_live_paid_gpus_observed": 1,
+            },
+        }
+    )
+
+    result = build_native_camera_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit="a" * 40,
+    )
+
+    assert result["status"] == "admitted"
+    assert result["limits"]["one_resource"] is True
+    assert result["limits"]["maximum_concurrent_paid_gpus_global"] == 2
+
+
+def test_native_camera_concurrency_preflight_blocks_at_global_ceiling() -> None:
+    _release, _bundle, preflight, _spend = _inputs()
+    preflight["provider_inventory_verified_zero"] = False
+    preflight["blockers"] = ["openpi_gpu_preflight_billable_inventory_not_zero"]
+    global_inventory = {
+        "status": "verified",
+        "total_live_paid_gpus_observed": 2,
+        "blockers": [],
+    }
+
+    result = camera_gpu._concurrency_aware_native_preflight(
+        preflight=preflight,
+        global_inventory=global_inventory,
+        maximum_concurrent_paid_gpus_global=2,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_inventory_below_global_ceiling"] is False
+    assert "native_camera_global_paid_gpu_ceiling_reached_or_unverified" in result[
+        "blockers"
+    ]
+
+
 def test_native_camera_gpu_request_binds_exact_worker_and_redacts_secrets() -> None:
     release, bundle, preflight, spend = _inputs()
+    preflight["excluded_machine_ids"] = [43326]
 
     prepared = build_native_camera_gpu_provider_request(
         release=release,
@@ -167,6 +224,7 @@ def test_native_camera_gpu_request_binds_exact_worker_and_redacts_secrets() -> N
         spend=spend,
         expected_source_commit="a" * 40,
         job_id="blueprint-native-warehouse-camera-v1",
+        launcher_source_commit="d" * 40,
     )
 
     assert prepared["status"] == "admitted"
@@ -175,6 +233,7 @@ def test_native_camera_gpu_request_binds_exact_worker_and_redacts_secrets() -> N
     assert request["schema_version"] == "nvidia_warehouse_native_camera_gpu_request.v2"
     assert request["provider"] == "vast"
     assert request["input_bundle_sha256"] == "c" * 64
+    assert request["launcher_source_commit"] == "d" * 40
     assert shape["docker_entrypoint"] == ["bash"]
     assert shape["docker_start_cmd"] == [
         "-lc",
@@ -190,7 +249,11 @@ def test_native_camera_gpu_request_binds_exact_worker_and_redacts_secrets() -> N
     assert environment["plaintext_env_values"] == {INPUT_SHA256_ENV: "c" * 64}
     assert environment["secret_values_in_artifact"] is False
     assert shape["gpu"]["gpu_count"] == 1
-    assert shape["limits"]["provider_zero_required_before_and_after"] is True
+    assert shape["limits"]["attempt_inventory_zero_required_before_launch"] is True
+    assert shape["limits"]["global_inventory_below_ceiling_required_before_launch"] is True
+    assert shape["limits"]["owned_resource_absence_required_after_launch"] is True
+    assert shape["limits"]["maximum_concurrent_paid_gpus_global"] == 1
+    assert shape["limits"]["excluded_machine_ids"] == [43326]
     assert shape["output_contract"] == {
         "individual_external_camera_frame_required": True,
         "individual_wrist_camera_frame_required": True,
@@ -290,8 +353,13 @@ def test_native_camera_monitor_tears_down_before_admitting_policy_wam(
             assert name_prefix == ""
             return {
                 "api_confirmed": True,
-                "live_resource_count": 0,
-                "resources": [],
+                "live_resource_count": 1,
+                "resources": [
+                    {
+                        "instance_id": "other-task-1",
+                        "name": "blueprint-disjoint-reference-task",
+                    }
+                ],
             }
 
     monkeypatch.setattr(camera_gpu, "safe_http_request", lambda *_a, **_k: Response())
@@ -457,6 +525,11 @@ def test_native_camera_execute_arms_guards_before_vast_launch(
     monkeypatch.setattr(camera_gpu, "get_render_provider", lambda _name: Provider())
     monkeypatch.setattr(
         camera_gpu,
+        "GLOBAL_PAID_GPU_LAUNCH_LOCK",
+        tmp_path / "paid_gpu_global_launch.lock",
+    )
+    monkeypatch.setattr(
+        camera_gpu,
         "collect_openpi_policy_ranking_vast_preflight",
         lambda **_kwargs: preflight,
     )
@@ -497,6 +570,7 @@ def test_native_camera_execute_arms_guards_before_vast_launch(
         adapter_output=launch_root / "adapter.json",
         pod_name="blueprint-native-warehouse-camera-v2",
         expected_source_commit="a" * 40,
+        launcher_source_commit="d" * 40,
         execute=True,
         hard_ttl_seconds=1200,
         max_spend_usd=1.0,
@@ -543,7 +617,7 @@ def test_native_camera_gpu_admission_blocks_dirty_image_rank_access_and_inventor
     assert result["status"] == "blocked"
     assert "native_camera_gpu_release_dirty_overlay_forbidden" in result["blockers"]
     assert "native_camera_gpu_input_freeze_invalid" in result["blockers"]
-    assert "native_camera_gpu_provider_inventory_not_zero" in result["blockers"]
+    assert "native_camera_gpu_global_paid_gpu_ceiling_not_proven" in result["blockers"]
 
 
 def test_native_camera_gpu_admission_fails_closed_on_malformed_capacity_values() -> None:

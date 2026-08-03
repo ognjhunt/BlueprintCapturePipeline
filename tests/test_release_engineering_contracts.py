@@ -763,6 +763,37 @@ def test_groot_oscar_release_acceptance_requires_real_oci_runtime_smoke() -> Non
     assert "published_runtime_identity_matches_smoked_local_image" in script
 
 
+def test_isaac_worker_final_runtime_user_can_discover_and_write_isaac_tree() -> None:
+    dockerfile = (ROOT / "deploy/docker/robot_eval_worker/isaac/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert re.search(r"usermod\s+-aG\s+isaac-sim\s+blueprint", dockerfile)
+    assert re.search(r"^USER blueprint$", dockerfile, re.MULTILINE)
+    assert "USER blueprint:blueprint" not in dockerfile
+    assert "chmod o+x /isaac-sim" not in dockerfile
+    assert "runuser -u blueprint -- test -r /isaac-sim" in dockerfile
+    for kit_dir in (
+        "/isaac-sim/kit/cache",
+        "/isaac-sim/kit/data",
+        "/isaac-sim/kit/logs",
+    ):
+        assert re.search(rf"mkdir\s+-p[^\n]*{re.escape(kit_dir)}", dockerfile)
+        assert re.search(rf"chown\s+blueprint:isaac-sim[^\n]*{re.escape(kit_dir)}", dockerfile)
+        assert re.search(rf"chmod\s+0775[^\n]*{re.escape(kit_dir)}", dockerfile)
+        assert f"runuser -u blueprint -- test -w {kit_dir}" in dockerfile
+
+    runtime_gate = re.search(
+        r"&&\s+runuser\s+-u\s+blueprint\s+--\s+env\s+PYTHONPATH=/app/src\s+"
+        r"/isaac-sim/python\.sh\s+-c[^\n]*\n"
+        r"\s*\"from blueprint_pipeline\.nvidia_warehouse_native_camera_canary "
+        r"import import_simulation_app; assert callable\(import_simulation_app\(\)\)\"",
+        dockerfile,
+    )
+    assert runtime_gate, "the launcher import gate must run as the final non-root runtime user"
+    assert not re.search(r"ch(?:own|mod)\s+-[a-zA-Z]*R[a-zA-Z]*\s+[^\n]*/isaac-sim", dockerfile)
+
+
 def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
     tmp_path: Path,
 ) -> None:
