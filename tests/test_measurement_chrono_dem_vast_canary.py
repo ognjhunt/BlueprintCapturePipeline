@@ -161,6 +161,9 @@ def test_bootstrap_binds_exact_source_build_cuda_bundle_and_signed_upload() -> N
     assert (
         "apt-get install -y --no-install-recommends " + " ".join(REQUIRED_DEBIAN_PACKAGES) in script
     )
+    assert script.index("apt-get install -y --no-install-recommends") < script.index(
+        'python3 - "$archive" "$bundle"'
+    )
     assert "-DCH_ENABLE_MODULE_DEM=" + BUILD_CONFIGURATION["CH_ENABLE_MODULE_DEM"] in script
     assert "-DCHRONO_CUDA_ARCHITECTURES=native" in script
     assert 'cmake --build "$chrono_build" --target install --parallel 2' in script
