@@ -1,5 +1,12 @@
 # Provider-Neutral New-Site Task Evaluation Run
 
+Production of the compiler prerequisites is owned by
+`blueprint_pipeline.post_capture_evidence_spine`; see
+[`runbooks/post-capture-evidence-spine.md`](runbooks/post-capture-evidence-spine.md).
+The final compiler remains a strict verifier. Callers no longer need to reshape
+site-specific source, reconstruction, geometry, target, placement, composition,
+routing, or authorization JSON by hand.
+
 `blueprint_pipeline.new_site_task_evaluation_run` is the deterministic top-level
 compiler for a new capture after provider/source admission. It does not choose
 Isaac by default and it does not let an analyzer, provider, or agent authorize

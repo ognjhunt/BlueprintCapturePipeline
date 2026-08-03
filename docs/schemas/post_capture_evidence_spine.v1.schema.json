@@ -1,0 +1,475 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/post_capture_evidence_spine.v1.schema.json",
+  "title": "Post-capture evidence-production spine artifacts",
+  "oneOf": [
+    {"$ref": "#/$defs/sourceProfile"},
+    {"$ref": "#/$defs/siteGeometry"},
+    {"$ref": "#/$defs/siteGeometryQualification"},
+    {"$ref": "#/$defs/native3dgs"},
+    {"$ref": "#/$defs/registrationQualification"},
+    {"$ref": "#/$defs/registeredReconstruction"},
+    {"$ref": "#/$defs/robotSelection"},
+    {"$ref": "#/$defs/placementMeasurement"},
+    {"$ref": "#/$defs/qualifiedPlacement"},
+    {"$ref": "#/$defs/sceneComposition"},
+    {"$ref": "#/$defs/routingInputs"},
+    {"$ref": "#/$defs/authorizationDecision"},
+    {"$ref": "#/$defs/runManifest"}
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "missingMeasurement": {
+      "type": "object",
+      "required": ["code", "instruction", "stage"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "instruction": {"type": "string", "minLength": 1},
+        "stage": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "sourceProfile": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "source_kind",
+        "source_capture_digest",
+        "source_artifact_digest",
+        "verified_source_files",
+        "source_bytes_verified",
+        "claim_boundary",
+        "source_profile_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "post_capture_source_profile.v1"},
+        "status": {
+          "enum": [
+            "admitted_provider_derived_support",
+            "admitted_blueprint_raw_contract"
+          ]
+        },
+        "source_kind": {"type": "string", "minLength": 1},
+        "source_capture_digest": {"$ref": "#/$defs/digest"},
+        "source_artifact_digest": {"$ref": "#/$defs/digest"},
+        "verified_source_files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["relative_path", "digest", "size_bytes"],
+            "properties": {
+              "relative_path": {"type": "string", "minLength": 1},
+              "digest": {"$ref": "#/$defs/digest"},
+              "size_bytes": {"type": "integer", "minimum": 0}
+            },
+            "additionalProperties": false
+          }
+        },
+        "source_bytes_verified": {"const": true},
+        "claim_boundary": {
+          "type": "object",
+          "required": [
+            "provider_derived_support",
+            "blueprint_raw_contract_truth",
+            "raw_capture_authority_upgraded"
+          ]
+        },
+        "source_profile_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "siteGeometry": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "source_profile_digest",
+        "geometry_asset_digest",
+        "collider_candidate_digest",
+        "scale_source",
+        "coverage_and_uncertainty",
+        "qualification_state",
+        "derived_site_geometry_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "derived_site_geometry.v1"},
+        "status": {"enum": ["derived_candidate_unqualified", "qualified"]},
+        "source_profile_digest": {"$ref": "#/$defs/digest"},
+        "geometry_asset_digest": {"$ref": "#/$defs/digest"},
+        "collider_candidate_digest": {"$ref": "#/$defs/digest"},
+        "scale_source": {"type": "object"},
+        "coverage_and_uncertainty": {
+          "type": "object",
+          "required": [
+            "observed_region_ids",
+            "unsupported_region_ids",
+            "generated_fill_used",
+            "unseen_or_rejected_depth_filled"
+          ],
+          "properties": {
+            "generated_fill_used": {"const": false},
+            "unseen_or_rejected_depth_filled": {"const": false}
+          }
+        },
+        "qualification_state": {
+          "type": "object",
+          "required": [
+            "metric_scale",
+            "collision_geometry",
+            "isaac_contact",
+            "candidate_may_self_qualify"
+          ],
+          "properties": {
+            "candidate_may_self_qualify": {"const": false}
+          }
+        },
+        "derived_site_geometry_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "native3dgs": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "source_profile_digest",
+        "provider_receipt_digest",
+        "appearance_format",
+        "appearance_asset_digest",
+        "full_resolution_appearance_preserved",
+        "provider_self_qualified",
+        "native_3dgs_candidate_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "native_3dgs_candidate.v1"},
+        "status": {"const": "candidate"},
+        "source_profile_digest": {"$ref": "#/$defs/digest"},
+        "provider_receipt_digest": {"$ref": "#/$defs/digest"},
+        "appearance_format": {"const": "native_3dgs"},
+        "appearance_asset_digest": {"$ref": "#/$defs/digest"},
+        "full_resolution_appearance_preserved": {"type": "boolean"},
+        "provider_self_qualified": {"const": false},
+        "native_3dgs_candidate_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "siteGeometryQualification": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "derived_site_geometry_digest",
+        "geometry_asset_digest",
+        "collider_candidate_digest",
+        "metric_scale_qualified",
+        "collision_geometry_qualified",
+        "qualifier_identity",
+        "candidate_may_self_qualify",
+        "geometry_qualification_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "site_geometry_qualification.v1"},
+        "status": {"enum": ["qualified", "unqualified"]},
+        "derived_site_geometry_digest": {"$ref": "#/$defs/digest"},
+        "geometry_asset_digest": {"$ref": "#/$defs/digest"},
+        "collider_candidate_digest": {"$ref": "#/$defs/digest"},
+        "metric_scale_qualified": {"type": "boolean"},
+        "collision_geometry_qualified": {"type": "boolean"},
+        "qualifier_identity": {"type": "string", "minLength": 1},
+        "candidate_may_self_qualify": {"const": false},
+        "geometry_qualification_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "registrationQualification": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "source_profile_digest",
+        "native_3dgs_candidate_digest",
+        "appearance_asset_digest",
+        "derived_site_geometry_digest",
+        "geometry_asset_digest",
+        "scene_registration_digest",
+        "registration_transform_digest",
+        "residual_measurement_digest",
+        "qualifier_identity",
+        "candidate_may_self_qualify",
+        "registration_qualification_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "scene_registration_qualification.v1"},
+        "status": {"enum": ["qualified", "unqualified", "abstained"]},
+        "source_profile_digest": {"$ref": "#/$defs/digest"},
+        "native_3dgs_candidate_digest": {"$ref": "#/$defs/digest"},
+        "appearance_asset_digest": {"$ref": "#/$defs/digest"},
+        "derived_site_geometry_digest": {"$ref": "#/$defs/digest"},
+        "geometry_asset_digest": {"$ref": "#/$defs/digest"},
+        "scene_registration_digest": {"$ref": "#/$defs/digest"},
+        "registration_transform_digest": {"$ref": "#/$defs/digest"},
+        "residual_measurement_digest": {"$ref": "#/$defs/digest"},
+        "qualifier_identity": {"type": "string", "minLength": 1},
+        "candidate_may_self_qualify": {"const": false},
+        "registration_qualification_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "registeredReconstruction": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "source_profile_digest",
+        "appearance_format",
+        "registration_status",
+        "presentation_output_used_as_evaluation_evidence",
+        "claim_boundary",
+        "reconstruction_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "registered_site_reconstruction.v1"},
+        "status": {"enum": ["qualified", "abstained"]},
+        "source_profile_digest": {"$ref": "#/$defs/digest"},
+        "appearance_format": {"const": "native_3dgs"},
+        "registration_status": {"enum": ["qualified", "abstained"]},
+        "presentation_output_used_as_evaluation_evidence": {"const": false},
+        "smallest_missing_measurement": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/missingMeasurement"}]
+        },
+        "claim_boundary": {
+          "type": "object",
+          "required": [
+            "appearance_quality_is_metric_registration",
+            "appearance_used_as_dynamics_authority"
+          ],
+          "properties": {
+            "appearance_quality_is_metric_registration": {"const": false},
+            "appearance_used_as_dynamics_authority": {"const": false}
+          }
+        },
+        "reconstruction_digest": {"$ref": "#/$defs/digest"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"const": "qualified"}},
+            "required": ["status"]
+          },
+          "then": {
+            "required": [
+              "appearance_asset_digest",
+              "native_3dgs_candidate_digest",
+              "geometry_asset_digest",
+              "derived_site_geometry_digest",
+              "scene_registration_digest",
+              "registration_transform_digest",
+              "residual_measurement_digest",
+              "registration_qualification_digest",
+              "geometry_qualification_status"
+            ],
+            "properties": {
+              "appearance_asset_digest": {"$ref": "#/$defs/digest"},
+              "native_3dgs_candidate_digest": {"$ref": "#/$defs/digest"},
+              "geometry_asset_digest": {"$ref": "#/$defs/digest"},
+              "derived_site_geometry_digest": {"$ref": "#/$defs/digest"},
+              "scene_registration_digest": {"$ref": "#/$defs/digest"},
+              "registration_transform_digest": {"$ref": "#/$defs/digest"},
+              "residual_measurement_digest": {"$ref": "#/$defs/digest"},
+              "registration_qualification_digest": {"$ref": "#/$defs/digest"},
+              "geometry_qualification_status": {"const": "qualified"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "robotSelection": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "target_binding_digest",
+        "robot_id",
+        "selection_is_qualification",
+        "robot_selection_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "task_robot_selection.v1"},
+        "status": {"const": "selected"},
+        "target_binding_digest": {"$ref": "#/$defs/digest"},
+        "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
+        "selection_is_qualification": {"const": false},
+        "robot_selection_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "qualifiedPlacement": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "robot_id",
+        "target_binding_digest",
+        "reachable",
+        "footprint_clear",
+        "collision_aware",
+        "candidate_may_self_authorize",
+        "physical_execution_authorized",
+        "placement_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "qualified_robot_placement.v1"},
+        "status": {"enum": ["qualified", "unqualified"]},
+        "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
+        "target_binding_digest": {"$ref": "#/$defs/digest"},
+        "reachable": {"type": "boolean"},
+        "footprint_clear": {"type": "boolean"},
+        "collision_aware": {"type": "boolean"},
+        "candidate_may_self_authorize": {"const": false},
+        "physical_execution_authorized": {"const": false},
+        "placement_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "placementMeasurement": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "placement_candidate_digest",
+        "robot_selection_digest",
+        "target_binding_digest",
+        "robot_id",
+        "reachable",
+        "footprint_clear",
+        "collision_aware",
+        "qualifier_identity",
+        "candidate_may_self_qualify",
+        "placement_qualification_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "robot_placement_qualification_measurement.v1"},
+        "status": {"enum": ["qualified", "unqualified", "abstained"]},
+        "placement_candidate_digest": {"$ref": "#/$defs/digest"},
+        "robot_selection_digest": {"$ref": "#/$defs/digest"},
+        "target_binding_digest": {"$ref": "#/$defs/digest"},
+        "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
+        "reachable": {"type": "boolean"},
+        "footprint_clear": {"type": "boolean"},
+        "collision_aware": {"type": "boolean"},
+        "qualifier_identity": {"type": "string", "minLength": 1},
+        "candidate_may_self_qualify": {"const": false},
+        "placement_qualification_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "sceneComposition": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "target_binding_digest",
+        "placement_digest",
+        "task_semantics",
+        "floor_support_mount",
+        "task_zone_replacement",
+        "candidate_may_self_authorize",
+        "scene_composition_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "qualified_scene_composition.v1"},
+        "status": {"enum": ["qualified", "abstained"]},
+        "target_binding_digest": {"$ref": "#/$defs/digest"},
+        "placement_digest": {"$ref": "#/$defs/digest"},
+        "task_semantics": {"enum": ["inspection", "interaction"]},
+        "floor_support_mount": {"type": "object"},
+        "task_zone_replacement": {"type": "object"},
+        "candidate_may_self_authorize": {"const": false},
+        "scene_composition_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "authorizationDecision": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "policy_execution_authorized",
+        "authorization_decision_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "post_capture_policy_execution_decision.v1"},
+        "status": {"const": "abstained"},
+        "policy_execution_authorized": {"const": false},
+        "smallest_missing_measurement": {"$ref": "#/$defs/missingMeasurement"},
+        "authorization_decision_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "routingInputs": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "requirements",
+        "site_evidence_profile",
+        "method_capability_profiles",
+        "measurement_qualifications",
+        "catalog_snapshot_hash",
+        "routing_as_of",
+        "source_profile_digest",
+        "target_binding_digest",
+        "placement_digest",
+        "robot_id",
+        "task_class",
+        "routing_inputs_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "post_capture_routing_inputs.v1"},
+        "catalog_snapshot_hash": {"$ref": "#/$defs/digest"},
+        "source_profile_digest": {"$ref": "#/$defs/digest"},
+        "target_binding_digest": {"$ref": "#/$defs/digest"},
+        "placement_digest": {"$ref": "#/$defs/digest"},
+        "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
+        "task_class": {"type": "string", "minLength": 1},
+        "routing_inputs_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "runManifest": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "run_id",
+        "status",
+        "invocation_digest",
+        "source_profile_digest",
+        "terminal_stage",
+        "artifacts",
+        "idempotent_content_addressing",
+        "upstream_digest_change_creates_new_run_directory",
+        "fixture_evidence_used",
+        "post_capture_evidence_run_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "post_capture_evidence_run.v1"},
+        "run_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["completed", "abstained"]},
+        "invocation_digest": {"$ref": "#/$defs/digest"},
+        "source_profile_digest": {"$ref": "#/$defs/digest"},
+        "terminal_stage": {"type": "string", "minLength": 1},
+        "artifacts": {"type": "array", "minItems": 3},
+        "idempotent_content_addressing": {"const": true},
+        "upstream_digest_change_creates_new_run_directory": {"const": true},
+        "fixture_evidence_used": {"const": false},
+        "post_capture_evidence_run_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}
