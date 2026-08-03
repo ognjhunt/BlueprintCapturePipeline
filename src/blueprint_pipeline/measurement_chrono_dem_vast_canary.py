@@ -279,7 +279,10 @@ for row in manifest.get("source_files", []):
         raise SystemExit("measurement_chrono_dem_source_digest_mismatch")
 PY
 failure_stage="chrono_clone"
-git clone --filter=blob:none --no-checkout __SOURCE_REPOSITORY__ "$chrono_source"
+git init "$chrono_source"
+git -C "$chrono_source" remote add origin __SOURCE_REPOSITORY__
+timeout --signal=TERM --kill-after=30s 600s \
+  git -C "$chrono_source" fetch --filter=blob:none --depth=1 origin tag __SOURCE_TAG__
 failure_stage="chrono_source_identity"
 git -C "$chrono_source" checkout --detach "$BLUEPRINT_MEASUREMENT_CHRONO_DEM_SOURCE_UPSTREAM_COMMIT"
 test "$(git -C "$chrono_source" rev-parse HEAD^{commit})" = \
