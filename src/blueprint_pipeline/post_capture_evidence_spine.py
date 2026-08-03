@@ -1253,6 +1253,10 @@ def build_routing_inputs_and_decision(
 
 def build_policy_execution_decision(
     *,
+    source_profile: Mapping[str, Any],
+    registered_reconstruction: Mapping[str, Any],
+    target_orchestration: Mapping[str, Any],
+    routing_inputs: Mapping[str, Any],
     routing_decision: Mapping[str, Any],
     qualified_placement: Mapping[str, Any],
     scene_composition: Mapping[str, Any],
@@ -1262,6 +1266,32 @@ def build_policy_execution_decision(
 ) -> dict[str, Any]:
     """Authorize only the exact independently qualified site/task/robot join."""
 
+    source = _validate_artifact(
+        source_profile,
+        schema=SOURCE_PROFILE_SCHEMA,
+        digest_field="source_profile_digest",
+        code="source_profile",
+    )
+    reconstruction = _validate_artifact(
+        registered_reconstruction,
+        schema=REGISTERED_RECONSTRUCTION_SCHEMA,
+        digest_field="reconstruction_digest",
+        code="registered_reconstruction",
+    )
+    target = _clone(dict(target_orchestration))
+    target_field = (
+        "orchestration_digest"
+        if target.get("schema_version") == "rendered_scene_task_target_orchestration.v1"
+        else "target_orchestration_digest"
+    )
+    if target.get(target_field) != canonical_digest(target, digest_field=target_field):
+        raise PostCaptureEvidenceError(["policy_authorization_target_invalid"])
+    route_inputs = _validate_artifact(
+        routing_inputs,
+        schema=ROUTING_INPUTS_SCHEMA,
+        digest_field="routing_inputs_digest",
+        code="routing_inputs",
+    )
     route = _clone(dict(routing_decision))
     placement = _validate_artifact(
         qualified_placement,
@@ -1275,6 +1305,57 @@ def build_policy_execution_decision(
         digest_field="scene_composition_digest",
         code="scene_composition",
     )
+    resolved_selection = build_task_robot_selection(target)
+    target_binding_digest = resolved_selection["target_binding_digest"]
+    exact_join = {
+        "reconstruction_source_profile_digest": (
+            reconstruction.get("source_profile_digest"),
+            source["source_profile_digest"],
+        ),
+        "routing_source_profile_digest": (
+            route_inputs.get("source_profile_digest"),
+            source["source_profile_digest"],
+        ),
+        "routing_target_binding_digest": (
+            route_inputs.get("target_binding_digest"),
+            target_binding_digest,
+        ),
+        "routing_placement_digest": (
+            route_inputs.get("placement_digest"),
+            placement["placement_digest"],
+        ),
+        "routing_robot_id": (
+            route_inputs.get("robot_id"),
+            resolved_selection["robot_id"],
+        ),
+        "composition_placement_digest": (
+            composition.get("placement_digest"),
+            placement["placement_digest"],
+        ),
+    }
+    if target_field == "orchestration_digest":
+        exact_join.update(
+            {
+                "target_source_scene_digest": (
+                    target.get("source_scene_digest"),
+                    reconstruction.get("source_scene_digest"),
+                ),
+                "target_analysis_appearance_digest": (
+                    target.get("analysis_splat_digest"),
+                    reconstruction.get("appearance_asset_digest"),
+                ),
+            }
+        )
+    else:
+        exact_join["target_reconstruction_digest"] = (
+            target.get("reconstruction_digest"),
+            reconstruction["reconstruction_digest"],
+        )
+    bad_joins = [name for name, values in exact_join.items() if values[0] != values[1]]
+    if bad_joins:
+        raise PostCaptureEvidenceError(
+            [f"policy_authorization_{name}_mismatch" for name in bad_joins]
+        )
     try:
         metric = validate_task_metric(task_metric)
     except (TypeError, ValueError) as exc:
@@ -1341,6 +1422,11 @@ def build_policy_execution_decision(
                 "status": "abstained",
                 "policy_execution_authorized": False,
                 "routing_decision_digest": route.get("routing_decision_digest"),
+                "routing_inputs_digest": route_inputs["routing_inputs_digest"],
+                "source_profile_digest": source["source_profile_digest"],
+                "reconstruction_digest": reconstruction["reconstruction_digest"],
+                "target_orchestration_digest": target[target_field],
+                "target_binding_digest": target_binding_digest,
                 "placement_digest": placement["placement_digest"],
                 "scene_composition_digest": composition["scene_composition_digest"],
                 "metric_spec_digest": metric["metric_spec_digest"],
@@ -1358,6 +1444,11 @@ def build_policy_execution_decision(
         "policy_execution_authorized": True,
         "physical_robot_execution_authorized": False,
         "routing_decision_digest": route["routing_decision_digest"],
+        "routing_inputs_digest": route_inputs["routing_inputs_digest"],
+        "source_profile_digest": source["source_profile_digest"],
+        "reconstruction_digest": reconstruction["reconstruction_digest"],
+        "target_orchestration_digest": target[target_field],
+        "target_binding_digest": target_binding_digest,
         "placement_digest": placement["placement_digest"],
         "scene_composition_digest": composition["scene_composition_digest"],
         "metric_spec_digest": metric["metric_spec_digest"],
@@ -1787,6 +1878,10 @@ def run_post_capture_evidence_spine(
             and policy_candidates
         ):
             authorization = build_policy_execution_decision(
+                source_profile=source,
+                registered_reconstruction=reconstruction,
+                target_orchestration=target,
+                routing_inputs=routing_inputs,
                 routing_decision=route_decision,
                 qualified_placement=selected_placement,
                 scene_composition=composition,

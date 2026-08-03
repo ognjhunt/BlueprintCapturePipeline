@@ -532,7 +532,21 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
         },
         "routing_decision_digest",
     )
+    routing_inputs = _finalize(
+        {
+            "schema_version": "post_capture_routing_inputs.v1",
+            "source_profile_digest": source["source_profile_digest"],
+            "target_binding_digest": selection["target_binding_digest"],
+            "placement_digest": placement["placement_digest"],
+            "robot_id": selection["robot_id"],
+        },
+        "routing_inputs_digest",
+    )
     authorization = build_policy_execution_decision(
+        source_profile=source,
+        registered_reconstruction=reconstruction,
+        target_orchestration=target,
+        routing_inputs=routing_inputs,
         routing_decision=route,
         qualified_placement=placement,
         scene_composition=composition,
@@ -558,6 +572,10 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
     _finalize(self_authorizing_route, "routing_decision_digest")
     with pytest.raises(PostCaptureEvidenceError, match="policy_authorizer_independence_invalid"):
         build_policy_execution_decision(
+            source_profile=source,
+            registered_reconstruction=reconstruction,
+            target_orchestration=target,
+            routing_inputs=routing_inputs,
             routing_decision=self_authorizing_route,
             qualified_placement=placement,
             scene_composition=composition,
