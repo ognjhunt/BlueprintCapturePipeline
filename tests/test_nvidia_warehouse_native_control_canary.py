@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
+import blueprint_pipeline.nvidia_warehouse_native_control_canary as control
 from blueprint_pipeline.nvidia_warehouse_native_control_canary import (
     CLAIM_LABEL,
     _validated_spec,
@@ -149,3 +151,19 @@ def test_positive_control_failure_blocks_five_controller_claim(tmp_path: Path) -
     assert result["status"] == "failed"
     assert result["blockers"] == ["native_positive_control_failed"]
     assert result["assessment"]["controller_results"] == []
+
+
+def test_native_backend_enables_bundled_franka_compatibility_extension_first() -> None:
+    source = inspect.getsource(control.isaac_sim_6_native_control_backend)
+    enable = 'enable_extension("isaacsim.robot.manipulators.examples")'
+    franka_import = "from isaacsim.robot.manipulators.examples.franka import Franka"
+    controller_import = (
+        "from isaacsim.robot.manipulators.examples.franka.controllers import "
+        "PickPlaceController"
+    )
+
+    assert enable in source
+    assert source.index(enable) < source.index(franka_import)
+    assert source.index(enable) < source.index(controller_import)
+    between = source[source.index(enable) : source.index(franka_import)]
+    assert "simulation_app.update()" in between

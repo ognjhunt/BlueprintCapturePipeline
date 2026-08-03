@@ -227,7 +227,14 @@ def isaac_sim_6_native_control_backend(
         from isaacsim.core.api import World
         from isaacsim.core.experimental.prims import XformPrim
         from isaacsim.core.prims import SingleRigidPrim
+        from isaacsim.core.utils.extensions import enable_extension
         from isaacsim.core.utils.stage import add_reference_to_stage
+
+        # Isaac Sim 6 keeps the legacy Franka/PickPlace API as a bundled,
+        # deprecated compatibility extension, but the base Python app does not
+        # enable it. Enable the exact NVIDIA extension before importing it.
+        enable_extension("isaacsim.robot.manipulators.examples")
+        simulation_app.update()
         from isaacsim.robot.manipulators.examples.franka import Franka
         from isaacsim.robot.manipulators.examples.franka.controllers import PickPlaceController
         from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera
