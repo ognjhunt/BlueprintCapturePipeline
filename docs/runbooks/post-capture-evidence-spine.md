@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`blueprint-produce-post-capture-evidence` turns an admitted ARKit source into
+`python -m blueprint_pipeline.post_capture_evidence_cli` turns an admitted ARKit source into
 the typed prerequisites consumed by `new_site_task_evaluation_run`. It verifies
 native producer artifacts and exact file bytes; callers provide paths to typed
 receipts, not site-specific reshaped JSON.
@@ -31,7 +31,7 @@ the provider job succeeded.
 From the repository root, with the retained ARKitScenes 40958756 bytes present:
 
 ```bash
-blueprint-produce-post-capture-evidence \
+python -m blueprint_pipeline.post_capture_evidence_cli \
   --run-id arkitscenes-40958756-real-post-capture \
   --source-artifact docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json \
   --source-root output/public_dataset_smokes/arkitscenes/40958756 \
@@ -61,7 +61,7 @@ fixture R7 evidence.
 Add only native typed artifacts that have actually been produced:
 
 ```bash
-blueprint-produce-post-capture-evidence \
+python -m blueprint_pipeline.post_capture_evidence_cli \
   --run-id <site-task-run-id> \
   --source-artifact <arkit-proxy-or-raw-v3.2-validation.json> \
   --source-root <retained-source-root> \

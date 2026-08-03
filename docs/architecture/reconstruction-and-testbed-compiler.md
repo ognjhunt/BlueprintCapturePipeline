@@ -217,7 +217,7 @@ one config and one exported Gaussian PLY. Each worker revalidates the entire
 input dataset against the plan before execution.
 
 The workers may run on separate admitted hosts. Their returned directories are
-normalized by `blueprint-finalize-canonical-3dgs`, which rehashes inputs and
+normalized by `python -m blueprint_pipeline.canonical_3dgs_cli finalize`, which rehashes inputs and
 outputs and writes a shared campaign result. The result binds both standard
 PLYs into the existing `appearance_fidelity_qualification.v1` lane; that gate
 requires exact-camera SSIM, PSNR, and LPIPS under site/task-specific thresholds.

@@ -59,6 +59,7 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
+    "src/blueprint_pipeline/teleport_paid_allocator.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
@@ -74,6 +75,7 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/qualification_control_admission.py",
     "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
+    "src/blueprint_pipeline/teleport_paid_allocator.py",
 }
 APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS = {
     (

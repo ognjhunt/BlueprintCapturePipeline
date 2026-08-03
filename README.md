@@ -1000,8 +1000,7 @@ python3 scripts/stage_capture_bundle.py \
 ## Entry Points
 
 The production post-capture producer is
-`python -m blueprint_pipeline.post_capture_evidence_spine` (installed as
-`blueprint-produce-post-capture-evidence`). It verifies ARKit/Raw V3.2 bytes and
+`python -m blueprint_pipeline.post_capture_evidence_cli`. It verifies ARKit/Raw V3.2 bytes and
 connects the existing reconstruction, geometry, automatic-target, placement,
 scene-composition, routing, and policy-admission lanes into one
 content-addressed run. It emits the first scientifically valid abstention when
