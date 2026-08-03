@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/teleport_t1_upload_packet.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "source_capture_digest", "source_proxy_digest", "dataset_class", "source_license", "customer_or_confidential_data_included", "frozen_split_digest", "candidate_dataset_digest", "deterministic_configuration_digest", "upload_zip", "upload_name_to_observation_id", "frozen_provider_configuration", "teleport_provider_terms_review_digest", "hidden_images_included", "hidden_filenames_included", "authority_recorded", "provider_mutations_performed", "required_external_inputs", "post_run_obligations", "proof_effect", "claim_ceiling", "timestamp", "teleport_t1_upload_packet_digest"],
+  "properties": {
+    "schema_version": {"const": "teleport_t1_upload_packet.v1"},
+    "status": {"const": "ready_to_upload_authorization_required"},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "source_proxy_digest": {"$ref": "#/$defs/digest"},
+    "dataset_class": {"const": "rights_cleared_public_dataset"},
+    "source_license": {"type": "string", "minLength": 1},
+    "customer_or_confidential_data_included": {"const": false},
+    "frozen_split_digest": {"$ref": "#/$defs/digest"},
+    "candidate_dataset_digest": {"$ref": "#/$defs/digest"},
+    "deterministic_configuration_digest": {"$ref": "#/$defs/digest"},
+    "upload_zip": {
+      "type": "object",
+      "required": ["relative_path", "digest", "size_bytes", "image_count", "compression"],
+      "properties": {
+        "relative_path": {"type": "string", "pattern": "^[^/\\\\]+\\.zip$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "image_count": {"type": "integer", "minimum": 1},
+        "compression": {"const": "stored_deterministic"}
+      },
+      "additionalProperties": false
+    },
+    "upload_name_to_observation_id": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
+    "teleport_provider_terms_review_digest": {"$ref": "#/$defs/digest"},
+    "hidden_images_included": {"const": false},
+    "hidden_filenames_included": {"const": false},
+    "provider_mutations_performed": {"const": false},
+    "proof_effect": {"const": "local_upload_packet_preparation_only"},
+    "claim_ceiling": {"const": "none"},
+    "teleport_t1_upload_packet_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

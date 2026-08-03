@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/teleport_future_customer_use_constraints.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "reviewed_at", "terms_review_artifact", "constraints", "allowed_current_scope", "proof_effect", "claim_ceiling", "teleport_future_customer_use_constraints_digest"],
+  "properties": {
+    "schema_version": {"const": "teleport_future_customer_use_constraints.v1"},
+    "status": {"const": "blocked_for_customer_or_confidential_capture"},
+    "constraints": {"type": "object", "required": ["training_use_carve_out", "confidential_processing_and_dpa", "retention_and_deletion", "transferable_exportable_model_rights", "derivative_blueprint_site_package_rights", "enterprise_or_on_prem_known_sensor_ingest"]},
+    "allowed_current_scope": {"type": "object", "required": ["dataset_class", "hidden_frames", "confidential_or_customer_capture", "provider_output_claim_ceiling"], "properties": {"dataset_class": {"const": "rights-cleared public candidate images only"}, "hidden_frames": {"const": false}, "confidential_or_customer_capture": {"const": false}, "provider_output_claim_ceiling": {"const": "appearance_reconstruction_candidate"}}},
+    "proof_effect": {"const": "future_customer_provider_admission_constraints_only"},
+    "claim_ceiling": {"const": "none"},
+    "teleport_future_customer_use_constraints_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

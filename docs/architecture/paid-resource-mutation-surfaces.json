@@ -220,7 +220,8 @@
       "required_markers": [
         "cpu-build",
         "model-volume",
-        "gpu-canary"
+        "gpu-canary",
+        "provider-reconstruction"
       ]
     },
     {
@@ -366,6 +367,16 @@
       "required_markers": [
         "require_paid_resource_admission_grant",
         "legacy_unitree_unifolm_runpod_launch_cli_disabled"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/teleport_reconstruction_adapter.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "TELEPORT_RESOURCE_CLASS = \"provider_reconstruction_api\"",
+        "TELEPORT_CREATE_CAPTURE_PATH",
+        "TELEPORT_DELETE_CAPTURE_PATH_TEMPLATE"
       ]
     },
     {
