@@ -18,6 +18,7 @@ from typing import Any, Sequence
 
 from .common import ensure_dir, write_json
 from .groot_oscar_digitalocean_builder import (
+    DETACHED_CPU_BUILD_SUPERVISOR_ENV,
     launch_detached_builder,
     observe_local_machine,
     run_builder,
