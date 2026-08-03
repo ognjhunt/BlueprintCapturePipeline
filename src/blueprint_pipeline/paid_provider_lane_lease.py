@@ -1566,10 +1566,24 @@ def release_transferred_paid_provider_lane_lease(
             current = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {"status": "already_released", "released": False, "reason": reason}
-        if teardown_owner_pid not in {
+        direct_owner = teardown_owner_pid in {
             current.get("owner_pid"),
             current.get("retained_teardown_owner_pid"),
-        }:
+        }
+        recorded_owner = current.get("owner_pid")
+        recorded_retained_owner = current.get("retained_teardown_owner_pid")
+        recoverable_dead_owner = bool(
+            current.get("hostname") == _hostname()
+            and type(recorded_owner) is int
+            and recorded_owner > 0
+            and not _pid_is_alive(recorded_owner)
+            and (
+                type(recorded_retained_owner) is not int
+                or recorded_retained_owner <= 0
+                or not _pid_is_alive(recorded_retained_owner)
+            )
+        )
+        if not direct_owner and not recoverable_dead_owner:
             return {
                 "status": "refused_not_teardown_owner",
                 "released": False,
@@ -1592,6 +1606,7 @@ def release_transferred_paid_provider_lane_lease(
         "released": True,
         "reason": reason,
         "teardown_verified": True,
+        "recovered_dead_owner": bool(recoverable_dead_owner and not direct_owner),
     }
 
 
