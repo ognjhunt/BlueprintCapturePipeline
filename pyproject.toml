@@ -47,6 +47,10 @@ dependencies = [
     # Canonical agent harness for the Task Evaluation Supervisor and its
     # specialized agents. Blueprint contracts remain the proof authority.
     "openai-agents>=0.19.1,<0.20",
+    # Bounded, jittered, allowlisted retries for transport_retry_policy —
+    # the shared read-retry layer behind provider_transport and the job
+    # transport. Mutations are never auto-retried (reconcile-first contract).
+    "tenacity>=9.1.0,<10",
     "uvicorn>=0.30.0",
     # Explicit uvicorn WebSocket protocol backend for hosted runtime sessions.
     "websockets>=12.0",

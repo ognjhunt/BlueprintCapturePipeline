@@ -5028,7 +5028,10 @@ def test_vast_adapter_io_zip_poll_and_validation_edges(
             FakeResponse(b"hello", status=200),
         ]
     )
-    monkeypatch.setattr(vpa.urllib.request, "urlopen", lambda *_, **__: next(responses))
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy",
+        lambda *_, **__: next(responses),
+    )
 
     assert vpa._api_json(method="GET", path="https://example.invalid", api_key="k") == (204, {})
     assert vpa._api_json(method="POST", path="/path", api_key="k", payload={"a": 1}) == (

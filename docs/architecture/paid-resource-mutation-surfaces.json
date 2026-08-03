@@ -39,214 +39,358 @@
   },
   "surfaces": [
     {
-      "path": "src/blueprint_pipeline/paid_resource_allocator.py",
-      "classification": "canonical_allocator",
-      "required_markers": ["cpu-build", "model-volume", "gpu-canary"]
-    },
-    {
-      "path": "src/blueprint_pipeline/reconstruction_vast_worker_smoke.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "run_reconstruction_vast_worker_smoke", "provider.launch("]
-    },
-    {
-      "path": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "run_finetune_job"]
-    },
-    {
-      "path": "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "run_single_episode"]
-    },
-    {
-      "path": "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "run_qualification_session"]
-    },
-    {
-      "path": "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "https://api.digitalocean.com/v2"]
-    },
-    {
-      "path": "src/blueprint_pipeline/groot_oscar_runpod_volume_watchdog.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["claim_transferred_paid_provider_lane_teardown", "watchdog_handoff.json"]
-    },
-    {
-      "path": "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "run_builder", "storage_model_volume_preparation_failed", "runpod_gpu_pods_created"]
-    },
-    {
-      "path": "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "run_runpod_provider_adapter"]
-    },
-    {
-      "path": "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "run_runpod_provider_adapter", "run_openpi_policy_ranking_campaign"]
-    },
-    {
-      "path": "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["build_paid_lane_admission", "require_paid_resource_admission", "run_native_camera_gpu_lane"]
-    },
-    {
-      "path": "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["build_paid_lane_admission", "require_paid_resource_admission", "run_successor_gpu_lane"]
-    },
-    {
-      "path": "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["build_paid_lane_admission", "require_paid_resource_admission", "run_gpu_lane"]
-    },
-    {
-      "path": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["build_paid_lane_admission", "require_paid_resource_admission", "require_paid_resource_admission_grant", "PAID_RESOURCE_CLASS = \"evaluator_api\""]
-    },
-    {
-      "path": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["build_paid_lane_admission", "require_paid_resource_admission", "require_paid_resource_admission_grant", "PAID_RESOURCE_CLASS"]
-    },
-    {
-      "path": "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "build_paid_lane_admission", "run_persistent_session_runpod"]
-    },
-    {
-      "path": "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "build_paid_lane_admission", "run_active_worker"]
-    },
-    {
-      "path": "src/blueprint_pipeline/groot_oscar_runpod_serverless_campaign_io.py",
+      "path": "scripts/postshot_windows_worker/launch_postshot_worker.py",
       "classification": "metered_object_storage_data_plane",
-      "required_markers": ["stage_campaign_inputs", "retrieve_campaign_outputs", "cleanup_campaign_storage", "upload_file"]
-    },
-    {
-      "path": "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "_transport_capability_valid", "legacy_runpod_s3_model_cache_mutation_cli_disabled_use_paid_resource_allocator", "upload_file", "delete_object"]
-    },
-    {
-      "path": "src/blueprint_pipeline/groot_oscar_model_cache_s3_remote_executor.py",
-      "classification": "canonical_adapter",
-      "required_markers": ["_issue_transport_execution_capability", "_upload_and_verify_model_cache_impl", "typed_model_cache_parent_binding_hmac_invalid"]
-    },
-    {
-      "path": "src/blueprint_pipeline/runpod_provider_adapter.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_runpod_provider_mutation_cli_disabled"]
-    },
-    {
-      "path": "src/blueprint_pipeline/runpod_live_execution_proof.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_runpod_live_mutation_cli_disabled"]
-    },
-    {
-      "path": "src/blueprint_pipeline/runpod_wam_async_runner.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_runpod_wam_create_cli_disabled"]
-    },
-    {
-      "path": "src/blueprint_pipeline/unitree_unifolm_runpod_server.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_unitree_unifolm_runpod_launch_cli_disabled"]
-    },
-    {
-      "path": "src/blueprint_pipeline/vast_provider_adapter.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_vast_provider_mutation_cli_disabled"]
-    },
-    {
-      "path": "src/blueprint_pipeline/vast_wam_async_runner.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_vast_wam_create_cli_disabled"]
-    },
-    {
-      "path": "src/blueprint_pipeline/lambda_provider_adapter.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_lambda_provider_mutation_cli_disabled"]
-    },
-    {
-      "path": "src/blueprint_pipeline/gpu_render_providers.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_gpu_render_provider_launch_disabled"]
+      "required_markers": [
+        "legacy_postshot_windows_worker_launch_disabled_use_paid_resource_allocator",
+        "delete_object"
+      ]
     },
     {
       "path": "src/blueprint_pipeline/cloud_vm_render_providers.py",
       "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_gpu_render_provider_launch_disabled"]
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "legacy_gpu_render_provider_launch_disabled"
+      ]
     },
     {
-      "path": "src/blueprint_pipeline/robot_eval_provider_launcher.py",
-      "classification": "hard_disabled_legacy_launcher",
-      "required_markers": ["legacy_provider_command_launcher_disabled_use_paid_resource_allocator"]
+      "path": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission",
+        "run_finetune_job"
+      ]
     },
     {
-      "path": "src/blueprint_pipeline/robot_eval_provider_race_launcher.py",
-      "classification": "hard_disabled_legacy_launcher",
-      "required_markers": ["legacy_provider_race_launcher_disabled_use_paid_resource_allocator"]
+      "path": "src/blueprint_pipeline/gpu_render_providers.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "legacy_gpu_render_provider_launch_disabled"
+      ]
     },
     {
-      "path": "src/blueprint_pipeline/production_gpu_runpod_autoscaler.py",
-      "classification": "hard_disabled_legacy_launcher",
-      "required_markers": ["legacy_runpod_autoscaler_disabled_use_paid_resource_allocator"]
-    },
-    {
-      "path": "scripts/postshot_windows_worker/launch_postshot_worker.py",
-      "classification": "metered_object_storage_data_plane",
-      "required_markers": ["legacy_postshot_windows_worker_launch_disabled_use_paid_resource_allocator", "delete_object"]
-    },
-    {
-      "path": "src/blueprint_pipeline/provider_race.py",
-      "classification": "legacy_orchestrator_no_grant_issuer",
-      "required_markers": ["provider.launch("]
+      "path": "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission",
+        "https://api.digitalocean.com/v2"
+      ]
     },
     {
       "path": "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py",
       "classification": "legacy_orchestrator_no_grant_issuer",
-      "required_markers": ["provider.launch("]
+      "required_markers": [
+        "provider.launch("
+      ]
     },
     {
-      "path": "src/blueprint_pipeline/isaac_particlefield_render_job.py",
-      "classification": "legacy_orchestrator_no_grant_issuer",
-      "required_markers": ["provider.launch("]
+      "path": "src/blueprint_pipeline/groot_oscar_model_cache_s3_remote_executor.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "_issue_transport_execution_capability",
+        "_upload_and_verify_model_cache_impl",
+        "typed_model_cache_parent_binding_hmac_invalid"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission",
+        "run_runpod_provider_adapter"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission",
+        "build_paid_lane_admission",
+        "run_persistent_session_runpod"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "_transport_capability_valid",
+        "legacy_runpod_s3_model_cache_mutation_cli_disabled_use_paid_resource_allocator",
+        "upload_file",
+        "delete_object"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission",
+        "build_paid_lane_admission",
+        "run_active_worker"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_serverless_campaign_io.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": [
+        "stage_campaign_inputs",
+        "retrieve_campaign_outputs",
+        "cleanup_campaign_storage",
+        "upload_file"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission",
+        "run_builder",
+        "storage_model_volume_preparation_failed",
+        "runpod_gpu_pods_created"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_volume_watchdog.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "claim_transferred_paid_provider_lane_teardown",
+        "watchdog_handoff.json"
+      ]
     },
     {
       "path": "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py",
       "classification": "legacy_orchestrator_no_grant_issuer",
-      "required_markers": ["._provider.launch("]
+      "required_markers": [
+        "._provider.launch("
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/isaac_particlefield_render_job.py",
+      "classification": "legacy_orchestrator_no_grant_issuer",
+      "required_markers": [
+        "provider.launch("
+      ]
     },
     {
       "path": "src/blueprint_pipeline/isaac_supervised_startup_runtime.py",
       "classification": "legacy_orchestrator_no_grant_issuer",
-      "required_markers": [".provider.launch("]
+      "required_markers": [
+        ".provider.launch("
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/lambda_provider_adapter.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "legacy_lambda_provider_mutation_cli_disabled"
+      ]
     },
     {
       "path": "src/blueprint_pipeline/live_pipeline_setup.py",
       "classification": "read_only_provider_inventory",
-      "required_markers": ["_digitalocean_read", "https://api.digitalocean.com/v2/droplets"]
+      "required_markers": [
+        "_digitalocean_read",
+        "https://api.digitalocean.com/v2/droplets"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "run_native_camera_gpu_lane"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission",
+        "run_runpod_provider_adapter",
+        "run_openpi_policy_ranking_campaign"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/paid_resource_allocator.py",
+      "classification": "canonical_allocator",
+      "required_markers": [
+        "cpu-build",
+        "model-volume",
+        "gpu-canary"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "run_gpu_lane"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "require_paid_resource_admission_grant",
+        "PAID_RESOURCE_CLASS = \"evaluator_api\""
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "require_paid_resource_admission_grant",
+        "PAID_RESOURCE_CLASS"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "run_successor_gpu_lane"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/production_gpu_runpod_autoscaler.py",
+      "classification": "hard_disabled_legacy_launcher",
+      "required_markers": [
+        "legacy_runpod_autoscaler_disabled_use_paid_resource_allocator"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/provider_race.py",
+      "classification": "legacy_orchestrator_no_grant_issuer",
+      "required_markers": [
+        "provider.launch("
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/reconstruction_vast_worker_smoke.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "run_reconstruction_vast_worker_smoke",
+        "provider.launch("
+      ]
     },
     {
       "path": "src/blueprint_pipeline/robot_eval_provider_input_setup.py",
       "classification": "metered_object_storage_data_plane",
-      "required_markers": ["upload_file"]
+      "required_markers": [
+        "upload_file"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/robot_eval_provider_launcher.py",
+      "classification": "hard_disabled_legacy_launcher",
+      "required_markers": [
+        "legacy_provider_command_launcher_disabled_use_paid_resource_allocator"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/robot_eval_provider_race_launcher.py",
+      "classification": "hard_disabled_legacy_launcher",
+      "required_markers": [
+        "legacy_provider_race_launcher_disabled_use_paid_resource_allocator"
+      ]
     },
     {
       "path": "src/blueprint_pipeline/robot_eval_worker.py",
       "classification": "metered_object_storage_data_plane",
-      "required_markers": ["upload_file"]
+      "required_markers": [
+        "upload_file"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/runpod_live_execution_proof.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "legacy_runpod_live_mutation_cli_disabled"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/runpod_provider_adapter.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "legacy_runpod_provider_mutation_cli_disabled"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/runpod_wam_async_runner.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "legacy_runpod_wam_create_cli_disabled"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission",
+        "run_single_episode"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission",
+        "run_qualification_session"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/skypilot_provisioner.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "skypilot_pilot_launch_disabled"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/unitree_unifolm_runpod_server.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "legacy_unitree_unifolm_runpod_launch_cli_disabled"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/vast_provider_adapter.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "legacy_vast_provider_mutation_cli_disabled"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/vast_wam_async_runner.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "legacy_vast_wam_create_cli_disabled"
+      ]
     },
     {
       "path": "src/blueprint_pipeline/wam_provider_object_store.py",
       "classification": "metered_object_storage_data_plane",
-      "required_markers": ["upload_file", "delete_object"]
+      "required_markers": [
+        "upload_file",
+        "delete_object"
+      ]
     }
   ]
 }

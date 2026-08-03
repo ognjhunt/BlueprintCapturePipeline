@@ -1,0 +1,7 @@
+# Bakeoff arm G1 — Splatfacto (gsplat DefaultStrategy). ISOLATED venv only,
+# created by scripts/setup_splatfacto_venv.sh g1; never the Blueprint runtime.
+# License review: docs/architecture/isolated-component-license-inventory.md.
+# nerfstudio 1.1.5 pins gsplat==1.4.0 exactly; both are stated here so the
+# install fails loudly on any resolver drift.
+nerfstudio==1.1.5
+gsplat==1.4.0
