@@ -75,6 +75,14 @@ def _finite_vector(value: Any, size: int) -> np.ndarray | None:
     return array
 
 
+def _quaternion_angle_rad(left: Sequence[float], right: Sequence[float]) -> float:
+    left_value = np.asarray(left, dtype=float)
+    right_value = np.asarray(right, dtype=float)
+    left_value /= max(float(np.linalg.norm(left_value)), 1e-12)
+    right_value /= max(float(np.linalg.norm(right_value)), 1e-12)
+    return float(2.0 * math.acos(min(1.0, abs(float(np.dot(left_value, right_value))))))
+
+
 def rank_controller_results(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Deterministically rank frozen controllers without breaking exact ties."""
 
@@ -430,6 +438,7 @@ def isaac_sim_6_native_control_backend(
             }
 
         def reset_state() -> dict[str, Any]:
+            contact_start = len(contacts)
             convert = getattr(getattr(robot, "_backend_utils", None), "convert", None)
             device = getattr(robot, "_device", None)
             joint_values = convert(initial_joints, device) if callable(convert) else initial_joints
@@ -447,6 +456,35 @@ def isaac_sim_6_native_control_backend(
                 world.step(render=False)
             row = state()
             row["wrist_camera_world_matrix"] = sync_wrist().tolist()
+            reset_contacts = contacts[contact_start:]
+            contact_pairs = sorted(
+                {
+                    "|".join(sorted((str(item["actor0"]), str(item["actor1"]))))
+                    for item in reset_contacts
+                }
+            )
+            contact_blob = json.dumps(reset_contacts)
+            row["contact_state"] = {
+                "event_count": len(reset_contacts),
+                "pair_signature": contact_pairs,
+                "pair_signature_sha256": canonical_sha256(contact_pairs),
+                "support_contact": (
+                    "SprayCan" in contact_blob and "WarehouseWorkcell" in contact_blob
+                ),
+            }
+            object_position = np.asarray(row["object_position_m"], dtype=float)
+            row["task_state"] = {
+                "inside_tray": bool(
+                    np.all(
+                        np.abs(object_position[:2] - tray_center[:2])
+                        <= tray_dims[:2] / 2.0
+                    )
+                ),
+                "distance_to_tray_xy_m": float(
+                    np.linalg.norm(object_position[:2] - tray_center[:2])
+                ),
+                "success_predicate": False,
+            }
             return row
 
         settle_start = len(contacts)
@@ -562,6 +600,7 @@ def isaac_sim_6_native_control_backend(
                     "joint_positions", "joint_velocities", "object_position_m",
                     "object_orientation_wxyz", "object_linear_velocity_m_s",
                     "object_angular_velocity_rad_s", "wrist_camera_world_matrix",
+                    "contact_state", "task_state",
                 )
             }
             row["cycle"] = cycle
@@ -576,6 +615,24 @@ def isaac_sim_6_native_control_backend(
             float(np.max(np.abs(np.asarray(row["object_position_m"]) - np.asarray(reference["object_position_m"]))))
             for row in reset_rows
         )
+        orientation_dev = max(
+            _quaternion_angle_rad(
+                row["object_orientation_wxyz"], reference["object_orientation_wxyz"]
+            )
+            for row in reset_rows
+        )
+        joint_velocity_max = max(
+            float(np.max(np.abs(np.asarray(row["joint_velocities"]))))
+            for row in reset_rows
+        )
+        object_linear_velocity_max = max(
+            float(np.linalg.norm(row["object_linear_velocity_m_s"]))
+            for row in reset_rows
+        )
+        object_angular_velocity_max = max(
+            float(np.linalg.norm(row["object_angular_velocity_rad_s"]))
+            for row in reset_rows
+        )
         camera_dev = max(
             float(
                 np.max(
@@ -587,13 +644,70 @@ def isaac_sim_6_native_control_backend(
             )
             for row in reset_rows
         )
+        contact_event_dev = max(
+            abs(
+                int(row["contact_state"]["event_count"])
+                - int(reference["contact_state"]["event_count"])
+            )
+            for row in reset_rows
+        )
+        contact_signature_equal = all(
+            row["contact_state"]["pair_signature_sha256"]
+            == reference["contact_state"]["pair_signature_sha256"]
+            for row in reset_rows
+        )
+        support_contact_every_cycle = all(
+            row["contact_state"]["support_contact"] is True for row in reset_rows
+        )
+        task_distance_dev = max(
+            abs(
+                float(row["task_state"]["distance_to_tray_xy_m"])
+                - float(reference["task_state"]["distance_to_tray_xy_m"])
+            )
+            for row in reset_rows
+        )
+        task_state_equal = all(
+            row["task_state"]["inside_tray"] == reference["task_state"]["inside_tray"]
+            and row["task_state"]["success_predicate"]
+            == reference["task_state"]["success_predicate"]
+            for row in reset_rows
+        )
+        reset_contract = spec["reset_contract"]
+        within_tolerances = bool(
+            joint_dev <= float(reset_contract["joint_position_tolerance_rad"])
+            and joint_velocity_max
+            <= float(reset_contract["joint_velocity_tolerance_rad_s"])
+            and object_dev <= float(reset_contract["object_position_tolerance_m"])
+            and orientation_dev
+            <= float(reset_contract["object_orientation_tolerance_rad"])
+            and object_linear_velocity_max
+            <= float(reset_contract["object_velocity_tolerance_m_s"])
+            and object_angular_velocity_max
+            <= float(reset_contract["object_angular_velocity_tolerance_rad_s"])
+            and camera_dev <= float(reset_contract["camera_transform_tolerance_m"])
+            and contact_event_dev
+            <= int(reset_contract["contact_event_count_tolerance"])
+            and contact_signature_equal
+            and support_contact_every_cycle
+            and task_distance_dev <= float(reset_contract["task_state_tolerance_m"])
+            and task_state_equal
+        )
         reset_evidence = {
             "cycle_count": len(reset_rows),
             "state_hashes": [row["state_sha256"] for row in reset_rows],
             "max_joint_position_deviation_rad": joint_dev,
+            "max_joint_velocity_rad_s": joint_velocity_max,
             "max_object_position_deviation_m": object_dev,
+            "max_object_orientation_deviation_rad": orientation_dev,
+            "max_object_linear_velocity_m_s": object_linear_velocity_max,
+            "max_object_angular_velocity_rad_s": object_angular_velocity_max,
             "max_camera_transform_deviation": camera_dev,
-            "within_tolerances": joint_dev <= float(spec["reset_contract"]["joint_position_tolerance_rad"]) and object_dev <= float(spec["reset_contract"]["object_position_tolerance_m"]) and camera_dev <= float(spec["reset_contract"]["camera_transform_tolerance_m"]),
+            "max_contact_event_count_deviation": contact_event_dev,
+            "contact_signature_equal": contact_signature_equal,
+            "support_contact_every_cycle": support_contact_every_cycle,
+            "max_task_state_distance_deviation_m": task_distance_dev,
+            "task_state_equal": task_state_equal,
+            "within_tolerances": within_tolerances,
             "cycles": reset_rows,
         }
         write_json(trace_dir / "reset_evidence.json", reset_evidence)

@@ -36,10 +36,14 @@
     "settle_steps_after_reset": 30,
     "joint_positions": [0.2897, 0.50732, -0.140016, -2.176, -0.0310497, 2.51592, -0.49251, 0.04, 0.04],
     "joint_position_tolerance_rad": 0.002,
+    "joint_velocity_tolerance_rad_s": 0.02,
     "object_position_tolerance_m": 0.002,
     "object_orientation_tolerance_rad": 0.005,
     "object_velocity_tolerance_m_s": 0.02,
-    "camera_transform_tolerance_m": 0.0001
+    "object_angular_velocity_tolerance_rad_s": 0.1,
+    "camera_transform_tolerance_m": 0.0001,
+    "contact_event_count_tolerance": 2,
+    "task_state_tolerance_m": 0.002
   },
   "task": {
     "instruction": "Pick up the spray can and place it inside the marked tray.",
@@ -134,5 +138,5 @@
   "claim_label": "NVIDIA-authored SimReady control scene; native Isaac physics; scripted controllers; single workcell; simulation-only.",
   "rankings_or_policy_outcomes_accessed": false,
   "paid_gpu_execution_admitted": false,
-  "spec_sha256": "c11b07306e6354dc027be0deb72341f74454e805a0fd688ccca3413f5e3f2509"
+  "spec_sha256": "14e35751a4d82d504ad384ce30ece7db30ecde5628589fff29ed4c8f9666c9cb"
 }
