@@ -145,6 +145,15 @@ class _Provider:
         self.launched = True
         return {"status": "launched", "instance_id": "42"}
 
+    def inspect(self, instance_id):
+        return {
+            "status": "observed",
+            "instance_id": instance_id,
+            "actual_status": "running" if self.launched else "stopped",
+            "api_confirmed": True,
+            "provider_absence_confirmed": False,
+        }
+
     def terminate(self, instance_id):
         self.launched = False
         return {"status": "terminated", "instance_id": instance_id}
@@ -322,6 +331,44 @@ def test_canary_times_out_once_then_tears_down_without_retry(tmp_path: Path) -> 
 
     assert result["status"] == "failed"
     assert result["blockers"] == ["measurement_chrono_dem_output_timeout"]
+    assert result["provider_zero_verified"] is True
+    assert result["provider_mutations_performed"] == 2
+    assert len(provider.requests) == 1
+    assert provider.launched is False
+
+
+def test_canary_stops_polling_when_provider_is_terminal_without_output(tmp_path: Path) -> None:
+    class _TerminalProvider(_Provider):
+        def inspect(self, instance_id):
+            return {
+                "status": "absent",
+                "instance_id": instance_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": True,
+            }
+
+    provider = _TerminalProvider()
+    times = iter([1000.0, 1001.0, 1002.0])
+    result = run_measurement_chrono_dem_vast_canary(
+        bound_request=_bound_request(),
+        bundle_receipt=_receipt(),
+        preflight=_preflight(),
+        job_dir=tmp_path / "canary",
+        input_bundle_get_url=INPUT_URL,
+        output_put_url=PUT_URL,
+        output_get_url=GET_URL,
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=lambda _url: (_ for _ in ()).throw(FileNotFoundError("not-ready")),
+        sleeper=lambda _seconds: pytest.fail("terminal provider must not sleep"),
+        clock=lambda: next(times),
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+
+    assert result["status"] == "failed"
+    assert result["blockers"] == [
+        "measurement_chrono_dem_provider_terminal_without_output"
+    ]
     assert result["provider_zero_verified"] is True
     assert result["provider_mutations_performed"] == 2
     assert len(provider.requests) == 1
