@@ -244,6 +244,35 @@ synthetic development regression, not characterized-material DEM,
 Chrono::Granular GPU evidence, pouring/tool interaction, physical accuracy,
 R5, R6, or R7.
 
+### Chrono::DEM exact-source CUDA development canary
+
+The CUDA lane is deliberately separate from the PyChrono NSC worker. It builds
+the exact Chrono 10.0.0 peeled commit with `CH_ENABLE_MODULE_DEM=ON` and runs two
+public synthetic 27-sphere cases. First compile a bundle from a clean immutable
+commit:
+
+```bash
+python -m blueprint_pipeline.measurement_chrono_dem_vast_bundle \
+  --repo-root . \
+  --corpus tests/fixtures/measurement_chrono_dem_cuda_v1/corpus.json \
+  --qualification-split-digest sha256:<64-hex-preregistered-heldout-split> \
+  --controller-scope-digest sha256:<64-hex-controller-scope> \
+  --bundle-output /path/to/chrono-dem-input.zip \
+  --receipt-output /path/to/chrono-dem-input-receipt.json
+```
+
+The compiler refuses a dirty checkout and records no spend authority. Paid
+execution must use `python -m blueprint_pipeline.paid_resource_allocator
+gpu-canary` with operation `measurement_chrono_dem_canary`, the exact runtime
+release, bundle receipt, sensitive URL files, a live independent watchdog using
+prefix `blueprint-measurement-chrono-dem-`, retry cap zero, and explicit spend
+and hard-TTL bounds. Provider adapters and the canary module are not launchers.
+
+A returned result may establish only the digest-bound synthetic CUDA
+development run and exact replay. It cannot establish characterized-material
+accuracy, pouring or tool interaction, Q-GRAN, R5-R7, production routing,
+physical success, deployment, or safety.
+
 ## SAPIEN PhysX rigid-contact development worker
 
 Install the explicit physics-development extra with the frozen environment:
