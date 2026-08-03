@@ -7196,7 +7196,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:d4f76bc0b75e90b80962c3918a097b4014802a7b139d7f5a6404be9351c3d5eb",
+              "sha256": "sha256:1f269e9fc02d759297909caf14199022e214ad070de148f5542003960d9469d4",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
