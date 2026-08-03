@@ -35,6 +35,8 @@ blueprint-produce-post-capture-evidence \
   --run-id arkitscenes-40958756-real-post-capture \
   --source-artifact docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json \
   --source-root output/public_dataset_smokes/arkitscenes/40958756 \
+  --depth-surface-result output/public_dataset_smokes/arkitscenes/40958756/compiled/arkitscenes_proxy_c38599abc46a0e27/observed_surface_proxy_v1/arkit_depth_surface_proxy_result.json \
+  --depth-surface-root output/public_dataset_smokes/arkitscenes/40958756 \
   --output-root output/post_capture_evidence_runs
 ```
 
@@ -47,8 +49,10 @@ smallest missing measurement: native_3dgs_appearance_missing
 
 That is an expected exit status of `2`, not a command failure. The retained
 content-addressed result is under
-`docs/evidence/arkitscenes_40958756_post_capture_2f8e5921/`. It binds the six
-real source files (including `40958756.mov`) and explicitly remains
+`docs/evidence/arkitscenes_40958756_post_capture_bda23f88/`. It binds the six
+real source files (including `40958756.mov`) plus the retained 66 MB observed
+depth surface. Its explicit unsupported-region record remains unfilled and its
+metric/collision state remains unqualified. The run explicitly remains
 provider-derived public-dataset support, never Blueprint Raw Contract V3.2 or
 fixture R7 evidence.
 
