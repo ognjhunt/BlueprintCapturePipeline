@@ -372,6 +372,8 @@ instead of launching anything:
 blueprint-request-canonical-3dgs-execution \
   --plan /derived/<capture-id>/canonical_3dgs_execution_plan.json \
   --transport-receipt /derived/<capture-id>/canonical_3dgs_transport_receipt.json \
+  --worker-wheel-digest sha256:<64-hex> \
+  --worker-wheel-filename blueprint_capture_pipeline-2.0.0-py3-none-any.whl \
   --timestamp <UTC-ISO8601> \
   --output /derived/<capture-id>/canonical_3dgs_execution_request.json
 ```

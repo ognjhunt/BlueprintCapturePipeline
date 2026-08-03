@@ -794,7 +794,11 @@ def test_execution_request_names_missing_authority_without_a_winner(tmp_path: Pa
         receipt_path=tmp_path / "transport.json",
     )
     request = build_canonical_3dgs_execution_request(
-        plan=plan, transport_receipt=transport, timestamp="2026-08-03T05:00:00Z"
+        plan=plan,
+        transport_receipt=transport,
+        worker_wheel_digest=_sha("9"),
+        worker_wheel_filename="blueprint_capture_pipeline-2.0.0-py3-none-any.whl",
+        timestamp="2026-08-03T05:00:00Z",
     )
     schema = json.loads(
         (Path(__file__).parents[1] / "docs/schemas/canonical_3dgs_execution_request.v1.schema.json").read_text()
