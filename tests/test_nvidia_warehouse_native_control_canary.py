@@ -7,10 +7,13 @@ from pathlib import Path
 import blueprint_pipeline.nvidia_warehouse_native_control_canary as control
 from blueprint_pipeline.nvidia_warehouse_native_control_canary import (
     CLAIM_LABEL,
+    _contact_impulse_magnitude,
     _validated_spec,
     rank_controller_results,
     run_native_control_canary,
 )
+
+import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +67,10 @@ def test_ranking_preserves_deterministic_exact_ties() -> None:
 
     assert [row["controller_id"] for row in ranked] == ["a", "b"]
     assert [row["rank"] for row in ranked] == [1, 1]
+
+
+def test_contact_impulse_uses_physx_float3_magnitude() -> None:
+    assert _contact_impulse_magnitude(np.asarray([3.0, 4.0, 0.0])) == 5.0
 
 
 def test_injected_native_backend_emits_result_envelope_and_integrity_index(

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import traceback
 import urllib.parse
 import urllib.request
 import zipfile
@@ -481,6 +482,19 @@ def _safe_failure_code(exc: BaseException) -> str | None:
     return value if re.fullmatch(r"[A-Za-z0-9_:,.-]+", value) else None
 
 
+def _safe_traceback_frames(exc: BaseException) -> list[dict[str, Any]]:
+    """Preserve failure location without exception text, source, locals, or host paths."""
+
+    return [
+        {
+            "filename": Path(frame.filename).name,
+            "line_number": int(frame.lineno),
+            "function": str(frame.name),
+        }
+        for frame in traceback.extract_tb(exc.__traceback__)[-12:]
+    ]
+
+
 def _write_worker_failure_output(
     *,
     output_dir: Path,
@@ -488,6 +502,7 @@ def _write_worker_failure_output(
     error_type: str,
     missing_module: str | None = None,
     failure_code: str | None = None,
+    traceback_frames: Sequence[Mapping[str, Any]] = (),
     transport_diagnostics: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -501,6 +516,7 @@ def _write_worker_failure_output(
         "error_type": str(error_type),
         "missing_module": missing_module,
         "failure_code": failure_code,
+        "traceback_frames": [dict(frame) for frame in traceback_frames],
         "transport_diagnostics": dict(transport_diagnostics or {}),
         "failure_before_frames": True,
         "label_free": True,
@@ -523,6 +539,7 @@ def _write_worker_failure_output(
             "error_type": str(error_type),
             "missing_module": missing_module,
             "failure_code": failure_code,
+            "traceback_frames": [dict(frame) for frame in traceback_frames],
             "transport_diagnostics": dict(transport_diagnostics or {}),
             "failure_before_frames": True,
             "media": [
@@ -623,6 +640,7 @@ def run_native_camera_gpu_worker(
             error_type=type(exc).__name__,
             missing_module=_safe_missing_module(exc),
             failure_code=_safe_failure_code(exc),
+            traceback_frames=_safe_traceback_frames(exc),
             transport_diagnostics={
                 "policy": "bounded_checksum_verified_retry",
                 "maximum_attempts": MAX_INPUT_DOWNLOAD_ATTEMPTS,

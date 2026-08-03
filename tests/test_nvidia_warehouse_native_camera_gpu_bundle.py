@@ -379,6 +379,11 @@ def test_gpu_worker_uploads_hash_bound_failure_media_and_exits_transport_cleanly
     assert validation["canary_status"] == "failed"
     assert validation["canary_result"]["failure_evidence"]["error_type"] == "TypeError"
     assert validation["canary_result"]["failure_evidence"]["failure_code"] is None
+    frames = validation["canary_result"]["failure_evidence"]["traceback_frames"]
+    assert frames[-1]["function"] == "runner"
+    assert frames[-1]["filename"] == Path(__file__).name
+    assert isinstance(frames[-1]["line_number"], int)
+    assert "live Isaac SimulationApp shim" not in json.dumps(validation)
     assert validation["canary_result"]["claim_boundary"]["policy_wam_loop_proven"] is False
 
 

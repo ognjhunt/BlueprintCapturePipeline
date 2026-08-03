@@ -76,6 +76,15 @@ def _finite_vector(value: Any, size: int) -> np.ndarray | None:
     return array
 
 
+def _contact_impulse_magnitude(value: Any) -> float:
+    """Return the PhysX contact impulse magnitude from its float3 payload."""
+
+    array = _backend_array_to_numpy(value).astype(float).reshape(-1)
+    if array.shape != (3,) or not np.isfinite(array).all():
+        raise ValueError("native_control_contact_impulse_invalid")
+    return float(np.linalg.norm(array))
+
+
 def _quaternion_angle_rad(left: Sequence[float], right: Sequence[float]) -> float:
     left_value = np.asarray(left, dtype=float)
     right_value = np.asarray(right, dtype=float)
@@ -430,9 +439,9 @@ def isaac_sim_6_native_control_backend(
                 for index in range(int(header.contact_data_offset), int(header.contact_data_offset + header.num_contact_data)):
                     point = data[index]
                     separation = float(getattr(point, "separation", 0.0))
-                    impulse = float(getattr(point, "impulse", 0.0))
+                    impulse = _contact_impulse_magnitude(getattr(point, "impulse", ()))
                     minimum_separation = separation if minimum_separation is None else min(minimum_separation, separation)
-                    maximum_impulse = max(maximum_impulse, abs(impulse))
+                    maximum_impulse = max(maximum_impulse, impulse)
                 contacts.append({
                     "physics_step": step,
                     "actor0": actor0,
