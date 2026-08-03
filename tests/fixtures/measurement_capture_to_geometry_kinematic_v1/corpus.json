@@ -1,0 +1,51 @@
+{
+  "schema_version": "capture_to_geometry_kinematic_development_corpus.v1",
+  "corpus_id": "blueprint-planar-reach-discrete-collision-development-v1",
+  "description": "Synthetic two-link planar reachability and finite-sample obstacle cases for Q-KIN development plumbing; not captured-site, continuous-collision, or physical evidence.",
+  "lane": "planar_reach_discrete_collision",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "captured_mesh_included": false,
+  "captured_registration_included": false,
+  "physical_measurements_included": false,
+  "qualification_labels_included": false,
+  "continuous_collision_evaluated": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "protocol_family": "planar_reach_discrete_collision",
+    "length_unit": "meters",
+    "angle_unit": "radians",
+    "link_lengths_m": [0.6, 0.4],
+    "link_half_width_m": 0.025,
+    "joint_limits_rad": [[-3.14, 3.14], [-3.14, 3.14]],
+    "home_joint_positions_rad": [0.0, 0.0],
+    "obstacle_half_extents_xy_m": [0.08, 0.08],
+    "path_sample_count": 101,
+    "elbow_branch": "up",
+    "clearance_unsafe_threshold_m": 0.01,
+    "target_tolerance_m": 1e-9
+  },
+  "cases": [
+    {
+      "case_id": "reachable-clear-development-001",
+      "target_xy_m": [0.6, 0.4],
+      "obstacle_center_xy_m": [1.5, 1.5],
+      "expected_development_class": "reachable_clear"
+    },
+    {
+      "case_id": "reachable-discrete-collision-development-002",
+      "target_xy_m": [0.6, 0.4],
+      "obstacle_center_xy_m": [0.45, 0.07],
+      "expected_development_class": "reachable_discrete_collision"
+    },
+    {
+      "case_id": "unreachable-development-003",
+      "target_xy_m": [1.2, 0.0],
+      "obstacle_center_xy_m": [1.5, 1.5],
+      "expected_development_class": "unreachable"
+    }
+  ]
+}

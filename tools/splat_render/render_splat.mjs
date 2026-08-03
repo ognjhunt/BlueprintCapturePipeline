@@ -23,7 +23,9 @@ function arg(name, def = null) {
   return i !== -1 && i + 1 < process.argv.length ? process.argv[i + 1] : def;
 }
 
-const splatPath = path.resolve(arg("splat"));
+const splatArg = arg("splat", null);
+const compositionArg = arg("composition", null);
+const splatPath = splatArg ? path.resolve(splatArg) : null;
 const outDir = path.resolve(arg("out"));
 const camerasArg = arg("cameras", null);
 const overlayArg = arg("overlay", null);
@@ -41,11 +43,40 @@ if (!["swiftshader", "metal"].includes(graphicsBackend)) {
   process.exit(2);
 }
 
-if (!splatPath || !outDir) {
-  console.error("usage: node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N]");
+if ((!splatPath && !compositionArg) || (splatPath && compositionArg) || !outDir) {
+  console.error("usage: node render_splat.mjs (--splat <file> | --composition <json>) --out <dir> [--cameras <json>] [--width N --height N]");
   process.exit(2);
 }
 fs.mkdirSync(outDir, { recursive: true });
+
+let composition = null;
+let compositeBackgroundPath = null;
+const compositeObjectPaths = new Map();
+if (compositionArg) {
+  composition = JSON.parse(fs.readFileSync(path.resolve(compositionArg), "utf8"));
+  if (composition.schema_version !== "dynamic_splat_render_request.v1") {
+    console.error("dynamic_splat_render_request_schema_invalid");
+    process.exit(2);
+  }
+  compositeBackgroundPath = path.resolve(String(composition.background?.path || ""));
+  if (!fs.existsSync(compositeBackgroundPath)) {
+    console.error("dynamic_splat_background_missing");
+    process.exit(2);
+  }
+  if (!Array.isArray(composition.objects) || composition.objects.length === 0) {
+    console.error("dynamic_splat_objects_missing");
+    process.exit(2);
+  }
+  for (const item of composition.objects) {
+    const objectId = String(item.object_id || "");
+    const objectPath = path.resolve(String(item.path || ""));
+    if (!objectId || compositeObjectPaths.has(objectId) || !fs.existsSync(objectPath)) {
+      console.error("dynamic_splat_object_invalid_or_duplicate");
+      process.exit(2);
+    }
+    compositeObjectPaths.set(objectId, objectPath);
+  }
+}
 
 // Vector helpers (scene up = +Y; Spark places splats in three.js Y-up world space).
 const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -107,10 +138,25 @@ function withTimeout(promise, timeoutMs, label) {
 
 async function main() {
   const blockers = [];
-  // static file server: tool dir + the splat at /splat
+  // Static file server: tool dir plus an explicit allowlist of splat assets.
   const server = http.createServer((req, res) => {
     const urlPath = decodeURIComponent((req.url || "/").split("?")[0]);
-    const file = urlPath === "/splat" ? splatPath : path.join(__dirname, urlPath);
+    let file;
+    if (urlPath === "/splat" && splatPath) {
+      file = splatPath;
+    } else if (urlPath === "/composite/background" && compositeBackgroundPath) {
+      file = compositeBackgroundPath;
+    } else if (urlPath.startsWith("/composite/object/")) {
+      const objectId = urlPath.slice("/composite/object/".length);
+      file = compositeObjectPaths.get(objectId);
+    } else {
+      file = path.join(__dirname, urlPath);
+    }
+    if (!file) {
+      res.writeHead(404);
+      res.end("not found");
+      return;
+    }
     fs.readFile(file, (err, data) => {
       if (err) {
         res.writeHead(404);
@@ -160,19 +206,54 @@ async function main() {
     overlay: null,
     blockers,
     page_errors: pageErrors,
+    composition: null,
   };
   try {
     await page.goto(`${base}/harness.html`, { waitUntil: "load", timeout: 60000 });
     await page.waitForFunction("window.__sparkReady===true", { timeout: 60000 });
 
-    const bounds = await withTimeout(
-      page.evaluate(
-        async ({ u, w, h, bgc }) => await window.BlueprintSplat.load(u, w, h, bgc),
-        { u: `${base}/splat`, w: width, h: height, bgc: bg },
-      ),
-      loadTimeoutMs,
-      "splat_load",
-    );
+    let bounds;
+    if (composition) {
+      const objects = composition.objects.map((item) => ({
+        object_id: String(item.object_id),
+        url: `${base}/composite/object/${encodeURIComponent(String(item.object_id))}`,
+        T_world_object: item.T_world_object,
+      }));
+      bounds = await withTimeout(
+        page.evaluate(
+          async ({ backgroundUrl, objects: objectRows, w, h, bgc }) =>
+            await window.BlueprintSplat.loadComposite(backgroundUrl, objectRows, w, h, bgc),
+          {
+            backgroundUrl: `${base}/composite/background`,
+            objects,
+            w: width,
+            h: height,
+            bgc: bg,
+          },
+        ),
+        loadTimeoutMs,
+        "composite_splat_load",
+      );
+      result.composition = bounds?.composition || null;
+      const expected = [...(composition.expected_object_ids || [])].map(String).sort();
+      const observed = [...(result.composition?.object_ids || [])].map(String).sort();
+      if (
+        composition.require_exactly_one_visual_instance_per_object !== true
+        || result.composition?.exactly_one_visual_instance_per_object !== true
+        || JSON.stringify(expected) !== JSON.stringify(observed)
+      ) {
+        blockers.push("composite_exactly_once_invariant_failed");
+      }
+    } else {
+      bounds = await withTimeout(
+        page.evaluate(
+          async ({ u, w, h, bgc }) => await window.BlueprintSplat.load(u, w, h, bgc),
+          { u: `${base}/splat`, w: width, h: height, bgc: bg },
+        ),
+        loadTimeoutMs,
+        "splat_load",
+      );
+    }
     result.bounds = bounds;
     if (!bounds || !isFinite(bounds.radius) || bounds.radius <= 0) {
       blockers.push("splat_bounds_invalid_after_load");

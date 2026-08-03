@@ -1,0 +1,70 @@
+{
+  "schema_version": "capture_to_deformation_granular_chrono_development_corpus.v1",
+  "corpus_id": "blueprint-chrono-nsc-spherical-granular-development-v1",
+  "description": "Synthetic PyChrono NSC monodisperse rigid-sphere column-collapse cases for Q-GRAN adapter development; not Chrono Granular GPU, characterized material, pouring, or physical evidence.",
+  "lane": "granular",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_measurements_included": false,
+  "physical_material_characterization_included": false,
+  "qualification_labels_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "adapter_protocol": "chrono_nsc_spherical_particle_column_collapse.v1",
+    "length_unit": "meters",
+    "mass_unit": "kilograms",
+    "time_unit": "seconds",
+    "particle_shape": "sphere",
+    "particle_size_distribution": "monodisperse",
+    "cohesion_model": "none",
+    "material_characterization_scope": "synthetic_parameters_only",
+    "contact_method": "nonsmooth_contact",
+    "collision_system": "bullet",
+    "count_x": 3,
+    "count_y": 3,
+    "count_z": 3,
+    "spacing_factor": 2.05,
+    "vertical_spacing_factor": 2.05,
+    "layer_stagger_x_fraction": 0.48,
+    "layer_stagger_y_fraction": 0.31,
+    "initial_ground_clearance_m": 0.001,
+    "ground_height_m": 0.0,
+    "gravity_m_s2": [0.0, 0.0, -9.81],
+    "rolling_friction": 0.01,
+    "spinning_friction": 0.01,
+    "restitution": 0.0,
+    "duration_s": 2.0,
+    "timestep_s": 0.001,
+    "settle_speed_threshold_m_s": 0.02,
+    "minimum_settled_fraction": 0.95,
+    "minimum_spread_ratio": 1.1,
+    "maximum_spread_ratio": 3.0,
+    "maximum_penetration_m": 0.003,
+    "maximum_normal_contact_force_n": 35.0
+  },
+  "metric_definitions": {
+    "state_trajectory": "Final horizontal particle-span divided by initial span for the unconfined NSC trajectory.",
+    "topology_contact": "Whether both particle-ground and interparticle contacts occurred.",
+    "force": "Maximum Chrono-reported contact-force magnitude in newtons.",
+    "task_outcome": "Whether spread, settling, penetration, contact-scope, force, and replay envelopes remained satisfied."
+  },
+  "cases": [
+    {
+      "case_id": "chrono-nsc-spherical-granular-development-001",
+      "synthetic_material_id": "low-friction-small-spheres",
+      "particle_radius_m": 0.012,
+      "particle_density_kg_m3": 1200.0,
+      "contact_friction": 0.2
+    },
+    {
+      "case_id": "chrono-nsc-spherical-granular-development-002",
+      "synthetic_material_id": "high-friction-large-spheres",
+      "particle_radius_m": 0.016,
+      "particle_density_kg_m3": 1600.0,
+      "contact_friction": 0.8
+    }
+  ]
+}

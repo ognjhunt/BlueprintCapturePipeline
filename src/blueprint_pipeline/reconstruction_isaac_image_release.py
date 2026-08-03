@@ -69,6 +69,8 @@ def build_reconstruction_isaac_image_release(
         or _DIGEST.fullmatch(str(identity.get("source_layer_digest") or "")) is None
     ):
         blockers.append("reconstruction_isaac_image_source_overlay_lineage_invalid")
+    if identity.get("isaac_sim_version") != "6.0.1":
+        blockers.append("reconstruction_isaac_image_isaac_version_invalid")
     release = {
         "schema_version": SCHEMA_VERSION,
         "status": "passed" if not blockers else "blocked",
@@ -79,6 +81,7 @@ def build_reconstruction_isaac_image_release(
         "runnable_platform": manifest.get("runnable_platform"),
         "worker_image_family": identity.get("worker_image_family"),
         "isaac_sim_major_version": identity.get("isaac_sim_major_version"),
+        "isaac_sim_version": identity.get("isaac_sim_version"),
         "image_manifest": manifest,
         "image_manifest_digest": canonical_digest(manifest),
         "build_receipt_status": "registry_config_exact_source_verified",

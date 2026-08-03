@@ -478,7 +478,7 @@ opt-in and must be covered by the pre-spend estimate. The estimate includes
 every sequential startup attempt plus the render budget.
 
 For unattended RunPod Isaac runs, do not rely on the raw
-`nvcr.io/nvidia/isaac-sim:6.0.0` base image. The provider request now blocks
+`nvcr.io/nvidia/isaac-sim:6.0.1` base image. The provider request now blocks
 before spend with `prebuilt_isaac_eval_worker_image_ref_missing` unless the
 image ref is configured directly, via
 `BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE`, or via

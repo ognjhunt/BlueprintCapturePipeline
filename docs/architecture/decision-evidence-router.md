@@ -31,6 +31,14 @@ Maintained Site-Task Testbed + Decision/Evidence Request
          new testbed version + narrow calibration
 ```
 
+For task/site questions requiring physics, sensors, materials, contact, or
+claim-ceiling control, the router invokes the additive measurement kernel
+documented in [task-site-measurement-routing.md](task-site-measurement-routing.md).
+That kernel hard-filters complete method capability profiles against validated
+site evidence and exact, signature-verified qualification scope before any
+ranking. It may return a qualified composite route or abstention; its decision
+is embedded in the claim plan and remains non-executable.
+
 The router minimizes evidence acquisition cost, delay cost, and expected
 decision loss subject to claim-specific false-safe limits, minimum coverage,
 rights/privacy constraints, exact applicability, budget/latency,

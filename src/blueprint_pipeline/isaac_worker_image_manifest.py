@@ -156,6 +156,7 @@ def derive_worker_build_identity(
         "BLUEPRINT_WORKER_SOURCE_MANIFEST_SHA256", ""
     ).strip()
     source_layer_digest = env.get("BLUEPRINT_WORKER_SOURCE_LAYER_DIGEST", "").strip()
+    isaac_version = env.get("BLUEPRINT_ISAAC_SIM_VERSION", "").strip()
     try:
         isaac_major = int(isaac_major_raw)
     except ValueError:
@@ -190,6 +191,7 @@ def derive_worker_build_identity(
         "source_manifest_sha256": source_manifest_sha256 or None,
         "source_layer_digest": source_layer_digest or None,
         "source_layer_matches_last_registry_layer": None,
+        "isaac_sim_version": isaac_version or None,
         "identity_source": "immutable_registry_image_config_environment",
     }
 

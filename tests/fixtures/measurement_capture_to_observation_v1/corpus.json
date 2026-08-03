@@ -1,0 +1,94 @@
+{
+  "schema_version": "capture_to_observation_development_corpus.v1",
+  "corpus_id": "blueprint-opencv-calibrated-observation-development-v1",
+  "description": "Synthetic non-coplanar calibration targets for exercising the public development protocol; not captured physical evidence.",
+  "development_only": true,
+  "synthetic_fixture": true,
+  "held_out": false,
+  "physical_measurements_included": false,
+  "qualification_labels_included": false,
+  "r5_evidence": false,
+  "r6_decision": false,
+  "r7_admission": false,
+  "shared_operating_point": {
+    "adapter_protocol": "opencv_calibrated_observation.v1",
+    "coordinate_convention": "opencv_x_right_y_down_z_forward",
+    "length_unit": "meters",
+    "image_unit": "pixels",
+    "timestamp_unit": "nanoseconds",
+    "image_size_px": [640, 480],
+    "camera_matrix": [
+      [800.0, 0.0, 320.0],
+      [0.0, 800.0, 240.0],
+      [0.0, 0.0, 1.0]
+    ],
+    "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
+    "object_points_m": [
+      [-0.15, -0.1, 0.0],
+      [0.15, -0.1, 0.0],
+      [0.15, 0.1, 0.0],
+      [-0.15, 0.1, 0.0],
+      [-0.12, -0.08, 0.12],
+      [0.12, -0.08, 0.12],
+      [0.12, 0.08, 0.12],
+      [-0.12, 0.08, 0.12]
+    ],
+    "unsafe_thresholds": {
+      "maximum_reprojection_rmse_px": 1.0,
+      "maximum_missing_depth_fraction": 0.3,
+      "maximum_temporal_error_ms": 5.0
+    }
+  },
+  "cases": [
+    {
+      "case_id": "calibrated-observation-development-001",
+      "observed_image_points_px": [
+        [234.02035359117903, 163.78996388718863],
+        [433.68071656406545, 169.03310415503333],
+        [430.0240056059892, 300.8901511106515],
+        [231.63278787999445, 298.40435177734844],
+        [254.3303130754853, 179.88646748583503],
+        [399.4812653862714, 183.36519662161584],
+        [397.00271013055686, 279.6810244082766],
+        [252.48347912529795, 277.43587006249743]
+      ],
+      "depth_samples_m": [
+        1.183031334,
+        1.207144035,
+        1.216968666,
+        null,
+        1.305891481,
+        1.325181642,
+        1.333041347,
+        1.313751186
+      ],
+      "capture_timestamp_ns": 1785650000000000000,
+      "reference_timestamp_ns": 1785650000002000000
+    },
+    {
+      "case_id": "calibrated-observation-development-002",
+      "observed_image_points_px": [
+        [221.16226403740458, 194.54415866642827],
+        [385.8627514118003, 192.02102423711742],
+        [387.08033622490797, 302.98996494002046],
+        [221.71247836812407, 304.16930216773466],
+        [247.43499025889662, 210.25446241867309],
+        [369.2396958853774, 208.53942098148252],
+        [370.0746625150372, 290.4780769650359],
+        [247.94315745227564, 291.32366657183917]
+      ],
+      "depth_samples_m": [
+        1.46298852,
+        null,
+        1.43701148,
+        1.454935611,
+        1.580078954,
+        1.565739649,
+        null,
+        1.573636627
+      ],
+      "capture_timestamp_ns": 1785650001000000000,
+      "reference_timestamp_ns": 1785650001003500000
+    }
+  ]
+}

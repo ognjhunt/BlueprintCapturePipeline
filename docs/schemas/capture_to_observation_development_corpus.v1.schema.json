@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/capture-to-observation-development-corpus.v1.schema.json",
+  "title": "Blueprint Capture-to-Observation development corpus",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "corpus_id",
+    "description",
+    "development_only",
+    "synthetic_fixture",
+    "held_out",
+    "physical_measurements_included",
+    "qualification_labels_included",
+    "r5_evidence",
+    "r6_decision",
+    "r7_admission",
+    "shared_operating_point",
+    "cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "capture_to_observation_development_corpus.v1"
+    },
+    "corpus_id": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "development_only": {"const": true},
+    "synthetic_fixture": {"const": true},
+    "held_out": {"const": false},
+    "physical_measurements_included": {"const": false},
+    "qualification_labels_included": {"const": false},
+    "r5_evidence": {"const": false},
+    "r6_decision": {"const": false},
+    "r7_admission": {"const": false},
+    "shared_operating_point": {"$ref": "#/$defs/shared"},
+    "cases": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "number": {"type": "number"},
+    "point2": {
+      "type": "array",
+      "prefixItems": [{"$ref": "#/$defs/number"}, {"$ref": "#/$defs/number"}],
+      "items": false
+    },
+    "point3": {
+      "type": "array",
+      "prefixItems": [
+        {"$ref": "#/$defs/number"},
+        {"$ref": "#/$defs/number"},
+        {"$ref": "#/$defs/number"}
+      ],
+      "items": false
+    },
+    "shared": {
+      "type": "object",
+      "required": [
+        "adapter_protocol",
+        "coordinate_convention",
+        "length_unit",
+        "image_unit",
+        "timestamp_unit",
+        "image_size_px",
+        "camera_matrix",
+        "distortion_coefficients",
+        "object_points_m",
+        "unsafe_thresholds"
+      ],
+      "properties": {
+        "adapter_protocol": {"const": "opencv_calibrated_observation.v1"},
+        "coordinate_convention": {"const": "opencv_x_right_y_down_z_forward"},
+        "length_unit": {"const": "meters"},
+        "image_unit": {"const": "pixels"},
+        "timestamp_unit": {"const": "nanoseconds"},
+        "image_size_px": {
+          "type": "array",
+          "prefixItems": [
+            {"type": "integer", "minimum": 2},
+            {"type": "integer", "minimum": 2}
+          ],
+          "items": false
+        },
+        "camera_matrix": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {"$ref": "#/$defs/number"}
+          }
+        },
+        "distortion_coefficients": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 14,
+          "items": {"$ref": "#/$defs/number"}
+        },
+        "object_points_m": {
+          "type": "array",
+          "minItems": 6,
+          "items": {"$ref": "#/$defs/point3"}
+        },
+        "unsafe_thresholds": {
+          "type": "object",
+          "required": [
+            "maximum_reprojection_rmse_px",
+            "maximum_missing_depth_fraction",
+            "maximum_temporal_error_ms"
+          ],
+          "properties": {
+            "maximum_reprojection_rmse_px": {"type": "number", "minimum": 0},
+            "maximum_missing_depth_fraction": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "maximum_temporal_error_ms": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "case": {
+      "type": "object",
+      "required": [
+        "case_id",
+        "observed_image_points_px",
+        "depth_samples_m",
+        "capture_timestamp_ns",
+        "reference_timestamp_ns"
+      ],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1},
+        "observed_image_points_px": {
+          "type": "array",
+          "minItems": 6,
+          "items": {"$ref": "#/$defs/point2"}
+        },
+        "depth_samples_m": {
+          "type": "array",
+          "minItems": 6,
+          "items": {
+            "oneOf": [
+              {"type": "number", "exclusiveMinimum": 0},
+              {"type": "null"}
+            ]
+          }
+        },
+        "capture_timestamp_ns": {"type": "integer", "minimum": 0},
+        "reference_timestamp_ns": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  }
+}

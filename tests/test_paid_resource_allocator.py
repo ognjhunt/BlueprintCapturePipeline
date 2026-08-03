@@ -701,8 +701,7 @@ def test_reconstruction_gpu_execute_routes_through_shared_grant_and_vast_adapter
 
     monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
     monkeypatch.setattr(
-        allocator,
-        "read_sensitive_url_file",
+        "blueprint_pipeline.paid_resource_transport.read_sensitive_url_file",
         lambda _path, *, label: (
             f"https://objects.example/{label}",
             {"mode_is_0600": True},
@@ -796,8 +795,7 @@ def test_reconstruction_pose_routes_bundle_and_receipt_through_shared_allocator(
 
     monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
     monkeypatch.setattr(
-        allocator,
-        "read_sensitive_url_file",
+        "blueprint_pipeline.paid_resource_transport.read_sensitive_url_file",
         lambda _path, *, label: (
             f"https://objects.example/{label}?signature=secret",
             {"mode_is_0600": True},
@@ -903,8 +901,7 @@ def test_reconstruction_gpu_execute_refuses_insecure_transport_before_provider(
         lambda **_kwargs: {"status": "execute_ready", "blockers": []},
     )
     monkeypatch.setattr(
-        allocator,
-        "read_sensitive_url_file",
+        "blueprint_pipeline.paid_resource_transport.read_sensitive_url_file",
         lambda _path, *, label: ("http://unsafe.example/value", {"mode_is_0600": True}),
     )
     monkeypatch.setattr(

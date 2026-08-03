@@ -1,0 +1,136 @@
+name: Measurement Research Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 9 1 * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: measurement-research-monitor-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Monthly release monitor and bounded regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
+      BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install frozen monitoring runtime
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev --extra sapien-development \
+            --extra exact-geometry-development
+
+      - name: Install isolated Drake 1.55 development runtime
+        run: |
+          uv python install 3.13
+          drake_python="$(uv python find 3.13)"
+          drake_environment="${RUNNER_TEMP}/blueprint-drake-1.55"
+          uv run python scripts/bootstrap_measurement_drake_development.py \
+            --python "${drake_python}" \
+            --environment "${drake_environment}" \
+            --output "${RUNNER_TEMP}/blueprint-ci/measurement-drake-bootstrap.json"
+          echo "BLUEPRINT_DRAKE_PYTHON=${drake_environment}/bin/python" >> "${GITHUB_ENV}"
+
+      - name: Install isolated PyChrono 10.0 development runtime
+        run: |
+          chrono_conda="$(command -v conda)"
+          test -x "${chrono_conda}"
+          chrono_environment="${RUNNER_TEMP}/blueprint-chrono-10"
+          uv run python scripts/bootstrap_measurement_chrono_development.py \
+            --conda "${chrono_conda}" \
+            --environment "${chrono_environment}" \
+            --output "${RUNNER_TEMP}/blueprint-ci/measurement-chrono-bootstrap.json"
+          echo "BLUEPRINT_CHRONO_PYTHON=${chrono_environment}/bin/python" >> "${GITHUB_ENV}"
+
+      - name: Fetch public release metadata and compile proposal-only report
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          monitor_root="${RUNNER_TEMP}/blueprint-ci/measurement-research-monitor"
+          mkdir -p "${monitor_root}"
+          uv run python scripts/measurement_research_monitor.py \
+            --fetch-github mujoco-3=google-deepmind/mujoco \
+            --fetch-github drake-1-55=RobotLocomotion/drake \
+            --fetch-github newton-1-4=newton-physics/newton \
+            --fetch-github sapien-maniskill-3=haosulab/SAPIEN \
+            --fetch-github project-chrono-10=projectchrono/chrono \
+            --output "${monitor_root}/release-monitor-report.json"
+
+      - name: Run bounded routing and monitoring regressions
+        run: |
+          uv run python -m pytest -q \
+            tests/test_measurement_research_monitoring.py \
+            tests/test_measurement_research_monitor.py \
+            tests/test_measurement_adapter_runtime.py \
+            tests/test_measurement_adapter_execution.py \
+            tests/test_measurement_drake_bootstrap.py \
+            tests/test_measurement_chrono_bootstrap.py \
+            tests/test_measurement_chrono_granular_adapter.py \
+            tests/test_measurement_deformation_granular_chrono_development_suite.py \
+            tests/test_measurement_site_evidence_bridge.py \
+            tests/test_measurement_geometry_contact_development_suite.py \
+            tests/test_measurement_mujoco_articulation_adapter.py \
+            tests/test_measurement_mujoco_insertion_adapter.py \
+            tests/test_measurement_newton_rigid_adapter.py \
+            tests/test_measurement_opencv_observation_adapter.py \
+            tests/test_measurement_pyelastica_cable_adapter.py \
+            tests/test_measurement_mujoco_flex_cloth_adapter.py \
+            tests/test_measurement_mujoco_granular_adapter.py \
+            tests/test_measurement_direct_tactile_adapter.py \
+            tests/test_measurement_world_model_action_fidelity_adapter.py \
+            tests/test_measurement_qualification_benchmarks.py \
+            tests/test_measurement_research_admission.py \
+            tests/test_task_site_measurement_routing.py
+
+      - name: Run SAPIEN physics-only development regression
+        run: |
+          uv run python -m pytest -q -m "" \
+            tests/test_measurement_sapien_rigid_adapter.py \
+            tests/test_measurement_geometry_contact_sapien_development_suite.py
+
+      - name: Run Drake SAP rigid-contact development regression
+        run: |
+          uv run python -m pytest -q -m "" \
+            tests/test_measurement_drake_rigid_adapter.py \
+            tests/test_measurement_geometry_contact_drake_development_suite.py
+
+      - name: Run PyChrono NSC granular development regression
+        run: |
+          uv run python -m pytest -q -m "" \
+            tests/test_measurement_chrono_granular_adapter.py \
+            tests/test_measurement_deformation_granular_chrono_development_suite.py
+
+      - name: Run Pinocchio and Coal Q-KIN development regression
+        run: |
+          uv run python -m pytest -q -m "" \
+            tests/test_measurement_pinocchio_coal_kinematic_adapter.py \
+            tests/test_measurement_geometry_kinematic_development_suite.py
+
+      - name: Upload immutable monitoring report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: measurement-research-monitor-${{ github.run_id }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/blueprint-ci/measurement-research-monitor/release-monitor-report.json
+            ${{ runner.temp }}/blueprint-ci/measurement-drake-bootstrap.json
+            ${{ runner.temp }}/blueprint-ci/measurement-chrono-bootstrap.json
+          if-no-files-found: error
+          retention-days: 90

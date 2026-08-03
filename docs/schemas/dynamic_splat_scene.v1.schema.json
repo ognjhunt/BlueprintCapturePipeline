@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/dynamic-splat-scene.v1.schema.json",
+  "title": "Blueprint exact-once dynamic Gaussian splat scene contracts",
+  "oneOf": [
+    {"$ref": "#/$defs/scene"},
+    {"$ref": "#/$defs/renderRequest"},
+    {"$ref": "#/$defs/renderManifest"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "transform": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "array", "minItems": 4, "maxItems": 4,
+        "items": {"type": "number"}
+      }
+    },
+    "scene": {
+      "type": "object",
+      "required": ["schema_version", "scene_id", "background", "objects", "frames", "render_invariants", "semantic_completeness_validated", "physical_accuracy_established", "robot_camera_parity_established", "dynamic_splat_scene_digest"],
+      "properties": {
+        "schema_version": {"const": "dynamic_splat_scene.v1"},
+        "scene_id": {"type": "string", "minLength": 1},
+        "background": {
+          "type": "object",
+          "required": ["path", "digest", "gaussian_count", "static_instance_count"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "digest": {"$ref": "#/$defs/digest"},
+            "gaussian_count": {"type": "integer", "minimum": 1},
+            "static_instance_count": {"const": 1}
+          },
+          "additionalProperties": false
+        },
+        "objects": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["object_id", "appearance", "physics", "pose_binding"],
+            "properties": {
+              "object_id": {"type": "string", "minLength": 1},
+              "appearance": {
+                "type": "object",
+                "required": ["path", "digest", "gaussian_count", "partition_digest", "visual_instance_count"],
+                "properties": {"visual_instance_count": {"const": 1}},
+                "additionalProperties": true
+              },
+              "physics": {
+                "type": "object",
+                "required": ["asset_id", "simready_asset_digest", "collider_count", "collider_instance_count", "validated"],
+                "properties": {
+                  "collider_count": {"type": "integer", "minimum": 1},
+                  "collider_instance_count": {"const": 1},
+                  "validated": {"const": false}
+                },
+                "additionalProperties": true
+              },
+              "pose_binding": {
+                "type": "object",
+                "required": ["pose_channel_id", "T_body_appearance", "appearance_and_collider_share_body_pose"],
+                "properties": {
+                  "T_body_appearance": {"$ref": "#/$defs/transform"},
+                  "appearance_and_collider_share_body_pose": {"const": true}
+                },
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "frames": {"type": "array", "minItems": 1},
+        "render_invariants": {
+          "type": "object",
+          "required": ["background_excludes_object_gaussians", "one_visual_instance_per_object", "one_collider_instance_per_object", "appearance_and_collider_share_pose_channel", "object_gaussians_absent_from_static_background"],
+          "properties": {
+            "background_excludes_object_gaussians": {"const": true},
+            "one_visual_instance_per_object": {"const": true},
+            "one_collider_instance_per_object": {"const": true},
+            "appearance_and_collider_share_pose_channel": {"const": true},
+            "object_gaussians_absent_from_static_background": {"const": true}
+          },
+          "additionalProperties": false
+        },
+        "semantic_completeness_validated": {"const": false},
+        "physical_accuracy_established": {"const": false},
+        "robot_camera_parity_established": {"const": false},
+        "dynamic_splat_scene_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "renderRequest": {
+      "type": "object",
+      "required": ["schema_version", "dynamic_splat_scene_digest", "frame_id", "background", "objects", "expected_object_ids", "require_exactly_one_visual_instance_per_object", "dynamic_splat_render_request_digest"],
+      "properties": {
+        "schema_version": {"const": "dynamic_splat_render_request.v1"},
+        "objects": {"type": "array", "minItems": 1},
+        "expected_object_ids": {"type": "array", "minItems": 1, "uniqueItems": true},
+        "require_exactly_one_visual_instance_per_object": {"const": true},
+        "dynamic_splat_render_request_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "renderManifest": {
+      "type": "object",
+      "required": ["schema_version", "dynamic_splat_scene_digest", "dynamic_splat_render_request_digest", "frame_id", "status", "blockers", "renderer", "render_result", "proof_boundary", "dynamic_splat_render_manifest_digest"],
+      "properties": {
+        "schema_version": {"const": "dynamic_splat_render_manifest.v1"},
+        "status": {"enum": ["completed", "blocked"]},
+        "proof_boundary": {
+          "type": "object",
+          "required": ["exactly_one_declared_visual_instance_rendered", "object_absent_from_static_background_by_partition", "semantic_object_completeness_established", "physical_accuracy_established", "robot_camera_parity_established"],
+          "properties": {
+            "exactly_one_declared_visual_instance_rendered": {"type": "boolean"},
+            "object_absent_from_static_background_by_partition": {"const": true},
+            "semantic_object_completeness_established": {"const": false},
+            "physical_accuracy_established": {"const": false},
+            "robot_camera_parity_established": {"const": false}
+          },
+          "additionalProperties": false
+        },
+        "dynamic_splat_render_manifest_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -22,6 +22,12 @@ from .decision_evidence_contracts import (
     canonical_digest,
 )
 from .evaluation_run_contract import EVALUATION_RUN_SCHEMA_VERSION, validate_evaluation_run_spec
+from .task_site_measurement_routing import (
+    MeasurementRoutingError,
+    build_measurement_input_abstention,
+    derive_task_measurement_requirements,
+    route_task_site_measurement,
+)
 
 
 _BASE_AUTHORITY = {
@@ -467,6 +473,27 @@ def route_decision_evidence(
         for value in qualification_values
     ]
     qualifications.sort(key=lambda value: _string(value.get("qualification_digest")))
+    measurement_profiles = [
+        dict(value["measurement_capability_profile"])
+        for value in methods
+        if isinstance(value.get("measurement_capability_profile"), Mapping)
+    ]
+    measurement_qualifications = [
+        dict(value["measurement_qualification_record"])
+        for value in qualifications
+        if isinstance(value.get("measurement_qualification_record"), Mapping)
+    ]
+    measurement_catalog_snapshot_hash = canonical_digest(
+        {
+            "method_profile_digests": [
+                value.get("capability_profile_digest") for value in measurement_profiles
+            ],
+            "qualification_digests": [
+                value.get("measurement_qualification_digest")
+                for value in measurement_qualifications
+            ],
+        }
+    )
     available_inputs = _evidence_inventory(testbed, request)
     budget = dict(request.get("budget") or {})
     max_budget = _number(budget.get("max_cost_usd"))
@@ -484,6 +511,66 @@ def route_decision_evidence(
     claims = sorted(_rows(request.get("claims")), key=lambda value: _string(value.get("claim_id")))
     for claim in claims:
         remaining_budget = max(0.0, max_budget - projected_cost)
+        measurement_decision: dict[str, Any] | None = None
+        site_evidence_profile = testbed.get("site_evidence_profile")
+        measurement_routing_requested = bool(
+            isinstance(site_evidence_profile, Mapping)
+            or measurement_profiles
+            or claim.get("task_measurement_requirements") is not None
+        )
+        if measurement_routing_requested:
+            if isinstance(site_evidence_profile, Mapping):
+                measurement_claim = copy.deepcopy(claim)
+                measurement_constraints = dict(
+                    measurement_claim.get("measurement_constraints") or {}
+                )
+                restrictions = dict(request.get("restrictions") or {})
+                request_budget = dict(request.get("budget") or {})
+                for target, source in (
+                    ("local_only", "local_only"),
+                    ("maximum_data_retention_days", "max_data_retention_days"),
+                    ("provider_training_use_allowed", "provider_training_use_allowed"),
+                    ("output_portability_required", "output_portability_required"),
+                    ("commercial_use_required", "commercial_use_required"),
+                ):
+                    if source in restrictions:
+                        measurement_constraints[target] = restrictions[source]
+                if "max_cost_usd" in request_budget:
+                    measurement_constraints["maximum_compute_cost_usd"] = min(
+                        _number(request_budget.get("max_cost_usd")), remaining_budget
+                    )
+                if "max_latency_seconds" in request_budget:
+                    measurement_constraints["maximum_latency_seconds"] = _number(
+                        request_budget.get("max_latency_seconds")
+                    )
+                measurement_claim["measurement_constraints"] = measurement_constraints
+                try:
+                    requirements = derive_task_measurement_requirements(
+                        measurement_claim, testbed
+                    )
+                    measurement_decision = route_task_site_measurement(
+                        requirements,
+                        site_evidence_profile,
+                        measurement_profiles,
+                        measurement_qualifications,
+                        catalog_snapshot_hash=measurement_catalog_snapshot_hash,
+                    )
+                except MeasurementRoutingError as exc:
+                    # An uninterpretable task class, forbidden generic material
+                    # regime, or malformed sidecar is an abstention, never a
+                    # silent fallback onto legacy claim-only selection.
+                    measurement_decision = build_measurement_input_abstention(
+                        request_id=_string(claim.get("claim_id")),
+                        blocker="task_measurement_requirements_underivable:"
+                        + "+".join(exc.codes)[:160],
+                        catalog_snapshot_hash=measurement_catalog_snapshot_hash,
+                    )
+            else:
+                measurement_decision = build_measurement_input_abstention(
+                    request_id=_string(claim.get("claim_id")),
+                    blocker="site_evidence_profile_missing",
+                    catalog_snapshot_hash=measurement_catalog_snapshot_hash,
+                )
         candidates = [
             _candidate(
                 profile=profile,
@@ -511,31 +598,53 @@ def route_decision_evidence(
         independent_count = max(1, int(_number(desired.get("minimum_independent_methods"), 1)))
         selected: list[_Candidate] = []
         correlation_groups: set[str] = set()
-        for candidate in eligible:
-            group = _string(candidate.profile.get("correlation_group"))
-            if group and group in correlation_groups:
-                shared_warnings.append(
-                    {
-                        "claim_id": claim.get("claim_id"),
-                        "method_id": candidate.profile.get("method_id"),
-                        "correlation_group": group,
-                        "counted_as_independent": False,
-                    }
-                )
-                continue
-            selected.append(candidate)
-            if group:
-                correlation_groups.add(group)
-            if len(selected) >= independent_count:
-                break
+        if measurement_decision is not None:
+            if measurement_decision.get("status") == "route_selected":
+                eligible_by_id = {
+                    _string(candidate.profile.get("method_id")): candidate
+                    for candidate in eligible
+                }
+                stage_ids = [
+                    _string(stage.get("method_id"))
+                    for stage in _rows(
+                        dict(measurement_decision.get("selected_route") or {}).get("stages")
+                    )
+                ]
+                if all(method_id in eligible_by_id for method_id in stage_ids):
+                    selected = [eligible_by_id[method_id] for method_id in stage_ids]
+        else:
+            for candidate in eligible:
+                group = _string(candidate.profile.get("correlation_group"))
+                if group and group in correlation_groups:
+                    shared_warnings.append(
+                        {
+                            "claim_id": claim.get("claim_id"),
+                            "method_id": candidate.profile.get("method_id"),
+                            "correlation_group": group,
+                            "counted_as_independent": False,
+                        }
+                    )
+                    continue
+                selected.append(candidate)
+                if group:
+                    correlation_groups.add(group)
+                if len(selected) >= independent_count:
+                    break
 
         status = "planned"
         rationale = "cheapest_qualified_sufficient_evidence"
         next_experiment = "none_required"
-        if len(selected) < independent_count:
+        measurement_route_failed = measurement_decision is not None and not selected
+        if measurement_route_failed or (
+            measurement_decision is None and len(selected) < independent_count
+        ):
             selected = []
             status = "abstention_planned"
-            rationale = "no_qualified_sufficient_plan"
+            rationale = (
+                "no_exact_qualified_measurement_route"
+                if measurement_decision is not None
+                else "no_qualified_sufficient_plan"
+            )
             rejected = sorted(
                 candidates,
                 key=lambda candidate: (
@@ -560,6 +669,10 @@ def route_decision_evidence(
                     f"qualify_or_supply:{next_candidate.profile.get('method_id')}:"
                     f"{','.join(next_candidate.reasons)}"
                 )
+            if measurement_decision is not None:
+                abstention = dict(measurement_decision.get("abstention") or {})
+                next_action = dict(abstention.get("smallest_next_action") or {})
+                next_experiment = _string(next_action.get("action_type")) or next_experiment
             if _string(claim.get("claim_type")) in _PHYSICAL_CLAIMS:
                 evidence_request = {
                     "request_id": _stable_id(
@@ -620,7 +733,7 @@ def route_decision_evidence(
                 )
 
         escalation_rows: list[dict[str, Any]] = []
-        if selected:
+        if selected and measurement_decision is None:
             selected_digests = {
                 _string(candidate.profile.get("method_profile_digest")) for candidate in selected
             }
@@ -680,6 +793,7 @@ def route_decision_evidence(
                 "status": status,
                 "selection_rationale": rationale,
                 "next_cheapest_experiment": next_experiment,
+                "measurement_routing_decision": measurement_decision,
                 "expected_cost_usd": sum(
                     _number(candidate.profile.get("expected_cost_usd"))
                     for candidate in selected

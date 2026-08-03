@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-drake-development-environment.v1.schema.json",
+  "title": "Blueprint Drake isolated development environment receipt",
+  "type": "object",
+  "required": ["schema_version", "drake_version", "python_version", "worker_python", "environment", "runtime_scope", "development_only", "production_route_eligible", "r7_admission", "bootstrap_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "measurement_drake_development_environment.v1"},
+    "drake_version": {"const": "1.55.0"},
+    "python_version": {"type": "string", "pattern": "^3\\.(13|14)(\\.|$)"},
+    "worker_python": {"type": "string", "minLength": 1},
+    "environment": {"type": "string", "minLength": 1},
+    "runtime_scope": {"const": "isolated_external_python"},
+    "development_only": {"const": true},
+    "production_route_eligible": {"const": false},
+    "r7_admission": {"const": false},
+    "bootstrap_receipt_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/capture-to-geometry-contact-insertion-development-corpus.v1.schema.json",
+  "title": "Blueprint Capture-to-Geometry-and-Contact insertion development corpus",
+  "type": "object",
+  "required": ["schema_version", "corpus_id", "description", "lane", "development_only", "synthetic_fixture", "held_out", "physical_measurements_included", "instrumented_force_included", "qualification_labels_included", "r5_evidence", "r6_decision", "r7_admission", "shared_operating_point", "metric_definitions", "cases"],
+  "properties": {
+    "schema_version": {"const": "capture_to_geometry_contact_insertion_development_corpus.v1"},
+    "corpus_id": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "lane": {"const": "peg_insertion"},
+    "development_only": {"const": true},
+    "synthetic_fixture": {"const": true},
+    "held_out": {"const": false},
+    "physical_measurements_included": {"const": false},
+    "instrumented_force_included": {"const": false},
+    "qualification_labels_included": {"const": false},
+    "r5_evidence": {"const": false},
+    "r6_decision": {"const": false},
+    "r7_admission": {"const": false},
+    "shared_operating_point": {"$ref": "#/$defs/shared"},
+    "metric_definitions": {"type": "object", "required": ["minimum_clearance_error", "contact_sequence", "penetration", "insertion_success_boundary", "replay"], "additionalProperties": {"type": "string", "minLength": 1}},
+    "cases": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/case"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "shared": {
+      "type": "object",
+      "required": ["adapter_protocol", "geometry_origin", "instrumented_force_measurement", "length_unit", "force_unit", "time_unit", "peg_half_width_m", "peg_half_height_m", "hole_half_width_m", "wall_thickness_m", "wall_half_height_m", "initial_center_height_m", "target_insertion_depth_m", "success_tolerance_m", "peg_mass_kg", "applied_force_n", "joint_damping", "penetration_unsafe_threshold_m", "duration_s", "timestep_s"],
+      "properties": {
+        "adapter_protocol": {"const": "mujoco_square_peg_insertion_boundary.v1"},
+        "geometry_origin": {"const": "synthetic_public_primitives"},
+        "instrumented_force_measurement": {"const": false},
+        "length_unit": {"const": "meters"},
+        "force_unit": {"const": "newtons"},
+        "time_unit": {"const": "seconds"},
+        "peg_half_width_m": {"type": "number", "exclusiveMinimum": 0},
+        "peg_half_height_m": {"type": "number", "exclusiveMinimum": 0},
+        "hole_half_width_m": {"type": "number", "exclusiveMinimum": 0},
+        "wall_thickness_m": {"type": "number", "exclusiveMinimum": 0},
+        "wall_half_height_m": {"type": "number", "exclusiveMinimum": 0},
+        "initial_center_height_m": {"type": "number", "exclusiveMinimum": 0},
+        "target_insertion_depth_m": {"type": "number", "exclusiveMinimum": 0},
+        "success_tolerance_m": {"type": "number", "minimum": 0},
+        "peg_mass_kg": {"type": "number", "exclusiveMinimum": 0},
+        "applied_force_n": {"type": "number", "exclusiveMinimum": 0},
+        "joint_damping": {"type": "number", "minimum": 0},
+        "penetration_unsafe_threshold_m": {"type": "number", "minimum": 0},
+        "duration_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 10},
+        "timestep_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.05}
+      },
+      "additionalProperties": false
+    },
+    "case": {
+      "type": "object",
+      "required": ["case_id", "lateral_offset_m"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1},
+        "lateral_offset_m": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  }
+}
