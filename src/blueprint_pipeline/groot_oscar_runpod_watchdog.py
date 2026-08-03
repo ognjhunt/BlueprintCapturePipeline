@@ -758,6 +758,7 @@ def run_watchdog(
                 build_paid_provider_lane_reconciliation,
                 release_transferred_paid_provider_lane_lease,
                 restore_paid_provider_lane_lease_to_retained_watchdog,
+                scope_pending_teardowns_for_concurrent_lane,
             )
 
             pending_path = str(receipt.get("pod_pending_teardown_record") or "")
@@ -817,7 +818,13 @@ def run_watchdog(
                         if isinstance(result.get("final_inventory"), Mapping)
                         else {}
                     ),
-                    open_pending_teardowns=load_pending_teardowns(),
+                    open_pending_teardowns=scope_pending_teardowns_for_concurrent_lane(
+                        load_pending_teardowns(),
+                        resource_name_prefix=pod_name_prefix,
+                        maximum_concurrent_paid_resources=int(
+                            receipt.get("maximum_concurrent_paid_gpus_global") or 1
+                        ),
+                    ),
                 )
                 result["provider_lane_terminal_release"] = (
                     release_transferred_paid_provider_lane_lease(

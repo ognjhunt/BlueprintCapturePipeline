@@ -66,6 +66,7 @@ from .paid_provider_lane_lease import (
     acquire_paid_provider_lane_lease,
     build_paid_provider_lane_reconciliation,
     release_paid_provider_lane_lease,
+    scope_pending_teardowns_for_concurrent_lane,
     transfer_paid_provider_compute_lane_lease_to_watchdog,
 )
 from .paid_resource_admission import (
@@ -1383,7 +1384,11 @@ def run_native_camera_gpu_lane(
         provider=resolved_provider,
         lane=PAID_LANE,
         provider_inventory=inventory,
-        open_pending_teardowns=load_pending_teardowns(),
+        open_pending_teardowns=scope_pending_teardowns_for_concurrent_lane(
+            load_pending_teardowns(),
+            resource_name_prefix=CANARY_NAME_PREFIX,
+            maximum_concurrent_paid_resources=maximum_concurrent_paid_gpus_global,
+        ),
     )
     lease = acquire_paid_provider_lane_lease(
         provider=resolved_provider,
@@ -1451,6 +1456,7 @@ def run_native_camera_gpu_lane(
         "pod_name_prefix": CANARY_NAME_PREFIX,
         "campaign_kind": "nvidia_warehouse_native_camera",
         "paid_lane": PAID_LANE,
+        "maximum_concurrent_paid_gpus_global": maximum_concurrent_paid_gpus_global,
         "campaign_budget": budget_context,
     }
     _write_private_json(receipt_path, receipt)

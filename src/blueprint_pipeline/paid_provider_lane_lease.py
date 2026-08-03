@@ -227,6 +227,31 @@ def build_paid_provider_lane_reconciliation(
     }
 
 
+def scope_pending_teardowns_for_concurrent_lane(
+    records: list[Mapping[str, Any]],
+    *,
+    resource_name_prefix: str,
+    maximum_concurrent_paid_resources: int,
+) -> list[Mapping[str, Any]]:
+    """Keep the historical provider-global guard unless concurrency is explicit.
+
+    A two-slot caller still owns only its name-bound lane.  The separate global
+    inventory check and launch mutex enforce the account-wide ceiling; this
+    scope keeps another lane's pending teardown from masquerading as ownership
+    of this lane while preserving same-prefix serialization.
+    """
+
+    if maximum_concurrent_paid_resources <= 1:
+        return list(records)
+    if maximum_concurrent_paid_resources != 2 or not resource_name_prefix:
+        return list(records)
+    return [
+        record
+        for record in records
+        if str(record.get("resource_name") or "").startswith(resource_name_prefix)
+    ]
+
+
 def paid_launch_pending_teardown_max_age(
     *,
     marker_timeout: int,

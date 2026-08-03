@@ -32,9 +32,33 @@ from blueprint_pipeline.paid_provider_lane_lease import (
     release_paid_provider_lane_lease,
     restore_paid_provider_lane_lease_to_retained_watchdog,
     rotate_paid_provider_lane_lease_to_retention_watchdog,
+    scope_pending_teardowns_for_concurrent_lane,
     transfer_paid_provider_lane_lease_to_watchdog,
     transfer_paid_provider_compute_lane_lease_to_watchdog,
 )
+
+
+def test_two_slot_scope_preserves_same_lane_and_excludes_other_lane() -> None:
+    records = [
+        {"resource_name": "blueprint-native-warehouse-camera-first", "status": "open"},
+        {"resource_name": "blueprint-groot-oscar-canary-other", "status": "open"},
+    ]
+
+    assert scope_pending_teardowns_for_concurrent_lane(
+        records,
+        resource_name_prefix="blueprint-native-warehouse-camera-",
+        maximum_concurrent_paid_resources=1,
+    ) == records
+    assert scope_pending_teardowns_for_concurrent_lane(
+        records,
+        resource_name_prefix="blueprint-native-warehouse-camera-",
+        maximum_concurrent_paid_resources=2,
+    ) == [records[0]]
+    assert scope_pending_teardowns_for_concurrent_lane(
+        records,
+        resource_name_prefix="blueprint-native-warehouse-camera-",
+        maximum_concurrent_paid_resources=3,
+    ) == records
 
 
 def test_compute_lane_transfers_directly_to_live_teardown_watchdog(
