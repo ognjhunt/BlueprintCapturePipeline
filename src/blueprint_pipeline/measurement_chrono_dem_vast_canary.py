@@ -54,6 +54,7 @@ from .watchdog_owner_teardown_contract import (
 
 
 RUNTIME_RESULT_SCHEMA_VERSION = "measurement_chrono_dem_cuda_vast_runtime_result.v1"
+FAILURE_RESULT_SCHEMA_VERSION = "measurement_chrono_dem_cuda_vast_failure_result.v1"
 EXECUTION_SCHEMA_VERSION = "measurement_chrono_dem_cuda_vast_execution.v1"
 TEARDOWN_SCHEMA_VERSION = "measurement_chrono_dem_cuda_vast_teardown.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "measurement_chrono_dem_cuda_vast_provider_zero.v1"
@@ -64,6 +65,17 @@ MAX_RESULT_BYTES = 64 * 1024**2
 INPUT_GET_ENV = "BLUEPRINT_MEASUREMENT_CHRONO_DEM_INPUT_GET_URL"
 OUTPUT_PUT_ENV = "BLUEPRINT_MEASUREMENT_CHRONO_DEM_OUTPUT_PUT_URL"
 WATCHDOG_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
+FAILURE_STAGES = {
+    "chrono_build_install",
+    "chrono_clone",
+    "chrono_configure",
+    "chrono_source_identity",
+    "input_bundle",
+    "probe_build",
+    "probe_configure",
+    "probe_execute",
+    "result_upload",
+}
 
 
 class MeasurementChronoDemVastCanaryError(ValueError):
@@ -178,11 +190,62 @@ chrono_install="$work/chrono-install"
 probe_source="$work/probe"
 probe_build="$work/probe-build"
 result="$work/result.json"
+provider_log="$work/provider.log"
 mkdir -p "$bundle" "$probe_source"
+exec > >(tee -a "$provider_log") 2>&1
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends __REQUIRED_DEBIAN_PACKAGES__
 rm -rf /var/lib/apt/lists/*
+failure_stage="input_bundle"
+upload_terminal_failure() {
+  exit_status="$1"
+  trap - EXIT
+  if [ "$exit_status" -eq 0 ] || [ -s "$result" ]; then
+    return
+  fi
+  set +e
+  python3 - "$result" "$provider_log" "$failure_stage" "$exit_status" <<'PY'
+import hashlib, json, os, re, sys, urllib.request
+from pathlib import Path
+
+result_path = Path(sys.argv[1])
+log_path = Path(sys.argv[2])
+stage = sys.argv[3]
+exit_code = int(sys.argv[4])
+excerpt = log_path.read_text(encoding="utf-8", errors="replace")[-8192:]
+excerpt = re.sub(r"https?://\\S+", "<redacted-url>", excerpt)
+value = {
+    "schema_version": "measurement_chrono_dem_cuda_vast_failure_result.v1",
+    "status": "failed",
+    "failure_stage": stage,
+    "exit_code": exit_code,
+    "log_excerpt": excerpt,
+    "source_commit_sha": os.environ["BLUEPRINT_MEASUREMENT_CHRONO_DEM_SOURCE_COMMIT"],
+    "runtime_image_digest": os.environ["BLUEPRINT_MEASUREMENT_CHRONO_DEM_RUNTIME_IMAGE"],
+    "runtime_release_digest": os.environ["BLUEPRINT_MEASUREMENT_CHRONO_DEM_RUNTIME_RELEASE_DIGEST"],
+    "input_bundle_digest": os.environ["BLUEPRINT_MEASUREMENT_CHRONO_DEM_INPUT_BUNDLE_DIGEST"],
+    "chrono_source_commit": os.environ["BLUEPRINT_MEASUREMENT_CHRONO_DEM_SOURCE_UPSTREAM_COMMIT"],
+    "raw_secret_values_recorded": False,
+    "proof_effect": "provider_execution_failure_evidence_only",
+    "claim_ceiling": "no_chrono_runtime_execution_evidence",
+}
+canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+value["failure_result_digest"] = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+result_path.write_bytes(payload)
+request = urllib.request.Request(
+    os.environ["BLUEPRINT_MEASUREMENT_CHRONO_DEM_OUTPUT_PUT_URL"],
+    data=payload,
+    method="PUT",
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(request, timeout=300) as response:
+    if response.status not in {200, 201, 204}:
+        raise SystemExit(f"measurement_chrono_dem_failure_upload_failed:{response.status}")
+PY
+}
+trap 'upload_terminal_failure "$?"' EXIT
 python3 - "$archive" "$bundle" <<'PY'
 import hashlib, json, os, stat, sys, urllib.request, zipfile
 from pathlib import Path
@@ -214,13 +277,16 @@ for row in manifest.get("source_files", []):
     if observed != row["digest"]:
         raise SystemExit("measurement_chrono_dem_source_digest_mismatch")
 PY
+failure_stage="chrono_clone"
 git clone --filter=blob:none --no-checkout __SOURCE_REPOSITORY__ "$chrono_source"
+failure_stage="chrono_source_identity"
 git -C "$chrono_source" checkout --detach "$BLUEPRINT_MEASUREMENT_CHRONO_DEM_SOURCE_UPSTREAM_COMMIT"
 test "$(git -C "$chrono_source" rev-parse HEAD^{commit})" = \
   "$BLUEPRINT_MEASUREMENT_CHRONO_DEM_SOURCE_UPSTREAM_COMMIT"
 test "$(git -C "$chrono_source" rev-parse __SOURCE_TAG__)" = "__SOURCE_TAG_OBJECT__"
 test "$(git -C "$chrono_source" rev-parse __SOURCE_TAG__^{commit})" = \
   "$BLUEPRINT_MEASUREMENT_CHRONO_DEM_SOURCE_UPSTREAM_COMMIT"
+failure_stage="chrono_configure"
 cmake -S "$chrono_source" -B "$chrono_build" -G Ninja \
   -DCMAKE_INSTALL_PREFIX="$chrono_install" \
   -DCMAKE_BUILD_TYPE=__CMAKE_BUILD_TYPE__ \
@@ -229,19 +295,23 @@ cmake -S "$chrono_source" -B "$chrono_build" -G Ninja \
   -DBUILD_BENCHMARKING=__BUILD_BENCHMARKING__ \
   -DCH_ENABLE_MODULE_DEM=__CH_ENABLE_MODULE_DEM__ \
   -DCHRONO_CUDA_ARCHITECTURES=__CHRONO_CUDA_ARCHITECTURES__
+failure_stage="chrono_build_install"
 cmake --build "$chrono_build" --target install --parallel 2
 cp "$bundle/scripts/measurement_chrono_dem_cuda_probe.cpp" "$probe_source/measurement_chrono_dem_cuda_probe.cpp"
 cp "$bundle/scripts/measurement_chrono_dem_cuda_probe.CMakeLists.txt" "$probe_source/CMakeLists.txt"
+failure_stage="probe_configure"
 cmake -S "$probe_source" -B "$probe_build" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$chrono_install" \
   -DCHRONO_CUDA_ARCHITECTURES=native
+failure_stage="probe_build"
 cmake --build "$probe_build" --parallel 2
 test -x "$probe_build/measurement_chrono_dem_cuda_probe"
 export PATH="$probe_build:$PATH"
 export LD_LIBRARY_PATH="$chrono_install/lib:${LD_LIBRARY_PATH:-}"
 export PYTHONPATH="$bundle/src"
 set +e
+failure_stage="probe_execute"
 python3 "$bundle/scripts/run_measurement_chrono_dem_bundle.py" \
   --bundle-root "$bundle" --output "$result"
 worker_status=$?
@@ -249,6 +319,7 @@ set -e
 if [ ! -s "$result" ]; then
   exit "$worker_status"
 fi
+failure_stage="result_upload"
 python3 - "$result" <<'PY'
 import os, sys, urllib.request
 from pathlib import Path
@@ -283,6 +354,56 @@ def _finite_number(value: Any) -> bool:
         and isinstance(value, (int, float))
         and math.isfinite(float(value))
     )
+
+
+def validate_measurement_chrono_dem_vast_failure_result(
+    value: Mapping[str, Any],
+    *,
+    bound_request: Mapping[str, Any],
+    bundle_receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a provider-authored pre-runtime failure without upgrading its claim."""
+
+    result = json.loads(json.dumps(dict(value)))
+    blockers: list[str] = []
+    if result.get("failure_result_digest") != canonical_digest(
+        result, digest_field="failure_result_digest"
+    ):
+        blockers.append("measurement_chrono_dem_failure_result_digest_mismatch")
+    expected = {
+        "schema_version": FAILURE_RESULT_SCHEMA_VERSION,
+        "status": "failed",
+        "source_commit_sha": bound_request.get("source_commit_sha"),
+        "runtime_image_digest": RUNTIME_IMAGE,
+        "runtime_release_digest": bound_request.get(
+            "measurement_chrono_dem_runtime_release_digest"
+        ),
+        "input_bundle_digest": bundle_receipt.get("input_bundle_digest"),
+        "chrono_source_commit": EXPECTED_SOURCE_COMMIT,
+        "raw_secret_values_recorded": False,
+        "proof_effect": "provider_execution_failure_evidence_only",
+        "claim_ceiling": "no_chrono_runtime_execution_evidence",
+    }
+    for key, expected_value in expected.items():
+        if result.get(key) != expected_value:
+            blockers.append(f"measurement_chrono_dem_failure_{key}_mismatch")
+    if result.get("failure_stage") not in FAILURE_STAGES:
+        blockers.append("measurement_chrono_dem_failure_stage_invalid")
+    exit_code = result.get("exit_code")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code == 0:
+        blockers.append("measurement_chrono_dem_failure_exit_code_invalid")
+    excerpt = result.get("log_excerpt")
+    if (
+        not isinstance(excerpt, str)
+        or not excerpt
+        or len(excerpt.encode("utf-8")) > 8192
+        or "X-Amz-" in excerpt
+        or "X-Amz-" in json.dumps(result)
+    ):
+        blockers.append("measurement_chrono_dem_failure_log_excerpt_invalid")
+    if blockers:
+        raise MeasurementChronoDemVastCanaryError(";".join(sorted(set(blockers))))
+    return result
 
 
 def validate_measurement_chrono_dem_vast_runtime_result(
@@ -478,6 +599,7 @@ def run_measurement_chrono_dem_vast_canary(
     instance_id: str | None = None
     launch_result: dict[str, Any] = {}
     validated_result: dict[str, Any] | None = None
+    validated_failure: dict[str, Any] | None = None
     blockers: list[str] = []
     provider_mutations = 0
     try:
@@ -618,14 +740,28 @@ def run_measurement_chrono_dem_vast_canary(
                     blockers.append("measurement_chrono_dem_output_timeout")
             else:
                 write_json(root / "provider_runtime_result.json", raw_result)
-                try:
-                    validated_result = validate_measurement_chrono_dem_vast_runtime_result(
-                        raw_result,
-                        bound_request=request,
-                        bundle_receipt=receipt,
-                    )
-                except MeasurementChronoDemVastCanaryError as exc:
-                    blockers.extend(str(exc).split(";"))
+                if raw_result.get("schema_version") == FAILURE_RESULT_SCHEMA_VERSION:
+                    try:
+                        validated_failure = validate_measurement_chrono_dem_vast_failure_result(
+                            raw_result,
+                            bound_request=request,
+                            bundle_receipt=receipt,
+                        )
+                        blockers.append(
+                            "measurement_chrono_dem_provider_reported_failure:"
+                            + str(validated_failure["failure_stage"])
+                        )
+                    except MeasurementChronoDemVastCanaryError as exc:
+                        blockers.extend(str(exc).split(";"))
+                else:
+                    try:
+                        validated_result = validate_measurement_chrono_dem_vast_runtime_result(
+                            raw_result,
+                            bound_request=request,
+                            bundle_receipt=receipt,
+                        )
+                    except MeasurementChronoDemVastCanaryError as exc:
+                        blockers.extend(str(exc).split(";"))
     finally:
         terminate_result: dict[str, Any] = {
             "status": "not_required" if instance_id is None else "not_attempted"
@@ -736,6 +872,9 @@ def run_measurement_chrono_dem_vast_canary(
         "runtime_result_digest": (
             validated_result.get("runtime_result_digest") if validated_result else None
         ),
+        "provider_failure_result_digest": (
+            validated_failure.get("failure_result_digest") if validated_failure else None
+        ),
         "duration_seconds": duration,
         "cost_usd": cost,
         "provider_mutations_performed": provider_mutations,
@@ -775,4 +914,5 @@ __all__ = [
     "RUNTIME_RESULT_SCHEMA_VERSION",
     "run_measurement_chrono_dem_vast_canary",
     "validate_measurement_chrono_dem_vast_runtime_result",
+    "validate_measurement_chrono_dem_vast_failure_result",
 ]
