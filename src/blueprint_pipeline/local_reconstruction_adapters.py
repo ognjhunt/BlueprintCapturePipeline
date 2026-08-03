@@ -632,6 +632,8 @@ class LocalDecodedObservationAdapter:
         rights_and_retention: Mapping[str, Any],
         maximum_frames: int = 12,
         maximum_source_bytes: int = _MAX_RETAINED_VIDEO_BYTES,
+        selected_frame_indexes: Sequence[int] | None = None,
+        selection_binding: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not _text(intake_id) or not _is_digest(capture_digest):
             raise LocalReconstructionAdapterError(["decoded_observation:source_binding_invalid"])
@@ -652,14 +654,65 @@ class LocalDecodedObservationAdapter:
             raise LocalReconstructionAdapterError(["decoded_observation:video_oversized"])
         ffprobe, ffmpeg, runtime_identity, runtime_digest = _tool_identity()
         probe = _probe_video(video_path, ffprobe)
-        indexes = _sample_indexes(probe["presentation_times_seconds"], maximum_frames)
+        if selected_frame_indexes is None:
+            if selection_binding is not None:
+                raise LocalReconstructionAdapterError(
+                    ["decoded_observation:selection_binding_without_indexes"]
+                )
+            indexes = _sample_indexes(probe["presentation_times_seconds"], maximum_frames)
+            normalized_selection_binding = None
+            selection_method = "evenly_spaced_actual_decoded_pts_with_endpoints_v1"
+            selection_root = f"maximum_frames_{maximum_frames}"
+        else:
+            indexes = list(selected_frame_indexes)
+            if (
+                not indexes
+                or any(
+                    not isinstance(index, int)
+                    or isinstance(index, bool)
+                    or index < 0
+                    or index >= probe["frame_count"]
+                    for index in indexes
+                )
+                or indexes != sorted(set(indexes))
+            ):
+                raise LocalReconstructionAdapterError(
+                    ["decoded_observation:admitted_frame_indexes_invalid"]
+                )
+            normalized_selection_binding = dict(selection_binding or {})
+            required_binding_digests = (
+                "admission_digest",
+                "candidate_manifest_digest",
+                "task_site_selection_profile_digest",
+                "source_video_digest",
+            )
+            if any(
+                not _is_digest(normalized_selection_binding.get(key))
+                for key in required_binding_digests
+            ) or (
+                _text(normalized_selection_binding.get("source_video_relative_path"))
+                != video_relative_path
+                or normalized_selection_binding.get("source_video_digest")
+                != _sha256_file(video_path)
+                or not _text(
+                    normalized_selection_binding.get("coordinate_frame_session_id")
+                )
+            ):
+                raise LocalReconstructionAdapterError(
+                    ["decoded_observation:selection_binding_invalid"]
+                )
+            selection_method = "task_site_profile_admitted_decoded_ordinals_v1"
+            selection_root = (
+                "admission_"
+                f"{normalized_selection_binding['admission_digest'][7:23]}"
+            )
         method_profile = decoded_observation_method_profile(execution_authorized=True)
         artifact_root = (
             output_root.expanduser().resolve()
             / capture_digest[7:]
             / "local_decoded_observation_index_v1"
             / method_profile["implementation_digest"][7:23]
-            / f"maximum_frames_{maximum_frames}"
+            / selection_root
         )
         frames = _extract_frames(
             video_path=video_path,
@@ -713,7 +766,9 @@ class LocalDecodedObservationAdapter:
             "decoded_presentation_times_seconds": probe["presentation_times_seconds"],
             "sampled_frames": candidate_visible_frames,
             "selected_frame_count": len(frames),
-            "selection_method": "evenly_spaced_actual_decoded_pts_with_endpoints_v1",
+            "selection_method": selection_method,
+            "selection_binding": normalized_selection_binding,
+            "default_selection_used": selected_frame_indexes is None,
             "stream_metadata": probe["stream"],
             "reconstruction_dataset_manifest_digest": dataset["dataset_manifest_digest"],
             "frozen_split_digest": dataset["train_heldout_split_digest"],
@@ -792,6 +847,8 @@ class LocalDecodedObservationAdapter:
                 "frozen_split_digest": dataset["train_heldout_split_digest"],
                 "candidate_can_change_split": False,
                 "candidate_can_read_hidden_heldout_pixels": False,
+                "default_selection_used": selected_frame_indexes is None,
+                "selection_binding": normalized_selection_binding,
                 "dataset_blockers": dataset["blockers"],
             },
             "cost_usd": 0.0,
@@ -977,6 +1034,8 @@ class LocalArkitMetricScaffoldAdapter:
         output_root: Path,
         rights_and_retention: Mapping[str, Any],
         maximum_frames: int = 12,
+        selected_frame_indexes: Sequence[int] | None = None,
+        selection_binding: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         root = capture_root.expanduser().resolve()
         if not _text(intake_id) or not _is_digest(capture_digest):
@@ -1002,6 +1061,15 @@ class LocalArkitMetricScaffoldAdapter:
             )
         video_track = _load_json(root / "video_track.json", label="video_track")
         video_relative_path = _text(video_track.get("video_file")) or "walkthrough.mov"
+        if selection_binding is not None and (
+            _text(selection_binding.get("source_video_relative_path"))
+            != video_relative_path
+            or _text(selection_binding.get("coordinate_frame_session_id"))
+            != _text(manifest.get("coordinate_frame_session_id"))
+        ):
+            raise LocalReconstructionAdapterError(
+                ["metric_scaffold:selection_capture_binding_mismatch"]
+            )
         video_path = _safe_child(root, video_relative_path)
         ffprobe, _, runtime_identity, runtime_digest = _tool_identity()
         probe = _probe_video(video_path, ffprobe)
@@ -1136,6 +1204,8 @@ class LocalArkitMetricScaffoldAdapter:
             output_root=output_root,
             rights_and_retention=rights_and_retention,
             maximum_frames=maximum_frames,
+            selected_frame_indexes=selected_frame_indexes,
+            selection_binding=selection_binding,
         )
         method_profile = arkit_metric_scaffold_method_profile(execution_authorized=True)
         scaffold = {
@@ -1164,6 +1234,8 @@ class LocalArkitMetricScaffoldAdapter:
             ],
             "depth_confidence_pairs": depth_pairs,
             "depth_surface_source_readiness": depth_surface_readiness,
+            "frame_selection_admission": dict(selection_binding or {}),
+            "frame_selection_default_used": selected_frame_indexes is None,
             "source_artifact_digests": {
                 relative: _sha256_file(_safe_child(root, relative))
                 for relative in (
@@ -1181,6 +1253,15 @@ class LocalArkitMetricScaffoldAdapter:
                 )
             },
         }
+        if selected_frame_indexes is not None:
+            candidate_manifest_path = root / "downstream_candidate_manifest.json"
+            if not candidate_manifest_path.is_file():
+                raise LocalReconstructionAdapterError(
+                    ["metric_scaffold:downstream_candidate_manifest_missing"]
+                )
+            scaffold["source_artifact_digests"]["downstream_candidate_manifest.json"] = (
+                _sha256_file(candidate_manifest_path)
+            )
         artifact_root = (
             output_root.expanduser().resolve()
             / capture_digest[7:]
@@ -1375,6 +1456,8 @@ class LocalArkitMetricScaffoldAdapter:
                         "arkit_raw_contract_validation_digest"
                     ],
                     "pose_refinement_executed": False,
+                    "frame_selection_default_used": selected_frame_indexes is None,
+                    "frame_selection_admission": dict(selection_binding or {}),
                 },
                 "cost_usd": 0.0,
                 "duration_seconds": 0.0,

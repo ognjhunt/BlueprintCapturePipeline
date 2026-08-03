@@ -16,6 +16,7 @@ The service that turns the capture into a 3D Gaussian Splat is the
 ```text
 BlueprintCapture V3.2 bundle OR explicitly admitted ARKitScenes proxy
   -> strict decoded-PTS / retention / ARKit / intrinsics validation
+  -> exact digest-bound task/site frame-selection admission (no default)
   -> frozen training / validation / evaluator-hidden split
   -> candidate RGB + raw ARKit camera bindings
   -> confidence-filtered captured LiDAR depth back-projection
@@ -49,6 +50,7 @@ python -m blueprint_pipeline.canonical_3dgs_cli prepare \
   --output-root /derived/<capture-id> \
   --intake-id <intake-id> \
   --capture-digest sha256:<64-hex> \
+  --task-site-selection-profile /control/<capture-id>-frame-selection.json \
   --source-commit-sha <40-hex>
 ```
 
@@ -58,6 +60,14 @@ preparation result, the COLMAP export result, a content-bound
 `canonical_3dgs_execution_plan.json`. The plan freezes Postshot as `primary`
 and Splatfacto as `comparison`, hashes every input artifact, records the frozen
 split and capture digest, and leaves `quality_winner` unset.
+
+The selection profile must be `task_site_frame_selection_profile.v1`, bind the
+exact `downstream_candidate_manifest.json` digest and current rights/revocation
+evidence, and name explicit task/site parameters. The raw V3.2 path has no
+`--maximum-frames` fallback: absent or invalid selection authority abstains with
+`task_site_evidence_profile_with_frame_selection_parameters`. The preparation
+records the candidate-manifest, selection-profile, and admission digests plus
+the exact admitted decoded ordinals.
 
 For an already compiled ARKitScenes proxy, name both retained roots explicitly;
 the command never searches for a "newest" artifact:

@@ -25,6 +25,13 @@ ARKit scaffold, reconstruction, held-out appearance, metric, collision,
 OpenUSD, Isaac, Task Evaluation Run, and physical/deployment gates remain
 separate.
 
+`blueprint-prepare-canonical-3dgs` consumes this admission directly for the raw
+V3.2 lane. It requires `--task-site-selection-profile`, decodes only the
+admitted `decoded_frame_ordinal` values, and carries the manifest, profile, and
+admission digests into the ARKit scaffold and canonical source admission. The
+generic local decoder retains its diagnostic sampling mode, but that mode is
+not reachable from the canonical raw-capture/Postshot preparation command.
+
 The versioned fixture is
 `tests/fixtures/capture_v32_downstream_candidate_manifest.json`. It contains no
 real media, is byte-identical to Capture's V3.2 candidate fixture, and proves

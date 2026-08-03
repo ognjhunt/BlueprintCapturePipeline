@@ -7196,7 +7196,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:d4f76bc0b75e90b80962c3918a097b4014802a7b139d7f5a6404be9351c3d5eb",
+              "sha256": "sha256:1f269e9fc02d759297909caf14199022e214ad070de148f5542003960d9469d4",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7462,7 +7462,7 @@
             {
               "artifact_id": "REL-15-AC-01-EV-01",
               "path": ".github/workflows/full-test-lane.yml",
-              "sha256": "sha256:8ba0ab705f76d7edf329ac0d503a06dce59590dfa223f7f79e9115f0f245fd4b",
+              "sha256": "sha256:5c552e2aa0acfe9d735f5511b78de6259f9c5f852feb6303cce4998dd955f2f6",
               "role": "workflow_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:b70197b311531e3c63d3fc9cb6f99a23279f2fc60b2f418d2c3f960052d6702f",
+              "sha256": "sha256:9c867d45523a09ebb72bf6a912524ef497349060af1177c022aaa87e0b33d285",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",

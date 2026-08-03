@@ -990,6 +990,15 @@ python3 scripts/stage_capture_bundle.py \
 
 ## Entry Points
 
+The production post-capture producer is
+`python -m blueprint_pipeline.post_capture_evidence_spine` (installed as
+`blueprint-produce-post-capture-evidence`). It verifies ARKit/Raw V3.2 bytes and
+connects the existing reconstruction, geometry, automatic-target, placement,
+scene-composition, routing, and policy-admission lanes into one
+content-addressed run. It emits the first scientifically valid abstention when
+an upstream qualification is unavailable. See
+[`docs/runbooks/post-capture-evidence-spine.md`](docs/runbooks/post-capture-evidence-spine.md).
+
 Provider-neutral new-site Task Evaluation Run compilation is available through
 `python -m blueprint_pipeline.new_site_task_evaluation_run`. It binds admitted
 capture/provider inputs, registered native 3DGS and dynamics geometry, a

@@ -202,6 +202,19 @@ def test_capture_descriptor_serialization_and_scene_builders(tmp_path) -> None:
                 arkit_intrinsics_uri="gs://bucket/intrinsics.json",
                 arkit_depth_prefix_uri="gs://bucket/depth",
                 arkit_confidence_prefix_uri="gs://bucket/confidence",
+                capture_bundle={
+                    "sync_map_uri": "gs://bucket/sync_map.jsonl",
+                    "video_frame_retention_uri": "gs://bucket/video_frame_retention.jsonl",
+                    "arkit_frame_quality_uri": "gs://bucket/arkit/frame_quality.jsonl",
+                    "arkit_feature_points_uri": "gs://bucket/arkit/feature_points.jsonl",
+                    "arkit_plane_observations_uri": "gs://bucket/arkit/planes.jsonl",
+                    "arkit_light_estimates_uri": "gs://bucket/arkit/light.jsonl",
+                    "arkit_meshes_prefix_uri": "gs://bucket/arkit/meshes",
+                    "arkit_mesh_manifest_uri": "gs://bucket/arkit/mesh_manifest.json",
+                    "downstream_candidate_manifest_uri": "gs://bucket/downstream_candidate_manifest.json",
+                    "reconstruction_qualification_request_uri": "gs://bucket/reconstruction_qualification_request.json",
+                    "device_calibration_uri": "gs://bucket/device_calibration.json",
+                },
                 capture_capabilities={"camera_pose": True},
                 depth_conditioning={"status": "available"},
                 capture_orientation={"display_orientation": "portrait"},
@@ -218,6 +231,21 @@ def test_capture_descriptor_serialization_and_scene_builders(tmp_path) -> None:
     assert serialized["capture_capabilities"] == {"camera_pose": True}
     assert serialized["depth_conditioning"] == {"status": "available"}
     assert serialized["capture_orientation"] == {"display_orientation": "portrait"}
+    assert serialized["sync_map_uri"] == "gs://bucket/sync_map.jsonl"
+    assert serialized["video_frame_retention_uri"] == "gs://bucket/video_frame_retention.jsonl"
+    assert serialized["arkit_frame_quality_uri"].endswith("/arkit/frame_quality.jsonl")
+    assert serialized["arkit_feature_points_uri"].endswith("/arkit/feature_points.jsonl")
+    assert serialized["arkit_plane_observations_uri"].endswith("/arkit/planes.jsonl")
+    assert serialized["arkit_light_estimates_uri"].endswith("/arkit/light.jsonl")
+    assert serialized["arkit_meshes_prefix_uri"].endswith("/arkit/meshes")
+    assert serialized["arkit_mesh_manifest_uri"].endswith("/arkit/mesh_manifest.json")
+    assert serialized["downstream_candidate_manifest_uri"].endswith(
+        "/downstream_candidate_manifest.json"
+    )
+    assert serialized["reconstruction_qualification_request_uri"].endswith(
+        "/reconstruction_qualification_request.json"
+    )
+    assert serialized["device_calibration_uri"].endswith("/device_calibration.json")
     assert descriptor.preferred_world_model_video_uri == "gs://bucket/world.mov"
     constraints = cb.build_capture_bundle_constraints(
         descriptor,
@@ -225,6 +253,13 @@ def test_capture_descriptor_serialization_and_scene_builders(tmp_path) -> None:
         qa_report={"status": "passed"},
     )
     assert constraints["capture_bundle"]["arkit_poses_uri"] == "gs://bucket/poses.jsonl"
+    assert constraints["capture_bundle"]["sync_map_uri"] == "gs://bucket/sync_map.jsonl"
+    assert constraints["capture_bundle"]["downstream_candidate_manifest_uri"].endswith(
+        "/downstream_candidate_manifest.json"
+    )
+    assert constraints["capture_bundle"]["reconstruction_qualification_request_uri"].endswith(
+        "/reconstruction_qualification_request.json"
+    )
     assert constraints["qa"] == {"status": "passed"}
     request = cb.build_scene_request_from_descriptor(descriptor)
     assert request["image"]["gcs_uri"] == "gs://bucket/keyframe.jpg"
