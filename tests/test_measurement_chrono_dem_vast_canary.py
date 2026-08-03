@@ -19,9 +19,11 @@ from blueprint_pipeline.measurement_chrono_dem_runtime_release import (
 )
 from blueprint_pipeline.measurement_chrono_dem_vast_bundle import RECEIPT_SCHEMA_VERSION
 from blueprint_pipeline.measurement_chrono_dem_vast_canary import (
+    FAILURE_RESULT_SCHEMA_VERSION,
     MeasurementChronoDemVastCanaryError,
     _bootstrap_script,
     run_measurement_chrono_dem_vast_canary,
+    validate_measurement_chrono_dem_vast_failure_result,
     validate_measurement_chrono_dem_vast_runtime_result,
 )
 from blueprint_pipeline.paid_resource_admission import (
@@ -115,6 +117,29 @@ def _preflight() -> dict:
     }
 
 
+def _failure_result(*, stage: str = "probe_build") -> dict:
+    receipt = _receipt()
+    value = {
+        "schema_version": FAILURE_RESULT_SCHEMA_VERSION,
+        "status": "failed",
+        "failure_stage": stage,
+        "exit_code": 1,
+        "log_excerpt": "compiler failed at an exact source location",
+        "source_commit_sha": SHA,
+        "runtime_image_digest": RUNTIME_IMAGE,
+        "runtime_release_digest": receipt["runtime_release_digest"],
+        "input_bundle_digest": D1,
+        "chrono_source_commit": EXPECTED_SOURCE_COMMIT,
+        "raw_secret_values_recorded": False,
+        "proof_effect": "provider_execution_failure_evidence_only",
+        "claim_ceiling": "no_chrono_runtime_execution_evidence",
+    }
+    value["failure_result_digest"] = canonical_digest(
+        value, digest_field="failure_result_digest"
+    )
+    return value
+
+
 class _Provider:
     name = "vast"
 
@@ -177,6 +202,10 @@ def test_bootstrap_binds_exact_source_build_cuda_bundle_and_signed_upload() -> N
     assert "-DCHRONO_CUDA_ARCHITECTURES=native" in script
     assert 'cmake --build "$chrono_build" --target install --parallel 2' in script
     assert 'headers={"Content-Type": "application/json"}' in script
+    assert "upload_terminal_failure" in script
+    assert 'failure_stage="chrono_build_install"' in script
+    assert 'failure_stage="probe_build"' in script
+    assert 're.sub(r"https?://\\\\S+", "<redacted-url>", excerpt)' in script
 
 
 def test_runtime_validator_enforces_cuda_identity_and_claim_ceiling(monkeypatch) -> None:
@@ -249,6 +278,29 @@ def test_runtime_validator_enforces_cuda_identity_and_claim_ceiling(monkeypatch)
     with pytest.raises(MeasurementChronoDemVastCanaryError, match="qualification_created"):
         validate_measurement_chrono_dem_vast_runtime_result(
             result, bound_request=bound, bundle_receipt=receipt
+        )
+
+
+def test_failure_validator_preserves_exact_provider_failure_without_claim_upgrade() -> None:
+    result = _failure_result()
+    assert (
+        validate_measurement_chrono_dem_vast_failure_result(
+            result,
+            bound_request=_bound_request(),
+            bundle_receipt=_receipt(),
+        )["failure_stage"]
+        == "probe_build"
+    )
+
+    result["log_excerpt"] = "https://objects.example/output?X-Amz-Signature=secret"
+    result["failure_result_digest"] = canonical_digest(
+        result, digest_field="failure_result_digest"
+    )
+    with pytest.raises(MeasurementChronoDemVastCanaryError, match="log_excerpt_invalid"):
+        validate_measurement_chrono_dem_vast_failure_result(
+            result,
+            bound_request=_bound_request(),
+            bundle_receipt=_receipt(),
         )
 
 
@@ -372,6 +424,37 @@ def test_canary_stops_polling_when_provider_is_terminal_without_output(tmp_path:
     assert result["provider_zero_verified"] is True
     assert result["provider_mutations_performed"] == 2
     assert len(provider.requests) == 1
+    assert provider.launched is False
+
+
+def test_canary_accepts_bounded_provider_failure_and_tears_down(tmp_path: Path) -> None:
+    provider = _Provider()
+    failure = _failure_result(stage="probe_build")
+    times = iter([1000.0, 1001.0, 1002.0])
+    result = run_measurement_chrono_dem_vast_canary(
+        bound_request=_bound_request(),
+        bundle_receipt=_receipt(),
+        preflight=_preflight(),
+        job_dir=tmp_path / "canary",
+        input_bundle_get_url=INPUT_URL,
+        output_put_url=PUT_URL,
+        output_get_url=GET_URL,
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=lambda _url: failure,
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+
+    assert result["status"] == "failed"
+    assert result["blockers"] == [
+        "measurement_chrono_dem_provider_reported_failure:probe_build"
+    ]
+    assert result["provider_failure_result_digest"] == failure["failure_result_digest"]
+    assert result["development_execution_completed"] is False
+    assert result["proof_effect"] == "none"
+    assert result["provider_zero_verified"] is True
     assert provider.launched is False
 
 
