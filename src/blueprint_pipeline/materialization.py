@@ -31,6 +31,10 @@ from .capture_orientation import (  # noqa: F401 - preserve established helper i
     _resolve_capture_orientation,
     _size_payload,
 )
+from .capture_v32_candidate_admission import (
+    CaptureV32CandidateAdmissionError,
+    validate_capture_v32_candidate_manifest,
+)
 from .common import (
     PipelineError,
     ensure_dir,
@@ -1261,6 +1265,53 @@ def _discover_raw_sidecars(
         if (raw_root / "motion.jsonl").is_file()
         else None
     )
+    candidate_manifest_path = raw_root / "downstream_candidate_manifest.json"
+    downstream_candidate_manifest_uri = (
+        join_gs_uri(raw_prefix_uri, "downstream_candidate_manifest.json")
+        if candidate_manifest_path.is_file()
+        else None
+    )
+    candidate_manifest_validation_status = "not_required"
+    candidate_manifest_validation_blockers: list[str] = []
+    downstream_candidate_manifest_digest: str | None = None
+    requires_candidate_manifest = source == "iphone" and str(
+        manifest.get("capture_schema_version") or ""
+    ).startswith("3.2")
+    if candidate_manifest_path.is_file():
+        try:
+            expected_video_digest: str | None = None
+            hashes_path = raw_root / "hashes.json"
+            if hashes_path.is_file():
+                artifacts = read_json(hashes_path).get("artifacts")
+                video_uri = str(manifest.get("video_uri") or "").removeprefix("raw/")
+                if isinstance(artifacts, Mapping) and video_uri:
+                    raw_digest = str(artifacts.get(video_uri) or "")
+                    if raw_digest:
+                        expected_video_digest = (
+                            raw_digest
+                            if raw_digest.startswith("sha256:")
+                            else f"sha256:{raw_digest}"
+                        )
+            candidate_manifest = validate_capture_v32_candidate_manifest(
+                read_json(candidate_manifest_path),
+                expected_source_video_digest=expected_video_digest,
+            )
+            downstream_candidate_manifest_digest = str(
+                candidate_manifest["manifest_digest"]
+            )
+            candidate_manifest_validation_status = "validated"
+        except (CaptureV32CandidateAdmissionError, OSError, ValueError) as exc:
+            candidate_manifest_validation_status = "blocked"
+            candidate_manifest_validation_blockers = list(
+                exc.codes
+                if isinstance(exc, CaptureV32CandidateAdmissionError)
+                else ("capture_v32_candidate_manifest_unreadable",)
+            )
+    elif requires_candidate_manifest:
+        candidate_manifest_validation_status = "blocked"
+        candidate_manifest_validation_blockers = [
+            "capture_v32_candidate_manifest_missing"
+        ]
 
     video_candidates = _raw_video_candidates(raw_root)
     raw_video_uri = (
@@ -1349,6 +1400,10 @@ def _discover_raw_sidecars(
         "companion_phone_calibration_uri": companion_phone_calibration_uri,
         "object_index_uri": object_index_uri,
         "motion_log_uri": motion_log_uri,
+        "downstream_candidate_manifest_uri": downstream_candidate_manifest_uri,
+        "downstream_candidate_manifest_digest": downstream_candidate_manifest_digest,
+        "candidate_manifest_validation_status": candidate_manifest_validation_status,
+        "candidate_manifest_validation_blockers": candidate_manifest_validation_blockers,
         "video_candidates": video_candidates,
         "raw_video_uri": raw_video_uri,
         "media_metadata": media_metadata,
@@ -1630,6 +1685,16 @@ def build_capture_bundle_records(
     companion_phone_calibration_uri = sidecars["companion_phone_calibration_uri"]
     object_index_uri = sidecars["object_index_uri"]
     motion_log_uri = sidecars["motion_log_uri"]
+    downstream_candidate_manifest_uri = sidecars["downstream_candidate_manifest_uri"]
+    downstream_candidate_manifest_digest = sidecars[
+        "downstream_candidate_manifest_digest"
+    ]
+    candidate_manifest_validation_status = sidecars[
+        "candidate_manifest_validation_status"
+    ]
+    candidate_manifest_validation_blockers = sidecars[
+        "candidate_manifest_validation_blockers"
+    ]
     raw_video_uri = sidecars["raw_video_uri"]
     media_metadata = sidecars["media_metadata"]
     arkit_geometry_ready = sidecars["arkit_geometry_ready"]
@@ -1798,6 +1863,20 @@ def build_capture_bundle_records(
         "capture_rights": _capture_rights_block(manifest),
         "world_model_candidacy": candidacy_decision,
         "temporal_alignment": temporal_alignment,
+        "downstream_candidate_manifest": {
+            "uri": downstream_candidate_manifest_uri,
+            "digest": downstream_candidate_manifest_digest,
+            "validation_status": candidate_manifest_validation_status,
+            "blockers": candidate_manifest_validation_blockers,
+            "selection_status": "awaiting_task_site_evidence_profile",
+            "selection_blocker": (
+                "task_site_evidence_profile_with_frame_selection_parameters"
+                if candidate_manifest_validation_status == "validated"
+                else None
+            ),
+            "provider_upload_authorized": False,
+            "claim_ceiling": "retained_observation_registry_only",
+        },
         "temporal_alignment_authority": {
             "authoritative_source": "canonical_recomputed_frame_pose_join",
             "manifest_declaration": pose_alignment_declaration,
@@ -1814,6 +1893,8 @@ def build_capture_bundle_records(
         ),
         "media_metadata": media_metadata,
         "capture_profile_id": str(manifest.get("capture_profile_id") or "").strip() or None,
+        "capture_schema_version": str(manifest.get("capture_schema_version") or "").strip()
+        or None,
         "capture_intake": capture_intake_admission or None,
         "capture_intake_byte_verification": {
             "status": "verified" if capture_intake_admission else "not_supplied",
@@ -1870,6 +1951,8 @@ def build_capture_bundle_records(
         "capture_source": source,
         "source_device": source_device,
         "capture_profile_id": str(manifest.get("capture_profile_id") or "").strip() or None,
+        "capture_schema_version": str(manifest.get("capture_schema_version") or "").strip()
+        or None,
         "capture_capabilities": dict(capture_capabilities)
         if isinstance(capture_capabilities, Mapping)
         else {},
@@ -1936,6 +2019,12 @@ def build_capture_bundle_records(
         ),
         "object_index_uri": object_index_uri,
         "motion_log_uri": motion_log_uri,
+        "downstream_candidate_manifest_uri": downstream_candidate_manifest_uri,
+        "downstream_candidate_manifest_digest": downstream_candidate_manifest_digest,
+        "downstream_candidate_manifest_validation_status": (
+            candidate_manifest_validation_status
+        ),
+        "downstream_candidate_manifest_blockers": candidate_manifest_validation_blockers,
         "qa_report_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/qa_report.json",
         "qa_status": None,
         "intended_space_type": str(manifest.get("intended_space_type") or "default"),

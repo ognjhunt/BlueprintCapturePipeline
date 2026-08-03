@@ -1,0 +1,34 @@
+{
+  "allowed_use_scope": {"derived_processing_allowed": true, "latest_revocation_check_required": true},
+  "candidate_count": 1,
+  "candidates": [{
+    "T_site_camera": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],
+    "T_world_camera": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],
+    "camera_intrinsics": {"cx":320,"cy":240,"fx":500,"fy":500,"height":480,"width":640},
+    "candidate_id": "rgb_000000",
+    "coordinate_frame_session_id": "cfs_fixture_001",
+    "decoded_frame_ordinal": 0,
+    "decoded_pts_sec": 0,
+    "decoded_source_pts_sec": 100.25,
+    "encoded_frame_index": 0,
+    "frame_id": "000001",
+    "output_image_relative_path": "candidate_rgb/000000.png",
+    "pose_frame_id": "000001",
+    "source_video_uri": "walkthrough.mov",
+    "t_capture_sec": 0,
+    "tracking_state": "normal",
+    "write_attempt_index": 0
+  }],
+  "capture_id": "capture_fixture_001",
+  "coordinate_frame_session_id": "cfs_fixture_001",
+  "manifest_digest": "sha256:54322836669d367101e39ecddd7bf916ee5c416c720cd71e38bd1ca35ba9d8e7",
+  "provider_neutrality": {
+    "mobile_app_direct_provider_upload_allowed": false,
+    "provider_selection_authority": "blueprint_pipeline",
+    "third_party_provider_upload_authorized": false
+  },
+  "scene_id": "scene_fixture_001",
+  "schema_version": "downstream_candidate_manifest.v1",
+  "source_video_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_video_uri": "walkthrough.mov"
+}

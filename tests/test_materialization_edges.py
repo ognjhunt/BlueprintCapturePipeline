@@ -422,6 +422,49 @@ def test_discover_raw_sidecars_arkit_geometry_ready(tmp_path: Path) -> None:
     assert sidecars["pose_alignment_ok"] is True
 
 
+def test_discover_raw_sidecars_validates_v32_candidate_registry(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "capture_v32_downstream_candidate_manifest.json"
+    )
+    (raw / "downstream_candidate_manifest.json").write_text(
+        fixture.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    sidecars = m._discover_raw_sidecars(
+        raw_root=raw,
+        raw_prefix_uri="gs://bucket/scenes/site/captures/capture/raw",
+        manifest={"capture_schema_version": "3.2.0"},
+        source="iphone",
+        source_device="iphone",
+    )
+
+    assert sidecars["candidate_manifest_validation_status"] == "validated"
+    assert sidecars["candidate_manifest_validation_blockers"] == []
+    assert sidecars["downstream_candidate_manifest_digest"] == (
+        "sha256:54322836669d367101e39ecddd7bf916ee5c416c720cd71e38bd1ca35ba9d8e7"
+    )
+
+
+def test_discover_raw_sidecars_blocks_missing_v32_candidate_registry(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    sidecars = m._discover_raw_sidecars(
+        raw_root=raw,
+        raw_prefix_uri="gs://bucket/scenes/site/captures/capture/raw",
+        manifest={"capture_schema_version": "3.2.0"},
+        source="iphone",
+        source_device="iphone",
+    )
+    assert sidecars["candidate_manifest_validation_status"] == "blocked"
+    assert sidecars["candidate_manifest_validation_blockers"] == [
+        "capture_v32_candidate_manifest_missing"
+    ]
+
+
 def test_discover_raw_sidecars_arcore_only_and_video_uri_fallback(tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     raw.mkdir()
