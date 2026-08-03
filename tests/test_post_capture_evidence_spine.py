@@ -4,8 +4,10 @@ import hashlib
 import json
 from pathlib import Path
 
-import pytest
 import jsonschema
+import pytest
+
+import blueprint_pipeline.post_capture_evidence_spine as spine_module
 
 from blueprint_pipeline.arkit_raw_contract_validation import (
     build_arkit_raw_contract_validation,
@@ -478,6 +480,7 @@ def test_teleport_receipts_bind_the_exact_native_ply_without_qualification(
 
 def test_target_robot_placement_scene_and_authorization_are_independent(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, receipt = _raw_source(tmp_path)
     source = build_source_profile(source_artifact=receipt, source_root=root)
@@ -532,9 +535,20 @@ def test_target_robot_placement_scene_and_authorization_are_independent(
         },
         "routing_decision_digest",
     )
+    monkeypatch.setattr(
+        spine_module,
+        "route_task_site_measurement",
+        lambda *_args, **_kwargs: route,
+    )
     routing_inputs = _finalize(
         {
             "schema_version": "post_capture_routing_inputs.v1",
+            "requirements": {},
+            "site_evidence_profile": {},
+            "method_capability_profiles": [],
+            "measurement_qualifications": [],
+            "catalog_snapshot_hash": _sha("f"),
+            "routing_as_of": "2026-08-03",
             "source_profile_digest": source["source_profile_digest"],
             "target_binding_digest": selection["target_binding_digest"],
             "placement_digest": placement["placement_digest"],
