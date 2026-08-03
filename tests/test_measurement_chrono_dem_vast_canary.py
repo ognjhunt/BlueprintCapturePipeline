@@ -202,7 +202,8 @@ def test_bootstrap_binds_exact_source_build_cuda_bundle_and_signed_upload() -> N
     assert "-DCH_ENABLE_MODULE_DEM=" + BUILD_CONFIGURATION["CH_ENABLE_MODULE_DEM"] in script
     assert "-DCHRONO_CUDA_ARCHITECTURES=native" in script
     assert 'cmake --build "$chrono_build" --target install --parallel 2' in script
-    assert 'headers={"Content-Type": "application/json"}' in script
+    assert script.count('headers={"Content-Type": "application/zip"}') == 2
+    assert 'headers={"Content-Type": "application/json"}' not in script
     assert "upload_terminal_failure" in script
     assert 'failure_stage="chrono_build_install"' in script
     assert 'failure_stage="probe_build"' in script
