@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/teleport_provider_run_receipt.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "provider_identity", "provider_execution_request_digest", "provider_execution_receipt_digest", "provider_deletion_receipt_digest", "provider_cost_receipt_digest", "failure_codes", "provider_zero_proven", "teleport_consumed_rgb_only", "teleport_consumed_arkit_poses", "teleport_consumed_depth_or_lidar", "metric_scale_proven", "collision_geometry_validated", "isaac_compatibility_proven", "task_success_proven", "physical_truth_proven", "proof_effect", "claim_ceiling", "timestamp", "teleport_provider_run_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "teleport_provider_run_receipt.v1"},
+    "status": {"enum": ["succeeded_unqualified", "failed"]},
+    "provider_identity": {"const": "teleport"},
+    "provider_zero_proven": {"const": false},
+    "teleport_consumed_rgb_only": {"const": true},
+    "teleport_consumed_arkit_poses": {"const": false},
+    "teleport_consumed_depth_or_lidar": {"const": false},
+    "metric_scale_proven": {"const": false},
+    "collision_geometry_validated": {"const": false},
+    "isaac_compatibility_proven": {"const": false},
+    "task_success_proven": {"const": false},
+    "physical_truth_proven": {"const": false},
+    "proof_effect": {"const": "provider_appearance_candidate_lifecycle_only"},
+    "claim_ceiling": {"const": "appearance_reconstruction_candidate"},
+    "teleport_provider_run_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}
