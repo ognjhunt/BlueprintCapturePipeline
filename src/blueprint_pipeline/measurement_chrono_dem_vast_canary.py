@@ -238,7 +238,9 @@ request = urllib.request.Request(
     os.environ["BLUEPRINT_MEASUREMENT_CHRONO_DEM_OUTPUT_PUT_URL"],
     data=payload,
     method="PUT",
-    headers={"Content-Type": "application/json"},
+    # The shared object-store transport signs output PUTs as application/zip.
+    # The body remains canonical JSON; this header must match the SigV4 input.
+    headers={"Content-Type": "application/zip"},
 )
 with urllib.request.urlopen(request, timeout=300) as response:
     if response.status not in {200, 201, 204}:
@@ -328,7 +330,9 @@ request = urllib.request.Request(
     os.environ["BLUEPRINT_MEASUREMENT_CHRONO_DEM_OUTPUT_PUT_URL"],
     data=payload,
     method="PUT",
-    headers={"Content-Type": "application/json"},
+    # The shared object-store transport signs output PUTs as application/zip.
+    # The body remains canonical JSON; this header must match the SigV4 input.
+    headers={"Content-Type": "application/zip"},
 )
 with urllib.request.urlopen(request, timeout=300) as response:
     if response.status not in {200, 201, 204}:
