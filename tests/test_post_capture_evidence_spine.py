@@ -759,7 +759,7 @@ def test_real_retained_arkitscenes_40958756_reaches_scientific_abstention(
     )
     assert result["manifest"]["fixture_evidence_used"] is False
     retained_root = (
-        repo / "docs/evidence/arkitscenes_40958756_post_capture_a42a9edf"
+        repo / "docs/evidence/arkitscenes_40958756_post_capture_2f8e5921"
     )
     assert result["manifest"] == json.loads(
         (retained_root / "post_capture_evidence_run.json").read_text(encoding="utf-8")
