@@ -558,6 +558,39 @@ def run_measurement_chrono_dem_vast_canary(
                     raw_result = dict(result_fetcher(output_get_url))
                     break
                 except (FileNotFoundError, TimeoutError):
+                    inspection = dict(provider.inspect(instance_id))
+                    provider_statuses = {
+                        str(inspection.get(key) or "").strip().lower()
+                        for key in (
+                            "status",
+                            "desiredStatus",
+                            "actual_status",
+                            "cur_state",
+                            "intended_status",
+                        )
+                    }
+                    provider_terminal = bool(
+                        inspection.get("api_confirmed") is True
+                        and (
+                            inspection.get("provider_absence_confirmed") is True
+                            or provider_statuses.intersection(
+                                {
+                                    "absent",
+                                    "dead",
+                                    "deleted",
+                                    "exited",
+                                    "failed",
+                                    "stopped",
+                                    "terminated",
+                                }
+                            )
+                        )
+                    )
+                    if provider_terminal:
+                        blockers.append(
+                            "measurement_chrono_dem_provider_terminal_without_output"
+                        )
+                        break
                     if float(clock()) - started_at >= hard_ttl:
                         break
                     try:
@@ -578,6 +611,8 @@ def run_measurement_chrono_dem_vast_canary(
             if raw_result is None:
                 if not any(
                     blocker.startswith("measurement_chrono_dem_output_fetch_failed:")
+                    or blocker
+                    == "measurement_chrono_dem_provider_terminal_without_output"
                     for blocker in blockers
                 ):
                     blockers.append("measurement_chrono_dem_output_timeout")
