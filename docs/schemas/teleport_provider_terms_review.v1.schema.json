@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/teleport_provider_terms_review.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "reviewed_at", "api_spec_version", "terms_version", "dpa_version", "official_sources", "rgb_images_or_video_only", "known_poses_ingest_documented", "depth_lidar_ingest_documented", "delete_success_has_durable_receipt", "public_exact_per_capture_price_published", "standard_terms_training_use_grant_present", "standard_model_license_transferable", "teleport_provider_terms_review_digest"],
+  "properties": {
+    "schema_version": {"const": "teleport_provider_terms_review.v1"},
+    "official_sources": {"type": "array", "minItems": 5},
+    "rgb_images_or_video_only": {"const": true},
+    "known_poses_ingest_documented": {"const": false},
+    "depth_lidar_ingest_documented": {"const": false},
+    "delete_success_has_durable_receipt": {"const": false},
+    "public_exact_per_capture_price_published": {"const": false},
+    "standard_terms_training_use_grant_present": {"const": true},
+    "standard_model_license_transferable": {"const": false},
+    "teleport_provider_terms_review_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}
