@@ -89,6 +89,7 @@ def test_isaac_suite_rejects_split_authority_and_digest_tampering() -> None:
         validate_capture_to_geometry_contact_isaac_physx_development_suite(tampered)
 
 
+@pytest.mark.external_runtime
 @pytest.mark.slow
 def test_isaac_suite_executes_exact_external_runtime() -> None:
     completed = run_capture_to_geometry_contact_isaac_physx_development_suite(
