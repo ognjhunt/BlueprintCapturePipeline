@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/arkitscenes-scripted-inspection-terminal-report.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "implementation_source_commit_sha",
+    "status",
+    "terminal_stage",
+    "smallest_missing_measurement",
+    "subsequent_runtime_requirement",
+    "source_class",
+    "evidence_class",
+    "scenario_scope",
+    "execution_scope",
+    "no_claims",
+    "exact_status",
+    "artifact_digests",
+    "task_evaluation_run_completed",
+    "decision_envelope_emitted",
+    "explicit_terminal_abstention",
+    "terminal_report_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "arkitscenes_scripted_inspection_terminal_report.v1"
+    },
+    "run_id": {"type": "string", "minLength": 1},
+    "implementation_source_commit_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "status": {
+      "enum": ["abstained", "awaiting_local_isaac_execution"]
+    },
+    "terminal_stage": {
+      "enum": ["robot_placement", "isaac_runtime_execution"]
+    },
+    "smallest_missing_measurement": {
+      "type": "object",
+      "required": ["code", "instruction", "authorization_request_digest"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "instruction": {"type": "string", "minLength": 1},
+        "authorization_request_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "subsequent_runtime_requirement": {"type": "object"},
+    "source_class": {"const": "public-dataset proxy"},
+    "evidence_class": {
+      "const": "scripted-controller evidence, not learned-policy evidence"
+    },
+    "scenario_scope": {"const": "single scenario"},
+    "execution_scope": {"const": "simulation-only"},
+    "no_claims": {
+      "type": "array",
+      "items": {"enum": ["physical success", "deployment", "safety", "transfer"]},
+      "uniqueItems": true,
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "exact_status": {"type": "object"},
+    "artifact_digests": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "task_evaluation_run_completed": {"const": false},
+    "decision_envelope_emitted": {"const": false},
+    "explicit_terminal_abstention": {"const": true},
+    "terminal_report_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "additionalProperties": false
+}

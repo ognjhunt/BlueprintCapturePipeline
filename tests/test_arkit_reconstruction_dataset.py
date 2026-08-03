@@ -161,6 +161,10 @@ def test_arkit_export_is_candidate_only_idempotent_and_fail_closed(tmp_path: Pat
     )
     assert observations["candidate_splits_only"] is True
     assert observations["hidden_heldout_pixels_included"] is False
+    assert {
+        row["camera"]["camera_axis_convention"]
+        for row in observations["observations"]
+    } == {"arkit_x_right_y_up_z_backward"}
     assert {row["split"] for row in observations["observations"]} <= {
         "training",
         "validation",

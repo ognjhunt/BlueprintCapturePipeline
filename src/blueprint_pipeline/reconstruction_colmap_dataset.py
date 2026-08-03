@@ -162,6 +162,17 @@ def _camera_line(observation: Mapping[str, Any], camera_id: int) -> tuple[str, s
             raise ValueError
         if not np.allclose(rotation_camera_world.T @ rotation_camera_world, np.eye(3), atol=1e-4):
             raise ValueError
+        camera_axis_convention = str(
+            camera.get("camera_axis_convention")
+            or "opencv_x_right_y_down_z_forward"
+        )
+        if camera_axis_convention == "arkit_x_right_y_up_z_backward":
+            # ARKit and COLMAP share camera +X. Their local +Y/+Z axes are
+            # opposite, so convert camera-to-world without changing the
+            # canonical ARKit world frame or camera center.
+            rotation_camera_world = rotation_camera_world @ np.diag([1.0, -1.0, -1.0])
+        elif camera_axis_convention != "opencv_x_right_y_down_z_forward":
+            raise ValueError
         rotation_world_camera = rotation_camera_world.T
         translation_world_camera = -(rotation_world_camera @ translation_camera_world)
         quaternion = _rotation_to_quaternion(rotation_world_camera)
@@ -221,6 +232,20 @@ def bind_colmap_initialization_surface(
         surface_calibration_digest = calibration_binding.get(
             "calibration_digest"
         ) or calibration_binding.get("digest")
+    observation = request.get("camera_observation_manifest")
+    proxy_observation_binding = (
+        not isinstance(calibration, Mapping)
+        and isinstance(observation, Mapping)
+        and isinstance(calibration_binding, Mapping)
+        and calibration_binding.get("camera_observation_digest")
+        == observation.get("camera_observation_digest")
+        and calibration_binding.get("metric_scaffold_digest")
+        == request.get("metric_scaffold_digest")
+    )
+    raw_calibration_binding = (
+        isinstance(calibration, Mapping)
+        and surface_calibration_digest == calibration.get("calibration_digest")
+    )
     if (
         not isinstance(surface_asset, Mapping)
         or not _is_digest(surface_asset.get("digest"))
@@ -228,8 +253,7 @@ def bind_colmap_initialization_surface(
         or surface_result.get("source_capture_digest") != request.get("source_capture_digest")
         or surface_result.get("train_heldout_split_digest")
         != request.get("frozen_split_digest")
-        or not isinstance(calibration, Mapping)
-        or surface_calibration_digest != calibration.get("calibration_digest")
+        or not (raw_calibration_binding or proxy_observation_binding)
         or canonical_json(surface_result.get("coordinate_frame_declaration"))
         != canonical_json(request.get("coordinate_frame_declaration"))
     ):

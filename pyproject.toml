@@ -229,6 +229,15 @@ blueprint-preflight-capture = "blueprint_pipeline.preflight_capture:main"
 blueprint-check-cpu-env = "blueprint_pipeline.cpu_env_doctor:main"
 blueprint-agent-review = "blueprint_pipeline.agent_review_cli:main"
 blueprint-run-e2e = "blueprint_pipeline.run_e2e:main"
+blueprint-prepare-canonical-3dgs = "blueprint_pipeline.canonical_3dgs_pipeline:main"
+blueprint-run-canonical-3dgs-arm = "blueprint_pipeline.canonical_3dgs_worker:main"
+blueprint-finalize-canonical-3dgs = "blueprint_pipeline.canonical_3dgs_pipeline:finalize_main"
+blueprint-canonical-3dgs-transport = "blueprint_pipeline.canonical_3dgs_transport:main"
+blueprint-admit-canonical-3dgs-worker = "blueprint_pipeline.canonical_3dgs_admission:main"
+blueprint-request-canonical-3dgs-execution = "blueprint_pipeline.canonical_3dgs_execution_request:main"
+blueprint-evaluate-canonical-3dgs = "blueprint_pipeline.canonical_3dgs_evaluation:main"
+blueprint-produce-post-capture-evidence = "blueprint_pipeline.post_capture_evidence_spine:main"
+blueprint-register-canonical-3dgs = "blueprint_pipeline.canonical_3dgs_registration:main"
 blueprint-compile-evaluation-run = "blueprint_pipeline.evaluation_run_contract:main"
 blueprint-run-evaluation-run = "blueprint_pipeline.evaluation_run_execution:main"
 blueprint-route-task-evaluation = "blueprint_pipeline.decision_evidence_cli:main"
@@ -360,6 +369,7 @@ blueprint-build-capture-batch-registry = "blueprint_pipeline.capture_batch_regis
 blueprint-build-scene-asset-preflight = "blueprint_pipeline.scene_asset_preflight:main"
 blueprint-import-scaniverse-assets = "blueprint_pipeline.scaniverse_asset_import:main"
 blueprint-adapt-polycam-developer-raw = "blueprint_pipeline.polycam_developer_source_profile:main"
+blueprint-prepare-arkitscenes-inspection-run = "blueprint_pipeline.arkitscenes_inspection_run:main"
 blueprint-autogen-scene-eval-tasks = "blueprint_pipeline.scene_eval_autogen:main"
 blueprint-build-episode-specs = "blueprint_pipeline.episode_spec:main"
 blueprint-build-scene-wam-policy-episode-packet = "blueprint_pipeline.scene_wam_policy_episode_packet:main"
@@ -382,6 +392,7 @@ blueprint-run-production-gpu-warm-watchdog = "blueprint_pipeline.production_gpu_
 blueprint-build-production-gpu-launch-qualification = "blueprint_pipeline.production_gpu_launch_qualification:main"
 blueprint-run-production-gpu-rollback-drill = "blueprint_pipeline.production_gpu_rollback_drill:main"
 blueprint-run-production-gpu-replenishment-probe = "blueprint_pipeline.production_gpu_replenishment_probe:main"
+blueprint-qualify-capture-reconstruction = "blueprint_pipeline.capture_reconstruction_qualification:main"
 
 [project.urls]
 Homepage = "https://tryblueprint.io"
@@ -443,6 +454,7 @@ filterwarnings = [
     "ignore::UserWarning",
 ]
 markers = [
+    "external_data: marks tests requiring retained source bytes that are not installed on hermetic CI runners",
     "external_runtime: marks tests requiring a separately provisioned exact external runtime; excluded from the hermetic CPU full lane",
     "gpu: marks tests requiring GPU",
     "integration: marks integration tests",

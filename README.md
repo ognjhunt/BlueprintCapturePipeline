@@ -45,6 +45,12 @@ AI and engineer orientation maps live under [`docs/architecture/`](docs/architec
 - [`task-evaluation-supervisor.md`](docs/architecture/task-evaluation-supervisor.md)
 - [`TASK_EVALUATION_SUPERVISOR_RUNBOOK.md`](docs/TASK_EVALUATION_SUPERVISOR_RUNBOOK.md)
 
+The operational iPhone/LiDAR reconstruction path—canonical Raw Contract V3.2
+or explicitly bounded ARKitScenes proxy input, deterministic cross-platform
+worker transport, allocator-bound Postshot/Splatfacto training, exact-camera
+evaluation, and registered-appearance production—is documented in
+[`docs/CANONICAL_V32_TO_3DGS.md`](docs/CANONICAL_V32_TO_3DGS.md).
+
 Provider-neutral Task Evaluation Run control-plane commands:
 
 ```bash
@@ -983,6 +989,15 @@ python3 scripts/stage_capture_bundle.py \
 ```
 
 ## Entry Points
+
+The production post-capture producer is
+`python -m blueprint_pipeline.post_capture_evidence_spine` (installed as
+`blueprint-produce-post-capture-evidence`). It verifies ARKit/Raw V3.2 bytes and
+connects the existing reconstruction, geometry, automatic-target, placement,
+scene-composition, routing, and policy-admission lanes into one
+content-addressed run. It emits the first scientifically valid abstention when
+an upstream qualification is unavailable. See
+[`docs/runbooks/post-capture-evidence-spine.md`](docs/runbooks/post-capture-evidence-spine.md).
 
 Provider-neutral new-site Task Evaluation Run compilation is available through
 `python -m blueprint_pipeline.new_site_task_evaluation_run`. It binds admitted
