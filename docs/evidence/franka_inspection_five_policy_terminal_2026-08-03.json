@@ -1,0 +1,439 @@
+{
+  "admitted_real_identity_count": 0,
+  "authorization_digest": "sha256:bffd4b8b933a2aaf92852b79752afbf092d0ac15bd4a9f40586df36b2a391c32",
+  "blockers": [
+    "candidate_contract_or_rights_admission_incomplete",
+    "checkpoint_specific_rights_missing",
+    "identity_query_candidate_set_mismatch"
+  ],
+  "candidate_audits": [
+    {
+      "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+      "audit_axes": {
+        "action": {
+          "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+          "native_action_chunk_rows": 15,
+          "status": "contract_compatible"
+        },
+        "embodiment": {
+          "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+          "status": "contract_compatible"
+        },
+        "hostability": {
+          "paid_runtime_test_performed": false,
+          "public_checkpoint_bytes": 10849851589,
+          "status": "not_materialized_rights_gate_precedes_spend"
+        },
+        "immutable_identity": {
+          "checkpoint_generation_manifest_sha256": "ae42d454bebb66b0084d72f43bceb4a0f55c637148f99134c3d3bad255c97dc1",
+          "object_count": 19,
+          "size_bytes": 10849851589,
+          "status": "verified_generation_manifest"
+        },
+        "observation": {
+          "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+          "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+          "status": "contract_compatible"
+        },
+        "provenance": {
+          "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_binning_droid",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_openpi_roboarena_object_set"
+        },
+        "rights_and_license": {
+          "evidence_digest": null,
+          "grant_scope": null,
+          "status": "checkpoint_specific_grant_unresolved"
+        },
+        "runtime_dependencies": {
+          "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_source_revision_pinned_not_materialized"
+        }
+      },
+      "audit_digest": "sha256:d976b73eefba29a6a84e67cb51ba08a9e7fc9ec3f4848328f580fe3c00a9d1cd",
+      "blockers": [
+        "checkpoint_specific_rights_missing"
+      ],
+      "candidate_id": "paligemma_binning_droid",
+      "checkpoint_generation_manifest_sha256": "ae42d454bebb66b0084d72f43bceb4a0f55c637148f99134c3d3bad255c97dc1",
+      "checkpoint_object_count": 19,
+      "checkpoint_rights": {
+        "status": "unresolved"
+      },
+      "checkpoint_size_bytes": 10849851589,
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_binning_droid",
+      "claim_boundary": {
+        "checkpoint_execution_admitted": false,
+        "identity_bound_query_observed": false,
+        "matched_reset_attempt_observed": false,
+        "technical_identity_frozen": true
+      },
+      "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+      "native_action_chunk_rows": 15,
+      "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+      "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+      "openpi_source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+      "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+      "schema_version": "learned_policy_contract_audit.v1",
+      "status": "blocked"
+    },
+    {
+      "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+      "audit_axes": {
+        "action": {
+          "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+          "native_action_chunk_rows": 15,
+          "status": "contract_compatible"
+        },
+        "embodiment": {
+          "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+          "status": "contract_compatible"
+        },
+        "hostability": {
+          "paid_runtime_test_performed": false,
+          "public_checkpoint_bytes": 10850689373,
+          "status": "not_materialized_rights_gate_precedes_spend"
+        },
+        "immutable_identity": {
+          "checkpoint_generation_manifest_sha256": "d7e0f2e9671576d7904135e39034bf45dd7f11f3ae8f20754395633f9d8df140",
+          "object_count": 19,
+          "size_bytes": 10850689373,
+          "status": "verified_generation_manifest"
+        },
+        "observation": {
+          "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+          "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+          "status": "contract_compatible"
+        },
+        "provenance": {
+          "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_droid",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_openpi_roboarena_object_set"
+        },
+        "rights_and_license": {
+          "evidence_digest": null,
+          "grant_scope": null,
+          "status": "checkpoint_specific_grant_unresolved"
+        },
+        "runtime_dependencies": {
+          "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_source_revision_pinned_not_materialized"
+        }
+      },
+      "audit_digest": "sha256:f738271bf184d14bd5bfed084fbf2479bea9c35d1b488c76052483991133738b",
+      "blockers": [
+        "checkpoint_specific_rights_missing"
+      ],
+      "candidate_id": "paligemma_fast_droid",
+      "checkpoint_generation_manifest_sha256": "d7e0f2e9671576d7904135e39034bf45dd7f11f3ae8f20754395633f9d8df140",
+      "checkpoint_object_count": 19,
+      "checkpoint_rights": {
+        "status": "unresolved"
+      },
+      "checkpoint_size_bytes": 10850689373,
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_droid",
+      "claim_boundary": {
+        "checkpoint_execution_admitted": false,
+        "identity_bound_query_observed": false,
+        "matched_reset_attempt_observed": false,
+        "technical_identity_frozen": true
+      },
+      "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+      "native_action_chunk_rows": 15,
+      "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+      "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+      "openpi_source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+      "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+      "schema_version": "learned_policy_contract_audit.v1",
+      "status": "blocked"
+    },
+    {
+      "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+      "audit_axes": {
+        "action": {
+          "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+          "native_action_chunk_rows": 15,
+          "status": "contract_compatible"
+        },
+        "embodiment": {
+          "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+          "status": "contract_compatible"
+        },
+        "hostability": {
+          "paid_runtime_test_performed": false,
+          "public_checkpoint_bytes": 10850020059,
+          "status": "not_materialized_rights_gate_precedes_spend"
+        },
+        "immutable_identity": {
+          "checkpoint_generation_manifest_sha256": "3b0e00fdb6e681e27bd59e3259b3b89577ec983b9ee5e3a527ed92e729a60808",
+          "object_count": 19,
+          "size_bytes": 10850020059,
+          "status": "verified_generation_manifest"
+        },
+        "observation": {
+          "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+          "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+          "status": "contract_compatible"
+        },
+        "provenance": {
+          "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_specialist_droid",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_openpi_roboarena_object_set"
+        },
+        "rights_and_license": {
+          "evidence_digest": null,
+          "grant_scope": null,
+          "status": "checkpoint_specific_grant_unresolved"
+        },
+        "runtime_dependencies": {
+          "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_source_revision_pinned_not_materialized"
+        }
+      },
+      "audit_digest": "sha256:2b7f7d5a36ce6c490bbc55adb624e40d901e2e326579967a2c958b01c335fbfd",
+      "blockers": [
+        "checkpoint_specific_rights_missing"
+      ],
+      "candidate_id": "paligemma_fast_specialist_droid",
+      "checkpoint_generation_manifest_sha256": "3b0e00fdb6e681e27bd59e3259b3b89577ec983b9ee5e3a527ed92e729a60808",
+      "checkpoint_object_count": 19,
+      "checkpoint_rights": {
+        "status": "unresolved"
+      },
+      "checkpoint_size_bytes": 10850020059,
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_specialist_droid",
+      "claim_boundary": {
+        "checkpoint_execution_admitted": false,
+        "identity_bound_query_observed": false,
+        "matched_reset_attempt_observed": false,
+        "technical_identity_frozen": true
+      },
+      "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+      "native_action_chunk_rows": 15,
+      "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+      "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+      "openpi_source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+      "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+      "schema_version": "learned_policy_contract_audit.v1",
+      "status": "blocked"
+    },
+    {
+      "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+      "audit_axes": {
+        "action": {
+          "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+          "native_action_chunk_rows": 15,
+          "status": "contract_compatible"
+        },
+        "embodiment": {
+          "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+          "status": "contract_compatible"
+        },
+        "hostability": {
+          "paid_runtime_test_performed": false,
+          "public_checkpoint_bytes": 10850197563,
+          "status": "not_materialized_rights_gate_precedes_spend"
+        },
+        "immutable_identity": {
+          "checkpoint_generation_manifest_sha256": "90e80a19ae9b579d03823835549fa3a8267f8916b520a862cbe8305e76a868e9",
+          "object_count": 18,
+          "size_bytes": 10850197563,
+          "status": "verified_generation_manifest"
+        },
+        "observation": {
+          "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+          "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+          "status": "contract_compatible"
+        },
+        "provenance": {
+          "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_vq_droid",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_openpi_roboarena_object_set"
+        },
+        "rights_and_license": {
+          "evidence_digest": null,
+          "grant_scope": null,
+          "status": "checkpoint_specific_grant_unresolved"
+        },
+        "runtime_dependencies": {
+          "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_source_revision_pinned_not_materialized"
+        }
+      },
+      "audit_digest": "sha256:8a3334e8b712057056a6379b9bb2cadb510193647769fff0f9010f9ca6b7e0e6",
+      "blockers": [
+        "checkpoint_specific_rights_missing"
+      ],
+      "candidate_id": "paligemma_vq_droid",
+      "checkpoint_generation_manifest_sha256": "90e80a19ae9b579d03823835549fa3a8267f8916b520a862cbe8305e76a868e9",
+      "checkpoint_object_count": 18,
+      "checkpoint_rights": {
+        "status": "unresolved"
+      },
+      "checkpoint_size_bytes": 10850197563,
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_vq_droid",
+      "claim_boundary": {
+        "checkpoint_execution_admitted": false,
+        "identity_bound_query_observed": false,
+        "matched_reset_attempt_observed": false,
+        "technical_identity_frozen": true
+      },
+      "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+      "native_action_chunk_rows": 15,
+      "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+      "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+      "openpi_source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+      "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+      "schema_version": "learned_policy_contract_audit.v1",
+      "status": "blocked"
+    },
+    {
+      "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+      "audit_axes": {
+        "action": {
+          "action_schema_digest": "sha256:d9a5885236c4e51946d5eb09200d5c5a797523d775ab10e8af1d5d73daf87e78",
+          "native_action_chunk_rows": 10,
+          "status": "contract_compatible"
+        },
+        "embodiment": {
+          "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+          "status": "contract_compatible"
+        },
+        "hostability": {
+          "paid_runtime_test_performed": false,
+          "public_checkpoint_bytes": 12007426260,
+          "status": "not_materialized_rights_gate_precedes_spend"
+        },
+        "immutable_identity": {
+          "checkpoint_generation_manifest_sha256": "c6a6a08597ec496bc0cf4cedbb23fb0cf87365f88f9f16190a3dd9e2f7e2802e",
+          "object_count": 19,
+          "size_bytes": 12007426260,
+          "status": "verified_generation_manifest"
+        },
+        "observation": {
+          "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+          "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+          "status": "contract_compatible"
+        },
+        "provenance": {
+          "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_diffusion_droid",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_openpi_roboarena_object_set"
+        },
+        "rights_and_license": {
+          "evidence_digest": null,
+          "grant_scope": null,
+          "status": "checkpoint_specific_grant_unresolved"
+        },
+        "runtime_dependencies": {
+          "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+          "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+          "status": "official_source_revision_pinned_not_materialized"
+        }
+      },
+      "audit_digest": "sha256:868d4e96d75a8b6713a9d0c1897d4a0ae7ba5130fefe8852289c16f33c40e8c9",
+      "blockers": [
+        "checkpoint_specific_rights_missing"
+      ],
+      "candidate_id": "paligemma_diffusion_droid",
+      "checkpoint_generation_manifest_sha256": "c6a6a08597ec496bc0cf4cedbb23fb0cf87365f88f9f16190a3dd9e2f7e2802e",
+      "checkpoint_object_count": 19,
+      "checkpoint_rights": {
+        "status": "unresolved"
+      },
+      "checkpoint_size_bytes": 12007426260,
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_diffusion_droid",
+      "claim_boundary": {
+        "checkpoint_execution_admitted": false,
+        "identity_bound_query_observed": false,
+        "matched_reset_attempt_observed": false,
+        "technical_identity_frozen": true
+      },
+      "embodiment_digest": "sha256:8731cbb82fab6bb93c424ea27f93db5a69f0364c5dad1f8ccb83cdec5c4c8a29",
+      "native_action_chunk_rows": 10,
+      "observation_schema_digest": "sha256:ce003606fe27ede92ce8b7da922be07e4e387be4cf0447c77df9665471b82eed",
+      "observation_sequence_spec_digest": "sha256:9a567a93b309b0200ea70460c866e69251a7cbbb6da5cca526d57974af965d11",
+      "openpi_source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+      "runtime_interface_digest": "sha256:3aa15b06c55438ef843c4f32c88a8808274da193516febfdbd05df92eaed10d3",
+      "schema_version": "learned_policy_contract_audit.v1",
+      "status": "blocked"
+    }
+  ],
+  "candidate_identities": [
+    {
+      "admission_status": "blocked",
+      "candidate_id": "paligemma_binning_droid",
+      "checkpoint_digest": "sha256:ae42d454bebb66b0084d72f43bceb4a0f55c637148f99134c3d3bad255c97dc1",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_binning_droid",
+      "contract_audit_digest": "sha256:d976b73eefba29a6a84e67cb51ba08a9e7fc9ec3f4848328f580fe3c00a9d1cd",
+      "policy_identity_digest": "sha256:07efec4020f8d392de85e9ef4a4b2b1b62c7a33c29bf1c1a5f269b54e1cf1472"
+    },
+    {
+      "admission_status": "blocked",
+      "candidate_id": "paligemma_fast_droid",
+      "checkpoint_digest": "sha256:d7e0f2e9671576d7904135e39034bf45dd7f11f3ae8f20754395633f9d8df140",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_droid",
+      "contract_audit_digest": "sha256:f738271bf184d14bd5bfed084fbf2479bea9c35d1b488c76052483991133738b",
+      "policy_identity_digest": "sha256:c1a34ef10e3eb745e173da97fd2f144bab4baa37f2178a8087b77c6740508cf8"
+    },
+    {
+      "admission_status": "blocked",
+      "candidate_id": "paligemma_fast_specialist_droid",
+      "checkpoint_digest": "sha256:3b0e00fdb6e681e27bd59e3259b3b89577ec983b9ee5e3a527ed92e729a60808",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_specialist_droid",
+      "contract_audit_digest": "sha256:2b7f7d5a36ce6c490bbc55adb624e40d901e2e326579967a2c958b01c335fbfd",
+      "policy_identity_digest": "sha256:908acce9ba300aeca2d5c032c677c2502457a0f8218f674018f3b93d429614ef"
+    },
+    {
+      "admission_status": "blocked",
+      "candidate_id": "paligemma_vq_droid",
+      "checkpoint_digest": "sha256:90e80a19ae9b579d03823835549fa3a8267f8916b520a862cbe8305e76a868e9",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_vq_droid",
+      "contract_audit_digest": "sha256:8a3334e8b712057056a6379b9bb2cadb510193647769fff0f9010f9ca6b7e0e6",
+      "policy_identity_digest": "sha256:b9649b0ffdd9011a9c8e0313f6384654622bece91e8d0573df3c432f8d799fcf"
+    },
+    {
+      "admission_status": "blocked",
+      "candidate_id": "paligemma_diffusion_droid",
+      "checkpoint_digest": "sha256:c6a6a08597ec496bc0cf4cedbb23fb0cf87365f88f9f16190a3dd9e2f7e2802e",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/roboarena/paligemma_diffusion_droid",
+      "contract_audit_digest": "sha256:868d4e96d75a8b6713a9d0c1897d4a0ae7ba5130fefe8852289c16f33c40e8c9",
+      "policy_identity_digest": "sha256:d8d3eff0a9691bb97a748625b78a2ab2e39bef4353dbc4fed65282ad8c4b27a9"
+    }
+  ],
+  "candidate_set_digest": "sha256:9e50352c48dfedf1dd1ea7c4e22df1fb71804147799dabc0bcc99170cd6c0ed0",
+  "claim_boundary": {
+    "five_immutable_public_checkpoint_identities_frozen": true,
+    "five_matched_reset_receipts_observed": false,
+    "five_policies_admitted": false,
+    "five_real_queries_observed": false,
+    "wam_or_video_presented_as_policy_execution": false
+  },
+  "contract_digest": "sha256:0fc97036b0e7b907ae05f70c1da4c132b3f3e96d4e9abe42083f066fcf382df9",
+  "exact_fifth_policy_blocker": "All five technically compatible official OpenPI RoboArena DROID checkpoints lack checkpoint-specific rights evidence. No local checkpoint cache exists for the five required identity-bound queries, and this goal authorizes no GPU/provider spend.",
+  "fleet_runnable": false,
+  "implementation_source_sha256": "sha256:c15c73ef0ae35ee8aebd2bea22c4d4f23ad4a072a3a756ceece635e8649bcdfe",
+  "matched_reset_attempt_count": 0,
+  "observed_at": "2026-08-03T15:00:00-05:00",
+  "openpi_source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+  "origin_main_base": "f12ff6372c4cc9025e9bc03441f5cc3e3498959d",
+  "paid_execution_authorized": false,
+  "proposed_real_identity_count": 5,
+  "real_identity_bound_query_count": 0,
+  "required_next_authority": "Obtain an attributable checkpoint-specific execution grant for each selected checkpoint. Then obtain a separate explicit GPU budget and TTL authorization before using paid_resource_allocator for five identity-bound queries and five matched-reset attempts.",
+  "schema_version": "five_policy_admission_terminal.v1",
+  "source_evidence": {
+    "gcs_checkpoint_specific_license_field_present": false,
+    "gcs_complete_object_generations_queried": true,
+    "official_droid_readme": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/examples/droid/README.md",
+    "official_droid_transform": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/src/openpi/policies/droid_policy.py",
+    "official_roboarena_configs": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/src/openpi/training/misc/roboarena_config.py",
+    "openpi_root_license": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/LICENSE"
+  },
+  "status": "blocked_before_fleet_execution",
+  "terminal_artifact_digest": "sha256:3998dc6d391eda56187866998cb0eb7b3231afd3cae994200225bbd867ec857e"
+}
