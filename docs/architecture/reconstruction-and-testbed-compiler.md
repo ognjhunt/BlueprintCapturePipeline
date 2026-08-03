@@ -762,10 +762,13 @@ bytes.
 
 The strict Polycam path deliberately accepts self-contained `GLB`, `USDZ`, and
 `PLY` rather than multi-file `GLTF` or `OBJ` packages whose dependencies are not
-yet bound as one immutable set. Polycam Developer Mode raw ZIPs and the
-Enterprise Content Management API are documented upstream and are promising
-future source/provider adapters, but neither is currently treated as Blueprint
-Raw Contract 3.2 or enabled for remote execution.
+yet bound as one immutable set. Polycam Developer Mode raw ZIPs now have a
+local, declaration-bound `polycam_developer_source_profile.v1` adapter that
+hashes the untouched archive and every member, rejects unsafe ZIPs, and
+fail-closes on missing semantic lanes. The adapter does not treat provider raw
+exports as Blueprint Raw Contract 3.2 or as independent metric evidence. The
+Enterprise Content Management API remains a future provider adapter and is not
+enabled for remote execution.
 
 The provider-neutral remote contract family is now present:
 `reconstruction_provider_admission.v1`,

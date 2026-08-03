@@ -359,6 +359,7 @@ blueprint-build-oscar-visual-augmentation-packet = "blueprint_pipeline.oscar_vis
 blueprint-build-capture-batch-registry = "blueprint_pipeline.capture_batch_registry:main"
 blueprint-build-scene-asset-preflight = "blueprint_pipeline.scene_asset_preflight:main"
 blueprint-import-scaniverse-assets = "blueprint_pipeline.scaniverse_asset_import:main"
+blueprint-adapt-polycam-developer-raw = "blueprint_pipeline.polycam_developer_source_profile:main"
 blueprint-autogen-scene-eval-tasks = "blueprint_pipeline.scene_eval_autogen:main"
 blueprint-build-episode-specs = "blueprint_pipeline.episode_spec:main"
 blueprint-build-scene-wam-policy-episode-packet = "blueprint_pipeline.scene_wam_policy_episode_packet:main"

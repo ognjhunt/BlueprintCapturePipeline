@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/polycam_developer_source_profile.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_profile",
+    "status",
+    "provider_identity",
+    "source_capture_identity",
+    "provider_capture_identity",
+    "device_identity",
+    "provider_app_version",
+    "provider_export_timestamp",
+    "layout_profile",
+    "source_declaration_digest",
+    "source_archive",
+    "member_inventory",
+    "semantic_bindings",
+    "unbound_members",
+    "metric_units",
+    "identity_binding",
+    "producing_method",
+    "implementation_digest",
+    "source_commit_sha",
+    "blockers",
+    "warnings",
+    "smallest_missing_measurement",
+    "claim_boundary",
+    "proof_effect",
+    "claim_ceiling",
+    "legal_next_actions",
+    "source_profile_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "polycam_developer_source_profile.v1"},
+    "source_profile": {"const": "polycam_developer_mode_lidar_raw_zip"},
+    "status": {"enum": ["admitted_provider_derived_support", "abstained"]},
+    "provider_identity": {"const": "polycam"},
+    "source_declaration_digest": {"$ref": "#/$defs/digest"},
+    "source_archive": {
+      "type": "object",
+      "required": ["original_filename", "size_bytes", "sha256", "member_count", "member_set_digest", "original_archive_preserved", "archive_extracted_by_adapter"],
+      "properties": {
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "member_count": {"type": "integer", "minimum": 0},
+        "member_set_digest": {"$ref": "#/$defs/digest"},
+        "original_archive_preserved": {"const": true},
+        "archive_extracted_by_adapter": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "member_inventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["member_path", "size_bytes", "compressed_size_bytes", "crc32", "sha256", "semantic_roles"],
+        "properties": {
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "compressed_size_bytes": {"type": "integer", "minimum": 0},
+          "crc32": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+          "sha256": {"$ref": "#/$defs/digest"},
+          "semantic_roles": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "semantic_bindings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["member_path", "sha256"],
+          "properties": {"sha256": {"$ref": "#/$defs/digest"}},
+          "additionalProperties": true
+        }
+      }
+    },
+    "implementation_digest": {"$ref": "#/$defs/digest"},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "warnings": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "smallest_missing_measurement": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["code", "instruction"],
+          "properties": {"code": {"type": "string"}, "instruction": {"type": "string"}},
+          "additionalProperties": false
+        }
+      ]
+    },
+    "claim_boundary": {
+      "type": "object",
+      "required": ["provider_derived_support", "blueprint_raw_contract_truth", "metric_scale_independently_proven", "collision_geometry_qualified", "isaac_compatibility_proven", "task_success_proven", "physical_success_proven"],
+      "properties": {
+        "provider_derived_support": {"const": true},
+        "blueprint_raw_contract_truth": {"const": false},
+        "metric_scale_independently_proven": {"const": false},
+        "collision_geometry_qualified": {"const": false},
+        "isaac_compatibility_proven": {"const": false},
+        "task_success_proven": {"const": false},
+        "physical_success_proven": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "proof_effect": {"enum": ["provider_source_profile_binding_only", "none"]},
+    "claim_ceiling": {"enum": ["provider_derived_capture_support", "none"]},
+    "source_profile_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

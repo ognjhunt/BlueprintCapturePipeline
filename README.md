@@ -1183,6 +1183,24 @@ physics/contact proof, and deployment readiness. The lane is
 documented in
 [`docs/SCANIVERSE_ASSET_IMPORT.md`](docs/SCANIVERSE_ASSET_IMPORT.md).
 
+Polycam Developer Mode raw-ZIP source-profile binding:
+
+```bash
+blueprint-adapt-polycam-developer-raw \
+  --archive /path/to/polycam-developer-raw.zip \
+  --declaration /path/to/polycam-source-declaration.json \
+  --output /path/to/polycam-source-profile.json \
+  --source-commit-sha <40-hex-immutable-commit>
+```
+
+This local-only adapter preserves and hashes the original ZIP, hashes every
+regular archive member, and binds declared RGB/video, timestamps, intrinsics,
+extrinsics, depth, confidence, mesh, metric-unit, capture, device, and provider
+lanes. It rejects unsafe archives and emits a fail-closed abstention when a
+semantic lane is missing. The result is Polycam-derived support, not Blueprint
+Raw Contract truth or independent metric/collision/Isaac/task evidence. See
+[`docs/POLYCAM_DEVELOPER_SOURCE_PROFILE.md`](docs/POLYCAM_DEVELOPER_SOURCE_PROFILE.md).
+
 To also download local PLY/SPZ splats for object-index enrichment:
 
 ```bash
