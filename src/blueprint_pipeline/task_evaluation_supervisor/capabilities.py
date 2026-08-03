@@ -95,6 +95,12 @@ class SupervisorContext:
     gaussian_reconstruction_trainer: Any | None = None
     heldout_appearance_evaluation_request: Mapping[str, Any] | None = None
     heldout_appearance_evaluator: Any | None = None
+    # Appearance truth, native rendering, and fidelity qualification are
+    # independent of the simulator selected for dynamics. Only immutable
+    # digests are exposed through the registered tool surface.
+    appearance_fidelity_qualification: Mapping[str, Any] | None = None
+    native_3dgs_render_request: Mapping[str, Any] | None = None
+    native_3dgs_renderer: Any | None = None
     # Phase 5 request/source artifacts and executors remain trusted runtime
     # state. The SDK receives only the registered immutable digest.
     metric_geometry_source: Mapping[str, Any] | None = None

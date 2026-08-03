@@ -17,6 +17,7 @@ SWEPT_AABB_COLLISION_SIMULATION_ADAPTER = "local://swept-aabb-collision-simulati
 SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER = "local://signed-isaac-visual-placement-replay-v1"
 SIGNED_ISAAC_POINT_CONTACT_ADAPTER = "local://signed-isaac-point-contact-replay-v1"
 SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER = "local://signed-isaac-policy-trace-pair-replay-v1"
+SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER = "local://signed-isaac-inspection-ranking-replay-v1"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -628,9 +629,9 @@ class SignedIsaacPointContactReplayAdapter:
 
 @dataclass(frozen=True)
 class SignedIsaacPolicyTracePairReplayAdapter:
-    """Replay two independently validated, exact Isaac Franka traces.
+    """Replay an independently validated exact Isaac Franka trace cohort.
 
-    This supports only the boolean claim that the two frozen candidates were
+    This supports only the boolean claim that the frozen candidates were
     executed from an identical start and produced distinct simulated traces.
     It does not rank them or turn stage-unit motion into metric task success.
     """
@@ -644,7 +645,17 @@ class SignedIsaacPolicyTracePairReplayAdapter:
             return _unavailable("signed_isaac_policy_trace_claim_type_not_supported")
         evidence = _evidence_row(testbed, "signed_isaac_articulated_policy_trace_pair")
         candidates = _rows(_mapping(evidence).get("candidate_traces"))
-        expected_ids = ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+        expected_ids = (
+            ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+            if evidence.get("controller_id") == "deterministic_franka_joint_position_pair.v1"
+            else [
+                "franka-inspection-center-hold-v1",
+                "franka-inspection-left-narrow-v1",
+                "franka-inspection-right-narrow-v1",
+                "franka-inspection-left-wide-v1",
+                "franka-inspection-right-wide-v1",
+            ]
+        )
         if (
             evidence is None
             or evidence.get("independently_validated") is not True
@@ -696,6 +707,74 @@ class SignedIsaacPolicyTracePairReplayAdapter:
         }
 
 
+@dataclass(frozen=True)
+class SignedIsaacInspectionRankingReplayAdapter:
+    """Replay a task/site-bound ranking of qualified inspection controllers."""
+
+    adapter_reference: str = SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER
+
+    def execute(self, **kwargs: Any) -> Mapping[str, Any]:
+        claim = _mapping(kwargs.get("claim"))
+        testbed = _mapping(kwargs.get("testbed"))
+        if str(claim.get("claim_type") or "") != "comparative_controller_ranking":
+            return _unavailable("signed_isaac_inspection_ranking_claim_type_not_supported")
+        evidence = _evidence_row(testbed, "signed_isaac_inspection_candidate_ranking")
+        ranking = _rows(_mapping(evidence).get("ranking"))
+        candidate_results = _rows(_mapping(evidence).get("candidate_results"))
+        ranking_artifact = _mapping(evidence)
+        ranking_artifact.pop("evidence_id", None)
+        subject = _mapping(claim.get("subject"))
+        expected_ids = [str(value) for value in subject.get("candidate_controller_ids", [])]
+        ranked_ids = [str(row.get("candidate_id") or "") for row in ranking]
+        if (
+            evidence is None
+            or evidence.get("status") != "completed"
+            or evidence.get("controller_candidate_ranking_proven") is not True
+            or evidence.get("learned_policy_ranking_proven") is not False
+            or not _sha256_digest(evidence.get("contract_digest"))
+            or evidence.get("ranking_digest")
+            != canonical_digest(ranking_artifact, digest_field="ranking_digest")
+            or len(ranking) < 2
+            or not set(ranked_ids).issubset(set(expected_ids))
+            or any(
+                row.get("status") != "qualified"
+                for row in candidate_results
+                if row.get("candidate_id") in set(ranked_ids)
+            )
+        ):
+            return _unavailable("signed_isaac_inspection_ranking_evidence_missing")
+        return {
+            "status": "valid",
+            "supports_claim": True,
+            "observed_value": ranking,
+            "categorical_finding": "task_bound_scripted_controller_ranking_observed",
+            "uncertainty": 0.0,
+            "coverage": 1.0,
+            "blockers": [],
+            "invalid_rollout_reasons": [],
+            "raw_artifact_references": [
+                {
+                    "uri": "artifact://external-scene-inspection-ranking",
+                    "digest": evidence["ranking_digest"],
+                }
+            ],
+            "provenance": {
+                "execution_mode": "hermetic_local_signed_evidence_replay",
+                "source_runtime": "isaac_sim",
+                "task_and_site_bound": True,
+                "candidate_kind": "scripted_controller_baseline",
+                "physical_robot_run_initiated": False,
+            },
+            "claim_ceiling": {
+                "comparative_controller_ranking": True,
+                "comparative_policy_ranking": False,
+                "physical_success": False,
+                "deployment_readiness": False,
+                "safety_certification": False,
+            },
+        }
+
+
 def authorized_local_evidence_adapter_registry(
     authorized_references: Sequence[str],
 ) -> EvidenceMethodAdapterRegistry:
@@ -707,6 +786,7 @@ def authorized_local_evidence_adapter_registry(
         SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER: SignedIsaacVisualPlacementReplayAdapter(),
         SIGNED_ISAAC_POINT_CONTACT_ADAPTER: SignedIsaacPointContactReplayAdapter(),
         SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER: SignedIsaacPolicyTracePairReplayAdapter(),
+        SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER: SignedIsaacInspectionRankingReplayAdapter(),
     }
     requested = sorted(
         {str(item or "").strip() for item in authorized_references if str(item or "").strip()}
@@ -722,6 +802,7 @@ __all__ = [
     "CAPTURED_VISIBILITY_ADAPTER",
     "PROCESSED_OBSERVATION_VISIBILITY_ADAPTER",
     "SIGNED_ISAAC_POINT_CONTACT_ADAPTER",
+    "SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER",
     "SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER",
     "SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER",
     "SWEPT_AABB_COLLISION_SIMULATION_ADAPTER",
@@ -729,6 +810,7 @@ __all__ = [
     "CapturedVisibilityAdapter",
     "ProcessedObservationVisibilityAdapter",
     "SignedIsaacPointContactReplayAdapter",
+    "SignedIsaacInspectionRankingReplayAdapter",
     "SignedIsaacPolicyTracePairReplayAdapter",
     "SignedIsaacVisualPlacementReplayAdapter",
     "SweptAabbCollisionSimulationAdapter",

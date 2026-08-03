@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/appearance_fidelity_qualification.v1.schema.json",
+  "title": "Appearance Fidelity Qualification v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_appearance",
+    "render_input",
+    "renderer",
+    "reference_frame_comparison",
+    "qualification_policy",
+    "retained_splat_fraction",
+    "removed_splat_count",
+    "status",
+    "blockers",
+    "evaluation_render_authorized",
+    "appearance_is_metric_or_collision_truth",
+    "presentation_derivative_used",
+    "claim_ceiling",
+    "appearance_fidelity_qualification_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "appearance_fidelity_qualification.v1"},
+    "source_appearance": {
+      "type": "object",
+      "required": ["asset_digest", "coordinate_basis_digest", "representation", "splat_count", "sh_degree", "bounds", "immutable_appearance_truth"],
+      "properties": {
+        "asset_digest": {"$ref": "#/$defs/digest"},
+        "coordinate_basis_digest": {"$ref": "#/$defs/digest"},
+        "representation": {"enum": ["standard_3dgs_ply", "spz", "ksplat", "splat"]},
+        "splat_count": {"type": "integer", "minimum": 1},
+        "sh_degree": {"type": "integer", "minimum": 0, "maximum": 3},
+        "immutable_appearance_truth": {"const": true}
+      }
+    },
+    "render_input": {
+      "type": "object",
+      "required": ["asset_digest", "coordinate_basis_digest", "representation", "splat_count", "sh_degree", "bounds", "removal_reasons", "global_decimation_applied"],
+      "properties": {
+        "asset_digest": {"$ref": "#/$defs/digest"},
+        "coordinate_basis_digest": {"$ref": "#/$defs/digest"},
+        "splat_count": {"type": "integer", "minimum": 1},
+        "basis_conversion_exact": {"type": "boolean"},
+        "basis_conversion_receipt_digest": {"$ref": "#/$defs/digest"},
+        "global_decimation_applied": {"const": false}
+      }
+    },
+    "reference_frame_comparison": {
+      "type": "object",
+      "required": ["status", "source_frame_digest", "rendered_frame_digest", "camera_spec_digest", "camera_basis_digest", "metrics"],
+      "properties": {
+        "status": {"const": "completed"},
+        "source_frame_digest": {"$ref": "#/$defs/digest"},
+        "rendered_frame_digest": {"$ref": "#/$defs/digest"},
+        "camera_spec_digest": {"$ref": "#/$defs/digest"},
+        "camera_basis_digest": {"$ref": "#/$defs/digest"},
+        "metrics": {"type": "object"}
+      }
+    },
+    "retained_splat_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+    "removed_splat_count": {"type": "integer", "minimum": 0},
+    "status": {"enum": ["qualified", "blocked"]},
+    "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "evaluation_render_authorized": {"type": "boolean"},
+    "appearance_is_metric_or_collision_truth": {"const": false},
+    "presentation_derivative_used": {"const": false},
+    "claim_ceiling": {"enum": ["qualified_appearance_render", "none"]},
+    "appearance_fidelity_qualification_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

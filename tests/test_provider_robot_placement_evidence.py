@@ -10,6 +10,7 @@ from blueprint_pipeline.external_provider_nurec import (
     build_provider_nurec_isaac_runtime_result,
 )
 from blueprint_pipeline.provider_robot_placement_evidence import (
+    _build_signed_isaac_visual_placement_evidence,
     build_provider_robot_placement_evidence,
 )
 
@@ -190,3 +191,31 @@ def test_depth_artifact_tamper_blocks_visual_placement(tmp_path: Path) -> None:
 
     assert evidence["status"] == "blocked"
     assert "provider_robot_placement_artifact_digest_mismatch" in evidence["blockers"]
+
+
+def test_source_probe_failure_does_not_erase_proxy_policy_visual_evidence(
+    tmp_path: Path,
+) -> None:
+    request = _request()
+    runtime = _runtime(request, tmp_path)
+    runtime["status"] = "blocked"
+    runtime["blockers"] = ["isaac_test_body_fell_through_floor"]
+    runtime["proxy_composed_evaluation"] = {
+        "configured": True,
+        "source_collision_restored_for_independent_probe": True,
+    }
+    runtime["articulated_policy_trace_pair"] = {"status": "completed"}
+
+    evidence = _build_signed_isaac_visual_placement_evidence(
+        verification_request=request,
+        runtime_result=runtime,
+        runtime_artifact_root=tmp_path,
+        request_builder=dict,
+        runtime_builder=lambda value, **_: dict(value),
+        schema_version="test_visual_evidence.v1",
+        digest_field="visual_evidence_digest",
+    )
+
+    assert evidence["status"] == "verified_visual_placement_only"
+    assert evidence["visual_robot_placement_observed"] is True
+    assert evidence["source_probe_abstained_without_invalidating_visual_evidence"] is True

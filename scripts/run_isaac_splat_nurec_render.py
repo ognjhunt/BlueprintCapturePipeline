@@ -174,7 +174,11 @@ def _validate_policy_trace_request(options: dict) -> tuple[dict | None, list[str
         errors.append("franka_policy_trace_robot_invalid")
     if trace.get("robot_prim_path") != options.get("robot_prim_path"):
         errors.append("franka_policy_trace_robot_prim_mismatch")
-    if trace.get("controller_id") != "deterministic_franka_joint_position_pair.v1":
+    controller_id = trace.get("controller_id")
+    if controller_id not in {
+        "deterministic_franka_joint_position_pair.v1",
+        "deterministic_franka_inspection_cohort.v1",
+    }:
         errors.append("franka_policy_trace_controller_invalid")
     if trace.get("joint_names") != joint_names:
         errors.append("franka_policy_trace_joint_names_invalid")
@@ -216,10 +220,20 @@ def _validate_policy_trace_request(options: dict) -> tuple[dict | None, list[str
         ):
             errors.append(f"franka_policy_trace_{key}_invalid")
     candidates = trace.get("candidates")
-    expected_ids = ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+    expected_ids = (
+        ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+        if controller_id == "deterministic_franka_joint_position_pair.v1"
+        else [
+            "franka-inspection-center-hold-v1",
+            "franka-inspection-left-narrow-v1",
+            "franka-inspection-right-narrow-v1",
+            "franka-inspection-left-wide-v1",
+            "franka-inspection-right-wide-v1",
+        ]
+    )
     if (
         not isinstance(candidates, list)
-        or len(candidates) != 2
+        or len(candidates) != len(expected_ids)
         or [row.get("policy_id") for row in candidates if isinstance(row, dict)] != expected_ids
     ):
         errors.append("franka_policy_trace_candidates_invalid")
@@ -231,15 +245,43 @@ def _validate_policy_trace_request(options: dict) -> tuple[dict | None, list[str
                 errors.append(f"franka_policy_trace_candidate_{index}_target_invalid")
             if not isinstance(steps, int) or isinstance(steps, bool) or not 30 <= steps <= 1800:
                 errors.append(f"franka_policy_trace_candidate_{index}_steps_invalid")
+            if (
+                controller_id == "deterministic_franka_inspection_cohort.v1"
+                and candidate.get("action_source") != "scripted_controller"
+            ):
+                errors.append(f"franka_policy_trace_candidate_{index}_action_source_invalid")
         if all(finite_vector(row.get("final_joint_positions_rad")) for row in candidates):
             hold = candidates[0]["final_joint_positions_rad"]
-            sweep = candidates[1]["final_joint_positions_rad"]
+            sweeps = [row["final_joint_positions_rad"] for row in candidates[1:]]
             if max(abs(float(a) - float(b)) for a, b in zip(start, hold)) > 1e-9:
                 errors.append("franka_policy_trace_hold_invalid")
-            if max(abs(float(a) - float(b)) for a, b in zip(start, sweep)) < float(
-                threshold or 0.0
+            if any(
+                max(abs(float(a) - float(b)) for a, b in zip(start, sweep))
+                < float(threshold or 0.0)
+                for sweep in sweeps
             ):
                 errors.append("franka_policy_trace_sweep_not_distinct")
+    target = trace.get("inspection_target_position_stage")
+    if controller_id == "deterministic_franka_inspection_cohort.v1" and not finite_vector(
+        target, length=3
+    ):
+        errors.append("franka_policy_trace_inspection_target_invalid")
+    outcome_contract = options.get("inspection_outcome_contract")
+    if controller_id == "deterministic_franka_inspection_cohort.v1":
+        if not isinstance(outcome_contract, dict):
+            errors.append("franka_inspection_outcome_contract_missing")
+        elif (
+            outcome_contract.get("schema_version")
+            != "external_scene_inspection_outcome_contract.v2"
+            or outcome_contract.get("contract_digest")
+            != _canonical_digest(outcome_contract, digest_field="contract_digest")
+            or outcome_contract.get("placement_proposal_digest")
+            != options.get("placement_proposal_digest")
+            or outcome_contract.get("inspection_target_position_stage") != target
+            or outcome_contract.get("thresholds_frozen_before_candidate_execution") is not True
+            or outcome_contract.get("candidate_may_self_authorize") is not False
+        ):
+            errors.append("franka_inspection_outcome_contract_invalid")
     camera = trace.get("egocentric_camera")
     if not isinstance(camera, dict) or camera.get("parent_link_name") != "panda_hand":
         errors.append("franka_policy_trace_camera_invalid")
@@ -316,10 +358,10 @@ def _reset_stability_assessment(
 
 
 def _trace_pair_distinctness(candidate_traces: list[dict], request: dict) -> dict:
-    """Independently compute bounded trace-pair identity and distinctness metrics."""
+    """Independently compute bounded trace-cohort reset and distinctness metrics."""
 
     errors = []
-    if len(candidate_traces) != 2:
+    if len(candidate_traces) < 2:
         errors.append("franka_policy_trace_pair_incomplete")
         return {
             "status": "blocked",
@@ -333,13 +375,22 @@ def _trace_pair_distinctness(candidate_traces: list[dict], request: dict) -> dic
         errors.append("franka_policy_trace_observation_vector_invalid")
         start_delta = None
         end_delta = None
+        minimum_end_delta = None
     else:
-        start_delta = max(abs(float(a) - float(b)) for a, b in zip(starts[0], starts[1]))
-        end_delta = max(abs(float(a) - float(b)) for a, b in zip(ends[0], ends[1]))
+        start_delta = max(
+            max(abs(float(a) - float(b)) for a, b in zip(starts[0], start)) for start in starts[1:]
+        )
+        reference_end_deltas = [
+            max(abs(float(a) - float(b)) for a, b in zip(ends[0], end)) for end in ends[1:]
+        ]
+        end_delta = max(reference_end_deltas)
+        minimum_end_delta = min(reference_end_deltas)
     identical_start = start_delta is not None and start_delta <= float(
         request["identical_start_tolerance_rad"]
     )
-    distinct = end_delta is not None and end_delta >= float(request["distinctness_threshold_rad"])
+    distinct = minimum_end_delta is not None and minimum_end_delta >= float(
+        request["distinctness_threshold_rad"]
+    )
     if not identical_start:
         errors.append("franka_policy_trace_identical_start_not_observed")
     if not distinct:
@@ -356,6 +407,9 @@ def _trace_pair_distinctness(candidate_traces: list[dict], request: dict) -> dic
         "distinct": distinct,
         "maximum_end_joint_delta_rad": (
             round(float(end_delta), 9) if end_delta is not None else None
+        ),
+        "minimum_non_reference_end_joint_delta_rad": (
+            round(float(minimum_end_delta), 9) if minimum_end_delta is not None else None
         ),
         "distinctness_threshold_rad": float(request["distinctness_threshold_rad"]),
         "identical_start_tolerance_rad": float(request["identical_start_tolerance_rad"]),
@@ -580,6 +634,200 @@ def _author_fixed_base_support_mount(stage, options: dict, *, Gf, UsdGeom, UsdPh
     return report
 
 
+def _author_bounded_floor_proxy(stage, options: dict, *, Gf, UsdGeom, UsdPhysics, Sdf):
+    """Author a disclosed local floor patch for a proxy-composed policy lane."""
+
+    raw = options.get("bounded_floor_proxy")
+    if raw is None:
+        return {"requested": False}
+    report = {"requested": True, "authored": False, "blockers": []}
+    if not isinstance(raw, dict):
+        report["blockers"] = ["bounded_floor_proxy_invalid"]
+        return report
+
+    def finite_vector(value, length):
+        return (
+            isinstance(value, list)
+            and len(value) == length
+            and all(
+                not isinstance(item, bool)
+                and isinstance(item, (int, float))
+                and math.isfinite(float(item))
+                for item in value
+            )
+        )
+
+    errors = []
+    path_text = str(raw.get("prim_path") or "")
+    path = Sdf.Path(path_text)
+    center = raw.get("center_xyz_collision_stage")
+    half_extents = raw.get("half_extents_xy_stage_units")
+    thickness = raw.get("thickness_stage_units")
+    top_z = raw.get("top_z_collision_stage")
+    if raw.get("schema_version") != "bounded_floor_proxy_candidate.v1":
+        errors.append("bounded_floor_proxy_schema_invalid")
+    if raw.get("status") != "simulator_support_candidate_only_requires_qualification":
+        errors.append("bounded_floor_proxy_status_invalid")
+    if (
+        not path.IsAbsolutePath()
+        or not path.IsPrimPath()
+        or not path_text.startswith("/World/BlueprintDerivedSupport/")
+        or ".." in path_text.split("/")
+    ):
+        errors.append("bounded_floor_proxy_prim_path_invalid")
+    if not finite_vector(center, 3):
+        errors.append("bounded_floor_proxy_center_invalid")
+    if not finite_vector(half_extents, 2) or any(
+        float(value) <= 0.0 or float(value) > 5.0 for value in (half_extents or [])
+    ):
+        errors.append("bounded_floor_proxy_half_extents_invalid")
+    if (
+        isinstance(thickness, bool)
+        or not isinstance(thickness, (int, float))
+        or not 0.01 <= float(thickness) <= 0.5
+    ):
+        errors.append("bounded_floor_proxy_thickness_invalid")
+    if (
+        isinstance(top_z, bool)
+        or not isinstance(top_z, (int, float))
+        or not math.isfinite(float(top_z))
+    ):
+        errors.append("bounded_floor_proxy_top_z_invalid")
+    if (
+        finite_vector(center, 3)
+        and isinstance(thickness, (int, float))
+        and not isinstance(thickness, bool)
+    ):
+        expected_top = float(center[2]) + 0.5 * float(thickness)
+        if not isinstance(top_z, (int, float)) or abs(expected_top - float(top_z)) > 1e-5:
+            errors.append("bounded_floor_proxy_top_z_mismatch")
+    if raw.get("bounded_to_robot_support_zone") is not True:
+        errors.append("bounded_floor_proxy_unbounded")
+    if raw.get("exclude_from_source_collider_physics_probe") is not True:
+        errors.append("bounded_floor_proxy_probe_exclusion_required")
+    if raw.get("physical_floor_continuity_qualified") is not False:
+        errors.append("bounded_floor_proxy_physical_claim_forbidden")
+    if errors:
+        report["blockers"] = sorted(set(errors))
+        return report
+
+    parent = path.GetParentPath()
+    if parent and parent != Sdf.Path.absoluteRootPath:
+        UsdGeom.Xform.Define(stage, parent)
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(2.0)
+    cube.CreateDisplayColorAttr([(0.12, 0.14, 0.18)])
+    cube.CreateDisplayOpacityAttr([0.0])
+    xformable = UsdGeom.Xformable(cube.GetPrim())
+    xformable.ClearXformOpOrder()
+    xformable.AddTranslateOp().Set(Gf.Vec3d(*[float(value) for value in center]))
+    xformable.AddScaleOp().Set(
+        Gf.Vec3d(
+            float(half_extents[0]),
+            float(half_extents[1]),
+            0.5 * float(thickness),
+        )
+    )
+    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    report.update(
+        authored=True,
+        blockers=[],
+        prim_path=path_text,
+        center_xyz_collision_stage=[round(float(value), 9) for value in center],
+        half_extents_xyz_stage_units=[
+            round(float(half_extents[0]), 9),
+            round(float(half_extents[1]), 9),
+            round(0.5 * float(thickness), 9),
+        ],
+        top_z_collision_stage=round(float(top_z), 9),
+        static_collision_authored=True,
+        source_package_modified=False,
+        source_collider_contact_qualification_effect="none",
+        physical_floor_continuity_qualified=False,
+        claim_boundary=(
+            "Derived bounded Isaac floor support only; not captured-floor continuity, "
+            "metric-scale, levelness, load-capacity, or physical-site evidence."
+        ),
+    )
+    return report
+
+
+def _configure_proxy_composed_policy_lane(
+    stage, options: dict, floor_proxy_report: dict, *, Sdf
+) -> dict:
+    """Disable a conflicting source collider only for the disclosed policy lane."""
+
+    raw = options.get("proxy_composed_evaluation_plan")
+    if raw is None:
+        return {"requested": False}
+    report = {"requested": True, "configured": False, "blockers": []}
+    if not isinstance(raw, dict):
+        report["blockers"] = ["proxy_composed_evaluation_plan_invalid"]
+        return report
+    if raw.get("status") != "required_before_policy_evaluation":
+        return {"requested": False, "status": raw.get("status")}
+    errors = []
+    source_path = str(raw.get("source_collision_prim_path") or "")
+    if raw.get("schema_version") != "external_scene_proxy_composed_evaluation_plan.v1":
+        errors.append("proxy_composed_evaluation_plan_schema_invalid")
+    if source_path != "/World/BlueprintReconstruction/Collision/ExternalSceneMesh":
+        errors.append("proxy_composed_evaluation_source_path_invalid")
+    if raw.get("source_collision_enabled_in_policy_lane") is not False:
+        errors.append("proxy_composed_evaluation_source_collision_enabled")
+    if raw.get("source_collision_qualification_preserved_separately") is not True:
+        errors.append("proxy_composed_evaluation_source_qualification_missing")
+    if raw.get("bounded_floor_proxy_required") is not True:
+        errors.append("proxy_composed_evaluation_floor_proxy_required")
+    if not floor_proxy_report.get("authored"):
+        errors.append("proxy_composed_evaluation_floor_proxy_unavailable")
+    source_prim = stage.GetPrimAtPath(Sdf.Path(source_path)) if source_path else None
+    if not source_prim or not source_prim.IsValid() or not source_prim.IsActive():
+        errors.append("proxy_composed_evaluation_source_collision_prim_unavailable")
+    if errors:
+        report["blockers"] = sorted(set(errors))
+        return report
+    source_prim.SetActive(False)
+    report.update(
+        configured=True,
+        blockers=[],
+        source_collision_prim_path=source_path,
+        source_collision_deactivated_for_policy_lane=True,
+        source_collision_qualification_preserved_separately=True,
+        policy_result_claim_ceiling="exact_proxy_composed_simulation_only",
+        physical_site_claim_effect="none",
+    )
+    return report
+
+
+def _restore_source_collision_after_proxy_policy_lane(stage, proxy_report: dict, *, Sdf) -> None:
+    path = str(proxy_report.get("source_collision_prim_path") or "")
+    if not proxy_report.get("configured") or not path:
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(path))
+    if prim and prim.IsValid():
+        prim.SetActive(True)
+        proxy_report["source_collision_restored_for_independent_probe"] = True
+
+
+def _exclude_floor_proxy_from_environment_physics_probe(
+    stage, floor_proxy_report: dict, *, Sdf
+) -> None:
+    path = str(floor_proxy_report.get("prim_path") or "")
+    if not floor_proxy_report.get("authored") or not path:
+        return
+    prim = stage.GetPrimAtPath(Sdf.Path(path))
+    if not prim or not prim.IsValid():
+        floor_proxy_report["excluded_from_environment_physics_probe"] = False
+        return
+    prim.SetActive(False)
+    floor_proxy_report.update(
+        excluded_from_environment_physics_probe=True,
+        physics_probe_claim_boundary=(
+            "derived_floor_proxy_excluded_so_probe_measures_source_environment_collision_only"
+        ),
+    )
+
+
 def _ensure_robot_only_lights(stage, lights_path: str, *, Sdf, UsdGeom, UsdLux):
     """Return a hidden light rig for the robot evidence renders.
 
@@ -795,6 +1043,82 @@ def _end_effector_position(stage, hand_prim, *, UsdGeom) -> list[float]:
     return [float(translation[index]) for index in range(3)]
 
 
+def _inspection_target_view_observation(
+    stage, camera_prim, target_position, camera_fov_degrees, *, Gf, UsdGeom
+) -> dict:
+    cache = UsdGeom.XformCache()
+    matrix = cache.GetLocalToWorldTransform(camera_prim)
+    translation = matrix.ExtractTranslation()
+    camera_position = [float(translation[index]) for index in range(3)]
+    forward_value = matrix.TransformDir(Gf.Vec3d(0.0, 0.0, -1.0))
+    forward = [float(forward_value[index]) for index in range(3)]
+    target_delta = [float(target_position[index]) - camera_position[index] for index in range(3)]
+    distance = math.sqrt(sum(value * value for value in target_delta))
+    forward_length = math.sqrt(sum(value * value for value in forward))
+    if distance <= 1e-9 or forward_length <= 1e-9:
+        raise RuntimeError("franka_inspection_camera_target_geometry_degenerate")
+    cosine = sum(a * b for a, b in zip(forward, target_delta)) / (forward_length * distance)
+    angle = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+    azimuth = math.atan2(
+        camera_position[1] - float(target_position[1]),
+        camera_position[0] - float(target_position[0]),
+    )
+    sector = int(math.floor(((azimuth + math.pi) / (2.0 * math.pi)) * 8.0)) % 8
+    return {
+        "camera_position_stage": [round(value, 9) for value in camera_position],
+        "camera_target_distance_stage_units": round(distance, 9),
+        "view_axis_error_degrees": round(angle, 9),
+        "target_in_fov": bool(angle <= 0.5 * float(camera_fov_degrees)),
+        "viewpoint_bin": f"azimuth-sector-{sector}",
+    }
+
+
+def _robot_environment_contact_events(robot_prim_path: str, support_prim_path: str) -> list[dict]:
+    """Read current PhysX contacts and exclude only fixed-base support contact."""
+
+    import omni.physx  # type: ignore
+    from pxr import PhysicsSchemaTools  # type: ignore
+
+    report = omni.physx.get_physx_simulation_interface().get_contact_report()
+    headers = report[0] if report else []
+    events = []
+    for header in headers:
+        paths = []
+        for name in ("actor0", "actor1", "collider0", "collider1"):
+            value = getattr(header, name, "")
+            try:
+                paths.append(str(PhysicsSchemaTools.intToSdfPath(int(value))))
+            except Exception:  # noqa: BLE001
+                paths.append(str(value))
+        robot_paths = [
+            path
+            for path in paths
+            if path == robot_prim_path or path.startswith(robot_prim_path + "/")
+        ]
+        if not robot_paths:
+            continue
+        outside = [
+            path
+            for path in paths
+            if path and not (path == robot_prim_path or path.startswith(robot_prim_path + "/"))
+        ]
+        if not outside:
+            continue
+        support_only = bool(support_prim_path) and all(
+            path == support_prim_path or path.startswith(support_prim_path + "/")
+            for path in outside
+        )
+        base_link_only = all(
+            "panda_link0" in path or path == robot_prim_path for path in robot_paths
+        )
+        if support_only and base_link_only:
+            continue
+        events.append(
+            {"robot_paths": sorted(set(robot_paths)), "other_paths": sorted(set(outside))}
+        )
+    return events
+
+
 def _author_egocentric_camera(stage, robot_prim, request: dict, *, Gf, Sdf, UsdGeom):
     camera_spec = request["egocentric_camera"]
     hand = _find_named_descendant(robot_prim, camera_spec["parent_link_name"])
@@ -902,6 +1226,9 @@ def _run_articulated_policy_traces(
         "joint_names": request["joint_names"],
         "physics_dt_seconds": request["physics_dt_seconds"],
     }
+    outcome_contract = options.get("inspection_outcome_contract")
+    if isinstance(outcome_contract, dict):
+        base["inspection_outcome_contract_digest"] = outcome_contract["contract_digest"]
     if not robot_report.get("composited") or not robot_report.get("geometry_streamed"):
         return {
             **base,
@@ -923,6 +1250,7 @@ def _run_articulated_policy_traces(
     try:
         import numpy as np  # type: ignore
         from isaacsim.core.api import SimulationContext  # type: ignore
+        from pxr import PhysxSchema, UsdPhysics  # type: ignore
 
         context = SimulationContext(
             physics_dt=float(request["physics_dt_seconds"]),
@@ -944,6 +1272,25 @@ def _run_articulated_policy_traces(
             return articulation, indices
 
         robot_prim = stage.GetPrimAtPath(Sdf.Path(request["robot_prim_path"]))
+        inspection_target = request.get("inspection_target_position_stage")
+        contact_reporting_active = False
+        if inspection_target is not None:
+            articulation_roots = [
+                prim
+                for prim in stage.Traverse()
+                if str(prim.GetPath()).startswith(request["robot_prim_path"])
+                and prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+            ]
+            if not articulation_roots:
+                raise RuntimeError("franka_inspection_articulation_root_missing")
+            for root in articulation_roots:
+                report_api = (
+                    PhysxSchema.PhysxContactReportAPI(root)
+                    if root.HasAPI(PhysxSchema.PhysxContactReportAPI)
+                    else PhysxSchema.PhysxContactReportAPI.Apply(root)
+                )
+                report_api.CreateThresholdAttr().Set(0.0)
+            contact_reporting_active = True
         camera_prim, hand_prim = _author_egocentric_camera(
             stage,
             robot_prim,
@@ -965,6 +1312,7 @@ def _run_articulated_policy_traces(
             trace = {
                 "schema_version": "franka_articulated_policy_trace.v1",
                 "policy_id": policy_id,
+                "action_source": candidate.get("action_source", "scripted_controller"),
                 "robot_id": request["robot_id"],
                 "controller_id": request["controller_id"],
                 "status": "running",
@@ -1009,6 +1357,8 @@ def _run_articulated_policy_traces(
                 duration = int(candidate["duration_steps"])
                 sample_interval = int(request["sample_interval_steps"])
                 positions = [_end_effector_position(stage, hand_prim, UsdGeom=UsdGeom)]
+                target_view_observations = []
+                robot_environment_contacts = []
                 failure_phase = "execute_joint_targets"
                 for step in range(1, duration + 1):
                     alpha = float(step) / float(duration)
@@ -1021,11 +1371,29 @@ def _run_articulated_policy_traces(
                         )
                     )
                     context.step(render=(step % sample_interval == 0 or step == duration))
+                    if contact_reporting_active:
+                        robot_environment_contacts.extend(
+                            _robot_environment_contact_events(
+                                request["robot_prim_path"],
+                                str((support or {}).get("prim_path") or ""),
+                            )
+                        )
                     if step % sample_interval == 0 or step == duration:
                         observed = _vector(articulation.get_joint_positions(joint_indices=indices))
                         velocity = _vector(articulation.get_joint_velocities(joint_indices=indices))
                         end_effector = _end_effector_position(stage, hand_prim, UsdGeom=UsdGeom)
                         positions.append(end_effector)
+                        if inspection_target is not None:
+                            target_view_observations.append(
+                                _inspection_target_view_observation(
+                                    stage,
+                                    camera_prim,
+                                    inspection_target,
+                                    request["egocentric_camera"]["fov_degrees"],
+                                    Gf=Gf,
+                                    UsdGeom=UsdGeom,
+                                )
+                            )
                         trace["samples"].append(
                             {
                                 "step": step,
@@ -1078,6 +1446,12 @@ def _run_articulated_policy_traces(
                     maximum_end_tracking_error_rad=round(tracking_error, 9),
                     end_effector_path_length_stage_units=round(path_length, 9),
                     egocentric_observation=egocentric_observation,
+                    target_view_observations=target_view_observations,
+                    contact_reporting_active=contact_reporting_active,
+                    robot_environment_contact_event_count=len(robot_environment_contacts),
+                    collision_free_observed=bool(
+                        contact_reporting_active and not robot_environment_contacts
+                    ),
                     physical_success_claimed=False,
                     claim_boundary=(
                         "Exact Isaac articulation observation for this candidate only; not "
@@ -1877,8 +2251,38 @@ def _render(args) -> int:
                 "runner_fixed_base_support_mount_authored",
                 fixed_base_support_mount=support_mount_report,
             )
+        floor_proxy_report = _author_bounded_floor_proxy(
+            stage,
+            render_options,
+            Gf=Gf,
+            UsdGeom=UsdGeom,
+            UsdPhysics=UsdPhysics,
+            Sdf=Sdf,
+        )
+        if floor_proxy_report.get("requested"):
+            _phase(
+                result_path,
+                base,
+                "runner_bounded_floor_proxy_authored",
+                bounded_floor_proxy=floor_proxy_report,
+            )
+        proxy_composition_report = _configure_proxy_composed_policy_lane(
+            stage,
+            render_options,
+            floor_proxy_report,
+            Sdf=Sdf,
+        )
+        if proxy_composition_report.get("requested"):
+            _phase(
+                result_path,
+                base,
+                "runner_proxy_composed_policy_lane_configured",
+                proxy_composed_evaluation=proxy_composition_report,
+            )
         robot_report = _composite_robot(stage, render_options, Gf=Gf, UsdGeom=UsdGeom, Sdf=Sdf)
         robot_report["fixed_base_support_mount"] = support_mount_report
+        robot_report["bounded_floor_proxy"] = floor_proxy_report
+        robot_report["proxy_composed_evaluation"] = proxy_composition_report
         robot_lights_prim = None
         if robot_report.get("requested"):
             _phase(result_path, base, "runner_robot_composited", robot=robot_report)
@@ -2202,6 +2606,11 @@ def _render(args) -> int:
         physics_probe = {}
         blockers = []
         if qualification_mode:
+            _restore_source_collision_after_proxy_policy_lane(
+                stage,
+                proxy_composition_report,
+                Sdf=Sdf,
+            )
             _exclude_robot_from_environment_physics_probe(
                 stage,
                 robot_report,
@@ -2210,6 +2619,11 @@ def _render(args) -> int:
             _exclude_support_mount_from_environment_physics_probe(
                 stage,
                 support_mount_report,
+                Sdf=Sdf,
+            )
+            _exclude_floor_proxy_from_environment_physics_probe(
+                stage,
+                floor_proxy_report,
                 Sdf=Sdf,
             )
             physics_probe = _run_qualification_physics_probe(
@@ -2236,6 +2650,12 @@ def _render(args) -> int:
                 blockers.append("isaac_articulated_policy_trace_pair_incomplete")
             if support_mount_report.get("requested") and not support_mount_report.get("authored"):
                 blockers.append("isaac_fixed_base_support_mount_incomplete")
+            if floor_proxy_report.get("requested") and not floor_proxy_report.get("authored"):
+                blockers.append("isaac_bounded_floor_proxy_incomplete")
+            if proxy_composition_report.get("requested") and not proxy_composition_report.get(
+                "configured"
+            ):
+                blockers.append("isaac_proxy_composed_policy_lane_incomplete")
             blockers = sorted(set(blockers))
             ok = not blockers
         else:
@@ -2258,6 +2678,8 @@ def _render(args) -> int:
             "mp4": mp4,
             "robot": robot_report,
             "fixed_base_support_mount": support_mount_report,
+            "bounded_floor_proxy": floor_proxy_report,
+            "proxy_composed_evaluation": proxy_composition_report,
             "articulated_policy_trace_pair": policy_trace_result,
             "blockers": blockers,
             "cost_usd": 0.0,
@@ -2266,6 +2688,10 @@ def _render(args) -> int:
                 "captured_scene_displayed_in_isaac_rtx": bool(visual_ok),
                 "robot_visual_composited_at_stance": bool(robot_report.get("composited")),
                 "derived_static_support_mount_authored": bool(support_mount_report.get("authored")),
+                "derived_bounded_floor_proxy_authored": bool(floor_proxy_report.get("authored")),
+                "source_collision_disabled_for_proxy_policy_lane": bool(
+                    proxy_composition_report.get("source_collision_deactivated_for_policy_lane")
+                ),
                 "articulated_policy_execution_observed": bool(
                     policy_trace_result.get("status") == "completed"
                 ),

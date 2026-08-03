@@ -14,8 +14,11 @@ so this module provides two layers:
 
 This module never claims rendering or physics; it only decodes/inspects splat geometry.
 """
+
 from __future__ import annotations
 
+import hashlib
+import math
 import re
 import subprocess
 from dataclasses import dataclass
@@ -24,17 +27,26 @@ from typing import Sequence
 
 import numpy as np
 
-SPLAT_TRANSFORM_CLI_REL = (
-    "tools/splat_render/node_modules/@playcanvas/splat-transform/bin/cli.mjs"
-)
+from .decision_evidence_contracts import canonical_digest
+
+SPLAT_TRANSFORM_CLI_REL = "tools/splat_render/node_modules/@playcanvas/splat-transform/bin/cli.mjs"
 
 # Standard 3DGS float-PLY vertex properties required for geometry analysis.
 _REQUIRED_3DGS_PROPS = (
-    "x", "y", "z",
+    "x",
+    "y",
+    "z",
     "opacity",
-    "scale_0", "scale_1", "scale_2",
-    "rot_0", "rot_1", "rot_2", "rot_3",
-    "f_dc_0", "f_dc_1", "f_dc_2",
+    "scale_0",
+    "scale_1",
+    "scale_2",
+    "rot_0",
+    "rot_1",
+    "rot_2",
+    "rot_3",
+    "f_dc_0",
+    "f_dc_1",
+    "f_dc_2",
 )
 _FLOAT_PLY_TYPES = {"float", "float32"}
 
@@ -44,11 +56,11 @@ class SplatData:
     """Standard 3DGS splat arrays (geometry + base color/opacity)."""
 
     count: int
-    xyz: np.ndarray        # (N, 3) float32 — splat centers
-    opacity: np.ndarray    # (N,)   float32 — raw logit (apply sigmoid for [0, 1])
-    f_dc: np.ndarray       # (N, 3) float32 — SH band-0 base color
-    scales: np.ndarray     # (N, 3) float32 — log-scale
-    quats: np.ndarray      # (N, 4) float32 — rotation quaternion (rot_0..3)
+    xyz: np.ndarray  # (N, 3) float32 — splat centers
+    opacity: np.ndarray  # (N,)   float32 — raw logit (apply sigmoid for [0, 1])
+    f_dc: np.ndarray  # (N, 3) float32 — SH band-0 base color
+    scales: np.ndarray  # (N, 3) float32 — log-scale
+    quats: np.ndarray  # (N, 4) float32 — rotation quaternion (rot_0..3)
     properties: tuple[str, ...]
     sh_rest: np.ndarray | None = None  # (N, 3*((degree+1)^2-1)) channel-major
 
@@ -234,9 +246,7 @@ def read_standard_3dgs_ply(path: str | Path) -> SplatData:
     ncol = len(props)
     flat = np.fromfile(path, dtype="<f4", count=count * ncol, offset=offset)
     if flat.size != count * ncol:
-        raise ValueError(
-            f"truncated PLY body: expected {count * ncol} floats, got {flat.size}"
-        )
+        raise ValueError(f"truncated PLY body: expected {count * ncol} floats, got {flat.size}")
     arr = flat.reshape(count, ncol)
 
     def cols(keys: Sequence[str]) -> np.ndarray:
@@ -274,12 +284,20 @@ def write_standard_3dgs_ply(splat: SplatData, path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     order = [
-        ("x", splat.xyz[:, 0]), ("y", splat.xyz[:, 1]), ("z", splat.xyz[:, 2]),
-        ("f_dc_0", splat.f_dc[:, 0]), ("f_dc_1", splat.f_dc[:, 1]), ("f_dc_2", splat.f_dc[:, 2]),
+        ("x", splat.xyz[:, 0]),
+        ("y", splat.xyz[:, 1]),
+        ("z", splat.xyz[:, 2]),
+        ("f_dc_0", splat.f_dc[:, 0]),
+        ("f_dc_1", splat.f_dc[:, 1]),
+        ("f_dc_2", splat.f_dc[:, 2]),
         ("opacity", splat.opacity),
-        ("scale_0", splat.scales[:, 0]), ("scale_1", splat.scales[:, 1]), ("scale_2", splat.scales[:, 2]),
-        ("rot_0", splat.quats[:, 0]), ("rot_1", splat.quats[:, 1]),
-        ("rot_2", splat.quats[:, 2]), ("rot_3", splat.quats[:, 3]),
+        ("scale_0", splat.scales[:, 0]),
+        ("scale_1", splat.scales[:, 1]),
+        ("scale_2", splat.scales[:, 2]),
+        ("rot_0", splat.quats[:, 0]),
+        ("rot_1", splat.quats[:, 1]),
+        ("rot_2", splat.quats[:, 2]),
+        ("rot_3", splat.quats[:, 3]),
     ]
     if splat.sh_rest is not None:
         rest = np.asarray(splat.sh_rest, dtype=np.float32)
@@ -357,4 +375,210 @@ def convert_to_standard_ply(
         "output": str(dst),
         "output_bytes": dst.stat().st_size,
         "decoder": "playcanvas_splat_transform",
+    }
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _summary_row_counts(stdout: str) -> list[int]:
+    legacy = [
+        int(match.group(1)) for match in re.finditer(r"\*\*Row Count:\*\*\s*(\d+)", stdout or "")
+    ]
+    if legacy:
+        return legacy
+    return [
+        int(match.group(1)) for match in re.finditer(r"(?m)^gaussians:\s*(\d+)\s*$", stdout or "")
+    ]
+
+
+def run_splat_transform_cleanup(
+    src: str | Path,
+    dst: str | Path,
+    *,
+    repo_root: str | Path | None = None,
+    node: str = "node",
+    timeout_seconds: int = 3_600,
+    gpu: int | None = None,
+    filter_nonfinite: bool = True,
+    minimum_opacity: float | None = None,
+    robust_bounds: Sequence[float] | None = None,
+    floater_parameters: Sequence[float] | None = None,
+) -> dict:
+    """Wrap the pinned PlayCanvas cleanup CLI and emit an unqualified receipt.
+
+    Blueprint delegates splat parsing, filtering, and encoding to the upstream
+    implementation. The source is never mutated, global decimation is not
+    exposed, and the output cannot enter evaluation until the independent
+    appearance-fidelity gate accepts its removal receipts and reference views.
+    """
+
+    source = Path(src).resolve()
+    output = Path(dst).resolve()
+    cli = find_splat_transform_cli(repo_root)
+    blockers: list[str] = []
+    if cli is None:
+        blockers.append("splat_transform_cli_unavailable")
+    if not source.is_file():
+        blockers.append("splat_source_missing")
+    if source == output:
+        blockers.append("immutable_source_overwrite_forbidden")
+    if output.suffix.lower() not in {".ply", ".spz", ".sog"}:
+        blockers.append("splat_cleanup_output_format_unsupported")
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, int)
+        or timeout_seconds < 1
+    ):
+        blockers.append("splat_cleanup_timeout_invalid")
+    if minimum_opacity is not None and (
+        isinstance(minimum_opacity, bool)
+        or not isinstance(minimum_opacity, (int, float))
+        or not math.isfinite(float(minimum_opacity))
+        or not 0.0 <= float(minimum_opacity) <= 1.0
+    ):
+        blockers.append("splat_cleanup_opacity_threshold_invalid")
+    if robust_bounds is not None and (
+        len(robust_bounds) != 6
+        or any(not math.isfinite(float(value)) for value in robust_bounds)
+        or any(float(robust_bounds[index]) > float(robust_bounds[index + 3]) for index in range(3))
+    ):
+        blockers.append("splat_cleanup_robust_bounds_invalid")
+    if floater_parameters is not None and (
+        len(floater_parameters) != 3
+        or any(not math.isfinite(float(value)) or float(value) <= 0 for value in floater_parameters)
+    ):
+        blockers.append("splat_cleanup_floater_parameters_invalid")
+    if blockers:
+        return {
+            "schema_version": "splat_transform_cleanup_result.v1",
+            "status": "blocked",
+            "blockers": sorted(set(blockers)),
+            "source_appearance_truth_preserved": source != output,
+            "global_decimation_applied": False,
+            "evaluation_render_authorized": False,
+        }
+
+    assert cli is not None
+    try:
+        version_process = subprocess.run(
+            [node, str(cli), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError:
+        return _blocked_cleanup_result("node_runtime_unavailable")
+    if version_process.returncode != 0:
+        return _blocked_cleanup_result("splat_transform_version_probe_failed")
+
+    command = [node, str(cli), "--no-tty", "-w"]
+    if gpu is not None:
+        command.extend(["--gpu", str(int(gpu))])
+    command.extend([str(source), "--stats"])
+    removal_reasons: list[dict[str, object]] = []
+    if filter_nonfinite:
+        # SplatTransform deliberately retains positive infinity in opacity. Its
+        # value threshold must be strictly inside (0, 1), so use a near-one
+        # exclusive bound instead of the invalid ``lte,1`` action.
+        command.extend(["--filter-nan", "--filter-value=opacity,lt,0.999999"])
+        removal_reasons.append({"reason": "nonfinite", "parameters": {}})
+    if minimum_opacity is not None:
+        command.append(f"--filter-value=opacity,gte,{float(minimum_opacity):.12g}")
+        removal_reasons.append(
+            {
+                "reason": "low_opacity",
+                "parameters": {"minimum_opacity": float(minimum_opacity)},
+            }
+        )
+    spatial_parameters: dict[str, object] = {}
+    if robust_bounds is not None:
+        normalized_bounds = [float(value) for value in robust_bounds]
+        command.append("--filter-box=" + ",".join(f"{value:.12g}" for value in normalized_bounds))
+        spatial_parameters["bounds"] = normalized_bounds
+    if floater_parameters is not None:
+        normalized_floaters = [float(value) for value in floater_parameters]
+        command.append(
+            "--filter-floaters=" + ",".join(f"{value:.12g}" for value in normalized_floaters)
+        )
+        spatial_parameters["floater_filter"] = normalized_floaters
+    if spatial_parameters:
+        removal_reasons.append(
+            {"reason": "robust_spatial_outlier", "parameters": spatial_parameters}
+        )
+    command.extend(["--stats", str(output)])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return _blocked_cleanup_result("splat_transform_cleanup_timeout")
+    counts = _summary_row_counts(process.stdout or "")
+    if process.returncode != 0 or not output.is_file() or len(counts) < 2:
+        result = _blocked_cleanup_result("splat_transform_cleanup_failed")
+        result.update(
+            {
+                "returncode": process.returncode,
+                "stderr_tail": (process.stderr or "")[-2000:],
+                "stdout_tail": (process.stdout or "")[-4000:],
+            }
+        )
+        return result
+    source_count, retained_count = counts[0], counts[-1]
+    if retained_count > source_count:
+        return _blocked_cleanup_result("splat_transform_cleanup_count_increased")
+    result = {
+        "schema_version": "splat_transform_cleanup_result.v1",
+        "status": "completed_unqualified_candidate",
+        "blockers": [],
+        "implementation": {
+            "tool_id": "playcanvas_splat_transform",
+            "version_output": (version_process.stdout or "").strip(),
+            "cli_digest": _sha256_path(cli),
+            "command": command,
+        },
+        "source": {
+            "path": str(source),
+            "asset_digest": _sha256_path(source),
+            "splat_count": source_count,
+            "immutable_appearance_truth": True,
+        },
+        "render_input_candidate": {
+            "path": str(output),
+            "asset_digest": _sha256_path(output),
+            "splat_count": retained_count,
+        },
+        "removed_splat_count": source_count - retained_count,
+        "retained_splat_fraction": retained_count / source_count,
+        "removal_reasons": removal_reasons,
+        "source_appearance_truth_preserved": True,
+        "global_decimation_applied": False,
+        "requires_independent_removal_qualification": True,
+        "requires_reference_frame_comparison": True,
+        "evaluation_render_authorized": False,
+        "claim_ceiling": "appearance_cleanup_candidate",
+    }
+    result["splat_transform_cleanup_result_digest"] = canonical_digest(
+        result, digest_field="splat_transform_cleanup_result_digest"
+    )
+    return result
+
+
+def _blocked_cleanup_result(blocker: str) -> dict:
+    return {
+        "schema_version": "splat_transform_cleanup_result.v1",
+        "status": "blocked",
+        "blockers": [blocker],
+        "source_appearance_truth_preserved": True,
+        "global_decimation_applied": False,
+        "evaluation_render_authorized": False,
     }

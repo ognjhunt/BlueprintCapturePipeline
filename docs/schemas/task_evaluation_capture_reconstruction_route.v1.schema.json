@@ -83,6 +83,40 @@
       "items": {"type": "string", "minLength": 1},
       "uniqueItems": true
     },
+    "appearance_fidelity_requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "full_resolution_source_is_appearance_truth",
+        "unqualified_global_decimation_forbidden",
+        "qualified_removal_reasons",
+        "source_retained_ratio_required",
+        "source_and_retained_bounds_required",
+        "representation_coordinate_basis_and_camera_binding_required",
+        "spherical_harmonics_degree_required",
+        "reference_frame_comparison_required",
+        "native_3dgs_renderer_required",
+        "appearance_renderer_independent_from_dynamics_engine",
+        "exact_camera_depth_aware_robot_composite_required",
+        "presentation_derivative_evaluation_use_forbidden"
+      ],
+      "properties": {
+        "full_resolution_source_is_appearance_truth": {"const": true},
+        "unqualified_global_decimation_forbidden": {"const": true},
+        "qualified_removal_reasons": {
+          "const": ["low_opacity", "nonfinite", "robust_spatial_outlier"]
+        },
+        "source_retained_ratio_required": {"const": true},
+        "source_and_retained_bounds_required": {"const": true},
+        "representation_coordinate_basis_and_camera_binding_required": {"const": true},
+        "spherical_harmonics_degree_required": {"const": true},
+        "reference_frame_comparison_required": {"const": true},
+        "native_3dgs_renderer_required": {"const": true},
+        "appearance_renderer_independent_from_dynamics_engine": {"const": true},
+        "exact_camera_depth_aware_robot_composite_required": {"const": true},
+        "presentation_derivative_evaluation_use_forbidden": {"const": true}
+      }
+    },
     "stages": {
       "type": "array",
       "items": {

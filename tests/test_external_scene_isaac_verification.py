@@ -339,3 +339,23 @@ def test_policy_only_abstention_preserves_static_scene_qualification(
     assert result["policy_lane_abstained_without_invalidating_static_evidence"] is True
     assert result["articulated_policy_trace_pair_qualified"] is False
     assert result["checks"]["live_contact_observed"] is True
+
+    runtime["blockers"] = ["isaac_test_body_fell_through_floor"]
+    runtime["physics_probe"]["test_body_fell_through_floor"] = True
+    runtime["proxy_composed_evaluation"] = {
+        "configured": True,
+        "source_collision_restored_for_independent_probe": True,
+    }
+    runtime["articulated_policy_trace_pair"] = {"status": "completed"}
+    result = normalize_external_scene_isaac_verification(
+        verification_request=request,
+        runtime_result=runtime,
+        package_artifact_root=package_root,
+        runtime_artifact_root=runtime_root,
+    )
+
+    assert result["status"] == "verified_proxy_composed_policy_evidence_only"
+    assert result["source_collision_contact_qualified"] is False
+    assert result["articulated_policy_trace_pair_qualified"] is True
+    assert result["source_probe_abstained_without_invalidating_proxy_policy_evidence"] is True
+    assert result["claim_ceiling"] == "exact_proxy_composed_simulation_policy_trace_only"

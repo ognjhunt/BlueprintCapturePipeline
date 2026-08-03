@@ -8,10 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-import hashlib
 import json
 import math
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 from typing import Any, Callable, Mapping, Sequence
 
@@ -91,6 +90,8 @@ from .capture_reconstruction_routing import (
     build_capture_reconstruction_route,
     validate_capture_reconstruction_route,
 )
+from .emitted_artifacts import validated_emitted_artifact as _validated_emitted_artifact
+from . import appearance_tools
 from .phase2_artifacts import (
     authorization_request,
     clarification_request,
@@ -101,37 +102,6 @@ from .phase2_artifacts import (
 
 
 TOOL_REGISTRY_SCHEMA_VERSION = "task_evaluation_supervisor_tool_registry.v1"
-
-
-def _validated_emitted_artifact(
-    *, root: str | Path, relative_path: Any, expected_digest: Any
-) -> Path:
-    root_path = Path(root).resolve(strict=True)
-    text = str(relative_path or "").replace("\\", "/")
-    relative = PurePosixPath(text)
-    if (
-        not text
-        or relative.is_absolute()
-        or any(part in {"", ".", ".."} for part in relative.parts)
-        or ":" in relative.parts[0]
-    ):
-        raise ValueError("emitted_artifact_relative_path_unsafe")
-    candidate = root_path.joinpath(*relative.parts)
-    if candidate.is_symlink():
-        raise ValueError("emitted_artifact_symlink_forbidden")
-    try:
-        resolved = candidate.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError("emitted_artifact_missing") from exc
-    if root_path not in resolved.parents or not resolved.is_file():
-        raise ValueError("emitted_artifact_escape_or_not_file")
-    digest = hashlib.sha256()
-    with resolved.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    if expected_digest != f"sha256:{digest.hexdigest()}":
-        raise ValueError("emitted_artifact_digest_mismatch")
-    return resolved
 
 
 def _output_schema(
@@ -344,6 +314,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    **appearance_tools.appearance_tool_output_schemas(_output_schema),
     "run_generated_repair_candidate": _output_schema(
         {
             "contract_present": {"const": True},
@@ -825,6 +796,7 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             timeout_seconds=1_800.0,
             idempotency="frozen_hidden_split_independent_evaluator",
         ),
+        *appearance_tools.appearance_tool_descriptors(_descriptor),
         _descriptor(
             "run_generated_repair_candidate",
             "generated_reconstruction_support",
@@ -1344,6 +1316,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "validate_metric_scale",
         "train_gaussian_reconstruction",
         "evaluate_heldout_appearance",
+        *appearance_tools.APPEARANCE_TOOL_IDS,
         "run_generated_repair_candidate",
         "compile_metric_geometry",
         "compile_collision_candidate",
@@ -1894,9 +1867,7 @@ def _compile_arkit_metric_scaffold(
         "reconstruction_result_digest": result_digest,
         "metric_scaffold_digest": metric_reference["digest"],
         "arkit_export_digest": export_reference["digest"],
-        "arkit_raw_contract_validation_digest": metrics[
-            "arkit_raw_contract_validation_digest"
-        ],
+        "arkit_raw_contract_validation_digest": metrics["arkit_raw_contract_validation_digest"],
         "decoded_pts_verified": True,
         "raw_arkit_poses_modified": False,
         "metric_scale_independently_validated": False,
@@ -2088,8 +2059,7 @@ def _export_arkit_reconstruction_dataset(
             not isinstance(artifact, Mapping)
             or artifact.get("schema_version") != artifact_type
             or artifact.get(digest_field) != expected_content_digest
-            or artifact.get(digest_field)
-            != canonical_digest(artifact, digest_field=digest_field)
+            or artifact.get(digest_field) != canonical_digest(artifact, digest_field=digest_field)
             or reference.get("content_digest") != expected_content_digest
         ):
             raise ValueError("arkit_reconstruction_dataset_export_artifact_digest_invalid")
@@ -2517,10 +2487,8 @@ def _run_pose_refinement(
             != request["pose_refinement_execution_request_digest"]
             or manifest["source_capture_digest"] != request["source_capture_digest"]
             or manifest["frozen_split_digest"] != request["frozen_split_digest"]
-            or manifest["camera_calibration_digest"]
-            != request["camera_calibration_digest"]
-            or manifest["initial_pose_manifest_digest"]
-            != request["initial_pose_manifest_digest"]
+            or manifest["camera_calibration_digest"] != request["camera_calibration_digest"]
+            or manifest["initial_pose_manifest_digest"] != request["initial_pose_manifest_digest"]
             or manifest["method_id"] != request["method_id"]
             or manifest["implementation_digest"] != request["implementation_digest"]
             or manifest["container_image_digest"] != request["container_image_digest"]
@@ -3198,6 +3166,10 @@ def _bound_artifact(
         return _run_pose_refinement(context=context, arguments=arguments)
     elif tool_id == "train_gaussian_reconstruction":
         return _train_gaussian_reconstruction(context=context, arguments=arguments)
+    elif tool_id in appearance_tools.APPEARANCE_TOOL_IDS:
+        return appearance_tools.execute_appearance_tool(
+            tool_id=tool_id, context=context, arguments=arguments
+        )
     elif tool_id in _GEOMETRY_TOOL_CONFIG:
         return _execute_geometry_contract_tool(
             context=context, tool_id=tool_id, arguments=arguments
@@ -3329,6 +3301,11 @@ def non_spend_tool_bindings(
         if tool_id == "train_gaussian_reconstruction" and (
             not callable(getattr(context, "gaussian_reconstruction_trainer", None))
             or not isinstance(getattr(context, "reconstruction_training_request", None), Mapping)
+        ):
+            continue
+        if (
+            tool_id in appearance_tools.APPEARANCE_TOOL_IDS
+            and not appearance_tools.appearance_tool_available(tool_id, context)
         ):
             continue
         if tool_id in _GEOMETRY_TOOL_CONFIG:
