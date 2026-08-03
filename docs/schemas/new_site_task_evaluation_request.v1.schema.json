@@ -182,9 +182,10 @@
         "candidate_may_self_authorize": {"const": false},
         "target_analysis": {
           "type": "object",
-          "required": ["schema_version", "target_analysis_digest"],
+          "required": ["schema_version", "robot_id", "target_analysis_digest"],
           "properties": {
             "schema_version": {"const": "scene_task_target_analysis_result.v1"},
+            "robot_id": {"enum": ["franka_panda", "unitree_g1"]},
             "target_analysis_digest": {"$ref": "#/$defs/digest"}
           },
           "additionalProperties": true

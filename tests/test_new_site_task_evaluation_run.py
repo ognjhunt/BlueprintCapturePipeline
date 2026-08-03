@@ -94,11 +94,17 @@ def _target(
     )
 
 
-def _rendered_target(reconstruction: dict) -> dict:
+def _rendered_target(
+    reconstruction: dict,
+    *,
+    task_family: str = "franka_small_object_pick",
+    robot_id: str = "franka_panda",
+    task_zone_status: str = "not_required_for_inspection_only",
+) -> dict:
     selected = {
         "proposal_id": "visible-object-001",
         "object_label": "visible object",
-        "task_family": "rigid_pick_place",
+        "task_family": task_family,
         "affordances": ["pick"],
         "visual_confidence": 0.95,
         "status": "authorized_metric_sim_target",
@@ -108,6 +114,7 @@ def _rendered_target(reconstruction: dict) -> dict:
             "schema_version": "scene_task_target_analysis_result.v1",
             "status": "target_ready_for_bounded_sim",
             "source_scene_digest": reconstruction["source_scene_digest"],
+            "robot_id": robot_id,
             "selected_target": selected,
         },
         "target_analysis_digest",
@@ -126,11 +133,17 @@ def _rendered_target(reconstruction: dict) -> dict:
     task_zone_requirement = _finalize(
         {
             "schema_version": "task_zone_asset_requirement_candidate.v1",
-            "status": "not_required_for_inspection_only",
+            "status": task_zone_status,
             "target_region_id": selected["proposal_id"],
-            "interaction_mode": "inspection_only",
+            "interaction_mode": (
+                "unknown"
+                if task_zone_status == "abstained_interaction_mode_ambiguous"
+                else "inspection_only"
+            ),
             "interaction_mode_source": "fixture",
-            "verified_simready_asset_required": False,
+            "verified_simready_asset_required": (
+                None if task_zone_status == "abstained_interaction_mode_ambiguous" else False
+            ),
             "authoritative_asset_selection_performed": False,
             "next_stage": "robot_placement",
         },
@@ -616,6 +629,56 @@ def test_existing_rendered_target_orchestration_is_admitted_without_hand_shaping
     assert result["target_orchestration_digest"] == rendered["orchestration_digest"]
     assert result["target_binding_digest"] == binding_digest
     assert result["task_class"] == "rigid_pick_place"
+    assert result["robot_id"] == "franka_panda"
+
+
+def test_rendered_g1_family_preserves_humanoid_robot_binding() -> None:
+    request = _request()
+    rendered = _rendered_target(
+        request["reconstruction"],
+        task_family="g1_object_retrieval",
+        robot_id="unitree_g1",
+    )
+    _replace_request_target(request, rendered)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "robot_default_binding_mismatch" in caught.value.codes
+    assert "g1_requires_humanoid_task" not in caught.value.codes
+
+
+def test_ambiguous_rendered_task_zone_requirement_abstains_before_placement() -> None:
+    request = _request()
+    rendered = _rendered_target(
+        request["reconstruction"],
+        task_zone_status="abstained_interaction_mode_ambiguous",
+    )
+    _replace_request_target(request, rendered)
+
+    result = compile_new_site_task_evaluation_run(request)
+
+    assert result["status"] == "abstained"
+    assert result["terminal_stage"] == "automatic_task_target_binding"
+    assert result["smallest_missing_measurement"]["code"] == (
+        "task_zone_interaction_mode_unresolved"
+    )
+    assert result["policy_attempt_count"] == 0
+
+
+def test_rendered_binding_must_join_registered_scene_and_splat() -> None:
+    request = _request()
+    rendered = _rendered_target(request["reconstruction"])
+    binding = rendered["binding_results"][0]["binding"]
+    binding["analysis_splat_digest"] = _sha("e")
+    _finalize(binding, "binding_evidence_digest")
+    _finalize(rendered, "orchestration_digest")
+    _replace_request_target(request, rendered)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "selected_target_binding_reconstruction_mismatch" in caught.value.codes
 
 
 def test_existing_external_placement_candidate_abstains_at_qualification() -> None:

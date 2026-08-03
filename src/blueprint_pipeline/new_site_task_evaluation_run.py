@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_site_measurement_routing import (
     MeasurementRoutingError,
+    TASK_CAPABILITIES,
     route_task_site_measurement,
 )
 
@@ -42,6 +43,25 @@ _RENDERED_TARGET_ANALYSIS_SCHEMA_VERSION = "scene_task_target_analysis_result.v1
 _SPLAT_TARGET_BINDING_SCHEMA_VERSION = "splat_bbox_target_binding_result.v1"
 _TASK_ZONE_REQUIREMENT_SCHEMA_VERSION = "task_zone_asset_requirement_candidate.v1"
 _EXTERNAL_PLACEMENT_SCHEMA_VERSION = "external_scene_robot_placement_candidate.v1"
+_ANALYZER_TASK_FAMILY_BINDINGS = {
+    "franka_small_object_pick": ("rigid_pick_place", "franka_panda"),
+    "franka_utensil_pick": ("rigid_pick_place", "franka_panda"),
+    "franka_tool_pick": ("rigid_pick_place", "franka_panda"),
+    "franka_work_surface_inspection": ("visual_perception", "franka_panda"),
+    "franka_surface_inspection": ("visual_perception", "franka_panda"),
+    "franka_sink_inspection": ("visual_perception", "franka_panda"),
+    "franka_appliance_interaction": ("doors_drawers_handles", "franka_panda"),
+    "g1_object_retrieval": ("mobile_manipulation_clutter", "unitree_g1"),
+    "g1_obstacle_aware_navigation": ("locomotion", "unitree_g1"),
+    "g1_work_surface_inspection": ("visual_navigation_active_perception", "unitree_g1"),
+    "g1_sink_inspection": ("visual_navigation_active_perception", "unitree_g1"),
+    "g1_appliance_interaction": ("mobile_manipulation_clutter", "unitree_g1"),
+}
+_HUMANOID_TASK_FAMILIES = {
+    family
+    for family, (_, robot_id) in _ANALYZER_TASK_FAMILY_BINDINGS.items()
+    if robot_id == "unitree_g1"
+}
 
 
 class NewSiteTaskEvaluationError(ValueError):
@@ -282,6 +302,11 @@ def _target_gate(
             if isinstance(binding_result, Mapping)
             else {}
         )
+        if binding and (
+            binding.get("source_scene_digest") != source_scene_digest
+            or binding.get("analysis_splat_digest") != appearance_asset_digest
+        ):
+            raise NewSiteTaskEvaluationError(["selected_target_binding_reconstruction_mismatch"])
         task_zone_requirement = _validate_canonical_artifact(
             rendered.get("task_zone_asset_requirement"),
             label="task_zone_asset_requirement",
@@ -291,11 +316,27 @@ def _target_gate(
         if task_zone_requirement.get("authoritative_asset_selection_performed") is not False:
             raise NewSiteTaskEvaluationError(["task_zone_candidate_self_authorization_forbidden"])
         task_family = str((selected or {}).get("task_family") or "").strip()
+        supplied_task_class = str((selected or {}).get("task_class") or "").strip()
+        family_binding = _ANALYZER_TASK_FAMILY_BINDINGS.get(task_family)
+        if supplied_task_class:
+            if supplied_task_class not in TASK_CAPABILITIES:
+                raise NewSiteTaskEvaluationError(["rendered_target_task_class_unknown"])
+            task_class = supplied_task_class
+        elif family_binding is not None:
+            task_class = family_binding[0]
+        else:
+            raise NewSiteTaskEvaluationError(["rendered_target_task_family_unmapped"])
+        analysis_robot = str(analysis.get("robot_id") or "").strip()
+        if analysis_robot not in {"franka_panda", "unitree_g1"}:
+            raise NewSiteTaskEvaluationError(["rendered_target_robot_binding_invalid"])
+        if family_binding is not None and analysis_robot != family_binding[1]:
+            raise NewSiteTaskEvaluationError(["rendered_target_robot_family_mismatch"])
         normalized_selected = (
             {
                 **selected,
                 "task_family": task_family,
-                "task_class": str(selected.get("task_class") or task_family).strip(),
+                "task_class": task_class,
+                "required_embodiment": analysis_robot,
                 "target_binding_digest": binding.get("binding_evidence_digest"),
                 "candidate_self_authorized": False,
             }
@@ -311,6 +352,26 @@ def _target_gate(
             "task_zone_asset_requirement": task_zone_requirement,
             "target_orchestration_digest": rendered["orchestration_digest"],
         }
+        if task_zone_requirement.get("status") in {
+            "abstained_interaction_mode_ambiguous",
+            "abstained_no_selected_target",
+        }:
+            return target, {
+                "code": "task_zone_interaction_mode_unresolved",
+                "instruction": (
+                    "Bind an explicit inspection, contact, articulation, or object-state "
+                    "interaction mode before scene composition."
+                ),
+            }
+        requirement_pair = (
+            task_zone_requirement.get("status"),
+            task_zone_requirement.get("verified_simready_asset_required"),
+        )
+        if requirement_pair not in {
+            ("not_required_for_inspection_only", False),
+            ("verified_task_zone_asset_required", True),
+        }:
+            raise NewSiteTaskEvaluationError(["task_zone_requirement_status_invalid"])
     else:
         target = _validate_canonical_artifact(
             value,
@@ -350,10 +411,11 @@ def _target_gate(
 
 def _expected_robot(selected_target: Mapping[str, Any]) -> str:
     task_class = str(selected_target.get("task_class") or "")
+    task_family = str(selected_target.get("task_family") or "")
     embodiment = str(selected_target.get("required_embodiment") or "").strip()
     if embodiment and embodiment not in {"franka_panda", "unitree_g1"}:
         raise NewSiteTaskEvaluationError(["selected_target_embodiment_unsupported"])
-    humanoid = task_class in _HUMANOID_TASK_CLASSES
+    humanoid = task_class in _HUMANOID_TASK_CLASSES or task_family in _HUMANOID_TASK_FAMILIES
     if embodiment == "unitree_g1" and not humanoid:
         raise NewSiteTaskEvaluationError(["g1_requires_humanoid_task"])
     if embodiment == "franka_panda" and humanoid:
