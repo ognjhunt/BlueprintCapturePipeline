@@ -603,6 +603,10 @@ def _safe_environment(temporary_root: Path) -> dict[str, str]:
     result["HOME"] = str(temporary_root)
     result["XDG_CACHE_HOME"] = str(temporary_root / ".cache")
     result["TMPDIR"] = str(temporary_root)
+    # Non-rendering measurement workers must not let MuJoCo probe a GL loader
+    # on headless Linux runners. Preserve an explicit operator choice.
+    if platform.system().lower() == "linux":
+        result.setdefault("MUJOCO_GL", "disable")
     result.setdefault("PATH", os.defpath)
     result.setdefault("PYTHONIOENCODING", "utf-8")
     return result
