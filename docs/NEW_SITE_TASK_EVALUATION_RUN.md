@@ -5,6 +5,16 @@ compiler for a new capture after provider/source admission. It does not choose
 Isaac by default and it does not let an analyzer, provider, or agent authorize
 its own evidence.
 
+This compiler is downstream of, and distinct from,
+`blueprint_pipeline.new_site_task_evaluation`. That upstream command validates
+capture materialization and an explicit task through a zero-spend development
+lane; it intentionally proves no comparative policy ranking. A caller may use
+its digest-bound capture and site evidence to prepare this compiler's admitted
+source, reconstruction, target, placement, and routing artifacts, but it must
+still supply five independently identified learned-policy execution receipts.
+Neither command may reinterpret the other's development output as stronger
+evidence.
+
 The compiler binds, in order:
 
 1. a digest-bound Blueprint or provider-derived source profile;
