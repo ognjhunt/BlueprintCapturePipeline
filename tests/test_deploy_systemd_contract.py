@@ -538,16 +538,18 @@ def test_ci_workflows_checkout_the_pinned_blueprint_contracts_revision():
         assert "CONTRACTS_REF: ${{ github.ref_name }}" not in text
 
 
-def test_full_test_lane_gates_pull_requests_and_deploy_contract():
+def test_full_test_lane_is_explicit_or_nightly_and_gates_deploy_contract():
     workflow = FULL_TEST_LANE_WORKFLOW.read_text(encoding="utf-8")
+    event_block = workflow.split("jobs:", 1)[0]
     deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
     required_doc = CI_REQUIRED_CHECKS_DOC.read_text(encoding="utf-8")
 
-    assert "pull_request:" in workflow
-    assert "push:" in workflow
-    assert 'branches: ["main"]' in workflow
-    assert "schedule:" in workflow
-    assert "workflow_dispatch:" in workflow
+    assert "pull_request:" not in event_block
+    assert "push:" not in event_block
+    assert "workflow_call:" in event_block
+    assert "schedule:" in event_block
+    assert 'cron: "17 8 * * *"' in event_block
+    assert "workflow_dispatch:" in event_block
     assert "uv run scripts/pytest_full.sh" in workflow
     assert '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"' in workflow
     assert 'FULL_TEST_LANE_REQUIRED="${FULL_TEST_LANE_REQUIRED:-true}"' in deploy_script
@@ -565,10 +567,11 @@ def test_full_test_lane_gates_pull_requests_and_deploy_contract():
         "Full Test Lane / Full pytest lane on CPU runner passed for this exact commit"
         in deploy_script
     )
-    assert "Full Test Lane / Full pytest lane on CPU runner" in required_doc
+    assert "Full Test Lane / Full pytest lane on CPU" in required_doc
+    assert "runner` to have passed for that exact commit SHA" in required_doc
     assert "passed for that exact commit SHA" in required_doc
     assert "deploy/scripts/deploy.sh" in required_doc
-    assert "weekly scheduled run is supplementary health evidence only" in required_doc
+    assert "nightly scheduled run is supplementary health evidence only" in required_doc
 
 
 def test_release_images_are_versioned_manifested_and_rejected_if_latest():
