@@ -9,7 +9,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .claim_contract_keys import PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
 from .common import ensure_dir, utc_now_iso, write_json
@@ -22,6 +22,12 @@ ISAAC_SIM_MAJOR_VERSION = 6
 RTX_SMOKE_WIDTH = 64
 RTX_SMOKE_HEIGHT = 64
 RTX_SMOKE_MAX_ASSET_LOADING_SECONDS = 10
+RTX_OUTPUT_ANNOTATORS = {
+    "rgb": "rgb",
+    "depth": "distance_to_camera",
+    "semantic_segmentation": "semantic_segmentation",
+}
+DEFAULT_RTX_OUTPUT_KINDS = tuple(RTX_OUTPUT_ANNOTATORS)
 
 # Isaac Sim 6's own RTX verifier rejects this Linux R570 interval.  Keep this
 # narrow: the rendered-frame check remains the authoritative compatibility
@@ -104,9 +110,7 @@ def _isaac_rtx_driver_check(
     rejected = [
         list(version)
         for version in versions
-        if ISAAC_SIM_6_UNSUPPORTED_R570_MIN
-        <= version
-        < ISAAC_SIM_6_UNSUPPORTED_R570_MAX_EXCLUSIVE
+        if ISAAC_SIM_6_UNSUPPORTED_R570_MIN <= version < ISAAC_SIM_6_UNSUPPORTED_R570_MAX_EXCLUSIVE
     ]
     if rejected:
         return (
@@ -136,7 +140,9 @@ def _isaac_rtx_driver_check(
     )
 
 
-def _nvidia_smi_check(*, env: Mapping[str, str], required: bool) -> tuple[dict[str, Any], list[str]]:
+def _nvidia_smi_check(
+    *, env: Mapping[str, str], required: bool
+) -> tuple[dict[str, Any], list[str]]:
     executable = shutil.which("nvidia-smi", path=env.get("PATH"))
     if not executable:
         status = "blocked" if required else "skipped_not_required"
@@ -185,12 +191,21 @@ def _isaac_smoke_checks(
     *,
     smoke_steps: int,
     require_rtx_render: bool,
+    required_output_kinds: Sequence[str],
     env: Mapping[str, str],  # noqa: ARG001 - retained for parity with MuJoCo preflight
 ) -> tuple[list[dict[str, Any]], list[str], Any | None]:
     checks: list[dict[str, Any]] = []
     blockers: list[str] = []
     try:
-        from isaacsim import SimulationApp  # type: ignore[import-not-found]
+        from .measurement_isaac_physx_rigid_adapter import (
+            _bind_isaac_runtime_environment,
+            _import_simulation_app,
+            _installed_simulation_app_extension_roots,
+            _observe_isaac_runtime_identity,
+        )
+
+        runtime_environment = _bind_isaac_runtime_environment()
+        SimulationApp = _import_simulation_app()
     except Exception as exc:  # pragma: no cover - depends on worker image
         checks.append(
             _check(
@@ -202,7 +217,17 @@ def _isaac_smoke_checks(
         )
         return checks, ["python_import_isaacsim_failed"], None
 
-    checks.append(_check("python_import_isaacsim", "passed"))
+    checks.append(
+        _check(
+            "python_import_isaacsim",
+            "passed",
+            simulation_app_class_module=str(getattr(SimulationApp, "__module__", "unavailable")),
+            simulation_app_extension_roots=[
+                str(path) for path in _installed_simulation_app_extension_roots()
+            ],
+            runtime_environment_paths=runtime_environment,
+        )
+    )
     renderer = "RayTracedLighting"
     checks.append(
         _check(
@@ -224,7 +249,17 @@ def _isaac_smoke_checks(
 
     simulation_app = None
     try:
-        simulation_app = SimulationApp({"headless": True, "renderer": renderer})
+        simulation_app = SimulationApp(
+            {"headless": True, "renderer": renderer, "fast_shutdown": True}
+        )
+        runtime_identity = _observe_isaac_runtime_identity(simulation_app)
+        checks.append(
+            _check(
+                "isaac_runtime_identity",
+                "passed",
+                **runtime_identity,
+            )
+        )
         import omni.replicator.core as rep  # type: ignore[import-not-found]
 
         asset_loading_timeout_configured = False
@@ -241,34 +276,99 @@ def _isaac_smoke_checks(
             # Python module. The rendered-frame gate remains authoritative.
             pass
 
+        # Author a tiny deterministic OpenUSD/Replicator scene so depth and
+        # semantic output checks cannot pass on an empty default stage.
+        rep.create.cube(
+            position=(0, 0, 0),
+            scale=0.5,
+            semantics=[("class", "blueprint_smoke_cube")],
+        )
+        rep.create.light(light_type="distant", intensity=3000, rotation=(315, 0, 0))
         camera = rep.create.camera(position=(0, 0, 2), look_at=(0, 0, 0))
         render_product = rep.create.render_product(camera, (RTX_SMOKE_WIDTH, RTX_SMOKE_HEIGHT))
-        annot = rep.AnnotatorRegistry.get_annotator("rgb")
-        annot.attach([render_product])
-        pixels = None
+        annotators = {
+            kind: rep.AnnotatorRegistry.get_annotator(RTX_OUTPUT_ANNOTATORS[kind])
+            for kind in required_output_kinds
+        }
+        for annotator in annotators.values():
+            annotator.attach([render_product])
+        outputs: dict[str, Any] = {}
         steps_executed = 0
         for _ in range(max(1, int(smoke_steps))):
             rep.orchestrator.step()
             steps_executed += 1
-            pixels = annot.get_data()
-            if int(getattr(pixels, "size", 0) or 0) > 0:
+            outputs = {kind: annotator.get_data() for kind, annotator in annotators.items()}
+            if all(
+                int(
+                    getattr(
+                        value.get("data") if isinstance(value, Mapping) else value,
+                        "size",
+                        0,
+                    )
+                    or 0
+                )
+                > 0
+                for value in outputs.values()
+            ):
                 break
-        pixel_count = int(getattr(pixels, "size", 0) or 0)
-        if pixel_count <= 0:
-            raise RuntimeError("empty_rtx_smoke_frame")
-        shape = list(getattr(pixels, "shape", []) or [])
+        import numpy as np  # type: ignore[import-not-found]
+
+        output_summaries: dict[str, dict[str, Any]] = {}
+        for kind, value in outputs.items():
+            data = value.get("data") if isinstance(value, Mapping) else value
+            array = np.asarray(data)
+            element_count = int(array.size)
+            if element_count <= 0:
+                raise RuntimeError(f"empty_rtx_smoke_output:{kind}")
+            summary: dict[str, Any] = {
+                "annotator": RTX_OUTPUT_ANNOTATORS[kind],
+                "element_count": element_count,
+                "shape": list(array.shape),
+                "dtype": str(array.dtype),
+                "nonempty": True,
+            }
+            if kind == "rgb":
+                summary["nonzero_value_count"] = int(np.count_nonzero(array))
+                if summary["nonzero_value_count"] <= 0:
+                    raise RuntimeError("rtx_smoke_rgb_has_no_nonzero_values")
+            elif kind == "depth":
+                finite = np.isfinite(array)
+                summary["finite_value_count"] = int(finite.sum())
+                summary["positive_finite_value_count"] = int(
+                    np.logical_and(finite, array > 0).sum()
+                )
+                if summary["positive_finite_value_count"] <= 0:
+                    raise RuntimeError("rtx_smoke_depth_has_no_positive_finite_values")
+            elif kind == "semantic_segmentation":
+                summary["unique_id_count"] = int(np.unique(array).size)
+                info = value.get("info") if isinstance(value, Mapping) else None
+                summary["metadata_present"] = isinstance(info, Mapping) and bool(info)
+                summary["expected_label_present"] = bool(
+                    isinstance(info, Mapping)
+                    and "blueprint_smoke_cube" in json.dumps(info, sort_keys=True)
+                )
+                if summary["expected_label_present"] is not True:
+                    raise RuntimeError("rtx_smoke_semantic_label_missing")
+            output_summaries[kind] = summary
+        rgb = output_summaries.get("rgb", {})
         checks.append(
             _check(
                 "rtx_smoke_frame_render",
                 "passed",
                 width=RTX_SMOKE_WIDTH,
                 height=RTX_SMOKE_HEIGHT,
-                pixel_count=pixel_count,
-                pixel_shape=shape,
+                pixel_count=rgb.get("element_count", 0),
+                pixel_shape=rgb.get("shape", []),
+                required_output_kinds=list(required_output_kinds),
+                output_summaries=output_summaries,
+                openusd_scene_authored=True,
+                semantic_prim_authored=True,
                 max_steps=max(1, int(smoke_steps)),
                 steps_executed=steps_executed,
                 max_asset_loading_time_seconds=RTX_SMOKE_MAX_ASSET_LOADING_SECONDS,
                 asset_loading_timeout_configured=asset_loading_timeout_configured,
+                renderer=renderer,
+                fast_shutdown=True,
             )
         )
     except Exception as exc:
@@ -293,9 +393,17 @@ def run_isaac_worker_runtime_preflight(
     require_nvidia_smi: bool = False,
     require_rtx_render: bool = False,
     smoke_steps: int = 1,
+    required_output_kinds: Sequence[str] = DEFAULT_RTX_OUTPUT_KINDS,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     runtime_env = dict(env or os.environ)
+    requested_outputs = tuple(dict.fromkeys(str(item).strip() for item in required_output_kinds))
+    unknown_outputs = sorted(set(requested_outputs) - set(RTX_OUTPUT_ANNOTATORS))
+    if not requested_outputs or "rgb" not in requested_outputs or unknown_outputs:
+        raise ValueError(
+            "isaac_rtx_output_kinds_invalid"
+            + (":" + ",".join(unknown_outputs) if unknown_outputs else "")
+        )
     generated_at = utc_now_iso()
     checks: list[dict[str, Any]] = []
     blockers: list[str] = []
@@ -329,6 +437,7 @@ def run_isaac_worker_runtime_preflight(
         isaac_checks, isaac_blockers, simulation_app = _isaac_smoke_checks(
             smoke_steps=smoke_steps,
             require_rtx_render=require_rtx_render,
+            required_output_kinds=requested_outputs,
             env=runtime_env,
         )
         checks.extend(isaac_checks)
@@ -346,11 +455,25 @@ def run_isaac_worker_runtime_preflight(
             "require_nvidia_smi": require_nvidia_smi,
             "require_rtx_render": require_rtx_render,
             "smoke_steps": max(1, int(smoke_steps)),
+            "required_output_kinds": list(requested_outputs),
         },
         "proof_boundary": {
             "runtime_preflight_executed": True,
             "runtime_preflight_is_not_simulator_proof": True,
             "simulator_execution_proven": False,
+            "rtx_pixels_rendered": not blockers and require_rtx_render,
+            "rtx_rgb_rendered": not blockers and require_rtx_render and "rgb" in requested_outputs,
+            "rtx_depth_output_observed": (
+                not blockers and require_rtx_render and "depth" in requested_outputs
+            ),
+            "rtx_semantic_segmentation_observed": (
+                not blockers
+                and require_rtx_render
+                and "semantic_segmentation" in requested_outputs
+            ),
+            "requested_sensor_modalities_observed": not blockers and require_rtx_render,
+            "calibrated_sensor_match_proven": False,
+            "q_sensor_qualification_created": False,
             "rank_fidelity_result_proven": False,
             "non_ranking_operational_claim_validated": False,
             PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
@@ -363,6 +486,7 @@ def run_isaac_worker_runtime_preflight(
             "contract": "fast_startup_canary",
             "frame_width": RTX_SMOKE_WIDTH,
             "frame_height": RTX_SMOKE_HEIGHT,
+            "required_output_kinds": list(requested_outputs),
             "does_not_validate": [
                 "dlss",
                 "review_resolution_quality",
@@ -402,12 +526,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-nvidia-smi", action="store_true")
     parser.add_argument("--require-rtx-render", action="store_true")
     parser.add_argument("--smoke-steps", type=int, default=1)
+    parser.add_argument(
+        "--required-output-kind",
+        action="append",
+        choices=sorted(RTX_OUTPUT_ANNOTATORS),
+        default=None,
+    )
     args = parser.parse_args(argv)
     payload = run_isaac_worker_runtime_preflight(
         output_path=args.output or _default_output_path(),
         require_nvidia_smi=args.require_nvidia_smi,
         require_rtx_render=args.require_rtx_render,
         smoke_steps=args.smoke_steps,
+        required_output_kinds=args.required_output_kind or DEFAULT_RTX_OUTPUT_KINDS,
     )
     print(json.dumps({"status": payload["status"], "blockers": payload["blockers"]}))
     return 0 if payload["status"] == "passed" else 2

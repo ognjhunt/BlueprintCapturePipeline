@@ -1,0 +1,120 @@
+{
+  "schema_version": "measurement_isaac_rtx_multimodal_development_evidence.v1",
+  "status": "passed",
+  "generated_at": "2026-08-02T18:32:50.737182+00:00",
+  "evidence_scope": "development_execution_only",
+  "source": {
+    "source_commit_sha": "d55b069d966703c883c564d535c0cd4f4f36a607",
+    "request_digest": "sha256:f8b8bccd38bef38da790bd256546f625ef3f86fd688119d437d55568b70f53c1",
+    "input_bundle_digest": "sha256:0a72b7d490acc3c906a13a6237dd055d87cf3d40b98cad28e64922ba85f8279e",
+    "bundle_manifest_digest": "sha256:672b9b728aae4e08443a8e1bc50cbbba68fe6749e06a09509795fe90f87327d6",
+    "runtime_result_digest": "sha256:abb56053b900335e5dbf833d128f02e4ba16950252db9c2fdcd2df076dd38885",
+    "execution_result_digest": "sha256:4b03bf45df1cbc39fb2a4e531b33e0ac74d024b32321e114784af582384a6255",
+    "rtx_preflight_result_digest": "sha256:aa9db7de6b296b476aeb154ab5859197021b2a97abd24310ca3c861876ecd698"
+  },
+  "runtime": {
+    "provider": "vast",
+    "instance_id": "46629842",
+    "worker_image_digest": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9",
+    "isaac_sim_version": "6.0.1",
+    "observed_build_version": "110.1.2+production.326809.f9bf0dda.gl",
+    "gpu_name": "NVIDIA L40",
+    "driver_version": "580.142",
+    "memory_total": "46068 MiB",
+    "cost_usd": 0.04570878025366937,
+    "duration_seconds": 360.03998708724976
+  },
+  "bound_sensor_request": {
+    "renderer": "RayTracedLighting",
+    "frame_resolution": [
+      64,
+      64
+    ],
+    "required_output_kinds": [
+      "rgb",
+      "depth",
+      "semantic_segmentation"
+    ],
+    "openusd_scene_authored": true,
+    "semantic_prim_authored": true,
+    "semantic_label": "blueprint_smoke_cube"
+  },
+  "observed_outputs": {
+    "rgb": {
+      "annotator": "rgb",
+      "dtype": "uint8",
+      "shape": [
+        64,
+        64,
+        4
+      ],
+      "element_count": 16384,
+      "nonzero_value_count": 5552
+    },
+    "depth": {
+      "annotator": "distance_to_camera",
+      "dtype": "float32",
+      "shape": [
+        64,
+        64
+      ],
+      "element_count": 4096,
+      "finite_value_count": 400,
+      "positive_finite_value_count": 400
+    },
+    "semantic_segmentation": {
+      "annotator": "semantic_segmentation",
+      "dtype": "uint32",
+      "shape": [
+        64,
+        64
+      ],
+      "element_count": 4096,
+      "unique_id_count": 2,
+      "metadata_present": true,
+      "expected_label_present": true
+    }
+  },
+  "physx_regression": {
+    "status": "passed",
+    "execution_bundle_count": 2,
+    "ground_contact_case_count": 2,
+    "maximum_penetration_m": 0.029889646396040914,
+    "mean_penetration_m": 0.014944824688136578
+  },
+  "claim_boundary": {
+    "claim_ceiling": "isaac_physx_rigid_contact_plus_rtx_multimodal_startup_development",
+    "requested_sensor_modalities_observed": true,
+    "calibrated_sensor_match_proven": false,
+    "q_sensor_qualification_created": false,
+    "r5_evidence_created": false,
+    "r6_decision_created": false,
+    "r7_catalog_admission_created": false,
+    "production_route_created": false,
+    "review_media_quality_proven": false,
+    "policy_execution_proven": false,
+    "task_success_proven": false,
+    "captured_site_accuracy_proven": false,
+    "physical_success_established": false,
+    "public_claim_upgrade_allowed": false
+  },
+  "cleanup": {
+    "teardown_status": "PASS",
+    "teardown_receipt_digest": "sha256:c8ad76aedb5a7885dc863733dcc3cc1df56d5e0c6369324baac7c7f254962660",
+    "provider_zero_status": "PASS",
+    "provider_zero_digest": "sha256:ad19370cd58ca7614ae9b14e4a652c39c4324025ac04efe66693962fd1625be4",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "exact_instance_absence_confirmed_twice": true,
+    "watchdog_status": "provider_terminal",
+    "staged_object_count": 2,
+    "all_staged_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "raw_secret_values_recorded": false,
+  "notes": [
+    "This checked summary is copied from immutable receipts and contains no credentials, object keys, or signed URLs.",
+    "Observed multimodal output proves runtime plumbing and non-empty structured output for the bound synthetic OpenUSD scene only.",
+    "No comparison to a calibrated real sensor, held-out site, policy result, or physical outcome was performed."
+  ]
+}

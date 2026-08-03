@@ -1,0 +1,51 @@
+{
+  "schema_version": "capture_intake_envelope.v1",
+  "intake_id": "loading-bay-capture-001",
+  "idempotency_key": "loading-bay-capture-001",
+  "source_type": "iphone_arkit_lidar",
+  "scene_id": "loading-bay-new-site-001",
+  "customer_id": "fixture-customer",
+  "organization_id": "blueprint-fixtures",
+  "requested_task_evaluation_run_audience": "internal_new_site_acceptance",
+  "capture_authority_profile": "iphone_arkit_lidar",
+  "original_files": [
+    {"relative_path": "camera-intrinsics.json", "original_filename": "camera-intrinsics.json", "sha256": "sha256:79b815e0488185340533bcf95270644417b13e140e16a52164afca5438387cc0", "size_bytes": 211},
+    {"relative_path": "depth-confidence.bin", "original_filename": "depth-confidence.bin", "sha256": "sha256:455e8ae34d925832a1937c0bfc8f155def7bb878ff5f985173d21aeb705ce9b1", "size_bytes": 16},
+    {"relative_path": "frame-000.depth.bin", "original_filename": "frame-000.depth.bin", "sha256": "sha256:5fcc0223a1d297a588544ab3d79c438fac2d0e8fff23b92ca8222a6e47275de9", "size_bytes": 20},
+    {"relative_path": "frame-000.rgb.bin", "original_filename": "frame-000.rgb.bin", "sha256": "sha256:a0a186edf8f7f9b05ac8d3c2f5a7769be40e8beed9a2fc0d8ed009cd69fa1504", "size_bytes": 45},
+    {"relative_path": "frame-001.depth.bin", "original_filename": "frame-001.depth.bin", "sha256": "sha256:03aaa3fb51faff669d8b084c5088292ad32b47915a5b841abba6fd159e9b9497", "size_bytes": 20},
+    {"relative_path": "frame-001.rgb.bin", "original_filename": "frame-001.rgb.bin", "sha256": "sha256:af99d83332ff9d951d51a5ec7804bff31886f9df0c793c6c9056da0beb0c6c72", "size_bytes": 45},
+    {"relative_path": "frame-retention.json", "original_filename": "frame-retention.json", "sha256": "sha256:227fe41978288e1b2331f5333a88a044afa42f364e1f50d875c5f4ad3ba39e78", "size_bytes": 184},
+    {"relative_path": "observations.json", "original_filename": "observations.json", "sha256": "sha256:2e0027a9ca192fa10880385edeccbbf5df894281718f6e3d593089b61ed8736f", "size_bytes": 1231},
+    {"relative_path": "retained.mov", "original_filename": "retained.mov", "sha256": "sha256:1f1f34ddbd9326cda660aa2bb0ac113aa8b9989c4cc06288d8ed313ff845f04f", "size_bytes": 59},
+    {"relative_path": "tracking-state.json", "original_filename": "tracking-state.json", "sha256": "sha256:076518e1110273050d74ca04f45cdf0153a63f5ba27e9d2df97eb7552e2b0fe0", "size_bytes": 194}
+  ],
+  "capture_device": {"device_class": "iphone_pro_fixture", "sensor_suite": "arkit_lidar_fixture"},
+  "timing_declaration": {"clock_domain": "fixture_monotonic_ns", "timestamps_file": "observations.json"},
+  "coordinate_frame_declaration": {"site_frame": "site", "camera_frame": "camera", "units": "m", "handedness": "right", "up_axis": "Y"},
+  "available_sensor_streams": [
+    {"stream_type": "retained_video", "status": "available", "source_relative_path": "retained.mov"},
+    {"stream_type": "decoded_video_pts", "status": "available", "source_relative_path": "observations.json"},
+    {"stream_type": "frame_retention_mapping", "status": "available", "source_relative_path": "frame-retention.json"},
+    {"stream_type": "camera_poses", "status": "available", "source_relative_path": "observations.json"},
+    {"stream_type": "camera_intrinsics", "status": "available", "source_relative_path": "camera-intrinsics.json"},
+    {"stream_type": "depth", "status": "available", "source_relative_path": "frame-000.depth.bin"},
+    {"stream_type": "depth_confidence", "status": "available", "source_relative_path": "depth-confidence.bin"},
+    {"stream_type": "tracking_state", "status": "available", "source_relative_path": "tracking-state.json"},
+    {"stream_type": "coordinate_frame_semantics", "status": "available", "source_relative_path": "observations.json"}
+  ],
+  "governance": {
+    "rights": "accepted",
+    "consent": "accepted",
+    "privacy": "cleared",
+    "retention": {"class": "fixture", "days": 0},
+    "revocation": {"mode": "version_invalidates_on_revocation"},
+    "provider_constraints": {"external_processing_allowed": false},
+    "allowed_uses": ["evaluation"]
+  },
+  "permitted_reconstruction_providers": ["local"],
+  "permitted_evidence_uses": ["evaluation"],
+  "operator_notes": ["New fixture created after the routing kernel; never physical or production evidence."],
+  "upload_validation": {"status": "passed"},
+  "malware_content_validation": {"status": "passed"}
+}

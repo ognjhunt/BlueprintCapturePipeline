@@ -1,0 +1,11 @@
+{
+  "schema_version": "fixture_camera_intrinsics.v1",
+  "sensor_id": "loading-bay-rgbd-1",
+  "width": 2,
+  "height": 2,
+  "fx": 1.8,
+  "fy": 1.8,
+  "cx": 1.0,
+  "cy": 1.0,
+  "distortion_model": "none_fixture"
+}

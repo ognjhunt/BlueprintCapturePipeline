@@ -422,7 +422,9 @@ exclude-dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+# Prefer this checkout's src tree over any editable install that may point at a
+# sibling checkout or worktree. Keep the repository root for script fixtures.
+pythonpath = ["src", "."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

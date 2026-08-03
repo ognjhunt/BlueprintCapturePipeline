@@ -66,6 +66,11 @@ DEFAULT_REGION_FILES = (
     "~/.blueprint-secrets/digitalocean_spaces_region",
     "~/.blueprint-secrets/aws_region",
 )
+SUPPORTED_OUTPUT_CONTENT_TYPES = (
+    "application/zip",
+    "application/json",
+    "application/octet-stream",
+)
 
 
 def _string(value: Any) -> str:
@@ -565,6 +570,7 @@ def _signed_output_round_trip_preflight(
     bucket: str,
     sentinel_key: str,
     expiration_seconds: int,
+    content_type: str = "application/octet-stream",
 ) -> dict[str, Any]:
     """Exercise a distinct signed PUT/GET object and prove its deletion."""
 
@@ -583,7 +589,7 @@ def _signed_output_round_trip_preflight(
             Params={
                 "Bucket": bucket,
                 "Key": sentinel_key,
-                "ContentType": "application/octet-stream",
+                "ContentType": content_type,
             },
             ExpiresIn=int(expiration_seconds),
             HttpMethod="PUT",
@@ -599,7 +605,7 @@ def _signed_output_round_trip_preflight(
             put_url,
             method="PUT",
             data=sentinel,
-            headers={"Content-Type": "application/octet-stream"},
+            headers={"Content-Type": content_type},
             timeout_seconds=SIGNED_OUTPUT_HTTP_TIMEOUT_SECONDS,
             max_response_bytes=SIGNED_OUTPUT_MAX_RESPONSE_BYTES,
             policy=presigned_transfer_policy(
@@ -704,6 +710,7 @@ def stage_wam_provider_bundle_object_store(
     region: str = "",
     region_file: str | Path | None = None,
     key_prefix: str = "blueprint/wam-provider",
+    output_content_type: str = "application/zip",
     expiration_seconds: int = 12 * 60 * 60,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -719,7 +726,8 @@ def stage_wam_provider_bundle_object_store(
     bundle_key = (
         f"{safe_prefix}/{job_key}/bundles/sha256/{bundle_sha256}.zip" if bundle_sha256 else ""
     )
-    output_key = f"{safe_prefix}/{job_key}/runpod_provider_runtime_output_{run_nonce}.zip"
+    output_suffix = ".json" if output_content_type == "application/json" else ".zip"
+    output_key = f"{safe_prefix}/{job_key}/runpod_provider_runtime_output_{run_nonce}{output_suffix}"
     sentinel_key = f"{safe_prefix}/{job_key}/preflight/signed_output_round_trip_{run_nonce}.bin"
     staging_binding_sha256 = _staging_binding_sha256(
         bundle_sha256=bundle_sha256,
@@ -805,6 +813,8 @@ def stage_wam_provider_bundle_object_store(
         blockers.append("missing_object_store_secret_access_key_file")
     if not bucket_value:
         blockers.append("missing_object_store_bucket_or_network_volume_id_file")
+    if output_content_type not in SUPPORTED_OUTPUT_CONTENT_TYPES:
+        blockers.append("unsupported_output_content_type")
     try:
         import boto3  # type: ignore[import-not-found]
         from botocore.client import Config  # type: ignore[import-not-found]
@@ -885,6 +895,7 @@ def stage_wam_provider_bundle_object_store(
                 bucket=bucket_value,
                 sentinel_key=sentinel_key,
                 expiration_seconds=int(expiration_seconds),
+                content_type=output_content_type,
             )
             blockers.extend(signed_output_round_trip.get("blockers") or [])
             bundle_url = client.generate_presigned_url(
@@ -908,7 +919,7 @@ def stage_wam_provider_bundle_object_store(
                     Params={
                         "Bucket": bucket_value,
                         "Key": output_key,
-                        "ContentType": "application/zip",
+                        "ContentType": output_content_type,
                     },
                     ExpiresIn=int(expiration_seconds),
                     HttpMethod="PUT",
@@ -986,6 +997,7 @@ def stage_wam_provider_bundle_object_store(
             "bucket": bucket_meta,
             "region": region_meta,
             "key_prefix": key_prefix,
+            "output_content_type": output_content_type,
             "expiration_seconds": int(expiration_seconds),
             "expires_at": expiry_metadata["expires_at"],
             "expiry_warning": expiry_metadata["expiry_warning"],
@@ -1303,6 +1315,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--region", default="")
     parser.add_argument("--region-file")
     parser.add_argument("--key-prefix", default="blueprint/wam-provider")
+    parser.add_argument(
+        "--output-content-type",
+        choices=SUPPORTED_OUTPUT_CONTENT_TYPES,
+        default="application/zip",
+    )
     parser.add_argument("--expiration-seconds", type=int, default=12 * 60 * 60)
     args = parser.parse_args(argv)
     common = {
@@ -1328,6 +1345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             **common,
             bundle_path=args.bundle_path,
             key_prefix=args.key_prefix,
+            output_content_type=args.output_content_type,
         )
     print(json.dumps(_mapping(manifest), sort_keys=True))
     return 0 if manifest.get("status") == "completed" else 1

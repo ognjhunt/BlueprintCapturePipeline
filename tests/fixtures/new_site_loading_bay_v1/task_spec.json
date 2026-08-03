@@ -1,0 +1,40 @@
+{
+  "schema_version": "new_site_task_spec.v1",
+  "intake_id": "loading-bay-capture-001",
+  "site_id": "loading-bay-new-site-001",
+  "site_class": "indoor-loading-bay-fixture",
+  "task_id": "inspect-pallet-marker",
+  "decision_question": "Is the pallet marker visible in retained calibrated RGB observations for this exact site and task?",
+  "deadline": "2027-08-02T00:00:00Z",
+  "robot_id": "fixture-inspection-arm",
+  "robot_base_position_site_m": [0.0, 0.0, 0.0],
+  "registration_uncertainty_m": 0.01,
+  "sensor_binding": {"sensor_id": "loading-bay-rgbd-1"},
+  "supported_condition_ranges": {"lighting_lux": [250, 550]},
+  "target_region": {
+    "region_id": "pallet-marker-region",
+    "position_site_m": [1.4, 1.0, 0.8],
+    "supporting_frames": ["loading-bay-frame-000", "loading-bay-frame-001"],
+    "captured_coverage": 0.9
+  },
+  "claim": {
+    "claim_id": "pallet-marker-visible",
+    "claim_type": "perception_visibility",
+    "subject": {"target_region_id": "pallet-marker-region"},
+    "measurable_threshold": {"operator": ">=", "value": 0.8, "units": "captured_coverage"},
+    "false_safe_consequence": "moderate",
+    "acceptable_false_safe_risk": 0.1,
+    "desired_confidence_or_coverage": {"minimum_coverage": 0.8, "minimum_independent_methods": 1},
+    "permitted_abstention_behavior": {"allowed": true}
+  },
+  "development_method": {
+    "method_id": "loading-bay-captured-visibility-development",
+    "declared_measurement_capabilities": [
+      "distortion_model_supported",
+      "extrinsics_import_supported",
+      "intrinsics_import_supported",
+      "rgb_supported",
+      "sensor_timing_supported"
+    ]
+  }
+}

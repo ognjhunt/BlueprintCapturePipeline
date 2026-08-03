@@ -1,0 +1,7 @@
+{
+  "schema_version": "new_site_observed_site_evidence_overlay.v1",
+  "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+  "base_artifacts_file": "site_evidence_complete.json",
+  "omit_artifacts": ["sensor_calibration"],
+  "omission_reason": "Intentional acceptance fixture: raw RGB/depth streams exist, but no independently verified sensor calibration or timing measurement is supplied."
+}

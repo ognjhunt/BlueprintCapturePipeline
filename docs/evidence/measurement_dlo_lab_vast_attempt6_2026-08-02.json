@@ -1,0 +1,78 @@
+{
+  "schema_version": "measurement_dlo_lab_vast_attempt_evidence.v1",
+  "attempt_id": "measurement-dlo-lab-vast-attempt6-2026-08-02",
+  "status": "failed_diagnostic_execution_preserved",
+  "blueprint_source_commit": "15185570d49ed9545805b4067258a1710fef3be0",
+  "dlo_lab_source_commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+  "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385",
+  "runtime_release_digest": "sha256:84d9be435c4b892561537505ad976320ca83a11141120706f05a7f14f8db209f",
+  "input_bundle_digest": "sha256:cf37e0d8df414a4a383e5bddb90c3c48092c1d36bacd4de8607a97746da709c8",
+  "bundle_manifest_digest": "sha256:695b240240ee10e7bda76ffb87e5e7c505e34707a66e7e3620788bba4dc7f1da",
+  "provider": "vast",
+  "instance_id": "46645370",
+  "gpu_name": "RTX A6000",
+  "hourly_rate_usd": 0.5024444444444445,
+  "duration_seconds": 247.79467797279358,
+  "estimated_cost_usd": 0.04537803773575849,
+  "runtime_result_digest": "sha256:92a039871011a540cf1bfeb7b0d0dbf0d93b3c8cdaef4868301ab5b26fc9f28e",
+  "execution_result_digest": "sha256:793612c1e5280a4610ea10098f79751d990f06b33b9061a1282b24d2e24ddc77",
+  "observed_failure": {
+    "execution_bundle_count": 2,
+    "python_version": "3.12.11",
+    "torch_distribution_version": "2.9.1+cu128",
+    "quadrants_distribution_version": "0.8.0",
+    "common_exit_code": -6,
+    "common_signal": 6,
+    "common_last_phase": "native_import_probe:quadrants",
+    "common_failure_codes": [
+      "dlo_lab_adapter_native_assertion",
+      "dlo_lab_adapter_native_import_probe_failed:quadrants",
+      "dlo_lab_adapter_native_termination",
+      "dlo_lab_adapter_supervised_worker_exit_nonzero:-6",
+      "dlo_lab_adapter_supervised_worker_signal:6"
+    ],
+    "native_diagnostic_requested_at_bootstrap": true,
+    "native_diagnostic_reached_worker": false,
+    "native_diagnostic_absence_reason": "generic_adapter_safe_environment_did_not_allow_blueprint_dlo_native_diagnostic",
+    "stderr_content_persisted": false,
+    "executions": [
+      {
+        "execution_id": "dlo-lab-cuda-cable-001-dlo-lab-cable-development-001",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:7625f9e0b07abf749794272416be420fdd83c7e92da5605283400af243893c40",
+        "native_diagnostic": null
+      },
+      {
+        "execution_id": "dlo-lab-cuda-cable-002-dlo-lab-cable-development-002",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:dae5cd124d3aadb03bbca9b58c7ab778e88a262b2bbcb0d3b8229c186919b4da",
+        "native_diagnostic": null
+      }
+    ]
+  },
+  "teardown": {
+    "status": "PASS",
+    "teardown_receipt_digest": "sha256:901dd050d3c451a64215315e0bb5c34925df365c2eba5ffe0a776922b7d93ac1",
+    "provider_zero_status": "PASS",
+    "provider_zero_digest": "sha256:24b2187fa59b1f15bb3068a73e10eea579f28d2ef1e3f8e6e1f9610f9da6e61a",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "watchdog_status": "provider_terminal"
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "claim_boundary": {
+    "development_execution_completed": false,
+    "qualification_created": false,
+    "r5_evidence": false,
+    "r6_decision": false,
+    "r7_admission": false,
+    "physical_success_established": false,
+    "proof_effect": "failed_diagnostic_execution_without_native_debugger_observation"
+  },
+  "next_encoded_action": "Bind gdb_first_case_only inside the digest-covered execution request while keeping the generic adapter safe environment and signed-URL stripping unchanged, then focused-test and rerun the same diagnostic."
+}

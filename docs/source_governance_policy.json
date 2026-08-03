@@ -227,7 +227,7 @@
     "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 8183,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
     "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5872,
-    "src/blueprint_pipeline/paid_resource_allocator.py": 2294,
+    "src/blueprint_pipeline/paid_resource_allocator.py": 2369,
     "src/blueprint_pipeline/policy_autoresearch.py": 2563,
     "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": 2053,
     "src/blueprint_pipeline/post_training_data_package.py": 6713,

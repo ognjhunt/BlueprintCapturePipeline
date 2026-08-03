@@ -32,9 +32,9 @@ CORPUS_PATH = (
     ROOT / "tests/fixtures/measurement_capture_to_deformation_granular_chrono_v1/corpus.json"
 )
 QUALIFICATION_SPLIT_DIGEST = "sha256:" + "f" * 64
-CONTROLLER_SCOPE_DIGEST = "sha256:" + hashlib.sha256(
-    b"chrono-granular-development-no-controller"
-).hexdigest()
+CONTROLLER_SCOPE_DIGEST = (
+    "sha256:" + hashlib.sha256(b"chrono-granular-development-no-controller").hexdigest()
+)
 
 
 def _chrono_python() -> Path:
@@ -101,7 +101,7 @@ def _request(case_index: int = 0) -> dict:
 def test_chrono_descriptor_is_exact_external_conda_without_false_pypi_probe() -> None:
     descriptor = build_measurement_adapter_descriptor("project-chrono-10")
     assert descriptor["target_version"] == EXPECTED_ENGINE_VERSION
-    assert descriptor["execution_mode"] == "isolated_external_conda"
+    assert descriptor["execution_mode"] == "isolated_external_conda_or_exact_source_build"
     assert descriptor["probe_contract"]["python_distributions"] == []
     assert descriptor["probe_contract"]["executables"] == []
 
@@ -148,9 +148,9 @@ def test_chrono_worker_request_rejects_solver_before_runtime_import() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
-    request["runtime_configuration"]["solver_settings_digest"] = "sha256:" + hashlib.sha256(
-        encoded
-    ).hexdigest()
+    request["runtime_configuration"]["solver_settings_digest"] = (
+        "sha256:" + hashlib.sha256(encoded).hexdigest()
+    )
     request.pop("execution_request_digest")
     with pytest.raises(MeasurementAdapterExecutionError, match="solver_settings_invalid"):
         run_chrono_granular_request(request)

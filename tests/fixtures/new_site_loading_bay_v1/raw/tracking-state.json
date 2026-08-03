@@ -1,0 +1,7 @@
+{
+  "schema_version": "fixture_tracking_state.v1",
+  "states": [
+    {"frame_id": "loading-bay-frame-000", "state": "normal"},
+    {"frame_id": "loading-bay-frame-001", "state": "normal"}
+  ]
+}
