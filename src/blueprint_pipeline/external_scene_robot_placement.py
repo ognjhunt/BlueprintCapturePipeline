@@ -20,7 +20,10 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .external_scene_collision_candidate import _flatten_glb, _sha256
 from .external_scene_inspection_outcome import build_franka_inspection_outcome_contract
-from .provider_nurec_robot_placement import build_franka_inspection_controller_cohort_request
+from .provider_nurec_robot_placement import (
+    build_default_franka_policy_trace_request,
+    build_franka_inspection_controller_cohort_request,
+)
 from .scene_placement.placement import ring_scan_stand_pose
 from .scene_placement.robot_profile import get_robot_profile
 from .scene_placement.types import SceneObject
@@ -559,6 +562,22 @@ def propose_external_scene_robot_placement(
     target_analysis: Mapping[str, Any],
 ) -> dict[str, Any]:
     admitted = build_external_scene_robot_placement_request(request)
+    try:
+        analysis = json.loads(json.dumps(dict(target_analysis), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ExternalSceneRobotPlacementError(
+            ["external_placement_target_analysis_not_json"]
+        ) from exc
+    supplied_analysis_digest = analysis.get("target_analysis_digest")
+    expected_analysis_digest = canonical_digest(analysis, digest_field="target_analysis_digest")
+    if supplied_analysis_digest != expected_analysis_digest:
+        raise ExternalSceneRobotPlacementError(
+            ["external_placement_target_analysis_digest_mismatch"]
+        )
+    if supplied_analysis_digest != admitted["target_analysis_digest"]:
+        raise ExternalSceneRobotPlacementError(
+            ["external_placement_request_target_analysis_mismatch"]
+        )
     glb = Path(collision_glb_path).resolve(strict=True)
     if glb.suffix.lower() != ".glb" or _sha256(glb) != admitted["collision_source_digest"]:
         raise ExternalSceneRobotPlacementError(["external_placement_collision_source_mismatch"])
@@ -986,16 +1005,6 @@ def propose_external_scene_robot_placement(
     placement["placement_proposal_digest"] = canonical_digest(
         placement, digest_field="placement_proposal_digest"
     )
-    inspection_outcome_contract = build_franka_inspection_outcome_contract(
-        target_analysis=target_analysis,
-        placement_proposal_digest=placement["placement_proposal_digest"],
-        target_position_stage=placement["target_position_collision_stage"],
-        scene_frame_binding_digest=placement["scene_frame_binding_digest"],
-    )
-    if inspection_outcome_contract["target_analysis_digest"] != admitted["target_analysis_digest"]:
-        raise ExternalSceneRobotPlacementError(
-            ["external_placement_inspection_contract_target_mismatch"]
-        )
     render_options = {
         "robot_id": "franka_panda",
         "robot_usd": str(profile.simulator_asset_refs["isaac_asset"]).lstrip("/"),
@@ -1008,14 +1017,33 @@ def propose_external_scene_robot_placement(
         "robot_only_pass": True,
         "robot_placement_digest": placement["placement_proposal_digest"],
         "placement_proposal_digest": placement["placement_proposal_digest"],
-        "inspection_outcome_contract": inspection_outcome_contract,
         "physics_probe_candidate": placement["physics_probe_candidate"],
         "lights_path": "/World/Lights",
-        "articulated_policy_trace_request": build_franka_inspection_controller_cohort_request(
-            robot_prim_path=profile.usd_prim_path,
-            target_position_stage=placement["target_position_collision_stage"],
-        ),
     }
+    selected_target = analysis.get("selected_target")
+    task_family = (
+        str(selected_target.get("task_family") or "").lower()
+        if isinstance(selected_target, Mapping)
+        else ""
+    )
+    if "inspection" in task_family:
+        inspection_outcome_contract = build_franka_inspection_outcome_contract(
+            target_analysis=analysis,
+            placement_proposal_digest=placement["placement_proposal_digest"],
+            target_position_stage=placement["target_position_collision_stage"],
+            scene_frame_binding_digest=placement["scene_frame_binding_digest"],
+        )
+        render_options["inspection_outcome_contract"] = inspection_outcome_contract
+        render_options["articulated_policy_trace_request"] = (
+            build_franka_inspection_controller_cohort_request(
+                robot_prim_path=profile.usd_prim_path,
+                target_position_stage=placement["target_position_collision_stage"],
+            )
+        )
+    else:
+        render_options["articulated_policy_trace_request"] = (
+            build_default_franka_policy_trace_request(robot_prim_path=profile.usd_prim_path)
+        )
     render_options["render_options_digest"] = canonical_digest(
         render_options, digest_field="render_options_digest"
     )

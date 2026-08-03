@@ -2,9 +2,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import blueprint_pipeline.splat_transform_collision as adapter
-from blueprint_pipeline.splat_transform_collision import (
-    generate_splat_transform_collision_candidate,
-)
 
 
 def _install_cli(tmp_path: Path) -> None:
@@ -35,7 +32,7 @@ def test_generates_unqualified_upstream_collision_candidate(tmp_path, monkeypatc
         )
 
     monkeypatch.setattr(adapter.subprocess, "run", fake_run)
-    result = generate_splat_transform_collision_candidate(
+    result = adapter.generate_splat_transform_collision_candidate(
         source,
         output,
         repo_root=tmp_path,
@@ -65,6 +62,6 @@ def test_rejects_invalid_output_without_running(tmp_path, monkeypatch) -> None:
         "run",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
     )
-    result = generate_splat_transform_collision_candidate(source, tmp_path / "scene.glb")
+    result = adapter.generate_splat_transform_collision_candidate(source, tmp_path / "scene.glb")
     assert result["status"] == "blocked"
     assert "splat_collision_output_must_end_voxel_json" in result["blockers"]

@@ -143,24 +143,14 @@ def test_iphone_lidar_and_360_capture_receive_different_reconstruction_routes(
     assert panorama["capture_authority_profile"] == "camera_360_equirectangular"
     assert "local://arkit-metric-scaffold-v1" in iphone["currently_registered_adapters"]
     assert "local://arkit-metric-scaffold-v1" not in panorama["currently_registered_adapters"]
-    assert "local://equirectangular-virtual-rig-v1" in panorama[
-        "currently_registered_adapters"
-    ]
+    assert "local://equirectangular-virtual-rig-v1" in panorama["currently_registered_adapters"]
     assert [row["stage_id"] for row in iphone["stages"]] != [
         row["stage_id"] for row in panorama["stages"]
     ]
-    assert "compile_equirectangular_virtual_rig" in {
-        row["stage_id"] for row in panorama["stages"]
-    }
-    assert "train_gaussian_reconstruction" in {
-        row["stage_id"] for row in iphone["stages"]
-    }
-    assert "evaluate_heldout_appearance" in {
-        row["stage_id"] for row in iphone["stages"]
-    }
-    assert "qualify_collision_candidate" in {
-        row["stage_id"] for row in iphone["stages"]
-    }
+    assert "compile_equirectangular_virtual_rig" in {row["stage_id"] for row in panorama["stages"]}
+    assert "train_gaussian_reconstruction" in {row["stage_id"] for row in iphone["stages"]}
+    assert "evaluate_heldout_appearance" in {row["stage_id"] for row in iphone["stages"]}
+    assert "qualify_collision_candidate" in {row["stage_id"] for row in iphone["stages"]}
     assert "verify_isaac_asset" in {row["stage_id"] for row in iphone["stages"]}
     assert "metric_reference_layer" in panorama["required_representations"]
     assert panorama["execution_authorized_by_route"] is False
@@ -177,12 +167,46 @@ def test_iphone_lidar_and_360_capture_receive_different_reconstruction_routes(
     jsonschema.validate(panorama, schema)
 
 
+def test_persisted_pre_appearance_gate_v1_route_remains_valid(
+    tmp_path: Path,
+) -> None:
+    route = build_capture_reconstruction_route(
+        _capture_build(tmp_path, profile="iphone_arkit_lidar", has_lidar=True),
+        requested_claim_types=["appearance_review", "reachability"],
+    )
+    legacy = json.loads(json.dumps(route))
+    legacy.pop("appearance_fidelity_requirements")
+    legacy["required_representations"].remove("qualified_appearance_render")
+    appearance_stage_ids = {
+        "preserve_full_resolution_appearance_truth",
+        "qualify_appearance_fidelity",
+        "render_native_3dgs",
+    }
+    legacy["stages"] = [
+        row for row in legacy["stages"] if row["stage_id"] not in appearance_stage_ids
+    ]
+    for ordinal, row in enumerate(legacy["stages"]):
+        row["ordinal"] = ordinal
+    legacy["capture_reconstruction_route_digest"] = canonical_digest(
+        legacy, digest_field="capture_reconstruction_route_digest"
+    )
+
+    assert validate_capture_reconstruction_route(legacy) == legacy
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs"
+            / "schemas"
+            / "task_evaluation_capture_reconstruction_route.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(legacy, schema)
+
+
 def test_registered_capture_build_inspection_uses_deterministic_profile(
     tmp_path: Path,
 ) -> None:
-    capture_build = _capture_build(
-        tmp_path, profile="iphone_arkit_lidar", has_lidar=True
-    )
+    capture_build = _capture_build(tmp_path, profile="iphone_arkit_lidar", has_lidar=True)
     registry = ToolRegistry.default()
     context = SupervisorContext(
         run_id="capture-inspection-tool",
@@ -206,14 +230,10 @@ def test_registered_capture_build_inspection_uses_deterministic_profile(
         if binding.tool_id == "inspect_capture_build"
     )
 
-    observation = binding.invoke(
-        {"capture_build_digest": capture_build["capture_build_digest"]}
-    )
+    observation = binding.invoke({"capture_build_digest": capture_build["capture_build_digest"]})
 
     assert observation["status"] == "completed"
-    assert observation["typed_result"]["capture_authority_profile"] == (
-        "iphone_arkit_lidar"
-    )
+    assert observation["typed_result"]["capture_authority_profile"] == ("iphone_arkit_lidar")
     assert observation["typed_result"]["route_status"] == "route_proposed"
     assert observation["typed_result"]["capture_profile_validation_status"] == (
         "required_raw_contract_gate"
@@ -293,12 +313,8 @@ def test_360_route_requires_digest_bound_deterministic_profile_validation(
     assert route["capture_profile_validation_digest"] is None
     assert route["stages"] == []
     assert route["currently_registered_adapters"] == []
-    assert route["blockers"] == [
-        "deterministic_capture_profile_validation_missing"
-    ]
-    assert route["next_legal_action"] == (
-        "request_deterministic_capture_profile_validation"
-    )
+    assert route["blockers"] == ["deterministic_capture_profile_validation_missing"]
+    assert route["next_legal_action"] == ("request_deterministic_capture_profile_validation")
     assert route["agent_selected_capture_profile"] is False
 
 
@@ -319,9 +335,7 @@ def test_360_declared_observed_profile_conflict_blocks_without_agent_switch(
     assert route["capture_profile_validation_status"] == "blocked"
     assert route["capture_profile_validation_digest"].startswith("sha256:")
     assert route["stages"] == []
-    assert route["blockers"] == [
-        "deterministic_capture_profile_validation_failed"
-    ]
+    assert route["blockers"] == ["deterministic_capture_profile_validation_failed"]
     assert route["next_legal_action"] == "request_corrected_capture_intake"
     assert route["agent_selected_capture_profile"] is False
 
@@ -344,9 +358,7 @@ def test_native_360_profile_routes_to_calibration_when_rig_is_still_pending(
     assert route["blockers"] == []
     assert route["stages"][0]["stage_id"] == "retain_native_360_originals"
     assert route["stages"][1]["stage_id"] == "normalize_native_360_capture"
-    assert "local://native-360-normalization-v1" in route[
-        "currently_registered_adapters"
-    ]
+    assert "local://native-360-normalization-v1" in route["currently_registered_adapters"]
 
 
 def test_360_profile_validation_projection_tamper_fails_closed(tmp_path: Path) -> None:
@@ -358,8 +370,7 @@ def test_360_profile_validation_projection_tamper_fails_closed(tmp_path: Path) -
     validation_artifact = next(
         artifact
         for artifact in tampered["artifacts"]
-        if artifact["relative_path"]
-        == "evaluation_prep/capture_profile_validation.json"
+        if artifact["relative_path"] == "evaluation_prep/capture_profile_validation.json"
     )
     validation_artifact["approved_projection"]["compatible_capture_authority_profile"] = (
         "camera_360_native"
@@ -374,9 +385,7 @@ def test_360_profile_validation_projection_tamper_fails_closed(tmp_path: Path) -
     assert route["capture_authority_profile"] is None
     assert route["capture_profile_validation_status"] == "invalid"
     assert route["capture_profile_validation_digest"] is None
-    assert route["blockers"] == [
-        "deterministic_capture_profile_validation_invalid"
-    ]
+    assert route["blockers"] == ["deterministic_capture_profile_validation_invalid"]
     assert route["next_legal_action"] == "preserve_evidence_and_stop"
 
 
@@ -687,9 +696,7 @@ def test_agents_sdk_executes_injected_frozen_dataset_compiler_without_proof_auth
     observation = bindings["compile_frozen_frame_dataset"].invoke(
         {
             "capture_build_digest": capture_build["capture_build_digest"],
-            "capture_reconstruction_route_digest": route[
-                "capture_reconstruction_route_digest"
-            ],
+            "capture_reconstruction_route_digest": route["capture_reconstruction_route_digest"],
         }
     )
 
@@ -811,9 +818,7 @@ def test_frozen_dataset_tool_rehashes_supporting_artifacts_from_compiler(
     observation = binding.invoke(
         {
             "capture_build_digest": capture_build["capture_build_digest"],
-            "capture_reconstruction_route_digest": route[
-                "capture_reconstruction_route_digest"
-            ],
+            "capture_reconstruction_route_digest": route["capture_reconstruction_route_digest"],
         }
     )
 
@@ -890,9 +895,7 @@ def test_agents_sdk_executes_digest_bound_native_360_normalizer_without_proof_au
     observation = bindings["normalize_native_360_capture"].invoke(
         {
             "capture_build_digest": capture_build["capture_build_digest"],
-            "capture_reconstruction_route_digest": route[
-                "capture_reconstruction_route_digest"
-            ],
+            "capture_reconstruction_route_digest": route["capture_reconstruction_route_digest"],
         }
     )
 
@@ -919,9 +922,7 @@ def test_agents_sdk_executes_digest_bound_native_360_normalizer_without_proof_au
 def test_agents_sdk_executes_shared_center_virtual_rig_compiler_without_pixel_promotion(
     tmp_path: Path,
 ) -> None:
-    capture_build = _capture_build(
-        tmp_path, profile="camera_360_equirectangular"
-    )
+    capture_build = _capture_build(tmp_path, profile="camera_360_equirectangular")
     route = build_capture_reconstruction_route(
         capture_build, requested_claim_types=["navigation_clearance"]
     )
@@ -985,9 +986,7 @@ def test_agents_sdk_executes_shared_center_virtual_rig_compiler_without_pixel_pr
     observation = bindings["compile_equirectangular_virtual_rig"].invoke(
         {
             "capture_build_digest": capture_build["capture_build_digest"],
-            "capture_reconstruction_route_digest": route[
-                "capture_reconstruction_route_digest"
-            ],
+            "capture_reconstruction_route_digest": route["capture_reconstruction_route_digest"],
         }
     )
 

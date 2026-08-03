@@ -101,9 +101,7 @@ def test_qualifies_only_auditable_full_fidelity_derivative() -> None:
 
 
 def test_global_decimation_can_never_qualify() -> None:
-    result = build_appearance_fidelity_qualification(
-        _qualification(retained=250, decimated=True)
-    )
+    result = build_appearance_fidelity_qualification(_qualification(retained=250, decimated=True))
 
     assert result["status"] == "blocked"
     assert "global_splat_decimation_forbidden" in result["blockers"]
@@ -117,6 +115,21 @@ def test_camera_must_bind_the_exact_render_coordinate_basis() -> None:
     result = build_appearance_fidelity_qualification(value)
     assert result["status"] == "blocked"
     assert "camera_coordinate_basis_mismatch" in result["blockers"]
+
+
+@pytest.mark.parametrize("field", ["measurement", "threshold"])
+def test_ssim_values_above_one_are_rejected(field: str) -> None:
+    value = _qualification()
+    if field == "measurement":
+        value["reference_frame_comparison"]["metrics"]["ssim"] = 1.01
+    else:
+        value["qualification_policy"]["minimum_ssim"] = 1.01
+
+    with pytest.raises(
+        AppearanceFidelityContractError,
+        match="appearance_fidelity_ssim_measurement_invalid",
+    ):
+        build_appearance_fidelity_qualification(value)
 
 
 def test_route_selects_best_measured_fidelity_independently_from_isaac() -> None:
@@ -192,5 +205,7 @@ def test_generative_enhancers_are_presentation_only(method_id: str) -> None:
 
     assert result["claim_ceiling"] == "presentation_only"
     jsonschema.validate(result, _schema("appearance_presentation_derivative.v1.schema.json"))
-    with pytest.raises(AppearanceFidelityContractError, match="presentation_derivative_authority_invalid"):
+    with pytest.raises(
+        AppearanceFidelityContractError, match="presentation_derivative_authority_invalid"
+    ):
         build_presentation_derivative_contract({**value, "evaluation_input_allowed": True})

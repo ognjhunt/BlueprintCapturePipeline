@@ -14,7 +14,6 @@
     "capture_profile_validation_digest",
     "requested_claim_types",
     "required_representations",
-    "appearance_fidelity_requirements",
     "stages",
     "currently_registered_adapters",
     "blockers",

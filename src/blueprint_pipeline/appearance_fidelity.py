@@ -62,7 +62,9 @@ def _digest(value: Any) -> bool:
     )
 
 
-def _finite_number(value: Any, *, minimum: float | None = None, maximum: float | None = None) -> bool:
+def _finite_number(
+    value: Any, *, minimum: float | None = None, maximum: float | None = None
+) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     number = float(value)
@@ -82,9 +84,7 @@ def _valid_bounds(value: Any) -> bool:
     robust_maximum = value.get("robust_max")
     rows = (minimum, maximum, robust_minimum, robust_maximum)
     if any(
-        not isinstance(row, list)
-        or len(row) != 3
-        or any(not _finite_number(item) for item in row)
+        not isinstance(row, list) or len(row) != 3 or any(not _finite_number(item) for item in row)
         for row in rows
     ):
         return False
@@ -109,7 +109,9 @@ def build_appearance_fidelity_qualification(value: Mapping[str, Any]) -> dict[st
     renderer = artifact.get("renderer")
     comparison = artifact.get("reference_frame_comparison")
     policy = artifact.get("qualification_policy")
-    if not all(isinstance(item, Mapping) for item in (source, render_input, renderer, comparison, policy)):
+    if not all(
+        isinstance(item, Mapping) for item in (source, render_input, renderer, comparison, policy)
+    ):
         raise AppearanceFidelityContractError(["appearance_fidelity_sections_missing"])
 
     for label, row in (("source", source), ("render_input", render_input)):
@@ -212,14 +214,14 @@ def build_appearance_fidelity_qualification(value: Mapping[str, Any]) -> dict[st
     if not isinstance(metrics, Mapping):
         raise AppearanceFidelityContractError(["appearance_fidelity_comparison_metrics_invalid"])
     threshold_pairs = (
-        ("ssim", "minimum_ssim", lambda observed, threshold: observed >= threshold),
-        ("psnr_db", "minimum_psnr_db", lambda observed, threshold: observed >= threshold),
-        ("lpips", "maximum_lpips", lambda observed, threshold: observed <= threshold),
+        ("ssim", "minimum_ssim", lambda observed, threshold: observed >= threshold, 1.0),
+        ("psnr_db", "minimum_psnr_db", lambda observed, threshold: observed >= threshold, None),
+        ("lpips", "maximum_lpips", lambda observed, threshold: observed <= threshold, None),
     )
-    for metric_key, policy_key, predicate in threshold_pairs:
-        if not _finite_number(metrics.get(metric_key), minimum=0.0) or not _finite_number(
-            policy.get(policy_key), minimum=0.0
-        ):
+    for metric_key, policy_key, predicate, maximum in threshold_pairs:
+        if not _finite_number(
+            metrics.get(metric_key), minimum=0.0, maximum=maximum
+        ) or not _finite_number(policy.get(policy_key), minimum=0.0, maximum=maximum):
             raise AppearanceFidelityContractError(
                 [f"appearance_fidelity_{metric_key}_measurement_invalid"]
             )
@@ -237,9 +239,7 @@ def build_appearance_fidelity_qualification(value: Mapping[str, Any]) -> dict[st
     artifact["appearance_is_metric_or_collision_truth"] = False
     artifact["presentation_derivative_used"] = False
     artifact["claim_ceiling"] = "qualified_appearance_render" if not blockers else "none"
-    expected = canonical_digest(
-        artifact, digest_field="appearance_fidelity_qualification_digest"
-    )
+    expected = canonical_digest(artifact, digest_field="appearance_fidelity_qualification_digest")
     if supplied is not None and supplied != expected:
         raise AppearanceFidelityContractError(["appearance_fidelity_digest_mismatch"])
     artifact["appearance_fidelity_qualification_digest"] = expected
@@ -279,7 +279,10 @@ def select_best_fidelity_render_route(
                         "appearance_fidelity_qualification_digest"
                     ],
                     "reasons": sorted(
-                        set(candidate["blockers"] + ([] if exact_source else ["source_digest_mismatch"]))
+                        set(
+                            candidate["blockers"]
+                            + ([] if exact_source else ["source_digest_mismatch"])
+                        )
                     ),
                 }
             )
@@ -374,9 +377,7 @@ def build_robot_appearance_composite_contract(value: Mapping[str, Any]) -> dict[
             "claim_ceiling": "qualified_scene_robot_visual_composite",
         }
     )
-    expected = canonical_digest(
-        artifact, digest_field="robot_appearance_composite_contract_digest"
-    )
+    expected = canonical_digest(artifact, digest_field="robot_appearance_composite_contract_digest")
     if supplied is not None and supplied != expected:
         raise AppearanceFidelityContractError(["robot_appearance_composite_digest_mismatch"])
     artifact["robot_appearance_composite_contract_digest"] = expected
@@ -408,9 +409,7 @@ def build_presentation_derivative_contract(value: Mapping[str, Any]) -> dict[str
     if errors:
         raise AppearanceFidelityContractError(errors)
     artifact["claim_ceiling"] = "presentation_only"
-    expected = canonical_digest(
-        artifact, digest_field="appearance_presentation_derivative_digest"
-    )
+    expected = canonical_digest(artifact, digest_field="appearance_presentation_derivative_digest")
     if supplied is not None and supplied != expected:
         raise AppearanceFidelityContractError(["presentation_derivative_digest_mismatch"])
     artifact["appearance_presentation_derivative_digest"] = expected

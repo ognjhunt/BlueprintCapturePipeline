@@ -321,10 +321,15 @@ def _profile_validation_projection(
         }
         if not required.issubset(value):
             return None, "invalid"
-        routing_binding = {key: value[key] for key in required if key not in {
-            "capture_profile_routing_binding_digest",
-            "capture_profile_validation_digest",
-        }}
+        routing_binding = {
+            key: value[key]
+            for key in required
+            if key
+            not in {
+                "capture_profile_routing_binding_digest",
+                "capture_profile_validation_digest",
+            }
+        }
         if (
             value.get("schema_version") != "capture_profile_validation.v1"
             or value.get("capture_profile_routing_binding_digest")
@@ -342,10 +347,7 @@ def _profile_validation_projection(
         projections.append(value)
     if not projections:
         return None, None
-    unique = {
-        str(value["capture_profile_routing_binding_digest"]): value
-        for value in projections
-    }
+    unique = {str(value["capture_profile_routing_binding_digest"]): value for value in projections}
     if len(unique) != 1:
         return None, "invalid"
     projection = next(iter(unique.values()))
@@ -391,6 +393,31 @@ def _required_representations(claim_types: Sequence[str]) -> list[str]:
     return sorted(required)
 
 
+def _legacy_v1_required_representations(claim_types: Sequence[str]) -> list[str]:
+    """Reproduce the pre-appearance-gate v1 representation projection.
+
+    Persisted v1 routes are immutable evidence.  The expanded v1 contract adds
+    qualified appearance requirements, but old digest-valid routes must remain
+    readable and must not silently acquire the new requirement.
+    """
+
+    return [
+        item
+        for item in _required_representations(claim_types)
+        if item != "qualified_appearance_render"
+    ]
+
+
+def _profile_stages_for_validation(
+    profile: str, *, expanded_appearance_contract: bool
+) -> tuple[tuple[str, str, str], ...]:
+    stages = _PROFILE_STAGES.get(profile, ())
+    if expanded_appearance_contract:
+        return stages
+    appearance_stage_ids = {row[0] for row in _APPEARANCE_FIDELITY_STAGES}
+    return tuple(row for row in stages if row[0] not in appearance_stage_ids)
+
+
 def build_capture_reconstruction_route(
     capture_build_value: Mapping[str, Any],
     *,
@@ -430,16 +457,12 @@ def build_capture_reconstruction_route(
                 profile_validation_status = "required_missing"
                 blockers.append("deterministic_capture_profile_validation_missing")
             else:
-                profile_validation_digest = str(
-                    validation["capture_profile_validation_digest"]
-                )
+                profile_validation_digest = str(validation["capture_profile_validation_digest"])
                 if (
                     validation.get("validation_status") != "validated"
-                    or validation.get("compatible_capture_authority_profile")
-                    != profiles[0]
+                    or validation.get("compatible_capture_authority_profile") != profiles[0]
                     or validation.get("blockers") != []
-                    or validation.get("proof_effect")
-                    != "capture_profile_validation_only"
+                    or validation.get("proof_effect") != "capture_profile_validation_only"
                 ):
                     status = "capture_profile_validation_failed"
                     profile = None
@@ -521,7 +544,7 @@ def build_capture_reconstruction_route(
 
 
 def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str, Any]:
-    required = {
+    base_required = {
         "schema_version",
         "capture_build_digest",
         "status",
@@ -531,7 +554,6 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
         "capture_profile_validation_digest",
         "requested_claim_types",
         "required_representations",
-        "appearance_fidelity_requirements",
         "stages",
         "currently_registered_adapters",
         "blockers",
@@ -548,6 +570,12 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
         route = json.loads(json.dumps(value))
     except (TypeError, ValueError) as exc:
         raise CaptureReconstructionRouteError("capture_reconstruction_route_not_json") from exc
+    expanded_appearance_contract = isinstance(route, dict) and (
+        "appearance_fidelity_requirements" in route
+    )
+    required = base_required | (
+        {"appearance_fidelity_requirements"} if expanded_appearance_contract else set()
+    )
     if not isinstance(route, dict) or set(route) != required:
         raise CaptureReconstructionRouteError("capture_reconstruction_route_fields_invalid")
     digest = str(route.get("capture_build_digest") or "")
@@ -583,8 +611,16 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
         or any(candidate not in CAPTURE_AUTHORITY_PROFILES for candidate in candidates)
         or route.get("requested_claim_types") != claims
         or route.get("required_representations") != representations
-        or representations != _required_representations(claims)
-        or fidelity_requirements != _APPEARANCE_FIDELITY_REQUIREMENTS
+        or representations
+        != (
+            _required_representations(claims)
+            if expanded_appearance_contract
+            else _legacy_v1_required_representations(claims)
+        )
+        or (
+            expanded_appearance_contract
+            and fidelity_requirements != _APPEARANCE_FIDELITY_REQUIREMENTS
+        )
         or route.get("currently_registered_adapters") != adapters
         or route.get("blockers") != blockers
         or route.get("agent_selected_capture_profile") is not False
@@ -604,7 +640,10 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
                 "implementation_status": implementation_status,
             }
             for ordinal, (stage_id, method_kind, implementation_status) in enumerate(
-                _PROFILE_STAGES.get(str(profile or ""), ())
+                _profile_stages_for_validation(
+                    str(profile or ""),
+                    expanded_appearance_contract=expanded_appearance_contract,
+                )
             )
         ]
         expected_adapters = (
@@ -696,14 +735,11 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
             or blockers != expected_blocker
             or (status == "capture_profile_required" and candidates)
             or (status == "ambiguous_capture_profile" and len(candidates) < 2)
+            or (status.startswith("capture_profile_validation_") and len(candidates) != 1)
+            or route.get("capture_profile_validation_status") != expected_validation_status
             or (
-                status.startswith("capture_profile_validation_")
-                and len(candidates) != 1
-            )
-            or route.get("capture_profile_validation_status")
-            != expected_validation_status
-            or (
-                status in {
+                status
+                in {
                     "capture_profile_validation_required",
                     "capture_profile_validation_invalid",
                 }

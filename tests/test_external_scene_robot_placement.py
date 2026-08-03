@@ -4,6 +4,7 @@ import hashlib
 import math
 
 import numpy as np
+import pytest
 import trimesh
 
 import blueprint_pipeline.external_scene_robot_placement as placement_module
@@ -39,6 +40,72 @@ def _target_analysis(*, position: list[float]) -> dict:
     }
     value["target_analysis_digest"] = canonical_digest(value, digest_field="target_analysis_digest")
     return value
+
+
+def _flat_floor_packet_inputs(tmp_path, *, task_family: str = "franka_fixture_inspection"):
+    mesh = trimesh.Trimesh(
+        vertices=np.asarray([[-3, 0, -3], [3, 0, -3], [3, 0, 3], [-3, 0, 3]], dtype=np.float32),
+        faces=np.asarray([[0, 1, 2], [0, 2, 3]], dtype=np.int64),
+        process=False,
+    )
+    glb = tmp_path / f"{task_family}.glb"
+    glb.write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+    target_analysis = _target_analysis(position=[0.0, 0.0, 0.7])
+    target_analysis["selected_target"]["task_family"] = task_family
+    target_analysis["target_analysis_digest"] = canonical_digest(
+        target_analysis, digest_field="target_analysis_digest"
+    )
+    request = {
+        "schema_version": "external_scene_robot_placement_request.v1",
+        "robot_id": "franka_panda",
+        "source_scene_digest": "sha256:" + "a" * 64,
+        "target_analysis_digest": target_analysis["target_analysis_digest"],
+        "target_binding_digest": "sha256:" + "c" * 64,
+        "scene_frame_binding_digest": "sha256:" + "d" * 64,
+        "collision_candidate_digest": "sha256:" + "e" * 64,
+        "collision_source_digest": _digest(glb),
+        "target_label": "fixture surface",
+        "visual_confidence": 0.9,
+        "target_position_collision_stage": [0.0, 0.0, 0.7],
+        "target_spatial_uncertainty_stage_units": 0.25,
+        "metric_scale_status": "provider_declared_not_independently_validated",
+        "collision_status": "candidate_compiled",
+        "candidate_may_self_authorize": False,
+    }
+    return glb, request, target_analysis
+
+
+def test_noninspection_target_preserves_generic_franka_policy_path(tmp_path) -> None:
+    glb, request, target_analysis = _flat_floor_packet_inputs(
+        tmp_path, task_family="faucet_handle_reach_and_turn"
+    )
+
+    packet = propose_external_scene_robot_placement(
+        collision_glb_path=glb,
+        request=request,
+        target_analysis=target_analysis,
+    )
+
+    render_options = packet["render_options"]
+    assert "inspection_outcome_contract" not in render_options
+    assert render_options["articulated_policy_trace_request"]["schema_version"] == (
+        "franka_articulated_policy_trace_request.v1"
+    )
+
+
+def test_target_analysis_payload_must_match_its_digest(tmp_path) -> None:
+    glb, request, target_analysis = _flat_floor_packet_inputs(tmp_path)
+    target_analysis["selected_target"]["object_label"] = "tampered fixture"
+
+    with pytest.raises(
+        placement_module.ExternalSceneRobotPlacementError,
+        match="external_placement_target_analysis_digest_mismatch",
+    ):
+        propose_external_scene_robot_placement(
+            collision_glb_path=glb,
+            request=request,
+            target_analysis=target_analysis,
+        )
 
 
 def test_external_scene_placement_uses_official_franka_and_abstains_formally(
