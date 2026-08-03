@@ -4,6 +4,16 @@
 
 ### Employee-Facing
 
+- Added a retained, development-only ARKitScenes 40958756 scripted-inspection
+  producer. It rehashes every recorded public-dataset source, regenerates the
+  current rendered-scene target, prepares the exact five deterministic Franka
+  controllers and official Isaac asset, records bounded paid-runtime authority,
+  and emits a typed digest-bound abstention when observed depth geometry cannot
+  support a collision-clear reset. This is public-dataset proxy,
+  single-scenario, simulation-only scripted-controller evidence; it is separate
+  from the learned five-policy lane and proves no physical success, deployment,
+  safety, or transfer (`src/blueprint_pipeline/arkitscenes_inspection_run.py`,
+  `docs/ARKITSCENES_INSPECTION_TASK_RUN.md`).
 - Added a frozen, provider-neutral five-policy lane for one Franka work-surface
   inspection task. It pins five distinct official OpenPI RoboArena DROID
   checkpoint object sets, requires a fresh identity-bound learned query at every
