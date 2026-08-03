@@ -10,6 +10,7 @@ import blueprint_pipeline.external_scene_robot_placement as placement_module
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.external_scene_robot_placement import (
     _footprint_overlap_counts,
+    _infer_horizontal_support_surface,
     _triangle_footprint_overlap_count,
     propose_external_scene_robot_placement,
 )
@@ -229,3 +230,150 @@ def test_oriented_triangle_probe_is_identical_for_search_and_final_gate() -> Non
         )
         == 1
     )
+
+
+def test_dominant_horizontal_floor_rejects_low_geometry_outlier() -> None:
+    vertices = np.asarray(
+        [
+            [-3.0, -3.0, 0.0],
+            [3.0, -3.0, 0.0],
+            [3.0, 3.0, 0.0],
+            [-3.0, 3.0, 0.0],
+            [0.0, 0.0, -2.0],
+            [0.1, 0.0, -2.0],
+            [0.0, 0.1, -2.0],
+        ],
+        dtype=np.float64,
+    )
+    faces = np.asarray([[0, 1, 2], [0, 2, 3], [4, 5, 6]], dtype=np.int64)
+
+    floor_z, support_triangles, evidence = _infer_horizontal_support_surface(
+        stage_vertices=vertices,
+        faces=faces,
+    )
+
+    assert floor_z == 0.0
+    assert support_triangles.shape[0] == 2
+    assert evidence["global_minimum_vertex_z_rejected_as_floor"] == -2.0
+    assert evidence["selection_method"] == "dominant_lower_horizontal_triangle_area_band"
+
+
+def test_external_scene_placement_abstains_when_clear_space_has_no_floor_support(
+    tmp_path,
+) -> None:
+    # A target well beyond this finite 2x2 floor used to appear collision-clear
+    # because the probe only counted obstacles. It must now fail closed.
+    mesh = trimesh.Trimesh(
+        vertices=np.asarray(
+            [[-1, 0, -1], [1, 0, -1], [1, 0, 1], [-1, 0, 1]],
+            dtype=np.float32,
+        ),
+        faces=np.asarray([[0, 1, 2], [0, 2, 3]], dtype=np.int64),
+        process=False,
+    )
+    glb = tmp_path / "finite-floor.glb"
+    glb.write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+    target_analysis = _target_analysis(position=[3.0, 0.0, 0.7])
+    request = {
+        "schema_version": "external_scene_robot_placement_request.v1",
+        "robot_id": "franka_panda",
+        "source_scene_digest": "sha256:" + "a" * 64,
+        "target_analysis_digest": target_analysis["target_analysis_digest"],
+        "target_binding_digest": "sha256:" + "c" * 64,
+        "scene_frame_binding_digest": "sha256:" + "d" * 64,
+        "collision_candidate_digest": "sha256:" + "e" * 64,
+        "collision_source_digest": _digest(glb),
+        "target_label": "unsupported fixture surface",
+        "visual_confidence": 0.9,
+        "target_position_collision_stage": [3.0, 0.0, 0.7],
+        "target_spatial_uncertainty_stage_units": 0.25,
+        "metric_scale_status": "unverified",
+        "collision_status": "candidate_compiled",
+        "candidate_may_self_authorize": False,
+    }
+
+    packet = propose_external_scene_robot_placement(
+        collision_glb_path=glb,
+        request=request,
+        target_analysis=target_analysis,
+    )
+
+    placement = packet["placement"]
+    assert placement["status"] == "abstained"
+    assert placement["base_support_coverage"]["full_sample_support_candidate"] is False
+    assert "robot_base_support_surface_missing" in placement["formal_gaps"]
+
+
+def test_supported_stance_with_source_collision_conflict_requires_proxy_composition(
+    tmp_path, monkeypatch
+) -> None:
+    # GLB is Y-up. The first four vertices are a floor; the last four map to a
+    # vertical stage-X wall crossing the selected robot footprint.
+    mesh = trimesh.Trimesh(
+        vertices=np.asarray(
+            [
+                [-3, 0, -3],
+                [3, 0, -3],
+                [3, 0, 3],
+                [-3, 0, 3],
+                [0, 0, 0.5],
+                [0, 1, 0.5],
+                [0, 1, -0.5],
+                [0, 0, -0.5],
+            ],
+            dtype=np.float32,
+        ),
+        faces=np.asarray([[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]], dtype=np.int64),
+        process=False,
+    )
+    glb = tmp_path / "floor-with-wall.glb"
+    glb.write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+    target_analysis = _target_analysis(position=[0.0, 0.0, 0.7])
+    request = {
+        "schema_version": "external_scene_robot_placement_request.v1",
+        "robot_id": "franka_panda",
+        "source_scene_digest": "sha256:" + "a" * 64,
+        "target_analysis_digest": target_analysis["target_analysis_digest"],
+        "target_binding_digest": "sha256:" + "c" * 64,
+        "scene_frame_binding_digest": "sha256:" + "d" * 64,
+        "collision_candidate_digest": "sha256:" + "e" * 64,
+        "collision_source_digest": _digest(glb),
+        "target_label": "fixture surface",
+        "visual_confidence": 0.9,
+        "target_position_collision_stage": [0.0, 0.0, 0.7],
+        "target_spatial_uncertainty_stage_units": 0.25,
+        "metric_scale_status": "unverified",
+        "collision_status": "candidate_compiled",
+        "candidate_may_self_authorize": False,
+    }
+    candidates = iter(
+        [
+            StandPose((0.0, 0.0, 0.0), 0.0, "target", False, 0.2, "source blocked"),
+            StandPose((0.0, 0.0, 0.0), 0.0, "target", False, 0.2, "proxy blocked"),
+            StandPose((0.0, 0.0, 0.0), 0.0, "target", True, 0.2, "support only"),
+        ]
+    )
+    monkeypatch.setattr(
+        placement_module,
+        "ring_scan_stand_pose",
+        lambda *_args, **_kwargs: next(candidates),
+    )
+
+    packet = propose_external_scene_robot_placement(
+        collision_glb_path=glb,
+        request=request,
+        target_analysis=target_analysis,
+    )
+
+    placement = packet["placement"]
+    assert placement["status"] == "abstained"
+    assert placement["base_support_coverage"]["full_sample_support_candidate"] is True
+    assert placement["mesh_triangle_aabb_overlap_probe_hits"] > 0
+    assert placement["bounded_floor_proxy"] is not None
+    assert placement["placement_selection_strategy"] == (
+        "proxy_composed_task_zone_candidate_required"
+    )
+    plan = placement["proxy_composed_evaluation_plan"]
+    assert plan["status"] == "required_before_policy_evaluation"
+    assert plan["source_collision_enabled_in_policy_lane"] is False
+    assert plan["task_zone_simready_asset_required"] is False

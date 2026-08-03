@@ -20,6 +20,38 @@ enhancer. It orchestrates and qualifies replaceable upstream tools:
 | Robot composite | Exact-camera, depth-aware compositor using the official simulator robot render | Bind frame, camera, asset, and runtime digests. The composite is visual support, not dynamics proof. |
 | Optional enhancement | DiFix, ArtiFixer, Fixer, Harmonizer, or a declared successor | Mark output presentation-only and forbid it from evidence, policy observations, target binding, geometry, collision, and routing qualification. |
 
+## Physics composition after a splat reconstruction
+
+A Gaussian reconstruction is appearance, not automatically a SimReady physics
+scene. Blueprint follows the same separation used by NVIDIA's smartphone-to-NuRec
+reference workflow: preserve the reconstruction for rendering, then compose clean,
+explicit physics support around it.
+
+Use the smallest sufficient derived layer:
+
+1. First test the digest-bound scan-derived collision candidate with no manufactured
+   ground. This qualification lane answers whether the captured/derived collider
+   itself supports contact; a proxy must never make that test pass.
+2. For evaluation continuity, add a bounded floor proxy registered to the inferred
+   floor band when the source mesh has holes or low outliers. Do not silently add an
+   infinite plane. Record its transform, bounds, thickness, source-support samples,
+   and exact source/placement digests.
+3. Add a disclosed fixed-base mount for Franka. The mount is simulator support, not
+   evidence of a physical pedestal, anchoring, load capacity, or installation.
+4. For inspection-only tasks, the captured task object may remain appearance-only.
+   For contact, articulation, or object-state-transition tasks, replace only the
+   interaction zone with a digest-bound, independently validated SimReady asset.
+   Qualify scale, site-to-asset transform, support, orientation, penetration,
+   reprojection, materials, colliders, joints, limits, and physics properties.
+5. If the scan-derived collider intersects the robot or task zone everywhere, do
+   not run it simultaneously and call the result realistic. Route to an explicit
+   proxy-composed evaluation lane: appearance splat plus clean floor/workcell/task
+   assets. Preserve the failed source-collider qualification as separate evidence.
+
+Policy ranks from a proxy-composed lane are valid only for that exact composed
+simulation. They do not prove the captured site's floor continuity, task-object
+dynamics, metric reach, or physical success.
+
 The pinned SplatTransform CLI is the default headless cleanup adapter. It reads
 Scaniverse SPZ and standard/compressed PLY, exposes statistics and qualified
 filters, can render lossless images, and can produce voxel/collision candidates.
@@ -84,3 +116,4 @@ present in an evaluation/policy input.
 - [NVIDIA DiFix3D+](https://research.nvidia.com/labs/toronto-ai/difix3d/)
 - [NVIDIA ArtiFixer](https://research.nvidia.com/labs/sil/projects/artifixer/)
 - [NVIDIA reconstruction enhancement workflow](https://developer.nvidia.com/blog/how-to-enhance-3d-gaussian-reconstruction-quality-for-simulation/)
+- [NVIDIA smartphone reconstruction to Isaac workflow](https://developer.nvidia.com/blog/reconstruct-a-scene-in-nvidia-isaac-sim-using-only-a-smartphone/)
