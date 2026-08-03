@@ -32,7 +32,7 @@
     "terminal_execution_receipt_written": false,
     "terminal_teardown_receipt_written": false,
     "terminal_provider_zero_receipt_written": false,
-    "pending_teardown_record_status": "open",
+    "pending_teardown_record_status": "closed_after_independent_recovery_reconciliation",
     "pending_teardown_record_sha256": "97a167a3d38e46e4340e96605a30a60c1785bbdd4208d0deb88e27699f766d1a",
     "controller_process_missing_before_finally": true,
     "controller_exit_cause": "unknown_no_persisted_traceback_or_exit_status",
@@ -41,15 +41,19 @@
   "cleanup_observation": {
     "chrono_scoped_live_resource_count": 0,
     "chrono_scoped_inventory_api_confirmed": true,
-    "global_live_resource_count_at_latest_reconciliation": 1,
-    "global_resource_belongs_to_another_blueprint_lane": true,
-    "global_provider_zero_terminal_receipt_withheld": true,
+    "global_live_resource_count_at_latest_reconciliation": 0,
+    "unrelated_global_resource_observed_before_final_reconciliation": true,
+    "global_provider_zero_independently_verified": true,
     "staged_object_count": 2,
     "all_staged_objects_absent": true,
     "signed_url_files_removed": true,
     "object_cleanup_receipt_sha256": "b886c46cea1f14c6a0e157a97d35ed1c67ee6101d6bd7408dee3c3902a2a7903",
-    "independent_watchdog_status": "armed",
-    "independent_watchdog_receipt_sha256": "647542f6638016469b15c44a5b9a5097f4147775ab7a135053a597e055fbafb3"
+    "independent_watchdog_status": "provider_terminal",
+    "independent_watchdog_receipt_sha256": "b35d186c52cfb607942b1b1c26cf815265666e25df308035faf9b78eee1c79f6",
+    "watchdog_provider_mutations_performed": 0,
+    "recovery_teardown_receipt_sha256": "a3d2fd4b98b28e54d8c3f1fd9a3b73d926d6acdaf0f37442c563e62f180ba48f",
+    "recovery_reconciliation_receipt_sha256": "dcde2cc95963d57a5317cd555063b982da0f825b18ff3e4d374353cd2bec189c",
+    "lease_status": "already_absent_before_recovery_release_step"
   },
   "encoded_fixes": {
     "terminal_provider_polling_commit": "38503c9ff",
@@ -62,7 +66,6 @@
     "provider_runtime_result_missing",
     "provider_log_not_published",
     "controller_terminal_receipts_missing",
-    "pending_teardown_reconciliation_open",
     "chrono_cuda_execution_unobserved"
   ],
   "qualification_created": false,
@@ -74,5 +77,5 @@
   "proof_effect": "provider_lifecycle_failure_evidence_only",
   "claim_ceiling": "no_chrono_runtime_execution_evidence",
   "raw_secret_values_recorded": false,
-  "next_encoded_action": "Reconcile the open pending teardown after unrelated global Vast inventory returns to zero, then run one new clean-commit attempt using the canonical OS-detached allocator and structured provider failure envelope."
+  "next_encoded_action": "Run one new clean-commit attempt using the canonical OS-detached allocator and structured provider failure envelope."
 }
