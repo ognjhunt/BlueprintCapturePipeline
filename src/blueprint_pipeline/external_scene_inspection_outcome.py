@@ -15,8 +15,8 @@ from typing import Any, Mapping, Sequence
 from .decision_evidence_contracts import canonical_digest
 
 
-CONTRACT_SCHEMA = "external_scene_inspection_outcome_contract.v1"
-RESULT_SCHEMA = "external_scene_inspection_candidate_ranking.v1"
+CONTRACT_SCHEMA = "external_scene_inspection_outcome_contract.v2"
+RESULT_SCHEMA = "external_scene_inspection_candidate_ranking.v2"
 POLICY_ACTION_SOURCES = {"learned_policy", "policy_endpoint", "vla_policy"}
 
 
@@ -107,6 +107,7 @@ def build_franka_inspection_outcome_contract(
             "minimum_camera_target_distance_stage_units": 0.20,
             "maximum_camera_target_distance_stage_units": 0.90,
             "minimum_distinct_viewpoints": 2,
+            "minimum_viewpoint_translation_stage_units": 0.05,
             "minimum_nonblank_terminal_observations": 1,
             "stable_reset_required": True,
             "collision_free_required": True,
@@ -183,13 +184,35 @@ def rank_franka_inspection_candidates(
             blockers.append("inspection_target_view_geometry_invalid")
         finite_angles = [float(value) for value in angles if value is not None]
         finite_distances = [float(value) for value in distances if value is not None]
-        distinct_viewpoints = len(
-            {
-                str(row.get("viewpoint_bin") or "").strip()
-                for row in in_fov
-                if str(row.get("viewpoint_bin") or "").strip()
-            }
+        camera_positions = []
+        for row in in_fov:
+            position = row.get("camera_position_stage")
+            if (
+                not isinstance(position, list)
+                or len(position) != 3
+                or any(_finite(value) is None for value in position)
+            ):
+                blockers.append("inspection_viewpoint_position_invalid")
+                continue
+            camera_positions.append([float(value) for value in position])
+        maximum_viewpoint_translation = max(
+            (
+                math.dist(first, second)
+                for first_index, first in enumerate(camera_positions)
+                for second in camera_positions[first_index + 1 :]
+            ),
+            default=0.0,
         )
+        minimum_viewpoint_translation = float(
+            thresholds["minimum_viewpoint_translation_stage_units"]
+        )
+        # The frozen v1 outcome requires exactly two distinct viewpoints.  Use
+        # measured camera displacement rather than arbitrary azimuth-bin
+        # boundaries, which can both split near-identical poses and collapse a
+        # useful local inspection sweep into one bin.
+        distinct_viewpoints = (
+            2 if maximum_viewpoint_translation >= minimum_viewpoint_translation else 1
+        ) if camera_positions else 0
         if in_fov_fraction < float(thresholds["minimum_target_in_fov_fraction"]):
             blockers.append("inspection_target_in_fov_coverage_below_threshold")
         best_angle = min(finite_angles, default=math.inf)
@@ -231,6 +254,9 @@ def rank_franka_inspection_candidates(
                 ),
                 "best_standoff_score": round(best_standoff, 9),
                 "distinct_viewpoints": distinct_viewpoints,
+                "maximum_viewpoint_translation_stage_units": round(
+                    maximum_viewpoint_translation, 9
+                ),
             }
         )
     qualified = [row for row in rows if row["status"] == "qualified"]

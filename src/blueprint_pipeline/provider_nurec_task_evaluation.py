@@ -321,7 +321,7 @@ def _method_profiles(
             "adapter_id": "robot_eval_policy_package",
             "adapter_version": "1",
             "policy_id": "franka-scripted-inspection-controller-cohort-v1",
-            "observation_schema_ref": "external_scene_inspection_candidate_ranking.v1",
+            "observation_schema_ref": "external_scene_inspection_candidate_ranking.v2",
             "action_schema_ref": "deterministic_franka_inspection_cohort.v1",
         }
         leaf["proof_contract"] = {

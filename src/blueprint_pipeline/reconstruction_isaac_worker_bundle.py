@@ -366,7 +366,7 @@ def _validate_render_options(path: Path) -> dict[str, Any]:
         supplied_contract_digest = outcome_contract.get("contract_digest")
         if (
             outcome_contract.get("schema_version")
-            != "external_scene_inspection_outcome_contract.v1"
+            != "external_scene_inspection_outcome_contract.v2"
             or _DIGEST.fullmatch(str(supplied_contract_digest or "")) is None
             or supplied_contract_digest
             != canonical_digest(outcome_contract, digest_field="contract_digest")

@@ -268,7 +268,7 @@ def test_collision_simulation_rejects_generated_or_tampered_physics() -> None:
 
 def test_inspection_ranking_replay_supports_controllers_but_not_policy_ranking() -> None:
     ranking = {
-        "schema_version": "external_scene_inspection_candidate_ranking.v1",
+        "schema_version": "external_scene_inspection_candidate_ranking.v2",
         "contract_digest": "sha256:" + "a" * 64,
         "status": "completed",
         "candidate_results": [

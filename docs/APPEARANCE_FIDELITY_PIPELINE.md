@@ -52,6 +52,14 @@ Policy ranks from a proxy-composed lane are valid only for that exact composed
 simulation. They do not prove the captured site's floor continuity, task-object
 dynamics, metric reach, or physical success.
 
+For inspection tasks, viewpoint diversity is measured from the recorded
+robot-relative camera translations in the exact simulator trace. Do not use
+coarse azimuth-bin labels as the qualification authority: a bin boundary can
+split nearly identical poses, while a useful local sweep can remain inside one
+bin. The frozen contract records the minimum stage-unit translation and keeps
+independent metric scale as a separate, unproven claim when no known-distance
+anchor exists.
+
 The pinned SplatTransform CLI is the default headless cleanup adapter. It reads
 Scaniverse SPZ and standard/compressed PLY, exposes statistics and qualified
 filters, can render lossless images, and can produce voxel/collision candidates.

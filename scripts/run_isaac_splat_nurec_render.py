@@ -272,7 +272,7 @@ def _validate_policy_trace_request(options: dict) -> tuple[dict | None, list[str
             errors.append("franka_inspection_outcome_contract_missing")
         elif (
             outcome_contract.get("schema_version")
-            != "external_scene_inspection_outcome_contract.v1"
+            != "external_scene_inspection_outcome_contract.v2"
             or outcome_contract.get("contract_digest")
             != _canonical_digest(outcome_contract, digest_field="contract_digest")
             or outcome_contract.get("placement_proposal_digest")
