@@ -1,0 +1,101 @@
+{
+  "schema_version": "new_site_observed_site_evidence.v1",
+  "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+  "artifacts": {
+    "capture_raw_manifest": {
+      "capture_id": "loading-bay-capture-001",
+      "capture_capabilities": {"rgb": true, "camera_pose": true, "depth": true},
+      "evidence_tier": "fixture_only",
+      "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+      "observed_or_independently_measured": true,
+      "artifact_digest": "sha256:33ef3e5c2ccff5714e1fd00784a7a3fe572600fac82123006e81b53cb4ed11d8"
+    },
+    "capture_qa_report": {
+      "report_id": "loading-bay-capture-qa",
+      "status": "passed",
+      "frame_count": 2,
+      "timestamps_strictly_monotonic": true,
+      "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+      "observed_or_independently_measured": true,
+      "artifact_digest": "sha256:f70b7b8cb8522dea015525720708cc2ab7f437f84fd7341e3f015ec30be0fe64"
+    },
+    "metric_scale_validation": {
+      "validation_id": "loading-bay-metric-scale",
+      "status": "passed",
+      "units": "m",
+      "maximum_error_m": 0.01,
+      "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+      "observed_or_independently_measured": true,
+      "artifact_digest": "sha256:e8ceb56eb4df71b40dc54cb73076a00f0d6b098316a901d41db10feaf2c894b6"
+    },
+    "metric_geometry_manifest": {
+      "manifest_id": "loading-bay-observed-geometry",
+      "status": "passed",
+      "geometry_status": "observed_metric_reference_candidate",
+      "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+      "observed_or_independently_measured": true,
+      "artifact_digest": "sha256:ef3d9e403f2820fd96d4d47e1bd5350a29a1bb4352051e8d3b418b620f89345a"
+    },
+    "collider_qualification_report": {
+      "report_id": "loading-bay-collider-qualification",
+      "status": "passed",
+      "independent_validation": true,
+      "coverage": 0.95,
+      "maximum_spatial_uncertainty_m": 0.01,
+      "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+      "observed_or_independently_measured": true,
+      "artifact_digest": "sha256:7fc8e2f4896f19cb13164aa16baf176d06648a43b9bb8f07d6d03b5d3c68fccd"
+    },
+    "robot_site_registration": {
+      "registration_id": "loading-bay-robot-site-registration",
+      "status": "verified",
+      "robot_base_frame": "fixture-inspection-arm-base",
+      "site_frame": "site",
+      "maximum_translation_error_m": 0.01,
+      "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+      "observed_or_independently_measured": true,
+      "artifact_digest": "sha256:6415c62a14a16a51fa6f35fa83bce6629d5e97c973f4c1e5bd3a839fc895b2d7"
+    },
+    "articulation_measurement": {
+      "measurement_id": "loading-bay-joint-models",
+      "status": "passed",
+      "actuation_measured": true,
+      "joint_models": [{"joint_id": "safety-gate-hinge", "joint_type": "revolute", "lower_rad": 0.0, "upper_rad": 1.57}],
+      "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+      "observed_or_independently_measured": true,
+      "artifact_digest": "sha256:c13234a80a9207119e4b6cbcc34d2b251de2eec16dd6ddca8f8544c317f8c8b9"
+    },
+    "material_identification": {
+      "identification_id": "loading-bay-material-characterization",
+      "status": "passed",
+      "friction_measured": true,
+      "mass_inertia_measured": true,
+      "materials": [{"object_id": "pallet-marker-panel", "material": "rigid_polymer_fixture", "static_friction": 0.5, "mass_kg": 0.2}],
+      "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+      "observed_or_independently_measured": true,
+      "artifact_digest": "sha256:bab4233fff340c922beb5388a1b0e5d6f890599ce3af446652255a57045dae3f"
+    },
+    "sensor_calibration": {
+      "calibration_id": "loading-bay-rgbd-calibration",
+      "status": "passed",
+      "timing_verified": true,
+      "sensor_id": "loading-bay-rgbd-1",
+      "maximum_timing_error_ns": 1000000,
+      "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+      "observed_or_independently_measured": true,
+      "artifact_digest": "sha256:fc7a59f5c670a272c456529ed24f08d50be0c912aba44e1682284d6115fd6f9a"
+    }
+  },
+  "collision_scene": {
+    "schema_version": "collision_scene_aabb.v1",
+    "source_capture_digest": "sha256:bc5fd8ba0d594d83ab794ae758dfecf066641c9c16400af16409a2cad55b256b",
+    "coordinate_frame": "site",
+    "scale_status": "metric_verified",
+    "generated_geometry": false,
+    "primitives": [
+      {"primitive_id": "loading-bay-wall", "object_id": "loading-bay-wall", "minimum_site_m": [2.8, 0.0, -0.5], "maximum_site_m": [3.0, 2.5, 2.5]}
+    ],
+    "validation": {"status": "qualified", "independent_validation": true, "coverage": 0.95, "maximum_spatial_uncertainty_m": 0.01},
+    "collision_scene_digest": "sha256:382b6c3e5ffff7a382494a6c01c81a3e65feac1eb17784df0610622bec478504"
+  }
+}

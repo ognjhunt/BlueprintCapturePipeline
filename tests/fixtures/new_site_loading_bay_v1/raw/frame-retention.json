@@ -1,0 +1,6 @@
+{
+  "schema_version": "fixture_frame_retention.v1",
+  "encoded_frame_count": 2,
+  "retained_frame_ids": ["loading-bay-frame-000", "loading-bay-frame-001"],
+  "dropped_frame_ids": []
+}
