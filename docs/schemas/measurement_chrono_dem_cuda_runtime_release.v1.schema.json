@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/measurement-chrono-dem-cuda-runtime-release.v1.schema.json",
+  "title": "Blueprint Chrono DEM CUDA runtime release",
+  "type": "object",
+  "required": ["schema_version", "runtime_image_digest", "amd64_image_manifest_digest", "ubuntu_version", "cuda_version", "chrono_version", "chrono_source_repository", "chrono_source_tag", "chrono_source_tag_object", "chrono_source_commit", "chrono_module", "required_debian_packages", "build_configuration", "required_backend", "cpu_fallback_allowed", "source_build_requires_network", "benchmark_assets_required", "development_only", "qualification_created", "r7_admission_created", "production_route_eligible", "physical_success_established", "runtime_release_digest"],
+  "properties": {
+    "schema_version": {"const": "measurement_chrono_dem_cuda_runtime_release.v1"},
+    "runtime_image_digest": {"const": "nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66"},
+    "amd64_image_manifest_digest": {"const": "sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43"},
+    "ubuntu_version": {"const": "24.04"},
+    "cuda_version": {"const": "12.8.1"},
+    "chrono_version": {"const": "10.0.0"},
+    "chrono_source_repository": {"const": "https://github.com/projectchrono/chrono.git"},
+    "chrono_source_tag": {"const": "10.0.0"},
+    "chrono_source_tag_object": {"const": "94fc98ae6f7f2bdcaf4ea8d34ee0892409ac9810"},
+    "chrono_source_commit": {"const": "9faf13dd8f1128dd75ed233a9627027b0422c3f7"},
+    "chrono_module": {"const": "chrono_dem"},
+    "required_debian_packages": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "build_configuration": {"type": "object", "additionalProperties": {"type": "string"}},
+    "required_backend": {"const": "cuda"},
+    "cpu_fallback_allowed": {"const": false},
+    "source_build_requires_network": {"const": true},
+    "benchmark_assets_required": {"const": false},
+    "development_only": {"const": true},
+    "qualification_created": {"const": false},
+    "r7_admission_created": {"const": false},
+    "production_route_eligible": {"const": false},
+    "physical_success_established": {"const": false},
+    "runtime_release_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

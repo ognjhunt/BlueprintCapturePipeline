@@ -548,6 +548,8 @@ def _run_reconstruction_gpu_canary(
         measurement_dlo_lab_runtime_release_path=getattr(
             args, "measurement_dlo_lab_runtime_release", None
         ),
+        measurement_chrono_dem_runtime_release_path=getattr(
+            args, "measurement_chrono_dem_runtime_release", None),
     )
     if not args.execute or admission.get("status") != "execute_ready":
         return admission
@@ -583,8 +585,8 @@ def _run_reconstruction_gpu_canary(
         }
         write_json(adapter_path, result)
         return result
-
-    if operation in {"measurement_dlo_lab_canary", "measurement_isaac_canary"}:
+    if operation in {"measurement_dlo_lab_canary", "measurement_isaac_canary",
+                     "measurement_chrono_dem_canary"}:
         result = measurement_dlo_lab_paid_allocator.run_measurement_canary_from_canonical_allocator(
             operation=operation,
             args=args,

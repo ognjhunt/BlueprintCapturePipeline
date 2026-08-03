@@ -50,7 +50,7 @@ def test_priority_descriptors_cover_named_adapter_program_without_authorization(
     chrono = build_measurement_adapter_descriptor("project-chrono-10")
     assert chrono["probe_contract"]["python_distributions"] == []
     assert chrono["probe_contract"]["executables"] == []
-    assert chrono["execution_mode"] == "isolated_external_conda"
+    assert chrono["execution_mode"] == "isolated_external_conda_or_exact_source_build"
     assert chrono["target_version"] == "10.0.0"
     dlo = build_measurement_adapter_descriptor("dlo-lab")
     assert dlo["probe_contract"]["python_distributions"] == []

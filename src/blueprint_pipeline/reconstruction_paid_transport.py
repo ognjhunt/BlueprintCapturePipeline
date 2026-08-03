@@ -12,6 +12,10 @@ from .measurement_dlo_lab_vast_bundle import (
     MeasurementDloLabVastBundleError,
     validate_measurement_dlo_lab_input_bundle_receipt,
 )
+from .measurement_chrono_dem_vast_bundle import (
+    MeasurementChronoDemVastBundleError,
+    validate_measurement_chrono_dem_input_bundle_receipt,
+)
 from .paid_resource_transport import resolve_paid_transport_urls
 from .reconstruction_gpu_operation_bundle import (
     ReconstructionGpuOperationBundleError,
@@ -42,10 +46,15 @@ def prepare_reconstruction_paid_transport(
         "isaac_canary",
         "measurement_isaac_canary",
         "measurement_dlo_lab_canary",
+        "measurement_chrono_dem_canary",
     }
     if scientific:
         urls.append(("provider_bundle_url", getattr(args, "provider_bundle_url_file", None)))
-        if operation not in {"measurement_isaac_canary", "measurement_dlo_lab_canary"}:
+        if operation not in {
+            "measurement_isaac_canary",
+            "measurement_dlo_lab_canary",
+            "measurement_chrono_dem_canary",
+        }:
             urls.append(
                 (
                     "operation_receipt_get_url",
@@ -57,6 +66,8 @@ def prepare_reconstruction_paid_transport(
             if operation == "measurement_isaac_canary"
             else getattr(args, "measurement_dlo_lab_bundle_receipt", None)
             if operation == "measurement_dlo_lab_canary"
+            else getattr(args, "measurement_chrono_dem_bundle_receipt", None)
+            if operation == "measurement_chrono_dem_canary"
             else getattr(args, "reconstruction_operation_bundle_receipt", None)
         )
         if not receipt_path:
@@ -70,6 +81,8 @@ def prepare_reconstruction_paid_transport(
                     receipt = validate_measurement_isaac_physx_input_bundle_receipt(raw)
                 elif operation == "measurement_dlo_lab_canary":
                     receipt = validate_measurement_dlo_lab_input_bundle_receipt(raw)
+                elif operation == "measurement_chrono_dem_canary":
+                    receipt = validate_measurement_chrono_dem_input_bundle_receipt(raw)
                 else:
                     receipt = validate_reconstruction_gpu_operation_bundle_receipt(raw)
             except (
@@ -80,6 +93,7 @@ def prepare_reconstruction_paid_transport(
                 IsaacWorkerBundleError,
                 MeasurementIsaacVastBundleError,
                 MeasurementDloLabVastBundleError,
+                MeasurementChronoDemVastBundleError,
             ):
                 blockers.append("reconstruction_operation_bundle_receipt_invalid")
             else:
@@ -97,7 +111,12 @@ def prepare_reconstruction_paid_transport(
                         ("worker_image_digest", "runtime_image_digest"),
                         ("source_commit_sha", "source_commit_sha"),
                     )
-                    if operation in {"measurement_isaac_canary", "measurement_dlo_lab_canary"}
+                    if operation
+                    in {
+                        "measurement_isaac_canary",
+                        "measurement_dlo_lab_canary",
+                        "measurement_chrono_dem_canary",
+                    }
                     else (
                         ("operation", "operation"),
                         ("operation_request_digest", "operation_request_digest"),
@@ -108,12 +127,8 @@ def prepare_reconstruction_paid_transport(
                 )
                 for request_key, receipt_key in bindings:
                     if admission.get(request_key) != receipt.get(receipt_key):
-                        blockers.append(
-                            f"reconstruction_operation_bundle_{request_key}_mismatch"
-                        )
-    resolved, url_blockers = resolve_paid_transport_urls(
-        urls, blocker_prefix="reconstruction"
-    )
+                        blockers.append(f"reconstruction_operation_bundle_{request_key}_mismatch")
+    resolved, url_blockers = resolve_paid_transport_urls(urls, blocker_prefix="reconstruction")
     blockers.extend(url_blockers)
     return receipt, resolved, blockers
 

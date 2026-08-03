@@ -23,6 +23,10 @@ from .measurement_dlo_lab_runtime_release import (
     MeasurementDloLabRuntimeReleaseError,
     validate_measurement_dlo_lab_runtime_release,
 )
+from .measurement_chrono_dem_runtime_release import (
+    MeasurementChronoDemRuntimeReleaseError,
+    validate_measurement_chrono_dem_runtime_release,
+)
 
 
 REQUEST_SCHEMA_VERSION = "reconstruction_gpu_canary_request.v1"
@@ -48,6 +52,7 @@ OPERATIONS = {
     "isaac_canary",
     "measurement_isaac_canary",
     "measurement_dlo_lab_canary",
+    "measurement_chrono_dem_canary",
 }
 EXECUTABLE_OPERATIONS = {
     "worker_smoke",
@@ -56,6 +61,7 @@ EXECUTABLE_OPERATIONS = {
     "isaac_canary",
     "measurement_isaac_canary",
     "measurement_dlo_lab_canary",
+    "measurement_chrono_dem_canary",
 }
 EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "worker_smoke": "reconstruction_vast_worker_smoke_result.v1",
@@ -64,6 +70,7 @@ EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "isaac_canary": "isaac_splat_nurec_render_result.v3",
     "measurement_isaac_canary": "measurement_isaac_physx_rtx_vast_runtime_result.v3",
     "measurement_dlo_lab_canary": "measurement_dlo_lab_cuda_vast_runtime_result.v1",
+    "measurement_chrono_dem_canary": "measurement_chrono_dem_cuda_vast_runtime_result.v1",
 }
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -275,6 +282,7 @@ def build_reconstruction_gpu_canary_admission(
     image_release: Mapping[str, Any] | None = None,
     measurement_isaac_runtime_release: Mapping[str, Any] | None = None,
     measurement_dlo_lab_runtime_release: Mapping[str, Any] | None = None,
+    measurement_chrono_dem_runtime_release: Mapping[str, Any] | None = None,
     observed_now_epoch: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind a canary request to immutable inputs without allocating a machine."""
@@ -374,13 +382,29 @@ def build_reconstruction_gpu_canary_admission(
             except MeasurementDloLabRuntimeReleaseError:
                 blockers.append("measurement_dlo_lab_runtime_release_invalid")
             else:
-                measurement_dlo_runtime_release_digest = str(
-                    dlo_release["runtime_release_digest"]
+                measurement_dlo_runtime_release_digest = str(dlo_release["runtime_release_digest"])
+                if dlo_release.get("runtime_image_digest") != source.get("worker_image_digest"):
+                    blockers.append("measurement_dlo_lab_runtime_release_image_mismatch")
+    measurement_chrono_dem_runtime_release_digest: str | None = None
+    if source.get("operation") == "measurement_chrono_dem_canary":
+        if measurement_chrono_dem_runtime_release is None:
+            if execute:
+                blockers.append("measurement_chrono_dem_runtime_release_missing")
+        else:
+            try:
+                chrono_dem_release = validate_measurement_chrono_dem_runtime_release(
+                    measurement_chrono_dem_runtime_release
                 )
-                if dlo_release.get("runtime_image_digest") != source.get(
+            except MeasurementChronoDemRuntimeReleaseError:
+                blockers.append("measurement_chrono_dem_runtime_release_invalid")
+            else:
+                measurement_chrono_dem_runtime_release_digest = str(
+                    chrono_dem_release["runtime_release_digest"]
+                )
+                if chrono_dem_release.get("runtime_image_digest") != source.get(
                     "worker_image_digest"
                 ):
-                    blockers.append("measurement_dlo_lab_runtime_release_image_mismatch")
+                    blockers.append("measurement_chrono_dem_runtime_release_image_mismatch")
 
     if provider != "vast" or provider_snapshot.get("provider") != "vast":
         blockers.append("reconstruction_gpu_vast_first_required")
@@ -472,6 +496,9 @@ def build_reconstruction_gpu_canary_admission(
         "isaac_image_release_digest": image_release_digest,
         "measurement_isaac_runtime_release_digest": measurement_runtime_release_digest,
         "measurement_dlo_lab_runtime_release_digest": measurement_dlo_runtime_release_digest,
+        "measurement_chrono_dem_runtime_release_digest": (
+            measurement_chrono_dem_runtime_release_digest
+        ),
         "provider_mutation_authorized": bool(
             execute and operation_adapter_qualified and not blockers
         ),
@@ -501,6 +528,9 @@ def build_reconstruction_gpu_canary_admission(
         "isaac_image_release_digest": image_release_digest,
         "measurement_isaac_runtime_release_digest": measurement_runtime_release_digest,
         "measurement_dlo_lab_runtime_release_digest": measurement_dlo_runtime_release_digest,
+        "measurement_chrono_dem_runtime_release_digest": (
+            measurement_chrono_dem_runtime_release_digest
+        ),
         "reconstruction_dataset_digest": source.get("reconstruction_dataset_digest"),
         "frozen_split_digest": source.get("frozen_split_digest"),
         "max_spend_usd": max_spend_usd,
@@ -553,6 +583,7 @@ def prepare_reconstruction_gpu_canary(
     image_release_path: str | Path | None = None,
     measurement_isaac_runtime_release_path: str | Path | None = None,
     measurement_dlo_lab_runtime_release_path: str | Path | None = None,
+    measurement_chrono_dem_runtime_release_path: str | Path | None = None,
 ) -> dict[str, Any]:
     image_release = _read(image_release_path) if image_release_path else None
     measurement_runtime_release = (
@@ -563,6 +594,11 @@ def prepare_reconstruction_gpu_canary(
     measurement_dlo_runtime_release = (
         _read(measurement_dlo_lab_runtime_release_path)
         if measurement_dlo_lab_runtime_release_path
+        else None
+    )
+    measurement_chrono_dem_runtime_release = (
+        _read(measurement_chrono_dem_runtime_release_path)
+        if measurement_chrono_dem_runtime_release_path
         else None
     )
     admission, bound = build_reconstruction_gpu_canary_admission(
@@ -581,6 +617,7 @@ def prepare_reconstruction_gpu_canary(
         image_release=image_release,
         measurement_isaac_runtime_release=measurement_runtime_release,
         measurement_dlo_lab_runtime_release=measurement_dlo_runtime_release,
+        measurement_chrono_dem_runtime_release=measurement_chrono_dem_runtime_release,
     )
     write_json(Path(admission_out), admission)
     write_json(Path(bound_request_out), bound)
