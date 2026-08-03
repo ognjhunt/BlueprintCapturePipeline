@@ -764,6 +764,17 @@ def test_exactly_five_learned_candidates_required() -> None:
     assert result["policy_attempt_count"] == 4
 
 
+def test_execution_bundle_forbids_parallel_caller_policy_placeholders() -> None:
+    request = _request()
+    request["policy_evaluation"]["learned_policy_execution_bundle"] = {}
+    _rebind_request(request)
+
+    with pytest.raises(NewSiteTaskEvaluationError) as caught:
+        compile_new_site_task_evaluation_run(request)
+
+    assert "caller_policy_evidence_forbidden_with_execution_bundle" in caught.value.codes
+
+
 def test_scripted_controller_cannot_impersonate_learned_policy() -> None:
     request = _request()
     candidate = request["policy_evaluation"]["policy_candidates"][0]
