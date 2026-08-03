@@ -22,6 +22,7 @@ jobs:
 
       - name: Install measurement runtimes
         run: |
+          uv lock --check
           uv sync --frozen --extra dev --extra sapien-development --extra exact-geometry-development
 
       - name: Capture isolated worker diagnostics
