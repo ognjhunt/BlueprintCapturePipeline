@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/appearance_render_route.v1.schema.json",
+  "title": "Appearance Render Route v1",
+  "type": "object",
+  "required": [
+    "schema_version", "site_id", "task_family", "source_appearance_digest", "status",
+    "selection_policy", "selected_appearance", "rejected_appearance_candidates",
+    "dynamics_engine", "appearance_renderer_selected_independently_from_dynamics",
+    "compositor_requirements", "evaluation_execution_authorized",
+    "next_required_measurement", "claim_ceiling", "appearance_render_route_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "appearance_render_route.v1"},
+    "source_appearance_digest": {"$ref": "#/$defs/digest"},
+    "status": {"enum": ["qualified_route_selected", "abstained"]},
+    "selection_policy": {"const": "best_qualified_fidelity_then_deterministic_tie_break"},
+    "appearance_renderer_selected_independently_from_dynamics": {"const": true},
+    "evaluation_execution_authorized": {"type": "boolean"},
+    "claim_ceiling": {"const": "render_route_only"},
+    "appearance_render_route_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

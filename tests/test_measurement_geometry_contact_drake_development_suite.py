@@ -39,6 +39,7 @@ def _corpus_digest() -> str:
     return "sha256:" + hashlib.sha256(CORPUS_PATH.read_bytes()).hexdigest()
 
 
+@pytest.mark.external_runtime
 def test_drake_suite_plans_and_executes_method_neutral_corpus() -> None:
     python = _drake_python()
     planned = run_capture_to_geometry_contact_drake_development_suite(
@@ -67,6 +68,7 @@ def test_drake_suite_plans_and_executes_method_neutral_corpus() -> None:
     jsonschema.validate(completed, json.loads(SCHEMA_PATH.read_text(encoding="utf-8")))
 
 
+@pytest.mark.external_runtime
 def test_drake_suite_preserves_virtual_environment_python_symlink() -> None:
     python = _drake_python()
     if not python.is_symlink():

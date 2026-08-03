@@ -457,6 +457,75 @@ def test_fixed_base_support_mount_rejects_inconsistent_top_height() -> None:
     assert "fixed_base_support_mount_top_z_mismatch" in report["blockers"]
 
 
+def test_bounded_floor_proxy_is_policy_support_and_source_probe_excluded() -> None:
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    source = UsdGeom.Mesh.Define(
+        stage,
+        "/World/BlueprintReconstruction/Collision/ExternalSceneMesh",
+    ).GetPrim()
+    options = {
+        "bounded_floor_proxy": {
+            "schema_version": "bounded_floor_proxy_candidate.v1",
+            "status": "simulator_support_candidate_only_requires_qualification",
+            "prim_path": "/World/BlueprintDerivedSupport/BoundedFloorPatch",
+            "center_xyz_collision_stage": [0.25, 2.59, -1.475],
+            "half_extents_xy_stage_units": [0.28, 0.28],
+            "thickness_stage_units": 0.05,
+            "top_z_collision_stage": -1.45,
+            "bounded_to_robot_support_zone": True,
+            "exclude_from_source_collider_physics_probe": True,
+            "physical_floor_continuity_qualified": False,
+        },
+        "proxy_composed_evaluation_plan": {
+            "schema_version": "external_scene_proxy_composed_evaluation_plan.v1",
+            "status": "required_before_policy_evaluation",
+            "source_collision_prim_path": (
+                "/World/BlueprintReconstruction/Collision/ExternalSceneMesh"
+            ),
+            "source_collision_enabled_in_policy_lane": False,
+            "source_collision_qualification_preserved_separately": True,
+            "bounded_floor_proxy_required": True,
+        },
+    }
+
+    floor = runner._author_bounded_floor_proxy(
+        stage,
+        options,
+        Gf=Gf,
+        UsdGeom=UsdGeom,
+        UsdPhysics=UsdPhysics,
+        Sdf=Sdf,
+    )
+    composition = runner._configure_proxy_composed_policy_lane(
+        stage,
+        options,
+        floor,
+        Sdf=Sdf,
+    )
+
+    floor_prim = stage.GetPrimAtPath("/World/BlueprintDerivedSupport/BoundedFloorPatch")
+    assert floor["authored"] is True
+    assert floor_prim.HasAPI(UsdPhysics.CollisionAPI)
+    assert floor["source_collider_contact_qualification_effect"] == "none"
+    assert composition["configured"] is True
+    assert source.IsActive() is False
+
+    runner._restore_source_collision_after_proxy_policy_lane(
+        stage,
+        composition,
+        Sdf=Sdf,
+    )
+    runner._exclude_floor_proxy_from_environment_physics_probe(stage, floor, Sdf=Sdf)
+
+    assert source.IsActive() is True
+    assert composition["source_collision_restored_for_independent_probe"] is True
+    assert floor_prim.IsActive() is False
+    assert floor["excluded_from_environment_physics_probe"] is True
+
+
 def test_robot_evidence_material_is_explicitly_support_only() -> None:
     from pxr import Sdf, Usd, UsdGeom, UsdShade
 

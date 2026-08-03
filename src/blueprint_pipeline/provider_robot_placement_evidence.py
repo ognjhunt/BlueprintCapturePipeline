@@ -92,7 +92,28 @@ def _build_signed_isaac_visual_placement_evidence(
         runtime.get("status") == "blocked"
         and runtime_blockers == ["isaac_articulated_policy_trace_pair_incomplete"]
     )
-    if runtime.get("status") != "completed" and not policy_only_abstention:
+    source_probe_blockers = {
+        "isaac_ground_contact_surface_missing",
+        "isaac_physics_probe_not_executed",
+        "isaac_test_body_contact_not_observed",
+        "isaac_test_body_fell_through_floor",
+        "isaac_test_body_pose_unavailable",
+    }
+    proxy = runtime.get("proxy_composed_evaluation")
+    proxy = proxy if isinstance(proxy, Mapping) else {}
+    policy_pair = runtime.get("articulated_policy_trace_pair")
+    policy_pair = policy_pair if isinstance(policy_pair, Mapping) else {}
+    source_probe_only_abstention = bool(
+        runtime.get("status") == "blocked"
+        and runtime_blockers
+        and set(runtime_blockers).issubset(source_probe_blockers)
+        and proxy.get("configured") is True
+        and proxy.get("source_collision_restored_for_independent_probe") is True
+        and policy_pair.get("status") == "completed"
+    )
+    if runtime.get("status") != "completed" and not (
+        policy_only_abstention or source_probe_only_abstention
+    ):
         blockers.append("provider_robot_placement_runtime_not_completed")
     if (
         robot.get("requested") is not True
@@ -200,6 +221,9 @@ def _build_signed_isaac_visual_placement_evidence(
         "camera_evidence": rows,
         "visual_robot_placement_observed": not blockers,
         "policy_lane_abstained_without_invalidating_visual_evidence": policy_only_abstention,
+        "source_probe_abstained_without_invalidating_visual_evidence": (
+            source_probe_only_abstention
+        ),
         "collision_free_placement_proven": False,
         "kinematic_reachability_proven": False,
         "navigation_or_task_success_proven": False,

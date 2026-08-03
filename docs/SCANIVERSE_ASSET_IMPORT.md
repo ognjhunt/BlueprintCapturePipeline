@@ -1,5 +1,8 @@
 # Scaniverse and Polycam External Asset Import Lane
 
+Appearance cleanup, native rendering, and presentation-only enhancement rules
+are defined in [Appearance Fidelity After Scaniverse](APPEARANCE_FIDELITY_PIPELINE.md).
+
 Status: local, proof-bounded support-asset lanes. Remote provider execution is
 disabled.
 

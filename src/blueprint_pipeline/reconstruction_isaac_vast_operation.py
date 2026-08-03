@@ -280,9 +280,17 @@ def _independent_qualification(
         IsaacReconstructionVerificationError,
     ) as exc:
         blockers.extend(exc.codes)
+    proxy_policy_only = bool(
+        qualified
+        and qualified.get("status") == "verified_proxy_composed_policy_evidence_only"
+    )
     result = {
         "schema_version": QUALIFICATION_SCHEMA_VERSION,
-        "status": ("verified_compatibility_only" if qualified is not None else "abstained"),
+        "status": (
+            "verified_proxy_composed_policy_only"
+            if proxy_policy_only
+            else ("verified_compatibility_only" if qualified is not None else "abstained")
+        ),
         "isaac_verification_request_digest": verification_request.get(
             "isaac_verification_request_digest"
         ),
@@ -300,9 +308,15 @@ def _independent_qualification(
         "simulator_task_success_proven": False,
         "physical_success_proven": False,
         "deployment_readiness_proven": False,
-        "proof_effect": ("isaac_load_render_physics_presence_only" if qualified else "none"),
+        "proof_effect": (
+            "isaac_proxy_composed_policy_trace_only"
+            if proxy_policy_only
+            else ("isaac_load_render_physics_presence_only" if qualified else "none")
+        ),
         "claim_ceiling": (
-            "isaac_load_render_compatibility" if qualified else "runtime_evidence_only"
+            "exact_proxy_composed_simulation_policy_trace_only"
+            if proxy_policy_only
+            else ("isaac_load_render_compatibility" if qualified else "runtime_evidence_only")
         ),
     }
     result["qualification_digest"] = canonical_digest(result, digest_field="qualification_digest")
@@ -751,6 +765,11 @@ def run_reconstruction_isaac_vast_operation(
     cost = hourly * duration / 3600.0 if instance_id else 0.0
     if cost > max_spend:
         blockers.append("reconstruction_isaac_vast_budget_exhausted")
+    qualification_verified = bool(
+        qualification
+        and qualification.get("status")
+        in {"verified_compatibility_only", "verified_proxy_composed_policy_only"}
+    )
     execution = {
         "schema_version": SCHEMA_VERSION,
         "status": "completed" if validated_receipt is not None and not blockers else "failed",
@@ -794,13 +813,11 @@ def run_reconstruction_isaac_vast_operation(
         "physical_success_proven": False,
         "deployment_readiness_proven": False,
         "proof_effect": (
-            "isaac_load_render_physics_presence_only"
-            if qualification and qualification.get("status") == "verified_compatibility_only"
-            else "none"
+            qualification.get("proof_effect", "none") if qualification_verified else "none"
         ),
         "claim_ceiling": (
-            "isaac_load_render_compatibility"
-            if qualification and qualification.get("status") == "verified_compatibility_only"
+            qualification.get("claim_ceiling", "provider_execution_and_runtime_evidence_only")
+            if qualification_verified
             else "provider_execution_and_runtime_evidence_only"
         ),
     }

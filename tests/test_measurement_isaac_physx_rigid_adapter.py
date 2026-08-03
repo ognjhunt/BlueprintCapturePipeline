@@ -361,6 +361,7 @@ def test_isaac_worker_blocks_runtime_version_mismatch(
     assert launch_configs == [{"headless": True, "fast_shutdown": True}]
 
 
+@pytest.mark.external_runtime
 @pytest.mark.slow
 def test_isaac_external_runtime_executes_shared_cases() -> None:
     launcher = _isaac_launcher()

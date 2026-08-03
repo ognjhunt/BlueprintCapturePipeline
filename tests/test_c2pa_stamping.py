@@ -254,16 +254,16 @@ def test_3d_sidecar_lane_is_fail_closed_pending_qualification(tmp_path: Path) ->
 
 
 def test_ptdp_hook_attaches_summary_and_record(tmp_path: Path) -> None:
-    from blueprint_pipeline.post_training_data_package import _apply_c2pa_edge_stamping
+    from blueprint_pipeline.c2pa_stamping import apply_ptdp_edge_stamping
 
     package_dir, media = _package_with_media(tmp_path)
     manifest = {"context": {"scene_id": "scene-1", "capture_id": "cap-1"}}
 
-    _apply_c2pa_edge_stamping(package_dir, manifest, env={})
+    apply_ptdp_edge_stamping(package_dir, manifest, env={})
     assert manifest["c2pa_edge_stamping"]["status"] == "disabled"
     assert manifest["c2pa_edge_stamping"]["sidecar_only"] is True
 
-    _apply_c2pa_edge_stamping(package_dir, manifest, env={C2PA_ENABLED_ENV: "1"})
+    apply_ptdp_edge_stamping(package_dir, manifest, env={C2PA_ENABLED_ENV: "1"})
     summary = manifest["c2pa_edge_stamping"]
     assert summary["status"] == "unavailable"
     assert summary["total_media_count"] == 1

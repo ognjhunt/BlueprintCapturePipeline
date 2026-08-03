@@ -43,12 +43,14 @@ def _candidate(candidate_id: str, *, angle: float, distance: float, source: str)
                 "target_in_fov": True,
                 "view_axis_error_degrees": angle,
                 "camera_target_distance_stage_units": distance,
+                "camera_position_stage": [0.0, 0.0, 0.0],
                 "viewpoint_bin": "left",
             },
             {
                 "target_in_fov": True,
                 "view_axis_error_degrees": angle + 2.0,
                 "camera_target_distance_stage_units": distance + 0.02,
+                "camera_position_stage": [0.1, 0.0, 0.0],
                 "viewpoint_bin": "right",
             },
         ],
@@ -93,6 +95,7 @@ def test_missing_collision_or_viewpoint_diversity_abstains() -> None:
     )
     candidate = _candidate("unsafe", angle=5.0, distance=0.54, source="scripted_controller")
     candidate["collision_free_observed"] = False
+    candidate["target_view_observations"][1]["camera_position_stage"] = [0.01, 0.0, 0.0]
     candidate["target_view_observations"][1]["viewpoint_bin"] = "left"
 
     result = rank_franka_inspection_candidates(contract=contract, candidates=[candidate])
@@ -101,6 +104,23 @@ def test_missing_collision_or_viewpoint_diversity_abstains() -> None:
     assert "inspection_collision_free_observation_missing" in blockers
     assert "inspection_viewpoint_diversity_below_threshold" in blockers
     assert result["status"] == "abstained"
+
+
+def test_measured_camera_translation_not_azimuth_bins_defines_viewpoint_diversity() -> None:
+    contract = build_franka_inspection_outcome_contract(
+        target_analysis=_analysis(), placement_proposal_digest=D[1]
+    )
+    candidate = _candidate(
+        "local-sweep", angle=5.0, distance=0.54, source="scripted_controller"
+    )
+    candidate["target_view_observations"][1]["viewpoint_bin"] = "left"
+
+    result = rank_franka_inspection_candidates(contract=contract, candidates=[candidate])
+
+    row = result["candidate_results"][0]
+    assert row["distinct_viewpoints"] == 2
+    assert row["maximum_viewpoint_translation_stage_units"] == 0.1
+    assert "inspection_viewpoint_diversity_below_threshold" not in row["blockers"]
 
 
 def test_two_provenance_bound_learned_candidates_can_support_policy_ranking() -> None:

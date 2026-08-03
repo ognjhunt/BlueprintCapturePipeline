@@ -40,6 +40,39 @@ _PROFILE_VALIDATION_PATHS = {
     "pipeline/evaluation_prep/capture_profile_validation.json",
 }
 
+_APPEARANCE_FIDELITY_STAGES = (
+    (
+        "preserve_full_resolution_appearance_truth",
+        "appearance_truth_preservation",
+        "required_deterministic_gate",
+    ),
+    (
+        "qualify_appearance_fidelity",
+        "appearance_fidelity_qualification",
+        "registered_conditional",
+    ),
+    ("render_native_3dgs", "native_3dgs_rendering", "registered_conditional"),
+)
+
+_APPEARANCE_FIDELITY_REQUIREMENTS = {
+    "full_resolution_source_is_appearance_truth": True,
+    "unqualified_global_decimation_forbidden": True,
+    "qualified_removal_reasons": [
+        "low_opacity",
+        "nonfinite",
+        "robust_spatial_outlier",
+    ],
+    "source_retained_ratio_required": True,
+    "source_and_retained_bounds_required": True,
+    "representation_coordinate_basis_and_camera_binding_required": True,
+    "spherical_harmonics_degree_required": True,
+    "reference_frame_comparison_required": True,
+    "native_3dgs_renderer_required": True,
+    "appearance_renderer_independent_from_dynamics_engine": True,
+    "exact_camera_depth_aware_robot_composite_required": True,
+    "presentation_derivative_evaluation_use_forbidden": True,
+}
+
 _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
     "iphone_arkit_lidar": (
         ("verify_arkit_raw_contract", "capture_validation", "required_deterministic_gate"),
@@ -71,6 +104,7 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "independent_appearance_qa",
             "registered_conditional",
         ),
+        *_APPEARANCE_FIDELITY_STAGES,
         ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
         ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
         ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
@@ -98,6 +132,7 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "independent_appearance_qa",
             "registered_conditional",
         ),
+        *_APPEARANCE_FIDELITY_STAGES,
         ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
         ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
         ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
@@ -125,6 +160,7 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "independent_appearance_qa",
             "registered_conditional",
         ),
+        *_APPEARANCE_FIDELITY_STAGES,
         ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
         ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
         ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
@@ -158,6 +194,7 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "independent_appearance_qa",
             "registered_conditional",
         ),
+        *_APPEARANCE_FIDELITY_STAGES,
         ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
         ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
         ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
@@ -179,6 +216,7 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "independent_appearance_qa",
             "registered_conditional",
         ),
+        *_APPEARANCE_FIDELITY_STAGES,
         ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
         ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
         ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
@@ -193,6 +231,7 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "external_reconstruction_import",
             "registered_conditional",
         ),
+        *_APPEARANCE_FIDELITY_STAGES,
         ("validate_metric_scale", "metric_scale", "registered_conditional"),
         ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
         ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
@@ -206,6 +245,10 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
 
 class CaptureReconstructionRouteError(ValueError):
     """Raised when a route artifact violates its deterministic contract."""
+
+
+def _clone_fidelity_requirements() -> dict[str, Any]:
+    return json.loads(json.dumps(_APPEARANCE_FIDELITY_REQUIREMENTS))
 
 
 def _strings(value: Any) -> list[str]:
@@ -278,10 +321,15 @@ def _profile_validation_projection(
         }
         if not required.issubset(value):
             return None, "invalid"
-        routing_binding = {key: value[key] for key in required if key not in {
-            "capture_profile_routing_binding_digest",
-            "capture_profile_validation_digest",
-        }}
+        routing_binding = {
+            key: value[key]
+            for key in required
+            if key
+            not in {
+                "capture_profile_routing_binding_digest",
+                "capture_profile_validation_digest",
+            }
+        }
         if (
             value.get("schema_version") != "capture_profile_validation.v1"
             or value.get("capture_profile_routing_binding_digest")
@@ -299,10 +347,7 @@ def _profile_validation_projection(
         projections.append(value)
     if not projections:
         return None, None
-    unique = {
-        str(value["capture_profile_routing_binding_digest"]): value
-        for value in projections
-    }
+    unique = {str(value["capture_profile_routing_binding_digest"]): value for value in projections}
     if len(unique) != 1:
         return None, "invalid"
     projection = next(iter(unique.values()))
@@ -319,6 +364,16 @@ def _profile_validation_projection(
 def _required_representations(claim_types: Sequence[str]) -> list[str]:
     claims = {str(item).strip() for item in claim_types if str(item).strip()}
     required = {"appearance_layer"}
+    if claims.intersection(
+        {
+            "appearance_review",
+            "comparative_policy_ranking",
+            "perception_visibility",
+            "simulated_policy_trace_distinguishability",
+            "task_discovery",
+        }
+    ):
+        required.add("qualified_appearance_render")
     if claims.intersection({"reachability", "robot_placement", "navigation_clearance"}):
         required.add("metric_reference_layer")
     if claims.intersection(
@@ -336,6 +391,31 @@ def _required_representations(claim_types: Sequence[str]) -> list[str]:
     if "articulation" in claims:
         required.add("articulated_object_asset")
     return sorted(required)
+
+
+def _legacy_v1_required_representations(claim_types: Sequence[str]) -> list[str]:
+    """Reproduce the pre-appearance-gate v1 representation projection.
+
+    Persisted v1 routes are immutable evidence.  The expanded v1 contract adds
+    qualified appearance requirements, but old digest-valid routes must remain
+    readable and must not silently acquire the new requirement.
+    """
+
+    return [
+        item
+        for item in _required_representations(claim_types)
+        if item != "qualified_appearance_render"
+    ]
+
+
+def _profile_stages_for_validation(
+    profile: str, *, expanded_appearance_contract: bool
+) -> tuple[tuple[str, str, str], ...]:
+    stages = _PROFILE_STAGES.get(profile, ())
+    if expanded_appearance_contract:
+        return stages
+    appearance_stage_ids = {row[0] for row in _APPEARANCE_FIDELITY_STAGES}
+    return tuple(row for row in stages if row[0] not in appearance_stage_ids)
 
 
 def build_capture_reconstruction_route(
@@ -377,16 +457,12 @@ def build_capture_reconstruction_route(
                 profile_validation_status = "required_missing"
                 blockers.append("deterministic_capture_profile_validation_missing")
             else:
-                profile_validation_digest = str(
-                    validation["capture_profile_validation_digest"]
-                )
+                profile_validation_digest = str(validation["capture_profile_validation_digest"])
                 if (
                     validation.get("validation_status") != "validated"
-                    or validation.get("compatible_capture_authority_profile")
-                    != profiles[0]
+                    or validation.get("compatible_capture_authority_profile") != profiles[0]
                     or validation.get("blockers") != []
-                    or validation.get("proof_effect")
-                    != "capture_profile_validation_only"
+                    or validation.get("proof_effect") != "capture_profile_validation_only"
                 ):
                     status = "capture_profile_validation_failed"
                     profile = None
@@ -438,6 +514,7 @@ def build_capture_reconstruction_route(
         "capture_profile_validation_digest": profile_validation_digest,
         "requested_claim_types": _strings(list(requested_claim_types)),
         "required_representations": _required_representations(requested_claim_types),
+        "appearance_fidelity_requirements": _clone_fidelity_requirements(),
         "stages": stages,
         "currently_registered_adapters": sorted(executable_adapters),
         "blockers": blockers,
@@ -467,7 +544,7 @@ def build_capture_reconstruction_route(
 
 
 def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str, Any]:
-    required = {
+    base_required = {
         "schema_version",
         "capture_build_digest",
         "status",
@@ -493,6 +570,12 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
         route = json.loads(json.dumps(value))
     except (TypeError, ValueError) as exc:
         raise CaptureReconstructionRouteError("capture_reconstruction_route_not_json") from exc
+    expanded_appearance_contract = isinstance(route, dict) and (
+        "appearance_fidelity_requirements" in route
+    )
+    required = base_required | (
+        {"appearance_fidelity_requirements"} if expanded_appearance_contract else set()
+    )
     if not isinstance(route, dict) or set(route) != required:
         raise CaptureReconstructionRouteError("capture_reconstruction_route_fields_invalid")
     digest = str(route.get("capture_build_digest") or "")
@@ -506,6 +589,7 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
     stages = route.get("stages")
     claims = _strings(route.get("requested_claim_types"))
     representations = _strings(route.get("required_representations"))
+    fidelity_requirements = route.get("appearance_fidelity_requirements")
     adapters = _strings(route.get("currently_registered_adapters"))
     blockers = _strings(route.get("blockers"))
     if (
@@ -527,7 +611,16 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
         or any(candidate not in CAPTURE_AUTHORITY_PROFILES for candidate in candidates)
         or route.get("requested_claim_types") != claims
         or route.get("required_representations") != representations
-        or representations != _required_representations(claims)
+        or representations
+        != (
+            _required_representations(claims)
+            if expanded_appearance_contract
+            else _legacy_v1_required_representations(claims)
+        )
+        or (
+            expanded_appearance_contract
+            and fidelity_requirements != _APPEARANCE_FIDELITY_REQUIREMENTS
+        )
         or route.get("currently_registered_adapters") != adapters
         or route.get("blockers") != blockers
         or route.get("agent_selected_capture_profile") is not False
@@ -547,7 +640,10 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
                 "implementation_status": implementation_status,
             }
             for ordinal, (stage_id, method_kind, implementation_status) in enumerate(
-                _PROFILE_STAGES.get(str(profile or ""), ())
+                _profile_stages_for_validation(
+                    str(profile or ""),
+                    expanded_appearance_contract=expanded_appearance_contract,
+                )
             )
         ]
         expected_adapters = (
@@ -639,14 +735,11 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
             or blockers != expected_blocker
             or (status == "capture_profile_required" and candidates)
             or (status == "ambiguous_capture_profile" and len(candidates) < 2)
+            or (status.startswith("capture_profile_validation_") and len(candidates) != 1)
+            or route.get("capture_profile_validation_status") != expected_validation_status
             or (
-                status.startswith("capture_profile_validation_")
-                and len(candidates) != 1
-            )
-            or route.get("capture_profile_validation_status")
-            != expected_validation_status
-            or (
-                status in {
+                status
+                in {
                     "capture_profile_validation_required",
                     "capture_profile_validation_invalid",
                 }

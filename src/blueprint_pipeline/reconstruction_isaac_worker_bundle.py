@@ -260,6 +260,126 @@ def _validate_render_options(path: Path) -> dict[str, Any]:
                 )
             ):
                 errors.append("isaac_render_options_support_mount_robot_pose_mismatch")
+    floor_proxy = value.get("bounded_floor_proxy")
+    if floor_proxy is not None:
+        if not isinstance(floor_proxy, Mapping):
+            errors.append("isaac_render_options_floor_proxy_invalid")
+        else:
+            center = floor_proxy.get("center_xyz_collision_stage")
+            half_extents = floor_proxy.get("half_extents_xy_stage_units")
+            thickness = floor_proxy.get("thickness_stage_units")
+            top_z = floor_proxy.get("top_z_collision_stage")
+
+            def finite_proxy_vector(vector: Any, length: int) -> bool:
+                return (
+                    isinstance(vector, list)
+                    and len(vector) == length
+                    and all(
+                        not isinstance(item, bool)
+                        and isinstance(item, (int, float))
+                        and math.isfinite(float(item))
+                        for item in vector
+                    )
+                )
+
+            if floor_proxy.get("schema_version") != "bounded_floor_proxy_candidate.v1":
+                errors.append("isaac_render_options_floor_proxy_schema_invalid")
+            if (
+                floor_proxy.get("status")
+                != "simulator_support_candidate_only_requires_qualification"
+            ):
+                errors.append("isaac_render_options_floor_proxy_status_invalid")
+            proxy_path = floor_proxy.get("prim_path")
+            if (
+                not isinstance(proxy_path, str)
+                or not proxy_path.startswith("/World/BlueprintDerivedSupport/")
+                or ".." in proxy_path.split("/")
+            ):
+                errors.append("isaac_render_options_floor_proxy_prim_path_invalid")
+            if not finite_proxy_vector(center, 3):
+                errors.append("isaac_render_options_floor_proxy_center_invalid")
+            if not finite_proxy_vector(half_extents, 2) or any(
+                float(item) <= 0.0 or float(item) > 5.0 for item in (half_extents or [])
+            ):
+                errors.append("isaac_render_options_floor_proxy_half_extents_invalid")
+            if (
+                isinstance(thickness, bool)
+                or not isinstance(thickness, (int, float))
+                or not 0.01 <= float(thickness) <= 0.5
+            ):
+                errors.append("isaac_render_options_floor_proxy_thickness_invalid")
+            if (
+                isinstance(top_z, bool)
+                or not isinstance(top_z, (int, float))
+                or not math.isfinite(float(top_z))
+            ):
+                errors.append("isaac_render_options_floor_proxy_top_z_invalid")
+            if (
+                finite_proxy_vector(center, 3)
+                and isinstance(thickness, (int, float))
+                and not isinstance(thickness, bool)
+                and isinstance(top_z, (int, float))
+                and not isinstance(top_z, bool)
+                and abs(float(center[2]) + 0.5 * float(thickness) - float(top_z)) > 1e-5
+            ):
+                errors.append("isaac_render_options_floor_proxy_top_z_mismatch")
+            if floor_proxy.get("bounded_to_robot_support_zone") is not True:
+                errors.append("isaac_render_options_floor_proxy_unbounded")
+            if floor_proxy.get("exclude_from_source_collider_physics_probe") is not True:
+                errors.append("isaac_render_options_floor_proxy_probe_exclusion_required")
+            if floor_proxy.get("physical_floor_continuity_qualified") is not False:
+                errors.append("isaac_render_options_floor_proxy_physical_claim_forbidden")
+    proxy_plan = value.get("proxy_composed_evaluation_plan")
+    if proxy_plan is not None:
+        if not isinstance(proxy_plan, Mapping):
+            errors.append("isaac_render_options_proxy_plan_invalid")
+        else:
+            if (
+                proxy_plan.get("schema_version")
+                != "external_scene_proxy_composed_evaluation_plan.v1"
+            ):
+                errors.append("isaac_render_options_proxy_plan_schema_invalid")
+            status = proxy_plan.get("status")
+            if status not in {"required_before_policy_evaluation", "not_required"}:
+                errors.append("isaac_render_options_proxy_plan_status_invalid")
+            source_path = proxy_plan.get("source_collision_prim_path")
+            if (
+                not isinstance(source_path, str)
+                or source_path != "/World/BlueprintReconstruction/Collision/ExternalSceneMesh"
+            ):
+                errors.append("isaac_render_options_proxy_plan_source_path_invalid")
+            if proxy_plan.get("source_collision_qualification_preserved_separately") is not True:
+                errors.append("isaac_render_options_proxy_plan_source_qualification_missing")
+            if proxy_plan.get("physical_site_claim_effect") != "none":
+                errors.append("isaac_render_options_proxy_plan_physical_claim_forbidden")
+            if status == "required_before_policy_evaluation":
+                if proxy_plan.get("source_collision_enabled_in_policy_lane") is not False:
+                    errors.append("isaac_render_options_proxy_plan_source_collision_enabled")
+                if proxy_plan.get("bounded_floor_proxy_required") is not True:
+                    errors.append("isaac_render_options_proxy_plan_floor_proxy_required")
+                if not isinstance(floor_proxy, Mapping):
+                    errors.append("isaac_render_options_proxy_plan_floor_proxy_missing")
+    outcome_contract = value.get("inspection_outcome_contract")
+    if outcome_contract is not None and not isinstance(outcome_contract, Mapping):
+        errors.append("isaac_render_options_inspection_outcome_contract_invalid")
+    elif isinstance(outcome_contract, Mapping):
+        supplied_contract_digest = outcome_contract.get("contract_digest")
+        if (
+            outcome_contract.get("schema_version")
+            != "external_scene_inspection_outcome_contract.v2"
+            or _DIGEST.fullmatch(str(supplied_contract_digest or "")) is None
+            or supplied_contract_digest
+            != canonical_digest(outcome_contract, digest_field="contract_digest")
+        ):
+            errors.append("isaac_render_options_inspection_outcome_contract_invalid")
+        if outcome_contract.get("thresholds_frozen_before_candidate_execution") is not True:
+            errors.append("isaac_render_options_inspection_thresholds_not_frozen")
+        if outcome_contract.get("placement_proposal_digest") != value.get(
+            "placement_proposal_digest"
+        ):
+            errors.append("isaac_render_options_inspection_placement_binding_invalid")
+        if outcome_contract.get("candidate_may_self_authorize") is not False:
+            errors.append("isaac_render_options_inspection_self_authorization_forbidden")
     trace = value.get("articulated_policy_trace_request")
     if trace is not None:
         if not isinstance(trace, Mapping):
@@ -273,8 +393,16 @@ def _validate_render_options(path: Path) -> dict[str, Any]:
                 errors.append("isaac_render_options_policy_trace_schema_invalid")
             if trace.get("robot_id") != "franka_panda" or trace.get("robot_prim_path") != prim_path:
                 errors.append("isaac_render_options_policy_trace_robot_binding_invalid")
-            if trace.get("controller_id") != "deterministic_franka_joint_position_pair.v1":
+            controller_id = trace.get("controller_id")
+            if controller_id not in {
+                "deterministic_franka_joint_position_pair.v1",
+                "deterministic_franka_inspection_cohort.v1",
+            }:
                 errors.append("isaac_render_options_policy_trace_controller_invalid")
+            if controller_id == "deterministic_franka_inspection_cohort.v1" and not isinstance(
+                outcome_contract, Mapping
+            ):
+                errors.append("isaac_render_options_inspection_outcome_contract_missing")
             if joint_names != expected_joint_names:
                 errors.append("isaac_render_options_policy_trace_joint_names_invalid")
 
@@ -319,10 +447,20 @@ def _validate_render_options(path: Path) -> dict[str, Any]:
                 or not 0.0 <= float(start_tolerance) <= 0.05
             ):
                 errors.append("isaac_render_options_policy_trace_start_tolerance_invalid")
-            expected_policy_ids = ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+            expected_policy_ids = (
+                ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+                if controller_id == "deterministic_franka_joint_position_pair.v1"
+                else [
+                    "franka-inspection-center-hold-v1",
+                    "franka-inspection-left-narrow-v1",
+                    "franka-inspection-right-narrow-v1",
+                    "franka-inspection-left-wide-v1",
+                    "franka-inspection-right-wide-v1",
+                ]
+            )
             if (
                 not isinstance(candidates, list)
-                or len(candidates) != 2
+                or len(candidates) != len(expected_policy_ids)
                 or [row.get("policy_id") for row in candidates if isinstance(row, Mapping)]
                 != expected_policy_ids
             ):
@@ -343,15 +481,42 @@ def _validate_render_options(path: Path) -> dict[str, Any]:
                         errors.append(
                             f"isaac_render_options_policy_trace_candidate_{index}_steps_invalid"
                         )
+                    if (
+                        controller_id == "deterministic_franka_inspection_cohort.v1"
+                        and candidate.get("action_source") != "scripted_controller"
+                    ):
+                        errors.append(
+                            f"isaac_render_options_policy_trace_candidate_{index}_action_source_invalid"
+                        )
                 if all(finite_vector(row.get("final_joint_positions_rad")) for row in candidates):
                     hold = candidates[0]["final_joint_positions_rad"]
-                    sweep = candidates[1]["final_joint_positions_rad"]
+                    sweeps = [row["final_joint_positions_rad"] for row in candidates[1:]]
                     if max(abs(float(a) - float(b)) for a, b in zip(start, hold)) > 1e-9:
                         errors.append("isaac_render_options_policy_trace_hold_policy_invalid")
-                    if max(abs(float(a) - float(b)) for a, b in zip(start, sweep)) < float(
-                        threshold or 0.0
+                    if any(
+                        max(abs(float(a) - float(b)) for a, b in zip(start, sweep))
+                        < float(threshold or 0.0)
+                        for sweep in sweeps
                     ):
                         errors.append("isaac_render_options_policy_trace_sweep_policy_not_distinct")
+            target = trace.get("inspection_target_position_stage")
+            if controller_id == "deterministic_franka_inspection_cohort.v1" and (
+                not isinstance(target, list)
+                or len(target) != 3
+                or any(
+                    isinstance(item, bool)
+                    or not isinstance(item, (int, float))
+                    or not math.isfinite(float(item))
+                    for item in target
+                )
+            ):
+                errors.append("isaac_render_options_policy_trace_inspection_target_invalid")
+            if (
+                controller_id == "deterministic_franka_inspection_cohort.v1"
+                and isinstance(outcome_contract, Mapping)
+                and outcome_contract.get("inspection_target_position_stage") != target
+            ):
+                errors.append("isaac_render_options_inspection_target_binding_invalid")
             camera = trace.get("egocentric_camera")
             if not isinstance(camera, Mapping):
                 errors.append("isaac_render_options_policy_trace_egocentric_camera_missing")

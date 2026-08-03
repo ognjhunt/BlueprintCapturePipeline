@@ -7,10 +7,12 @@ from blueprint_pipeline.local_evidence_adapters import (
     ANALYTIC_REACHABILITY_ADAPTER,
     CAPTURED_VISIBILITY_ADAPTER,
     PROCESSED_OBSERVATION_VISIBILITY_ADAPTER,
+    SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER,
     SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
     AnalyticReachabilityAdapter,
     CapturedVisibilityAdapter,
     ProcessedObservationVisibilityAdapter,
+    SignedIsaacInspectionRankingReplayAdapter,
     SweptAabbCollisionSimulationAdapter,
     authorized_local_evidence_adapter_registry,
 )
@@ -44,9 +46,7 @@ def _testbed() -> dict:
             "maximum_spatial_uncertainty_m": 0.01,
         },
     }
-    scene["collision_scene_digest"] = canonical_digest(
-        scene, digest_field="collision_scene_digest"
-    )
+    scene["collision_scene_digest"] = canonical_digest(scene, digest_field="collision_scene_digest")
     return {
         "source_capture_bundles": [
             {"bundle_id": "capture-1", "version": "3", "digest": "sha256:" + "f" * 64}
@@ -63,23 +63,27 @@ def _testbed() -> dict:
                 "method_qualification_status": "analytic_only",
             },
         },
-        "target_regions": [{
-            "region_id": "tote-1",
-            "position_site_m": [0.6, 0.1, 0.7],
-            "supporting_frames": ["frame-2", "frame-1", "frame-1"],
-            "captured_coverage": 0.9,
-        }],
+        "target_regions": [
+            {
+                "region_id": "tote-1",
+                "position_site_m": [0.6, 0.1, 0.7],
+                "supporting_frames": ["frame-2", "frame-1", "frame-1"],
+                "captured_coverage": 0.9,
+            }
+        ],
         "validation_envelope": {
             "robot_placement_digest": "sha256:" + "a" * 64,
             "reconstruction_layers": {
-                "physics_layer": [{
-                    "output": "collision_geometry",
-                    "result_id": "collision-result-1",
-                    "result_digest": "sha256:" + "e" * 64,
-                    "asset_references": {"collision_scene": scene},
-                    "generated_regions": [],
-                    "claim_ceiling": {"collision_geometry": True},
-                }],
+                "physics_layer": [
+                    {
+                        "output": "collision_geometry",
+                        "result_id": "collision-result-1",
+                        "result_digest": "sha256:" + "e" * 64,
+                        "asset_references": {"collision_scene": scene},
+                        "generated_regions": [],
+                        "claim_ceiling": {"collision_geometry": True},
+                    }
+                ],
             },
         },
     }
@@ -176,9 +180,7 @@ def test_processed_observation_visibility_never_claims_raw_capture() -> None:
     )
 
     assert result["status"] == "valid"
-    assert result["categorical_finding"] == (
-        "target_region_visible_in_processed_dataset_views"
-    )
+    assert result["categorical_finding"] == ("target_region_visible_in_processed_dataset_views")
     assert result["provenance"]["raw_capture_authority"] is False
     assert result["claim_ceiling"]["processed_captured_observation_visibility"] is True
     assert result["claim_ceiling"]["metric_geometry"] is False
@@ -264,19 +266,68 @@ def test_collision_simulation_rejects_generated_or_tampered_physics() -> None:
     assert "collision_scene_digest_invalid" in result["blockers"]
 
 
+def test_inspection_ranking_replay_supports_controllers_but_not_policy_ranking() -> None:
+    ranking = {
+        "schema_version": "external_scene_inspection_candidate_ranking.v2",
+        "contract_digest": "sha256:" + "a" * 64,
+        "status": "completed",
+        "candidate_results": [
+            {"candidate_id": "controller-a", "status": "qualified"},
+            {"candidate_id": "controller-b", "status": "qualified"},
+        ],
+        "ranking": [
+            {"rank": 1, "candidate_id": "controller-a", "score": 0.9},
+            {"rank": 2, "candidate_id": "controller-b", "score": 0.8},
+        ],
+        "controller_candidate_ranking_proven": True,
+        "learned_policy_ranking_proven": False,
+        "blockers": [],
+    }
+    ranking["ranking_digest"] = canonical_digest(ranking, digest_field="ranking_digest")
+    testbed = _testbed()
+    testbed["evidence_inventory"] = [
+        {"evidence_id": "signed_isaac_inspection_candidate_ranking", **ranking}
+    ]
+    claim = {
+        "claim_type": "comparative_controller_ranking",
+        "subject": {"candidate_controller_ids": ["controller-a", "controller-b"]},
+    }
+
+    result = SignedIsaacInspectionRankingReplayAdapter().execute(
+        claim=claim,
+        testbed=testbed,
+    )
+
+    assert result["status"] == "valid"
+    assert result["supports_claim"] is True
+    assert result["claim_ceiling"]["comparative_controller_ranking"] is True
+    assert result["claim_ceiling"]["comparative_policy_ranking"] is False
+
+    testbed["evidence_inventory"][0]["ranking"][0]["score"] = 1.0
+    tampered = SignedIsaacInspectionRankingReplayAdapter().execute(
+        claim=claim,
+        testbed=testbed,
+    )
+    assert tampered["status"] == "unavailable"
+
+
 def test_local_registry_is_empty_by_default_and_rejects_unknown_authority() -> None:
     empty = authorized_local_evidence_adapter_registry([])
     assert empty.manifest() == []
-    authorized = authorized_local_evidence_adapter_registry([
-        CAPTURED_VISIBILITY_ADAPTER,
-        PROCESSED_OBSERVATION_VISIBILITY_ADAPTER,
-        ANALYTIC_REACHABILITY_ADAPTER,
-        SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
-    ])
+    authorized = authorized_local_evidence_adapter_registry(
+        [
+            CAPTURED_VISIBILITY_ADAPTER,
+            PROCESSED_OBSERVATION_VISIBILITY_ADAPTER,
+            SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER,
+            ANALYTIC_REACHABILITY_ADAPTER,
+            SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
+        ]
+    )
     assert authorized.manifest() == [
         ANALYTIC_REACHABILITY_ADAPTER,
         CAPTURED_VISIBILITY_ADAPTER,
         PROCESSED_OBSERVATION_VISIBILITY_ADAPTER,
+        SIGNED_ISAAC_INSPECTION_RANKING_ADAPTER,
         SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
     ]
     with pytest.raises(ValueError, match="local_evidence_adapter_not_registered"):

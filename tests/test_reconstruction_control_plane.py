@@ -412,7 +412,10 @@ def test_external_reconstruction_import_executes_as_partial_appearance_only(
         plan_id=planned["plan_id"],
     )
     assert executed["state"] == "partial"
-    assert executed["missing_representations"] == ["decoded_observation_frames"]
+    assert executed["missing_representations"] == [
+        "decoded_observation_frames",
+        "qualified_appearance_render",
+    ]
     assert executed["results"][0]["capture_digest"] == asset_digest
     assert executed["results"][0]["outputs"] == ["appearance_layer"]
     assert executed["results"][0]["claim_ceiling"]["metric_geometry"] is False
