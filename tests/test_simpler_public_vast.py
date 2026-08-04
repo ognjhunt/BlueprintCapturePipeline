@@ -29,6 +29,7 @@ from blueprint_pipeline.vast_provider_adapter import (
     _probe_shell_script,
     _search_payload,
 )
+from blueprint_pipeline.vast_provider_adapter import _probe_env
 
 
 ROOT = Path(__file__).parents[1]
