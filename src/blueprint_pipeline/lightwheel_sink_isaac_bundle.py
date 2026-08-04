@@ -171,6 +171,7 @@ def compile_lightwheel_sink_isaac_input_bundle(
         "sink_translation_world_m": [0.4885, -0.2643, 0.0885],
         "franka_prim_path": "/World/Franka",
         "franka_asset_relative_path": "/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd",
+        "franka_base_translation_world_m": [0.35, 0.30, 0.0],
         "physics_dt_seconds": 1.0 / 60.0,
         "settle_steps": 45,
         "target_steps": 45,

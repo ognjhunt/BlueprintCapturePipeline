@@ -373,17 +373,65 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
             camera_xform.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(float(q[0]), Gf.Vec3d(*map(float, q[1:]))))
             cameras[name] = Camera(prim_path=path, resolution=(width, height))
 
+        # Everything joins the stage before the single physics init: a second
+        # world.reset() mid-session made Kit process a quit on the next rendered
+        # step (attempt 46754204 exited 0 right after capsule_world_reset_complete).
+        pusher_path = "/World/TestTools/KinematicCapsule"
+        capsule = UsdGeom.Capsule.Define(stage, pusher_path)
+        capsule.CreateRadiusAttr(0.018)
+        capsule.CreateHeightAttr(0.10)
+        capsule.CreateAxisAttr("X")
+        capsule.CreateDisplayColorAttr([(0.9, 0.15, 0.05)])
+        capsule_xform = UsdGeom.Xformable(capsule.GetPrim())
+        translate_op = capsule_xform.AddTranslateOp()
+        capsule_park_m = center + tangent * -0.30
+        translate_op.Set(Gf.Vec3d(*map(float, capsule_park_m)))
+        UsdPhysics.CollisionAPI.Apply(capsule.GetPrim())
+        rigid = UsdPhysics.RigidBodyAPI.Apply(capsule.GetPrim())
+        rigid.CreateKinematicEnabledAttr().Set(True)
+        UsdPhysics.MassAPI.Apply(capsule.GetPrim()).CreateMassAttr().Set(0.2)
+        contact_api = PhysxSchema.PhysxContactReportAPI.Apply(capsule.GetPrim())
+        contact_api.CreateThresholdAttr().Set(0.0)
+
+        assets_root = get_assets_root_path() or ""
+        if not assets_root:
+            raise RuntimeError("lightwheel_sink_isaac_assets_root_missing")
+        franka_asset = assets_root.rstrip("/") + str(config["franka_asset_relative_path"])
+        checkpoint("franka_asset_reference_start", asset=franka_asset)
+        add_reference_to_stage(franka_asset, str(config["franka_prim_path"]))
+        checkpoint("franka_asset_referenced")
+        # Origin-based placement intersects the sink's counter volume and puts
+        # the handle at the edge of reach; stand the base on the +y approach side.
+        franka_base_translation = [
+            float(item)
+            for item in (config.get("franka_base_translation_world_m") or [0.35, 0.30, 0.0])
+        ]
+        UsdGeom.Xformable(stage.GetPrimAtPath(str(config["franka_prim_path"]))).AddTranslateOp().Set(
+            Gf.Vec3d(*franka_base_translation)
+        )
+        hand_path = str(config["franka_prim_path"]) + "/panda_hand"
+        for root_path in (str(config["franka_prim_path"]), hand_path):
+            api = PhysxSchema.PhysxContactReportAPI.Apply(stage.GetPrimAtPath(root_path))
+            api.CreateThresholdAttr().Set(0.0)
+
         Articulation = _single_articulation_type()
         sink = Articulation(prim_path=sink_path, name="lightwheel_sink")
         world.scene.add(sink)
-        checkpoint("sink_world_reset_start")
+        franka = Articulation(prim_path=str(config["franka_prim_path"]), name="lightwheel_sink_franka")
+        world.scene.add(franka)
+        checkpoint("world_reset_start")
         world.reset()
-        checkpoint("sink_world_reset_complete")
+        checkpoint("world_reset_complete")
         for camera in cameras.values():
             camera.initialize()
         for _ in range(8):
             world.step(render=True)
         checkpoint("render_warmup_complete")
+        initial_joints = np.asarray([0.2897, 0.50732, -0.140016, -2.176, -0.0310497, 2.51592, -0.49251, 0.04, 0.04])
+        franka.set_joint_positions(initial_joints)
+        for _ in range(int(config["settle_steps"])):
+            world.step(render=False)
+        checkpoint("franka_initial_pose_settled")
         dof_names = list(getattr(sink, "dof_names", []) or [])
         joint_name = str(config["handle_joint_path"]).rsplit("/", 1)[-1]
         if joint_name not in dof_names:
@@ -417,30 +465,15 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         frames.extend([_frame_record(cameras["front"], "asset_sweep_120_front"), _frame_record(cameras["close"], "asset_sweep_120_close")])
         checkpoint("joint_target_sweep_complete", target_count=len(sweep_trace))
 
-        # Restore a passive handle, then sweep a kinematic capsule through it tangentially.
+        # Restore a passive handle, then sweep the pre-built kinematic capsule
+        # through it tangentially. No reset: the capsule teleports from its
+        # parking spot into the approach position.
         drive.CreateStiffnessAttr().Set(0.0)
         drive.CreateDampingAttr().Set(0.02)
         sink.set_joint_positions(np.asarray([0.0]), joint_indices=np.asarray([handle_index]))
         for _ in range(30):
             world.step(render=False)
-        pusher_path = "/World/TestTools/KinematicCapsule"
-        capsule = UsdGeom.Capsule.Define(stage, pusher_path)
-        capsule.CreateRadiusAttr(0.018)
-        capsule.CreateHeightAttr(0.10)
-        capsule.CreateAxisAttr("X")
-        capsule.CreateDisplayColorAttr([(0.9, 0.15, 0.05)])
-        capsule_xform = UsdGeom.Xformable(capsule.GetPrim())
-        translate_op = capsule_xform.AddTranslateOp()
-        translate_op.Set(Gf.Vec3d(*map(float, center + tangent * -0.11)))
-        UsdPhysics.CollisionAPI.Apply(capsule.GetPrim())
-        rigid = UsdPhysics.RigidBodyAPI.Apply(capsule.GetPrim())
-        rigid.CreateKinematicEnabledAttr().Set(True)
-        UsdPhysics.MassAPI.Apply(capsule.GetPrim()).CreateMassAttr().Set(0.2)
-        contact_api = PhysxSchema.PhysxContactReportAPI.Apply(capsule.GetPrim())
-        contact_api.CreateThresholdAttr().Set(0.0)
-        checkpoint("capsule_world_reset_start")
-        world.reset()
-        checkpoint("capsule_world_reset_complete")
+        checkpoint("capsule_push_start")
         pusher_trace: list[dict[str, Any]] = []
         pusher_contacts: list[dict[str, Any]] = []
         for step in range(int(config["pusher_steps"])):
@@ -463,26 +496,15 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                 )
         frames.append(_frame_record(cameras["close"], "capsule_push_close"))
         checkpoint("capsule_push_complete", contact_count=len(pusher_contacts))
-        capsule.GetPrim().SetActive(False)
+        # Park the capsule out of the Franka's workspace (teleport, not
+        # SetActive: deactivating a body mid-session repopulates the scene).
+        translate_op.Set(Gf.Vec3d(*map(float, capsule_park_m)))
 
-        # Official fixed-base Franka, controlled only by scripted differential IK.
-        assets_root = get_assets_root_path() or ""
-        if not assets_root:
-            raise RuntimeError("lightwheel_sink_isaac_assets_root_missing")
-        franka_asset = assets_root.rstrip("/") + str(config["franka_asset_relative_path"])
-        checkpoint("franka_asset_reference_start", asset=franka_asset)
-        add_reference_to_stage(franka_asset, str(config["franka_prim_path"]))
-        checkpoint("franka_asset_referenced")
-        franka = Articulation(prim_path=str(config["franka_prim_path"]), name="lightwheel_sink_franka")
-        world.scene.add(franka)
-        world.reset()
-        checkpoint("franka_world_reset_complete")
-        for camera in cameras.values():
-            camera.initialize()
-        initial_joints = np.asarray([0.2897, 0.50732, -0.140016, -2.176, -0.0310497, 2.51592, -0.49251, 0.04, 0.04])
-        franka.set_joint_positions(initial_joints)
-        for _ in range(int(config["settle_steps"])):
+        # Scripted differential-IK Franka push against a re-zeroed handle.
+        sink.set_joint_positions(np.asarray([0.0]), joint_indices=np.asarray([handle_index]))
+        for _ in range(30):
             world.step(render=False)
+        checkpoint("franka_push_start")
         franka_initial_handle_angle = math.degrees(_joint_values(sink, handle_index)[0])
         franka_dof_names = list(getattr(franka, "dof_names", []) or [])
         franka_fixed_joint_paths = [
@@ -497,10 +519,6 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         if "panda_hand" not in body_names:
             raise RuntimeError(f"lightwheel_sink_franka_hand_body_missing:{body_names}")
         body_index = body_names.index("panda_hand")
-        hand_path = str(config["franka_prim_path"]) + "/panda_hand"
-        for root_path in (str(config["franka_prim_path"]), hand_path):
-            api = PhysxSchema.PhysxContactReportAPI.Apply(stage.GetPrimAtPath(root_path))
-            api.CreateThresholdAttr().Set(0.0)
         waypoints = [center - tangent * 0.13, center - tangent * 0.025, center + tangent * 0.09]
         franka_trace: list[dict[str, Any]] = []
         franka_contacts: list[dict[str, Any]] = []
@@ -592,6 +610,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
             },
             "franka": {
                 "asset_uri": franka_asset,
+                "base_translation_world_m": franka_base_translation,
                 "fixed_base_requested": True,
                 "fixed_joint_paths": franka_fixed_joint_paths,
                 "base_displacement_m": float(
