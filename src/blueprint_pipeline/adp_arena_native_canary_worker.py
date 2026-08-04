@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -39,19 +40,33 @@ def _sha256(path: Path) -> str:
 
 def _run(command: list[str], *, log_path: Path, cwd: Path | None = None) -> dict[str, Any]:
     started = time.monotonic()
+    phase = log_path.stem
+    print(f"BLUEPRINT_WAM_RUNTIME_PHASE:adp_arena:{phase}:started", flush=True)
     with log_path.open("w", encoding="utf-8") as log:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=str(cwd) if cwd else None,
-            stdout=log,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            check=False,
+            bufsize=1,
         )
+        assert process.stdout is not None
+        for line in process.stdout:
+            log.write(line)
+            log.flush()
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        returncode = process.wait()
+    duration = round(time.monotonic() - started, 3)
+    print(
+        f"BLUEPRINT_WAM_RUNTIME_PHASE:adp_arena:{phase}:completed:rc={returncode}:seconds={duration}",
+        flush=True,
+    )
     return {
         "command": command,
-        "returncode": completed.returncode,
-        "duration_seconds": round(time.monotonic() - started, 3),
+        "returncode": returncode,
+        "duration_seconds": duration,
         "log_path": log_path.name,
         "log_sha256": _sha256(log_path),
     }

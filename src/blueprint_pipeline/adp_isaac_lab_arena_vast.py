@@ -87,6 +87,30 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _next_attempt_root(job: Path) -> tuple[int, Path]:
+    """Return a fresh evidence root without ever reusing paid-run staging state."""
+
+    ledger = _read_json(job / "adp_arena_vast_session_budget.json")
+    observed = int(ledger.get("attempt_count") or 0)
+    attempts_dir = job / "attempts"
+    if attempts_dir.is_dir():
+        for path in attempts_dir.glob("attempt_*"):
+            try:
+                observed = max(observed, int(path.name.removeprefix("attempt_")))
+            except ValueError:
+                continue
+    number = observed + 1
+    return number, attempts_dir / f"attempt_{number:03d}"
+
+
+def _write_run_result(job: Path, attempt_root: Path, result: Mapping[str, Any]) -> None:
+    """Persist an immutable per-attempt result plus the root latest-result pointer."""
+
+    ensure_dir(attempt_root)
+    write_json(attempt_root / "adp_arena_vast_result.json", dict(result))
+    write_json(job / "adp_arena_vast_result.json", dict(result))
+
+
 @contextmanager
 def _vast_authority_environment():
     previous = {name: os.environ.get(name) for name in _VAST_MUTATION_ENV}
@@ -248,7 +272,9 @@ def run_arena_native_control_vast(
     if paid_resource_admission_grant is None:
         raise ValueError("adp_arena_paid_resource_admission_grant_missing")
 
-    staging_dir = job / "object_store_staging"
+    attempt_number, attempt_root = _next_attempt_root(job)
+    ensure_dir(attempt_root)
+    staging_dir = attempt_root / "object_store_staging"
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
         bundle_path=str(bundle_path),
@@ -261,16 +287,18 @@ def run_arena_native_control_vast(
             "schema_version": RESULT_SCHEMA_VERSION,
             "generated_at": generated,
             "status": "blocked",
+            "attempt_number": attempt_number,
+            "attempt_root": str(attempt_root),
             "provider_mutations_performed": 0,
             "blockers": staging.get("blockers") or ["adp_arena_object_store_staging_blocked"],
         }
-        write_json(job / "adp_arena_vast_result.json", result)
+        _write_run_result(job, attempt_root, result)
         return result
 
     bundle_url = (staging_dir / "provider_bundle_url.txt").read_text().strip()
     output_put_url = (staging_dir / "provider_output_put_url.txt").read_text().strip()
     output_get_url = (staging_dir / "provider_output_get_url.txt").read_text().strip()
-    provider_run = job / "vast_provider_run"
+    provider_run = attempt_root / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     local_avoidlist = job / "adp_arena_vast_machine_avoidlist.json"
     if machine_avoidlist_path is not None:
@@ -319,7 +347,7 @@ def run_arena_native_control_vast(
             )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
-    extracted = _extract_provider_output(output_zip, job / "immutable_execution")
+    extracted = _extract_provider_output(output_zip, attempt_root / "immutable_execution")
     execution = dict(extracted.get("execution") or {})
     teardown = _read_json(provider_run / "vast_teardown_manifest.json")
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
@@ -335,6 +363,8 @@ def run_arena_native_control_vast(
         "schema_version": RESULT_SCHEMA_VERSION,
         "generated_at": generated,
         "status": "completed" if not blockers else "blocked",
+        "attempt_number": attempt_number,
+        "attempt_root": str(attempt_root),
         "protocol_digest": bundle.get("protocol_digest"),
         "bundle_sha256": bundle.get("bundle_sha256"),
         "native_control_result_path": extracted.get("result_path"),
@@ -349,7 +379,7 @@ def run_arena_native_control_vast(
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
-    write_json(job / "adp_arena_vast_result.json", result)
+    _write_run_result(job, attempt_root, result)
     return result
 
 

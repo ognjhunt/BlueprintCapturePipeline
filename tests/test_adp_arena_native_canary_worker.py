@@ -11,6 +11,7 @@ from blueprint_pipeline.adp_arena_native_canary_worker import (
     OPENPI_REVISION,
     _artifact_manifest,
     _episode_rows,
+    _run,
 )
 
 
@@ -38,3 +39,19 @@ def test_native_worker_reads_episode_truth_and_hashes_artifacts(tmp_path: Path) 
         "zero_action_control/run/episode_results_rank0.jsonl",
     }
     assert all(row["sha256"].startswith("sha256:") for row in artifacts)
+
+
+def test_native_worker_streams_runtime_phase_and_command_output(
+    tmp_path: Path, capsys
+) -> None:
+    result = _run(
+        ["python3", "-c", "print('live-provider-progress')"],
+        log_path=tmp_path / "install_00.log",
+    )
+
+    output = capsys.readouterr().out
+    assert "BLUEPRINT_WAM_RUNTIME_PHASE:adp_arena:install_00:started" in output
+    assert "live-provider-progress" in output
+    assert "BLUEPRINT_WAM_RUNTIME_PHASE:adp_arena:install_00:completed:rc=0" in output
+    assert result["returncode"] == 0
+    assert (tmp_path / "install_00.log").read_text() == "live-provider-progress\n"

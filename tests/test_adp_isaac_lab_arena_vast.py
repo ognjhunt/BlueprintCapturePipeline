@@ -14,6 +14,7 @@ from blueprint_pipeline.adp_founder_sim_protocol import (
 from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     DEFAULT_IMAGE,
     PROBE_KIND,
+    _next_attempt_root,
     build_arena_native_control_bundle,
 )
 from blueprint_pipeline.common import write_json
@@ -121,6 +122,19 @@ def test_arena_bundle_uses_isaac_image_terms_and_ssh_bundle_path(tmp_path: Path)
     assert "run_adp_arena_provider_runtime.sh" in script
     assert "adp_arena_provider_runtime_output.zip" in script
     assert script.index("/isaac-sim/python.sh") < script.index("${PY_NET:-}")
+
+
+def test_paid_attempt_roots_are_fresh_and_preserve_prior_evidence(tmp_path: Path) -> None:
+    write_json(tmp_path / "adp_arena_vast_session_budget.json", {"attempt_count": 1})
+    prior = tmp_path / "attempts" / "attempt_002"
+    prior.mkdir(parents=True)
+    (prior / "prior_evidence.txt").write_text("preserve", encoding="utf-8")
+
+    number, root = _next_attempt_root(tmp_path)
+
+    assert number == 3
+    assert root == tmp_path / "attempts" / "attempt_003"
+    assert (prior / "prior_evidence.txt").read_text(encoding="utf-8") == "preserve"
 
 
 def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:
