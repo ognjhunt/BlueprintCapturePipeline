@@ -675,7 +675,7 @@ def run_lightwheel_sink_canary(bundle_root: Path, output_path: Path) -> int:
         try:
             _phase("bundle_validation_complete", started=process_started)
             runtime = _runtime(bundle_root, manifest)
-        except Exception as exc:  # noqa: BLE001 - terminal evidence must survive runtime failure
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - terminal evidence must survive runtime failure, including Isaac's sys.exit on startup rejection
             blockers.append(f"lightwheel_sink_runtime_failed:{type(exc).__name__}:{str(exc)[:400]}")
     asset_after = {
         str(record["path"]): _sha256(bundle_root / str(record["path"]))

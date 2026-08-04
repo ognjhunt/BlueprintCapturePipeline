@@ -268,15 +268,34 @@ for row in [*manifest.get("source_files", []), *manifest.get("asset_files", [])]
         raise SystemExit("lightwheel_sink_member_digest_mismatch")
 PY
 export PYTHONPATH="$bundle/src"
+worker_log="$work/worker.log"
 set +e
+driver="$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '"')"
+echo "BLUEPRINT_LIGHTWHEEL_SINK_PHASE:{\"name\":\"host_driver\",\"detail\":\"$driver\"}"
 echo 'BLUEPRINT_LIGHTWHEEL_SINK_PHASE:{"name":"worker_process_start"}'
 timeout --signal=TERM --kill-after=60 960 \
-  /isaac-sim/python.sh "$bundle/scripts/run_lightwheel_sink_isaac_bundle.py" --bundle-root "$bundle" --output "$result"
-worker_status=$?
+  /isaac-sim/python.sh "$bundle/scripts/run_lightwheel_sink_isaac_bundle.py" --bundle-root "$bundle" --output "$result" 2>&1 | tee -a "$worker_log"
+worker_status=${PIPESTATUS[0]}
 echo "BLUEPRINT_LIGHTWHEEL_SINK_PHASE:{\"name\":\"worker_process_exit\",\"exit_code\":$worker_status}"
 set -e
 if [ ! -s "$result" ]; then
-  printf '{"schema_version":"lightwheel_sink_isaac_runtime_result.v1","status":"failed","blockers":["lightwheel_sink_worker_no_terminal_result:exit_%s"]}\n' "$worker_status" > "$result"
+  /isaac-sim/python.sh - "$result" "$worker_log" "$worker_status" <<'PY'
+import json, sys
+from pathlib import Path
+log_path = Path(sys.argv[2])
+tail = log_path.read_text(errors="replace").splitlines()[-120:] if log_path.is_file() else []
+Path(sys.argv[1]).write_text(
+    json.dumps(
+        {
+            "schema_version": "lightwheel_sink_isaac_runtime_result.v1",
+            "status": "failed",
+            "blockers": [f"lightwheel_sink_worker_no_terminal_result:exit_{sys.argv[3]}"],
+            "worker_log_tail": tail,
+        }
+    )
+    + "\n"
+)
+PY
 fi
 /isaac-sim/python.sh - "$result" <<'PY'
 import os, sys, urllib.request
@@ -588,6 +607,10 @@ def run_measurement_isaac_vast_canary(
             vast_launch_mode="args",
         )
         provider_request = provider.build_request(spec, root)
+        if lightwheel_sink:
+            # Attempt 46753231 died inside SimulationApp startup (exit 1) on a
+            # host whose driver Isaac 6 rejects; only rent known-supported hosts.
+            provider_request["require_known_supported_isaac_driver"] = True
         vast_preferences = request.get("vast_preferred_gpu_keywords")
         if isinstance(vast_preferences, list) and vast_preferences:
             provider_request["preferred_gpu_keywords"] = [
