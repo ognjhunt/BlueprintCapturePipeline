@@ -11,7 +11,7 @@ output:
   layer_only: false
   flatten_output: false
 materials:
-  path: ../../content_agents_source/apps/material_agent/data/materials/material_libs_default/materials.yaml
+  path: ../content_agents_source/apps/material_agent/data/materials/material_libs_default/materials.yaml
 steps:
   validate_input:
     enabled: true

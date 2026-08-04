@@ -12,6 +12,11 @@ steps:
     enabled: false
   identify_asset:
     enabled: true
+    vlm:
+      backend: gemini
+      model: gemini-2.5-pro
+      temperature: 0.1
+      max_tokens: 4096
     renderer:
       backend: ovrtx
       image_width: 512

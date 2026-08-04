@@ -22,6 +22,7 @@ RUNTIME_RESULT_FILENAMES = (
     "unitree_groot_n17_sonic_policy_provider_output.json",
     "unitree_groot_n17_sonic_wam_persistent_session_output.json",
     "adp_simpler_closed_loop_execution.json",
+    "adp_content_agents_vast_result.json",
 )
 ENTRYPOINT_DIAGNOSTIC_FILENAME = "provider_entrypoint_diagnostic.json"
 

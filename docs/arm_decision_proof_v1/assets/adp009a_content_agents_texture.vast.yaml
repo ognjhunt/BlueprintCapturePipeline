@@ -10,6 +10,8 @@ texture:
   detail_policy: surface_only
   uv_policy: generate_missing
   uv_scope: target_prims
+  uv_target_prim_paths:
+    - /canned_beverage/visuals/body
   uv_generation_mode: projection
   uv_projection: box
   image_gen:
@@ -23,6 +25,9 @@ material_textures:
   green_can:
     prompt: bright green aluminum beverage can surface, clean non-branded packaging
     opacity: 1.0
+    material_path: /canned_beverage/materials/green_can
+    prim_paths:
+      - /canned_beverage/visuals/body
 auto_prompt:
   enabled: false
 variations:

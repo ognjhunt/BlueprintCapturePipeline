@@ -17,6 +17,7 @@ from blueprint_pipeline.vast_provider_adapter import (
     _probe_shell_script,
     _resolve_launch_mode,
 )
+from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,12 @@ ROOT = Path(__file__).resolve().parents[1]
 def _fake_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     source = tmp_path / "content-agents"
     source.mkdir()
+    material_library = (
+        source
+        / "apps/material_agent/data/materials/material_libs_default/materials.yaml"
+    )
+    material_library.parent.mkdir(parents=True)
+    material_library.write_text("materials: []\n", encoding="utf-8")
 
     def fake_git(_repo: Path, *args: str) -> str:
         if args == ("rev-parse", "HEAD"):
@@ -82,6 +89,7 @@ def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
     assert first["status"] == "ready"
     assert first["bundle_sha256"] == second["bundle_sha256"]
     assert first["container_image"] == content_agents.DEFAULT_IMAGE
+    assert first["remote_config_contract_validated"] is True
     assert first["retry_cap"] == 0
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
@@ -140,6 +148,21 @@ def test_vast_adapter_uses_gpu_rendering_and_bounded_bundle_path(tmp_path: Path)
     assert "run_adp_content_agents_provider_runtime.sh" in script
     assert "adp_content_agents_provider_runtime_output.zip" in script
     assert "apt-get install" in script
+
+
+def test_provider_output_inspector_recognizes_content_agents_result(tmp_path: Path) -> None:
+    output = tmp_path / "output.zip"
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr(
+            "adp_content_agents_vast_result.json",
+            json.dumps({"status": "blocked", "blockers": ["typed_runtime_failure"]}),
+        )
+
+    inspection = inspect_provider_runtime_output_zip(output)
+
+    assert inspection["runtime_result_present"] is True
+    assert inspection["runtime_result_status"] == "blocked"
+    assert inspection["runtime_result_blockers"] == ["typed_runtime_failure"]
 
 
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:

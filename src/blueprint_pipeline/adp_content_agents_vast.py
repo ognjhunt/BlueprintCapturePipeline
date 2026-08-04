@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
+import yaml
+
 from .common import ensure_dir, utc_now_iso, write_json
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
@@ -78,6 +80,41 @@ def _git(repo: Path, *args: str) -> str:
 def _write_executable(path: Path, source: Path) -> None:
     shutil.copy2(source, path)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _validate_remote_configs(
+    *, source: Path, config_sources: Mapping[str, Path]
+) -> None:
+    payloads = {
+        name: yaml.safe_load(path.read_text(encoding="utf-8"))
+        for name, path in config_sources.items()
+    }
+    material_path = (
+        source
+        / "apps/material_agent/data/materials/material_libs_default/materials.yaml"
+    )
+    material = dict(payloads.get("material_agent.yaml") or {})
+    texture = dict(payloads.get("texture_agent.yaml") or {})
+    physics = dict(payloads.get("physics_agent.yaml") or {})
+    texture_config = dict(texture.get("texture") or {})
+    texture_spec = dict((texture.get("material_textures") or {}).get("green_can") or {})
+    physics_steps = dict(physics.get("steps") or {})
+    identify_vlm = dict((physics_steps.get("identify_asset") or {}).get("vlm") or {})
+    predict_vlm = dict((physics_steps.get("predict") or {}).get("vlm") or {})
+    if (
+        not material_path.is_file()
+        or (material.get("materials") or {}).get("path")
+        != "../content_agents_source/apps/material_agent/data/materials/"
+        "material_libs_default/materials.yaml"
+        or texture_config.get("uv_target_prim_paths")
+        != ["/canned_beverage/visuals/body"]
+        or texture_spec.get("material_path")
+        != "/canned_beverage/materials/green_can"
+        or texture_spec.get("prim_paths") != ["/canned_beverage/visuals/body"]
+        or identify_vlm.get("backend") != "gemini"
+        or predict_vlm.get("backend") != "gemini"
+    ):
+        raise ValueError("adp_content_agents_remote_config_contract_invalid")
 
 
 def _deterministic_zip(source_root: Path, destination: Path) -> None:
@@ -150,6 +187,7 @@ def build_content_agents_vast_bundle(
         "texture_agent.yaml": assets / "adp009a_content_agents_texture.vast.yaml",
         "physics_agent.yaml": assets / "adp009a_content_agents_physics.vast.yaml",
     }
+    _validate_remote_configs(source=source, config_sources=config_sources)
     for name, path in config_sources.items():
         shutil.copy2(path, runtime / "configs" / name)
     usd_source = assets / "adp009a_840313_canned_beverage_control.usda"
@@ -180,6 +218,7 @@ def build_content_agents_vast_bundle(
         "reference_image_sha256": _sha256(reference_source),
         "reference_image_authority": "blueprint_cad_render_not_interiorgs_dataset_bytes",
         "runtime_entrypoint": "provider_runtime/run_adp_content_agents_provider_runtime.sh",
+        "remote_config_contract_validated": True,
         "expected_output_filename": "adp_content_agents_vast_result.json",
         "material_agent_planned": True,
         "texture_agent_planned": True,
