@@ -122,7 +122,12 @@ def test_arena_bundle_uses_isaac_image_terms_and_ssh_bundle_path(tmp_path: Path)
     )
     assert "run_adp_arena_provider_runtime.sh" in script
     assert "adp_arena_provider_runtime_output.zip" in script
-    assert script.index("/isaac-sim/python.sh") < script.index("${PY_NET:-}")
+    assert "BLUEPRINT_VAST_CUDA_RUNTIME_DEFERRED_TO_ISAAC_SIMULATION_APP" in script
+    assert "wp.get_devices()" in script
+    assert "isaac_simulation_app_warp" in script
+    assert script.rindex("BLUEPRINT_VAST_GPU_SANITY_OK") > script.index(
+        "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED"
+    )
 
 
 def test_paid_attempt_roots_are_fresh_and_preserve_prior_evidence(tmp_path: Path) -> None:

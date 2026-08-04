@@ -2914,11 +2914,17 @@ def _probe_shell_script(
         "else echo BLUEPRINT_VAST_GPU_SANITY_BLOCKED:$smi; fi; "
     )
     # nvidia-smi proves NVML visibility, not compatibility between the host
-    # driver and this container's CUDA runtime. Paid bundles require both.
-    script += cuda_runtime_probe_shell_fragment(
-        required=enable_blueprint_bundle,
-        prefer_isaac_python=_is_isaac_provider_bundle(provider_bundle_kind),
-    )
+    # driver and this container's CUDA runtime. Isaac images prove the latter
+    # through SimulationApp plus Warp device enumeration because they do not
+    # necessarily expose a standalone libcudart to the bundled Python.
+    isaac_provider_bundle = _is_isaac_provider_bundle(provider_bundle_kind)
+    if enable_blueprint_bundle and isaac_provider_bundle:
+        script += (
+            "cuda_runtime_rc=1; "
+            "echo BLUEPRINT_VAST_CUDA_RUNTIME_DEFERRED_TO_ISAAC_SIMULATION_APP; "
+        )
+    else:
+        script += cuda_runtime_probe_shell_fragment(required=enable_blueprint_bundle)
     script += 'echo BLUEPRINT_VAST_DF_START; df -h "$WORK_DIR"; '
     if enable_isaac_smoke:
         script += (
@@ -2927,9 +2933,14 @@ def _probe_shell_script(
             "elif [ -x /isaac-sim/python ]; then ISAAC_PY=/isaac-sim/python; "
             "elif command -v python3 >/dev/null 2>&1; then ISAAC_PY=$(command -v python3); fi; "
             'if [ -n "$ISAAC_PY" ]; then '
-            '$ISAAC_PY -c \'from isaacsim import SimulationApp; app=SimulationApp({"headless": True}); print("BLUEPRINT_VAST_ISAAC_SMOKE_OK", flush=True); import os; os._exit(0)\'; irc=$?; '
+            '$ISAAC_PY -c \'from isaacsim import SimulationApp; app=SimulationApp({"headless": True}); import warp as wp; wp.init(); devices=[device for device in wp.get_devices() if device.is_cuda]; assert devices, "isaac_warp_cuda_device_missing"; print("BLUEPRINT_VAST_ISAAC_SMOKE_OK:cuda_devices=%d" % len(devices), flush=True); import os; os._exit(0)\'; irc=$?; '
             "if [ $irc -eq 0 ]; then echo BLUEPRINT_VAST_ISAAC_SMOKE_COMPLETED; "
-            "else echo BLUEPRINT_VAST_ISAAC_SMOKE_BLOCKED:$irc; fi; "
+            + (
+                "cuda_runtime_rc=0; echo BLUEPRINT_VAST_CUDA_RUNTIME_OK:isaac_simulation_app_warp; "
+                if isaac_provider_bundle
+                else ""
+            )
+            + "else echo BLUEPRINT_VAST_ISAAC_SMOKE_BLOCKED:$irc; fi; "
             "else echo BLUEPRINT_VAST_ISAAC_SMOKE_BLOCKED:python_missing; fi; "
         )
     else:
@@ -3304,7 +3315,16 @@ def _probe_shell_script(
             )
     else:
         script += "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_SKIPPED; "
-    script += "echo BLUEPRINT_VAST_ONSTART_DONE"
+    # Vast's retained container log is tail-bounded. Re-emit the admission
+    # summary after potentially verbose provider work so evidence cannot be
+    # lost merely because runtime logs are long.
+    script += (
+        "if [ ${smi:-1} -eq 0 ]; then echo BLUEPRINT_VAST_GPU_SANITY_OK; "
+        "else echo BLUEPRINT_VAST_GPU_SANITY_BLOCKED:${smi:-1}; fi; "
+        "if [ ${cuda_runtime_rc:-1} -eq 0 ]; then echo BLUEPRINT_VAST_CUDA_RUNTIME_OK; "
+        "else echo BLUEPRINT_VAST_CUDA_RUNTIME_BLOCKED:final:${cuda_runtime_rc:-1}; fi; "
+        "echo BLUEPRINT_VAST_ONSTART_DONE"
+    )
     return script
 
 
