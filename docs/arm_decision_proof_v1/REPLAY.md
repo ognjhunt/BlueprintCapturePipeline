@@ -29,8 +29,18 @@ receipts. Physical-reference values were not uploaded to or read by the worker.
 
 The command seals the development decision before opening the separately tracked
 published outcomes, then exactly joins all six candidate-condition cells. Two
-consecutive runs produced the same artifact-index digest
-`sha256:6e2ada17343a816b1842d5ef08d69a98d4d002ce29f980c496ef87b16c63f2a3`.
+consecutive post-upgrade replays produced the same artifact-index digest
+`sha256:e009662e90c3d9966d31ccf56e209097c0df223b2332542b86e7823f15db48f2`.
+These replays reconstruct the evidence package; they do not rerun the simulator.
+
+The six admitted historical episodes use execution schema v1 and did not retain
+observation pixels or video. The evidence package exposes that limitation as
+`legacy_execution_missing_required_media` and reports zero human-review media
+coverage. Execution schema v2 is forward-only: every newly executed episode must
+retain every lossless policy-input image, a frame manifest, a terminal image,
+and a derived review video, with digests linked through the episode receipt and
+evidence matrix. A completed v2 episode missing any required visual artifact is
+invalid and cannot qualify a run.
 
 The result can qualify only Blueprint's bounded retrospective external-reference
 harness. It remains `development_only`; it is not prospective validation,
