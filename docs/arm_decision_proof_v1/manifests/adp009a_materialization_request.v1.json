@@ -41,7 +41,8 @@
         "gaussian_splatting/environment.yml",
         "LaMa/conda_env.yml",
         "LaMa/requirements.txt",
-        "Segment-and-Track-Anything/licenses.md"
+        "Segment-and-Track-Anything/licenses.md",
+        "Segment-and-Track-Anything/LICENSE.txt"
       ],
       "documented_inputs": {
         "README.md": [
@@ -55,7 +56,8 @@
           "big-lama.zip"
         ]
       },
-      "smallest_blocker": "inpaint360_author_data_and_weight_rights_or_smoke_missing"
+      "prerequisite_receipt": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "smallest_blocker": "inpaint360_author_dataset_license_authority_missing"
     },
     "infusion_primary_adapter": {
       "repository": "https://github.com/ali-vilab/Infusion",

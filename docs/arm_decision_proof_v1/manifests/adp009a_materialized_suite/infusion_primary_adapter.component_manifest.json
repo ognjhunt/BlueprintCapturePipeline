@@ -8,7 +8,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-infusion_primary_adapter",
-  "manifest_digest": "sha256:144294468169c8d4d73e156a21e7e1d5fcf15cbf28613f0ce87aebd5287b1e4e",
+  "manifest_digest": "sha256:76bf2490bbd96f631ed00df471a7525766d0c16a13f8504bc5f67a89376881f7",
   "materialized_artifacts": [
     {
       "external_relative_path": "Infusion/LICENSE",
@@ -43,7 +43,9 @@
     "author_method_executed": false,
     "author_smoke_receipt_bound": false,
     "author_workflow_declarations_hashed": true,
+    "checkpoint_bytes_verified": false,
     "dependency_declarations_hashed": true,
+    "method_prerequisite_receipt_bound": false,
     "official_remote_head_verified": true,
     "source_checkout_opened": true,
     "source_tree_clean": true,
@@ -59,7 +61,9 @@
     "submodules": {}
   },
   "rights": {
+    "author_data_rights_established": false,
     "checkpoint_or_author_data_rights_established": false,
+    "checkpoint_rights_established": false,
     "source_license": "MIT",
     "source_license_file_hashed": true
   },

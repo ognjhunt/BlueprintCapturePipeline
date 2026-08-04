@@ -28,7 +28,7 @@
   "deployment_readiness": false,
   "evaluated_on": "2026-08-04",
   "gate_id": "exact_public_scene_suite_index",
-  "index_digest": "sha256:831a643aea867a67dd4e0a3747959d8c9b204e50d2bfb1dd5d1a58fce4014907",
+  "index_digest": "sha256:90a03a08f30e09d41294bbb647a074091b915eb59ec45f5ab033a0bcb89ea605",
   "index_id": "adp009a-public-suite-20260804",
   "metric_geometry_qualified": false,
   "partner_capture_qualified": false,
@@ -36,17 +36,17 @@
   "program_id": "arm-decision-proof-v1",
   "prospective_validation": false,
   "public_scene_software_qualified": false,
-  "receipt_digest": "sha256:0cb204b7deaaea163f6156808483d8fab84a7488766c0790c83b5027e17c1701",
+  "receipt_digest": "sha256:f5a43c6f99f64849e2c47a4024554a85930b2e994e9a44ec358cc6230a713491",
   "required_role_count": 10,
   "role_bindings": [
     {
-      "component_admission_receipt_digest": "sha256:c877f68f2621fecdfcdbb29f51a98399b436d733cf737be6aa1c3aa958ac74d5",
+      "component_admission_receipt_digest": "sha256:9b78616f356aefa9bcdb23f33ba8609ae2c23f07f538cce8cb40d8e81d9cfe59",
       "component_blockers": [
-        "inpaint360_author_data_and_weight_rights_or_smoke_missing"
+        "inpaint360_author_dataset_license_authority_missing"
       ],
-      "component_manifest_digest": "sha256:9a75f0ee9206fb6391b7c71de56f3a5c234693d81ac87b143589f57d62bb3f07",
+      "component_manifest_digest": "sha256:ba1d81e664cbff7ae1faa44875c002452ed132f43e415bb9337ea7f984325e37",
       "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:9c59862139a9067f16579f0fb16defa0ce4c35f022c11fd9199562cc8443c74b",
+      "exact_artifact_digest": "sha256:0ae7e7c6fd95c5c80ce69431e686a2bca7bd48ba17530ba9bbf6b4c1a933ebdf",
       "exact_revision": {
         "kind": "git_commit",
         "value": "d54c893285c6cb27788e05cce607e7d3cca6388a"
@@ -56,11 +56,11 @@
       "source_project_id": "Inpaint360GS"
     },
     {
-      "component_admission_receipt_digest": "sha256:05d3b792a24e07a3a7d8d984ee9a1b9a1dea3dcec774ab1f2828a940dd674b2e",
+      "component_admission_receipt_digest": "sha256:df5b5d3a5ca82519714cb818bfb5720e70d24704464e0a24516afa418f16df6e",
       "component_blockers": [
         "infusion_author_masks_and_checkpoint_license_or_smoke_missing"
       ],
-      "component_manifest_digest": "sha256:144294468169c8d4d73e156a21e7e1d5fcf15cbf28613f0ce87aebd5287b1e4e",
+      "component_manifest_digest": "sha256:76bf2490bbd96f631ed00df471a7525766d0c16a13f8504bc5f67a89376881f7",
       "declared_status": "blocked",
       "exact_artifact_digest": "sha256:b3014c92c3a6aaf353295a2527d5c2548f086232216e468c67e96d9ac7f63584",
       "exact_revision": {
@@ -72,11 +72,11 @@
       "source_project_id": "InFusion"
     },
     {
-      "component_admission_receipt_digest": "sha256:97819c211ffc233b0cedf4e3af1e1683842d741d5d267ecb6dceb372dabe9a5e",
+      "component_admission_receipt_digest": "sha256:75c0cae82e0175b6d8884f4b649e43c374cb273b4ee6778ff3460d88f3c4865b",
       "component_blockers": [
         "aurafusion360_unpinned_runtime_weights_or_author_smoke_missing"
       ],
-      "component_manifest_digest": "sha256:d4e2b6f3eb7454ca53c37fcb7260b8a5ec9fb29cdd3118ae46e06407188e67cf",
+      "component_manifest_digest": "sha256:273376efdd2fc9373e514d11cf6d0a64729c2ef9b9387b4bff2bedb081e69d8c",
       "declared_status": "blocked",
       "exact_artifact_digest": "sha256:6860b249ea3c431d09c61b19d4340f592e7e5a0d7b64b234e0defee9d39dd7d8",
       "exact_revision": {
@@ -196,6 +196,6 @@
   ],
   "schema_version": "public_scene_suite_index_receipt.v1",
   "status": "blocked",
-  "supplied_index_digest": "sha256:831a643aea867a67dd4e0a3747959d8c9b204e50d2bfb1dd5d1a58fce4014907",
+  "supplied_index_digest": "sha256:90a03a08f30e09d41294bbb647a074091b915eb59ec45f5ab033a0bcb89ea605",
   "task_physics_qualified": false
 }

@@ -8,7 +8,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-inpaint360_author_smoke",
-  "manifest_digest": "sha256:9a75f0ee9206fb6391b7c71de56f3a5c234693d81ac87b143589f57d62bb3f07",
+  "manifest_digest": "sha256:ba1d81e664cbff7ae1faa44875c002452ed132f43e415bb9337ea7f984325e37",
   "materialized_artifacts": [
     {
       "external_relative_path": "Inpaint360GS/LICENSE.txt",
@@ -60,18 +60,118 @@
       "size_bytes": 37414
     },
     {
+      "external_relative_path": "Inpaint360GS/Segment-and-Track-Anything/LICENSE.txt",
+      "publisher_path": "Segment-and-Track-Anything/LICENSE.txt",
+      "role": "dependency_declaration",
+      "sha256": "sha256:8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+      "size_bytes": 34523
+    },
+    {
       "external_relative_path": "Inpaint360GS/README.md",
       "publisher_path": "README.md",
       "role": "author_workflow_declaration",
       "sha256": "sha256:d7ac9169e04f6dc54cdef9d54c042def33375beef393d55fd7e2c80150db7d66",
       "size_bytes": 8221
+    },
+    {
+      "external_relative_path": "methods/Inpaint360GS/CropFormer_model/Entity_Segmentation/CropFormer_hornet_3x/CropFormer_hornet_3x_03823a.pth",
+      "publisher_path": "CropFormer_model/Entity_Segmentation/CropFormer_hornet_3x/CropFormer_hornet_3x_03823a.pth",
+      "role": "method_checkpoint",
+      "sha256": "sha256:71915b7e9dc63fc662b32c59dff513530a06221c3b22f6de7ff4d6ef82df1128",
+      "size_bytes": 888996425
+    },
+    {
+      "external_relative_path": "methods/Inpaint360GS/LaMa/big-lama.zip",
+      "publisher_path": "",
+      "role": "method_checkpoint",
+      "sha256": "sha256:d7161bba4d68b438f9fa7f09dcb750a223804c300c68d214a5e0be16251fba8d",
+      "size_bytes": 381428720
+    },
+    {
+      "external_relative_path": "methods/Inpaint360GS/Segment-and-Track-Anything/ckpt/sam_vit_b_01ec64.pth",
+      "publisher_path": "",
+      "role": "method_checkpoint",
+      "sha256": "sha256:ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912",
+      "size_bytes": 375042383
+    },
+    {
+      "external_relative_path": "methods/Inpaint360GS/Segment-and-Track-Anything/ckpt/R50_DeAOTL_PRE_YTB_DAV.pth",
+      "publisher_path": "",
+      "role": "method_checkpoint",
+      "sha256": "sha256:7e8a8d83310739bac02817f6bf48b6bbe2bbd7d5325722f1084088eb3aee1e06",
+      "size_bytes": 236513959
+    },
+    {
+      "external_relative_path": "Entity/LICENSE",
+      "publisher_path": "Entity/LICENSE",
+      "role": "checkpoint_rights_authority",
+      "sha256": "sha256:ec250197d2c26095ea48a7ab8a28acfca9b36020b269dfd41434ba9631a22b28",
+      "size_bytes": 17695
+    },
+    {
+      "external_relative_path": "Entity/Entityv2/README.md",
+      "publisher_path": "Entity/Entityv2/README.md",
+      "role": "checkpoint_rights_authority",
+      "sha256": "sha256:e0a57e0dcdb0ca35f0d11c9b8369a0de62af23d855b7d103b1b58c5dbc6afe63",
+      "size_bytes": 8596
+    },
+    {
+      "external_relative_path": "LaMa/LICENSE",
+      "publisher_path": "LaMa/LICENSE",
+      "role": "checkpoint_rights_authority",
+      "sha256": "sha256:4ceeeac5a802e86c413c22b16cce8e9a22027b0250c97e6f8ac97c14cf0542c0",
+      "size_bytes": 11348
+    },
+    {
+      "external_relative_path": "LaMa/README.md",
+      "publisher_path": "LaMa/README.md",
+      "role": "checkpoint_rights_authority",
+      "sha256": "sha256:97ec131e26ab120490c57425abca96fd68b886d20689e88ba3df10956acec705",
+      "size_bytes": 17454
+    },
+    {
+      "external_relative_path": "Inpaint360GS/Segment-and-Track-Anything/sam/LICENSE",
+      "publisher_path": "Inpaint360GS/Segment-and-Track-Anything/sam/LICENSE",
+      "role": "checkpoint_rights_authority",
+      "sha256": "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "size_bytes": 11357
+    },
+    {
+      "external_relative_path": "Inpaint360GS/Segment-and-Track-Anything/README.md",
+      "publisher_path": "Inpaint360GS/Segment-and-Track-Anything/README.md",
+      "role": "checkpoint_rights_authority",
+      "sha256": "sha256:7a986c797c0bc78f11b22246c4d893f111c172b640e854a682bc6a970c7017d6",
+      "size_bytes": 18123
+    },
+    {
+      "external_relative_path": "Inpaint360GS/Segment-and-Track-Anything/aot/LICENSE",
+      "publisher_path": "Inpaint360GS/Segment-and-Track-Anything/aot/LICENSE",
+      "role": "checkpoint_rights_authority",
+      "sha256": "sha256:b916a4eb0d68c15001586b8755dbdd0cd0c076c88ac78a7341e34ec299fd429b",
+      "size_bytes": 1516
+    },
+    {
+      "external_relative_path": "Inpaint360GS/Segment-and-Track-Anything/README.md",
+      "publisher_path": "Inpaint360GS/Segment-and-Track-Anything/README.md",
+      "role": "checkpoint_rights_authority",
+      "sha256": "sha256:7a986c797c0bc78f11b22246c4d893f111c172b640e854a682bc6a970c7017d6",
+      "size_bytes": 18123
+    },
+    {
+      "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "publisher_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "role": "method_prerequisite_receipt",
+      "sha256": "sha256:143ada3605df4b719a94c2bf47f847e9bcc8180757df85b34f7c3ebe8f076fb9",
+      "size_bytes": 9938
     }
   ],
   "observed_evidence": {
     "author_method_executed": false,
     "author_smoke_receipt_bound": false,
     "author_workflow_declarations_hashed": true,
+    "checkpoint_bytes_verified": true,
     "dependency_declarations_hashed": true,
+    "method_prerequisite_receipt_bound": true,
     "official_remote_head_verified": true,
     "source_checkout_opened": true,
     "source_tree_clean": true,
@@ -87,7 +187,9 @@
     "submodules": {}
   },
   "rights": {
+    "author_data_rights_established": false,
     "checkpoint_or_author_data_rights_established": false,
+    "checkpoint_rights_established": true,
     "source_license": "Apache-2.0",
     "source_license_file_hashed": true
   },

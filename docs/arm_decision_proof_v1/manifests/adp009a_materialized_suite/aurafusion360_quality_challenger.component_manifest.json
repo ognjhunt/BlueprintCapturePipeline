@@ -8,7 +8,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-aurafusion360_quality_challenger",
-  "manifest_digest": "sha256:d4e2b6f3eb7454ca53c37fcb7260b8a5ec9fb29cdd3118ae46e06407188e67cf",
+  "manifest_digest": "sha256:273376efdd2fc9373e514d11cf6d0a64729c2ef9b9387b4bff2bedb081e69d8c",
   "materialized_artifacts": [
     {
       "external_relative_path": "AuraFusion360_official/LICENSE",
@@ -64,7 +64,9 @@
     "author_method_executed": false,
     "author_smoke_receipt_bound": false,
     "author_workflow_declarations_hashed": true,
+    "checkpoint_bytes_verified": false,
     "dependency_declarations_hashed": true,
+    "method_prerequisite_receipt_bound": false,
     "official_remote_head_verified": true,
     "source_checkout_opened": true,
     "source_tree_clean": true,
@@ -84,7 +86,9 @@
     }
   },
   "rights": {
+    "author_data_rights_established": false,
     "checkpoint_or_author_data_rights_established": false,
+    "checkpoint_rights_established": false,
     "source_license": "Apache-2.0",
     "source_license_file_hashed": true
   },
