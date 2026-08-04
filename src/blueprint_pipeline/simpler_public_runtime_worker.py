@@ -254,7 +254,7 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
         raise RuntimeError("nvidia_smi_failed:" + nvidia["output_tail"][-1000:])
     lock = {
         "schema_version": RUNTIME_LOCK_SCHEMA_VERSION,
-        "container_image": manifest["runtime"]["paid_runtime_plan"]["container_image"],
+        "container_image": manifest["runtime"]["environment_lock"]["container_image"],
         "python": sys.version,
         "platform": platform.platform(),
         "machine": platform.machine(),

@@ -14,6 +14,7 @@ import json
 import math
 import shutil
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any, Mapping, Sequence
 
 from .common import write_json
@@ -31,6 +32,39 @@ VERDICT_SCHEMA_VERSION = "adp_bounded_verdict.v1"
 PHASE_LABEL = "retrospective_external_reference"
 CLAIM_CEILING = "development_only"
 SHA256_PREFIX = "sha256:"
+DEFAULT_MANIFEST_PATH = Path(
+    "docs/arm_decision_proof_v1/manifests/"
+    "simpler_google_robot_pick_coke_can.v1.json"
+)
+DEFAULT_EXECUTION_PATH = Path(
+    "output/arm_decision_proof_v1/immutable_execution/"
+    "adp_simpler_closed_loop_execution.json"
+)
+DEFAULT_OUTCOMES_PATH = Path(
+    "docs/arm_decision_proof_v1/manifests/"
+    "simpler_google_robot_pick_coke_can_physical_outcomes.v1.json"
+)
+DEFAULT_OUTPUT_PATH = Path("output/arm_decision_proof_v1/evidence")
+ACQUISITION_COMMAND = (
+    "BLUEPRINT_LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR="
+    "output/arm_decision_proof_v1/supervisor PYTHONPATH=src .venv/bin/python -m "
+    "blueprint_pipeline.paid_resource_allocator gpu-canary --probe-kind "
+    "adp-simpler-public-reference --provider vast --provider-launch-request "
+    "output/arm_decision_proof_v1/unused_request.json --release-evidence "
+    "output/arm_decision_proof_v1/unused_release.json --model-cache-evidence "
+    "output/arm_decision_proof_v1/unused_model.json --preflight-bundle "
+    "output/arm_decision_proof_v1/unused_preflight.json --admission-out "
+    "output/arm_decision_proof_v1/paid_admission.json --bound-request-out "
+    "output/arm_decision_proof_v1/unused_bound.json --adapter-output "
+    "output/arm_decision_proof_v1/allocator_result.json --pod-name adp-simpler "
+    "--adp-public-reference-manifest "
+    "docs/arm_decision_proof_v1/manifests/"
+    "simpler_google_robot_pick_coke_can.v1.json --adp-job-dir "
+    "output/arm_decision_proof_v1 --adp-machine-avoidlist "
+    "docs/arm_decision_proof_v1/manifests/simpler_vast_machine_avoidlist.v1.json "
+    "--adp-max-hourly-rate-usd 0.80 --adp-max-spend-usd 2.00 "
+    "--adp-hard-ttl-seconds 7200 --execute"
+)
 
 
 class ArmDecisionProofError(ValueError):
@@ -392,6 +426,17 @@ def compile_bounded_decision(receipts: Sequence[Mapping[str, Any]]) -> dict[str,
         "stop_rule": "all_planned_cells_terminal",
         "uncertainty": "95_percent_wilson_per_candidate_conservative_difference_bounds",
     }
+    z_alpha = NormalDist().inv_cdf(1.0 - rule["alpha"] / 2.0)
+    z_power = NormalDist().inv_cdf(rule["target_power"])
+    minimum_trials_per_candidate = math.ceil(
+        0.5
+        * (z_alpha + z_power) ** 2
+        / rule["minimum_decision_relevant_difference"] ** 2
+    )
+    rule["minimum_trials_per_candidate"] = minimum_trials_per_candidate
+    rule["sample_size_method"] = (
+        "conservative_two_proportion_normal_approximation_without_paired_discordance_prior"
+    )
     rows: dict[str, list[Mapping[str, Any]]] = {
         candidate_id: [row for row in receipts if row.get("candidate_id") == candidate_id]
         for candidate_id in candidate_ids
@@ -422,10 +467,17 @@ def compile_bounded_decision(receipts: Sequence[Mapping[str, Any]]) -> dict[str,
     ]
     mdre = rule["minimum_decision_relevant_difference"]
     invalid = sum(summary["invalid_or_failed"] for summary in summaries.values())
+    trial_count_sufficient = all(
+        summary["planned"] >= minimum_trials_per_candidate for summary in summaries.values()
+    )
     if invalid:
         decision = "abstain"
         selected = None
         reason = "invalid_or_failed_cells_make_selection_unsafe"
+    elif not trial_count_sufficient:
+        decision = "abstain"
+        selected = None
+        reason = "planned_trial_count_below_frozen_power_requirement"
     elif difference_interval[0] >= mdre:
         decision = "select"
         selected = challenger
@@ -456,6 +508,15 @@ def compile_bounded_decision(receipts: Sequence[Mapping[str, Any]]) -> dict[str,
         "invalid_region": [
             row["receipt_digest"] for row in receipts if row.get("status") != "completed"
         ],
+        "trial_count_qualification": {
+            "status": "passed" if trial_count_sufficient else "insufficient_power_abstain",
+            "minimum_trials_per_candidate": minimum_trials_per_candidate,
+            "observed_planned_trials_per_candidate": {
+                candidate_id: summary["planned"]
+                for candidate_id, summary in summaries.items()
+            },
+            "arbitrary_trial_count_accepted_for_selection": False,
+        },
         "next_cheapest_missing_measurement": (
             "additional digest-bound fixed-reset replications for each candidate-condition cell"
             if decision in {"abstain", "equivalent_inconclusive"}
@@ -686,6 +747,18 @@ def reconstruct_evidence_package(
         )
         for episode in _rows(execution.get("episodes"))
     ]
+    replayed_receipts = [
+        _episode_receipt(
+            episode,
+            manifest=manifest,
+            execution_digest=execution["execution_digest"],
+        )
+        for episode in _rows(execution.get("episodes"))
+    ]
+    if [row["receipt_digest"] for row in receipts] != [
+        row["receipt_digest"] for row in replayed_receipts
+    ]:
+        raise ArmDecisionProofError(["episode_receipt_replay_non_reproducible"])
     for receipt in receipts:
         _write_artifact(receipts_dir / f"{receipt['episode_id']}.json", receipt)
     replay = {
@@ -726,6 +799,37 @@ def reconstruct_evidence_package(
     verdict = adjudicate(decision, joined)
     _write_artifact(output / "physical_outcome_join.json", joined)
     _write_artifact(output / "bounded_verdict.json", verdict)
+    receipt_by_pair = {
+        (row["candidate_id"], row["condition_id"]): row for row in receipts
+    }
+    matrix_cells = []
+    for verdict_cell in verdict["cells"]:
+        pair = (verdict_cell["candidate_id"], verdict_cell["condition_id"])
+        receipt = receipt_by_pair[pair]
+        matrix_cells.append(
+            {
+                **verdict_cell,
+                "episode_id": receipt["episode_id"],
+                "episode_receipt_digest": receipt["receipt_digest"],
+                "source_commit": receipt["source_commit"],
+                "source_manifest_digest": receipt["source_manifest_digest"],
+                "environment_lock_digest": receipt["dependency_lock_digest"],
+                "checkpoint_identity_digest": receipt["checkpoint_identity_digest"],
+                "reset_digest": receipt["reset_digest"],
+                "observation_trace_digest": receipt["observation_trace_digest"],
+                "action_trace_digest": receipt["action_trace_digest"],
+                "metric_trace_digest": receipt["metric_trace_digest"],
+                "trace_artifacts": receipt["artifacts"],
+                "evaluator": receipt["evaluator"],
+                "failure": receipt["failure"],
+                "physical_outcomes_digest": outcomes["outcomes_digest"],
+                "physical_release_receipt_digest": release[
+                    "release_receipt_digest"
+                ],
+                "qualification_receipt_digest": admission["receipt_digest"],
+                "qualification_status": admission["status"],
+            }
+        )
     matrix = {
         "schema_version": "adp_evidence_matrix.v1",
         "status": "complete",
@@ -734,7 +838,11 @@ def reconstruct_evidence_package(
         "seal_digest": seal["seal_digest"],
         "release_receipt_digest": release["release_receipt_digest"],
         "join_digest": joined["join_digest"],
-        "cells": verdict["cells"],
+        "source_artifact": _mapping(
+            _mapping(manifest.get("physical_reference")).get("source_artifact")
+        ),
+        "environment_lock_digest": execution["runtime_lock_digest"],
+        "cells": matrix_cells,
         "missing_outcomes_visible": True,
         "missing_outcomes": joined["missing_outcomes"],
     }
@@ -756,6 +864,16 @@ def reconstruct_evidence_package(
         "claim_ceiling": CLAIM_CEILING,
     }
     _write_artifact(output / "replay_instructions.json", replay_instructions)
+    execution_inputs_dir = inputs_dir / "execution_artifacts"
+    for episode in _rows(execution.get("episodes")):
+        for artifact in _rows(episode.get("artifacts")):
+            relative_path = _string(artifact.get("relative_path"))
+            if not relative_path:
+                continue
+            source_artifact = (execution_file.parent / relative_path).resolve()
+            target_artifact = execution_inputs_dir / relative_path
+            target_artifact.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_artifact, target_artifact)
     artifact_rows = []
     for path in sorted(item for item in output.rglob("*") if item.is_file()):
         if path.name == "artifact_index.json":
@@ -784,10 +902,10 @@ def reconstruct_evidence_package(
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--execution-package", type=Path, required=True)
-    parser.add_argument("--physical-outcomes", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
+    parser.add_argument("--execution-package", type=Path, default=DEFAULT_EXECUTION_PATH)
+    parser.add_argument("--physical-outcomes", type=Path, default=DEFAULT_OUTCOMES_PATH)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_PATH)
     return parser.parse_args(argv)
 
 
@@ -801,7 +919,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_dir=args.output_dir,
         )
     except ArmDecisionProofError as exc:
-        print(json.dumps({"status": "blocked", "blockers": exc.blockers}, sort_keys=True))
+        payload: dict[str, Any] = {"status": "blocked", "blockers": exc.blockers}
+        if any("immutable_execution_input_missing" in item for item in exc.blockers):
+            payload["exact_acquisition_command"] = ACQUISITION_COMMAND
+        print(json.dumps(payload, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
     return 0
@@ -813,6 +934,7 @@ if __name__ == "__main__":  # pragma: no cover
 
 __all__ = [
     "ArmDecisionProofError",
+    "ACQUISITION_COMMAND",
     "adjudicate",
     "build_evaluation_run_spec",
     "compile_bounded_decision",

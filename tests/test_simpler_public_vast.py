@@ -50,6 +50,8 @@ def test_bundle_contains_public_runtime_but_not_physical_outcome_values(
     assert "provider_runtime/adp_simpler_provider_runner.py" in names
     assert not any("physical_outcomes" in name for name in names)
     assert "cells" not in bundled_manifest["physical_reference"]
+    assert 'manifest["runtime"]["environment_lock"]["container_image"]' in runner
+    assert "paid_runtime_plan" not in runner
     assert provider_runtime_contract_blockers(
         provider_bundle_kind="adp_simpler",
         entrypoint_text=entrypoint,

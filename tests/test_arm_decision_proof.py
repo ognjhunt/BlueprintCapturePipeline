@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.arm_decision_proof import (
+    ACQUISITION_COMMAND,
     ArmDecisionProofError,
     join_physical_outcomes,
     main,
@@ -137,8 +138,20 @@ def test_full_reconstruction_seals_before_release_and_renders_every_cell(
     assert release["published_outcomes_were_not_genuinely_unseen"] is True
     assert len(matrix["cells"]) == 6
     assert matrix["labels"] == ["retrospective_external_reference", "development_only"]
+    assert matrix["cells"][0]["reset_digest"].startswith("sha256:")
+    assert matrix["cells"][0]["physical_release_receipt_digest"] == release[
+        "release_receipt_digest"
+    ]
+    assert matrix["cells"][0]["qualification_status"] == "admitted"
     assert verdict["sealed_development_decision"] == "abstain"
     assert verdict["verdict"] == "inconclusive"
+    decision = json.loads((output / "bounded_development_decision.json").read_text())
+    assert decision["trial_count_qualification"]["status"] == (
+        "insufficient_power_abstain"
+    )
+    assert decision["trial_count_qualification"][
+        "arbitrary_trial_count_accepted_for_selection"
+    ] is False
 
 
 def test_duplicate_candidate_identity_is_never_padding() -> None:
@@ -218,4 +231,6 @@ def test_missing_execution_input_returns_exact_acquisition_instruction(
     )
 
     assert status == 2
-    assert "run canonical Vast acquisition command" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "run canonical Vast acquisition command" in output
+    assert ACQUISITION_COMMAND in output
