@@ -89,6 +89,111 @@ def _candidate_checkpoint_digest(candidate: Mapping[str, Any]) -> str:
     return canonical_digest(identity)
 
 
+def _paid_runtime_canary_blockers(
+    canary: Mapping[str, Any],
+    *,
+    environment_lock: Mapping[str, Any],
+    source_identity_digest: Any,
+) -> list[str]:
+    """Validate the declared paid runtime qualification without trusting it blindly.
+
+    This is the manifest-level half of the check.  The integrated replay also
+    opens and digest-checks every declared artifact before it accepts the
+    execution package.
+    """
+
+    blockers: list[str] = []
+    prefix = "paid_runtime_canary"
+    if _string(canary.get("status")) != "completed":
+        blockers.append(f"{prefix}_not_completed")
+    if _string(canary.get("provider")) != "vast":
+        blockers.append(f"{prefix}_provider_invalid")
+    if _string(canary.get("authority")) != (
+        "user_authorized_vast_gpu_spend_for_arm_decision_proof_v1"
+    ):
+        blockers.append(f"{prefix}_authority_missing")
+    if canary.get("license_terms_accepted_by_agent") is not False:
+        blockers.append(f"{prefix}_license_authority_invalid")
+    if not _is_sha1(canary.get("orchestrator_source_commit")):
+        blockers.append(f"{prefix}_orchestrator_commit_invalid")
+    if not _is_sha256(canary.get("source_manifest_digest")):
+        blockers.append(f"{prefix}_source_manifest_digest_invalid")
+    if canary.get("source_identity_digest") != source_identity_digest:
+        blockers.append(f"{prefix}_source_identity_mismatch")
+    if canary.get("runtime_lock_digest") != environment_lock.get("digest"):
+        blockers.append(f"{prefix}_runtime_lock_mismatch")
+    for key in ("bundle_sha256", "execution_digest", "runtime_lock_digest"):
+        if not _is_sha256(canary.get(key)):
+            blockers.append(f"{prefix}_{key}_invalid")
+    admitted_machine_ids = environment_lock.get("admitted_vast_machine_ids")
+    if (
+        not isinstance(admitted_machine_ids, list)
+        or canary.get("machine_id") not in admitted_machine_ids
+    ):
+        blockers.append(f"{prefix}_machine_not_admitted")
+    if not isinstance(canary.get("instance_id"), int):
+        blockers.append(f"{prefix}_instance_id_invalid")
+    cost = _number(canary.get("estimated_cost_usd"))
+    hard_cap = _number(canary.get("hard_cap_usd"))
+    if cost is None or hard_cap is None or cost < 0 or hard_cap <= 0 or cost > hard_cap:
+        blockers.append(f"{prefix}_spend_boundary_invalid")
+    if canary.get("retry_cap") != 0:
+        blockers.append(f"{prefix}_retry_cap_invalid")
+    if (
+        not isinstance(canary.get("hard_ttl_seconds"), int)
+        or canary.get("hard_ttl_seconds", 0) <= 0
+    ):
+        blockers.append(f"{prefix}_ttl_invalid")
+    for key in (
+        "all_staged_objects_absent",
+        "all_vast_instances_destroyed",
+        "provider_zero_verified",
+        "teardown_completed",
+    ):
+        if canary.get(key) is not True:
+            blockers.append(f"{prefix}_{key}_not_true")
+    for key in (
+        "continuing_spend",
+        "physical_outcome_values_accessed",
+        "physical_outcomes_uploaded",
+        "raw_secret_values_recorded",
+    ):
+        if canary.get(key) is not False:
+            blockers.append(f"{prefix}_{key}_not_false")
+
+    artifact_rows = _rows(canary.get("artifacts"))
+    roles = [_string(row.get("role")) for row in artifact_rows]
+    required_roles = {
+        "bundle_receipt",
+        "execution",
+        "final_validation",
+        "object_store_cleanup",
+        "offer_selection",
+        "paid_admission",
+        "provider_result",
+        "runtime_lock",
+        "source_manifest",
+        "teardown",
+    }
+    if not required_roles.issubset(set(roles)):
+        blockers.append(f"{prefix}_required_artifacts_missing")
+    if len(roles) != len(set(roles)):
+        blockers.append(f"{prefix}_artifact_role_duplicate")
+    for row in artifact_rows:
+        relative_path = _string(row.get("relative_path"))
+        path = Path(relative_path)
+        if (
+            not relative_path
+            or path.is_absolute()
+            or ".." in path.parts
+            or not _is_sha256(row.get("sha256"))
+            or not isinstance(row.get("size_bytes"), int)
+            or row.get("size_bytes", 0) <= 0
+        ):
+            blockers.append(f"{prefix}_artifact_binding_invalid:{_string(row.get('role'))}")
+    return blockers
+
+
 def _validate_license(errors: list[str], value: Any, *, path: str) -> None:
     license_value = _mapping(value)
     if not _string(license_value.get("spdx")):
@@ -242,7 +347,9 @@ def _validate_manifest(value: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         condition_ids.append(condition_id)
         trial_count = condition.get("published_physical_trial_count_per_candidate")
         if not isinstance(trial_count, int) or isinstance(trial_count, bool) or trial_count <= 0:
-            errors.append(f"conditions[{index}].published_physical_trial_count_per_candidate:invalid")
+            errors.append(
+                f"conditions[{index}].published_physical_trial_count_per_candidate:invalid"
+            )
         else:
             trial_counts[condition_id] = trial_count
         if not _mapping(condition.get("reset_binding")):
@@ -254,9 +361,7 @@ def _validate_manifest(value: Mapping[str, Any]) -> tuple[list[str], list[str]]:
 
     physical = _mapping(value.get("physical_reference"))
     source_artifact = _mapping(physical.get("source_artifact"))
-    if not _string(source_artifact.get("url")) or not _is_sha256(
-        source_artifact.get("sha256")
-    ):
+    if not _string(source_artifact.get("url")) or not _is_sha256(source_artifact.get("sha256")):
         errors.append("physical_reference.source_artifact:invalid")
     if _string(physical.get("outcome_granularity")) != "candidate_by_condition_aggregate":
         errors.append("physical_reference.outcome_granularity:unsupported")
@@ -284,14 +389,24 @@ def _validate_manifest(value: Mapping[str, Any]) -> tuple[list[str], list[str]]:
             errors.append(f"physical_reference.cells[{index}].condition_id:unknown")
         if cell.get("trial_count") != trial_counts.get(condition_id):
             errors.append(f"physical_reference.cell_bindings[{index}].trial_count:mismatch")
-    expected_pairs = {(candidate_id, condition_id) for candidate_id in candidate_ids for condition_id in condition_ids}
+    expected_pairs = {
+        (candidate_id, condition_id)
+        for candidate_id in candidate_ids
+        for condition_id in condition_ids
+    }
     if observed_pairs != expected_pairs:
         missing = sorted(expected_pairs - observed_pairs)
         extra = sorted(observed_pairs - expected_pairs)
         if missing:
-            errors.append("physical_reference.cell_bindings:missing_pairs:" + ",".join(f"{a}/{b}" for a, b in missing))
+            errors.append(
+                "physical_reference.cell_bindings:missing_pairs:"
+                + ",".join(f"{a}/{b}" for a, b in missing)
+            )
         if extra:
-            errors.append("physical_reference.cell_bindings:extra_pairs:" + ",".join(f"{a}/{b}" for a, b in extra))
+            errors.append(
+                "physical_reference.cell_bindings:extra_pairs:"
+                + ",".join(f"{a}/{b}" for a, b in extra)
+            )
     if outcomes_artifact.get("cell_count") != len(cells):
         errors.append("physical_reference.outcomes_artifact.cell_count:mismatch")
 
@@ -301,11 +416,15 @@ def _validate_manifest(value: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         blockers.append("runtime_environment_lock_incomplete")
     feasibility = _mapping(runtime.get("zero_spend_feasibility"))
     feasibility_status = _string(feasibility.get("status"))
-    if feasibility_status != "passed":
-        blockers.append(
-            "zero_spend_feasibility_not_passed:"
-            + (feasibility_status or "missing")
-        )
+    paid_runtime_canary = _mapping(runtime.get("paid_runtime_canary"))
+    paid_runtime_blockers = _paid_runtime_canary_blockers(
+        paid_runtime_canary,
+        environment_lock=lock,
+        source_identity_digest=value.get("source_identity_digest"),
+    )
+    if feasibility_status != "passed" and paid_runtime_blockers:
+        blockers.append("zero_spend_feasibility_not_passed:" + (feasibility_status or "missing"))
+        blockers.extend(paid_runtime_blockers)
     if _number(feasibility.get("cost_usd")) != 0.0:
         errors.append("runtime.zero_spend_feasibility.cost_usd:must_be_zero")
     for key in ("cpu", "gpu", "storage", "expected_duration"):
@@ -369,9 +488,9 @@ def build_public_reference_admission_receipt(value: Mapping[str, Any]) -> dict[s
         "physical_reference_cell_count": len(
             _rows(_mapping(normalized.get("physical_reference")).get("cell_bindings"))
         ),
-        "physical_outcomes_artifact_digest": _mapping(
-            normalized.get("physical_reference")
-        ).get("outcomes_artifact", {}).get("digest"),
+        "physical_outcomes_artifact_digest": _mapping(normalized.get("physical_reference"))
+        .get("outcomes_artifact", {})
+        .get("digest"),
         "physical_outcome_values_read": False,
         "exact_candidate_condition_join_available": True,
         "qualified_execution_ready": not blockers,

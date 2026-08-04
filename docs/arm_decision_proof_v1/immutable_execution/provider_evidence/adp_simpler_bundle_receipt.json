@@ -1,0 +1,30 @@
+{
+  "schema_version": "adp_simpler_provider_bundle.v1",
+  "generated_at": "2026-08-04T06:02:51.316221+00:00",
+  "status": "ready",
+  "reference_id": "simpler-google-robot-pick-coke-can-v1",
+  "source_identity_digest": "sha256:b1175b62222ac2e92d5bd28cf9db54a03c024b31614c2c90a8ea426e76bd915a",
+  "source_manifest_digest": "sha256:eaaece7b2d2412786d4f68159c21d48722d97a44ae39a5a5e1da4ae1d6e3c7f3",
+  "candidate_ids": [
+    "rt1-converged-400120",
+    "rt1-15pct-58240"
+  ],
+  "condition_ids": [
+    "coke-can-horizontal-lr-switch",
+    "coke-can-vertical-laid",
+    "coke-can-standing-upright"
+  ],
+  "container_image": "nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04@sha256:693d4bcb5b05ec381cf815ed0085d4cbc0757d46ccbaa5fab097bb5c250bc69d",
+  "runtime_entrypoint": "provider_runtime/run_adp_simpler_provider_runtime.sh",
+  "expected_output_filename": "adp_simpler_closed_loop_execution.json",
+  "physical_outcome_values_bundled": false,
+  "local_bundle_ready_for_remote_staging": true,
+  "blockers": [],
+  "phase_label": "retrospective_external_reference",
+  "claim_ceiling": "development_only",
+  "raw_secret_values_recorded": false,
+  "bundle_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/adp_simpler_vast_20260804_attempt13/run/bundle/adp_simpler_provider_runtime_bundle.zip",
+  "bundle_sha256": "sha256:55d1f422f8946bc4323b00304e48b6d8846629c732335029ba81eba812f7c15c",
+  "bundle_size_bytes": 15464,
+  "manifest_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/adp_simpler_vast_20260804_attempt13/run/bundle/provider_runtime/adp_simpler_provider_manifest.json"
+}

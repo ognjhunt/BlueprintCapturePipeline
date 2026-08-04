@@ -301,13 +301,8 @@
       "archive_sha256": "sha256:2f5edf452025745e79822069fe8027ddbc682a06ddd8b2bf7b68bd48ab349b2e"
     },
     "environment_lock": {
-      "status": "exact_immutable",
-      "digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
-      "artifact": {
-        "relative_path": "simpler_runtime_lock.json",
-        "file_sha256": "sha256:187bcee7dd43a043f83a4b3aa57d1d85df5176bb0a2e00bce0f0bb21efa6acaa",
-        "size_bytes": 8242
-      },
+      "status": "upstream_partially_pinned",
+      "digest": null,
       "container_image": "nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04@sha256:693d4bcb5b05ec381cf815ed0085d4cbc0757d46ccbaa5fab097bb5c250bc69d",
       "container_terms": {
         "publisher": "NVIDIA",
@@ -320,13 +315,37 @@
       "vulkan_driver_override_environment": ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"],
       "sapien_offscreen_system_packages": ["libegl1", "libxext6", "libvulkan1", "vulkan-tools"],
       "admitted_vast_machine_ids": [41950],
-      "machine_admission_basis": "attempt_13_completed_six_genuine_checkpoint_backed_closed_loop_episodes_with_observed_nvidia_vulkan_cuda_and_exact_runtime_lock",
-      "unresolved_requirements": []
+      "machine_admission_basis": "attempt_7_observed_nvidia_icd_cuda_toolkit_and_real_sapien_construction",
+      "unresolved_requirements": [
+        "exact_python_patch",
+        "numpy",
+        "matplotlib",
+        "coacd",
+        "plotly",
+        "ml_collections",
+        "wandb",
+        "einops",
+        "transformers",
+        "gymnasium",
+        "scipy_for_submodule",
+        "h5py",
+        "pyyaml",
+        "tqdm",
+        "GitPython",
+        "tabulate",
+        "gdown",
+        "transforms3d",
+        "opencv-python",
+        "imageio",
+        "trimesh",
+        "rtree",
+        "ruckig"
+      ]
     },
     "cpu": {"architecture": "linux_x86_64", "minimum_vcpu": 4, "status": "estimate_not_upstream_benchmark"},
     "gpu": {"required": true, "vendor": "NVIDIA", "cuda": ">=11.8,<13", "recommended": "RTX", "paper_benchmark": "RTX_4090"},
     "storage": {"checkpoint_bytes": 1293998401, "repository_and_environment_bytes": "acquisition_measurement_required", "minimum_free_bytes": 10737418240},
-    "expected_duration": {"paper_render_rate_sim_steps_per_second": 3500, "paper_relative_speed_vs_real": 7, "observed_full_two_candidate_runtime_seconds": 277.4032227079733},
+    "expected_duration": {"paper_render_rate_sim_steps_per_second": 3500, "paper_relative_speed_vs_real": 7, "full_two_candidate_wall_time": "canary_measurement_required"},
     "zero_spend_feasibility": {
       "status": "blocked_host_incompatible_no_nvidia_cuda",
       "cost_usd": 0.0,
@@ -335,49 +354,6 @@
       "observed_gpu": "Apple_M2_8_core_Metal",
       "nvidia_smi_available": false,
       "paid_execution_authorized_separately": true
-    },
-    "paid_runtime_canary": {
-      "status": "completed",
-      "provider": "vast",
-      "authority": "user_authorized_vast_gpu_spend_for_arm_decision_proof_v1",
-      "license_terms_accepted_by_agent": false,
-      "orchestrator_source_commit": "134d63f6f6fc6aa9f3ba5bad2e8a17b03296c16e",
-      "source_manifest_digest": "sha256:eaaece7b2d2412786d4f68159c21d48722d97a44ae39a5a5e1da4ae1d6e3c7f3",
-      "source_identity_digest": "sha256:b1175b62222ac2e92d5bd28cf9db54a03c024b31614c2c90a8ea426e76bd915a",
-      "bundle_sha256": "sha256:55d1f422f8946bc4323b00304e48b6d8846629c732335029ba81eba812f7c15c",
-      "runtime_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
-      "execution_digest": "sha256:2bc388722999f62e2d1955c73ba3e935beb4a092229d784c11404ad5aef9e97a",
-      "machine_id": 41950,
-      "instance_id": 46765550,
-      "gpu_model_slug": "rtx_4090",
-      "selected_hourly_rate_usd": 0.33555555555555555,
-      "observed_runtime_seconds": 277.4032227079733,
-      "estimated_cost_usd": 0.025857,
-      "hard_cap_usd": 2.0,
-      "hard_ttl_seconds": 7200,
-      "retry_cap": 0,
-      "all_staged_objects_absent": true,
-      "all_vast_instances_destroyed": true,
-      "provider_zero_verified": true,
-      "teardown_completed": true,
-      "continuing_spend": false,
-      "physical_outcome_values_accessed": false,
-      "physical_outcomes_uploaded": false,
-      "raw_secret_values_recorded": false,
-      "artifacts": [
-        {"role": "source_manifest", "relative_path": "provider_evidence/source_manifest.json", "sha256": "sha256:5702131c4ddca0960c25eb11b2ed930a3803dcb3a881ca2afe08a665107235d7", "size_bytes": 19079},
-        {"role": "runtime_lock", "relative_path": "simpler_runtime_lock.json", "sha256": "sha256:187bcee7dd43a043f83a4b3aa57d1d85df5176bb0a2e00bce0f0bb21efa6acaa", "size_bytes": 8242},
-        {"role": "execution", "relative_path": "adp_simpler_closed_loop_execution.json", "sha256": "sha256:17d07770b2b08071cbccce36f5dcc2661d853ad1f64e54d043f47b1ecd18c3bf", "size_bytes": 10709},
-        {"role": "paid_admission", "relative_path": "provider_evidence/paid_admission.json", "sha256": "sha256:d1a8422e23141f41692518582ed2e3b893c4170ae6d1e0ae20ec2d1308e12ec7", "size_bytes": 2046},
-        {"role": "bundle_receipt", "relative_path": "provider_evidence/adp_simpler_bundle_receipt.json", "sha256": "sha256:a2aa8ad4cba710c2c6488263a73e7efc59bc83146aaa887bd97b2137ef9fc33b", "size_bytes": 1605},
-        {"role": "provider_result", "relative_path": "provider_evidence/adp_simpler_vast_result.json", "sha256": "sha256:dd4095123cbae44572ee4c5ee49506ba36a311eb19cc469c7665922099972469", "size_bytes": 1591},
-        {"role": "budget_ledger", "relative_path": "provider_evidence/vast_budget_ledger.json", "sha256": "sha256:51e07d5a6c9325cfdb3f455d7fc0a54a91d838a396387c931e00f7c0ac28caae", "size_bytes": 697},
-        {"role": "offer_selection", "relative_path": "provider_evidence/vast_offer_selection_manifest.json", "sha256": "sha256:fce1e9672aa07f99b5ccd95eb514a2be9089d07ae51981df168776ef4f0acefe", "size_bytes": 3245},
-        {"role": "output_download", "relative_path": "provider_evidence/vast_provider_output_download_manifest.json", "sha256": "sha256:b4bbc853f88acbf171c1faed253cca00f2f4422606b99b1f43cbbb9af23b4ee2", "size_bytes": 540},
-        {"role": "final_validation", "relative_path": "provider_evidence/vast_final_validation.json", "sha256": "sha256:8eab7feb0ebbb742043a202ad4800e70da0c1d536cec5c6da93683af920c3f0d", "size_bytes": 2435},
-        {"role": "teardown", "relative_path": "provider_evidence/vast_teardown_manifest.json", "sha256": "sha256:c9470278a188d4d06af738055b79b473a1f48009c08d47091c8edecb249afc45", "size_bytes": 1358},
-        {"role": "object_store_cleanup", "relative_path": "provider_evidence/wam_provider_object_store_cleanup.json", "sha256": "sha256:e9b04574b69271e20691c23329c6dabb90fab4a41054a8c2c4f4f4f04db93235", "size_bytes": 943}
-      ]
     }
   },
   "claim_boundaries": {
@@ -392,5 +368,5 @@
     "universal_robot_or_simulator_support": false,
     "two_candidates_establish_rank_correlation": false
   },
-  "manifest_digest": "sha256:323706aee905177b66eb9881ada8b1049df9b08a1a7e1cc2aa0f23e4f4b023c5"
+  "manifest_digest": "sha256:eaaece7b2d2412786d4f68159c21d48722d97a44ae39a5a5e1da4ae1d6e3c7f3"
 }

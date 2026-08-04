@@ -1,0 +1,12 @@
+{
+  "schema_version": "vast_provider_output_download.v1",
+  "generated_at": "2026-08-04T06:07:30.532616+00:00",
+  "status": "completed",
+  "provider_output_get_url_present": true,
+  "provider_upload_marker_seen": true,
+  "output_zip_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/adp_simpler_vast_20260804_attempt13/run/vast_provider_run/vast_provider_runtime_output.zip",
+  "raw_secret_values_recorded": false,
+  "http_status_code": 200,
+  "output_zip_present_after_download": true,
+  "output_zip_size_bytes": 28876
+}

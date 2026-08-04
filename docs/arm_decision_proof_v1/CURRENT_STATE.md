@@ -7,13 +7,13 @@ fixture does not promote a public-reference gate.
 | Item | Status | Observed evidence |
 |---|---|---|
 | ADP-001 | `observed_complete` | [`north_star_contract.json`](north_star_contract.json), [`test_arm_decision_proof_focus.py`](../../tests/test_arm_decision_proof_focus.py) |
-| ADP-002 | `partial` | [`simpler_google_robot_pick_coke_can.v1.json`](manifests/simpler_google_robot_pick_coke_can.v1.json), [`public_reference_admission.py`](../../src/blueprint_pipeline/public_reference_admission.py); exact runtime lock awaits the admitted Vast execution |
-| ADP-003 | `partial` | [`arm_decision_proof.py`](../../src/blueprint_pipeline/arm_decision_proof.py), [`evaluation_run_contract.py`](../../src/blueprint_pipeline/evaluation_run_contract.py), [`test_arm_decision_proof.py`](../../tests/test_arm_decision_proof.py); real two-checkpoint execution awaits ADP-002 runtime completion |
-| ADP-004 | `partial` | Digest-bound receipt/replay implementation and focused tests exist; real episode traces await the admitted execution |
-| ADP-005 | `partial` | Decision seal, separate outcome loader, release receipt, mismatch rejection, and firebreak tests exist; integrated public run awaits execution |
-| ADP-006 | `partial` | Frozen deterministic rule exposes uncertainty, invalid region, coverage, abstention, and next measurement; integrated result awaits execution |
-| ADP-007 | `partial` | Per-cell matrix links source/runtime/reset/trace/metric/outcome/qualification digests; integrated result awaits execution |
-| ADP-008 | `missing` | One-command reconstruction is implemented and fail-closed, but no admitted immutable execution package has completed yet |
+| ADP-002 | `observed_complete` | [`simpler_google_robot_pick_coke_can.v1.json`](manifests/simpler_google_robot_pick_coke_can.v1.json), [`public_reference_admission_receipt.json`](../../output/arm_decision_proof_v1/evidence/public_reference_admission_receipt.json), [`paid_runtime_canary_validation.json`](../../output/arm_decision_proof_v1/evidence/paid_runtime_canary_validation.json) |
+| ADP-003 | `observed_complete` | [`adp_simpler_closed_loop_execution.json`](immutable_execution/adp_simpler_closed_loop_execution.json), [`execution_validation.json`](../../output/arm_decision_proof_v1/evidence/execution_validation.json); exactly two distinct genuine RT-1 checkpoint identities and six completed cells |
+| ADP-004 | `observed_complete` | [`receipt_replay.json`](../../output/arm_decision_proof_v1/evidence/receipt_replay.json), six [`episode_receipts`](../../output/arm_decision_proof_v1/evidence/episode_receipts), and digest-bound [`traces`](immutable_execution/traces) |
+| ADP-005 | `observed_complete` | [`decision_seal.json`](../../output/arm_decision_proof_v1/evidence/decision_seal.json) precedes [`physical_outcome_release_receipt.json`](../../output/arm_decision_proof_v1/evidence/physical_outcome_release_receipt.json); published outcomes are explicitly a software firebreak, not a genuinely unseen holdout |
+| ADP-006 | `observed_complete` | [`bounded_development_decision.json`](../../output/arm_decision_proof_v1/evidence/bounded_development_decision.json) freezes the rule and correctly abstains because three trials per candidate are below the 99-trial conservative requirement |
+| ADP-007 | `observed_complete` | [`evidence_matrix.json`](../../output/arm_decision_proof_v1/evidence/evidence_matrix.json) renders all six candidate-condition cells with source, reset, execution, trace, metric, physical outcome, version, digest, and qualification links |
+| ADP-008 | `observed_complete` | [`REPLAY.md`](REPLAY.md), [`physical_outcome_join.json`](../../output/arm_decision_proof_v1/evidence/physical_outcome_join.json), [`bounded_verdict.json`](../../output/arm_decision_proof_v1/evidence/bounded_verdict.json), and [`artifact_index.json`](../../output/arm_decision_proof_v1/evidence/artifact_index.json); identical reruns produced index digest `sha256:6e2ada17343a816b1842d5ef08d69a98d4d002ce29f980c496ef87b16c63f2a3` |
 
 All entries are `retrospective_external_reference` and `development_only`.
 No capture or reconstruction feature was added.

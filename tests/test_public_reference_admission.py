@@ -29,17 +29,29 @@ def _manifest() -> dict:
 def test_simpler_manifest_retains_exact_source_and_outcome_joins() -> None:
     receipt = build_public_reference_admission_receipt(_manifest())
 
-    assert receipt["status"] == "blocked"
-    assert receipt["blockers"] == [
-        "runtime_environment_lock_incomplete",
-        "zero_spend_feasibility_not_passed:blocked_host_incompatible_no_nvidia_cuda",
-    ]
+    assert receipt["status"] == "admitted"
+    assert receipt["blockers"] == []
     assert receipt["phase_label"] == "retrospective_external_reference"
     assert receipt["claim_ceiling"] == "development_only"
     assert receipt["physical_reference_cell_count"] == 6
     assert receipt["exact_candidate_condition_join_available"] is True
     assert len(receipt["candidate_bindings"]) == 2
     assert len({row["checkpoint_identity_digest"] for row in receipt["candidate_bindings"]}) == 2
+
+
+def test_paid_runtime_canary_cannot_override_zero_spend_blocker_when_tampered() -> None:
+    value = _manifest()
+    value.pop("manifest_digest")
+    value["runtime"]["paid_runtime_canary"]["provider_zero_verified"] = False
+
+    receipt = build_public_reference_admission_receipt(value)
+
+    assert receipt["status"] == "blocked"
+    assert "paid_runtime_canary_provider_zero_verified_not_true" in receipt["blockers"]
+    assert (
+        "zero_spend_feasibility_not_passed:blocked_host_incompatible_no_nvidia_cuda"
+        in receipt["blockers"]
+    )
 
 
 def test_runtime_readiness_is_derived_not_caller_asserted() -> None:

@@ -33,38 +33,17 @@ PHASE_LABEL = "retrospective_external_reference"
 CLAIM_CEILING = "development_only"
 SHA256_PREFIX = "sha256:"
 DEFAULT_MANIFEST_PATH = Path(
-    "docs/arm_decision_proof_v1/manifests/"
-    "simpler_google_robot_pick_coke_can.v1.json"
+    "docs/arm_decision_proof_v1/manifests/simpler_google_robot_pick_coke_can.v1.json"
 )
 DEFAULT_EXECUTION_PATH = Path(
-    "output/arm_decision_proof_v1/immutable_execution/"
-    "adp_simpler_closed_loop_execution.json"
+    "docs/arm_decision_proof_v1/immutable_execution/adp_simpler_closed_loop_execution.json"
 )
 DEFAULT_OUTCOMES_PATH = Path(
     "docs/arm_decision_proof_v1/manifests/"
     "simpler_google_robot_pick_coke_can_physical_outcomes.v1.json"
 )
 DEFAULT_OUTPUT_PATH = Path("output/arm_decision_proof_v1/evidence")
-ACQUISITION_COMMAND = (
-    "BLUEPRINT_LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR="
-    "output/arm_decision_proof_v1/supervisor PYTHONPATH=src .venv/bin/python -m "
-    "blueprint_pipeline.paid_resource_allocator gpu-canary --probe-kind "
-    "adp-simpler-public-reference --provider vast --provider-launch-request "
-    "output/arm_decision_proof_v1/unused_request.json --release-evidence "
-    "output/arm_decision_proof_v1/unused_release.json --model-cache-evidence "
-    "output/arm_decision_proof_v1/unused_model.json --preflight-bundle "
-    "output/arm_decision_proof_v1/unused_preflight.json --admission-out "
-    "output/arm_decision_proof_v1/paid_admission.json --bound-request-out "
-    "output/arm_decision_proof_v1/unused_bound.json --adapter-output "
-    "output/arm_decision_proof_v1/allocator_result.json --pod-name adp-simpler "
-    "--adp-public-reference-manifest "
-    "docs/arm_decision_proof_v1/manifests/"
-    "simpler_google_robot_pick_coke_can.v1.json --adp-job-dir "
-    "output/arm_decision_proof_v1 --adp-machine-avoidlist "
-    "docs/arm_decision_proof_v1/manifests/simpler_vast_machine_avoidlist.v1.json "
-    "--adp-max-hourly-rate-usd 0.80 --adp-max-spend-usd 2.00 "
-    "--adp-hard-ttl-seconds 7200 --execute"
-)
+ACQUISITION_COMMAND = "git restore --source=HEAD -- docs/arm_decision_proof_v1/immutable_execution"
 
 
 class ArmDecisionProofError(ValueError):
@@ -91,8 +70,10 @@ def _string(value: Any) -> str:
 
 def _is_digest(value: Any) -> bool:
     text = _string(value)
-    return len(text) == 71 and text.startswith(SHA256_PREFIX) and all(
-        character in "0123456789abcdef" for character in text[7:]
+    return (
+        len(text) == 71
+        and text.startswith(SHA256_PREFIX)
+        and all(character in "0123456789abcdef" for character in text[7:])
     )
 
 
@@ -198,9 +179,7 @@ def build_evaluation_run_spec(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "profile_id": "simpler-sapien-vast-immutable-input",
             "providers": ["vast"],
             "simulator": "SAPIEN-2.2.2",
-            "environment_lock_digest": _mapping(runtime.get("environment_lock")).get(
-                "digest"
-            ),
+            "environment_lock_digest": _mapping(runtime.get("environment_lock")).get("digest"),
         },
         "proof_contract": {
             "adapter_id": "declared_evidence_proof_contract",
@@ -228,6 +207,187 @@ def build_evaluation_run_spec(manifest: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_paid_runtime_canary(
+    manifest: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    *,
+    execution_root: Path,
+) -> dict[str, Any]:
+    """Verify the observed paid canary and every artifact declared by admission."""
+
+    runtime = _mapping(manifest.get("runtime"))
+    canary = _mapping(runtime.get("paid_runtime_canary"))
+    if not canary:
+        if _mapping(runtime.get("zero_spend_feasibility")).get("status") == "passed":
+            return {
+                "status": "not_required_zero_spend_execution",
+                "artifact_count": 0,
+            }
+        raise ArmDecisionProofError(["paid_runtime_canary_missing"])
+    blockers: list[str] = []
+    root = execution_root.resolve()
+    bound: dict[str, tuple[dict[str, Any], Path]] = {}
+    for row in _rows(canary.get("artifacts")):
+        role = _string(row.get("role"))
+        relative_path = _string(row.get("relative_path"))
+        target = (root / relative_path).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            blockers.append(f"paid_runtime_artifact_path_outside_root:{role}")
+            continue
+        if role in bound:
+            blockers.append(f"paid_runtime_artifact_role_duplicate:{role}")
+            continue
+        bound[role] = (row, target)
+        if not target.is_file():
+            blockers.append(f"paid_runtime_artifact_missing:{role}")
+            continue
+        if target.stat().st_size != row.get("size_bytes"):
+            blockers.append(f"paid_runtime_artifact_size_mismatch:{role}")
+        if _file_digest(target) != row.get("sha256"):
+            blockers.append(f"paid_runtime_artifact_digest_mismatch:{role}")
+
+    def artifact_json(role: str) -> dict[str, Any]:
+        binding = bound.get(role)
+        if binding is None or not binding[1].is_file():
+            blockers.append(f"paid_runtime_artifact_unavailable:{role}")
+            return {}
+        try:
+            value = json.loads(binding[1].read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            blockers.append(f"paid_runtime_artifact_invalid_json:{role}")
+            return {}
+        if not isinstance(value, Mapping):
+            blockers.append(f"paid_runtime_artifact_not_mapping:{role}")
+            return {}
+        return dict(value)
+
+    source_manifest = artifact_json("source_manifest")
+    if source_manifest:
+        try:
+            source_admission = build_public_reference_admission_receipt(source_manifest)
+        except ValueError:
+            blockers.append("paid_runtime_source_manifest_structurally_invalid")
+        else:
+            if source_admission.get("manifest_digest") != canary.get("source_manifest_digest"):
+                blockers.append("paid_runtime_source_manifest_digest_mismatch")
+            if source_admission.get("source_identity_digest") != manifest.get(
+                "source_identity_digest"
+            ):
+                blockers.append("paid_runtime_source_identity_mismatch")
+    runtime_lock = artifact_json("runtime_lock")
+    if runtime_lock:
+        if runtime_lock.get("runtime_lock_digest") != canary.get(
+            "runtime_lock_digest"
+        ) or canonical_digest(runtime_lock, digest_field="runtime_lock_digest") != canary.get(
+            "runtime_lock_digest"
+        ):
+            blockers.append("paid_runtime_lock_digest_mismatch")
+        repository = _mapping(_mapping(manifest.get("source")).get("repository"))
+        expected_submodules = {
+            row["path"]: row["commit"] for row in _rows(repository.get("submodules"))
+        }
+        if runtime_lock.get("source_commit") != repository.get("commit"):
+            blockers.append("paid_runtime_lock_source_commit_mismatch")
+        if runtime_lock.get("submodule_commits") != expected_submodules:
+            blockers.append("paid_runtime_lock_submodule_mismatch")
+        if runtime_lock.get("container_image") != _mapping(runtime.get("environment_lock")).get(
+            "container_image"
+        ):
+            blockers.append("paid_runtime_lock_container_mismatch")
+    execution_binding = bound.get("execution")
+    if (
+        execution_binding is None
+        or execution_binding[1] != (root / DEFAULT_EXECUTION_PATH.name).resolve()
+    ):
+        blockers.append("paid_runtime_execution_artifact_binding_mismatch")
+    if execution.get("source_manifest_digest") != canary.get("source_manifest_digest"):
+        blockers.append("paid_runtime_execution_source_manifest_mismatch")
+    if execution.get("execution_digest") != canary.get("execution_digest"):
+        blockers.append("paid_runtime_execution_digest_mismatch")
+    if execution.get("runtime_lock_digest") != canary.get("runtime_lock_digest"):
+        blockers.append("paid_runtime_execution_lock_mismatch")
+    if execution.get("physical_outcome_values_accessed") is not False:
+        blockers.append("paid_runtime_execution_outcome_firebreak_failed")
+
+    paid_admission = artifact_json("paid_admission")
+    allocation = _mapping(paid_admission.get("allocation_binding"))
+    if paid_admission.get("status") != "admitted":
+        blockers.append("paid_runtime_allocator_admission_missing")
+    expected_allocation = {
+        "orchestrator_source_commit": canary.get("orchestrator_source_commit"),
+        "source_identity_digest": canary.get("source_identity_digest"),
+        "bundle_sha256": canary.get("bundle_sha256"),
+        "hard_cap_usd": canary.get("hard_cap_usd"),
+        "hard_ttl_seconds": canary.get("hard_ttl_seconds"),
+        "retry_cap": canary.get("retry_cap"),
+    }
+    for key, expected_value in expected_allocation.items():
+        if allocation.get(key) != expected_value:
+            blockers.append(f"paid_runtime_allocation_binding_mismatch:{key}")
+    bundle_receipt = artifact_json("bundle_receipt")
+    if bundle_receipt.get("bundle_sha256") != canary.get("bundle_sha256"):
+        blockers.append("paid_runtime_bundle_digest_mismatch")
+    provider_result = artifact_json("provider_result")
+    for key in (
+        "source_identity_digest",
+        "bundle_sha256",
+        "execution_digest",
+        "runtime_lock_digest",
+        "estimated_cost_usd",
+        "hard_cap_usd",
+        "hard_ttl_seconds",
+        "retry_cap",
+    ):
+        if provider_result.get(key) != canary.get(key):
+            blockers.append(f"paid_runtime_provider_result_mismatch:{key}")
+    if (
+        provider_result.get("status") != "completed"
+        or provider_result.get("continuing_spend_from_this_run") is not False
+        or provider_result.get("all_staged_objects_absent") is not True
+    ):
+        blockers.append("paid_runtime_provider_result_incomplete")
+    offer = _mapping(artifact_json("offer_selection").get("selected_offer"))
+    if offer.get("machine_id") != canary.get("machine_id"):
+        blockers.append("paid_runtime_machine_id_mismatch")
+    final_validation = artifact_json("final_validation")
+    if (
+        final_validation.get("status") != "passed"
+        or final_validation.get("all_vast_instances_destroyed_by_adapter") is not True
+        or final_validation.get("continuing_spend_from_this_run") is not False
+    ):
+        blockers.append("paid_runtime_final_validation_failed")
+    teardown = artifact_json("teardown")
+    if (
+        teardown.get("status") != "completed"
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or canary.get("instance_id") not in (teardown.get("vast_instance_ids") or [])
+    ):
+        blockers.append("paid_runtime_teardown_not_proven")
+    cleanup = artifact_json("object_store_cleanup")
+    if cleanup.get("status") != "completed" or cleanup.get("all_objects_absent") is not True:
+        blockers.append("paid_runtime_object_cleanup_not_proven")
+    if blockers:
+        raise ArmDecisionProofError(blockers)
+    result = {
+        "schema_version": "adp_paid_runtime_canary_validation.v1",
+        "status": "passed",
+        "source_manifest_digest": canary["source_manifest_digest"],
+        "runtime_lock_digest": canary["runtime_lock_digest"],
+        "execution_digest": canary["execution_digest"],
+        "machine_id": canary["machine_id"],
+        "instance_id": canary["instance_id"],
+        "estimated_cost_usd": canary["estimated_cost_usd"],
+        "provider_zero_verified": True,
+        "physical_outcome_values_accessed": False,
+        "artifact_count": len(bound),
+        "artifact_binding_digest": canonical_digest({"artifacts": canary.get("artifacts")}),
+    }
+    result["validation_digest"] = canonical_digest(result, digest_field="validation_digest")
+    return result
+
+
 def validate_execution_package(
     execution: Mapping[str, Any],
     manifest: Mapping[str, Any],
@@ -237,20 +397,31 @@ def validate_execution_package(
     blockers: list[str] = []
     if execution.get("schema_version") != EXECUTION_SCHEMA_VERSION:
         blockers.append("execution_schema_invalid")
+    if execution.get("status") != "completed":
+        blockers.append("execution_not_completed")
     if execution.get("reference_id") != manifest.get("reference_id"):
         blockers.append("execution_reference_id_mismatch")
     if execution.get("source_identity_digest") != manifest.get("source_identity_digest"):
         blockers.append("execution_source_identity_digest_mismatch")
+    canary = _mapping(_mapping(manifest.get("runtime")).get("paid_runtime_canary"))
+    expected_source_manifest_digest = canary.get(
+        "source_manifest_digest", manifest.get("manifest_digest")
+    )
+    if execution.get("source_manifest_digest") != expected_source_manifest_digest:
+        blockers.append("execution_source_manifest_digest_mismatch")
+    if execution.get("physical_outcome_values_accessed") is not False:
+        blockers.append("execution_physical_outcome_firebreak_failed")
+    if execution.get("phase_label") != PHASE_LABEL:
+        blockers.append("execution_phase_label_invalid")
+    if execution.get("claim_ceiling") != CLAIM_CEILING:
+        blockers.append("execution_claim_ceiling_invalid")
     runtime_digest = _mapping(_mapping(manifest.get("runtime")).get("environment_lock")).get(
         "digest"
     )
-    if execution.get("runtime_lock_digest") != runtime_digest or not _is_digest(
-        runtime_digest
-    ):
+    if execution.get("runtime_lock_digest") != runtime_digest or not _is_digest(runtime_digest):
         blockers.append("execution_runtime_lock_digest_mismatch")
     expected_candidates = {
-        row["candidate_id"]: _checkpoint_digest(row)
-        for row in _rows(manifest.get("candidates"))
+        row["candidate_id"]: _checkpoint_digest(row) for row in _rows(manifest.get("candidates"))
     }
     observed_candidates = _rows(execution.get("candidates"))
     if len(observed_candidates) != 2:
@@ -297,25 +468,30 @@ def validate_execution_package(
         if episode.get("source_commit") != _mapping(manifest.get("source")).get(
             "repository", {}
         ).get("commit"):
-            blockers.append(f"execution_episode_source_commit_mismatch:{candidate_id}/{condition_id}")
+            blockers.append(
+                f"execution_episode_source_commit_mismatch:{candidate_id}/{condition_id}"
+            )
         if episode.get("checkpoint_identity_digest") != expected_candidates.get(candidate_id):
             blockers.append(
                 f"execution_episode_checkpoint_identity_mismatch:{candidate_id}/{condition_id}"
             )
         if status == "completed":
             completed_by_candidate[candidate_id] = completed_by_candidate.get(candidate_id, 0) + 1
-            if not isinstance(episode.get("policy_query_count"), int) or episode.get(
-                "policy_query_count", 0
-            ) <= 0:
+            if (
+                not isinstance(episode.get("policy_query_count"), int)
+                or episode.get("policy_query_count", 0) <= 0
+            ):
                 blockers.append(f"execution_policy_not_queried:{candidate_id}/{condition_id}")
-            if not isinstance(episode.get("simulator_step_count"), int) or episode.get(
-                "simulator_step_count", 0
-            ) <= 0:
+            if (
+                not isinstance(episode.get("simulator_step_count"), int)
+                or episode.get("simulator_step_count", 0) <= 0
+            ):
                 blockers.append(f"execution_simulator_not_stepped:{candidate_id}/{condition_id}")
         evaluator = _mapping(episode.get("evaluator"))
-        if evaluator.get("owner") != "environment_not_policy" or evaluator.get(
-            "policy_self_report_used"
-        ) is not False:
+        if (
+            evaluator.get("owner") != "environment_not_policy"
+            or evaluator.get("policy_self_report_used") is not False
+        ):
             blockers.append(f"execution_evaluator_not_independent:{candidate_id}/{condition_id}")
         if status == "completed" and not isinstance(episode.get("success"), bool):
             blockers.append(f"execution_completed_success_missing:{candidate_id}/{condition_id}")
@@ -403,9 +579,11 @@ def _wilson(successes: int, trials: int, z: float = 1.959963984540054) -> list[f
     proportion = successes / trials
     denominator = 1.0 + z * z / trials
     center = (proportion + z * z / (2.0 * trials)) / denominator
-    margin = z * math.sqrt(
-        proportion * (1.0 - proportion) / trials + z * z / (4.0 * trials * trials)
-    ) / denominator
+    margin = (
+        z
+        * math.sqrt(proportion * (1.0 - proportion) / trials + z * z / (4.0 * trials * trials))
+        / denominator
+    )
     return [round(max(0.0, center - margin), 12), round(min(1.0, center + margin), 12)]
 
 
@@ -429,9 +607,7 @@ def compile_bounded_decision(receipts: Sequence[Mapping[str, Any]]) -> dict[str,
     z_alpha = NormalDist().inv_cdf(1.0 - rule["alpha"] / 2.0)
     z_power = NormalDist().inv_cdf(rule["target_power"])
     minimum_trials_per_candidate = math.ceil(
-        0.5
-        * (z_alpha + z_power) ** 2
-        / rule["minimum_decision_relevant_difference"] ** 2
+        0.5 * (z_alpha + z_power) ** 2 / rule["minimum_decision_relevant_difference"] ** 2
     )
     rule["minimum_trials_per_candidate"] = minimum_trials_per_candidate
     rule["sample_size_method"] = (
@@ -462,8 +638,12 @@ def compile_bounded_decision(receipts: Sequence[Mapping[str, Any]]) -> dict[str,
         - baseline_summary["success_rate_with_invalid_as_failure"]
     )
     difference_interval = [
-        round(challenger_summary["wilson_interval"][0] - baseline_summary["wilson_interval"][1], 12),
-        round(challenger_summary["wilson_interval"][1] - baseline_summary["wilson_interval"][0], 12),
+        round(
+            challenger_summary["wilson_interval"][0] - baseline_summary["wilson_interval"][1], 12
+        ),
+        round(
+            challenger_summary["wilson_interval"][1] - baseline_summary["wilson_interval"][0], 12
+        ),
     ]
     mdre = rule["minimum_decision_relevant_difference"]
     invalid = sum(summary["invalid_or_failed"] for summary in summaries.values())
@@ -512,8 +692,7 @@ def compile_bounded_decision(receipts: Sequence[Mapping[str, Any]]) -> dict[str,
             "status": "passed" if trial_count_sufficient else "insufficient_power_abstain",
             "minimum_trials_per_candidate": minimum_trials_per_candidate,
             "observed_planned_trials_per_candidate": {
-                candidate_id: summary["planned"]
-                for candidate_id, summary in summaries.items()
+                candidate_id: summary["planned"] for candidate_id, summary in summaries.items()
             },
             "arbitrary_trial_count_accepted_for_selection": False,
         },
@@ -530,8 +709,17 @@ def compile_bounded_decision(receipts: Sequence[Mapping[str, Any]]) -> dict[str,
 
 
 def seal_decision(
-    *, manifest: Mapping[str, Any], execution: Mapping[str, Any], plan: Mapping[str, Any], receipts: Sequence[Mapping[str, Any]], decision: Mapping[str, Any]
+    *,
+    manifest: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    receipts: Sequence[Mapping[str, Any]],
+    decision: Mapping[str, Any],
 ) -> dict[str, Any]:
+    compiler_path = Path(__file__).resolve()
+    admission_compiler_path = Path(
+        build_public_reference_admission_receipt.__code__.co_filename
+    ).resolve()
     seal = {
         "schema_version": SEAL_SCHEMA_VERSION,
         "status": "sealed",
@@ -541,6 +729,8 @@ def seal_decision(
         "candidate_ids": sorted(row["candidate_id"] for row in _rows(manifest.get("candidates"))),
         "condition_ids": sorted(row["condition_id"] for row in _rows(manifest.get("conditions"))),
         "episode_receipt_digests": sorted(row["receipt_digest"] for row in receipts),
+        "evidence_compiler_code_digest": _file_digest(compiler_path),
+        "admission_compiler_code_digest": _file_digest(admission_compiler_path),
         "decision": dict(decision),
         "physical_outcome_values_accessed": False,
         "physical_outcomes_artifact_digest": _mapping(
@@ -592,7 +782,12 @@ def release_physical_outcomes(
 
 
 def join_physical_outcomes(
-    *, manifest: Mapping[str, Any], receipts: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Any], release: Mapping[str, Any], seal: Mapping[str, Any]
+    *,
+    manifest: Mapping[str, Any],
+    receipts: Sequence[Mapping[str, Any]],
+    outcomes: Mapping[str, Any],
+    release: Mapping[str, Any],
+    seal: Mapping[str, Any],
 ) -> dict[str, Any]:
     blockers: list[str] = []
     if release.get("seal_digest") != seal.get("seal_digest"):
@@ -704,7 +899,12 @@ def _write_artifact(path: Path, value: Mapping[str, Any]) -> None:
 
 
 def reconstruct_evidence_package(
-    *, manifest_path: str | Path, execution_path: str | Path, outcomes_path: str | Path, output_dir: str | Path, generated_at: str = "2026-08-04T00:00:00Z"
+    *,
+    manifest_path: str | Path,
+    execution_path: str | Path,
+    outcomes_path: str | Path,
+    output_dir: str | Path,
+    generated_at: str = "2026-08-04T00:00:00Z",
 ) -> dict[str, Any]:
     output = Path(output_dir).expanduser().resolve()
     manifest_file = Path(manifest_path).expanduser().resolve()
@@ -719,9 +919,14 @@ def reconstruct_evidence_package(
     execution = _load_json(
         execution_file,
         blocker=(
-            "immutable_execution_input_missing:run canonical Vast acquisition command "
+            "immutable_execution_input_missing:restore exact tracked immutable input "
             "documented in docs/arm_decision_proof_v1/REPLAY.md"
         ),
+    )
+    paid_runtime_validation = validate_paid_runtime_canary(
+        manifest,
+        execution,
+        execution_root=execution_file.parent,
     )
     execution_validation = validate_execution_package(
         execution, manifest, execution_root=execution_file.parent
@@ -733,8 +938,20 @@ def reconstruct_evidence_package(
     inputs_dir.mkdir()
     shutil.copy2(manifest_file, inputs_dir / manifest_file.name)
     shutil.copy2(execution_file, inputs_dir / execution_file.name)
+    code_inputs_dir = inputs_dir / "code"
+    code_inputs_dir.mkdir()
+    shutil.copy2(Path(__file__).resolve(), code_inputs_dir / Path(__file__).name)
+    admission_compiler_path = Path(
+        build_public_reference_admission_receipt.__code__.co_filename
+    ).resolve()
+    shutil.copy2(
+        admission_compiler_path,
+        code_inputs_dir / admission_compiler_path.name,
+    )
     spec = build_evaluation_run_spec(manifest)
-    plan = compile_evaluation_run(spec, output_dir=output / "normalized_run", generated_at=generated_at)
+    plan = compile_evaluation_run(
+        spec, output_dir=output / "normalized_run", generated_at=generated_at
+    )
     if plan.get("status") != "prepared":
         raise ArmDecisionProofError(["normalized_evaluation_run_plan_blocked"])
     receipts_dir = output / "episode_receipts"
@@ -778,6 +995,7 @@ def reconstruct_evidence_package(
         decision=decision,
     )
     _write_artifact(output / "public_reference_admission_receipt.json", admission)
+    _write_artifact(output / "paid_runtime_canary_validation.json", paid_runtime_validation)
     _write_artifact(output / "execution_validation.json", execution_validation)
     _write_artifact(output / "receipt_replay.json", replay)
     _write_artifact(output / "bounded_development_decision.json", decision)
@@ -799,9 +1017,7 @@ def reconstruct_evidence_package(
     verdict = adjudicate(decision, joined)
     _write_artifact(output / "physical_outcome_join.json", joined)
     _write_artifact(output / "bounded_verdict.json", verdict)
-    receipt_by_pair = {
-        (row["candidate_id"], row["condition_id"]): row for row in receipts
-    }
+    receipt_by_pair = {(row["candidate_id"], row["condition_id"]): row for row in receipts}
     matrix_cells = []
     for verdict_cell in verdict["cells"]:
         pair = (verdict_cell["candidate_id"], verdict_cell["condition_id"])
@@ -823,9 +1039,7 @@ def reconstruct_evidence_package(
                 "evaluator": receipt["evaluator"],
                 "failure": receipt["failure"],
                 "physical_outcomes_digest": outcomes["outcomes_digest"],
-                "physical_release_receipt_digest": release[
-                    "release_receipt_digest"
-                ],
+                "physical_release_receipt_digest": release["release_receipt_digest"],
                 "qualification_receipt_digest": admission["receipt_digest"],
                 "qualification_status": admission["status"],
             }
@@ -850,11 +1064,8 @@ def reconstruct_evidence_package(
     _write_artifact(output / "evidence_matrix.json", matrix)
     replay_instructions = {
         "schema_version": "adp_replay_instructions.v1",
-        "command": (
-            "python -m blueprint_pipeline.arm_decision_proof "
-            f"--manifest {manifest_file} --execution-package {execution_file} "
-            f"--physical-outcomes {outcomes_file} --output-dir {output}"
-        ),
+        "command": "PYTHONPATH=src .venv/bin/python -m blueprint_pipeline.arm_decision_proof",
+        "missing_input_acquisition_command": ACQUISITION_COMMAND,
         "immutable_input_digests": {
             "manifest": manifest["manifest_digest"],
             "execution": execution["execution_digest"],
@@ -874,6 +1085,17 @@ def reconstruct_evidence_package(
             target_artifact = execution_inputs_dir / relative_path
             target_artifact.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_artifact, target_artifact)
+    runtime_inputs_dir = inputs_dir / "paid_runtime_canary"
+    for artifact in _rows(
+        _mapping(_mapping(manifest.get("runtime")).get("paid_runtime_canary")).get("artifacts")
+    ):
+        relative_path = _string(artifact.get("relative_path"))
+        if not relative_path:
+            continue
+        source_artifact = (execution_file.parent / relative_path).resolve()
+        target_artifact = runtime_inputs_dir / relative_path
+        target_artifact.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_artifact, target_artifact)
     artifact_rows = []
     for path in sorted(item for item in output.rglob("*") if item.is_file()):
         if path.name == "artifact_index.json":
@@ -943,4 +1165,5 @@ __all__ = [
     "release_physical_outcomes",
     "seal_decision",
     "validate_execution_package",
+    "validate_paid_runtime_canary",
 ]

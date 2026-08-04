@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from blueprint_pipeline.arm_decision_proof import (
     reconstruct_evidence_package,
     release_physical_outcomes,
     validate_execution_package,
+    validate_paid_runtime_canary,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -29,6 +31,7 @@ MANIFEST_PATH = (
 OUTCOMES_PATH = MANIFEST_PATH.with_name(
     "simpler_google_robot_pick_coke_can_physical_outcomes.v1.json"
 )
+IMMUTABLE_EXECUTION_ROOT = MANIFEST_PATH.parents[1] / "immutable_execution"
 
 
 def _admitted_manifest() -> dict:
@@ -39,6 +42,7 @@ def _admitted_manifest() -> dict:
         "digest": "sha256:" + "4" * 64,
         "container_image": "nvidia/cuda@sha256:" + "1" * 64,
     }
+    value["runtime"].pop("paid_runtime_canary", None)
     value["runtime"]["zero_spend_feasibility"]["status"] = "passed"
     value["manifest_digest"] = canonical_digest(value, digest_field="manifest_digest")
     return value
@@ -78,9 +82,7 @@ def _execution(manifest: dict) -> dict:
                     "status": "completed",
                     "success": candidate_index == 1,
                     "source_commit": manifest["source"]["repository"]["commit"],
-                    "dependency_lock_digest": manifest["runtime"]["environment_lock"][
-                        "digest"
-                    ],
+                    "dependency_lock_digest": manifest["runtime"]["environment_lock"]["digest"],
                     "checkpoint_identity_digest": checkpoint_digests[candidate_id],
                     "reset_digest": "sha256:" + "5" * 64,
                     "observation_trace_digest": "sha256:" + "6" * 64,
@@ -92,19 +94,21 @@ def _execution(manifest: dict) -> dict:
                         "owner": "environment_not_policy",
                         "policy_self_report_used": False,
                     },
-                    "artifacts": [
-                        {"role": "trace", "sha256": "sha256:" + "9" * 64}
-                    ],
+                    "artifacts": [{"role": "trace", "sha256": "sha256:" + "9" * 64}],
                 }
             )
     value = {
         "schema_version": "simpler_closed_loop_execution.v1",
+        "status": "completed",
         "reference_id": manifest["reference_id"],
         "source_identity_digest": manifest["source_identity_digest"],
         "source_manifest_digest": manifest["manifest_digest"],
         "runtime_lock_digest": manifest["runtime"]["environment_lock"]["digest"],
         "candidates": candidates,
         "episodes": episodes,
+        "physical_outcome_values_accessed": False,
+        "phase_label": "retrospective_external_reference",
+        "claim_ceiling": "development_only",
     }
     value["execution_digest"] = canonical_digest(value, digest_field="execution_digest")
     return value
@@ -139,28 +143,25 @@ def test_full_reconstruction_seals_before_release_and_renders_every_cell(
     assert len(matrix["cells"]) == 6
     assert matrix["labels"] == ["retrospective_external_reference", "development_only"]
     assert matrix["cells"][0]["reset_digest"].startswith("sha256:")
-    assert matrix["cells"][0]["physical_release_receipt_digest"] == release[
-        "release_receipt_digest"
-    ]
+    assert (
+        matrix["cells"][0]["physical_release_receipt_digest"] == release["release_receipt_digest"]
+    )
     assert matrix["cells"][0]["qualification_status"] == "admitted"
     assert verdict["sealed_development_decision"] == "abstain"
     assert verdict["verdict"] == "inconclusive"
     decision = json.loads((output / "bounded_development_decision.json").read_text())
-    assert decision["trial_count_qualification"]["status"] == (
-        "insufficient_power_abstain"
+    assert decision["trial_count_qualification"]["status"] == ("insufficient_power_abstain")
+    assert (
+        decision["trial_count_qualification"]["arbitrary_trial_count_accepted_for_selection"]
+        is False
     )
-    assert decision["trial_count_qualification"][
-        "arbitrary_trial_count_accepted_for_selection"
-    ] is False
 
 
 def test_duplicate_candidate_identity_is_never_padding() -> None:
     manifest = _admitted_manifest()
     execution = _execution(manifest)
     execution["candidates"][1] = copy.deepcopy(execution["candidates"][0])
-    execution["execution_digest"] = canonical_digest(
-        execution, digest_field="execution_digest"
-    )
+    execution["execution_digest"] = canonical_digest(execution, digest_field="execution_digest")
 
     with pytest.raises(ArmDecisionProofError) as caught:
         validate_execution_package(execution, manifest)
@@ -169,12 +170,33 @@ def test_duplicate_candidate_identity_is_never_padding() -> None:
     assert "execution_candidate_set_mismatch" in caught.value.blockers
 
 
+def test_paid_runtime_canary_rejects_changed_provider_receipt(tmp_path: Path) -> None:
+    execution_root = tmp_path / "immutable_execution"
+    shutil.copytree(IMMUTABLE_EXECUTION_ROOT, execution_root)
+    teardown_path = execution_root / "provider_evidence" / "vast_teardown_manifest.json"
+    teardown = json.loads(teardown_path.read_text(encoding="utf-8"))
+    teardown["continuing_spend_from_this_run"] = True
+    teardown_path.write_text(json.dumps(teardown), encoding="utf-8")
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    execution = json.loads(
+        (execution_root / "adp_simpler_closed_loop_execution.json").read_text(encoding="utf-8")
+    )
+
+    with pytest.raises(ArmDecisionProofError) as caught:
+        validate_paid_runtime_canary(
+            manifest,
+            execution,
+            execution_root=execution_root,
+        )
+
+    assert "paid_runtime_artifact_digest_mismatch:teardown" in caught.value.blockers
+    assert "paid_runtime_teardown_not_proven" in caught.value.blockers
+
+
 def test_outcome_loader_rejects_before_reading_without_a_valid_seal(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(
-        ArmDecisionProofError, match="physical_outcome_release_requires_valid_seal"
-    ):
+    with pytest.raises(ArmDecisionProofError, match="physical_outcome_release_requires_valid_seal"):
         release_physical_outcomes(
             outcomes_path=tmp_path / "does-not-exist.json",
             manifest=_admitted_manifest(),
@@ -232,5 +254,5 @@ def test_missing_execution_input_returns_exact_acquisition_instruction(
 
     assert status == 2
     output = capsys.readouterr().out
-    assert "run canonical Vast acquisition command" in output
+    assert "restore exact tracked immutable input" in output
     assert ACQUISITION_COMMAND in output

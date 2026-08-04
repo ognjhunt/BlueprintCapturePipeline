@@ -1,0 +1,23 @@
+{
+  "schema_version": "adp_simpler_vast_run.v1",
+  "generated_at": "2026-08-04T06:02:51.327858+00:00",
+  "status": "completed",
+  "source_identity_digest": "sha256:b1175b62222ac2e92d5bd28cf9db54a03c024b31614c2c90a8ea426e76bd915a",
+  "bundle_sha256": "sha256:55d1f422f8946bc4323b00304e48b6d8846629c732335029ba81eba812f7c15c",
+  "execution_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/adp_simpler_vast_20260804_attempt13/run/immutable_execution/adp_simpler_closed_loop_execution.json",
+  "execution_digest": "sha256:2bc388722999f62e2d1955c73ba3e935beb4a092229d784c11404ad5aef9e97a",
+  "runtime_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+  "adapter_result_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/adp_simpler_vast_20260804_attempt13/run/vast_provider_run/vast_provider_adapter_result.json",
+  "teardown_manifest_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/adp_simpler_vast_20260804_attempt13/run/vast_provider_run/vast_teardown_manifest.json",
+  "object_store_cleanup_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/adp_simpler_vast_20260804_attempt13/run/object_store_staging/wam_provider_object_store_cleanup.json",
+  "estimated_cost_usd": 0.025857,
+  "hard_cap_usd": 2.0,
+  "hard_ttl_seconds": 7200,
+  "retry_cap": 0,
+  "continuing_spend_from_this_run": false,
+  "all_staged_objects_absent": true,
+  "blockers": [],
+  "phase_label": "retrospective_external_reference",
+  "claim_ceiling": "development_only",
+  "raw_secret_values_recorded": false
+}

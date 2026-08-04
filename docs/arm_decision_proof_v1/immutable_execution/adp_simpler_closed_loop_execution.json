@@ -1,0 +1,219 @@
+{
+  "blockers": [],
+  "candidates": [
+    {
+      "candidate_id": "rt1-converged-400120",
+      "checkpoint_identity_digest": "sha256:13ca2c14f9795536f00594f559e385143cb59eff12a61fd3165f101def26cf58",
+      "genuine_checkpoint_loaded": true
+    },
+    {
+      "candidate_id": "rt1-15pct-58240",
+      "checkpoint_identity_digest": "sha256:1d2c81208db05e088a137e4aeded53b982c184050bbb1b44580fefcdf944707f",
+      "genuine_checkpoint_loaded": true
+    }
+  ],
+  "claim_ceiling": "development_only",
+  "episodes": [
+    {
+      "action_trace_digest": "sha256:04fb8585a387c1d5e3bac5adf59f53d40c98d9112cce2a550364b2d09e241a02",
+      "artifacts": [
+        {
+          "relative_path": "traces/adp-7e4dd39f94af111fe23047d5.json",
+          "role": "normalized_episode_trace",
+          "sha256": "sha256:17113257748a0d157b416051abe7cabbc5a07e1607ca4d801d878c33d48eaed7",
+          "size_bytes": 21443
+        }
+      ],
+      "candidate_id": "rt1-converged-400120",
+      "checkpoint_identity_digest": "sha256:13ca2c14f9795536f00594f559e385143cb59eff12a61fd3165f101def26cf58",
+      "condition_id": "coke-can-horizontal-lr-switch",
+      "dependency_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+      "episode_id": "adp-7e4dd39f94af111fe23047d5",
+      "evaluator": {
+        "owner": "environment_not_policy",
+        "policy_self_report_used": false,
+        "source_git_blob_sha1": "ab772085ad2049c15d0f59430bd3ca2ae1b5f087",
+        "success_semantics": "object_lifted_or_lifted_significantly_for_at_least_five_steps"
+      },
+      "failure": null,
+      "metric_trace_digest": "sha256:8ab24cbc1f4b59edad21b242eb370cd99ba54d014a4d607f9a814733cdab4d57",
+      "observation_trace_digest": "sha256:59b280d7bb24f5615b4dc4f6a0441f52f4b123d154a1fcca04a4fe8969669745",
+      "policy_query_count": 16,
+      "reset_digest": "sha256:1f4d32617731f779b506424bcf55c23f5cd57f3ed4d73bcec536ac469f6ebd4c",
+      "seed": 0,
+      "simulator_step_count": 16,
+      "source_commit": "06accaca93535902d408da4855f21cece12bceb7",
+      "status": "completed",
+      "success": true
+    },
+    {
+      "action_trace_digest": "sha256:70d00d965a08c0506871b669b1634613f81d37cfdb2116dd7b35edbc382eb367",
+      "artifacts": [
+        {
+          "relative_path": "traces/adp-daf629e3aff422c38af0a30a.json",
+          "role": "normalized_episode_trace",
+          "sha256": "sha256:9d98be4f0226185ddfad9d4984251a7b279bb2df157e46e27f1e98fb10396d53",
+          "size_bytes": 25949
+        }
+      ],
+      "candidate_id": "rt1-converged-400120",
+      "checkpoint_identity_digest": "sha256:13ca2c14f9795536f00594f559e385143cb59eff12a61fd3165f101def26cf58",
+      "condition_id": "coke-can-vertical-laid",
+      "dependency_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+      "episode_id": "adp-daf629e3aff422c38af0a30a",
+      "evaluator": {
+        "owner": "environment_not_policy",
+        "policy_self_report_used": false,
+        "source_git_blob_sha1": "ab772085ad2049c15d0f59430bd3ca2ae1b5f087",
+        "success_semantics": "object_lifted_or_lifted_significantly_for_at_least_five_steps"
+      },
+      "failure": null,
+      "metric_trace_digest": "sha256:22b1c6f21d32899973fa3b3e4bb79695ecd870a22111421a81010ca14fc99f4f",
+      "observation_trace_digest": "sha256:247658f71d575c16d5b6fe34357e402ba82b1927e76da2c426c4e90a9d2eae58",
+      "policy_query_count": 20,
+      "reset_digest": "sha256:bf42bf655437b1c06d9ceef9cb27041fa08e68baab8a96795b818695a5e50ef0",
+      "seed": 0,
+      "simulator_step_count": 20,
+      "source_commit": "06accaca93535902d408da4855f21cece12bceb7",
+      "status": "completed",
+      "success": true
+    },
+    {
+      "action_trace_digest": "sha256:896cb18954c0bc38995f2144889a3c7fd7331796e4353bfb5685d55b8fd1017b",
+      "artifacts": [
+        {
+          "relative_path": "traces/adp-cd0d7a33ce295828c509c1e9.json",
+          "role": "normalized_episode_trace",
+          "sha256": "sha256:355d89159f0e7cbeea75c05e4192a5755a6514c95f7dce01872216707cf5ab7c",
+          "size_bytes": 19900
+        }
+      ],
+      "candidate_id": "rt1-converged-400120",
+      "checkpoint_identity_digest": "sha256:13ca2c14f9795536f00594f559e385143cb59eff12a61fd3165f101def26cf58",
+      "condition_id": "coke-can-standing-upright",
+      "dependency_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+      "episode_id": "adp-cd0d7a33ce295828c509c1e9",
+      "evaluator": {
+        "owner": "environment_not_policy",
+        "policy_self_report_used": false,
+        "source_git_blob_sha1": "ab772085ad2049c15d0f59430bd3ca2ae1b5f087",
+        "success_semantics": "object_lifted_or_lifted_significantly_for_at_least_five_steps"
+      },
+      "failure": null,
+      "metric_trace_digest": "sha256:9e505811e1844c5d228446f8a29a1f21d031ee6b518e57cdf5c03928e66b9f67",
+      "observation_trace_digest": "sha256:3a01446fda5272544ea9996b1005afe865f3fb92cb3fc20ee2aebeae8c49bf60",
+      "policy_query_count": 15,
+      "reset_digest": "sha256:f66461fe0896a9d875e3c8a2900fcf01c34afd619af4e736202ed3d1dbac0e78",
+      "seed": 0,
+      "simulator_step_count": 15,
+      "source_commit": "06accaca93535902d408da4855f21cece12bceb7",
+      "status": "completed",
+      "success": true
+    },
+    {
+      "action_trace_digest": "sha256:f6ceb5f8b1d2ddee6e8d4398d5ffaf01b6313a1cc3aa6a1f58c1b5b767403ecf",
+      "artifacts": [
+        {
+          "relative_path": "traces/adp-a0849372692fb73216ed4b96.json",
+          "role": "normalized_episode_trace",
+          "sha256": "sha256:099d7a61ccda13726354ea1d22397fbb1263517103f4cbf6214c4db196ca228e",
+          "size_bytes": 20872
+        }
+      ],
+      "candidate_id": "rt1-15pct-58240",
+      "checkpoint_identity_digest": "sha256:1d2c81208db05e088a137e4aeded53b982c184050bbb1b44580fefcdf944707f",
+      "condition_id": "coke-can-horizontal-lr-switch",
+      "dependency_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+      "episode_id": "adp-a0849372692fb73216ed4b96",
+      "evaluator": {
+        "owner": "environment_not_policy",
+        "policy_self_report_used": false,
+        "source_git_blob_sha1": "ab772085ad2049c15d0f59430bd3ca2ae1b5f087",
+        "success_semantics": "object_lifted_or_lifted_significantly_for_at_least_five_steps"
+      },
+      "failure": null,
+      "metric_trace_digest": "sha256:3c17909a55bd42e29ff75bb7937478ca9cb5ccd8b9c88c9c3a0ccc2fb64c122d",
+      "observation_trace_digest": "sha256:c90149945ca0ef685a9741f1aa44b08145e3cb13d92af5ad8843ac08527a1094",
+      "policy_query_count": 16,
+      "reset_digest": "sha256:1f4d32617731f779b506424bcf55c23f5cd57f3ed4d73bcec536ac469f6ebd4c",
+      "seed": 0,
+      "simulator_step_count": 16,
+      "source_commit": "06accaca93535902d408da4855f21cece12bceb7",
+      "status": "completed",
+      "success": true
+    },
+    {
+      "action_trace_digest": "sha256:2004d66e9612606e4cb98b51f71974301b37ef16f8db03c66fb000f5c5ebf9a3",
+      "artifacts": [
+        {
+          "relative_path": "traces/adp-c14a5aa28853abfce15a0e71.json",
+          "role": "normalized_episode_trace",
+          "sha256": "sha256:a497219004757c0a5b0c55c1a5bee3980c65cf4217497ebf1872761a87a0dfd3",
+          "size_bytes": 89570
+        }
+      ],
+      "candidate_id": "rt1-15pct-58240",
+      "checkpoint_identity_digest": "sha256:1d2c81208db05e088a137e4aeded53b982c184050bbb1b44580fefcdf944707f",
+      "condition_id": "coke-can-vertical-laid",
+      "dependency_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+      "episode_id": "adp-c14a5aa28853abfce15a0e71",
+      "evaluator": {
+        "owner": "environment_not_policy",
+        "policy_self_report_used": false,
+        "source_git_blob_sha1": "ab772085ad2049c15d0f59430bd3ca2ae1b5f087",
+        "success_semantics": "object_lifted_or_lifted_significantly_for_at_least_five_steps"
+      },
+      "failure": null,
+      "metric_trace_digest": "sha256:a3da19587849d706936d0e62dba4e173010990c5c1c141c7886837c7c17f51b7",
+      "observation_trace_digest": "sha256:f32fe817a41c147bd385fd283f1fbb3cab58f53c4282c15826fbf9b63eadebed",
+      "policy_query_count": 80,
+      "reset_digest": "sha256:bf42bf655437b1c06d9ceef9cb27041fa08e68baab8a96795b818695a5e50ef0",
+      "seed": 0,
+      "simulator_step_count": 80,
+      "source_commit": "06accaca93535902d408da4855f21cece12bceb7",
+      "status": "completed",
+      "success": true
+    },
+    {
+      "action_trace_digest": "sha256:afe1aef0d4ea3243342a3e01e723a2dd95ef58daee98f0a372ac426d0b535f95",
+      "artifacts": [
+        {
+          "relative_path": "traces/adp-703af84c16e0cbc147d73f7c.json",
+          "role": "normalized_episode_trace",
+          "sha256": "sha256:e79701839c8a549659f4db2b7998f2bb02ad75a6de625c613b43277005e936ee",
+          "size_bytes": 88346
+        }
+      ],
+      "candidate_id": "rt1-15pct-58240",
+      "checkpoint_identity_digest": "sha256:1d2c81208db05e088a137e4aeded53b982c184050bbb1b44580fefcdf944707f",
+      "condition_id": "coke-can-standing-upright",
+      "dependency_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+      "episode_id": "adp-703af84c16e0cbc147d73f7c",
+      "evaluator": {
+        "owner": "environment_not_policy",
+        "policy_self_report_used": false,
+        "source_git_blob_sha1": "ab772085ad2049c15d0f59430bd3ca2ae1b5f087",
+        "success_semantics": "object_lifted_or_lifted_significantly_for_at_least_five_steps"
+      },
+      "failure": null,
+      "metric_trace_digest": "sha256:2501151961d2995c9349a6ef962ef55852bf71ce937970f0cb25a9c703daf163",
+      "observation_trace_digest": "sha256:e44940dd2cfadc5a7531a9a7d9880f1c891d9e334a18aac5005d88ec097a96b8",
+      "policy_query_count": 80,
+      "reset_digest": "sha256:f66461fe0896a9d875e3c8a2900fcf01c34afd619af4e736202ed3d1dbac0e78",
+      "seed": 0,
+      "simulator_step_count": 80,
+      "source_commit": "06accaca93535902d408da4855f21cece12bceb7",
+      "status": "completed",
+      "success": true
+    }
+  ],
+  "execution_digest": "sha256:2bc388722999f62e2d1955c73ba3e935beb4a092229d784c11404ad5aef9e97a",
+  "phase_label": "retrospective_external_reference",
+  "physical_outcome_values_accessed": false,
+  "reference_id": "simpler-google-robot-pick-coke-can-v1",
+  "runtime_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+  "schema_version": "simpler_closed_loop_execution.v1",
+  "source_identity_digest": "sha256:b1175b62222ac2e92d5bd28cf9db54a03c024b31614c2c90a8ea426e76bd915a",
+  "source_manifest_digest": "sha256:eaaece7b2d2412786d4f68159c21d48722d97a44ae39a5a5e1da4ae1d6e3c7f3",
+  "status": "completed"
+}
