@@ -115,6 +115,7 @@ from .single_g1_kitchen_qualification_session import (
 )
 from .simpler_public_vast import (
     PROBE_KIND as ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
+    build_simpler_public_vast_bundle,
     run_simpler_public_vast,
 )
 from .teleport_paid_allocator import (
@@ -1270,6 +1271,40 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp_simpler_budget_invalid")
             if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
                 blockers.append("adp_simpler_hard_ttl_invalid")
+            prepared_bundle = None
+            if not blockers:
+                try:
+                    prepared_bundle = build_simpler_public_vast_bundle(
+                        manifest_path=args.adp_public_reference_manifest,
+                        job_dir=Path(args.adp_job_dir) / "bundle",
+                    )
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    blockers.append(f"adp_simpler_bundle_preparation_failed:{type(exc).__name__}")
+            if prepared_bundle is not None and prepared_bundle.get("status") != "ready":
+                blockers.extend(prepared_bundle.get("blockers") or ["adp_simpler_bundle_blocked"])
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get(
+                    "orchestrator_source_commit"
+                ),
+                "public_reference_manifest": args.adp_public_reference_manifest,
+                "source_identity_digest": (
+                    prepared_bundle.get("source_identity_digest") if prepared_bundle else None
+                ),
+                "bundle_sha256": prepared_bundle.get("bundle_sha256")
+                if prepared_bundle
+                else None,
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "retry_cap": 0,
+            }
+            allocation_binding_digest = "sha256:" + hashlib.sha256(
+                json.dumps(
+                    allocation_binding, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
             paid_admission = build_paid_lane_admission(
                 resource_class="vast_provider_adapter", blockers=blockers
             )
@@ -1286,6 +1321,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "authority": "user_authorized_vast_spend_for_arm_decision_proof_v1",
                     "private_data_uploaded": False,
                     "physical_outcome_values_uploaded": False,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
                 }
             )
             write_json(Path(args.admission_out), paid_admission)
@@ -1311,6 +1348,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 job_dir=args.adp_job_dir,
                 paid_resource_admission_grant=grant,
                 execute=args.execute,
+                prepared_bundle=prepared_bundle,
                 max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                 hard_cap_usd=args.adp_max_spend_usd,
                 hard_ttl_seconds=args.adp_hard_ttl_seconds,

@@ -172,10 +172,20 @@ def build_simpler_public_vast_bundle(
     readiness_path = runtime / "adp_simpler_provider_manifest.json"
     write_json(readiness_path, readiness)
     bundle_path = job / "adp_simpler_provider_runtime_bundle.zip"
-    with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(bundle_path, "w") as archive:
         for path in sorted(runtime.rglob("*")):
             if path.is_file():
-                archive.write(path, path.relative_to(job).as_posix())
+                info = zipfile.ZipInfo(
+                    path.relative_to(job).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
+                )
+                info.create_system = 3
+                info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
+                archive.writestr(
+                    info,
+                    path.read_bytes(),
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=9,
+                )
     receipt = {
         **readiness,
         "bundle_path": str(bundle_path),
@@ -223,6 +233,7 @@ def run_simpler_public_vast(
     job_dir: str | Path,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
+    prepared_bundle: Mapping[str, Any] | None = None,
     max_hourly_rate_usd: float = 0.80,
     hard_cap_usd: float = 2.00,
     hard_ttl_seconds: int = 7200,
@@ -232,9 +243,20 @@ def run_simpler_public_vast(
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
     generated = utc_now_iso()
-    bundle = build_simpler_public_vast_bundle(
-        manifest_path=manifest_path, job_dir=job / "bundle", generated_at=generated
+    bundle = (
+        dict(prepared_bundle)
+        if prepared_bundle is not None
+        else build_simpler_public_vast_bundle(
+            manifest_path=manifest_path, job_dir=job / "bundle", generated_at=generated
+        )
     )
+    bundle_path = Path(str(bundle.get("bundle_path") or "")).expanduser().resolve()
+    if (
+        bundle.get("status") != "ready"
+        or not bundle_path.is_file()
+        or _file_sha256(bundle_path) != bundle.get("bundle_sha256")
+    ):
+        raise ValueError("adp_simpler_prepared_bundle_binding_invalid")
     if not execute:
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
@@ -253,7 +275,7 @@ def run_simpler_public_vast(
     staging_dir = job / "object_store_staging"
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
-        bundle_path=str(bundle["bundle_path"]),
+        bundle_path=str(bundle_path),
         key_prefix=os.getenv("BLUEPRINT_ADP_SIMPLER_OBJECT_STORE_PREFIX", DEFAULT_KEY_PREFIX),
         expiration_seconds=max(hard_ttl_seconds + 1800, 10800),
         generated_at=generated,
@@ -295,7 +317,7 @@ def run_simpler_public_vast(
                 max_live_minutes=hard_ttl_seconds // 60,
                 session_max_live_minutes=hard_ttl_seconds // 60,
                 public_image=DEFAULT_IMAGE,
-                provider_bundle=str(bundle["bundle_path"]),
+                provider_bundle=str(bundle_path),
                 provider_bundle_url=bundle_url,
                 provider_output_put_url=output_put_url,
                 provider_output_get_url=output_get_url,

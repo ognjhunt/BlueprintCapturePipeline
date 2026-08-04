@@ -54,6 +54,10 @@ def test_bundle_contains_public_runtime_but_not_physical_outcome_values(
         entrypoint_text=entrypoint,
         runner_text=runner,
     ) == []
+    second = build_simpler_public_vast_bundle(
+        manifest_path=MANIFEST, job_dir=tmp_path / "bundle-2", generated_at="fixed"
+    )
+    assert second["bundle_sha256"] == receipt["bundle_sha256"]
 
 
 def test_canonical_grant_bridge_sets_and_restores_adapter_mutation_gates(
@@ -129,3 +133,7 @@ def test_canonical_allocator_issues_grant_only_for_execute(
     assert admission["physical_outcome_values_uploaded"] is False
     assert admission["hard_cap_usd"] == 2.0
     assert admission["hard_ttl_seconds"] == 7200
+    assert admission["allocation_binding"]["bundle_sha256"] == observed[
+        "prepared_bundle"
+    ]["bundle_sha256"]
+    assert admission["allocation_binding_digest"].startswith("sha256:")
