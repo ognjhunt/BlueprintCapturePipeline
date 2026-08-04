@@ -44,3 +44,16 @@ def test_pytorch_cuda_fallback_marker_qualifies_gpu_sanity() -> None:
 
     assert result["gpu_ok"] is True
     assert result["blockers"] == []
+
+
+def test_isaac_bundle_prefers_isaac_python_before_system_python() -> None:
+    fragment = cuda_runtime_probe_shell_fragment(required=True, prefer_isaac_python=True)
+
+    assert fragment.index("/isaac-sim/python.sh") < fragment.index("${PY_NET:-}")
+    subprocess.run(
+        ["bash", "-n"],
+        input=fragment,
+        text=True,
+        check=True,
+        capture_output=True,
+    )

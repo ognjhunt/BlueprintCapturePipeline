@@ -120,6 +120,7 @@ def test_arena_bundle_uses_isaac_image_terms_and_ssh_bundle_path(tmp_path: Path)
     )
     assert "run_adp_arena_provider_runtime.sh" in script
     assert "adp_arena_provider_runtime_output.zip" in script
+    assert script.index("/isaac-sim/python.sh") < script.index("${PY_NET:-}")
 
 
 def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:

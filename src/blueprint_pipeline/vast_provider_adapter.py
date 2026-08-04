@@ -2915,7 +2915,10 @@ def _probe_shell_script(
     )
     # nvidia-smi proves NVML visibility, not compatibility between the host
     # driver and this container's CUDA runtime. Paid bundles require both.
-    script += cuda_runtime_probe_shell_fragment(required=enable_blueprint_bundle)
+    script += cuda_runtime_probe_shell_fragment(
+        required=enable_blueprint_bundle,
+        prefer_isaac_python=_is_isaac_provider_bundle(provider_bundle_kind),
+    )
     script += 'echo BLUEPRINT_VAST_DF_START; df -h "$WORK_DIR"; '
     if enable_isaac_smoke:
         script += (
