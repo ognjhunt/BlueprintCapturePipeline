@@ -154,6 +154,10 @@ def _vulkan_runtime_evidence(
     if not vulkaninfo:
         raise RuntimeError("vulkaninfo_missing")
     os.environ["VK_DRIVER_FILES"] = str(icd)
+    # Ubuntu 22.04's loader predates VK_DRIVER_FILES (Vulkan headers 1.3.207),
+    # while newer loaders prefer it. Set both names to the same exact ICD so
+    # either loader generation excludes Mesa/llvmpipe deterministically.
+    os.environ["VK_ICD_FILENAMES"] = str(icd)
     probe = _run([vulkaninfo, "--summary"], timeout=60)
     output = probe["output_tail"].strip()
     if probe["returncode"] != 0:
@@ -164,6 +168,7 @@ def _vulkan_runtime_evidence(
     return {
         "driver_capabilities": os.environ.get("NVIDIA_DRIVER_CAPABILITIES"),
         "vk_driver_files": os.environ["VK_DRIVER_FILES"],
+        "vk_icd_filenames": os.environ["VK_ICD_FILENAMES"],
         "icd_sha256": _file_sha256(icd),
         "vulkaninfo_path": vulkaninfo,
         "vulkaninfo_summary": output,

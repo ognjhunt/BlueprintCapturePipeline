@@ -312,6 +312,7 @@
       "xla_cuda_data_dir": "/usr/local/cuda",
       "nvidia_driver_capabilities": "all",
       "vulkan_requirement": "observed_nvidia_icd_and_vulkaninfo_summary",
+      "vulkan_driver_override_environment": ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"],
       "unresolved_requirements": [
         "exact_python_patch",
         "numpy",
@@ -364,5 +365,5 @@
     "universal_robot_or_simulator_support": false,
     "two_candidates_establish_rank_correlation": false
   },
-  "manifest_digest": "sha256:68ebdc68fe8463f5bde30a132c30b1adb3ec955285ef1c167a780988fa6798e4"
+  "manifest_digest": "sha256:f2fce805b1430f4e9d504fbcdc12dec83602f147518ecb131c9216333ff9007f"
 }

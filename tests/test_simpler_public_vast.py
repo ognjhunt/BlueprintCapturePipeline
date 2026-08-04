@@ -62,6 +62,7 @@ def test_bundle_contains_public_runtime_but_not_physical_outcome_values(
     assert "cuda_toolkit_libdevice_missing" in runner
     assert "--xla_gpu_cuda_data_dir=" in runner
     assert "nvidia_vulkan_device_not_observed" in runner
+    assert "VK_ICD_FILENAMES" in runner
     assert "paid_runtime_plan" not in runner
     assert "BLUEPRINT_WAM_RUNTIME_PHASE:adp_simpler" in runner
     assert 'source_dir / "ManiSkill2_real2sim"' in runner
@@ -163,6 +164,7 @@ def test_worker_binds_observed_nvidia_vulkan_icd(
 
     assert evidence["driver_capabilities"] == "all"
     assert evidence["vk_driver_files"] == str(icd)
+    assert evidence["vk_icd_filenames"] == str(icd)
     assert evidence["icd_sha256"].startswith("sha256:")
 
 
