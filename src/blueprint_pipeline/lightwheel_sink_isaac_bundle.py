@@ -176,6 +176,8 @@ def compile_lightwheel_sink_isaac_input_bundle(
         "target_steps": 45,
         "pusher_steps": 90,
         "ik_steps_per_waypoint": 90,
+        "runtime_deadline_seconds": 780,
+        "collision_approximation_session_override": "convexHull",
         "renderer": "RayTracedLighting",
         "render_resolution": [640, 480],
         "deterministic_seed": 47,

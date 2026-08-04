@@ -272,6 +272,18 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
     import numpy as np
 
     started = time.monotonic()
+    deadline_seconds = float(
+        dict(manifest["test_configuration"]).get("runtime_deadline_seconds") or 780.0
+    )
+
+    def checkpoint(name: str, **detail: Any) -> None:
+        _phase(name, started=started, **detail)
+        elapsed = time.monotonic() - started
+        if elapsed > deadline_seconds:
+            raise RuntimeError(
+                f"lightwheel_sink_runtime_deadline_exceeded:{name}:{elapsed:.0f}s"
+            )
+
     _phase("simulation_app_launch_start", started=started)
     SimulationApp = _simulation_app_type()
     config = dict(manifest["test_configuration"])
@@ -279,7 +291,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
     simulation_app = SimulationApp(
         {"headless": True, "renderer": config["renderer"], "width": width, "height": height}
     )
-    _phase("simulation_app_launch_complete", started=started)
+    checkpoint("simulation_app_launch_complete")
     try:
         from isaacsim.core.api import World
         from isaacsim.core.utils.stage import add_reference_to_stage
@@ -288,16 +300,36 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
         world = World(stage_units_in_meters=1.0, physics_dt=float(config["physics_dt_seconds"]), rendering_dt=float(config["physics_dt_seconds"]))
-        _phase("world_created", started=started)
+        checkpoint("world_created")
         stage = world.stage
         add_reference_to_stage(str(bundle_root / manifest["wrapper_path"]), "/World")
-        _phase("sink_wrapper_referenced", started=started)
+        checkpoint("sink_wrapper_referenced")
         sink_path = str(config["sink_prim_path"])
         sink_prim = stage.GetPrimAtPath(sink_path)
         if not sink_prim.IsValid():
             raise RuntimeError("lightwheel_sink_wrapper_reference_not_composed")
         xform = UsdGeom.Xformable(sink_prim)
         xform.AddTranslateOp().Set(Gf.Vec3d(*map(float, config["sink_translation_world_m"])))
+
+        # The generated asset requests convexDecomposition on five dense meshes;
+        # VHACD cooking on those stalls PhysX parse for tens of minutes on CPU.
+        # This canary only needs a lever test, so the session layer downgrades
+        # every sink collider to a convex hull. The source layer stays untouched.
+        collider_overrides: list[dict[str, str]] = []
+        for prim in Usd.PrimRange(sink_prim):
+            if not prim.HasAPI(UsdPhysics.CollisionAPI) or not prim.IsA(UsdGeom.Mesh):
+                continue
+            mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(prim)
+            approximation = mesh_collision.GetApproximationAttr()
+            collider_overrides.append(
+                {
+                    "path": str(prim.GetPath()),
+                    "source_approximation": str(approximation.Get() or "none"),
+                    "session_approximation": "convexHull",
+                }
+            )
+            approximation.Set("convexHull")
+        checkpoint("collider_approximation_overridden", collider_count=len(collider_overrides))
 
         joint_prim = stage.GetPrimAtPath(str(config["handle_joint_path"]))
         joint = UsdPhysics.RevoluteJoint(joint_prim)
@@ -344,12 +376,14 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         Articulation = _single_articulation_type()
         sink = Articulation(prim_path=sink_path, name="lightwheel_sink")
         world.scene.add(sink)
+        checkpoint("sink_world_reset_start")
         world.reset()
-        _phase("sink_world_reset_complete", started=started)
+        checkpoint("sink_world_reset_complete")
         for camera in cameras.values():
             camera.initialize()
         for _ in range(8):
             world.step(render=True)
+        checkpoint("render_warmup_complete")
         dof_names = list(getattr(sink, "dof_names", []) or [])
         joint_name = str(config["handle_joint_path"]).rsplit("/", 1)[-1]
         if joint_name not in dof_names:
@@ -358,7 +392,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         root_initial = np.asarray(_world_position(stage, str(config["base_prim_path"]), UsdGeom))
 
         frames = [_frame_record(cameras["front"], "asset_initial_front"), _frame_record(cameras["side"], "asset_initial_side")]
-        _phase("initial_frames_captured", started=started, frame_count=len(frames))
+        checkpoint("initial_frames_captured", frame_count=len(frames))
         sweep_trace: list[dict[str, Any]] = []
         for target_deg in config["handle_joint_targets_degrees"]:
             _apply_targets(sink, np.asarray([math.radians(float(target_deg))]), np.asarray([handle_index]))
@@ -375,8 +409,13 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                     "root_displacement_m": float(np.linalg.norm(root_now - root_initial)),
                 }
             )
+            checkpoint(
+                "sweep_target_measured",
+                target_degrees=float(target_deg),
+                actual_degrees=round(math.degrees(position), 3),
+            )
         frames.extend([_frame_record(cameras["front"], "asset_sweep_120_front"), _frame_record(cameras["close"], "asset_sweep_120_close")])
-        _phase("joint_target_sweep_complete", started=started, target_count=len(sweep_trace))
+        checkpoint("joint_target_sweep_complete", target_count=len(sweep_trace))
 
         # Restore a passive handle, then sweep a kinematic capsule through it tangentially.
         drive.CreateStiffnessAttr().Set(0.0)
@@ -399,8 +438,9 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         UsdPhysics.MassAPI.Apply(capsule.GetPrim()).CreateMassAttr().Set(0.2)
         contact_api = PhysxSchema.PhysxContactReportAPI.Apply(capsule.GetPrim())
         contact_api.CreateThresholdAttr().Set(0.0)
+        checkpoint("capsule_world_reset_start")
         world.reset()
-        _phase("capsule_world_reset_complete", started=started)
+        checkpoint("capsule_world_reset_complete")
         pusher_trace: list[dict[str, Any]] = []
         pusher_contacts: list[dict[str, Any]] = []
         for step in range(int(config["pusher_steps"])):
@@ -422,11 +462,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                     {"step": step, "capsule_position_m": position_m.tolist(), "handle_degrees": math.degrees(angle), "handle_velocity_rad_s": velocity, "handle_effort_nm": effort, "contact_count": len(records)}
                 )
         frames.append(_frame_record(cameras["close"], "capsule_push_close"))
-        _phase(
-            "capsule_push_complete",
-            started=started,
-            contact_count=len(pusher_contacts),
-        )
+        checkpoint("capsule_push_complete", contact_count=len(pusher_contacts))
         capsule.GetPrim().SetActive(False)
 
         # Official fixed-base Franka, controlled only by scripted differential IK.
@@ -434,11 +470,13 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         if not assets_root:
             raise RuntimeError("lightwheel_sink_isaac_assets_root_missing")
         franka_asset = assets_root.rstrip("/") + str(config["franka_asset_relative_path"])
+        checkpoint("franka_asset_reference_start", asset=franka_asset)
         add_reference_to_stage(franka_asset, str(config["franka_prim_path"]))
+        checkpoint("franka_asset_referenced")
         franka = Articulation(prim_path=str(config["franka_prim_path"]), name="lightwheel_sink_franka")
         world.scene.add(franka)
         world.reset()
-        _phase("franka_world_reset_complete", started=started)
+        checkpoint("franka_world_reset_complete")
         for camera in cameras.values():
             camera.initialize()
         initial_joints = np.asarray([0.2897, 0.50732, -0.140016, -2.176, -0.0310497, 2.51592, -0.49251, 0.04, 0.04])
@@ -509,12 +547,13 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                             "contact_count": len(contacts),
                         }
                     )
+            checkpoint(
+                "franka_waypoint_complete",
+                waypoint_index=waypoint_index,
+                handle_degrees=round(math.degrees(_joint_values(sink, handle_index)[0]), 3),
+            )
         frames.extend([_frame_record(cameras["front"], "franka_push_front"), _frame_record(cameras["close"], "franka_push_close")])
-        _phase(
-            "franka_push_complete",
-            started=started,
-            contact_count=len(franka_contacts),
-        )
+        checkpoint("franka_push_complete", contact_count=len(franka_contacts))
 
         root_final = np.asarray(_world_position(stage, str(config["base_prim_path"]), UsdGeom))
         franka_base_final = np.asarray(_world_position(stage, franka_base_path, UsdGeom))
@@ -538,6 +577,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                 "physics_scene_present": stage.GetPrimAtPath("/World/physicsScene").IsValid(),
                 "articulation_root_api_present": sink_prim.HasAPI(UsdPhysics.ArticulationRootAPI),
                 "fixed_root_joint_present": stage.GetPrimAtPath("/World/Sink/BlueprintFixedRoot").IsValid(),
+                "collider_session_overrides": collider_overrides,
                 "source_asset_modified": False,
             },
             "asset": {

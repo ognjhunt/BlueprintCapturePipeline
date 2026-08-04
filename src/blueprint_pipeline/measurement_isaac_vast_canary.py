@@ -270,12 +270,13 @@ PY
 export PYTHONPATH="$bundle/src"
 set +e
 echo 'BLUEPRINT_LIGHTWHEEL_SINK_PHASE:{"name":"worker_process_start"}'
-/isaac-sim/python.sh "$bundle/scripts/run_lightwheel_sink_isaac_bundle.py" --bundle-root "$bundle" --output "$result"
+timeout --signal=TERM --kill-after=60 960 \
+  /isaac-sim/python.sh "$bundle/scripts/run_lightwheel_sink_isaac_bundle.py" --bundle-root "$bundle" --output "$result"
 worker_status=$?
 echo "BLUEPRINT_LIGHTWHEEL_SINK_PHASE:{\"name\":\"worker_process_exit\",\"exit_code\":$worker_status}"
 set -e
 if [ ! -s "$result" ]; then
-  exit "$worker_status"
+  printf '{"schema_version":"lightwheel_sink_isaac_runtime_result.v1","status":"failed","blockers":["lightwheel_sink_worker_no_terminal_result:exit_%s"]}\n' "$worker_status" > "$result"
 fi
 /isaac-sim/python.sh - "$result" <<'PY'
 import os, sys, urllib.request
