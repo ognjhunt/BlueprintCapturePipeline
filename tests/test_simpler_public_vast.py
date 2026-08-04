@@ -144,3 +144,42 @@ def test_canonical_allocator_issues_grant_only_for_execute(
         "prepared_bundle"
     ]["bundle_sha256"]
     assert admission["allocation_binding_digest"].startswith("sha256:")
+    assert admission["allocation_binding"]["machine_avoidlist_digest"] is None
+
+
+def test_allocator_digest_binds_reviewed_machine_avoidlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    avoidlist = tmp_path / "avoidlist.json"
+    avoidlist.write_text(
+        json.dumps(
+            {
+                "schema_version": "vast_machine_avoidlist.v1",
+                "status": "completed",
+                "machine_ids": [56730],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "run_simpler_public_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    args = _allocator_args(tmp_path, execute=False) + [
+        "--adp-machine-avoidlist",
+        str(avoidlist),
+    ]
+
+    assert allocator.main(args) == 0
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["allocation_binding"]["machine_avoidlist_digest"].startswith(
+        "sha256:"
+    )
+    assert observed["machine_avoidlist_path"] == str(avoidlist)

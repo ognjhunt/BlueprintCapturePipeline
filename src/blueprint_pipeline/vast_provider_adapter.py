@@ -3630,6 +3630,19 @@ def _request_logs_and_fetch(
     }
 
 
+def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
+    """Allow digest-pinned ADP images the same bounded cold-pull window as WAM."""
+
+    return (
+        _env_int(
+            VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
+            DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
+        )
+        if provider_bundle_kind in {"wam", "evaluator", "adp_simpler"}
+        else 60
+    )
+
+
 def _log_result_has_container_missing(log_result: Mapping[str, Any]) -> bool:
     attempts = log_result.get("log_poll_attempts")
     if not isinstance(attempts, Sequence) or isinstance(attempts, (str, bytes)):
@@ -5567,13 +5580,8 @@ def run_vast_provider_adapter(
                 else bounded_container_missing_retry_attempts(
                     max_wait_seconds=min(startup_timeout_seconds, max_live_minutes * 60),
                     retry_interval_seconds=30,
-                    max_missing_seconds=(
-                        _env_int(
-                            VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
-                            DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
-                        )
-                        if provider_bundle_kind in {"wam", "evaluator"}
-                        else 60
+                    max_missing_seconds=_container_missing_max_seconds(
+                        provider_bundle_kind
                     ),
                 )
             ),

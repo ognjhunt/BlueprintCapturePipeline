@@ -1011,6 +1011,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-max-hourly-rate-usd", type=float, default=0.80)
     gpu.add_argument("--adp-max-spend-usd", type=float, default=2.00)
     gpu.add_argument("--adp-hard-ttl-seconds", type=int, default=7200)
+    gpu.add_argument("--adp-machine-avoidlist")
     gpu.add_argument(
         "--reconstruction-refresh-preflight",
         action="store_true",
@@ -1271,6 +1272,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp_simpler_budget_invalid")
             if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
                 blockers.append("adp_simpler_hard_ttl_invalid")
+            avoidlist_digest = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                if not avoidlist_path.is_file():
+                    blockers.append("adp_simpler_machine_avoidlist_missing")
+                else:
+                    avoidlist_digest = "sha256:" + hashlib.sha256(
+                        avoidlist_path.read_bytes()
+                    ).hexdigest()
             prepared_bundle = None
             if not blockers:
                 try:
@@ -1299,6 +1309,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                 "retry_cap": 0,
+                "machine_avoidlist_digest": avoidlist_digest,
             }
             allocation_binding_digest = "sha256:" + hashlib.sha256(
                 json.dumps(
@@ -1349,6 +1360,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 paid_resource_admission_grant=grant,
                 execute=args.execute,
                 prepared_bundle=prepared_bundle,
+                machine_avoidlist_path=args.adp_machine_avoidlist,
                 max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                 hard_cap_usd=args.adp_max_spend_usd,
                 hard_ttl_seconds=args.adp_hard_ttl_seconds,

@@ -238,6 +238,7 @@ def run_simpler_public_vast(
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
     prepared_bundle: Mapping[str, Any] | None = None,
+    machine_avoidlist_path: str | Path | None = None,
     max_hourly_rate_usd: float = 0.80,
     hard_cap_usd: float = 2.00,
     hard_ttl_seconds: int = 7200,
@@ -307,6 +308,10 @@ def run_simpler_public_vast(
     ).strip()
     provider_run = job / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
+    local_avoidlist = job / "adp_vast_machine_avoidlist.json"
+    if machine_avoidlist_path is not None:
+        source_avoidlist = Path(machine_avoidlist_path).expanduser().resolve()
+        shutil.copy2(source_avoidlist, local_avoidlist)
     adapter: dict[str, Any] = {}
     try:
         with _vast_authority_environment():
@@ -337,6 +342,7 @@ def run_simpler_public_vast(
                 session_budget_ledger_path=_adp_session_budget_ledger(job),
                 verify_staging_urls=True,
                 preferred_gpu_keywords=("RTX 4090", "RTX 3090", "RTX A5000"),
+                machine_avoidlist_path=local_avoidlist,
                 instance_label_prefix="blueprint-adp-simpler-",
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
