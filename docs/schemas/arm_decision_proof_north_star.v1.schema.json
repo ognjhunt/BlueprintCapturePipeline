@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/arm_decision_proof_north_star.v1.schema.json",
+  "title": "Arm Decision Proof North Star v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "program_id",
+    "status",
+    "approved_on",
+    "north_star",
+    "north_star_metric",
+    "product",
+    "construction_method",
+    "showcase_label",
+    "execution_strategy",
+    "scope",
+    "required_evidence",
+    "acceptance",
+    "development_substrates",
+    "non_goals",
+    "gates",
+    "compatibility"
+  ],
+  "properties": {
+    "schema_version": {"const": "arm_decision_proof_north_star.v1"},
+    "program_id": {"const": "arm-decision-proof-v1"},
+    "status": {"const": "sole_active_program"},
+    "approved_on": {"type": "string", "format": "date"},
+    "north_star": {"type": "string", "minLength": 80},
+    "north_star_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "current", "target"],
+      "properties": {
+        "name": {"const": "prospectively_physically_validated_new_site_task_decisions"},
+        "current": {"const": 0},
+        "target": {"const": 1}
+      }
+    },
+    "product": {"const": "task_evaluation_run"},
+    "construction_method": {"const": "candidate_minimum_sufficient_evaluation_replica"},
+    "showcase_label": {"const": "SiteBench"},
+    "execution_strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "harness_engineering",
+        "capture_feature_development",
+        "partner_recruitment_and_protocol"
+      ],
+      "properties": {
+        "mode": {"const": "public_reference_harness_first"},
+        "harness_engineering": {"const": "dominant_until_harness_complete"},
+        "capture_feature_development": {"const": "zero_unless_measured_blocker"},
+        "partner_recruitment_and_protocol": {"const": "parallel_human_lane"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "partners",
+        "sites",
+        "tasks",
+        "embodiment",
+        "candidate_count",
+        "task_family",
+        "object_class",
+        "camera_arrangement",
+        "gripper"
+      ],
+      "properties": {
+        "partners": {"const": 1},
+        "sites": {"const": 1},
+        "tasks": {"const": 1},
+        "embodiment": {"const": "fixed_robot_arm"},
+        "candidate_count": {"const": 2},
+        "task_family": {"const": "bounded_rigid_object_pick_place"},
+        "object_class": {"const": "rigid_opaque"},
+        "camera_arrangement": {"const": "fixed"},
+        "gripper": {"const": "parallel_jaw"}
+      }
+    },
+    "required_evidence": {
+      "type": "array",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 3}
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 3}
+    },
+    "development_substrates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed",
+        "purpose",
+        "claim_ceiling",
+        "canonical_fixtures",
+        "primary_public_reference_candidate",
+        "public_reference_admission_status",
+        "cannot_qualify"
+      ],
+      "properties": {
+        "allowed": {"const": true},
+        "purpose": {"const": "exercise_downstream_harness_before_partner_capture"},
+        "claim_ceiling": {"const": "development_only"},
+        "canonical_fixtures": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 3}
+        },
+        "primary_public_reference_candidate": {"const": "SIMPLER"},
+        "public_reference_admission_status": {
+          "const": "requires_exact_revision_asset_license_and_runtime_pin"
+        },
+        "cannot_qualify": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 3}
+        }
+      }
+    },
+    "non_goals": {
+      "type": "array",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 3}
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase", "day", "id", "required_outcome", "failure_action"],
+        "properties": {
+          "phase": {"enum": ["public_reference_harness", "partner_proof"]},
+          "day": {"type": "integer", "minimum": 1, "maximum": 42},
+          "id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+          "required_outcome": {"type": "string", "minLength": 10},
+          "failure_action": {"enum": ["stop", "pivot_or_stop"]}
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preserve_readers", "preserve_historical_evidence", "allow_unrelated_new_work"],
+      "properties": {
+        "preserve_readers": {"const": true},
+        "preserve_historical_evidence": {"const": true},
+        "allow_unrelated_new_work": {"const": false}
+      }
+    }
+  }
+}

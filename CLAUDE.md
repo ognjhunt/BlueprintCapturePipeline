@@ -6,14 +6,26 @@ the Claude-harness entry summary and must not drift ahead of it.
 
 Read first (repo-root-relative):
 
-1. `PLATFORM_CONTEXT.md`
-2. `WORLD_MODEL_STRATEGY_CONTEXT.md`
-3. `VISION.md` (long-horizon direction and bets; never overrides the two above)
-4. `AGENTS.md`
-5. `docs/DOCTRINE_PRECEDENCE.md` (when docs disagree)
+1. `docs/arm_decision_proof_v1/north_star_contract.json`
+2. `docs/arm_decision_proof_v1/README.md`
+3. `docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`
+4. `docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`
+5. `PLATFORM_CONTEXT.md`
+6. `WORLD_MODEL_STRATEGY_CONTEXT.md`
+7. `AGENTS.md`
+8. `docs/DOCTRINE_PRECEDENCE.md` (when docs disagree)
 
 Key rules (full text and precedents in `AGENTS.md`):
 
+- Arm Decision Proof v1 is the sole active program: one partner, site, fixed
+  arm, rigid-object task, and two real frozen candidates, prospectively sealed
+  and physically adjudicated.
+- Every task must name the ADP backlog item and day gate it unblocks. Existing
+  captures/scenes may exercise downstream seams only as `development_only`.
+- Complete the pinned public-reference harness through ADP-008 before new
+  capture/reconstruction features; SIMPLER is the first candidate to audit.
+- Humanoid, deformable, five-policy/general-ranking, world-model, provider
+  bakeoff, post-training, multi-site, and unrelated product work is frozen.
 - Keep world-model backends swappable behind stable contracts.
 - Protect provenance, rights, privacy, and raw capture truth.
 - Optimize for the single customer-facing Task Evaluation Run. Treat the

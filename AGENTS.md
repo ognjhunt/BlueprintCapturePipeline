@@ -8,23 +8,32 @@ drifts from this guide, this guide wins; if docs disagree with each other, use
 
 ## Mission
 
-`BlueprintCapturePipeline` turns raw capture bundles into maintained Site-Task
-Testbeds and claim-level **Task Evaluation Runs**. A run routes each claim to
-qualified evidence, returns a decision or explicit abstention, and may expose
-rights-cleared evidence for evaluation or post-training use. Generated,
-simulation, legacy export, hosted-session, and trust artifacts are supporting
-machinery inside that one product, not separate products.
+`BlueprintCapturePipeline` has one active mission: deliver **Arm Decision Proof
+v1** (`arm-decision-proof-v1`). From one qualified, rights-cleared representation
+of one previously unseen fixed-arm workcell—imported from an existing
+scene/capture when possible and newly captured only for measured gaps—Blueprint
+must prospectively choose or eliminate one of two frozen policy/configuration
+candidates for the next scarce physical-test budget, or explicitly abstain, then
+adjudicate that decision and one predicted failure boundary with held-out
+physical trials.
+
+The one customer-facing product remains a **Task Evaluation Run**. The maintained
+Site-Task Testbed is its reusable substrate; the candidate Minimum Sufficient
+Evaluation Replica is a construction method; the Physical Outcome Join is the
+proof. SiteBench may name the bounded case study, not a second product.
 
 ## Read First
 
 All paths are repo-root-relative:
 
-1. [`PLATFORM_CONTEXT.md`](PLATFORM_CONTEXT.md) — what is true and sellable today
-2. [`WORLD_MODEL_STRATEGY_CONTEXT.md`](WORLD_MODEL_STRATEGY_CONTEXT.md) — model-backend posture and build priorities
-3. [`VISION.md`](VISION.md) — the long-horizon ladder; direction and bets, never overrides the two above
-4. [`docs/DOCTRINE_PRECEDENCE.md`](docs/DOCTRINE_PRECEDENCE.md) — how to resolve documentation conflicts
-5. [`README.md`](README.md) and [`pyproject.toml`](pyproject.toml)
-6. [`docs/architecture/ai-onboarding-map.md`](docs/architecture/ai-onboarding-map.md)
+1. [`docs/arm_decision_proof_v1/north_star_contract.json`](docs/arm_decision_proof_v1/north_star_contract.json)
+2. [`docs/arm_decision_proof_v1/README.md`](docs/arm_decision_proof_v1/README.md)
+3. [`docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
+4. [`docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md)
+5. [`PLATFORM_CONTEXT.md`](PLATFORM_CONTEXT.md) — current product and proof doctrine
+6. [`WORLD_MODEL_STRATEGY_CONTEXT.md`](WORLD_MODEL_STRATEGY_CONTEXT.md) — backend admission and build priorities
+7. [`docs/DOCTRINE_PRECEDENCE.md`](docs/DOCTRINE_PRECEDENCE.md) — how to resolve documentation conflicts
+8. [`README.md`](README.md), [`pyproject.toml`](pyproject.toml), and [`docs/architecture/ai-onboarding-map.md`](docs/architecture/ai-onboarding-map.md)
 
 Org context (roles, agent lanes, who owns what): [`AUTONOMOUS_ORG.md`](AUTONOMOUS_ORG.md).
 
@@ -39,29 +48,63 @@ dependent step as blocked instead of guessing.
 
 ## Product Rules
 
+- Treat `arm-decision-proof-v1` as the sole active program. Historical docs,
+  schemas, providers, evaluators, and runtime lanes are compatibility or paused
+  material unless a recorded Arm Decision Proof blocker requires the smallest
+  possible dependency.
+- Before accepting work, name the ADP backlog item and day-7/day-14/day-28/day-35
+  or day-42 gate it unblocks, the observed completion artifact, why existing
+  infrastructure is insufficient, and the smallest reversible change. Missing
+  any answer means the work is out of focus.
 - Keep geometry, capture observations, simulators, learned evaluators, providers,
   and physical evidence replaceable behind stable capture and evaluation contracts.
-- Optimize for Task Evaluation Runs over maintained Site-Task Testbeds. Legacy
-  Policy Improvement Run and Post-Training Data Package contracts remain
-  compatibility/internal evidence machinery, not products or default outputs.
+- Optimize for the one prospective two-candidate fixed-arm Task Evaluation Run.
+  Legacy five-policy, Policy Improvement Run, Post-Training Data Package,
+  humanoid, world-model, and provider contracts remain compatibility/internal
+  machinery, not active products or default outputs.
 - Preserve rights, privacy, provenance, and capture truth through the pipeline.
 - Treat readiness and review *outputs* (qualification summaries, trust scores, readiness matrices) as optional support layers. Do not confuse that posture with the module historically named for it: `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) is the core capture→package orchestration spine, not a secondary readiness module.
 - Do not make downstream generated artifacts appear more authoritative than raw capture evidence.
+- Use existing captures, fixtures, OpenUSD scenes, and SimReady candidates to
+  exercise downstream compiler/runtime/receipt/replay/sealing/outcome-join paths
+  now. Keep them `development_only`; they cannot qualify partner capture, owner
+  task truth, registration, task physics, observation-domain match, sim-to-real
+  fidelity, or partner value. Never copy fixture data into qualified evidence.
+- Until ADP-008 passes, direct nearly all engineering work to the pinned public
+  reference harness: external scene ingestion, two-candidate execution, receipts,
+  sealing, external outcome joins, statistics, replay, abstention, and evidence
+  presentation. New capture/reconstruction feature work is forbidden unless a
+  measured blocker proves the smallest missing measurement.
+- Do not start or expand humanoid/G1, locomotion, deformables, insertion/force
+  tasks, five-policy/general-ranking campaigns, world-model/evaluator research,
+  reconstruction/provider bakeoffs, universal runtimes, dynamic-scene research,
+  post-training products, multi-site generalization, or unrelated WebApp/growth
+  work without an observed ADP blocker and explicit scope change.
 
 ## Repo Map
 
 - `src/blueprint_pipeline/`: core orchestration, runtime services, stages, and adapters
   - `site_package_orchestrator.py` (formerly `qualification.py`): the capture→site-package orchestration spine
-  - `robot_eval_job_orchestrator.py` and the WAM/simulator evaluator modules: the robot-evaluation engine lane
+  - Decision/Evidence Router, EvaluationRunSpec, scenario matrix, runtime
+    adapters, episode receipts, rank-fidelity statistics, and Physical Outcome
+    Join: the reusable Arm Decision Proof spine
+  - legacy robot-evaluation, WAM, humanoid, and provider modules: compatibility
+    unless an active-program blocker explicitly requires them
 - `tests/`: pipeline, synthesis, runtime, and contract coverage
-- `docs/`: contracts, runbooks, and launch gates
+- `docs/arm_decision_proof_v1/`: sole active program, partner packet, backlog, and master goal
+- `docs/`: stable dependency contracts, compatibility docs, and historical evidence
 - `scripts/`: environment setup and runtime launch helpers
 - `skillpacks/`: reusable operational skill content
 - `autoresearch/`: eval targets and scoring harness
 
 ## Working Rules
 
-- Prefer changes that strengthen package quality, hosted runtime reliability, and contract stability.
+- Work the Arm Decision Proof critical path in order. Prefer changes that turn an
+  existing development-only seam into a replayable, fail-closed precursor of the
+  partner proof; do not optimize unrelated platform breadth.
+- Choose the partner and its actual stack before choosing a permanent robot,
+  simulator, provider, or reconstruction backend. Build from scratch as little
+  as possible and use thin adapters.
 - Preserve raw bundle truth and downstream compatibility with other Blueprint repos.
 - Do not hardwire the company to one model family, checkpoint, or provider.
 - Keep cross-repo contracts explicit when changing bundle, runtime, or sync behavior.
@@ -106,10 +149,9 @@ dependent step as blocked instead of guessing.
   A manual action taken to save a live run remains a stopgap; encode and focus-
   test the equivalent in the same session (precedents: PR #180 builder swap,
   PR #181 compute-cap ceiling).
-- Keep WAM rollout execution, generated-video success labels, and forward/inverse
-  episode-consistency scoring separate. The WAM/evaluator may prepare
-  `wam_episode_consistency_request.json` and normalize an external scorer result,
-  but it must not claim forward/inverse consistency from WAM execution alone.
+- Compatibility work must preserve prior proof boundaries. In particular,
+  generated-video or simulator execution never becomes physical truth, and a
+  candidate policy or provider never grades itself.
 - For Paperclip/autonomous-loop closeouts, apply the Blueprint-WebApp
   `docs/autonomous-loop-evidence-checklist-2026-05-03.md` (sibling checkout; see
   the sibling-checkout convention above) before claiming `done`, `blocked`, or
