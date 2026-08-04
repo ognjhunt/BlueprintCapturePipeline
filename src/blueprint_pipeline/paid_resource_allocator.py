@@ -130,6 +130,7 @@ from .adp_content_agents_vast import (
     SOURCE_TREE as ADP_CONTENT_AGENTS_SOURCE_TREE,
     run_content_agents_vast,
 )
+from .adp_content_agents_bundle_preflight import validate_bundle_config_preflight
 from .teleport_paid_allocator import (
     add_teleport_provider_arguments,
     load_teleport_credentials,
@@ -1025,6 +1026,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-hard-ttl-seconds", type=int, default=7200)
     gpu.add_argument("--adp-machine-avoidlist")
     gpu.add_argument("--adp-content-agents-bundle-receipt")
+    gpu.add_argument("--adp-content-agents-config-preflight-receipt")
     gpu.add_argument(
         "--reconstruction-refresh-preflight",
         action="store_true",
@@ -1274,7 +1276,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.probe_kind == ADP_CONTENT_AGENTS_PROBE_KIND:
             missing = [
                 name
-                for name in ("adp_content_agents_bundle_receipt", "adp_job_dir")
+                for name in (
+                    "adp_content_agents_bundle_receipt",
+                    "adp_content_agents_config_preflight_receipt",
+                    "adp_job_dir",
+                )
                 if not getattr(args, name, None)
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
@@ -1325,6 +1331,40 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if receipt_path and receipt_path.is_file()
                 else None
             )
+            config_preflight: dict[str, Any] | None = None
+            config_preflight_path: Path | None = None
+            if args.adp_content_agents_config_preflight_receipt:
+                config_preflight_path = Path(
+                    args.adp_content_agents_config_preflight_receipt
+                ).expanduser().resolve()
+                if not config_preflight_path.is_file():
+                    blockers.append("adp_content_agents_config_preflight_receipt_missing")
+                else:
+                    try:
+                        config_preflight = _load(config_preflight_path)
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        blockers.append("adp_content_agents_config_preflight_receipt_invalid")
+            if config_preflight is not None and prepared_bundle is not None:
+                blockers.extend(
+                    validate_bundle_config_preflight(
+                        preflight=config_preflight,
+                        prepared_bundle=prepared_bundle,
+                        preflight_receipt_path=config_preflight_path,
+                        expected_orchestrator_source_commit=str(
+                            control_identity.get("orchestrator_source_commit") or ""
+                        ),
+                    )
+                )
+                if config_preflight.get("bundle_receipt_sha256") != receipt_sha256:
+                    blockers.append(
+                        "adp_content_agents_config_preflight_bundle_receipt_mismatch"
+                    )
+            config_preflight_receipt_sha256 = (
+                "sha256:"
+                + hashlib.sha256(config_preflight_path.read_bytes()).hexdigest()
+                if config_preflight_path and config_preflight_path.is_file()
+                else None
+            )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_CONTENT_AGENTS_PROBE_KIND,
@@ -1332,6 +1372,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "orchestrator_source_commit"
                 ),
                 "bundle_receipt_sha256": receipt_sha256,
+                "config_preflight_receipt_sha256": config_preflight_receipt_sha256,
+                "config_preflight_receipt_digest": (
+                    config_preflight.get("receipt_digest") if config_preflight else None
+                ),
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
                 ),
@@ -1390,7 +1434,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     write_json(Path(args.adapter_output), result)
                     print(json.dumps({"success": False}, sort_keys=True))
                     return 2
-            if blockers or prepared_bundle is None:
+            if blockers or prepared_bundle is None or config_preflight is None:
                 result = {
                     "status": "blocked",
                     "blockers": sorted(set(blockers)),

@@ -1,0 +1,380 @@
+"""Bind the exact ADP-009A Content Agents bundle to successful CLI dry-runs."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import tempfile
+import zipfile
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+from .adp_content_agents_vast import SOURCE_COMMIT, SOURCE_TREE
+from .common import ensure_dir, utc_now_iso, write_json
+from .decision_evidence_contracts import canonical_digest
+
+
+SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v1"
+LOCAL_IMAGE = "blueprint/adp009a-content-agents:0.5.2"
+LOCAL_IMAGE_ID = "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574"
+LOCAL_IMAGE_PLATFORM = "linux/arm64"
+SECRET_ENV_NAMES = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY")
+ORCHESTRATOR_REPO_ROOT = Path(__file__).resolve().parents[2]
+CONFIG_MEMBERS = {
+    "material": "provider_runtime/configs/material_agent.yaml",
+    "texture": "provider_runtime/configs/texture_agent.yaml",
+    "physics": "provider_runtime/configs/physics_agent.yaml",
+}
+ENTRYPOINTS = {
+    "material": "material-agent",
+    "texture": "texture-agent",
+    "physics": "physics-agent",
+}
+DRY_RUN_MARKERS = {
+    "material": "Dry run complete",
+    "texture": "Dry run -- execution plan",
+    "physics": "Dry run complete",
+}
+
+
+class ContentAgentsBundlePreflightError(ValueError):
+    """The exact-bundle preflight could not derive passing evidence."""
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, Mapping):
+        raise ContentAgentsBundlePreflightError("bundle_receipt_not_json_object")
+    return dict(value)
+
+
+def _safe_extract(archive_path: Path, destination: Path) -> None:
+    root = destination.resolve()
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                target = (destination / member.filename).resolve()
+                if target != root and root not in target.parents:
+                    raise ContentAgentsBundlePreflightError("bundle_zip_path_traversal")
+            archive.extractall(destination)
+    except zipfile.BadZipFile as exc:
+        raise ContentAgentsBundlePreflightError("bundle_zip_invalid") from exc
+
+
+def _secret() -> str:
+    for name in SECRET_ENV_NAMES:
+        value = str(os.getenv(name) or "").strip()
+        if value:
+            return value
+    path = Path("~/.blueprint-secrets/gemini_api_key").expanduser()
+    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+
+def _redact(value: str, secrets: Sequence[str]) -> str:
+    redacted = value
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[REDACTED]")
+    return redacted
+
+
+def _inspect_image(*, docker: str, image: str) -> dict[str, Any]:
+    result = subprocess.run(
+        [docker, "image", "inspect", image],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ContentAgentsBundlePreflightError("local_preflight_image_missing")
+    try:
+        values = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ContentAgentsBundlePreflightError("local_preflight_image_inspect_invalid") from exc
+    if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], Mapping):
+        raise ContentAgentsBundlePreflightError("local_preflight_image_inspect_invalid")
+    value = dict(values[0])
+    platform = f"{value.get('Os')}/{value.get('Architecture')}"
+    if value.get("Id") != LOCAL_IMAGE_ID or platform != LOCAL_IMAGE_PLATFORM:
+        raise ContentAgentsBundlePreflightError("local_preflight_image_identity_mismatch")
+    return {"reference": image, "id": str(value["Id"]), "platform": platform}
+
+
+def _orchestrator_source_identity() -> dict[str, Any]:
+    values: dict[str, str] = {}
+    for role, arguments in (
+        ("commit", ("rev-parse", "HEAD")),
+        ("tree", ("rev-parse", "HEAD^{tree}")),
+        ("dirty", ("status", "--porcelain")),
+    ):
+        result = subprocess.run(
+            ["git", "-C", str(ORCHESTRATOR_REPO_ROOT), *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise ContentAgentsBundlePreflightError("orchestrator_source_identity_missing")
+        values[role] = result.stdout.strip()
+    if values["dirty"]:
+        raise ContentAgentsBundlePreflightError("orchestrator_source_checkout_dirty")
+    return {"commit": values["commit"], "tree": values["tree"], "checkout_clean": True}
+
+
+def _bundle_config_records(bundle_path: Path) -> dict[str, dict[str, Any]]:
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            members = set(archive.namelist())
+            records: dict[str, dict[str, Any]] = {}
+            for name, member in CONFIG_MEMBERS.items():
+                if member not in members:
+                    raise ContentAgentsBundlePreflightError(f"bundle_config_missing:{name}")
+                value = archive.read(member)
+                records[name] = {
+                    "member": member,
+                    "size_bytes": len(value),
+                    "sha256": _sha256_bytes(value),
+                }
+            return records
+    except zipfile.BadZipFile as exc:
+        raise ContentAgentsBundlePreflightError("bundle_zip_invalid") from exc
+
+
+def materialize_bundle_config_preflight(
+    *,
+    bundle_receipt_path: str | Path,
+    evidence_dir: str | Path,
+    docker: str = "docker",
+    image: str = LOCAL_IMAGE,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Execute all three upstream dry-runs against the exact upload bundle."""
+
+    if image != LOCAL_IMAGE:
+        raise ContentAgentsBundlePreflightError("local_preflight_image_not_frozen")
+    receipt_path = Path(bundle_receipt_path).expanduser().resolve()
+    output = Path(evidence_dir).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ContentAgentsBundlePreflightError("preflight_evidence_dir_not_empty")
+    ensure_dir(output)
+    bundle_receipt = _read_json(receipt_path)
+    bundle_path = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser().resolve()
+    if (
+        bundle_receipt.get("status") != "ready"
+        or bundle_receipt.get("source_commit") != SOURCE_COMMIT
+        or bundle_receipt.get("source_tree") != SOURCE_TREE
+        or not bundle_path.is_file()
+        or _sha256_file(bundle_path) != bundle_receipt.get("bundle_sha256")
+    ):
+        raise ContentAgentsBundlePreflightError("bundle_receipt_binding_invalid")
+    config_records = _bundle_config_records(bundle_path)
+    image_record = _inspect_image(docker=docker, image=image)
+    source_identity = _orchestrator_source_identity()
+    secret = _secret()
+    if not secret:
+        raise ContentAgentsBundlePreflightError("gemini_secret_missing")
+    environment = os.environ.copy()
+    for name in SECRET_ENV_NAMES:
+        environment[name] = secret
+
+    executions: dict[str, dict[str, Any]] = {}
+    with tempfile.TemporaryDirectory(prefix="adp-content-agents-preflight-", dir=output.parent) as raw:
+        expanded = Path(raw) / "bundle"
+        ensure_dir(expanded)
+        _safe_extract(bundle_path, expanded)
+        runtime = expanded / "provider_runtime"
+        source_zip = runtime / "content_agents_source.zip"
+        source = runtime / "content_agents_source"
+        ensure_dir(source)
+        _safe_extract(source_zip, source)
+        for name in ("material", "texture", "physics"):
+            command = [
+                docker,
+                "run",
+                "--rm",
+                "--platform",
+                LOCAL_IMAGE_PLATFORM,
+                "-v",
+                f"{expanded}:/bundle",
+                "-w",
+                "/bundle/provider_runtime",
+            ]
+            for env_name in SECRET_ENV_NAMES:
+                command.extend(["-e", env_name])
+            command.extend(
+                [
+                    "--entrypoint",
+                    ENTRYPOINTS[name],
+                    image,
+                    "run",
+                    "/bundle/" + CONFIG_MEMBERS[name],
+                    "--dry-run",
+                ]
+            )
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            log_text = _redact(result.stdout + result.stderr, (secret,))
+            log_path = output / f"{ENTRYPOINTS[name]}.log"
+            log_path.write_text(log_text, encoding="utf-8")
+            marker = DRY_RUN_MARKERS[name]
+            if result.returncode != 0:
+                raise ContentAgentsBundlePreflightError(f"dry_run_failed:{name}")
+            if marker not in log_text:
+                raise ContentAgentsBundlePreflightError(f"dry_run_marker_missing:{name}")
+            executions[name] = {
+                "entrypoint": ENTRYPOINTS[name],
+                "arguments": ["run", "/bundle/" + CONFIG_MEMBERS[name], "--dry-run"],
+                "secret_environment_names_passed_by_name": list(SECRET_ENV_NAMES),
+                "returncode": result.returncode,
+                "required_marker": marker,
+                "log_path": str(log_path),
+                "log_size_bytes": log_path.stat().st_size,
+                "log_sha256": _sha256_file(log_path),
+            }
+
+    receipt: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": generated_at or utc_now_iso(),
+        "generated_by": "blueprint_pipeline.adp_content_agents_bundle_preflight",
+        "orchestrator_source_identity": source_identity,
+        "status": "passed",
+        "bundle_receipt_path": str(receipt_path),
+        "bundle_receipt_sha256": _sha256_file(receipt_path),
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": _sha256_file(bundle_path),
+        "content_agents_source_commit": SOURCE_COMMIT,
+        "content_agents_source_tree": SOURCE_TREE,
+        "local_container_image": image_record,
+        "configs": config_records,
+        "executions": executions,
+        "all_required_dry_runs_executed": True,
+        "provider_mutations_performed": 0,
+        "paid_resource_allocated": False,
+        "raw_secret_values_recorded": False,
+        "blockers": [],
+        "receipt_digest": "",
+    }
+    serialized = json.dumps(receipt, sort_keys=True)
+    if secret in serialized:
+        raise ContentAgentsBundlePreflightError("raw_secret_value_recorded")
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(output / "adp_content_agents_bundle_config_preflight.json", receipt)
+    return receipt
+
+
+def validate_bundle_config_preflight(
+    *,
+    preflight: Mapping[str, Any],
+    prepared_bundle: Mapping[str, Any],
+    preflight_receipt_path: str | Path,
+    expected_orchestrator_source_commit: str,
+) -> list[str]:
+    """Re-derive every local binding used by paid admission."""
+
+    blockers: list[str] = []
+    preflight_path = Path(preflight_receipt_path).expanduser().resolve()
+    evidence_root = preflight_path.parent
+    bundle_path = Path(str(prepared_bundle.get("bundle_path") or "")).expanduser().resolve()
+    source_identity = preflight.get("orchestrator_source_identity")
+    if not isinstance(source_identity, Mapping):
+        source_identity = {}
+    if (
+        preflight.get("schema_version") != SCHEMA_VERSION
+        or preflight.get("generated_by")
+        != "blueprint_pipeline.adp_content_agents_bundle_preflight"
+        or preflight.get("status") != "passed"
+        or source_identity.get("commit") != expected_orchestrator_source_commit
+        or source_identity.get("checkout_clean") is not True
+        or preflight.get("receipt_digest")
+        != canonical_digest(preflight, digest_field="receipt_digest")
+        or preflight.get("bundle_sha256") != prepared_bundle.get("bundle_sha256")
+        or preflight.get("bundle_path") != str(bundle_path)
+        or preflight.get("content_agents_source_commit") != SOURCE_COMMIT
+        or preflight.get("content_agents_source_tree") != SOURCE_TREE
+        or preflight.get("local_container_image")
+        != {
+            "reference": LOCAL_IMAGE,
+            "id": LOCAL_IMAGE_ID,
+            "platform": LOCAL_IMAGE_PLATFORM,
+        }
+        or preflight.get("all_required_dry_runs_executed") is not True
+        or preflight.get("provider_mutations_performed") != 0
+        or preflight.get("paid_resource_allocated") is not False
+        or preflight.get("raw_secret_values_recorded") is not False
+        or preflight.get("blockers") not in ([], None)
+    ):
+        blockers.append("adp_content_agents_config_preflight_binding_invalid")
+
+    try:
+        observed_configs = _bundle_config_records(bundle_path)
+    except (OSError, ContentAgentsBundlePreflightError):
+        observed_configs = {}
+    if preflight.get("configs") != observed_configs:
+        blockers.append("adp_content_agents_config_preflight_config_digest_mismatch")
+    executions = preflight.get("executions")
+    if not isinstance(executions, Mapping):
+        blockers.append("adp_content_agents_config_preflight_execution_missing")
+        executions = {}
+    for name in ("material", "texture", "physics"):
+        row = executions.get(name)
+        if not isinstance(row, Mapping):
+            blockers.append(f"adp_content_agents_config_preflight_execution_missing:{name}")
+            continue
+        log_path = Path(str(row.get("log_path") or "")).expanduser().resolve()
+        if evidence_root != log_path.parent:
+            blockers.append(f"adp_content_agents_config_preflight_log_outside_evidence:{name}")
+        expected = {
+            "entrypoint": ENTRYPOINTS[name],
+            "arguments": ["run", "/bundle/" + CONFIG_MEMBERS[name], "--dry-run"],
+            "secret_environment_names_passed_by_name": list(SECRET_ENV_NAMES),
+            "returncode": 0,
+            "required_marker": DRY_RUN_MARKERS[name],
+            "log_path": str(log_path),
+            "log_size_bytes": log_path.stat().st_size if log_path.is_file() else 0,
+            "log_sha256": _sha256_file(log_path) if log_path.is_file() else "",
+        }
+        log_text = log_path.read_text(encoding="utf-8") if log_path.is_file() else ""
+        if dict(row) != expected or DRY_RUN_MARKERS[name] not in log_text:
+            blockers.append(f"adp_content_agents_config_preflight_execution_invalid:{name}")
+    return sorted(set(blockers))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Execute exact Content Agents config dry-runs before GPU allocation."
+    )
+    parser.add_argument("--bundle-receipt", required=True)
+    parser.add_argument("--evidence-dir", required=True)
+    parser.add_argument("--docker", default="docker")
+    args = parser.parse_args(argv)
+    receipt = materialize_bundle_config_preflight(
+        bundle_receipt_path=args.bundle_receipt,
+        evidence_dir=args.evidence_dir,
+        docker=args.docker,
+    )
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
