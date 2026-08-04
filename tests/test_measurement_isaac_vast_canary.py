@@ -175,6 +175,9 @@ def test_lightwheel_bootstrap_runs_sink_worker_and_rehashes_every_member() -> No
     assert "worker_log_tail" in script
     assert "lightwheel_sink_worker_no_terminal_result" in script
     assert "host_driver" in script
+    # Bundle download must stream in chunks and retry on digest mismatch.
+    assert "input_download_digest_retry" in script
+    assert "input_download_error_retry" in script
 
 
 def test_watchdog_validation_binds_live_process_and_exact_nonsymlink_evidence(

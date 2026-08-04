@@ -239,16 +239,38 @@ bundle="$work/bundle"
 result="$work/result.json"
 mkdir -p "$bundle"
 /isaac-sim/python.sh - "$archive" "$bundle" <<'PY'
-import hashlib, json, os, stat, sys, urllib.request, zipfile
+import hashlib, json, os, stat, sys, time, urllib.request, zipfile
 from pathlib import Path
 archive = Path(sys.argv[1])
 bundle = Path(sys.argv[2])
-with urllib.request.urlopen(os.environ["BLUEPRINT_MEASUREMENT_ISAAC_INPUT_GET_URL"], timeout=300) as response:
-    payload = response.read(268435457)
-if len(payload) > 268435456:
-    raise SystemExit("lightwheel_sink_input_oversized")
 expected = os.environ["BLUEPRINT_LIGHTWHEEL_SINK_INPUT_BUNDLE_DIGEST"].removeprefix("sha256:")
-if hashlib.sha256(payload).hexdigest() != expected:
+payload = None
+# One flat read of a ~40MB body truncated on instance 46754876; stream in
+# chunks and retry until the digest matches.
+for attempt in range(4):
+    try:
+        chunks, total = [], 0
+        with urllib.request.urlopen(os.environ["BLUEPRINT_MEASUREMENT_ISAAC_INPUT_GET_URL"], timeout=300) as response:
+            while True:
+                chunk = response.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 268435456:
+                    raise SystemExit("lightwheel_sink_input_oversized")
+                chunks.append(chunk)
+        candidate = b"".join(chunks)
+        if hashlib.sha256(candidate).hexdigest() == expected:
+            payload = candidate
+            break
+        detail = {"name": "input_download_digest_retry", "attempt": attempt, "received_bytes": total}
+    except SystemExit:
+        raise
+    except Exception as exc:
+        detail = {"name": "input_download_error_retry", "attempt": attempt, "error": type(exc).__name__}
+    print("BLUEPRINT_LIGHTWHEEL_SINK_PHASE:" + json.dumps(detail, sort_keys=True), flush=True)
+    time.sleep(5)
+if payload is None:
     raise SystemExit("lightwheel_sink_input_digest_mismatch")
 archive.write_bytes(payload)
 total = 0
