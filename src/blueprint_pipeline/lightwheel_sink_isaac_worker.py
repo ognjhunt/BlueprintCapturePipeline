@@ -549,6 +549,9 @@ def _runtime(
         sink.set_joint_positions(np.asarray([0.0]), joint_indices=np.asarray([handle_index]))
         for _ in range(30):
             world.step(render=False)
+        checkpoint("franka_jacobian_probe_start")
+        probe_jacobians = np.asarray(franka._articulation_view.get_jacobians())
+        checkpoint("franka_jacobian_probe_ok", shape=list(probe_jacobians.shape))
         checkpoint("franka_push_start")
         franka_initial_handle_angle = math.degrees(_joint_values(sink, handle_index)[0])
         franka_dof_names = list(getattr(franka, "dof_names", []) or [])
@@ -580,7 +583,10 @@ def _runtime(
                 joints = np.asarray(franka.get_joint_positions()).reshape(-1)
                 commanded = joints[arm_indices] + delta
                 _apply_targets(franka, commanded, arm_indices)
-                world.step(render=step % 30 == 0)
+                # First-step renders inside these loops killed the app natively
+                # three times; loop-end renders never did. Render only for the
+                # final captures below.
+                world.step(render=False)
                 if step % 15 == 0 or step == int(config["ik_steps_per_waypoint"]) - 1:
                     sink_angle, _, sink_effort = _joint_values(sink, handle_index)
                     contacts = _between_contacts(
@@ -615,6 +621,7 @@ def _runtime(
                 waypoint_index=waypoint_index,
                 handle_degrees=round(math.degrees(_joint_values(sink, handle_index)[0]), 3),
             )
+        world.step(render=True)
         frames.extend([_frame_record(cameras["front"], "franka_push_front"), _frame_record(cameras["close"], "franka_push_close")])
         checkpoint("franka_push_complete", contact_count=len(franka_contacts))
         try:
