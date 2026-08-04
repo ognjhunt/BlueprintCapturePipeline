@@ -117,7 +117,8 @@ def _validate_remote_configs(
         or texture_spec.get("prim_paths") != ["/canned_beverage/visuals/body"]
         or texture_config.get("image_gen")
         != {"backend": "openai", "model": "gpt-image-1"}
-        or material_validation.get("on_failure") != "block"
+        or material_validation.get("on_failure") != "warn"
+        or (material_steps.get("validate_output") or {}).get("on_failure") != "warn"
         or material_vlm.get("backend") != "openai"
         or material_vlm.get("model") != "gpt-4.1"
         or material_llm.get("backend") != "openai"

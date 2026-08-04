@@ -41,6 +41,7 @@ DRY_RUN_MARKERS = {
     "texture": "Dry run -- execution plan",
     "physics": "Dry run complete",
 }
+MATERIAL_VALIDATE_MARKER = "Pipeline completed successfully"
 
 
 class ContentAgentsBundlePreflightError(ValueError):
@@ -281,6 +282,59 @@ def materialize_bundle_config_preflight(
                 "log_size_bytes": log_path.stat().st_size,
                 "log_sha256": _sha256_file(log_path),
             }
+        validation_name = "material_validate_input"
+        validation_arguments = [
+            "run",
+            "/bundle/" + CONFIG_MEMBERS["material"],
+            "--only",
+            "validate_input",
+            "--clean",
+        ]
+        validation_command = [
+            docker,
+            "run",
+            "--rm",
+            "--platform",
+            LOCAL_IMAGE_PLATFORM,
+            "-v",
+            f"{expanded}:/bundle",
+            "-w",
+            "/bundle/provider_runtime",
+            "-e",
+            "OPENAI_API_KEY",
+            "--entrypoint",
+            ENTRYPOINTS["material"],
+            image,
+            *validation_arguments,
+        ]
+        validation_result = subprocess.run(
+            validation_command,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        validation_text = _redact(
+            validation_result.stdout + validation_result.stderr, (secret,)
+        )
+        validation_log = output / "material-agent-validate-input.log"
+        validation_log.write_text(validation_text, encoding="utf-8")
+        if validation_result.returncode != 0:
+            raise ContentAgentsBundlePreflightError("material_validate_input_failed")
+        if MATERIAL_VALIDATE_MARKER not in validation_text:
+            raise ContentAgentsBundlePreflightError(
+                "material_validate_input_marker_missing"
+            )
+        executions[validation_name] = {
+            "entrypoint": ENTRYPOINTS["material"],
+            "arguments": validation_arguments,
+            "secret_environment_names_passed_by_name": ["OPENAI_API_KEY"],
+            "returncode": validation_result.returncode,
+            "required_marker": MATERIAL_VALIDATE_MARKER,
+            "log_path": str(validation_log),
+            "log_size_bytes": validation_log.stat().st_size,
+            "log_sha256": _sha256_file(validation_log),
+        }
 
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -396,6 +450,52 @@ def validate_bundle_config_preflight(
         log_text = log_path.read_text(encoding="utf-8") if log_path.is_file() else ""
         if dict(row) != expected or DRY_RUN_MARKERS[name] not in log_text:
             blockers.append(f"adp_content_agents_config_preflight_execution_invalid:{name}")
+    validation_row = executions.get("material_validate_input")
+    if not isinstance(validation_row, Mapping):
+        blockers.append(
+            "adp_content_agents_config_preflight_execution_missing:material_validate_input"
+        )
+    else:
+        validation_log = Path(
+            str(validation_row.get("log_path") or "")
+        ).expanduser().resolve()
+        if evidence_root != validation_log.parent:
+            blockers.append(
+                "adp_content_agents_config_preflight_log_outside_evidence:material_validate_input"
+            )
+        validation_arguments = [
+            "run",
+            "/bundle/" + CONFIG_MEMBERS["material"],
+            "--only",
+            "validate_input",
+            "--clean",
+        ]
+        expected_validation = {
+            "entrypoint": ENTRYPOINTS["material"],
+            "arguments": validation_arguments,
+            "secret_environment_names_passed_by_name": ["OPENAI_API_KEY"],
+            "returncode": 0,
+            "required_marker": MATERIAL_VALIDATE_MARKER,
+            "log_path": str(validation_log),
+            "log_size_bytes": (
+                validation_log.stat().st_size if validation_log.is_file() else 0
+            ),
+            "log_sha256": (
+                _sha256_file(validation_log) if validation_log.is_file() else ""
+            ),
+        }
+        validation_text = (
+            validation_log.read_text(encoding="utf-8")
+            if validation_log.is_file()
+            else ""
+        )
+        if (
+            dict(validation_row) != expected_validation
+            or MATERIAL_VALIDATE_MARKER not in validation_text
+        ):
+            blockers.append(
+                "adp_content_agents_config_preflight_execution_invalid:material_validate_input"
+            )
     return sorted(set(blockers))
 
 

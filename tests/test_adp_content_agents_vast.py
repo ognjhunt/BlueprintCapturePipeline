@@ -52,7 +52,8 @@ def _fake_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         if command[:4] == ["git", "-C", str(source), "archive"]:
             output = next(item.removeprefix("--output=") for item in command if item.startswith("--output="))
             with zipfile.ZipFile(output, "w") as archive:
-                archive.writestr("LICENSE", "Apache-2.0\n")
+                info = zipfile.ZipInfo("LICENSE", date_time=(1980, 1, 1, 0, 0, 0))
+                archive.writestr(info, "Apache-2.0\n")
             return None
         return original_run(command, **kwargs)
 
@@ -128,7 +129,7 @@ def test_bundle_rejects_changed_reference_bytes(
 @pytest.mark.parametrize(
     ("filename", "before", "after"),
     [
-        ("material_agent.yaml", "on_failure: block", "on_failure: fail"),
+        ("material_agent.yaml", "on_failure: warn", "on_failure: fail"),
         ("texture_agent.yaml", "model: gpt-image-1", "model: unavailable-image"),
         (
             "physics_agent.yaml",
@@ -230,6 +231,27 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
             "log_sha256": "sha256:"
             + hashlib.sha256(log_path.read_bytes()).hexdigest(),
         }
+    validation_log = tmp_path / "material-validate.log"
+    validation_log.write_text(
+        bundle_preflight.MATERIAL_VALIDATE_MARKER, encoding="utf-8"
+    )
+    executions["material_validate_input"] = {
+        "entrypoint": bundle_preflight.ENTRYPOINTS["material"],
+        "arguments": [
+            "run",
+            "/bundle/" + bundle_preflight.CONFIG_MEMBERS["material"],
+            "--only",
+            "validate_input",
+            "--clean",
+        ],
+        "secret_environment_names_passed_by_name": ["OPENAI_API_KEY"],
+        "returncode": 0,
+        "required_marker": bundle_preflight.MATERIAL_VALIDATE_MARKER,
+        "log_path": str(validation_log.resolve()),
+        "log_size_bytes": validation_log.stat().st_size,
+        "log_sha256": "sha256:"
+        + hashlib.sha256(validation_log.read_bytes()).hexdigest(),
+    }
     bundle_receipt_path = tmp_path / "receipt.json"
     receipt = {
         "schema_version": bundle_preflight.SCHEMA_VERSION,
@@ -492,6 +514,10 @@ def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
         assert kwargs["env"]["OPENAI_API_KEY"] == secret
         assert secret not in " ".join(command)
         entrypoint = command[command.index("--entrypoint") + 1]
+        if "--only" in command:
+            return subprocess.CompletedProcess(
+                command, 0, bundle_preflight.MATERIAL_VALIDATE_MARKER, ""
+            )
         name = next(
             name
             for name, expected in bundle_preflight.ENTRYPOINTS.items()
@@ -523,7 +549,7 @@ def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
         generated_at="fixed",
     )
 
-    assert len(observed_commands) == 7
+    assert len(observed_commands) == 8
     assert receipt["status"] == "passed"
     assert receipt["all_required_dry_runs_executed"] is True
     assert bundle_preflight.validate_bundle_config_preflight(

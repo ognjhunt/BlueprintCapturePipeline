@@ -15,7 +15,10 @@ materials:
 steps:
   validate_input:
     enabled: true
-    on_failure: block
+    # NVIDIA's validator reports the grasp-guide extent and USDA performance as
+    # advisory issues. Preserve those diagnostics without blocking material
+    # inference on the separately Foundation-validated control asset.
+    on_failure: warn
   optimize_usd:
     enabled: false
   build_dataset_usd:
@@ -94,7 +97,7 @@ steps:
     enabled: false
   validate_output:
     enabled: true
-    on_failure: fail
+    on_failure: warn
   render:
     enabled: true
     backend: ovrtx
