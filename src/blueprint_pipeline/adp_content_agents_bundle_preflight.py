@@ -42,6 +42,17 @@ DRY_RUN_MARKERS = {
     "physics": "Dry run complete",
 }
 MATERIAL_VALIDATE_MARKER = "Pipeline completed successfully"
+USD_BBOX_MARKER = "BLUEPRINT_CONTENT_AGENTS_DEFAULT_PURPOSE_BBOX_OK"
+USD_BBOX_SCRIPT = (
+    "from pxr import Usd,UsdGeom;"
+    "s=Usd.Stage.Open('/bundle/provider_runtime/input/"
+    "adp009a_840313_canned_beverage_control.usda');"
+    "p=UsdGeom.Mesh.Get(s,'/canned_beverage/visuals/body');"
+    "r=UsdGeom.BBoxCache(Usd.TimeCode.Default(),[UsdGeom.Tokens.default_])"
+    ".ComputeWorldBound(p.GetPrim()).ComputeAlignedRange();"
+    "assert p.ComputePurpose()==UsdGeom.Tokens.default_ and not r.IsEmpty();"
+    f"print('{USD_BBOX_MARKER}')"
+)
 
 
 class ContentAgentsBundlePreflightError(ValueError):
@@ -335,6 +346,41 @@ def materialize_bundle_config_preflight(
             "log_size_bytes": validation_log.stat().st_size,
             "log_sha256": _sha256_file(validation_log),
         }
+        bbox_arguments = ["-c", USD_BBOX_SCRIPT]
+        bbox_command = [
+            docker,
+            "run",
+            "--rm",
+            "--platform",
+            LOCAL_IMAGE_PLATFORM,
+            "-v",
+            f"{expanded}:/bundle",
+            "--entrypoint",
+            "python",
+            image,
+            *bbox_arguments,
+        ]
+        bbox_result = subprocess.run(
+            bbox_command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        bbox_text = bbox_result.stdout + bbox_result.stderr
+        bbox_log = output / "usd-default-purpose-bbox.log"
+        bbox_log.write_text(bbox_text, encoding="utf-8")
+        if bbox_result.returncode != 0 or USD_BBOX_MARKER not in bbox_text:
+            raise ContentAgentsBundlePreflightError("usd_default_purpose_bbox_probe_failed")
+        executions["usd_default_purpose_bbox"] = {
+            "entrypoint": "python",
+            "arguments": bbox_arguments,
+            "secret_environment_names_passed_by_name": [],
+            "returncode": bbox_result.returncode,
+            "required_marker": USD_BBOX_MARKER,
+            "log_path": str(bbox_log),
+            "log_size_bytes": bbox_log.stat().st_size,
+            "log_sha256": _sha256_file(bbox_log),
+        }
 
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -495,6 +541,32 @@ def validate_bundle_config_preflight(
         ):
             blockers.append(
                 "adp_content_agents_config_preflight_execution_invalid:material_validate_input"
+            )
+    bbox_row = executions.get("usd_default_purpose_bbox")
+    if not isinstance(bbox_row, Mapping):
+        blockers.append(
+            "adp_content_agents_config_preflight_execution_missing:usd_default_purpose_bbox"
+        )
+    else:
+        bbox_log = Path(str(bbox_row.get("log_path") or "")).expanduser().resolve()
+        if evidence_root != bbox_log.parent:
+            blockers.append(
+                "adp_content_agents_config_preflight_log_outside_evidence:usd_default_purpose_bbox"
+            )
+        expected_bbox = {
+            "entrypoint": "python",
+            "arguments": ["-c", USD_BBOX_SCRIPT],
+            "secret_environment_names_passed_by_name": [],
+            "returncode": 0,
+            "required_marker": USD_BBOX_MARKER,
+            "log_path": str(bbox_log),
+            "log_size_bytes": bbox_log.stat().st_size if bbox_log.is_file() else 0,
+            "log_sha256": _sha256_file(bbox_log) if bbox_log.is_file() else "",
+        }
+        bbox_text = bbox_log.read_text(encoding="utf-8") if bbox_log.is_file() else ""
+        if dict(bbox_row) != expected_bbox or USD_BBOX_MARKER not in bbox_text:
+            blockers.append(
+                "adp_content_agents_config_preflight_execution_invalid:usd_default_purpose_bbox"
             )
     return sorted(set(blockers))
 

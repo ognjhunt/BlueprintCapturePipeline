@@ -40,7 +40,7 @@ steps:
           camera_focus_mode: stage
           skip_occluded_images: false
           use_original_materials: true
-        prim_only_original:
+        prim_only:
           margin: 1.2
           cameras: ["+x+y+z", "-x-y+z"]
           camera_focus_mode: prim
@@ -49,6 +49,7 @@ steps:
       types: [UsdGeom.Mesh]
       skip_instances: true
       skip_prototypes: false
+      skip_invisible: true
     extract_hierarchy: true
     extract_metadata: true
     skip_existing: false

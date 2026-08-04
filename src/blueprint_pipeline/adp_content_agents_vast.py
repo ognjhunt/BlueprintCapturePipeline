@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
+from pxr import Usd, UsdGeom
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .paid_resource_admission import PaidResourceAdmissionGrant
@@ -80,6 +81,48 @@ def _write_executable(path: Path, source: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _materialize_content_agents_input(source: Path, destination: Path) -> dict[str, Any]:
+    """Derive the exact NVIDIA-compatible USD without mutating canonical bytes."""
+
+    shutil.copy2(source, destination)
+    stage = Usd.Stage.Open(str(destination))
+    if stage is None or stage.GetDefaultPrim().GetPath() != "/canned_beverage":
+        raise ValueError("adp_content_agents_input_default_prim_invalid")
+    visual = UsdGeom.Mesh.Get(stage, "/canned_beverage/visuals/body")
+    if not visual or visual.ComputePurpose() != UsdGeom.Tokens.render:
+        raise ValueError("adp_content_agents_input_visual_purpose_invalid")
+    visual.GetPurposeAttr().Clear()
+    grasp = UsdGeom.BasisCurves.Get(stage, "/canned_beverage/grasp_identifier_01")
+    computed_extent = UsdGeom.Boundable.ComputeExtentFromPlugins(
+        grasp, Usd.TimeCode.Default()
+    )
+    if not computed_extent:
+        raise ValueError("adp_content_agents_input_grasp_extent_unavailable")
+    grasp.GetExtentAttr().Set(computed_extent)
+    stage.GetRootLayer().Save()
+    reopened = Usd.Stage.Open(str(destination))
+    if reopened is None:
+        raise ValueError("adp_content_agents_input_reopen_failed")
+    normalized_visual = UsdGeom.Mesh.Get(reopened, "/canned_beverage/visuals/body")
+    cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
+    )
+    bounds = cache.ComputeWorldBound(normalized_visual.GetPrim()).ComputeAlignedRange()
+    if normalized_visual.ComputePurpose() != UsdGeom.Tokens.default_ or bounds.IsEmpty():
+        raise ValueError("adp_content_agents_input_default_purpose_bbox_invalid")
+    return {
+        "source_input_usd_sha256": _sha256(source),
+        "normalized_input_usd_sha256": _sha256(destination),
+        "transformations": [
+            "clear_visual_render_purpose_to_usd_default_for_nvidia_0_5_2_bbox",
+            "recompute_grasp_identifier_extent_from_curve_width",
+        ],
+        "visual_prim": "/canned_beverage/visuals/body",
+        "visual_purpose": "default",
+        "default_purpose_bbox_nonempty": True,
+    }
+
+
 def _validate_remote_configs(
     *, source: Path, config_sources: Mapping[str, Path]
 ) -> None:
@@ -105,6 +148,14 @@ def _validate_remote_configs(
     identify_vlm = dict((physics_steps.get("identify_asset") or {}).get("vlm") or {})
     identify_enabled = (physics_steps.get("identify_asset") or {}).get("enabled")
     predict_vlm = dict((physics_steps.get("predict") or {}).get("vlm") or {})
+    material_rendering_modes = set(
+        ((material_steps.get("build_dataset_usd") or {}).get("renderer") or {})
+        .get("rendering_modes", {})
+    )
+    physics_dataset = dict(physics_steps.get("build_dataset_usd") or {})
+    physics_rendering_modes = set(
+        (physics_dataset.get("renderer") or {}).get("rendering_modes", {})
+    )
     if (
         not material_path.is_file()
         or (material.get("materials") or {}).get("path")
@@ -128,6 +179,9 @@ def _validate_remote_configs(
         or identify_vlm.get("model") != "gpt-4.1"
         or predict_vlm.get("backend") != "openai"
         or predict_vlm.get("model") != "gpt-4.1"
+        or material_rendering_modes != {"composition", "prim_only"}
+        or physics_rendering_modes != {"composition", "prim_only"}
+        or (physics_dataset.get("prim_filters") or {}).get("skip_invisible") is not True
     ):
         raise ValueError("adp_content_agents_remote_config_contract_invalid")
 
@@ -206,7 +260,9 @@ def build_content_agents_vast_bundle(
     for name, path in config_sources.items():
         shutil.copy2(path, runtime / "configs" / name)
     usd_source = assets / "adp009a_840313_canned_beverage_control.usda"
-    shutil.copy2(usd_source, runtime / "input" / usd_source.name)
+    input_normalization = _materialize_content_agents_input(
+        usd_source, runtime / "input" / usd_source.name
+    )
     reference_name = "adp009a_840313_canned_beverage_control_reference.png"
     shutil.copy2(reference_source, runtime / "input" / reference_name)
 
@@ -229,7 +285,8 @@ def build_content_agents_vast_bundle(
         "container_image": DEFAULT_IMAGE,
         "container_platform": "linux/amd64",
         "source_archive_sha256": _sha256(source_zip),
-        "input_usd_sha256": _sha256(usd_source),
+        "input_usd_sha256": input_normalization["normalized_input_usd_sha256"],
+        "input_usd_normalization": input_normalization,
         "reference_image_sha256": _sha256(reference_source),
         "reference_image_authority": "blueprint_cad_render_not_interiorgs_dataset_bytes",
         "runtime_entrypoint": "provider_runtime/run_adp_content_agents_provider_runtime.sh",

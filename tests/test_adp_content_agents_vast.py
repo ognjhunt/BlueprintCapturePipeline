@@ -94,6 +94,11 @@ def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
     assert first["status"] == "ready"
     assert first["bundle_sha256"] == second["bundle_sha256"]
     assert first["container_image"] == content_agents.DEFAULT_IMAGE
+    assert first["input_usd_normalization"]["default_purpose_bbox_nonempty"] is True
+    assert (
+        first["input_usd_normalization"]["source_input_usd_sha256"]
+        != first["input_usd_sha256"]
+    )
     assert first["remote_config_contract_validated"] is True
     assert first["retry_cap"] == 0
     preflight = _blueprint_bundle_preflight(
@@ -251,6 +256,18 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
         "log_size_bytes": validation_log.stat().st_size,
         "log_sha256": "sha256:"
         + hashlib.sha256(validation_log.read_bytes()).hexdigest(),
+    }
+    bbox_log = tmp_path / "bbox.log"
+    bbox_log.write_text(bundle_preflight.USD_BBOX_MARKER, encoding="utf-8")
+    executions["usd_default_purpose_bbox"] = {
+        "entrypoint": "python",
+        "arguments": ["-c", bundle_preflight.USD_BBOX_SCRIPT],
+        "secret_environment_names_passed_by_name": [],
+        "returncode": 0,
+        "required_marker": bundle_preflight.USD_BBOX_MARKER,
+        "log_path": str(bbox_log.resolve()),
+        "log_size_bytes": bbox_log.stat().st_size,
+        "log_sha256": "sha256:" + hashlib.sha256(bbox_log.read_bytes()).hexdigest(),
     }
     bundle_receipt_path = tmp_path / "receipt.json"
     receipt = {
@@ -511,9 +528,13 @@ def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
                 ]
             )
             return subprocess.CompletedProcess(command, 0, stdout, "")
-        assert kwargs["env"]["OPENAI_API_KEY"] == secret
         assert secret not in " ".join(command)
         entrypoint = command[command.index("--entrypoint") + 1]
+        if entrypoint == "python":
+            return subprocess.CompletedProcess(
+                command, 0, bundle_preflight.USD_BBOX_MARKER, ""
+            )
+        assert kwargs["env"]["OPENAI_API_KEY"] == secret
         if "--only" in command:
             return subprocess.CompletedProcess(
                 command, 0, bundle_preflight.MATERIAL_VALIDATE_MARKER, ""
@@ -549,7 +570,7 @@ def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
         generated_at="fixed",
     )
 
-    assert len(observed_commands) == 8
+    assert len(observed_commands) == 9
     assert receipt["status"] == "passed"
     assert receipt["all_required_dry_runs_executed"] is True
     assert bundle_preflight.validate_bundle_config_preflight(

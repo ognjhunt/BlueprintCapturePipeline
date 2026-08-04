@@ -36,7 +36,7 @@ steps:
           camera_focus_mode: stage
           skip_occluded_images: false
           use_original_materials: true
-        prim_only_original:
+        prim_only:
           margin: 1.2
           cameras: ["+x+y+z", "-x+y+z", "-x-y+z", "+x-y+z"]
           camera_focus_mode: prim
