@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/public_scene_suite_index.v1.schema.json",
+  "title": "ADP-009 Exact Public Scene Suite Index v1",
+  "description": "Digest-bound, development-only index of the exact public datasets, released methods, controlled truth, replacement object, and physics control required by ADP-009.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "program_id",
+    "adp_item",
+    "index_id",
+    "components",
+    "claim_ceiling",
+    "claim_boundaries",
+    "index_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "public_scene_suite_index.v1"},
+    "program_id": {"const": "arm-decision-proof-v1"},
+    "adp_item": {"const": "ADP-009"},
+    "index_id": {"$ref": "#/$defs/identifier"},
+    "components": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/component"}
+    },
+    "claim_ceiling": {"const": "development_only"},
+    "claim_boundaries": {
+      "type": "object",
+      "required": [
+        "exact_public_suite_binding",
+        "public_scene_software_qualified",
+        "metric_geometry_qualified",
+        "task_physics_qualified",
+        "partner_capture_qualified",
+        "prospective_validation",
+        "physical_evidence",
+        "digital_twin",
+        "deployment_readiness",
+        "physical_safety",
+        "customer_value",
+        "general_sim_to_real_fidelity"
+      ],
+      "properties": {
+        "exact_public_suite_binding": {"const": true},
+        "public_scene_software_qualified": {"const": false},
+        "metric_geometry_qualified": {"const": false},
+        "task_physics_qualified": {"const": false},
+        "partner_capture_qualified": {"const": false},
+        "prospective_validation": {"const": false},
+        "physical_evidence": {"const": false},
+        "digital_twin": {"const": false},
+        "deployment_readiness": {"const": false},
+        "physical_safety": {"const": false},
+        "customer_value": {"const": false},
+        "general_sim_to_real_fidelity": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "index_digest": {"$ref": "#/$defs/sha256"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:+-]{0,191}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "exactRevision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"const": "git_commit"},
+            "value": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"const": "release_tag"},
+            "value": {
+              "type": "string",
+              "pattern": "^(?!(?:current|HEAD|head|latest|main|master|tip|trunk)$)[A-Za-z0-9][A-Za-z0-9._:+/-]{0,190}$"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"const": "content_digest"},
+            "value": {"$ref": "#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "component": {
+      "type": "object",
+      "required": [
+        "role",
+        "source_project_id",
+        "component_manifest_digest",
+        "component_admission_receipt_digest",
+        "exact_revision",
+        "exact_artifact_digest",
+        "status",
+        "blockers"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "inpaint360_author_smoke",
+            "infusion_primary_adapter",
+            "aurafusion360_quality_challenger",
+            "interiorgs_appearance_scene",
+            "sage3d_collision_companion",
+            "controlled_background_truth",
+            "exact_simready_object",
+            "usd_content_agents_candidate",
+            "physics_positive_control",
+            "scannetpp_real_transfer"
+          ]
+        },
+        "source_project_id": {
+          "enum": [
+            "Inpaint360GS",
+            "InFusion",
+            "AuraFusion360",
+            "InteriorGS",
+            "SAGE-3D",
+            "Blueprint-controlled",
+            "NVIDIA-Omniverse/usd-content-agents",
+            "ScanNet++"
+          ]
+        },
+        "component_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "component_admission_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "exact_revision": {"$ref": "#/$defs/exactRevision"},
+        "exact_artifact_digest": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["admitted", "blocked"]},
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,255}$"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "role": {"const": "inpaint360_author_smoke"},
+                "source_project_id": {"const": "Inpaint360GS"}
+              },
+              "required": ["role", "source_project_id"]
+            },
+            {
+              "properties": {
+                "role": {"const": "infusion_primary_adapter"},
+                "source_project_id": {"const": "InFusion"}
+              },
+              "required": ["role", "source_project_id"]
+            },
+            {
+              "properties": {
+                "role": {"const": "aurafusion360_quality_challenger"},
+                "source_project_id": {"const": "AuraFusion360"}
+              },
+              "required": ["role", "source_project_id"]
+            },
+            {
+              "properties": {
+                "role": {"const": "interiorgs_appearance_scene"},
+                "source_project_id": {"const": "InteriorGS"}
+              },
+              "required": ["role", "source_project_id"]
+            },
+            {
+              "properties": {
+                "role": {"const": "sage3d_collision_companion"},
+                "source_project_id": {"const": "SAGE-3D"}
+              },
+              "required": ["role", "source_project_id"]
+            },
+            {
+              "properties": {
+                "role": {"const": "controlled_background_truth"},
+                "source_project_id": {"const": "Blueprint-controlled"}
+              },
+              "required": ["role", "source_project_id"]
+            },
+            {
+              "properties": {
+                "role": {"const": "exact_simready_object"},
+                "source_project_id": {"const": "Blueprint-controlled"}
+              },
+              "required": ["role", "source_project_id"]
+            },
+            {
+              "properties": {
+                "role": {"const": "usd_content_agents_candidate"},
+                "source_project_id": {"const": "NVIDIA-Omniverse/usd-content-agents"}
+              },
+              "required": ["role", "source_project_id"]
+            },
+            {
+              "properties": {
+                "role": {"const": "physics_positive_control"},
+                "source_project_id": {"const": "Blueprint-controlled"}
+              },
+              "required": ["role", "source_project_id"]
+            },
+            {
+              "properties": {
+                "role": {"const": "scannetpp_real_transfer"},
+                "source_project_id": {"const": "ScanNet++"}
+              },
+              "required": ["role", "source_project_id"]
+            }
+          ]
+        },
+        {
+          "if": {
+            "properties": {"status": {"const": "admitted"}},
+            "required": ["status"]
+          },
+          "then": {"properties": {"blockers": {"maxItems": 0}}},
+          "else": {"properties": {"blockers": {"minItems": 1}}}
+        }
+      ]
+    }
+  }
+}

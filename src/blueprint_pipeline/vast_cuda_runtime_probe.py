@@ -6,11 +6,19 @@ import re
 from typing import Any, Mapping
 
 
-def cuda_runtime_probe_shell_fragment(*, required: bool) -> str:
+def cuda_runtime_probe_shell_fragment(*, required: bool, prefer_isaac_python: bool = False) -> str:
     if not required:
         return "cuda_runtime_rc=0; echo BLUEPRINT_VAST_CUDA_RUNTIME_SKIPPED; "
+    interpreter_selection = (
+        "CUDA_PY=''; "
+        "if [ -x /isaac-sim/python.sh ]; then CUDA_PY=/isaac-sim/python.sh; "
+        "elif [ -x /isaac-sim/python ]; then CUDA_PY=/isaac-sim/python; "
+        'else CUDA_PY="${PY_NET:-}"; fi; '
+        if prefer_isaac_python
+        else 'CUDA_PY="${PY_NET:-}"; '
+    )
     return (
-        'CUDA_PY="${PY_NET:-}"; cuda_runtime_rc=1; '
+        interpreter_selection + "cuda_runtime_rc=1; "
         'if [ -z "$CUDA_PY" ] && [ -x /opt/conda/bin/python ]; then CUDA_PY=/opt/conda/bin/python; '
         'elif [ -z "$CUDA_PY" ] && [ -x /usr/local/bin/python ]; then CUDA_PY=/usr/local/bin/python; '
         'elif [ -z "$CUDA_PY" ] && [ -x /isaac-sim/python.sh ]; then CUDA_PY=/isaac-sim/python.sh; '

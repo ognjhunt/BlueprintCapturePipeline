@@ -11,11 +11,12 @@ Active execution documents are limited to:
 2. [`arm_decision_proof_v1/README.md`](arm_decision_proof_v1/README.md)
 3. [`arm_decision_proof_v1/PARTNER_SELECTION_PACKET.md`](arm_decision_proof_v1/PARTNER_SELECTION_PACKET.md)
 4. [`arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-5. [`arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md)
-6. [`arm_decision_proof_v1/MASTER_GOAL_PROMPT.md`](arm_decision_proof_v1/MASTER_GOAL_PROMPT.md)
-7. [`architecture/source-of-truth-map.md`](architecture/source-of-truth-map.md)
-8. [`architecture/ai-onboarding-map.md`](architecture/ai-onboarding-map.md)
-9. [`DOCTRINE_PRECEDENCE.md`](DOCTRINE_PRECEDENCE.md)
+5. [`arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`](arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md)
+6. [`arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md) — historical ADP-008 decision
+7. [`arm_decision_proof_v1/MASTER_GOAL_PROMPT.md`](arm_decision_proof_v1/MASTER_GOAL_PROMPT.md)
+8. [`architecture/source-of-truth-map.md`](architecture/source-of-truth-map.md)
+9. [`architecture/ai-onboarding-map.md`](architecture/ai-onboarding-map.md)
+10. [`DOCTRINE_PRECEDENCE.md`](DOCTRINE_PRECEDENCE.md)
 
 Root `AGENTS.md`, `PLATFORM_CONTEXT.md`, and
 `WORLD_MODEL_STRATEGY_CONTEXT.md` remain binding.

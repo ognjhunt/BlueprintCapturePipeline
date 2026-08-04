@@ -1,0 +1,41 @@
+{
+  "schema_version": "vast_machine_avoidlist.v1",
+  "generated_at": "2026-08-04T05:24:49.507865+00:00",
+  "status": "completed",
+  "machine_ids": [56730, 78080],
+  "entries": [
+    {
+      "generated_at": "2026-08-04T04:25:25.553406+00:00",
+      "machine_id": 56730,
+      "instance_id": 46760476,
+      "offer_id": 46200632,
+      "gpu_model_slug": "rtx_3090",
+      "driver_version": "580.173.02",
+      "reason": "vast_startup_control_plane_did_not_reach_onstart_heartbeat",
+      "blockers": ["vast_heartbeat_container_missing"],
+      "retry_policy": "exclude_for_current_job_until_manual_review"
+    },
+    {
+      "generated_at": "2026-08-04T05:24:49.507865+00:00",
+      "machine_id": 78080,
+      "instance_id": 46762693,
+      "offer_id": 35580413,
+      "gpu_model_slug": "rtx_3090",
+      "driver_version": "580.142",
+      "reason": "digest_pinned_cuda_devel_image_did_not_reach_container_logs_within_900_seconds",
+      "blockers": [
+        "vast_heartbeat_no_log_progress_timeout",
+        "vast_heartbeat_container_missing",
+        "vast_heartbeat_output_missing_success_marker"
+      ],
+      "retry_policy": "exclude_for_current_job_until_manual_review"
+    }
+  ],
+  "review": {
+    "status": "reviewed_and_retained_for_adp_acquisition",
+    "observed_cost_usd": 0.041594,
+    "continuing_spend_from_failed_run": false,
+    "replacement_action": "distinct_machine_with_observed_exact_image_startup"
+  },
+  "raw_secret_values_recorded": false
+}

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.local/schemas/public_physical_reference_outcomes.v1.schema.json",
+  "title": "Public Physical Reference Outcomes v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "reference_id",
+    "task_id",
+    "source_artifact_sha256",
+    "source_location",
+    "outcome_granularity",
+    "phase_label",
+    "claim_ceiling",
+    "cells",
+    "outcomes_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "public_physical_reference_outcomes.v1"},
+    "reference_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "source_artifact_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "source_location": {"type": "string", "minLength": 1},
+    "outcome_granularity": {"const": "candidate_by_condition_aggregate"},
+    "phase_label": {"const": "retrospective_external_reference"},
+    "claim_ceiling": {"const": "development_only"},
+    "cells": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "condition_id", "trial_count", "success_rate", "reported_uncertainty"],
+        "properties": {
+          "candidate_id": {"type": "string", "minLength": 1},
+          "condition_id": {"type": "string", "minLength": 1},
+          "trial_count": {"type": "integer", "minimum": 1},
+          "success_rate": {"type": "number", "minimum": 0, "maximum": 1},
+          "reported_uncertainty": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "outcomes_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

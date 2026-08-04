@@ -286,6 +286,8 @@ def _intrinsics_from_probe(video_probe: Mapping[str, Any]) -> Dict[str, Any]:
             "model": "none",
             "coefficients": [],
         },
+        "intrinsics_measurement_source": "heuristic_from_image_dimensions",
+        "metric_intrinsics_truth": False,
     }
 
 
@@ -305,7 +307,9 @@ def _pose_for_frame(frame_index: int, timestamp_seconds: float) -> tuple[List[Li
         [0.0, 0.0, 1.0, -translation_z],
         [0.0, 0.0, 0.0, 1.0],
     ]
-    pose_confidence = round(max(0.5, 0.98 - frame_index * 0.03), 4)
+    # This is a deterministic placeholder trajectory, not an estimated pose.
+    # Confidence therefore describes no observed quantity and must remain zero.
+    pose_confidence = 0.0
     return world_from_camera, camera_from_world, pose_confidence
 
 
@@ -341,6 +345,8 @@ def run_da3_provider(
         frame["world_from_camera"] = world_from_camera
         frame["camera_from_world"] = camera_from_world
         frame["pose_confidence"] = pose_confidence
+        frame["pose_measurement_source"] = "synthetic_trajectory_placeholder"
+        frame["metric_pose_truth"] = False
 
     keyframe_indices = [
         int(frame["frame_index"])
@@ -355,6 +361,8 @@ def run_da3_provider(
         "frames": frame_records,
         "keyframe_indices": keyframe_indices,
         "loop_closure_detected": False,
+        "qualification_role": "diagnostic_cross_check_only",
+        "metric_geometry_authority": False,
         "provider_metrics": metrics,
         "provider_warnings": [*frame_warnings, *depth_warnings],
         "provider_errors": [],

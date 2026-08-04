@@ -113,6 +113,16 @@ from .single_g1_kitchen_qualification_session import (
     SESSION_ACTIONS as QUALIFICATION_SESSION_ACTIONS,
     run_qualification_session,
 )
+from .simpler_public_vast import (
+    PROBE_KIND as ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
+    build_simpler_public_vast_bundle,
+    run_simpler_public_vast,
+)
+from .adp_isaac_lab_arena_vast import (
+    PROBE_KIND as ADP_ISAAC_LAB_ARENA_PROBE_KIND,
+    build_arena_native_control_bundle,
+    run_arena_native_control_vast,
+)
 from .teleport_paid_allocator import (
     add_teleport_provider_arguments,
     load_teleport_credentials,
@@ -138,6 +148,7 @@ DETACHED_GPU_CANARY_MANIFEST = "detached_gpu_canary_supervisor.json"
 DETACHED_GPU_CANARY_LOG = "detached_gpu_canary_supervisor.log"
 DETACHED_GPU_CANARY_LOCK = "detached_gpu_canary_supervisor.lock"
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
+
 
 def admit_openai_api_candidate(**kwargs: Any) -> AdmissionResult:
     """Canonical source-bound issuer for one paid OpenAI candidate capability."""
@@ -742,18 +753,10 @@ def _run_reconstruction_gpu_canary(
                 "blueprint-reconstruction-",
             ),
             container_disk_bytes=container_disk_bytes,
-            watchdog=(
-                seed.get("watchdog")
-                if isinstance(seed.get("watchdog"), dict)
-                else {}
-            ),
-            conflicting_owner_present=(
-                seed.get("conflicting_owner_present") is not False
-            ),
+            watchdog=(seed.get("watchdog") if isinstance(seed.get("watchdog"), dict) else {}),
+            conflicting_owner_present=(seed.get("conflicting_owner_present") is not False),
             capacity_probe=provider.capacity_preflight,
-            inventory_probe=lambda prefix: provider.billable_inventory(
-                name_prefix=prefix
-            ),
+            inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
             max_hourly_rate_usd=float(max_hourly_rate),
         )
         write_json(Path(args.preflight_bundle), refreshed)
@@ -775,15 +778,16 @@ def _run_reconstruction_gpu_canary(
         execution_adapter_id=select_reconstruction_execution_adapter_id(
             args.provider_launch_request, execute=args.execute
         ),
-        image_release_path=getattr(
-            args, "reconstruction_isaac_image_release", None
+        image_release_path=getattr(args, "reconstruction_isaac_image_release", None),
+        measurement_isaac_runtime_release_path=getattr(
+            args, "measurement_isaac_runtime_release", None
         ),
-        measurement_isaac_runtime_release_path=getattr(args, "measurement_isaac_runtime_release", None),
         measurement_dlo_lab_runtime_release_path=getattr(
             args, "measurement_dlo_lab_runtime_release", None
         ),
         measurement_chrono_dem_runtime_release_path=getattr(
-            args, "measurement_chrono_dem_runtime_release", None),
+            args, "measurement_chrono_dem_runtime_release", None
+        ),
     )
     if not args.execute or admission.get("status") != "execute_ready":
         return admission
@@ -817,8 +821,11 @@ def _run_reconstruction_gpu_canary(
         }
         write_json(adapter_path, result)
         return result
-    if operation in {"measurement_dlo_lab_canary", "measurement_isaac_canary",
-                     "measurement_chrono_dem_canary"}:
+    if operation in {
+        "measurement_dlo_lab_canary",
+        "measurement_isaac_canary",
+        "measurement_chrono_dem_canary",
+    }:
         result = measurement_dlo_lab_paid_allocator.run_measurement_canary_from_canonical_allocator(
             operation=operation,
             args=args,
@@ -935,6 +942,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
             RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
+            ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
+            ADP_ISAAC_LAB_ARENA_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -1000,6 +1009,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-hard-ttl-seconds", type=int)
     gpu.add_argument("--reconstruction-retry-cap", type=int)
     gpu.add_argument("--reconstruction-authority-id")
+    gpu.add_argument("--adp-public-reference-manifest")
+    gpu.add_argument("--adp-arena-approval")
+    gpu.add_argument("--adp-job-dir")
+    gpu.add_argument("--adp-max-hourly-rate-usd", type=float, default=0.80)
+    gpu.add_argument("--adp-max-spend-usd", type=float, default=2.00)
+    gpu.add_argument("--adp-hard-ttl-seconds", type=int, default=7200)
+    gpu.add_argument("--adp-machine-avoidlist")
     gpu.add_argument(
         "--reconstruction-refresh-preflight",
         action="store_true",
@@ -1246,6 +1262,236 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == ADP_ISAAC_LAB_ARENA_PROBE_KIND:
+            missing = [
+                name
+                for name in ("adp_arena_approval", "adp_job_dir")
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            blockers = [*missing, *control_blockers]
+            if args.provider != "vast":
+                blockers.append("adp_arena_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("adp_arena_budget_invalid")
+            if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
+                blockers.append("adp_arena_hard_ttl_invalid")
+            avoidlist_digest = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                if not avoidlist_path.is_file():
+                    blockers.append("adp_arena_machine_avoidlist_missing")
+                else:
+                    avoidlist_digest = (
+                        "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+                    )
+            prepared_bundle = None
+            if not blockers:
+                try:
+                    prepared_bundle = build_arena_native_control_bundle(
+                        approval_path=args.adp_arena_approval,
+                        job_dir=Path(args.adp_job_dir) / "bundle",
+                    )
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    blockers.append(f"adp_arena_bundle_preparation_failed:{type(exc).__name__}")
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": ADP_ISAAC_LAB_ARENA_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
+                "approval_path": args.adp_arena_approval,
+                "protocol_digest": (
+                    prepared_bundle.get("protocol_digest") if prepared_bundle else None
+                ),
+                "bundle_sha256": (
+                    prepared_bundle.get("bundle_sha256") if prepared_bundle else None
+                ),
+                "control_id": "arena_zero_action_negative",
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "retry_cap": 0,
+                "machine_avoidlist_digest": avoidlist_digest,
+            }
+            allocation_binding_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+            )
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=blockers
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": ADP_ISAAC_LAB_ARENA_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": (
+                        "founder_exact_protocol_approval_plus_user_authorized_vast_spend"
+                    ),
+                    "private_data_uploaded": False,
+                    "candidate_policy_queried": False,
+                    "physical_outcome_values_uploaded": False,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if prepared_bundle is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": blockers,
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_arena_native_control_vast(
+                    approval_path=args.adp_arena_approval,
+                    job_dir=args.adp_job_dir,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    prepared_bundle=prepared_bundle,
+                    machine_avoidlist_path=args.adp_machine_avoidlist,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND:
+            missing = [
+                name
+                for name in ("adp_public_reference_manifest", "adp_job_dir")
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            blockers = [*missing, *control_blockers]
+            if args.provider != "vast":
+                blockers.append("adp_simpler_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("adp_simpler_budget_invalid")
+            if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
+                blockers.append("adp_simpler_hard_ttl_invalid")
+            avoidlist_digest = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                if not avoidlist_path.is_file():
+                    blockers.append("adp_simpler_machine_avoidlist_missing")
+                else:
+                    avoidlist_digest = (
+                        "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+                    )
+            prepared_bundle = None
+            if not blockers:
+                try:
+                    prepared_bundle = build_simpler_public_vast_bundle(
+                        manifest_path=args.adp_public_reference_manifest,
+                        job_dir=Path(args.adp_job_dir) / "bundle",
+                    )
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    blockers.append(f"adp_simpler_bundle_preparation_failed:{type(exc).__name__}")
+            if prepared_bundle is not None and prepared_bundle.get("status") != "ready":
+                blockers.extend(prepared_bundle.get("blockers") or ["adp_simpler_bundle_blocked"])
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
+                "public_reference_manifest": args.adp_public_reference_manifest,
+                "source_identity_digest": (
+                    prepared_bundle.get("source_identity_digest") if prepared_bundle else None
+                ),
+                "bundle_sha256": prepared_bundle.get("bundle_sha256") if prepared_bundle else None,
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "retry_cap": 0,
+                "machine_avoidlist_digest": avoidlist_digest,
+            }
+            allocation_binding_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+            )
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=blockers
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "public_reference_manifest": args.adp_public_reference_manifest,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": "user_authorized_vast_spend_for_arm_decision_proof_v1",
+                    "private_data_uploaded": False,
+                    "physical_outcome_values_uploaded": False,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            result = run_simpler_public_vast(
+                manifest_path=args.adp_public_reference_manifest,
+                job_dir=args.adp_job_dir,
+                paid_resource_admission_grant=grant,
+                execute=args.execute,
+                prepared_bundle=prepared_bundle,
+                machine_avoidlist_path=args.adp_machine_avoidlist,
+                max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                hard_cap_usd=args.adp_max_spend_usd,
+                hard_ttl_seconds=args.adp_hard_ttl_seconds,
+            )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND:
             source_blockers, checkout_commit = _source_checkout_blockers(
                 args.expected_source_commit or "",

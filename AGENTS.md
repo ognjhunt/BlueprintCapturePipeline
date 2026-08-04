@@ -9,10 +9,11 @@ drifts from this guide, this guide wins; if docs disagree with each other, use
 ## Mission
 
 `BlueprintCapturePipeline` has one active mission: deliver **Arm Decision Proof
-v1** (`arm-decision-proof-v1`). From one qualified, rights-cleared representation
-of one previously unseen fixed-arm workcell—imported from an existing
-scene/capture when possible and newly captured only for measured gaps—Blueprint
-must prospectively choose or eliminate one of two frozen policy/configuration
+v1** (`arm-decision-proof-v1`). Qualify the reusable service first on exact,
+rights-cleared public datasets—including one metric 3DGS/collision object
+removal, released-code inpainting, and exact SimReady USD replacement—then take
+one fresh capture of one previously unseen fixed-arm workcell. Blueprint must
+prospectively choose or eliminate one of exactly two frozen policy/configuration
 candidates for the next scarce physical-test budget, or explicitly abstain, then
 adjudicate that decision and one predicted failure boundary with held-out
 physical trials.
@@ -29,11 +30,12 @@ All paths are repo-root-relative:
 1. [`docs/arm_decision_proof_v1/north_star_contract.json`](docs/arm_decision_proof_v1/north_star_contract.json)
 2. [`docs/arm_decision_proof_v1/README.md`](docs/arm_decision_proof_v1/README.md)
 3. [`docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-4. [`docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md)
-5. [`PLATFORM_CONTEXT.md`](PLATFORM_CONTEXT.md) — current product and proof doctrine
-6. [`WORLD_MODEL_STRATEGY_CONTEXT.md`](WORLD_MODEL_STRATEGY_CONTEXT.md) — backend admission and build priorities
-7. [`docs/DOCTRINE_PRECEDENCE.md`](docs/DOCTRINE_PRECEDENCE.md) — how to resolve documentation conflicts
-8. [`README.md`](README.md), [`pyproject.toml`](pyproject.toml), and [`docs/architecture/ai-onboarding-map.md`](docs/architecture/ai-onboarding-map.md)
+4. [`docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`](docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md)
+5. [`docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md) — historical ADP-008 decision
+6. [`PLATFORM_CONTEXT.md`](PLATFORM_CONTEXT.md) — current product and proof doctrine
+7. [`WORLD_MODEL_STRATEGY_CONTEXT.md`](WORLD_MODEL_STRATEGY_CONTEXT.md) — backend admission and build priorities
+8. [`docs/DOCTRINE_PRECEDENCE.md`](docs/DOCTRINE_PRECEDENCE.md) — how to resolve documentation conflicts
+9. [`README.md`](README.md), [`pyproject.toml`](pyproject.toml), and [`docs/architecture/ai-onboarding-map.md`](docs/architecture/ai-onboarding-map.md)
 
 Org context (roles, agent lanes, who owns what): [`AUTONOMOUS_ORG.md`](AUTONOMOUS_ORG.md).
 
@@ -52,8 +54,8 @@ dependent step as blocked instead of guessing.
   schemas, providers, evaluators, and runtime lanes are compatibility or paused
   material unless a recorded Arm Decision Proof blocker requires the smallest
   possible dependency.
-- Before accepting work, name the ADP backlog item and day-7/day-14/day-28/day-35
-  or day-42 gate it unblocks, the observed completion artifact, why existing
+- Before accepting work, name the ADP backlog item and day-7/day-14/day-21/day-28,
+  day-35, or day-42 gate it unblocks, the observed completion artifact, why existing
   infrastructure is insufficient, and the smallest reversible change. Missing
   any answer means the work is out of focus.
 - Keep geometry, capture observations, simulators, learned evaluators, providers,
@@ -70,11 +72,17 @@ dependent step as blocked instead of guessing.
   now. Keep them `development_only`; they cannot qualify partner capture, owner
   task truth, registration, task physics, observation-domain match, sim-to-real
   fidelity, or partner value. Never copy fixture data into qualified evidence.
-- Until ADP-008 passes, direct nearly all engineering work to the pinned public
-  reference harness: external scene ingestion, two-candidate execution, receipts,
-  sealing, external outcome joins, statistics, replay, abstention, and evidence
-  presentation. New capture/reconstruction feature work is forbidden unless a
-  measured blocker proves the smallest missing measurement.
+- ADP-008 is observed complete. Until ADP-009 passes, direct nearly all
+  engineering work to exact public-scene/method admission, metric registration,
+  one exact InteriorGS/matching-SAGE-3D object removal through frozen render-
+  derived inputs, unchanged Inpaint360GS author reproduction, an InFusion
+  primary adapter and AuraFusion360 quality challenger, exact SimReady USD
+  replacement, bounded NVIDIA USD Content Agents authoring comparison, targeted ScanNet++
+  real measured transfer after access, hybrid Isaac qualification,
+  abstention, media, and replay. Fresh capture feature work is forbidden unless
+  a measured blocker proves the smallest missing measurement; the next
+  construction phase uses the existing Raw V3.2 path for one fresh
+  clean-background/object-present workcell capture.
 - Do not start or expand humanoid/G1, locomotion, deformables, insertion/force
   tasks, five-policy/general-ranking campaigns, world-model/evaluator research,
   reconstruction/provider bakeoffs, universal runtimes, dynamic-scene research,
@@ -152,6 +160,13 @@ dependent step as blocked instead of guessing.
 - Compatibility work must preserve prior proof boundaries. In particular,
   generated-video or simulator execution never becomes physical truth, and a
   candidate policy or provider never grades itself.
+- Every newly executed policy-evaluation episode must retain the exact lossless
+  observation frames shown to the policy, a digest-bound frame manifest, and a
+  derived human-review video. Completed episodes without all three are invalid;
+  failures before the first observation must retain an explicit typed media gap.
+  The receipt must identify whether success came from deterministic simulator
+  state, a human, or a learned evaluator. A policy may never grade itself, and a
+  review video remains derived visual evidence rather than physical truth.
 - For Paperclip/autonomous-loop closeouts, apply the Blueprint-WebApp
   `docs/autonomous-loop-evidence-checklist-2026-05-03.md` (sibling checkout; see
   the sibling-checkout convention above) before claiming `done`, `blocked`, or

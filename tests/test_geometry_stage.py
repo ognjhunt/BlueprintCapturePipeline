@@ -1004,6 +1004,38 @@ def test_geometry_stage_da3_and_empty_frame_edges(monkeypatch, tmp_path: Path) -
     assert "intrinsics_missing" in summary["launch_blockers"]
 
 
+def test_non_authoritative_da3_flags_cannot_reach_metric_record_qualification(
+    tmp_path: Path,
+) -> None:
+    geometry_root = tmp_path / "da3-diagnostic"
+    records = _write_frame_artifacts(geometry_root, frame_count=1)
+    records[0]["metric_pose_truth"] = False
+    report = geometry_stage._validate_geometry_frame_records(
+        frame_records=records,
+        intrinsics_payload={
+            "schema_version": "v1",
+            "camera_model": "pinhole",
+            "image_width": 32,
+            "image_height": 24,
+            "fx": 28.0,
+            "fy": 29.0,
+            "cx": 16.0,
+            "cy": 12.0,
+            "distortion": {"model": "none", "coefficients": []},
+            "metric_intrinsics_truth": False,
+            "source": {"capture_truth": False},
+        },
+        geometry_root=geometry_root,
+        provider_result_fallback=False,
+        require_explicit_metric_truth=True,
+    )
+
+    assert report["verified_record_count"] == 0
+    blockers = report["rejections"][0]["blockers"]
+    assert "metric_pose_truth_not_explicitly_proven" in blockers
+    assert "metric_intrinsics_truth_not_explicitly_proven" in blockers
+
+
 def test_local_sfm_builder_truth_flags_are_append_only(tmp_path: Path) -> None:
     local = geometry_stage._build_local_sfm_provider_result(
         video_path=tmp_path / "walkthrough.mp4",

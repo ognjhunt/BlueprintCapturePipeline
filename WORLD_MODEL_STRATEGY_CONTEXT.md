@@ -16,22 +16,37 @@ replaceable evidence methods behind the existing Task Evaluation Run contracts.
 No method gains authority from novelty, realism, provider identity, or a paper's
 reported result.
 
-### Public Harness First, Partner Stack Second
+### Public Evidence Ladder First, Fresh Partner Site Last
 
-First audit and pin one existing public real-to-sim substrate. SIMPLER is the
-provisional first candidate because it exposes prepackaged manipulation
-environments, common policy integrations, condition variation, and public real
-performance references. Its admission still requires exact repository,
-submodule, asset, license, policy, task, evaluator, outcome, and runtime pins.
+ADP-008 already qualified the decision/outcome harness retrospectively on
+SIMPLER. Preserve that replay. ADP-009 now qualifies the missing scene-editing
+and physicalization seams with orthogonal public evidence:
 
-Use it to qualify the complete harness retrospectively. Do not integrate
-PolaRiS, REALM, DROID, or another backend in parallel unless SIMPLER fails a
-recorded requirement. Do not select a permanent robot, simulator, policy family,
-renderer, provider, or reconstruction system from this development result.
+1. an exact released Inpaint360GS revision and unchanged author-data
+   reproducibility smoke, plus exact InFusion and AuraFusion360 author smokes;
+2. one exact rights-admitted InteriorGS/SAGE-3D appearance/static-collision pair
+   for synthetic source-object removal and hybrid composition; an authored
+   scene remains a separate physics positive control, never a substitute;
+3. a digest-bound virtual-camera adapter that renders RGB and only each
+   preregistered method's native splat depth/disparity inputs into disjoint
+   calibration and test trajectories when original source frames are
+   unavailable, while withholding external metric geometry and clean-background
+   truth from the method; InFusion is the primary world-frame supplemental-Ply
+   adapter and AuraFusion360 is the multiview quality challenger;
+4. one targeted ScanNet++ scene as the second and only public real measured
+   transfer after access and rights admission;
+5. one exact SimReady USD task object, one physics-authored Isaac control, and a
+   manual-USD versus NVIDIA USD Content Agents v0.5.2 authoring comparison.
+
+No one dataset supplies the product proof. Every public result is
+`development_only`, noncommercial terms remain noncommercial, and paper-only
+methods are inadmissible. Do not select a permanent robot, simulator, policy
+family, renderer, provider, or reconstruction system from this development
+result.
 
 For the later prospective proof, partner first and backend second:
 
-After admission:
+After ADP-009 and partner admission:
 
 1. record the partner's working robot, observation/action interface, policy
    runtime, simulator, source assets, and task;
@@ -44,40 +59,62 @@ After admission:
 A DROID/Franka partner may justify one stack; another fixed arm may justify
 another. That does not change the product or proof contract.
 
-### Development Substrates
+### Development Substrates And Editing
 
-Existing captures and scenes are the default way to make the downstream harness
-runnable before new capture arrives. Pin the smallest corpus and its digests.
-Use it for deterministic compiler, matrix, reset, runtime, receipt, replay,
-sealing, outcome-join, aggregation, abstention, and presentation tests.
+Existing captures and exact public scenes are the default way to make the full
+service runnable before fresh capture arrives. Pin the smallest corpus and its
+digests. Use it for metric registration, object partition/removal,
+render-derived virtual-camera inputs, released-code inpainting, SimReady USD
+authoring and insertion, collision/contact/dynamics, deterministic variation,
+compiler, matrix, reset, runtime, receipt, replay, sealing, outcome-join,
+aggregation, abstention, and presentation tests.
 
-All reused assets retain `development_only` status. They cannot validate the new
-capture, site-task sufficiency, physical dynamics, policy-domain match,
-sim-to-real decision fidelity, or customer value. Fixture success is a software
-result, not a scientific or commercial result.
+All reused assets retain `development_only` status. They cannot validate the
+fresh capture, site-task sufficiency, factual recovery of never-observed hidden
+surfaces, real physical dynamics, policy-domain match, sim-to-real decision
+fidelity, or customer value. Fixture success is a software result, not a
+scientific or commercial result.
 
-Until the one-command public-reference harness is complete, nearly all
-engineering effort goes to external source ingestion, normalized contracts,
-two-candidate execution, condition receipts, replay, decision sealing, external
-outcome joins, statistics, abstention, and evidence presentation. New capture or
-reconstruction feature work is frozen unless a measured blocker proves it is the
-smallest missing measurement.
+If the released inpainting path retrains an editable splat from render-derived
+views, record that new artifact identity. Do not call it an in-place edit of the
+publisher PLY unless exact initialization from that PLY is separately proven.
+
+Until the one-command ADP-009 public-scene rehearsal is complete, nearly all
+engineering effort goes to exact admissions, metric frame/geometry, object
+partition/removal, background completion, SimReady physicalization, hybrid
+Isaac checks, deterministic variation, abstention, media, and replay. New capture
+feature work is frozen unless a measured blocker proves it is the smallest
+missing measurement.
 
 ### Minimum Replica Rule
 
 Build only what the policy observation and task decision require:
 
 - captured appearance only where the policy observes it;
-- independently qualified simplified collision geometry for the robot, work
-  surface, tray, fixture, and rigid objects;
+- registered 3DGS or explicit visual geometry for appearance, never measurement
+  or collision authority;
+- independently qualified simplified static collision geometry for the work
+  surface, tray, and fixture;
+- one exact SimReady USD per task object, with separate visual/collision meshes,
+  measured dimensions/pose, mass, center of mass, inertia, friction, restitution,
+  semantic identity, and reset;
 - measured coordinate frames and scale;
 - owner-approved resets, conditions, and metrics;
 - matched control rate, latency model, and interfaces where decision-relevant.
 
-Do not model the whole facility. Do not add fidelity without a measured failure
-or preregistered requirement. The candidate MSER becomes sufficient only if the
-physical holdout supports the sealed practical decision inside the stated
-envelope.
+Do not model the whole facility. Remove a source object from both appearance and
+collision before inserting its replacement; a visual edit may never leave a
+ghost collider. Prefer observed clean-background/source-view evidence.
+Generated completion remains `visual_candidate_only`. Do not add fidelity
+without a measured failure or preregistered requirement. The candidate MSER
+becomes sufficient only if the physical holdout supports the sealed practical
+decision inside the stated envelope.
+
+NVIDIA USD Content Agents is a replaceable conversion, material, physics-schema,
+and static-validation backend after source geometry exists. It is not an
+image-to-CAD system. Agent-authored CAD is admissible only as immutable source
+code, parameters, kernel, and output that pass independent metric, collider,
+physics, and dynamic Isaac gates.
 
 ### Stable Contracts
 

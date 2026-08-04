@@ -15,16 +15,26 @@ Until that is observed, broader visions are not roadmaps.
 
 ### Immediate Sequence
 
-Blueprint first qualifies the evaluation harness retrospectively on one pinned
-public real-to-sim reference. It then replaces the public scene and published
-outcomes with one admitted partner's existing site assets, task truth, and a
-genuinely held-out physical trial.
+Blueprint has qualified the decision/outcome harness retrospectively on SIMPLER.
+It next qualifies the scene-construction service on exact public data: metric
+InteriorGS/matching-SAGE-3D appearance/collision pairing, one source-object
+removal, unchanged Inpaint360GS reproduction, InFusion primary completion and
+AuraFusion360 challenge using explicitly render-derived method inputs, one exact
+SimReady USD replacement, a manual-versus-NVIDIA Content Agents authoring check,
+one targeted ScanNet++ measured transfer, deterministic variation, abstention,
+and full simulator-side replay.
 
-The first phase is not capture R&D. New capture or reconstruction features are
-added only when the harness or partner proof identifies a specific missing
-measurement that commoditized or existing inputs cannot supply. The durable
-value under test is the evidence-bounded harness and decision, not ownership of
-scene reconstruction.
+Only after that public matrix and partner protocol pass does Blueprint take one
+fresh capture of one previously unseen workcell, including registered
+clean-background and object-present observations. Fresh capture is the final new
+construction input; two-candidate execution, sealing, held-out physical trials,
+and adjudication follow it.
+
+This sequence is not open-ended capture or 3DGS research. New features or methods
+are added only when a gate identifies a specific missing measurement and an exact
+released implementation. The durable value under test is the evidence-bounded
+Task Evaluation Run, including a reversible splat-to-SimReady replacement seam,
+not ownership of reconstruction or inpainting.
 
 ### What This Proof Would Establish
 

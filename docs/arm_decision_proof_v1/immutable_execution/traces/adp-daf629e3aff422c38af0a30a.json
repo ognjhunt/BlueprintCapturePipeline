@@ -1,0 +1,1180 @@
+{
+  "action_trace": [
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          0.04947388172149658,
+          0.037105441093444824,
+          0.0
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.007874011993408203,
+          0.007874011993408203,
+          0.0
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          0.04947388172149658,
+          0.037105441093444824,
+          0.0
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.007874011993408203,
+          0.007874011993408203,
+          0.0
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          0.09894776344299316,
+          0.06184232234954833,
+          0.0
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.06299209594726562,
+          0.06299209594726562,
+          -0.007874011993408203
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          0.09894776344299316,
+          0.06184232234954834,
+          0.0
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.06299209594726562,
+          0.06299209594726562,
+          -0.007874011993408203
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          0.17315852642059326,
+          0.06184232234954834,
+          0.0
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.09448814392089844,
+          0.07874011993408203,
+          -0.007874011993408203
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          0.17315852642059326,
+          0.06184232234954834,
+          0.0
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.09448814392089844,
+          0.07874011993408203,
+          -0.007874011993408203
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          0.17315852642059326,
+          0.0865793228149414,
+          -0.30921196937561035
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.09448814392089844,
+          0.10236215591430664,
+          0.0
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          0.17315852642059326,
+          0.0865793228149414,
+          -0.30921196937561035
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.09448814392089844,
+          0.10236215591430664,
+          0.0
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          0.11131620407104492,
+          0.0865793228149414,
+          -0.3215804100036621
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.06299209594726562,
+          0.09448814392089844,
+          -0.007874011993408203
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          0.11131620407104492,
+          0.0865793228149414,
+          -0.3215804100036621
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.06299209594726562,
+          0.09448814392089844,
+          -0.007874011993408203
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          0.08657932281494139,
+          0.08657932281494139,
+          -0.3215804100036621
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.04724407196044922,
+          0.09448814392089844,
+          -0.007874011993408203
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          0.0865793228149414,
+          0.0865793228149414,
+          -0.3215804100036621
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.04724407196044922,
+          0.09448814392089844,
+          -0.007874011993408203
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          -0.0865793228149414,
+          0.136053204536438,
+          -0.4205281734466553
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.039370059967041016,
+          0.09448814392089844,
+          -0.02362203598022461
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          -0.0865793228149414,
+          0.136053204536438,
+          -0.4205281734466553
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.039370059967041016,
+          0.09448814392089844,
+          -0.02362203598022461
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          -0.136053204536438,
+          0.11131620407104492,
+          -0.3957911729812622
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.039370059967041016,
+          0.07874011993408203,
+          -0.02362203598022461
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          -0.136053204536438,
+          0.11131620407104492,
+          -0.3957911729812622
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.039370059967041016,
+          0.07874011993408203,
+          -0.02362203598022461
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          -0.06184232234954833,
+          0.25973808765411377,
+          -0.272106409072876
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.02362203598022461,
+          0.06299209594726562,
+          -0.05511808395385742
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          -0.06184232234954834,
+          0.25973808765411377,
+          -0.272106409072876
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.02362203598022461,
+          0.06299209594726562,
+          -0.05511808395385742
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          -0.0742107629776001,
+          0.24736952781677246,
+          -0.2597379684448242
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          0.06299209594726562,
+          -0.0708661675453186
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          -0.0742107629776001,
+          0.24736952781677246,
+          -0.2597379684448242
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          0.06299209594726562,
+          -0.0708661675453186
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          -0.0742107629776001,
+          0.1607900857925415,
+          -0.2597379684448242
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.015748023986816406,
+          0.015748023986816406,
+          -0.0708661675453186
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          -0.0742107629776001,
+          0.1607900857925415,
+          -0.2597379684448242
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.015748023986816406,
+          0.015748023986816406,
+          -0.0708661675453186
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          -0.12368476390838623,
+          0.11131620407104492,
+          -0.19789564609527588
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.03149604797363281,
+          -0.015748023986816406,
+          -0.0629921555519104
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          -0.12368476390838623,
+          0.11131620407104492,
+          -0.19789564609527588
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.03149604797363281,
+          -0.015748023986816406,
+          -0.0629921555519104
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          1.0
+        ],
+        "rot_axangle": [
+          -0.012368440628051758,
+          0.11131620407104492,
+          -0.11131632328033447
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.03149604797363281,
+          -0.015748023986816406,
+          -0.05511808395385742
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          1.0
+        ],
+        "rotation_delta": [
+          -0.012368440628051758,
+          0.11131620407104492,
+          -0.11131632328033447
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.03149604797363281,
+          -0.015748023986816406,
+          -0.05511808395385742
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          1.0
+        ],
+        "rot_axangle": [
+          -0.012368440628051758,
+          0.06184232234954834,
+          -0.037105441093444824
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.007874011993408203,
+          -0.007874011993408203,
+          -0.03149604797363281
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          1.0
+        ],
+        "rotation_delta": [
+          -0.012368440628051758,
+          0.06184232234954834,
+          -0.037105441093444824
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.007874011993408203,
+          -0.007874011993408203,
+          -0.03149604797363281
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.6062991619110107
+        ],
+        "rot_axangle": [
+          0.0,
+          0.0,
+          -0.012368440628051758
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          -0.007874011993408203,
+          0.015748023986816406
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.6062991619110107
+        ],
+        "rotation_delta": [
+          0.0,
+          0.0,
+          -0.012368440628051758
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          -0.007874011993408203,
+          0.015748023986816406
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.3700786828994751
+        ],
+        "rot_axangle": [
+          0.0,
+          -0.0742107629776001,
+          -0.024736881256103516
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          -0.015748023986816406,
+          0.07874011993408203
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.3700786828994751
+        ],
+        "rotation_delta": [
+          0.0,
+          -0.0742107629776001,
+          -0.024736881256103516
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          -0.015748023986816406,
+          0.07874011993408203
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.1417323350906372
+        ],
+        "rot_axangle": [
+          0.012368440628051758,
+          -0.12368476390838624,
+          0.04947388172149658
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.007874011993408203,
+          -0.015748023986816406,
+          0.10236215591430664
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.1417323350906372
+        ],
+        "rotation_delta": [
+          0.012368440628051758,
+          -0.12368476390838623,
+          0.04947388172149658
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.007874011993408203,
+          -0.015748023986816406,
+          0.10236215591430664
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          0.0,
+          -0.09894788265228271,
+          0.04947388172149658
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.007874011993408203,
+          0.0,
+          0.07086610794067383
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          0.0,
+          -0.09894788265228271,
+          0.04947388172149658
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          -0.007874011993408203,
+          0.0,
+          0.07086610794067383
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "terminate_episode": [
+          0,
+          1,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "normalized": {
+        "gripper": [
+          0.0
+        ],
+        "rot_axangle": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "terminate_episode": [
+          1,
+          0,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "raw": {
+        "gripper_closedness_action": [
+          0.0
+        ],
+        "rotation_delta": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "terminate_episode": [
+          1,
+          0,
+          0
+        ],
+        "world_vector": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    }
+  ],
+  "environment_metric_trace": [
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 1,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 2,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 3,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 4,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 5,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 6,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 7,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 8,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 9,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 10,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 11,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 12,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 13,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 14,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": false,
+        "n_lift_significant": 0
+      },
+      "is_grasped": false,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 15,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": true,
+        "n_lift_significant": 0
+      },
+      "is_grasped": true,
+      "lifted_object": false,
+      "lifted_object_significantly": false,
+      "success": false
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 16,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": true,
+        "n_lift_significant": 0
+      },
+      "is_grasped": true,
+      "lifted_object": true,
+      "lifted_object_significantly": false,
+      "success": true
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 17,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": true,
+        "n_lift_significant": 1
+      },
+      "is_grasped": true,
+      "lifted_object": true,
+      "lifted_object_significantly": true,
+      "success": true
+    },
+    {
+      "consecutive_grasp": false,
+      "elapsed_steps": 18,
+      "episode_stats": {
+        "consec_grasp": false,
+        "grasped": true,
+        "n_lift_significant": 2
+      },
+      "is_grasped": true,
+      "lifted_object": true,
+      "lifted_object_significantly": true,
+      "success": true
+    },
+    {
+      "consecutive_grasp": true,
+      "elapsed_steps": 19,
+      "episode_stats": {
+        "consec_grasp": true,
+        "grasped": true,
+        "n_lift_significant": 3
+      },
+      "is_grasped": true,
+      "lifted_object": true,
+      "lifted_object_significantly": true,
+      "success": true
+    },
+    {
+      "consecutive_grasp": true,
+      "elapsed_steps": 20,
+      "episode_stats": {
+        "consec_grasp": true,
+        "grasped": true,
+        "n_lift_significant": 4
+      },
+      "is_grasped": true,
+      "lifted_object": true,
+      "lifted_object_significantly": true,
+      "success": true
+    }
+  ],
+  "episode_id": "adp-daf629e3aff422c38af0a30a",
+  "failure": null,
+  "identity": {
+    "candidate_id": "rt1-converged-400120",
+    "condition_id": "coke-can-vertical-laid",
+    "seed": 0
+  },
+  "observation_sha256_trace": [
+    "sha256:4f97c8ea4cabcc95c89a7293af14cd0848c94d891aa85a5de0adb1adac0b1d7b",
+    "sha256:c1b4dbcb5feee548c2961f60c16a71f5a994523632a9655e68a783b433bcb35e",
+    "sha256:dd28d527f1769f5cc438993c4a74579cae136c4ddcc27c783640ccb9daad5b53",
+    "sha256:c45be4d24a8a29faa9d84d40a5b5f404776acaa50493fb22d09a2987828adfac",
+    "sha256:01dd497443284269043dc99bfa58236b066811ffdd85b40c0523e7138b86d62e",
+    "sha256:9fd0bc93644d8a25274747d0460a713f67245abea609efc3341f491d6d950e33",
+    "sha256:8fdcafc21621e1e32cecce43ef8f844ab75afa1ad817654fab26abd7e58a06c8",
+    "sha256:debfc922f122e3801ecd1e767110b8df1d02db42c11877331f8009202bd1abdc",
+    "sha256:3316db824e4b901b70e4f4323d946600c1b752e59eb6dd7b5a34eece6265d20b",
+    "sha256:807d04126eb6b7c51cfc81ad1fc967ab5a4335a3069176a2d2bbfcd75bcb9456",
+    "sha256:804b686ed9554b2bc69edd095f10432a75e1614933f2b2d1688d8ab4553bade3",
+    "sha256:f5c815701456dfe9b4f0c8f3190090f07c31b62cab298097b4034f4aa1551c3e",
+    "sha256:da110cf164f5c5cc29202703c9729df3a39901c058be18276dd2b70b67c35550",
+    "sha256:37143348508e77143014480a42568c0e0e3000672db4a2b9f4242f960533764b",
+    "sha256:d66f706b3bda4d3be16ff9b1eb025ac25fecc4f399703d767dec596d4bac9a0e",
+    "sha256:bd4e62c9c0c93c2499df6780e7dccce01592091851035e2620e456faa8e8dd5e",
+    "sha256:7544ee38f15e43c09c797295e2e19dc0a86e18b38f64ac45cb3cdcbb8df23a65",
+    "sha256:a5164b0ed430d73bcba40957022aa8f10535981d6d6e2283f6622d8fbccb8341",
+    "sha256:ef8f57a41663770d1e2889a9c311011bc23523dea91f685ddfe9c95db63448cc",
+    "sha256:c9c8fab0a43bd481517502ac8aa27d701f28fcd94aab9b174915bfa4abb08b8a"
+  ],
+  "reset": {
+    "condition": {
+      "laid_vertically": true,
+      "lr_switch": false,
+      "upright": false
+    },
+    "environment_reset_info": {
+      "disable_bad_material": false,
+      "distractor_model_ids": null,
+      "distractor_model_scales": null,
+      "model_id": "opened_coke_can",
+      "model_scale": 1.0,
+      "obj_init_pose_wrt_robot_base": "Pose([0.584843, 0.000892967, 0.840576], [0.707059, -0.00810042, -0.0116181, -0.707013])",
+      "orientation": "laid_vertically",
+      "rgb_overlay_cameras": [
+        "overhead_camera"
+      ],
+      "rgb_overlay_mode": "background",
+      "rgb_overlay_path": "/workspace/adp_simpler/SimplerEnv/ManiSkill2_real2sim/data/real_inpainting/google_coke_can_real_eval_1.png",
+      "scene_name": "google_pick_coke_can_1_v4",
+      "scene_offset": null,
+      "scene_pose": null,
+      "scene_table_height": 0.87,
+      "urdf_version": ""
+    },
+    "object_xy": [
+      -0.235,
+      0.2
+    ],
+    "representative_fixed_reset_not_published_25_trial_grid": true,
+    "robot_quaternion_xyzw": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "robot_xy": [
+      0.35,
+      0.2
+    ],
+    "seed": 0
+  },
+  "schema_version": "simpler_episode_trace.v1",
+  "status": "completed",
+  "success": true
+}

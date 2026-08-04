@@ -138,6 +138,7 @@ def _validate_geometry_frame_records(
     intrinsics_payload: Mapping[str, Any],
     geometry_root: Path,
     provider_result_fallback: bool,
+    require_explicit_metric_truth: bool = False,
 ) -> Dict[str, Any]:
     """Verify aligned RGB/pose/depth/confidence records before counting them."""
 
@@ -207,6 +208,12 @@ def _validate_geometry_frame_records(
             or depth_source not in {"sensor_depth", "validated_sfm", "provider_metric_reconstruction"}
         ):
             blockers.append("metric_depth_truth_not_explicitly_proven")
+        if require_explicit_metric_truth and frame.get("metric_pose_truth") is not True:
+            blockers.append("metric_pose_truth_not_explicitly_proven")
+        if require_explicit_metric_truth and (
+            intrinsics_payload.get("source", {}).get("capture_truth") is not True
+        ):
+            blockers.append("metric_intrinsics_truth_not_explicitly_proven")
         confidence_range = frame.get("confidence_range")
         if not (
             isinstance(confidence_range, list)
@@ -233,6 +240,8 @@ def _validate_geometry_frame_records(
                     "height": height,
                     "depth_unit": "meters",
                     "metric_depth_truth": metric_depth_truth and not provider_result_fallback,
+                    "metric_pose_truth": frame.get("metric_pose_truth") is True
+                    and not provider_result_fallback,
                     "geometry_record_verified": True,
                 }
             )
@@ -1673,6 +1682,9 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     provider_key = str(provider or "").strip().lower()
     local_da3_provider = provider_key in {"da3", "local_da3", "depth_anything_3"}
     provider_result_fallback = bool(provider_result.get("fallback_used"))
+    provider_explicitly_non_authoritative = (
+        provider_result.get("metric_geometry_authority") is False
+    )
     provider_result_source = str(provider_result.get("geometry_source") or "").strip()
     local_sfm_provider = provider_result_source == "local_sfm" or provider_key in {
         "local_sfm",
@@ -1690,9 +1702,16 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         else "video_to_world"
     )
 
+    provider_intrinsics = dict(provider_result.get("intrinsics") or {})
+    declared_metric_intrinsics_truth = provider_intrinsics.get("metric_intrinsics_truth")
+    intrinsics_capture_truth = (
+        not provider_result_fallback
+        and not provider_explicitly_non_authoritative
+        and declared_metric_intrinsics_truth is not False
+    )
     intrinsics_payload = {
         "schema_version": "v1",
-        **dict(provider_result.get("intrinsics") or {}),
+        **provider_intrinsics,
         "source": {
             "producer": provider,
             "model": model,
@@ -1700,7 +1719,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             "calibration_truth": "synthetic_diagnostic_not_calibrated"
             if provider_result_fallback
             else "provider_output",
-            "capture_truth": not provider_result_fallback,
+            "capture_truth": intrinsics_capture_truth,
         },
     }
     validation_report = _validate_geometry_frame_records(
@@ -1708,6 +1727,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         intrinsics_payload=intrinsics_payload,
         geometry_root=geometry_root,
         provider_result_fallback=provider_result_fallback,
+        require_explicit_metric_truth=provider_explicitly_non_authoritative,
     )
     verified_frame_records = list(validation_report.pop("verified_records"))
     validation_report_path = geometry_root / "geometry_validation_report.json"
@@ -1725,6 +1745,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         timestamp_seconds = _safe_float(frame.get("timestamp_seconds"))
         frame_id = str(frame.get("frame_id") or _frame_id(frame_index))
         pose_confidence = _safe_float(frame.get("pose_confidence"), 1.0)
+        metric_pose_truth = frame.get("metric_pose_truth") is True
         image_path = str(frame.get("image_path") or "")
         depth_path = str(frame.get("depth_path") or "")
         confidence_path = str(frame.get("confidence_path") or "")
@@ -1742,8 +1763,9 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
                 "pose_confidence": pose_confidence,
                 "is_keyframe": bool(frame.get("is_keyframe")),
                 "pose_truth_source": "synthetic_diagnostic"
-                if provider_result_fallback
+                if provider_result_fallback or not metric_pose_truth
                 else frame_geometry_source,
+                "metric_pose_truth": metric_pose_truth,
             }
         )
         frame_index_records.append(
@@ -1754,8 +1776,10 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
                 "image_path": image_path,
                 "depth_path": depth_path,
                 "confidence_path": confidence_path,
-                "pose_present": bool(frame.get("world_from_camera")) and not provider_result_fallback,
-                "intrinsics_present": bool(provider_result.get("intrinsics")) and not provider_result_fallback,
+                "pose_present": bool(frame.get("world_from_camera"))
+                and not provider_result_fallback,
+                "intrinsics_present": bool(provider_result.get("intrinsics"))
+                and not provider_result_fallback,
                 "pose_confidence": pose_confidence,
                 # Only carry a sharpness value that was actually measured
                 # (image gradient variance) or provider-reported; a missing
@@ -1767,7 +1791,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
                 "sharpness_measured": sharpness_score is not None,
                 "geometry_source": frame_geometry_source,
                 "synthetic_geometry_used": provider_result_fallback,
-                "capture_truth": not provider_result_fallback,
+                "capture_truth": metric_pose_truth and intrinsics_capture_truth,
             }
         )
         depth_artifacts.append(
@@ -2050,7 +2074,9 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "rejected_geometry_record_count": len(validation_report.get("rejections") or []),
         "geometry_validation_report": _json_pointer(validation_report_path, context=context),
         "synthetic_geometry_used": fallback_used,
-        "synthetic_artifacts_are_capture_truth": not fallback_used,
+        "synthetic_artifacts_are_capture_truth": (
+            not fallback_used and not provider_explicitly_non_authoritative
+        ),
         "geometry_live_ready": geometry_live_ready,
         "external_market_ready": external_market_ready,
         "site_faithful_market_ready": site_faithful_market_ready,

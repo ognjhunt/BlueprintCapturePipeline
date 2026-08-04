@@ -1343,7 +1343,7 @@
             {
               "artifact_id": "DATA-03-AC-01-EV-01",
               "path": "src/blueprint_pipeline/geometry_stage.py",
-              "sha256": "sha256:e95f11b5823bc61092fabc168aa2df25cc353c7558638501a5df293481e4da48",
+              "sha256": "sha256:2cfb3fe25c257ee5bae7bf2f30b3c7bbb0fae61f364930b7490569fcb2decbe6",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1359,7 +1359,7 @@
             {
               "artifact_id": "DATA-03-AC-01-EV-02",
               "path": "tests/test_geometry_stage.py",
-              "sha256": "sha256:39147ffa1dc0a274eed2c5c216bd253c05dceb438873556c93a5d6abdf3c17ab",
+              "sha256": "sha256:76bcae1de4aba1af89a0ad6754bf99cfd20ec396711e3ae1310038e2b0dbb61a",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2356,7 +2356,7 @@
             {
               "artifact_id": "DATA-09-AC-01-EV-03",
               "path": "tests/test_geometry_stage.py",
-              "sha256": "sha256:39147ffa1dc0a274eed2c5c216bd253c05dceb438873556c93a5d6abdf3c17ab",
+              "sha256": "sha256:76bcae1de4aba1af89a0ad6754bf99cfd20ec396711e3ae1310038e2b0dbb61a",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

@@ -1,0 +1,43 @@
+{
+  "schema_version": "paid_lane_admission.v1",
+  "status": "admitted",
+  "resource_class": "vast_provider_adapter",
+  "blockers": [],
+  "provider_mutations_performed": 0,
+  "raw_secret_values_recorded": false,
+  "program_id": "arm-decision-proof-v1",
+  "probe_kind": "adp-simpler-public-reference",
+  "control_plane_identity": {
+    "schema_version": "blueprint.gpu_canary_control_plane_identity.v1",
+    "orchestrator_source_commit": "134d63f6f6fc6aa9f3ba5bad2e8a17b03296c16e",
+    "checkout_clean": true,
+    "origin_main_commit": "b4e9a33bed8cb53d030a1d13c04ea7bb5e26c1ce",
+    "remote_main_commit": "b4e9a33bed8cb53d030a1d13c04ea7bb5e26c1ce",
+    "orchestrator_equals_origin_main": false,
+    "orchestrator_equals_remote_main": false,
+    "main_parity_is_diagnostic_not_runtime_identity": true,
+    "raw_secret_values_recorded": false
+  },
+  "public_reference_manifest": "docs/arm_decision_proof_v1/manifests/simpler_google_robot_pick_coke_can.v1.json",
+  "max_hourly_rate_usd": 0.8,
+  "hard_cap_usd": 2.0,
+  "hard_ttl_seconds": 7200,
+  "retry_cap": 0,
+  "authority": "user_authorized_vast_spend_for_arm_decision_proof_v1",
+  "private_data_uploaded": false,
+  "physical_outcome_values_uploaded": false,
+  "allocation_binding": {
+    "program_id": "arm-decision-proof-v1",
+    "probe_kind": "adp-simpler-public-reference",
+    "orchestrator_source_commit": "134d63f6f6fc6aa9f3ba5bad2e8a17b03296c16e",
+    "public_reference_manifest": "docs/arm_decision_proof_v1/manifests/simpler_google_robot_pick_coke_can.v1.json",
+    "source_identity_digest": "sha256:b1175b62222ac2e92d5bd28cf9db54a03c024b31614c2c90a8ea426e76bd915a",
+    "bundle_sha256": "sha256:55d1f422f8946bc4323b00304e48b6d8846629c732335029ba81eba812f7c15c",
+    "max_hourly_rate_usd": 0.8,
+    "hard_cap_usd": 2.0,
+    "hard_ttl_seconds": 7200,
+    "retry_cap": 0,
+    "machine_avoidlist_digest": "sha256:1b1fa8556acd5d3b018cda0d9b82f4cbb1c65b697fb8ce1318f080a00e14d02f"
+  },
+  "allocation_binding_digest": "sha256:57f5e7a8ec2968a433a11a76b30199e90c6f1d7b3b5cd910ea5c431904f0b589"
+}

@@ -1,0 +1,27 @@
+{
+  "approval": {
+    "approval_receipt_digest": "sha256:073065217f29e07bbb909dbc63c8e0cf673ece04253e24c0dc53426eb55fe253",
+    "approval_statement": "I approve protocol adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2 with digest sha256:05eb6f5c187fd69da6f40e7428634181b39fe7f02501bd7ccb9a4331801c01fc as Blueprint founder and simulation task owner.",
+    "approval_statement_sha256": "7abcbad89fdbc4f12a76605cf0e27274877e60d6180d14b04f1f54d3aad604f6",
+    "approved": true,
+    "approved_scope": "development_only_simulation",
+    "approver_role": "blueprint_founder_sim_owner",
+    "deployment_authorized": false,
+    "evidence_ref": "codex-task://019fccab-db18-78d2-8f11-1e8a55076c2f/user-message/2026-08-04-v2",
+    "physical_execution_authorized": false,
+    "protocol_digest": "sha256:05eb6f5c187fd69da6f40e7428634181b39fe7f02501bd7ccb9a4331801c01fc",
+    "protocol_id": "adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2",
+    "publication_authorized": false,
+    "schema_version": "adp_founder_sim_only_approval.v1",
+    "uncapped_paid_compute_authorized": false
+  },
+  "execution_admission_digest": "sha256:c0003d810aeec6b8cc0a87d97637982b7b927a07b2afdb9b9abe4d963595fb0d",
+  "paid_compute_authorized": false,
+  "physical_execution_authorized": false,
+  "protocol_digest": "sha256:05eb6f5c187fd69da6f40e7428634181b39fe7f02501bd7ccb9a4331801c01fc",
+  "protocol_id": "adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2",
+  "schedule_digest": "sha256:f8c4b35234a70c37c04f2e95c1d9792585aa56ca02d647e83fde411447a47005",
+  "schema_version": "adp_founder_sim_execution_admission.v2",
+  "simulation_only": true,
+  "status": "founder_approved_pending_runtime_and_paid_resource_preconditions"
+}

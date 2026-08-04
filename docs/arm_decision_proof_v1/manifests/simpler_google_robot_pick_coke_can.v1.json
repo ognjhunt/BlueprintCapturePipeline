@@ -1,0 +1,396 @@
+{
+  "schema_version": "public_reference_admission.v1",
+  "program_id": "arm-decision-proof-v1",
+  "reference_id": "simpler-google-robot-pick-coke-can-v1",
+  "source_identity_digest": "sha256:b1175b62222ac2e92d5bd28cf9db54a03c024b31614c2c90a8ea426e76bd915a",
+  "phase_label": "retrospective_external_reference",
+  "claim_ceiling": "development_only",
+  "source": {
+    "repository": {
+      "url": "https://github.com/simpler-env/SimplerEnv",
+      "commit": "06accaca93535902d408da4855f21cece12bceb7",
+      "tree": "8e19ab43e428c650b6cff34823caf93183fa9b1c",
+      "commit_observed_at": "2026-08-04T03:42:00Z",
+      "license": {
+        "spdx": "MIT",
+        "source_url": "https://raw.githubusercontent.com/simpler-env/SimplerEnv/06accaca93535902d408da4855f21cece12bceb7/LICENSE",
+        "text_sha256": "sha256:c28645822e5cdadf816144773ee153332449ae04aa6f0b6a6393e5611092f878"
+      },
+      "submodules": [
+        {
+          "path": "ManiSkill2_real2sim",
+          "url": "https://github.com/simpler-env/ManiSkill2_real2sim",
+          "commit": "ef7a4d4fdf4b69f2c2154db5b15b9ac8dfe10682",
+          "license": {
+            "spdx": "Apache-2.0",
+            "source_url": "https://raw.githubusercontent.com/simpler-env/ManiSkill2_real2sim/ef7a4d4fdf4b69f2c2154db5b15b9ac8dfe10682/LICENSE",
+            "text_sha256": "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          }
+        }
+      ]
+    },
+    "asset_bindings": [
+      {
+        "role": "environment_code",
+        "repository_path": "ManiSkill2_real2sim",
+        "path": "mani_skill2_real2sim/envs/custom_scenes/grasp_single_in_scene.py",
+        "git_object_type": "blob",
+        "git_object_sha1": "ab772085ad2049c15d0f59430bd3ca2ae1b5f087"
+      },
+      {
+        "role": "scene_asset",
+        "repository_path": "ManiSkill2_real2sim",
+        "path": "data/hab2_bench_assets/stages/google_pick_coke_can_1_v4.glb",
+        "git_object_type": "blob",
+        "git_object_sha1": "002d9a550666a2902ef079301387ea08053b2bf9"
+      },
+      {
+        "role": "observation_background",
+        "repository_path": "ManiSkill2_real2sim",
+        "path": "data/real_inpainting/google_coke_can_real_eval_1.png",
+        "git_object_type": "blob",
+        "git_object_sha1": "24ec261a192f790d3a8e46e7d61b9cd60a306daa"
+      },
+      {
+        "role": "object_assets",
+        "repository_path": "ManiSkill2_real2sim",
+        "path": "data/custom/models/opened_coke_can",
+        "git_object_type": "tree",
+        "git_object_sha1": "1a6b1717495a3f286180e0a9de9b78effdc77e2d"
+      },
+      {
+        "role": "robot_assets",
+        "repository_path": "ManiSkill2_real2sim",
+        "path": "mani_skill2_real2sim/assets/descriptions/googlerobot_description",
+        "git_object_type": "tree",
+        "git_object_sha1": "fa6e83b01f1341d0486c8a4994626eac36c65abb"
+      },
+      {
+        "role": "robot_implementation",
+        "repository_path": "ManiSkill2_real2sim",
+        "path": "mani_skill2_real2sim/agents/robots/googlerobot.py",
+        "git_object_type": "blob",
+        "git_object_sha1": "8cd9001fffdf276bf1b31cf365b3fbbefbe16a61"
+      },
+      {
+        "role": "evaluation_driver",
+        "repository_path": ".",
+        "path": "scripts/rt1_pick_coke_can_visual_matching.sh",
+        "git_object_type": "blob",
+        "git_object_sha1": "b00866846ba6e3bd89508f51b15a7744298e1013"
+      },
+      {
+        "role": "external_outcome_code",
+        "repository_path": ".",
+        "path": "simpler_env/utils/metrics.py",
+        "git_object_type": "blob",
+        "git_object_sha1": "39a251c9abe14b30f5578e931143ff2a7edf4bfe"
+      }
+    ]
+  },
+  "rights": {
+    "review_status": "terms_recorded_not_accepted_by_agent",
+    "agent_accepted_new_terms": false,
+    "terms": [
+      {
+        "subject": "simpler_env_repository",
+        "spdx": "MIT",
+        "source_url": "https://raw.githubusercontent.com/simpler-env/SimplerEnv/06accaca93535902d408da4855f21cece12bceb7/LICENSE",
+        "text_sha256": "sha256:c28645822e5cdadf816144773ee153332449ae04aa6f0b6a6393e5611092f878"
+      },
+      {
+        "subject": "maniskill2_real2sim_repository_and_assets",
+        "spdx": "Apache-2.0",
+        "source_url": "https://raw.githubusercontent.com/simpler-env/ManiSkill2_real2sim/ef7a4d4fdf4b69f2c2154db5b15b9ac8dfe10682/LICENSE",
+        "text_sha256": "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      {
+        "subject": "rt1_checkpoint_materials",
+        "spdx": "CC-BY-4.0",
+        "source_url": "https://creativecommons.org/licenses/by/4.0/legalcode.txt",
+        "text_sha256": "sha256:9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411",
+        "terms_source_repository": "https://github.com/google-deepmind/open_x_embodiment",
+        "terms_source_commit": "9eeb68b989efbcf474e8fb9019e01d02b962a604",
+        "terms_source_readme_sha256": "sha256:e7dbf6bb04559e981b7eab2e0f4510579bf82b09948a0fe6471ba1794f86ae59"
+      },
+      {
+        "subject": "universal_sentence_encoder_large_tensorflow2_v2",
+        "spdx": "Apache-2.0",
+        "source_url": "https://www.kaggle.com/models/google/universal-sentence-encoder/tensorFlow2/large/2",
+        "text_sha256": "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    ]
+  },
+  "task": {
+    "task_id": "simpler.google_robot.pick_coke_can",
+    "task_family": "bounded_rigid_object_pick_place",
+    "environment_id": "GraspSingleOpenedCokeCanInScene-v0",
+    "scene_id": "google_pick_coke_can_1_v4",
+    "robot_id": "google_robot_static",
+    "instruction": "pick coke can",
+    "observation_schema": {
+      "policy_input": "rgb_uint8",
+      "camera": "overhead_camera",
+      "image_width": 320,
+      "image_height": 256,
+      "depth_visible_to_policy": false,
+      "language_embedding": "universal_sentence_encoder_large_5"
+    },
+    "action_schema": {
+      "world_vector": 3,
+      "rotation_axis_angle": 3,
+      "gripper": 1,
+      "terminate_episode": 1,
+      "simulator_action_order": [
+        "world_vector",
+        "rotation_axis_angle",
+        "gripper"
+      ]
+    },
+    "controller": {
+      "control_frequency_hz": 3,
+      "simulation_frequency_hz": 513,
+      "max_control_steps": 80,
+      "mode": "arm_pd_ee_delta_pose_align_interpolate_by_planner_gripper_pd_joint_target_delta_pos_interpolate_by_planner"
+    },
+    "reset": {
+      "robot_xy": [0.35, 0.2],
+      "robot_quaternion_xyzw": [0.0, 0.0, 0.0, 1.0],
+      "object_xy_grid": {
+        "x_start": -0.35,
+        "x_stop": -0.12,
+        "x_count": 5,
+        "y_start": -0.02,
+        "y_stop": 0.42,
+        "y_count": 5
+      },
+      "trials_per_orientation": 25,
+      "urdf_visual_variants": [
+        "default",
+        "recolor_tabletop_visual_matching_1",
+        "recolor_tabletop_visual_matching_2",
+        "recolor_cabinet_visual_matching_1"
+      ]
+    },
+    "evaluator": {
+      "owner": "environment_not_policy",
+      "policy_self_report_used": false,
+      "source_path": "ManiSkill2_real2sim/mani_skill2_real2sim/envs/custom_scenes/grasp_single_in_scene.py",
+      "source_git_blob_sha1": "ab772085ad2049c15d0f59430bd3ca2ae1b5f087",
+      "success_semantics": "object_lifted_or_lifted_significantly_for_at_least_five_steps",
+      "lift_threshold_m": 0.01,
+      "significant_lift_threshold_m": 0.02,
+      "significant_lift_min_steps": 5,
+      "timeout_is_success": false
+    },
+    "invalid_trial_behavior": {
+      "published_source_rule": "not_reported",
+      "blueprint_qualification_rule": "retain_invalid_and_missing_cells"
+    },
+    "randomness": {
+      "rt1_inference": "deterministic_saved_model_policy",
+      "object_positions": "deterministic_5_by_5_grid",
+      "orientation": "condition_bound",
+      "robot_visual_variant": "four_version_paper_average"
+    }
+  },
+  "candidates": [
+    {
+      "candidate_id": "rt1-converged-400120",
+      "display_name": "RT-1 Converged",
+      "policy_family": "RT-1",
+      "genuine_public_checkpoint": true,
+      "checkpoint_prefix": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120",
+      "checkpoint_total_size_bytes": 646999221,
+      "checkpoint_objects": [
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120/assets/metadata.textproto", "size_bytes": 24047, "generation": "1709599353958391", "md5_base64": "BwTYW8Yv/fbuhPUlFQwQ4Q==", "crc32c_base64": "G2NiRg=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120/checkpoint", "size_bytes": 345, "generation": "1709599352500249", "md5_base64": "ptUvOaZxbYPRI/wfiLA6wQ==", "crc32c_base64": "mBXmqw=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120/ckpt-400120.data-00000-of-00001", "size_bytes": 473890853, "generation": "1709599352322133", "md5_base64": "sWYIjUnNc0e0lFiNeXrwIg==", "crc32c_base64": "fkVFvQ=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120/ckpt-400120.index", "size_bytes": 34270, "generation": "1709599349786703", "md5_base64": "XjfPp4eTg1sVSS3J87Bgkw==", "crc32c_base64": "uqJ3HQ=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120/fingerprint.pb", "size_bytes": 56, "generation": "1709599350141453", "md5_base64": "/o8fAp5Hz3CGanDEAzdOQg==", "crc32c_base64": "+qQPQQ=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120/policy_specs.pbtxt", "size_bytes": 9171, "generation": "1709599349952052", "md5_base64": "l6mvPTkBSNvC2JtU/aviVQ==", "crc32c_base64": "CBiZzw=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120/saved_model.pb", "size_bytes": 14824110, "generation": "1709599352770500", "md5_base64": "l55q9IWGRWGkw+LdBUuwMw==", "crc32c_base64": "1NFssQ=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120/variables/variables.data-00000-of-00001", "size_bytes": 158202888, "generation": "1709599353776852", "md5_base64": "sf+1gufQeWHEMmbKrGqfTg==", "crc32c_base64": "KP+8bw=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000400120/variables/variables.index", "size_bytes": 13481, "generation": "1709599352949839", "md5_base64": "79/yT90XA/Jcj7p2T/3dWg==", "crc32c_base64": "Dcpd7A=="}
+      ]
+    },
+    {
+      "candidate_id": "rt1-15pct-58240",
+      "display_name": "RT-1 15 Percent",
+      "policy_family": "RT-1",
+      "genuine_public_checkpoint": true,
+      "checkpoint_prefix": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240",
+      "checkpoint_total_size_bytes": 646999180,
+      "checkpoint_objects": [
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240/assets/metadata.textproto", "size_bytes": 24047, "generation": "1709599024463719", "md5_base64": "BwTYW8Yv/fbuhPUlFQwQ4Q==", "crc32c_base64": "G2NiRg=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240/checkpoint", "size_bytes": 343, "generation": "1709599022961628", "md5_base64": "ldH6qN0p6h82G0CIr+grWA==", "crc32c_base64": "0Ttl4A=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240/ckpt-58240.data-00000-of-00001", "size_bytes": 473890853, "generation": "1709599022411154", "md5_base64": "42axquFVkGKEyOC7aadh9g==", "crc32c_base64": "1J4vOQ=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240/ckpt-58240.index", "size_bytes": 34236, "generation": "1709599019909361", "md5_base64": "NZuLjxsBT6fUX8knS0LQJQ==", "crc32c_base64": "X+dEDA=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240/fingerprint.pb", "size_bytes": 55, "generation": "1709599022798131", "md5_base64": "VQcRzMdWjAtqh46mDBS6vg==", "crc32c_base64": "xHr9Xw=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240/policy_specs.pbtxt", "size_bytes": 9171, "generation": "1709599022614870", "md5_base64": "l6mvPTkBSNvC2JtU/aviVQ==", "crc32c_base64": "CBiZzw=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240/saved_model.pb", "size_bytes": 14824115, "generation": "1709599023235254", "md5_base64": "IRIzwzSl10b4eUWEDFHPLA==", "crc32c_base64": "RUrExw=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240/variables/variables.data-00000-of-00001", "size_bytes": 158202888, "generation": "1709599024286787", "md5_base64": "zAf/tEvMcv9XPY1iiFCHKw==", "crc32c_base64": "jSjdgA=="},
+        {"name": "open_x_embodiment_and_rt_x_oss/rt_1_tf_trained_for_000058240/variables/variables.index", "size_bytes": 13472, "generation": "1709599023400715", "md5_base64": "+7PYGUHbmkckPoHWMUKewg==", "crc32c_base64": "v0ripA=="}
+      ]
+    }
+  ],
+  "conditions": [
+    {
+      "condition_id": "coke-can-horizontal-lr-switch",
+      "published_label": "Horizontal Laying",
+      "published_physical_trial_count_per_candidate": 25,
+      "reset_binding": {"lr_switch": true, "upright": false, "laid_vertically": false}
+    },
+    {
+      "condition_id": "coke-can-vertical-laid",
+      "published_label": "Vertical Laying",
+      "published_physical_trial_count_per_candidate": 25,
+      "reset_binding": {"lr_switch": false, "upright": false, "laid_vertically": true}
+    },
+    {
+      "condition_id": "coke-can-standing-upright",
+      "published_label": "Standing",
+      "published_physical_trial_count_per_candidate": 25,
+      "reset_binding": {"lr_switch": false, "upright": true, "laid_vertically": false}
+    }
+  ],
+  "physical_reference": {
+    "source_artifact": {
+      "title": "Evaluating Real-World Robot Manipulation Policies in Simulation",
+      "url": "https://simpler-env.github.io/simpler.pdf",
+      "sha256": "sha256:7414c22de180c5c0a16a48f76e2b4b36d0c6377b4a7e5cccf3f2f3d9e9aa7c8b",
+      "size_bytes": 9894913,
+      "table": "Table IV",
+      "protocol_section": "Appendix B"
+    },
+    "repository_metrics_binding": {
+      "path": "simpler_env/utils/metrics.py",
+      "git_blob_sha1": "39a251c9abe14b30f5578e931143ff2a7edf4bfe",
+      "published_task_aggregate_only": true,
+      "orientation_cells_taken_from_paper_table_not_expanded_from_repository_aggregate": true
+    },
+    "outcome_granularity": "candidate_by_condition_aggregate",
+    "outcomes_artifact": {
+      "relative_path": "simpler_google_robot_pick_coke_can_physical_outcomes.v1.json",
+      "digest": "sha256:621fa5c0ea14888e71c42d3e482f22484990f3b26d77b2d0f7df7feb4ab77ded",
+      "cell_count": 6,
+      "programmatic_release_required": true
+    },
+    "cell_bindings": [
+      {"candidate_id": "rt1-converged-400120", "condition_id": "coke-can-horizontal-lr-switch", "trial_count": 25},
+      {"candidate_id": "rt1-converged-400120", "condition_id": "coke-can-vertical-laid", "trial_count": 25},
+      {"candidate_id": "rt1-converged-400120", "condition_id": "coke-can-standing-upright", "trial_count": 25},
+      {"candidate_id": "rt1-15pct-58240", "condition_id": "coke-can-horizontal-lr-switch", "trial_count": 25},
+      {"candidate_id": "rt1-15pct-58240", "condition_id": "coke-can-vertical-laid", "trial_count": 25},
+      {"candidate_id": "rt1-15pct-58240", "condition_id": "coke-can-standing-upright", "trial_count": 25}
+    ]
+  },
+  "runtime": {
+    "upstream_requirements": [
+      {"path": "requirements_full_install.txt", "git_blob_sha1": "5437fa69137e62dc3d279ad661fe10d22fec50d0", "sha256": "sha256:d60990dbc82038c53a2bb5d069dc274f659cefc35cc35a0e72a94832bc7f213d", "pin_status": "partial"},
+      {"path": "ManiSkill2_real2sim/requirements.txt", "git_blob_sha1": "b86e1c2ec28236afe74b985cf3ec20e171ec5394", "pin_status": "partial"}
+    ],
+    "language_encoder": {
+      "model_id": "google/universal-sentence-encoder/tensorFlow2/large/2",
+      "legacy_tfhub_id": "google/universal-sentence-encoder-large/5",
+      "publisher": "Google",
+      "license": "Apache-2.0",
+      "download_url": "https://www.kaggle.com/api/v1/models/google/universal-sentence-encoder/tensorFlow2/large/2/download",
+      "archive_size_bytes": 550093654,
+      "uncompressed_size_bytes": 605134577,
+      "archive_sha256": "sha256:2f5edf452025745e79822069fe8027ddbc682a06ddd8b2bf7b68bd48ab349b2e"
+    },
+    "environment_lock": {
+      "status": "exact_immutable",
+      "digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+      "artifact": {
+        "relative_path": "simpler_runtime_lock.json",
+        "file_sha256": "sha256:187bcee7dd43a043f83a4b3aa57d1d85df5176bb0a2e00bce0f0bb21efa6acaa",
+        "size_bytes": 8242
+      },
+      "container_image": "nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04@sha256:693d4bcb5b05ec381cf815ed0085d4cbc0757d46ccbaa5fab097bb5c250bc69d",
+      "container_terms": {
+        "publisher": "NVIDIA",
+        "terms_url": "https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license",
+        "review_status": "public_terms_recorded_no_acceptance_by_agent"
+      },
+      "xla_cuda_data_dir": "/usr/local/cuda",
+      "nvidia_driver_capabilities": "all",
+      "vulkan_requirement": "observed_nvidia_icd_and_vulkaninfo_summary",
+      "vulkan_driver_override_environment": ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"],
+      "sapien_offscreen_system_packages": ["libegl1", "libxext6", "libvulkan1", "vulkan-tools"],
+      "admitted_vast_machine_ids": [41950],
+      "machine_admission_basis": "attempt_13_completed_six_genuine_checkpoint_backed_closed_loop_episodes_with_observed_nvidia_vulkan_cuda_and_exact_runtime_lock",
+      "unresolved_requirements": []
+    },
+    "cpu": {"architecture": "linux_x86_64", "minimum_vcpu": 4, "status": "estimate_not_upstream_benchmark"},
+    "gpu": {"required": true, "vendor": "NVIDIA", "cuda": ">=11.8,<13", "recommended": "RTX", "paper_benchmark": "RTX_4090"},
+    "storage": {"checkpoint_bytes": 1293998401, "repository_and_environment_bytes": "acquisition_measurement_required", "minimum_free_bytes": 10737418240},
+    "expected_duration": {"paper_render_rate_sim_steps_per_second": 3500, "paper_relative_speed_vs_real": 7, "observed_full_two_candidate_runtime_seconds": 277.4032227079733},
+    "zero_spend_feasibility": {
+      "status": "blocked_host_incompatible_no_nvidia_cuda",
+      "cost_usd": 0.0,
+      "observed_host_os": "Darwin",
+      "observed_host_architecture": "arm64",
+      "observed_gpu": "Apple_M2_8_core_Metal",
+      "nvidia_smi_available": false,
+      "paid_execution_authorized_separately": true
+    },
+    "paid_runtime_canary": {
+      "status": "completed",
+      "provider": "vast",
+      "authority": "user_authorized_vast_gpu_spend_for_arm_decision_proof_v1",
+      "license_terms_accepted_by_agent": false,
+      "orchestrator_source_commit": "134d63f6f6fc6aa9f3ba5bad2e8a17b03296c16e",
+      "source_manifest_digest": "sha256:eaaece7b2d2412786d4f68159c21d48722d97a44ae39a5a5e1da4ae1d6e3c7f3",
+      "source_identity_digest": "sha256:b1175b62222ac2e92d5bd28cf9db54a03c024b31614c2c90a8ea426e76bd915a",
+      "bundle_sha256": "sha256:55d1f422f8946bc4323b00304e48b6d8846629c732335029ba81eba812f7c15c",
+      "runtime_lock_digest": "sha256:3ecd6028b9ae4f24a5303b44df5150aa58c11e8b18655c15da355fc0f0b776a3",
+      "execution_digest": "sha256:2bc388722999f62e2d1955c73ba3e935beb4a092229d784c11404ad5aef9e97a",
+      "machine_id": 41950,
+      "instance_id": 46765550,
+      "gpu_model_slug": "rtx_4090",
+      "selected_hourly_rate_usd": 0.33555555555555555,
+      "observed_runtime_seconds": 277.4032227079733,
+      "estimated_cost_usd": 0.025857,
+      "hard_cap_usd": 2.0,
+      "hard_ttl_seconds": 7200,
+      "retry_cap": 0,
+      "all_staged_objects_absent": true,
+      "all_vast_instances_destroyed": true,
+      "provider_zero_verified": true,
+      "teardown_completed": true,
+      "continuing_spend": false,
+      "physical_outcome_values_accessed": false,
+      "physical_outcomes_uploaded": false,
+      "raw_secret_values_recorded": false,
+      "artifacts": [
+        {"role": "source_manifest", "relative_path": "provider_evidence/source_manifest.json", "sha256": "sha256:5702131c4ddca0960c25eb11b2ed930a3803dcb3a881ca2afe08a665107235d7", "size_bytes": 19079},
+        {"role": "runtime_lock", "relative_path": "simpler_runtime_lock.json", "sha256": "sha256:187bcee7dd43a043f83a4b3aa57d1d85df5176bb0a2e00bce0f0bb21efa6acaa", "size_bytes": 8242},
+        {"role": "execution", "relative_path": "adp_simpler_closed_loop_execution.json", "sha256": "sha256:17d07770b2b08071cbccce36f5dcc2661d853ad1f64e54d043f47b1ecd18c3bf", "size_bytes": 10709},
+        {"role": "paid_admission", "relative_path": "provider_evidence/paid_admission.json", "sha256": "sha256:d1a8422e23141f41692518582ed2e3b893c4170ae6d1e0ae20ec2d1308e12ec7", "size_bytes": 2046},
+        {"role": "bundle_receipt", "relative_path": "provider_evidence/adp_simpler_bundle_receipt.json", "sha256": "sha256:a2aa8ad4cba710c2c6488263a73e7efc59bc83146aaa887bd97b2137ef9fc33b", "size_bytes": 1605},
+        {"role": "provider_result", "relative_path": "provider_evidence/adp_simpler_vast_result.json", "sha256": "sha256:dd4095123cbae44572ee4c5ee49506ba36a311eb19cc469c7665922099972469", "size_bytes": 1591},
+        {"role": "budget_ledger", "relative_path": "provider_evidence/vast_budget_ledger.json", "sha256": "sha256:51e07d5a6c9325cfdb3f455d7fc0a54a91d838a396387c931e00f7c0ac28caae", "size_bytes": 697},
+        {"role": "offer_selection", "relative_path": "provider_evidence/vast_offer_selection_manifest.json", "sha256": "sha256:fce1e9672aa07f99b5ccd95eb514a2be9089d07ae51981df168776ef4f0acefe", "size_bytes": 3245},
+        {"role": "output_download", "relative_path": "provider_evidence/vast_provider_output_download_manifest.json", "sha256": "sha256:b4bbc853f88acbf171c1faed253cca00f2f4422606b99b1f43cbbb9af23b4ee2", "size_bytes": 540},
+        {"role": "final_validation", "relative_path": "provider_evidence/vast_final_validation.json", "sha256": "sha256:8eab7feb0ebbb742043a202ad4800e70da0c1d536cec5c6da93683af920c3f0d", "size_bytes": 2435},
+        {"role": "teardown", "relative_path": "provider_evidence/vast_teardown_manifest.json", "sha256": "sha256:c9470278a188d4d06af738055b79b473a1f48009c08d47091c8edecb249afc45", "size_bytes": 1358},
+        {"role": "object_store_cleanup", "relative_path": "provider_evidence/wam_provider_object_store_cleanup.json", "sha256": "sha256:e9b04574b69271e20691c23329c6dabb90fab4a41054a8c2c4f4f4f04db93235", "size_bytes": 943}
+      ]
+    }
+  },
+  "claim_boundaries": {
+    "retrospective_harness_qualification": true,
+    "digital_twin": false,
+    "prospective_validation": false,
+    "deployment_readiness": false,
+    "physical_safety": false,
+    "customer_value": false,
+    "general_sim_to_real_fidelity": false,
+    "general_policy_ranking": false,
+    "universal_robot_or_simulator_support": false,
+    "two_candidates_establish_rank_correlation": false
+  },
+  "manifest_digest": "sha256:323706aee905177b66eb9881ada8b1049df9b08a1a7e1cc2aa0f23e4f4b023c5"
+}

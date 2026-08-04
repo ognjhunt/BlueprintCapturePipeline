@@ -1,0 +1,46 @@
+{
+  "schema_version": "vast_teardown_manifest.v1",
+  "generated_at": "2026-08-04T06:07:31.507725+00:00",
+  "status": "completed",
+  "vast_instance_ids": [
+    46765550
+  ],
+  "teardown_actions_performed": [
+    {
+      "instance_id": 46765550,
+      "action": "destroy_instance",
+      "http_status_code": 200,
+      "response": {
+        "success": true
+      },
+      "status": "completed"
+    }
+  ],
+  "runner_gpu_teardown_completed": true,
+  "continuing_spend_from_this_run": false,
+  "retention_authorized": false,
+  "retention_decision": {
+    "schema_version": "vast_retained_instance_decision.v1",
+    "generated_at": "2026-08-04T06:07:31.085124+00:00",
+    "status": "teardown_required",
+    "requested": false,
+    "instance_ids": [
+      46765550
+    ],
+    "watchdog_pid": null,
+    "watchdog_deadline_epoch": null,
+    "container_health_proven": true,
+    "gpu_health_proven": true,
+    "cosmos_server_loaded": false,
+    "cosmos_runtime_status": null,
+    "blockers": [
+      "retention_not_requested",
+      "retention_independent_watchdog_not_armed",
+      "retention_watchdog_deadline_expired_or_missing",
+      "retention_cosmos_server_not_proven_loaded"
+    ],
+    "raw_secret_values_recorded": false
+  },
+  "zero_continuing_spend_scope": "all Vast instances created by this adapter were destroyed",
+  "raw_secret_values_recorded": false
+}
