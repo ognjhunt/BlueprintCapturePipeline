@@ -314,6 +314,8 @@
       "vulkan_requirement": "observed_nvidia_icd_and_vulkaninfo_summary",
       "vulkan_driver_override_environment": ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"],
       "sapien_offscreen_system_packages": ["libegl1", "libxext6", "libvulkan1", "vulkan-tools"],
+      "admitted_vast_machine_ids": [41950],
+      "machine_admission_basis": "attempt_7_observed_nvidia_icd_cuda_toolkit_and_real_sapien_construction",
       "unresolved_requirements": [
         "exact_python_patch",
         "numpy",
@@ -366,5 +368,5 @@
     "universal_robot_or_simulator_support": false,
     "two_candidates_establish_rank_correlation": false
   },
-  "manifest_digest": "sha256:5b25df9aef75918f5050eb02a3897577ded29a9517c6833019ee2d65ef327f63"
+  "manifest_digest": "sha256:eaaece7b2d2412786d4f68159c21d48722d97a44ae39a5a5e1da4ae1d6e3c7f3"
 }

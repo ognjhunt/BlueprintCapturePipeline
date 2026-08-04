@@ -13,6 +13,7 @@ from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
 )
 from blueprint_pipeline.simpler_public_vast import (
+    ADMITTED_MACHINE_IDS,
     PROBE_KIND,
     _adp_session_budget_ledger,
     _vast_authority_environment,
@@ -95,6 +96,14 @@ def test_adp_budget_ledger_is_run_local(tmp_path: Path) -> None:
     assert _adp_session_budget_ledger(tmp_path) == (
         tmp_path.resolve() / "adp_vast_session_budget.json"
     )
+
+
+def test_adp_runtime_pins_only_observed_vulkan_capable_machine() -> None:
+    assert ADMITTED_MACHINE_IDS == (41950,)
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert manifest["runtime"]["environment_lock"]["admitted_vast_machine_ids"] == [
+        41950
+    ]
 
 
 def test_worker_activates_only_verified_editable_source_roots(tmp_path: Path) -> None:

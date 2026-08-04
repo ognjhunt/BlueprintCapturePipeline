@@ -34,6 +34,7 @@ DEFAULT_IMAGE = (
     "sha256:693d4bcb5b05ec381cf815ed0085d4cbc0757d46ccbaa5fab097bb5c250bc69d"
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/simpler"
+ADMITTED_MACHINE_IDS = (41950,)
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
@@ -342,6 +343,7 @@ def run_simpler_public_vast(
                 session_budget_ledger_path=_adp_session_budget_ledger(job),
                 verify_staging_urls=True,
                 preferred_gpu_keywords=("RTX 4090", "RTX 3090", "RTX A5000"),
+                allowed_machine_ids=ADMITTED_MACHINE_IDS,
                 machine_avoidlist_path=local_avoidlist,
                 instance_label_prefix="blueprint-adp-simpler-",
                 forward_hf_token=False,
@@ -393,6 +395,7 @@ def run_simpler_public_vast(
 
 __all__ = [
     "DEFAULT_IMAGE",
+    "ADMITTED_MACHINE_IDS",
     "PROBE_KIND",
     "build_simpler_public_vast_bundle",
     "run_simpler_public_vast",
