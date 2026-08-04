@@ -153,6 +153,9 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         "scene_bundle", "capture_site_scene_bundle", "1", ("capture", "site_package")
     ),
     EvaluationRunAdapterDescriptor(
+        "scene_bundle", "simpler_public_scene", "1", ("public_scene", "sapien")
+    ),
+    EvaluationRunAdapterDescriptor(
         "robot_adapter", "isaac_unitree_g1", "1", ("unitree_g1", "isaac_sim")
     ),
     EvaluationRunAdapterDescriptor(
@@ -160,6 +163,9 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
     ),
     EvaluationRunAdapterDescriptor(
         "robot_adapter", "isaac_robot_asset", "1", ("openusd", "isaac_sim")
+    ),
+    EvaluationRunAdapterDescriptor(
+        "robot_adapter", "simpler_google_robot", "1", ("google_robot", "sapien")
     ),
     EvaluationRunAdapterDescriptor(
         "task_scenario_pack", "manifest_task_scenario_pack", "1", ("manifest",)
@@ -175,6 +181,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         "benchmark_task_scenario_pack",
         "1",
         ("frozen_splits", "hidden_test", "seen_unseen", "fixed_rollouts"),
+    ),
+    EvaluationRunAdapterDescriptor(
+        "task_scenario_pack",
+        "simpler_condition_matrix",
+        "1",
+        ("deterministic", "condition_ids"),
     ),
     EvaluationRunAdapterDescriptor(
         "policy_adapter", "isaac_g1_deterministic_controller", "1", ("in_process",)
@@ -198,6 +210,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         "policy_adapter", "http_policy_worker", "1", ("http", "persistent_worker")
     ),
     EvaluationRunAdapterDescriptor(
+        "policy_adapter",
+        "simpler_rt1_candidate_set",
+        "1",
+        ("exactly_two", "frozen_checkpoints"),
+    ),
+    EvaluationRunAdapterDescriptor(
         "runtime_provider_profile",
         "isaac_provider_runtime",
         "1",
@@ -208,6 +226,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         "robot_eval_runtime_provider",
         "1",
         ("multi_simulator", "multi_provider"),
+    ),
+    EvaluationRunAdapterDescriptor(
+        "runtime_provider_profile",
+        "simpler_cached_execution",
+        "1",
+        ("immutable_external_input", "replay"),
     ),
     EvaluationRunAdapterDescriptor(
         "proof_contract",

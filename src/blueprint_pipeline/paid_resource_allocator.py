@@ -113,6 +113,10 @@ from .single_g1_kitchen_qualification_session import (
     SESSION_ACTIONS as QUALIFICATION_SESSION_ACTIONS,
     run_qualification_session,
 )
+from .simpler_public_vast import (
+    PROBE_KIND as ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
+    run_simpler_public_vast,
+)
 from .teleport_paid_allocator import (
     add_teleport_provider_arguments,
     load_teleport_credentials,
@@ -935,6 +939,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
             RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
+            ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -1000,6 +1005,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-hard-ttl-seconds", type=int)
     gpu.add_argument("--reconstruction-retry-cap", type=int)
     gpu.add_argument("--reconstruction-authority-id")
+    gpu.add_argument("--adp-public-reference-manifest")
+    gpu.add_argument("--adp-job-dir")
+    gpu.add_argument("--adp-max-hourly-rate-usd", type=float, default=0.80)
+    gpu.add_argument("--adp-max-spend-usd", type=float, default=2.00)
+    gpu.add_argument("--adp-hard-ttl-seconds", type=int, default=7200)
     gpu.add_argument(
         "--reconstruction-refresh-preflight",
         action="store_true",
@@ -1246,6 +1256,69 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND:
+            missing = [
+                name
+                for name in ("adp_public_reference_manifest", "adp_job_dir")
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            blockers = [*missing, *control_blockers]
+            if args.provider != "vast":
+                blockers.append("adp_simpler_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("adp_simpler_budget_invalid")
+            if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
+                blockers.append("adp_simpler_hard_ttl_invalid")
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=blockers
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "public_reference_manifest": args.adp_public_reference_manifest,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": "user_authorized_vast_spend_for_arm_decision_proof_v1",
+                    "private_data_uploaded": False,
+                    "physical_outcome_values_uploaded": False,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            result = run_simpler_public_vast(
+                manifest_path=args.adp_public_reference_manifest,
+                job_dir=args.adp_job_dir,
+                paid_resource_admission_grant=grant,
+                execute=args.execute,
+                max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                hard_cap_usd=args.adp_max_spend_usd,
+                hard_ttl_seconds=args.adp_hard_ttl_seconds,
+            )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND:
             source_blockers, checkout_commit = _source_checkout_blockers(
                 args.expected_source_commit or "",

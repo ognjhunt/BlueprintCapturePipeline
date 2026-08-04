@@ -14,6 +14,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "evaluator",
     "unitree_unifolm",
     "unitree_groot_n17_sonic",
+    "adp_simpler",
 )
 
 
@@ -108,6 +109,17 @@ def provider_runtime_contract_blockers(
         )
         runner_valid = "SimulationApp" in runner_text
         runner_blocker = "provider_runner_missing_isaac_simulation_app_smoke"
+    elif provider_bundle_kind == "adp_simpler":
+        entrypoint_valid = (
+            "adp_simpler_runner_failed_without_runtime_result" in entrypoint_text
+            and "blocked_adp_simpler_process_exited_without_result" in entrypoint_text
+        )
+        runner_valid = (
+            "adp_simpler_closed_loop_execution.json" in runner_text
+            and "simpler_closed_loop_execution.v1" in runner_text
+            and "environment_not_policy" in runner_text
+        )
+        runner_blocker = "provider_runner_missing_adp_simpler_runtime_contract"
     elif provider_bundle_kind == "unitree_unifolm":
         entrypoint_valid = (
             "unitree_unifolm_provider_runner_failed_without_runtime_result" in entrypoint_text

@@ -1,0 +1,19 @@
+{
+  "schema_version": "public_physical_reference_outcomes.v1",
+  "reference_id": "simpler-google-robot-pick-coke-can-v1",
+  "task_id": "simpler.google_robot.pick_coke_can",
+  "source_artifact_sha256": "sha256:7414c22de180c5c0a16a48f76e2b4b36d0c6377b4a7e5cccf3f2f3d9e9aa7c8b",
+  "source_location": "Table IV",
+  "outcome_granularity": "candidate_by_condition_aggregate",
+  "phase_label": "retrospective_external_reference",
+  "claim_ceiling": "development_only",
+  "cells": [
+    {"candidate_id": "rt1-converged-400120", "condition_id": "coke-can-horizontal-lr-switch", "trial_count": 25, "success_rate": 0.96, "reported_uncertainty": {"status": "not_reported_for_cell_rate"}},
+    {"candidate_id": "rt1-converged-400120", "condition_id": "coke-can-vertical-laid", "trial_count": 25, "success_rate": 0.88, "reported_uncertainty": {"status": "not_reported_for_cell_rate"}},
+    {"candidate_id": "rt1-converged-400120", "condition_id": "coke-can-standing-upright", "trial_count": 25, "success_rate": 0.72, "reported_uncertainty": {"status": "not_reported_for_cell_rate"}},
+    {"candidate_id": "rt1-15pct-58240", "condition_id": "coke-can-horizontal-lr-switch", "trial_count": 25, "success_rate": 1.0, "reported_uncertainty": {"status": "not_reported_for_cell_rate"}},
+    {"candidate_id": "rt1-15pct-58240", "condition_id": "coke-can-vertical-laid", "trial_count": 25, "success_rate": 0.96, "reported_uncertainty": {"status": "not_reported_for_cell_rate"}},
+    {"candidate_id": "rt1-15pct-58240", "condition_id": "coke-can-standing-upright", "trial_count": 25, "success_rate": 0.8, "reported_uncertainty": {"status": "not_reported_for_cell_rate"}}
+  ],
+  "outcomes_digest": "sha256:621fa5c0ea14888e71c42d3e482f22484990f3b26d77b2d0f7df7feb4ab77ded"
+}

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/public_reference_admission.v1.schema.json",
+  "title": "Public Reference Admission v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "program_id",
+    "reference_id",
+    "source_identity_digest",
+    "phase_label",
+    "claim_ceiling",
+    "source",
+    "rights",
+    "task",
+    "candidates",
+    "conditions",
+    "physical_reference",
+    "runtime",
+    "claim_boundaries",
+    "manifest_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "public_reference_admission.v1"},
+    "program_id": {"const": "arm-decision-proof-v1"},
+    "reference_id": {"type": "string", "minLength": 1},
+    "source_identity_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "phase_label": {"const": "retrospective_external_reference"},
+    "claim_ceiling": {"const": "development_only"},
+    "source": {
+      "type": "object",
+      "required": ["repository", "asset_bindings"],
+      "properties": {
+        "repository": {"type": "object"},
+        "asset_bindings": {"type": "array", "minItems": 5, "items": {"type": "object"}}
+      },
+      "additionalProperties": true
+    },
+    "rights": {"type": "object"},
+    "task": {"type": "object"},
+    "candidates": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object"}},
+    "conditions": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "physical_reference": {
+      "type": "object",
+      "required": ["source_artifact", "outcome_granularity", "outcomes_artifact", "cell_bindings"],
+      "properties": {
+        "outcome_granularity": {"const": "candidate_by_condition_aggregate"},
+        "outcomes_artifact": {
+          "type": "object",
+          "required": ["relative_path", "digest", "cell_count", "programmatic_release_required"],
+          "properties": {
+            "relative_path": {"type": "string", "minLength": 1},
+            "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "cell_count": {"type": "integer", "minimum": 1},
+            "programmatic_release_required": {"const": true}
+          }
+        },
+        "cell_bindings": {"type": "array", "minItems": 2, "items": {"type": "object"}}
+      },
+      "additionalProperties": true
+    },
+    "runtime": {"type": "object"},
+    "claim_boundaries": {
+      "type": "object",
+      "required": [
+        "retrospective_harness_qualification",
+        "digital_twin",
+        "prospective_validation",
+        "deployment_readiness",
+        "physical_safety",
+        "customer_value",
+        "general_sim_to_real_fidelity",
+        "general_policy_ranking",
+        "universal_robot_or_simulator_support"
+      ],
+      "properties": {
+        "retrospective_harness_qualification": {"const": true},
+        "digital_twin": {"const": false},
+        "prospective_validation": {"const": false},
+        "deployment_readiness": {"const": false},
+        "physical_safety": {"const": false},
+        "customer_value": {"const": false},
+        "general_sim_to_real_fidelity": {"const": false},
+        "general_policy_ranking": {"const": false},
+        "universal_robot_or_simulator_support": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "manifest_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}
