@@ -310,6 +310,8 @@
         "review_status": "public_terms_recorded_no_acceptance_by_agent"
       },
       "xla_cuda_data_dir": "/usr/local/cuda",
+      "nvidia_driver_capabilities": "all",
+      "vulkan_requirement": "observed_nvidia_icd_and_vulkaninfo_summary",
       "unresolved_requirements": [
         "exact_python_patch",
         "numpy",
@@ -362,5 +364,5 @@
     "universal_robot_or_simulator_support": false,
     "two_candidates_establish_rank_correlation": false
   },
-  "manifest_digest": "sha256:4420ece2de1aee3ea51a4e50289ea541ffb61010408fa82f77d8210cb3eee8cd"
+  "manifest_digest": "sha256:68ebdc68fe8463f5bde30a132c30b1adb3ec955285ef1c167a780988fa6798e4"
 }

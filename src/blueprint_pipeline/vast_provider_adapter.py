@@ -1124,7 +1124,7 @@ def _provider_plan(
                 if enable_isaac_smoke
                 else "not_required_for_public_probe",
                 "NVIDIA_DRIVER_CAPABILITIES": "present"
-                if enable_isaac_smoke
+                if enable_isaac_smoke or provider_bundle_kind == "adp_simpler"
                 else "not_required_for_public_probe",
             },
             "blueprint_bundle_enabled": enable_blueprint_bundle,
@@ -2513,6 +2513,7 @@ def _probe_env(
     provider_bundle_inline_sha256: str | None = None,
     retain_cosmos_server: bool = False,
     forward_hf_token: bool = True,
+    provider_bundle_kind: str = "isaac",
 ) -> dict[str, str]:
     env = {
         "BLUEPRINT_VAST_PROBE": "true",
@@ -2526,6 +2527,10 @@ def _probe_env(
                 "NVIDIA_DRIVER_CAPABILITIES": "all",
             }
         )
+    elif provider_bundle_kind == "adp_simpler":
+        # SIMPLER's headless SAPIEN renderer still needs the NVIDIA Vulkan
+        # driver injected by the container runtime. This accepts no Isaac terms.
+        env["NVIDIA_DRIVER_CAPABILITIES"] = "all"
     if _string(provider_bundle_url):
         env["BLUEPRINT_EVAL_MANIFEST_URI"] = _string(provider_bundle_url)
     if _string(provider_output_put_url):
@@ -2966,7 +2971,7 @@ def _probe_shell_script(
                 + "RUNTIME_PY=''; "
                 "if command -v apt-get >/dev/null 2>&1; then "
                 "apt-get update >/tmp/blueprint_adp_apt_update.log 2>&1 && "
-                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip git ffmpeg libvulkan1 libgl1 libglib2.0-0 >/tmp/blueprint_adp_apt_install.log 2>&1; "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip git ffmpeg libvulkan1 vulkan-tools libgl1 libglib2.0-0 >/tmp/blueprint_adp_apt_install.log 2>&1; "
                 "fi; "
                 "if [ -x /usr/bin/python3 ]; then RUNTIME_PY=/usr/bin/python3; "
                 "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); fi; "
@@ -5339,6 +5344,7 @@ def run_vast_provider_adapter(
                     ),
                     retain_cosmos_server=retain_instance_on_runtime_failure,
                     forward_hf_token=forward_hf_token,
+                    provider_bundle_kind=provider_bundle_kind,
                 ),
                 image_login=image_login,
                 template_hash_id=template_hash,

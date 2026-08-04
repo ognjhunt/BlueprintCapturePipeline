@@ -138,6 +138,38 @@ def _cuda_toolkit_evidence(
     }
 
 
+def _vulkan_runtime_evidence(
+    icd_candidates: Sequence[Path] = (
+        Path("/etc/vulkan/icd.d/nvidia_icd.json"),
+        Path("/usr/share/vulkan/icd.d/nvidia_icd.json"),
+        Path("/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json"),
+    ),
+) -> dict[str, Any]:
+    """Bind the headless SAPIEN renderer to an observed NVIDIA Vulkan ICD."""
+
+    icd = next((path for path in icd_candidates if path.is_file()), None)
+    if icd is None:
+        raise RuntimeError("nvidia_vulkan_icd_missing")
+    vulkaninfo = shutil.which("vulkaninfo")
+    if not vulkaninfo:
+        raise RuntimeError("vulkaninfo_missing")
+    os.environ["VK_DRIVER_FILES"] = str(icd)
+    probe = _run([vulkaninfo, "--summary"], timeout=60)
+    output = probe["output_tail"].strip()
+    if probe["returncode"] != 0:
+        raise RuntimeError("nvidia_vulkan_probe_failed")
+    lowered = output.lower()
+    if "nvidia" not in lowered or "llvmpipe" in lowered:
+        raise RuntimeError("nvidia_vulkan_device_not_observed")
+    return {
+        "driver_capabilities": os.environ.get("NVIDIA_DRIVER_CAPABILITIES"),
+        "vk_driver_files": os.environ["VK_DRIVER_FILES"],
+        "icd_sha256": _file_sha256(icd),
+        "vulkaninfo_path": vulkaninfo,
+        "vulkaninfo_summary": output,
+    }
+
+
 def _download(url: str, path: Path, *, expected_size: int, expected_sha256: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "BlueprintADPSimpler/1.0"})
@@ -197,6 +229,10 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
     _phase("cuda_toolkit_preflight")
     cuda_toolkit = _cuda_toolkit_evidence()
     _phase("cuda_toolkit_preflight", "completed")
+
+    _phase("vulkan_runtime_preflight")
+    vulkan_runtime = _vulkan_runtime_evidence()
+    _phase("vulkan_runtime_preflight", "completed")
 
     _phase("source_checkout")
     source_dir = work_dir / "SimplerEnv"
@@ -314,6 +350,7 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
         "language_encoder_archive_sha256": encoder["archive_sha256"],
         "nvidia_smi": nvidia["output_tail"].strip(),
         "cuda_toolkit": cuda_toolkit,
+        "vulkan_runtime": vulkan_runtime,
     }
     lock["runtime_lock_digest"] = _canonical_digest(lock, digest_field="runtime_lock_digest")
     _phase("runtime_lock", "completed")

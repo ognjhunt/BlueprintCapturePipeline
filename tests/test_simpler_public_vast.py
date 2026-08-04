@@ -21,7 +21,9 @@ from blueprint_pipeline.simpler_public_vast import (
 from blueprint_pipeline.simpler_public_runtime_worker import (
     _activate_verified_source_roots,
     _cuda_toolkit_evidence,
+    _vulkan_runtime_evidence,
 )
+from blueprint_pipeline.vast_provider_adapter import _probe_env
 
 
 ROOT = Path(__file__).parents[1]
@@ -59,6 +61,7 @@ def test_bundle_contains_public_runtime_but_not_physical_outcome_values(
     assert "cuda_toolkit_ptxas_missing" in runner
     assert "cuda_toolkit_libdevice_missing" in runner
     assert "--xla_gpu_cuda_data_dir=" in runner
+    assert "nvidia_vulkan_device_not_observed" in runner
     assert "paid_runtime_plan" not in runner
     assert "BLUEPRINT_WAM_RUNTIME_PHASE:adp_simpler" in runner
     assert 'source_dir / "ManiSkill2_real2sim"' in runner
@@ -136,6 +139,44 @@ def test_worker_rejects_image_without_xla_compiler_inputs(
 
     with pytest.raises(RuntimeError, match="cuda_toolkit_ptxas_missing"):
         _cuda_toolkit_evidence(tmp_path / "cuda")
+
+
+def test_worker_binds_observed_nvidia_vulkan_icd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    icd = tmp_path / "nvidia_icd.json"
+    icd.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("NVIDIA_DRIVER_CAPABILITIES", "all")
+    monkeypatch.setattr(
+        "blueprint_pipeline.simpler_public_runtime_worker.shutil.which",
+        lambda name: "/usr/bin/vulkaninfo" if name == "vulkaninfo" else None,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.simpler_public_runtime_worker._run",
+        lambda *args, **kwargs: {
+            "returncode": 0,
+            "output_tail": "GPU0: NVIDIA GeForce RTX 4090",
+        },
+    )
+
+    evidence = _vulkan_runtime_evidence((icd,))
+
+    assert evidence["driver_capabilities"] == "all"
+    assert evidence["vk_driver_files"] == str(icd)
+    assert evidence["icd_sha256"].startswith("sha256:")
+
+
+def test_adp_vast_env_requests_graphics_without_isaac_terms(tmp_path: Path) -> None:
+    env = _probe_env(
+        job_dir=tmp_path,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_simpler",
+        forward_hf_token=False,
+    )
+
+    assert env["NVIDIA_DRIVER_CAPABILITIES"] == "all"
+    assert "ACCEPT_EULA" not in env
+    assert "PRIVACY_CONSENT" not in env
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
