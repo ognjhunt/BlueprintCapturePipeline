@@ -32,15 +32,20 @@ from .episode_visual_evidence import (
 )
 from .franka_droid_closed_loop import SCHEMA_VERSION as FRANKA_RUNNER_SCHEMA_VERSION
 from .franka_droid_control_preflight import SCHEMA_VERSION as CONTROL_PREFLIGHT_SCHEMA_VERSION
-from .groot_n17_droid_policy_runtime import GrootN17DroidPolicySpec
+from .groot_n16_arena_policy_runtime import GrootN16ArenaPolicySpec
 
 
-PROTOCOL_SCHEMA_VERSION = "adp_founder_sim_only_protocol.v1"
+PROTOCOL_SCHEMA_VERSION = "adp_founder_sim_only_protocol.v2"
 APPROVAL_SCHEMA_VERSION = "adp_founder_sim_only_approval.v1"
-EXECUTION_ADMISSION_SCHEMA_VERSION = "adp_founder_sim_execution_admission.v1"
-PROTOCOL_ID = "adp-founder-sim-arena-droid-pi05-vs-groot-n17-v1"
+EXECUTION_ADMISSION_SCHEMA_VERSION = "adp_founder_sim_execution_admission.v2"
+PROTOCOL_ID = "adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2"
 BASELINE_ID = "pi05_droid_jointpos_polaris"
-ALTERNATIVE_ID = "nvidia/GR00T-N1.7-DROID"
+ALTERNATIVE_ID = "nvidia/GR00T-N1.6-DROID"
+SUPERSEDED_PROTOCOL_ID = "adp-founder-sim-arena-droid-pi05-vs-groot-n17-v1"
+SUPERSEDED_PROTOCOL_DIGEST = (
+    "sha256:3940d30009c4d9fdadac1ba4419eb2f04f8b22fd0273131f31d0112e1e2f6ad2"
+)
+ARENA_OPENPI_REVISION = "c23745b5ad24e98f66967ea795a07b2588ed6c79"
 
 
 class FounderSimProtocolError(ValueError):
@@ -102,13 +107,23 @@ def build_founder_sim_protocol() -> dict[str, Any]:
         seed_start=41000,
     )
     schedule_admission = validate_schedule_for_execution(schedule)
-    groot_identity = GrootN17DroidPolicySpec().identity()
+    groot_identity = GrootN16ArenaPolicySpec().identity()
     protocol: dict[str, Any] = {
         "schema_version": PROTOCOL_SCHEMA_VERSION,
         "protocol_id": PROTOCOL_ID,
         "status": "frozen_pending_founder_digest_approval",
         "program": "arm-decision-proof-v1",
         "phase": "development_only_simulation_precursor",
+        "amendment": {
+            "supersedes_protocol_id": SUPERSEDED_PROTOCOL_ID,
+            "supersedes_protocol_digest": SUPERSEDED_PROTOCOL_DIGEST,
+            "reason": (
+                "live source audit found that the pinned Arena Docker stack uses Isaac Sim "
+                "6.0.1 and its documented DROID GR00T seam supports N1.6, not N1.7"
+            ),
+            "candidate_outcomes_accessed_before_amendment": False,
+            "paid_compute_started_before_amendment": False,
+        },
         "authority_model": {
             "required_approvers": ["blueprint_founder_sim_owner"],
             "partner_task_owner_required": False,
@@ -163,7 +178,12 @@ def build_founder_sim_protocol() -> dict[str, Any]:
                     "stability": "alpha_exact_revision_requires_blueprint_canary",
                 },
                 "isaac_lab_revision": "af1bab4dc173ba69b08fab779c14ead61d13fd33",
-                "isaac_sim_version": "6.0.0.1",
+                "isaac_sim_version": "6.0.1.0",
+                "isaac_sim_container": (
+                    "nvcr.io/nvidia/isaac-sim:6.0.1@"
+                    "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
+                ),
+                "isaac_sim_container_platform": "linux/amd64",
                 "physics_backend": "PhysX",
                 "renderer": "Isaac RTX",
                 "environment_type": "ManagerBasedRLEnv",
@@ -174,6 +194,8 @@ def build_founder_sim_protocol() -> dict[str, Any]:
                     "observations.py": "7de4229abdce5a3aebb752d34680ed17fd4e560d",
                 },
                 "arena_environment": "pick_and_place_maple_table",
+                "arena_openpi_client_revision": ARENA_OPENPI_REVISION,
+                "arena_groot_client_revision": ("e29d8fc50b0e4745120ae3fb72447986fe638aa6"),
                 "blueprint_integration": (
                     "thin receipt and schedule adapter around Arena's existing environment "
                     "and remote policies; no Arena fork or custom environment"
@@ -243,16 +265,16 @@ def build_founder_sim_protocol() -> dict[str, Any]:
                 "checkpoint_inventory_sha256": (
                     "492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063"
                 ),
-                "openpi_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+                "openpi_revision": ARENA_OPENPI_REVISION,
                 "action_chunk_shape": [15, 8],
             },
             {
                 "role": "alternative",
                 "candidate_id": ALTERNATIVE_ID,
-                "family": "NVIDIA Isaac GR00T N1.7",
+                "family": "NVIDIA Isaac GR00T N1.6",
                 "runtime": (
-                    "NVIDIA PolicyClient ZMQ through Blueprint's identity-bound N1.7 "
-                    "adapter and the pinned Arena DROID environment"
+                    "Arena's pinned NVIDIA PolicyClient ZMQ DROID adapter and matching "
+                    "GR00T source revision"
                 ),
                 "identity": groot_identity,
                 "checkpoint_files_sha256": "required_from_materialized_worker_receipt",
@@ -381,9 +403,7 @@ def expected_founder_approval_statement(
     )
 
 
-def build_founder_approval_receipt(
-    *, statement: str, evidence_ref: str
-) -> dict[str, Any]:
+def build_founder_approval_receipt(*, statement: str, evidence_ref: str) -> dict[str, Any]:
     """Convert an observed exact-digest human statement into a durable receipt."""
 
     observed = " ".join(str(statement).split())

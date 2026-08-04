@@ -271,8 +271,14 @@ def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
+    """Return whether a bundle must use the Isaac image/runtime safety path."""
+
+    return provider_bundle_kind in {"isaac", "adp_arena"}
+
+
 def _provider_expected_video_count(provider_bundle_kind: str) -> int:
-    if provider_bundle_kind == "isaac":
+    if _is_isaac_provider_bundle(provider_bundle_kind):
         return DEFAULT_VIDEO_SMOKE_CAMERA_COUNT
     if provider_bundle_kind == "wam":
         return DEFAULT_WAM_ROLLOUT_VIDEO_COUNT
@@ -1905,6 +1911,14 @@ def _blueprint_bundle_preflight(
         "provider_runtime/adp_simpler_provider_manifest.json",
         "provider_runtime/public_reference_manifest.json",
     }
+    adp_arena_required_entries = {
+        "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "provider_runtime/adp_arena_provider_runner.py",
+        "provider_runtime/adp_arena_provider_manifest.json",
+        "provider_runtime/founder_sim_protocol.json",
+        "provider_runtime/founder_sim_approval_receipt.json",
+        "provider_runtime/arena_worker_request.json",
+    }
     if provider_bundle_kind == "isaac":
         required_entries = isaac_required_entries
         entrypoint_member = "provider_runtime/run_isaac_realistic_runtime.sh"
@@ -1915,6 +1929,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_simpler_provider_runtime.sh"
         runner_member = "provider_runtime/adp_simpler_provider_runner.py"
         readiness_name = "adp_simpler_provider_manifest.json"
+    elif provider_bundle_kind == "adp_arena":
+        required_entries = adp_arena_required_entries
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_arena_provider_runner.py"
+        readiness_name = "adp_arena_provider_manifest.json"
     elif provider_bundle_kind == "unitree_unifolm":
         required_entries = unitree_unifolm_required_entries
         entrypoint_member = "provider_runtime/run_unitree_unifolm_provider_runtime.sh"
@@ -1951,7 +1970,7 @@ def _blueprint_bundle_preflight(
     )
     if (
         provider_bundle_kind
-        in {"unitree_unifolm", "unitree_groot_n17_sonic", "adp_simpler"}
+        in {"unitree_unifolm", "unitree_groot_n17_sonic", "adp_simpler", "adp_arena"}
         and not readiness_path.is_file()
     ):
         readiness_path = (
@@ -1972,12 +1991,12 @@ def _blueprint_bundle_preflight(
         "provider_output_put",
     )
     if enable_blueprint_bundle:
-        if provider_bundle_kind == "isaac" and not enable_isaac_smoke:
+        if _is_isaac_provider_bundle(provider_bundle_kind) and not enable_isaac_smoke:
             blockers.append("blueprint_bundle_execution_requires_isaac_smoke_path")
         if not bundle_path or not bundle_path.is_file():
             blockers.append(
                 "isaac_provider_runtime_bundle_missing"
-                if provider_bundle_kind == "isaac"
+                if _is_isaac_provider_bundle(provider_bundle_kind)
                 else "provider_runtime_bundle_missing"
             )
         else:
@@ -2390,7 +2409,7 @@ def _isaac_image_startup_preflight(
     blockers: list[str] = []
     warnings: list[str] = []
     isaac_path_requested = enable_isaac_smoke or (
-        enable_blueprint_bundle and provider_bundle_kind == "isaac"
+        enable_blueprint_bundle and _is_isaac_provider_bundle(provider_bundle_kind)
     )
     template_hash = _string(vast_template_hash_id)
     direct_official_isaac_image = (
@@ -2487,6 +2506,7 @@ def _resolve_launch_mode(
             "evaluator",
             "unitree_unifolm",
             "adp_simpler",
+            "adp_arena",
         }:
             return "ssh_direct"
         return "args" if enable_isaac_smoke else "ssh_direct"
@@ -2509,7 +2529,9 @@ def _resolve_probe_image(
 ) -> str:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
-    if enable_isaac_smoke or (enable_blueprint_bundle and provider_bundle_kind == "isaac"):
+    if enable_isaac_smoke or (
+        enable_blueprint_bundle and _is_isaac_provider_bundle(provider_bundle_kind)
+    ):
         return isaac_image
     return public_image
 
@@ -2530,7 +2552,7 @@ def _probe_env(
         "BLUEPRINT_VAST_PROBE": "true",
         "BLUEPRINT_VAST_PROBE_JOB_DIR_BASENAME": job_dir.name,
     }
-    if enable_isaac_smoke:
+    if enable_isaac_smoke or provider_bundle_kind == "adp_arena":
         env.update(
             {
                 "ACCEPT_EULA": "Y",
@@ -2978,8 +3000,7 @@ def _probe_shell_script(
             )
         elif provider_bundle_kind == "adp_simpler":
             script += (
-                common_start
-                + "RUNTIME_PY=''; "
+                common_start + "RUNTIME_PY=''; "
                 "if command -v apt-get >/dev/null 2>&1; then "
                 "apt-get update >/tmp/blueprint_adp_apt_update.log 2>&1 && "
                 "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip git ffmpeg libvulkan1 vulkan-tools libgl1 libegl1 libxext6 libglib2.0-0 >/tmp/blueprint_adp_apt_install.log 2>&1; "
@@ -3021,6 +3042,51 @@ def _probe_shell_script(
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
                 'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_simpler_provider_runtime_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
+            )
+        elif provider_bundle_kind == "adp_arena":
+            script += (
+                common_start + "RUNTIME_PY=/isaac-sim/python.sh; "
+                'if [ ! -x "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; '
+                "else "
+                'rm -rf "$WORK_DIR/adp_arena_provider_bundle" "$WORK_DIR/adp_arena_provider_runtime_bundle.zip" "$WORK_DIR/adp_arena_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp_arena_provider_runtime_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp_arena_provider_runtime_bundle.zip" "$WORK_DIR/adp_arena_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/adp_arena_provider_bundle/provider_runtime/run_adp_arena_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_ADP_ARENA_OUTPUT_DIR="$WORK_DIR/adp_arena_provider_bundle/runtime_output"; '
+                'mkdir -p "$BLUEPRINT_ADP_ARENA_OUTPUT_DIR"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$WORK_DIR/adp_arena_provider_bundle/provider_runtime/run_adp_arena_provider_runtime.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_ADP_ARENA_OUTPUT_DIR', '/workspace/adp_arena_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'adp_arena_provider_runtime_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file():\n"
+                "                size = path.stat().st_size\n"
+                "                if size <= 100_000_000:\n"
+                "                    archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_arena_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -3654,7 +3720,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
             DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
         )
-        if provider_bundle_kind in {"wam", "evaluator", "adp_simpler"}
+        if provider_bundle_kind in {"wam", "evaluator", "adp_simpler", "adp_arena"}
         else 60
     )
 
@@ -4213,7 +4279,9 @@ def run_vast_provider_adapter(
         preferred_geolocation_regex or os.getenv(VAST_PREFERRED_GEOLOCATION_REGEX_ENV)
     )
     resolved_prefer_isaac_rt = (
-        provider_bundle_kind == "isaac" if prefer_isaac_rt is None else bool(prefer_isaac_rt)
+        _is_isaac_provider_bundle(provider_bundle_kind)
+        if prefer_isaac_rt is None
+        else bool(prefer_isaac_rt)
     )
     avoidlist = _load_machine_avoidlist(resolved_machine_avoidlist_path)
     excluded_machine_ids = _avoidlist_machine_ids(resolved_machine_avoidlist_path)
@@ -4309,6 +4377,7 @@ def run_vast_provider_adapter(
             "unitree_unifolm",
             "unitree_groot_n17_sonic",
             "adp_simpler",
+            "adp_arena",
         }
         and _string(provider_bundle_url)
         and inline_bundle_transport.get("inline_provider_bundle_transport_used") is True
@@ -5601,9 +5670,7 @@ def run_vast_provider_adapter(
                 else bounded_container_missing_retry_attempts(
                     max_wait_seconds=min(startup_timeout_seconds, max_live_minutes * 60),
                     retry_interval_seconds=30,
-                    max_missing_seconds=_container_missing_max_seconds(
-                        provider_bundle_kind
-                    ),
+                    max_missing_seconds=_container_missing_max_seconds(provider_bundle_kind),
                 )
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
@@ -5747,7 +5814,7 @@ def run_vast_provider_adapter(
         )
 
         isaac_blockers: list[str] = []
-        if provider_bundle_kind != "isaac" and not enable_isaac_smoke:
+        if not _is_isaac_provider_bundle(provider_bundle_kind) and not enable_isaac_smoke:
             isaac_not_required_effect = (
                 f"isaac_smoke_not_required_for_{provider_bundle_kind}_bundle"
             )
@@ -5784,17 +5851,17 @@ def run_vast_provider_adapter(
         elif not enable_isaac_smoke:
             isaac_blockers.append("isaac_smoke_disabled_for_this_bounded_probe")
         if (
-            provider_bundle_kind == "isaac"
+            _is_isaac_provider_bundle(provider_bundle_kind)
             and selected_offer
             and not selected_offer.get("isaac_rt_candidate")
         ):
             isaac_blockers.append("selected_gpu_not_in_isaac_rt_candidate_allowlist")
         if (
-            provider_bundle_kind == "isaac"
+            _is_isaac_provider_bundle(provider_bundle_kind)
             and image_login_summary.get("reason") == "ngc_key_missing"
         ):
             isaac_blockers.append("ngc_api_key_file_missing_or_empty_for_required_ngc_login")
-        if provider_bundle_kind == "isaac" and (isaac_blockers or not gpu_ok):
+        if _is_isaac_provider_bundle(provider_bundle_kind) and (isaac_blockers or not gpu_ok):
             if not gpu_ok:
                 isaac_blockers.append("gpu_sanity_not_proven")
             _append_phase(
@@ -5826,7 +5893,7 @@ def run_vast_provider_adapter(
                     **_truth_boundaries(),
                 },
             )
-        elif provider_bundle_kind == "isaac":
+        elif _is_isaac_provider_bundle(provider_bundle_kind):
             _append_phase(resolved_job_dir, "vast_isaac_smoke_started", "running")
             isaac_text = heartbeat_text
             isaac_ok = "BLUEPRINT_VAST_ISAAC_SMOKE_OK" in isaac_text
@@ -5863,12 +5930,16 @@ def run_vast_provider_adapter(
         provider_blockers: list[str] = []
         if not enable_blueprint_bundle:
             provider_blockers.append("blueprint_bundle_execution_disabled_for_this_probe")
-        if enable_blueprint_bundle and provider_bundle_kind == "isaac" and not enable_isaac_smoke:
+        if (
+            enable_blueprint_bundle
+            and _is_isaac_provider_bundle(provider_bundle_kind)
+            and not enable_isaac_smoke
+        ):
             provider_blockers.append("blueprint_bundle_execution_requires_isaac_smoke_path")
         if not bundle_path or not bundle_path.is_file():
             provider_blockers.append(
                 "isaac_provider_runtime_bundle_missing"
-                if provider_bundle_kind == "isaac"
+                if _is_isaac_provider_bundle(provider_bundle_kind)
                 else "provider_runtime_bundle_missing"
             )
         if enable_blueprint_bundle and not _string(provider_bundle_url):

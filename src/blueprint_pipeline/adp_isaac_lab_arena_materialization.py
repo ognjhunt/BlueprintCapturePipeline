@@ -28,7 +28,7 @@ from .adp_founder_sim_protocol import (
 from .adp_isaac_lab_arena_request import build_arena_worker_request
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
-from .groot_n17_droid_policy_runtime import (
+from .groot_n16_arena_policy_runtime import (
     CHECKPOINT_REVISION,
     GROOT_SOURCE_REVISION,
 )
@@ -40,7 +40,7 @@ ADMISSION_SCHEMA_VERSION = "adp_isaac_lab_arena_materialization_admission.v1"
 SOURCE_REVISIONS = {
     "arena_source": "3c19a3a9e45fc2cc1b64ab8a43047ecac9c0ad4d",
     "isaac_lab_source": "af1bab4dc173ba69b08fab779c14ead61d13fd33",
-    "openpi_source": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "openpi_source": "c23745b5ad24e98f66967ea795a07b2588ed6c79",
     "groot_source": GROOT_SOURCE_REVISION,
 }
 
@@ -99,9 +99,7 @@ def inventory_byte_group(root: Path) -> dict[str, Any]:
             for name in tuple(directory_names):
                 candidate = directory_path / name
                 if candidate.is_symlink():
-                    raise ArenaMaterializationError(
-                        ["materialization_directory_symlink_forbidden"]
-                    )
+                    raise ArenaMaterializationError(["materialization_directory_symlink_forbidden"])
             for name in file_names:
                 candidates.append((directory_path / name, resolved))
     else:
@@ -195,9 +193,7 @@ def build_materialization_receipt(
     if blockers:
         raise ArenaMaterializationError(blockers)
 
-    arena_lock_sha256 = protocol["scene"]["simulator_stack"]["isaac_lab_arena"][
-        "uv_lock_sha256"
-    ]
+    arena_lock_sha256 = protocol["scene"]["simulator_stack"]["isaac_lab_arena"]["uv_lock_sha256"]
     sources = {
         name: inventory_source_checkout(
             Path(source_checkouts[name]),
@@ -207,8 +203,7 @@ def build_materialization_receipt(
         for name, revision in SOURCE_REVISIONS.items()
     }
     byte_groups = {
-        name: inventory_byte_group(Path(byte_group_roots[name]))
-        for name in REQUIRED_BYTE_GROUPS
+        name: inventory_byte_group(Path(byte_group_roots[name])) for name in REQUIRED_BYTE_GROUPS
     }
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -229,17 +224,13 @@ def build_materialization_receipt(
             "baseline": {
                 "candidate_id": BASELINE_ID,
                 "openpi_revision": SOURCE_REVISIONS["openpi_source"],
-                "checkpoint_inventory_digest": byte_groups["pi05_checkpoint"][
-                    "inventory_digest"
-                ],
+                "checkpoint_inventory_digest": byte_groups["pi05_checkpoint"]["inventory_digest"],
             },
             "alternative": {
                 "candidate_id": ALTERNATIVE_ID,
                 "groot_source_revision": GROOT_SOURCE_REVISION,
                 "checkpoint_revision": CHECKPOINT_REVISION,
-                "checkpoint_inventory_digest": byte_groups["groot_checkpoint"][
-                    "inventory_digest"
-                ],
+                "checkpoint_inventory_digest": byte_groups["groot_checkpoint"]["inventory_digest"],
             },
         },
         "candidate_jobs_authorized": False,
@@ -312,9 +303,7 @@ def admit_materialized_worker(
         "paid_compute_authorized": False,
         "physical_execution_authorized": False,
     }
-    admission["admission_digest"] = canonical_digest(
-        admission, digest_field="admission_digest"
-    )
+    admission["admission_digest"] = canonical_digest(admission, digest_field="admission_digest")
     return admission
 
 

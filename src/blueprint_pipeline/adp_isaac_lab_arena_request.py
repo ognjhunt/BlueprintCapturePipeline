@@ -48,7 +48,7 @@ def _policy_binding(candidate_id: str) -> dict[str, Any]:
             ),
             "remote_protocol": "zmq",
             "expected_checkpoint_identity": ALTERNATIVE_ID,
-            "blueprint_n17_identity_adapter_required": True,
+            "arena_native_groot_droid_adapter_required": True,
         }
     raise ValueError(f"arena_candidate_not_frozen:{candidate_id}")
 

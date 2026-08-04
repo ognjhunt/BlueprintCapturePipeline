@@ -55,9 +55,9 @@ def pinned_source_probes(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError(arguments)
 
     original_sha256_file = materialization._sha256_file
-    expected_lock = build_founder_sim_protocol()["scene"]["simulator_stack"][
-        "isaac_lab_arena"
-    ]["uv_lock_sha256"]
+    expected_lock = build_founder_sim_protocol()["scene"]["simulator_stack"]["isaac_lab_arena"][
+        "uv_lock_sha256"
+    ]
 
     def fake_sha256_file(path: Path) -> str:
         if path.name == "uv.lock":
@@ -89,7 +89,7 @@ def test_receipt_binds_every_source_asset_checkpoint_and_runtime_group(
     receipt = build_materialization_receipt(
         source_checkouts=sources,
         byte_group_roots=groups,
-        isaac_sim_version="6.0.0.1",
+        isaac_sim_version="6.0.1.0",
     )
 
     assert receipt["status"] == "verified_from_local_worker_bytes"
@@ -99,15 +99,18 @@ def test_receipt_binds_every_source_asset_checkpoint_and_runtime_group(
         "pi05_droid_jointpos_polaris"
     )
     assert receipt["candidate_bindings"]["alternative"]["candidate_id"] == (
-        "nvidia/GR00T-N1.7-DROID"
+        "nvidia/GR00T-N1.6-DROID"
     )
     assert receipt["candidate_jobs_authorized"] is False
     assert receipt["paid_compute_authorized"] is False
-    assert verify_materialization_receipt(
-        receipt,
-        source_checkouts=sources,
-        byte_group_roots=groups,
-    ) == receipt
+    assert (
+        verify_materialization_receipt(
+            receipt,
+            source_checkouts=sources,
+            byte_group_roots=groups,
+        )
+        == receipt
+    )
 
 
 def test_changed_worker_byte_invalidates_existing_receipt(
@@ -117,7 +120,7 @@ def test_changed_worker_byte_invalidates_existing_receipt(
     receipt = build_materialization_receipt(
         source_checkouts=sources,
         byte_group_roots=groups,
-        isaac_sim_version="6.0.0.1",
+        isaac_sim_version="6.0.1.0",
     )
     (groups["groot_checkpoint"] / "bytes.bin").write_bytes(b"changed checkpoint")
 
@@ -138,7 +141,7 @@ def test_materialized_worker_admits_controls_but_never_candidate_jobs_or_spend(
     receipt = build_materialization_receipt(
         source_checkouts=sources,
         byte_group_roots=groups,
-        isaac_sim_version="6.0.0.1",
+        isaac_sim_version="6.0.1.0",
     )
     admission = admit_materialized_worker(
         founder_execution_admission=_founder_execution_admission(),
@@ -177,7 +180,7 @@ def test_materialization_rejects_any_missing_required_group(
         build_materialization_receipt(
             source_checkouts=sources,
             byte_group_roots=groups,
-            isaac_sim_version="6.0.0.1",
+            isaac_sim_version="6.0.1.0",
         )
 
 
@@ -197,7 +200,7 @@ def test_materialization_rejects_runtime_version_or_founder_digest_mismatch(
     receipt = build_materialization_receipt(
         source_checkouts=sources,
         byte_group_roots=groups,
-        isaac_sim_version="6.0.0.1",
+        isaac_sim_version="6.0.1.0",
     )
     admission = _founder_execution_admission()
     admission["protocol_digest"] = "sha256:" + "0" * 64

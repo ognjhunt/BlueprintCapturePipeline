@@ -19,7 +19,7 @@ from blueprint_pipeline.adp_prospective_design import validate_schedule_for_exec
 def test_protocol_freezes_one_sim_task_two_real_candidates_and_no_physical_claim() -> None:
     protocol = build_founder_sim_protocol()
     assert protocol["decision"]["baseline_candidate_id"] == ("pi05_droid_jointpos_polaris")
-    assert protocol["decision"]["alternative_candidate_id"] == ("nvidia/GR00T-N1.7-DROID")
+    assert protocol["decision"]["alternative_candidate_id"] == ("nvidia/GR00T-N1.6-DROID")
     assert [row["role"] for row in protocol["candidates"]] == [
         "baseline",
         "alternative",
@@ -29,6 +29,10 @@ def test_protocol_freezes_one_sim_task_two_real_candidates_and_no_physical_claim
         "71f066ad0be9cd271f7ed58c030243ef157af9f4"
     )
     assert protocol["scene"]["simulator_stack"]["physics_backend"] == "PhysX"
+    assert protocol["scene"]["simulator_stack"]["isaac_sim_version"] == "6.0.1.0"
+    assert protocol["scene"]["simulator_stack"]["isaac_sim_container"].endswith(
+        "@sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
+    )
     assert protocol["scene"]["simulator_stack"]["environment_type"] == ("ManagerBasedRLEnv")
     assert protocol["scene"]["simulator_stack"]["arena_environment"] == (
         "pick_and_place_maple_table"

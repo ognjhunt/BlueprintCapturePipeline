@@ -1,9 +1,14 @@
 # Founder Sim-Only Decision Test
 
-Status: **frozen and exact-digest founder approved; runtime not started**
+Status: **v2 frozen and exact-digest founder approved; native control pending**
 Claim ceiling: **development-only simulation**
 Protocol ID:
-`adp-founder-sim-arena-droid-pi05-vs-groot-n17-v1`
+`adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2`
+
+The approved v1 protocol is retained as a superseded audit artifact. A
+pre-spend source audit found that the pinned Arena revision uses Isaac Sim
+6.0.1 and its documented DROID GR00T runtime is N1.6, not N1.7. No candidate
+outcome was accessed and no paid compute was started before the v2 amendment.
 
 This is the deliberately thinner stage requested by Blueprint's founder. It
 tests the decision harness against an existing simulated workcell before any
@@ -18,9 +23,10 @@ validation, deployment evidence, or a physical allocation decision.
   bowl.
 - Baseline: `pi05_droid_jointpos_polaris`, the byte-inventoried OpenPI π0.5
   DROID joint-position checkpoint.
-- Alternative: `nvidia/GR00T-N1.7-DROID`, pinned to NVIDIA Isaac-GR00T source
-  revision `b9955401d50c92a29258732e3ad6ccd579f1bdc0` and Hugging Face
-  checkpoint revision `05e7cc97e40dbd33b0890c35cc0214fcb0547ab5`.
+- Alternative: `nvidia/GR00T-N1.6-DROID`, pinned to Arena's NVIDIA
+  Isaac-GR00T submodule revision
+  `e29d8fc50b0e4745120ae3fb72447986fe638aa6` and Hugging Face checkpoint
+  revision `ae3ebe8d288971ac53aa30c756ea5cba0f52611b`.
 - Primary metric: deterministic binary simulator-state task success. No
   secondary metric is registered.
 - Conditions: one frozen scene/object/light configuration; each repetition uses
@@ -47,7 +53,8 @@ proxy:
 - task framework: Isaac Lab revision
   `af1bab4dc173ba69b08fab779c14ead61d13fd33` using a manager-based RL
   environment;
-- simulator: Isaac Sim `6.0.0.1`;
+- simulator: Isaac Sim `6.0.1.0`, using the linux/amd64 image digest
+  `sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb`;
 - physics: PhysX;
 - rendering and policy observations: Isaac RTX;
 - embodiment and action interface: Arena `droid_abs_joint_pos`;
@@ -67,16 +74,16 @@ native-Isaac, or sim-to-real evidence.
 The protocol is generated deterministically by
 [`adp_founder_sim_protocol.py`](../../src/blueprint_pipeline/adp_founder_sim_protocol.py),
 and the GR00T ZMQ/DROID translation is isolated in
-[`groot_n17_droid_policy_runtime.py`](../../src/blueprint_pipeline/groot_n17_droid_policy_runtime.py).
+[`groot_n16_arena_policy_runtime.py`](../../src/blueprint_pipeline/groot_n16_arena_policy_runtime.py).
 
 ## Immutable Digests
 
 - Protocol digest:
-  `sha256:3940d30009c4d9fdadac1ba4419eb2f04f8b22fd0273131f31d0112e1e2f6ad2`
+  `sha256:05eb6f5c187fd69da6f40e7428634181b39fe7f02501bd7ccb9a4331801c01fc`
 - Executable schedule digest:
-  `sha256:b1c9fb7ee06c7f48014225868318e80e1652a69c1d6687347b5c2687a8ab34c6`
+  `sha256:f8c4b35234a70c37c04f2e95c1d9792585aa56ca02d647e83fde411447a47005`
 - Frozen non-executable Arena worker-request digest:
-  `sha256:dd1d79206299a0d6954ee91daef6d168e42e1d054abafec33284f30348ad2650`
+  `sha256:52cd00e886354236f63ee68eaa0bbc1b42c64ee0881bffa8aeea4fbeec6d0b71`
 
 Any candidate, model revision, scene, reset, metric, schedule, controller,
 evidence, or claim change creates a different digest and requires a new
@@ -88,21 +95,19 @@ One human approval is sufficient because this phase has no partner and no
 physical holdout. Approval must quote the exact protocol digest after review:
 
 > I approve protocol
-> `adp-founder-sim-arena-droid-pi05-vs-groot-n17-v1` with digest
-> `sha256:3940d30009c4d9fdadac1ba4419eb2f04f8b22fd0273131f31d0112e1e2f6ad2`
-> in my role as Blueprint founder and simulation task owner. I approve only the
-> development-only simulation phase; this does not authorize physical robot
-> motion, deployment, publication, or uncapped paid compute.
+> `adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2` with digest
+> `sha256:05eb6f5c187fd69da6f40e7428634181b39fe7f02501bd7ccb9a4331801c01fc`
+> as Blueprint founder and simulation task owner.
 
 Blueprint's founder supplied that exact statement in the Codex task on
 2026-08-04. The deterministic receipt is
-[`founder_sim_approval_receipt.json`](manifests/founder_sim_approval_receipt.json),
+[`founder_sim_approval_receipt.v2.json`](manifests/founder_sim_approval_receipt.v2.json),
 digest
-`sha256:94ae151d8a7dca5a86bef37ef32233b13b9aa0a2ba0a73eba9d2c0dcdb69c9e9`.
+`sha256:073065217f29e07bbb909dbc63c8e0cf673ece04253e24c0dc53426eb55fe253`.
 The resulting non-paid execution admission is
-[`founder_sim_execution_admission.json`](manifests/founder_sim_execution_admission.json),
+[`founder_sim_execution_admission.v2.json`](manifests/founder_sim_execution_admission.v2.json),
 digest
-`sha256:5f586feea7211996edac22413d2a320d7ba79a231e3983fe64f964f9d595b4fa`.
+`sha256:c0003d810aeec6b8cc0a87d97637982b7b927a07b2afdb9b9abe4d963595fb0d`.
 
 The exact 88 logical Arena jobs are compiled by
 [`adp_isaac_lab_arena_request.py`](../../src/blueprint_pipeline/adp_isaac_lab_arena_request.py).
@@ -134,6 +139,13 @@ It requires clean exact-revision Arena, Isaac Lab, OpenPI, and GR00T checkouts;
 the frozen Arena lock; byte-complete inventories for the runtime lock, five
 registered environment/embodiment groups, and both checkpoints. Passing it
 authorizes only native control canaries, never candidate jobs or paid compute.
+
+The canonical capped Vast control lane is implemented by
+[`adp_isaac_lab_arena_vast.py`](../../src/blueprint_pipeline/adp_isaac_lab_arena_vast.py).
+It stages only public, digest-bound inputs and the approval receipt, uses the
+exact Isaac image, permits zero retries, and requires the shared price, TTL,
+watchdog, teardown, output-return, and provider-zero contracts. Its first
+execution target is only the Arena zero-action negative control.
 
 No production simulation, capture, reconstruction, physical trial, upload, or
 paid allocation was started while freezing this protocol.

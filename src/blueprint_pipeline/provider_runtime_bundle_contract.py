@@ -15,6 +15,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "unitree_unifolm",
     "unitree_groot_n17_sonic",
     "adp_simpler",
+    "adp_arena",
 )
 
 
@@ -123,6 +124,20 @@ def provider_runtime_contract_blockers(
             and "environment_step_info.success" in runner_text
         )
         runner_blocker = "provider_runner_missing_adp_simpler_runtime_contract"
+    elif provider_bundle_kind == "adp_arena":
+        entrypoint_valid = (
+            "adp_arena_runner_failed_without_runtime_result" in entrypoint_text
+            and "blocked_adp_arena_process_exited_without_result" in entrypoint_text
+        )
+        runner_valid = (
+            "SimulationApp" in runner_text
+            and "adp_arena_native_canary.json" in runner_text
+            and "pick_and_place_maple_table" in runner_text
+            and "zero_action" in runner_text
+            and "record_camera_video" in runner_text
+            and "provider_zero_required_after_return" in runner_text
+        )
+        runner_blocker = "provider_runner_missing_adp_arena_runtime_contract"
     elif provider_bundle_kind == "unitree_unifolm":
         entrypoint_valid = (
             "unitree_unifolm_provider_runner_failed_without_runtime_result" in entrypoint_text
