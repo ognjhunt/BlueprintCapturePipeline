@@ -18,6 +18,11 @@ from .measurement_isaac_runtime_release import ISAAC_VERSION, RUNTIME_IMAGE
 from .measurement_isaac_vast_bundle import (
     validate_measurement_isaac_physx_input_bundle_receipt,
 )
+from .lightwheel_sink_isaac_bundle import (
+    RECEIPT_SCHEMA_VERSION as LIGHTWHEEL_SINK_RECEIPT_SCHEMA_VERSION,
+    validate_lightwheel_sink_isaac_input_bundle_receipt,
+    validate_lightwheel_sink_isaac_runtime_result,
+)
 from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
@@ -226,6 +231,67 @@ exit "$worker_status"
 """
 
 
+def _lightwheel_sink_bootstrap_script() -> str:
+    return r"""set -euo pipefail
+work="$(mktemp -d "${TMPDIR:-/tmp}/blueprint-lightwheel-sink.XXXXXX")"
+archive="$work/input.zip"
+bundle="$work/bundle"
+result="$work/result.json"
+mkdir -p "$bundle"
+/isaac-sim/python.sh - "$archive" "$bundle" <<'PY'
+import hashlib, json, os, stat, sys, urllib.request, zipfile
+from pathlib import Path
+archive = Path(sys.argv[1])
+bundle = Path(sys.argv[2])
+with urllib.request.urlopen(os.environ["BLUEPRINT_MEASUREMENT_ISAAC_INPUT_GET_URL"], timeout=300) as response:
+    payload = response.read(268435457)
+if len(payload) > 268435456:
+    raise SystemExit("lightwheel_sink_input_oversized")
+expected = os.environ["BLUEPRINT_LIGHTWHEEL_SINK_INPUT_BUNDLE_DIGEST"].removeprefix("sha256:")
+if hashlib.sha256(payload).hexdigest() != expected:
+    raise SystemExit("lightwheel_sink_input_digest_mismatch")
+archive.write_bytes(payload)
+total = 0
+with zipfile.ZipFile(archive) as source:
+    for info in source.infolist():
+        parts = Path(info.filename).parts
+        mode = info.external_attr >> 16
+        total += info.file_size
+        if not parts or Path(info.filename).is_absolute() or ".." in parts or stat.S_ISLNK(mode) or info.file_size > 134217728 or total > 536870912:
+            raise SystemExit("lightwheel_sink_input_member_unsafe")
+    source.extractall(bundle)
+manifest = json.loads((bundle / "bundle_manifest.json").read_text())
+for row in [*manifest.get("source_files", []), *manifest.get("asset_files", [])]:
+    path = bundle / row["path"]
+    observed = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    if observed != row["digest"]:
+        raise SystemExit("lightwheel_sink_member_digest_mismatch")
+PY
+export PYTHONPATH="$bundle/src"
+set +e
+/isaac-sim/python.sh "$bundle/scripts/run_lightwheel_sink_isaac_bundle.py" --bundle-root "$bundle" --output "$result"
+worker_status=$?
+set -e
+if [ ! -s "$result" ]; then
+  exit "$worker_status"
+fi
+/isaac-sim/python.sh - "$result" <<'PY'
+import os, sys, urllib.request
+from pathlib import Path
+request = urllib.request.Request(
+    os.environ["BLUEPRINT_MEASUREMENT_ISAAC_OUTPUT_PUT_URL"],
+    data=Path(sys.argv[1]).read_bytes(),
+    method="PUT",
+    headers={"Content-Type": "application/zip"},
+)
+with urllib.request.urlopen(request, timeout=300) as response:
+    if response.status not in {200, 201, 204}:
+        raise SystemExit(f"lightwheel_sink_output_upload_failed:{response.status}")
+PY
+exit "$worker_status"
+"""
+
+
 def validate_measurement_isaac_vast_runtime_result(
     value: Mapping[str, Any],
     *,
@@ -397,7 +463,12 @@ def run_measurement_isaac_vast_canary(
         paid_resource_admission_grant, resource_class="gpu_render"
     )
     request = json.loads(json.dumps(dict(bound_request)))
-    receipt = validate_measurement_isaac_physx_input_bundle_receipt(bundle_receipt)
+    lightwheel_sink = bundle_receipt.get("schema_version") == LIGHTWHEEL_SINK_RECEIPT_SCHEMA_VERSION
+    receipt = (
+        validate_lightwheel_sink_isaac_input_bundle_receipt(bundle_receipt)
+        if lightwheel_sink
+        else validate_measurement_isaac_physx_input_bundle_receipt(bundle_receipt)
+    )
     if request.get("bound_request_digest") != canonical_digest(
         request, digest_field="bound_request_digest"
     ):
@@ -407,6 +478,8 @@ def run_measurement_isaac_vast_canary(
         or request.get("provider_mutation_authorized") is not True
         or request.get("operation") != OPERATION
         or provider.name != "vast"
+        or (lightwheel_sink and request.get("capture_profile") != "external_generated_asset")
+        or (not lightwheel_sink and request.get("capture_profile") == "external_generated_asset")
         or request.get("worker_image_digest") != RUNTIME_IMAGE
         or request.get("operation_input_bundle_digest") != receipt["input_bundle_digest"]
         or request.get("source_commit_sha") != receipt["source_commit_sha"]
@@ -485,11 +558,24 @@ def run_measurement_isaac_vast_canary(
             "ACCEPT_EULA": "Y",
             "PRIVACY_CONSENT": "Y",
         }
+        if lightwheel_sink:
+            env.update(
+                {
+                    "BLUEPRINT_LIGHTWHEEL_SINK_SOURCE_COMMIT": str(request["source_commit_sha"]),
+                    "BLUEPRINT_LIGHTWHEEL_SINK_RUNTIME_IMAGE": RUNTIME_IMAGE,
+                    "BLUEPRINT_LIGHTWHEEL_SINK_RUNTIME_RELEASE_DIGEST": str(
+                        request["measurement_isaac_runtime_release_digest"]
+                    ),
+                    "BLUEPRINT_LIGHTWHEEL_SINK_INPUT_BUNDLE_DIGEST": str(
+                        receipt["input_bundle_digest"]
+                    ),
+                }
+            )
         spec = RenderLaunchSpec(
             name=name,
             image=RUNTIME_IMAGE,
             env=env,
-            bootstrap_argv=["-lc", _bootstrap_script()],
+            bootstrap_argv=["-lc", _lightwheel_sink_bootstrap_script() if lightwheel_sink else _bootstrap_script()],
             entrypoint=["bash"],
             container_disk_gb=max(100, int(preflight.get("container_disk_bytes") or 0) // 1024**3),
             volume_gb=0,
@@ -564,12 +650,20 @@ def run_measurement_isaac_vast_canary(
             else:
                 write_json(root / "provider_runtime_result.json", raw_result)
                 try:
-                    validated_result = validate_measurement_isaac_vast_runtime_result(
-                        raw_result,
-                        bound_request=request,
-                        bundle_receipt=receipt,
+                    validated_result = (
+                        validate_lightwheel_sink_isaac_runtime_result(
+                            raw_result,
+                            bound_request=request,
+                            bundle_receipt=receipt,
+                        )
+                        if lightwheel_sink
+                        else validate_measurement_isaac_vast_runtime_result(
+                            raw_result,
+                            bound_request=request,
+                            bundle_receipt=receipt,
+                        )
                     )
-                except MeasurementIsaacVastCanaryError as exc:
+                except (MeasurementIsaacVastCanaryError, ValueError) as exc:
                     blockers.extend(str(exc).split(";"))
     finally:
         terminate_result: dict[str, Any] = {
@@ -699,7 +793,9 @@ def run_measurement_isaac_vast_canary(
         "raw_secret_values_recorded": False,
         "proof_effect": "development_execution_only" if validated_result else "none",
         "claim_ceiling": (
-            "isaac_physx_rigid_contact_plus_rtx_multimodal_startup_development"
+            "isaac_articulation_and_scripted_franka_contact_development"
+            if validated_result and lightwheel_sink
+            else "isaac_physx_rigid_contact_plus_rtx_multimodal_startup_development"
             if validated_result
             else "provider_execution_evidence_only"
         ),

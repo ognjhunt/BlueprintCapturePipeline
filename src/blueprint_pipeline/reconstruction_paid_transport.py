@@ -9,6 +9,10 @@ from .measurement_isaac_vast_bundle import (
     MeasurementIsaacVastBundleError,
     validate_measurement_isaac_physx_input_bundle_receipt,
 )
+from .lightwheel_sink_isaac_bundle import (
+    RECEIPT_SCHEMA_VERSION as LIGHTWHEEL_SINK_RECEIPT_SCHEMA_VERSION,
+    validate_lightwheel_sink_isaac_input_bundle_receipt,
+)
 from .measurement_dlo_lab_vast_bundle import (
     MeasurementDloLabVastBundleError,
     validate_measurement_dlo_lab_input_bundle_receipt,
@@ -173,7 +177,11 @@ def prepare_reconstruction_paid_transport(
                 if operation in isaac_operations:
                     receipt = validate_isaac_verification_worker_bundle_receipt(raw)
                 elif operation == "measurement_isaac_canary":
-                    receipt = validate_measurement_isaac_physx_input_bundle_receipt(raw)
+                    receipt = (
+                        validate_lightwheel_sink_isaac_input_bundle_receipt(raw)
+                        if raw.get("schema_version") == LIGHTWHEEL_SINK_RECEIPT_SCHEMA_VERSION
+                        else validate_measurement_isaac_physx_input_bundle_receipt(raw)
+                    )
                 elif operation == "measurement_dlo_lab_canary":
                     receipt = validate_measurement_dlo_lab_input_bundle_receipt(raw)
                 elif operation == "measurement_chrono_dem_canary":

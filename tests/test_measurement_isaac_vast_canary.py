@@ -16,8 +16,12 @@ from blueprint_pipeline.measurement_isaac_runtime_release import (
 from blueprint_pipeline.measurement_isaac_vast_bundle import RECEIPT_SCHEMA_VERSION
 from blueprint_pipeline.measurement_isaac_vast_canary import (
     _bootstrap_script,
+    _lightwheel_sink_bootstrap_script,
     _watchdog_valid,
     run_measurement_isaac_vast_canary,
+)
+from blueprint_pipeline.lightwheel_sink_isaac_bundle import (
+    RECEIPT_SCHEMA_VERSION as LIGHTWHEEL_SINK_RECEIPT_SCHEMA_VERSION,
 )
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
@@ -158,6 +162,15 @@ def test_bootstrap_verifies_bundle_and_uses_exact_isaac_python() -> None:
     assert 'headers={"Content-Type": "application/json"}' not in script
 
 
+def test_lightwheel_bootstrap_runs_sink_worker_and_rehashes_every_member() -> None:
+    script = _lightwheel_sink_bootstrap_script()
+    assert "run_lightwheel_sink_isaac_bundle.py" in script
+    assert "BLUEPRINT_LIGHTWHEEL_SINK_INPUT_BUNDLE_DIGEST" in script
+    assert "lightwheel_sink_member_digest_mismatch" in script
+    assert "source_files" in script and "asset_files" in script
+    assert script.count("/isaac-sim/python.sh") == 3
+
+
 def test_watchdog_validation_binds_live_process_and_exact_nonsymlink_evidence(
     tmp_path: Path,
 ) -> None:
@@ -282,6 +295,67 @@ def test_canary_tears_down_and_persists_no_signed_urls(tmp_path: Path, monkeypat
     for secret in (INPUT_URL, PUT_URL, GET_URL):
         assert secret not in persisted
     assert not list((tmp_path / "leases").glob("*.lease.json"))
+
+
+def test_canary_dispatches_external_sink_bundle_with_exact_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    release = build_measurement_isaac_runtime_release()
+    receipt = {
+        "schema_version": LIGHTWHEEL_SINK_RECEIPT_SCHEMA_VERSION,
+        "source_commit_sha": SHA,
+        "runtime_image_digest": RUNTIME_IMAGE,
+        "runtime_release_digest": release["runtime_release_digest"],
+        "bundle_manifest_digest": D2,
+        "input_bundle_digest": D1,
+        "input_bundle_size_bytes": 1000,
+        "source_model_digest": D1,
+        "texture_manifest_digest": D2,
+        "wrapper_digest": D3,
+        "test_configuration_digest": D1,
+        "asset_file_count": 6,
+        "raw_secret_values_recorded": False,
+        "provider_allocation_performed": False,
+        "paid_execution_authorized_by_bundle": False,
+        "proof_effect": "none",
+        "claim_ceiling": "immutable_external_asset_development_input_only",
+    }
+    receipt["bundle_receipt_digest"] = canonical_digest(
+        receipt, digest_field="bundle_receipt_digest"
+    )
+    request = _bound_request()
+    request.pop("bound_request_digest")
+    request["capture_profile"] = "external_generated_asset"
+    request["bound_request_digest"] = canonical_digest(
+        request, digest_field="bound_request_digest"
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.measurement_isaac_vast_canary."
+        "validate_lightwheel_sink_isaac_runtime_result",
+        lambda value, **_kwargs: dict(value),
+    )
+    provider = _Provider()
+    times = iter([1000.0, 1001.0, 1002.0])
+    result = run_measurement_isaac_vast_canary(
+        bound_request=request,
+        bundle_receipt=receipt,
+        preflight=_preflight(),
+        job_dir=tmp_path,
+        input_bundle_get_url=INPUT_URL,
+        output_put_url=PUT_URL,
+        output_get_url=GET_URL,
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=lambda _url: {"runtime_result_digest": D3, "status": "passed"},
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda *_args: True,
+    )
+    assert result["status"] == "completed"
+    env = provider.requests[0]["create_payload"]["env"]
+    assert env["BLUEPRINT_LIGHTWHEEL_SINK_SOURCE_COMMIT"] == SHA
+    assert env["BLUEPRINT_LIGHTWHEEL_SINK_INPUT_BUNDLE_DIGEST"] == D1
+    assert result["claim_ceiling"] == "isaac_articulation_and_scripted_franka_contact_development"
 
 
 def test_canary_records_fetch_failure_and_still_tears_down(tmp_path: Path) -> None:
