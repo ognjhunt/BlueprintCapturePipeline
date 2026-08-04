@@ -14,6 +14,7 @@ import os
 import shutil
 import stat
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -33,6 +34,10 @@ DEFAULT_IMAGE = (
     "sha256:131e238d724ee145317f10d6c8eba0d301439c6c8764b02473510e7035756e81"
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/simpler"
+_VAST_MUTATION_ENV = (
+    "BLUEPRINT_ALLOW_VAST_API_CALLS",
+    "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
+)
 
 
 ENTRYPOINT = r'''#!/usr/bin/env bash
@@ -92,6 +97,23 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+@contextmanager
+def _vast_authority_environment():
+    """Bridge the canonical grant to the adapter's defense-in-depth env gates."""
+
+    previous = {name: os.environ.get(name) for name in _VAST_MUTATION_ENV}
+    try:
+        for name in _VAST_MUTATION_ENV:
+            os.environ[name] = "1"
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def build_simpler_public_vast_bundle(
@@ -261,36 +283,37 @@ def run_simpler_public_vast(
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     adapter: dict[str, Any] = {}
     try:
-        adapter = run_vast_provider_adapter(
-            job_dir=provider_run,
-            mode="live-startup-probe",
-            allow_vast_api_call=True,
-            allow_instance_launch=True,
-            max_hourly_rate=max_hourly_rate_usd,
-            target_spend_usd=hard_cap_usd,
-            hard_cap_usd=hard_cap_usd,
-            max_live_minutes=hard_ttl_seconds // 60,
-            session_max_live_minutes=hard_ttl_seconds // 60,
-            public_image=DEFAULT_IMAGE,
-            provider_bundle=str(bundle["bundle_path"]),
-            provider_bundle_url=bundle_url,
-            provider_output_put_url=output_put_url,
-            provider_output_get_url=output_get_url,
-            provider_runtime_output_zip=output_zip,
-            enable_blueprint_bundle=True,
-            provider_bundle_kind="adp_simpler",
-            vast_launch_mode="ssh_direct",
-            disk_gb=50,
-            min_gpu_ram_mb=16000,
-            poll_interval_seconds=15,
-            startup_timeout_seconds=hard_ttl_seconds,
-            heartbeat_no_progress_seconds=900,
-            verify_staging_urls=True,
-            preferred_gpu_keywords=("RTX 4090", "RTX 3090", "RTX A5000"),
-            instance_label_prefix="blueprint-adp-simpler-",
-            forward_hf_token=False,
-            paid_resource_admission_grant=paid_resource_admission_grant,
-        )
+        with _vast_authority_environment():
+            adapter = run_vast_provider_adapter(
+                job_dir=provider_run,
+                mode="live-startup-probe",
+                allow_vast_api_call=True,
+                allow_instance_launch=True,
+                max_hourly_rate=max_hourly_rate_usd,
+                target_spend_usd=hard_cap_usd,
+                hard_cap_usd=hard_cap_usd,
+                max_live_minutes=hard_ttl_seconds // 60,
+                session_max_live_minutes=hard_ttl_seconds // 60,
+                public_image=DEFAULT_IMAGE,
+                provider_bundle=str(bundle["bundle_path"]),
+                provider_bundle_url=bundle_url,
+                provider_output_put_url=output_put_url,
+                provider_output_get_url=output_get_url,
+                provider_runtime_output_zip=output_zip,
+                enable_blueprint_bundle=True,
+                provider_bundle_kind="adp_simpler",
+                vast_launch_mode="ssh_direct",
+                disk_gb=50,
+                min_gpu_ram_mb=16000,
+                poll_interval_seconds=15,
+                startup_timeout_seconds=hard_ttl_seconds,
+                heartbeat_no_progress_seconds=900,
+                verify_staging_urls=True,
+                preferred_gpu_keywords=("RTX 4090", "RTX 3090", "RTX A5000"),
+                instance_label_prefix="blueprint-adp-simpler-",
+                forward_hf_token=False,
+                paid_resource_admission_grant=paid_resource_admission_grant,
+            )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     extracted = _extract_provider_output(output_zip, job / "immutable_execution")
@@ -300,7 +323,7 @@ def run_simpler_public_vast(
     blockers.extend(extracted.get("blockers") or [])
     if execution.get("status") not in {"completed", "completed_with_retained_failures"}:
         blockers.extend(execution.get("blockers") or ["adp_execution_not_completed"])
-    if execution.get("physical_outcome_values_accessed") is not False:
+    if execution and execution.get("physical_outcome_values_accessed") is not False:
         blockers.append("adp_execution_outcome_firebreak_violated")
     if teardown.get("continuing_spend_from_this_run") is not False:
         blockers.append("adp_vast_provider_zero_not_proven")

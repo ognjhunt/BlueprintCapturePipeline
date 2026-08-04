@@ -13,6 +13,7 @@ from blueprint_pipeline.provider_runtime_bundle_contract import (
 )
 from blueprint_pipeline.simpler_public_vast import (
     PROBE_KIND,
+    _vast_authority_environment,
     build_simpler_public_vast_bundle,
 )
 
@@ -53,6 +54,20 @@ def test_bundle_contains_public_runtime_but_not_physical_outcome_values(
         entrypoint_text=entrypoint,
         runner_text=runner,
     ) == []
+
+
+def test_canonical_grant_bridge_sets_and_restores_adapter_mutation_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BLUEPRINT_ALLOW_VAST_API_CALLS", raising=False)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "prior")
+
+    with _vast_authority_environment():
+        assert allocator.os.environ["BLUEPRINT_ALLOW_VAST_API_CALLS"] == "1"
+        assert allocator.os.environ["BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"] == "1"
+
+    assert "BLUEPRINT_ALLOW_VAST_API_CALLS" not in allocator.os.environ
+    assert allocator.os.environ["BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"] == "prior"
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
