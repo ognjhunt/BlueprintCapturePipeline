@@ -313,6 +313,7 @@
       "nvidia_driver_capabilities": "all",
       "vulkan_requirement": "observed_nvidia_icd_and_vulkaninfo_summary",
       "vulkan_driver_override_environment": ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"],
+      "sapien_offscreen_system_packages": ["libegl1", "libxext6", "libvulkan1", "vulkan-tools"],
       "unresolved_requirements": [
         "exact_python_patch",
         "numpy",
@@ -365,5 +366,5 @@
     "universal_robot_or_simulator_support": false,
     "two_candidates_establish_rank_correlation": false
   },
-  "manifest_digest": "sha256:f2fce805b1430f4e9d504fbcdc12dec83602f147518ecb131c9216333ff9007f"
+  "manifest_digest": "sha256:5b25df9aef75918f5050eb02a3897577ded29a9517c6833019ee2d65ef327f63"
 }

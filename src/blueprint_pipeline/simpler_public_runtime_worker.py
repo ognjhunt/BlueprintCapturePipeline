@@ -161,10 +161,26 @@ def _vulkan_runtime_evidence(
     probe = _run([vulkaninfo, "--summary"], timeout=60)
     output = probe["output_tail"].strip()
     if probe["returncode"] != 0:
-        raise RuntimeError("nvidia_vulkan_probe_failed")
+        diagnostic = " ".join(output.split())[-800:] or "no_vulkaninfo_output"
+        raise RuntimeError(f"nvidia_vulkan_probe_failed:{diagnostic}")
     lowered = output.lower()
     if "nvidia" not in lowered or "llvmpipe" in lowered:
-        raise RuntimeError("nvidia_vulkan_device_not_observed")
+        reason = "nvidia_marker_missing" if "nvidia" not in lowered else "llvmpipe_observed"
+        raise RuntimeError(f"nvidia_vulkan_device_not_observed:{reason}")
+    packages = _run(
+        [
+            "dpkg-query",
+            "-W",
+            "-f=${binary:Package}=${Version}\\n",
+            "libegl1",
+            "libxext6",
+            "libvulkan1",
+            "vulkan-tools",
+        ],
+        timeout=60,
+    )
+    if packages["returncode"] != 0:
+        raise RuntimeError("vulkan_system_package_lock_failed")
     return {
         "driver_capabilities": os.environ.get("NVIDIA_DRIVER_CAPABILITIES"),
         "vk_driver_files": os.environ["VK_DRIVER_FILES"],
@@ -172,6 +188,9 @@ def _vulkan_runtime_evidence(
         "icd_sha256": _file_sha256(icd),
         "vulkaninfo_path": vulkaninfo,
         "vulkaninfo_summary": output,
+        "system_packages": sorted(
+            line for line in packages["output_tail"].splitlines() if line.strip()
+        ),
     }
 
 

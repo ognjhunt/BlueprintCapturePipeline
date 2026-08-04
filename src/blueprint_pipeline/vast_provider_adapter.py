@@ -2971,7 +2971,7 @@ def _probe_shell_script(
                 + "RUNTIME_PY=''; "
                 "if command -v apt-get >/dev/null 2>&1; then "
                 "apt-get update >/tmp/blueprint_adp_apt_update.log 2>&1 && "
-                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip git ffmpeg libvulkan1 vulkan-tools libgl1 libglib2.0-0 >/tmp/blueprint_adp_apt_install.log 2>&1; "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip git ffmpeg libvulkan1 vulkan-tools libgl1 libegl1 libxext6 libglib2.0-0 >/tmp/blueprint_adp_apt_install.log 2>&1; "
                 "fi; "
                 "if [ -x /usr/bin/python3 ]; then RUNTIME_PY=/usr/bin/python3; "
                 "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); fi; "

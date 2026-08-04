@@ -23,7 +23,7 @@ from blueprint_pipeline.simpler_public_runtime_worker import (
     _cuda_toolkit_evidence,
     _vulkan_runtime_evidence,
 )
-from blueprint_pipeline.vast_provider_adapter import _probe_env
+from blueprint_pipeline.vast_provider_adapter import _probe_env, _probe_shell_script
 
 
 ROOT = Path(__file__).parents[1]
@@ -154,9 +154,13 @@ def test_worker_binds_observed_nvidia_vulkan_icd(
     )
     monkeypatch.setattr(
         "blueprint_pipeline.simpler_public_runtime_worker._run",
-        lambda *args, **kwargs: {
+        lambda command, **kwargs: {
             "returncode": 0,
-            "output_tail": "GPU0: NVIDIA GeForce RTX 4090",
+            "output_tail": (
+                "GPU0: NVIDIA GeForce RTX 4090"
+                if command[0].endswith("vulkaninfo")
+                else "libegl1=1.4.0\nlibxext6=1.3.4\nlibvulkan1=1.3.204\nvulkan-tools=1.3.204"
+            ),
         },
     )
 
@@ -166,6 +170,7 @@ def test_worker_binds_observed_nvidia_vulkan_icd(
     assert evidence["vk_driver_files"] == str(icd)
     assert evidence["vk_icd_filenames"] == str(icd)
     assert evidence["icd_sha256"].startswith("sha256:")
+    assert "libegl1=1.4.0" in evidence["system_packages"]
 
 
 def test_adp_vast_env_requests_graphics_without_isaac_terms(tmp_path: Path) -> None:
@@ -179,6 +184,14 @@ def test_adp_vast_env_requests_graphics_without_isaac_terms(tmp_path: Path) -> N
     assert env["NVIDIA_DRIVER_CAPABILITIES"] == "all"
     assert "ACCEPT_EULA" not in env
     assert "PRIVACY_CONSENT" not in env
+
+    script = _probe_shell_script(
+        "https://example.com",
+        enable_isaac_smoke=False,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="adp_simpler",
+    )
+    assert "libegl1 libxext6" in script
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
