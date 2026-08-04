@@ -1,0 +1,76 @@
+{
+  "schema_version": "adp009a_scene_selection_seal.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009A",
+  "sealed_at": "2026-08-04T19:21:26Z",
+  "selection_preregistration_digest": "sha256:f946b1d674fee977b6132b20d28cbd24185fd60dc5909e64c8582c651c13f407",
+  "shortlist_preregistration_digest": "sha256:aa083b49198ab7d8404fa78990c62176338234606f8f9f8227995a249a01e675",
+  "candidate_a_failure_digest": "sha256:f1cd85e2933b82057cc93d32cff75c88f060efe41e5356e499da5a8038701315",
+  "method_outcomes_observed": false,
+  "new_virtual_camera_render_executed": false,
+  "selected_scene": {
+    "interiorgs_folder": "0839_841757",
+    "publisher_scene_id": "841757",
+    "selection_reason": "first_preregistered_shortlist_candidate_with_a_unique_supported_nonoverlapped_target_collider_and_direct_splat_records_not_dominated_by_low_opacity_or_extreme_view_dependence",
+    "publisher_mapping": {
+      "interiorgs_scene_id": "0839_841757",
+      "sage_usdz_scene_id": "841757",
+      "sage_collision_scene_id": "841757"
+    }
+  },
+  "source_artifacts": [
+    {"repository": "spatialverse/InteriorGS", "revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530", "path": "0839_841757/3dgs_compressed.ply", "size_bytes": 42944495, "sha256": "sha256:22150c41ca85d2f9f3b89d070a767d9f2daa8d39abd14f464ddb85657e8a8897"},
+    {"repository": "spatialverse/InteriorGS", "revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530", "path": "0839_841757/labels.json", "size_bytes": 223091, "sha256": "sha256:8e157200a7b1b29af7575f0e21a78d754e81c5316d6eebe594d090af8cb6692e"},
+    {"repository": "spatialverse/InteriorGS", "revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530", "path": "0839_841757/structure.json", "size_bytes": 31297, "sha256": "sha256:36a35122e8028ed2c3a8e8bfdf3aaa35a5c87927bdc3605d41623100d920857f"},
+    {"repository": "spatialverse/SAGE-3D_InteriorGS_usdz", "revision": "d0b6cdc0aa052d38d743339bb629799ae81e7966", "path": "InteriorGS_usdz/841757.usdz", "size_bytes": 103219568, "sha256": "sha256:d7de3a7939c935f2a015c57aebc1e8e7a6f85ec2ba61c89b2cd318c9924e4956"},
+    {"repository": "spatialverse/SAGE-3D_Collision_Mesh", "revision": "3ba75cc7887b62bf84211d5db08adfa64d691597", "path": "Collision_Mesh/841757/841757_collision.usd", "size_bytes": 36428877, "sha256": "sha256:2ba60fb13f8704d7885df54233a25e1bdbf4800ee54deb5d3bc9a6301cd06dbd"}
+  ],
+  "coordinate_frame": {
+    "units": "meters",
+    "handedness": "right_handed",
+    "up_axis": "Z",
+    "source_axes": ["right", "back", "up"],
+    "origin": "publisher_scene_origin",
+    "normalization_history": "publisher_compressed_ply_preserved_without_blueprint_normalization",
+    "T_source_world": [[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]],
+    "T_world_source": [[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]],
+    "sage_nurec_local_to_world": [[-1.0,0.0,0.0,0.0],[0.0,0.0,-1.0,0.0],[0.0,-1.0,0.0,0.0],[0.0,0.0,0.0,1.0]],
+    "sage_nurec_world_to_local": [[-1.0,0.0,0.0,0.0],[0.0,0.0,-1.0,0.0],[0.0,-1.0,0.0,0.0],[0.0,0.0,0.0,1.0]]
+  },
+  "selected_target": {
+    "interiorgs_instance_id": "344",
+    "semantic_label": "table lamp",
+    "obb_min_m": [1.1810129942626952, 0.1213710159716797, 0.48072629926757815],
+    "obb_max_m": [1.5203810057373046, 0.4603980240283203, 0.9383903007324219],
+    "obb_size_m": [0.3393680114746094, 0.3390270080566406, 0.45766400146484375],
+    "collision_prim_path": "/Root/_PRP24JVAJ3S2PTULY888888",
+    "obb_collision_aabb_iou": 0.9787,
+    "next_best_collision_iou": 0.0102,
+    "separately_removable": true,
+    "unrelated_collision_overlap_fraction": 0.0,
+    "support_instance_id": "340",
+    "support_semantic_label": "Side table",
+    "support_top_z_m": 0.4999599957275391,
+    "support_horizontal": true,
+    "support_xy_coverage_fraction": 1.0,
+    "conservative_clear_camera_azimuth_count_at_0_9m": 12,
+    "direct_splat_record_count_inside_obb": 855,
+    "splat_fraction_opacity_at_least_0_9": 0.66199,
+    "splat_fraction_opacity_at_least_0_5": 0.75673,
+    "target_sh_rest_to_dc_ratio_p90": 0.5823,
+    "scene_sh_rest_to_dc_ratio_p90": 1.1414,
+    "appearance_eligibility": "not_dominated_by_low_opacity_or_extreme_view_dependence",
+    "physical_material_authority": false,
+    "generated_geometry_is_metric_truth": false
+  },
+  "shortlist_outcomes": [
+    {"rank": 1, "scene_id": "840411", "outcome": "rejected", "smallest_blocker": "candidate_targets_overlap_unrelated_furniture_collision"},
+    {"rank": 2, "scene_id": "841151", "outcome": "rejected", "smallest_blocker": "candidate_targets_lack_independent_support_and_collision_identity"},
+    {"rank": 3, "scene_id": "841757", "outcome": "selected", "smallest_blocker": null},
+    {"rank": 4, "scene_id": "840920", "outcome": "metadata_and_collision_screened_but_full_pair_not_materialized", "smallest_blocker": "supported_notebook_is_gloss_dominated_and_rice_cooker_overlaps_cabinet_collision"},
+    {"rank": 5, "scene_id": "840873", "outcome": "metadata_and_collision_screened_but_full_pair_not_materialized", "smallest_blocker": "no_target_passed_preregistered_geometry_support_and_size_screen"}
+  ],
+  "selection_status": "sealed",
+  "claim_ceiling": "development_only",
+  "record_digest": "sha256:ecfb88efc8b2c222f6bc32429cd20594c25171fadd4d6eb12d2e4abf4c1ce115"
+}

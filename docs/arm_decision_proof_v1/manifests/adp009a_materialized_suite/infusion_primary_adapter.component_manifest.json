@@ -1,0 +1,69 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "inpainting_result": false,
+    "method_source_checkout_is_not_execution": true,
+    "metric_geometry_qualified": false,
+    "physical_evidence": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-infusion_primary_adapter",
+  "manifest_digest": "sha256:144294468169c8d4d73e156a21e7e1d5fcf15cbf28613f0ce87aebd5287b1e4e",
+  "materialized_artifacts": [
+    {
+      "external_relative_path": "Infusion/LICENSE",
+      "publisher_path": "LICENSE",
+      "role": "source_license",
+      "sha256": "sha256:9c0f0708890efe2128259abe8541a5f6606a9e6c5fcf55705b7d1b52c99bf5d3",
+      "size_bytes": 1095
+    },
+    {
+      "external_relative_path": "Infusion/environment.yaml",
+      "publisher_path": "environment.yaml",
+      "role": "dependency_declaration",
+      "sha256": "sha256:3995e5a74909d72c0301586f3b411b8d21b904d6553a29db1f4024e8df55775c",
+      "size_bytes": 496
+    },
+    {
+      "external_relative_path": "Infusion/gaussian_splatting/submodules/diff-gaussian-rasterization-confidence/LICENSE.md",
+      "publisher_path": "gaussian_splatting/submodules/diff-gaussian-rasterization-confidence/LICENSE.md",
+      "role": "dependency_declaration",
+      "sha256": "sha256:cd5c95b3cfff3acc1bd412420c770f88809331c3db6872df11a970147aa8e81f",
+      "size_bytes": 4275
+    },
+    {
+      "external_relative_path": "Infusion/README.md",
+      "publisher_path": "README.md",
+      "role": "author_workflow_declaration",
+      "sha256": "sha256:7f572185925a056098c70c18070e033a84a2712b33b1955319ae2df46a983eb2",
+      "size_bytes": 9043
+    }
+  ],
+  "observed_evidence": {
+    "author_method_executed": false,
+    "author_smoke_receipt_bound": false,
+    "author_workflow_declarations_hashed": true,
+    "dependency_declarations_hashed": true,
+    "official_remote_head_verified": true,
+    "source_checkout_opened": true,
+    "source_tree_clean": true,
+    "source_tree_matches_expected": true,
+    "submodule_revisions_verified": true
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "official_remote_head": "788da7f40cad4314831a053b7419df277d7814c4",
+    "repository": "https://github.com/ali-vilab/Infusion",
+    "repository_tree": "39f437f353114f7958b28a3a5b816d37ed2936a5",
+    "revision": "788da7f40cad4314831a053b7419df277d7814c4",
+    "submodules": {}
+  },
+  "rights": {
+    "checkpoint_or_author_data_rights_established": false,
+    "source_license": "MIT",
+    "source_license_file_hashed": true
+  },
+  "role": "infusion_primary_adapter",
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "InFusion"
+}

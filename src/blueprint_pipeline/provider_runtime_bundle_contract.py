@@ -16,6 +16,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "unitree_groot_n17_sonic",
     "adp_simpler",
     "adp_arena",
+    "adp_content_agents",
 )
 
 
@@ -138,6 +139,23 @@ def provider_runtime_contract_blockers(
             and "provider_zero_required_after_return" in runner_text
         )
         runner_blocker = "provider_runner_missing_adp_arena_runtime_contract"
+    elif provider_bundle_kind == "adp_content_agents":
+        entrypoint_valid = (
+            "adp_content_agents_runner_failed_without_runtime_result" in entrypoint_text
+            and "blocked_adp_content_agents_process_exited_without_result" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp_content_agents_vast_result.json",
+                "material_agent_executed",
+                "texture_agent_executed",
+                "physics_agent_executed",
+                "validation_agent_executed",
+                "joint_agent_inapplicable_single_rigid_body",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp_content_agents_runtime_contract"
     elif provider_bundle_kind == "unitree_unifolm":
         entrypoint_valid = (
             "unitree_unifolm_provider_runner_failed_without_runtime_result" in entrypoint_text

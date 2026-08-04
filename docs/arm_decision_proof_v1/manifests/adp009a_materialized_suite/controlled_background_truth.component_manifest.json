@@ -1,0 +1,24 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "physical_evidence": false,
+    "qualified": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-controlled_background_truth",
+  "manifest_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
+  "materialized_artifacts": [],
+  "observed_evidence": {
+    "required_receipt_present": false
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "revision": "not_materialized"
+  },
+  "rights": {
+    "established": false
+  },
+  "role": "controlled_background_truth",
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "Blueprint-controlled"
+}

@@ -1,0 +1,170 @@
+{
+  "adp_item": "ADP-009",
+  "claim_boundaries": {
+    "customer_value": false,
+    "deployment_readiness": false,
+    "digital_twin": false,
+    "exact_public_suite_binding": true,
+    "general_sim_to_real_fidelity": false,
+    "metric_geometry_qualified": false,
+    "partner_capture_qualified": false,
+    "physical_evidence": false,
+    "physical_safety": false,
+    "prospective_validation": false,
+    "public_scene_software_qualified": false,
+    "task_physics_qualified": false
+  },
+  "claim_ceiling": "development_only",
+  "components": [
+    {
+      "blockers": [
+        "inpaint360_author_data_and_weight_rights_or_smoke_missing"
+      ],
+      "component_admission_receipt_digest": "sha256:c877f68f2621fecdfcdbb29f51a98399b436d733cf737be6aa1c3aa958ac74d5",
+      "component_manifest_digest": "sha256:9a75f0ee9206fb6391b7c71de56f3a5c234693d81ac87b143589f57d62bb3f07",
+      "exact_artifact_digest": "sha256:9c59862139a9067f16579f0fb16defa0ce4c35f022c11fd9199562cc8443c74b",
+      "exact_revision": {
+        "kind": "git_commit",
+        "value": "d54c893285c6cb27788e05cce607e7d3cca6388a"
+      },
+      "role": "inpaint360_author_smoke",
+      "source_project_id": "Inpaint360GS",
+      "status": "blocked"
+    },
+    {
+      "blockers": [
+        "infusion_author_masks_and_checkpoint_license_or_smoke_missing"
+      ],
+      "component_admission_receipt_digest": "sha256:05d3b792a24e07a3a7d8d984ee9a1b9a1dea3dcec774ab1f2828a940dd674b2e",
+      "component_manifest_digest": "sha256:144294468169c8d4d73e156a21e7e1d5fcf15cbf28613f0ce87aebd5287b1e4e",
+      "exact_artifact_digest": "sha256:b3014c92c3a6aaf353295a2527d5c2548f086232216e468c67e96d9ac7f63584",
+      "exact_revision": {
+        "kind": "git_commit",
+        "value": "788da7f40cad4314831a053b7419df277d7814c4"
+      },
+      "role": "infusion_primary_adapter",
+      "source_project_id": "InFusion",
+      "status": "blocked"
+    },
+    {
+      "blockers": [
+        "aurafusion360_unpinned_runtime_weights_or_author_smoke_missing"
+      ],
+      "component_admission_receipt_digest": "sha256:97819c211ffc233b0cedf4e3af1e1683842d741d5d267ecb6dceb372dabe9a5e",
+      "component_manifest_digest": "sha256:d4e2b6f3eb7454ca53c37fcb7260b8a5ec9fb29cdd3118ae46e06407188e67cf",
+      "exact_artifact_digest": "sha256:6860b249ea3c431d09c61b19d4340f592e7e5a0d7b64b234e0defee9d39dd7d8",
+      "exact_revision": {
+        "kind": "git_commit",
+        "value": "f23b26c44ba84608306ba952510533ebf4c7877d"
+      },
+      "role": "aurafusion360_quality_challenger",
+      "source_project_id": "AuraFusion360",
+      "status": "blocked"
+    },
+    {
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:b497bef714075e6b46fdfdab1864fdede24459872d5f5bbb645398175e0b47e3",
+      "component_manifest_digest": "sha256:f96681e8d23499926b7417196415840a69f5bfd22425eedd61e0b2dbac475e38",
+      "exact_artifact_digest": "sha256:2230ed3e6beac377f39fe5a094fcee2c6f35781b26fe68fea0a0f5d691dd426d",
+      "exact_revision": {
+        "kind": "git_commit",
+        "value": "334dfeea4e0241033b4e5de97c01bc7c9c080530"
+      },
+      "role": "interiorgs_appearance_scene",
+      "source_project_id": "InteriorGS",
+      "status": "admitted"
+    },
+    {
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:61e63b52e444e964f38beebe87c0f9bf3656e62a11517baed16ac4835ddbfa95",
+      "component_manifest_digest": "sha256:f5666090b84e93b955726a9e7bfe4af4bb9cb17fdb2334e8d11bbd654eb5ffd3",
+      "exact_artifact_digest": "sha256:bd40ad9c1f404e6ae1720c86681ab154277a9a74e606c1af34fe8472b651fcc8",
+      "exact_revision": {
+        "kind": "git_commit",
+        "value": "3ba75cc7887b62bf84211d5db08adfa64d691597"
+      },
+      "role": "sage3d_collision_companion",
+      "source_project_id": "SAGE-3D",
+      "status": "admitted"
+    },
+    {
+      "blockers": [
+        "controlled_background_truth_case_missing"
+      ],
+      "component_admission_receipt_digest": "sha256:58a0d75a13ba5bd0afc77cd070fbc70c60f516e41f4b0256549f8cde431fca32",
+      "component_manifest_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
+      "exact_artifact_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
+      "exact_revision": {
+        "kind": "content_digest",
+        "value": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844"
+      },
+      "role": "controlled_background_truth",
+      "source_project_id": "Blueprint-controlled",
+      "status": "blocked"
+    },
+    {
+      "blockers": [
+        "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
+      ],
+      "component_admission_receipt_digest": "sha256:14cc5895e2d2df4ea36103dba8ef921f353b1a0563152e787bd10cc81ddae120",
+      "component_manifest_digest": "sha256:f95832848f2c8fe82607f9fb0b942e5997dc3a3940b48b5c6a84107f60cf817e",
+      "exact_artifact_digest": "sha256:102cc9c6d1098ce364b3b7f3aebd2630f770f6185fd28b130c37d954db1a8b45",
+      "exact_revision": {
+        "kind": "git_commit",
+        "value": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3"
+      },
+      "role": "exact_simready_object",
+      "source_project_id": "Blueprint-controlled",
+      "status": "blocked"
+    },
+    {
+      "blockers": [
+        "nvidia_content_agents_material_texture_physics_full_execution_missing"
+      ],
+      "component_admission_receipt_digest": "sha256:a0a74ef8fe272e1af9262f1eb108f6b4f040705156b82a467abfa17f2df803a1",
+      "component_manifest_digest": "sha256:5012430d63f2679d2db9ff34d47153b89552a97f0a1dfa222fa49e3a3cc92e22",
+      "exact_artifact_digest": "sha256:720bec8233ac4f59794f2753d5f8ba9f052ee5af637c5b7b7e25b18a684c92a0",
+      "exact_revision": {
+        "kind": "git_commit",
+        "value": "36dbf3f274f8e256637230a05a085853f65cc175"
+      },
+      "role": "usd_content_agents_candidate",
+      "source_project_id": "NVIDIA-Omniverse/usd-content-agents",
+      "status": "blocked"
+    },
+    {
+      "blockers": [
+        "physics_positive_control_receipt_missing"
+      ],
+      "component_admission_receipt_digest": "sha256:94202cd5fe0b5bc38f4dfd774adde0dac15abae5e2c7b66d6b4911434a1cb7b4",
+      "component_manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
+      "exact_artifact_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
+      "exact_revision": {
+        "kind": "content_digest",
+        "value": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e"
+      },
+      "role": "physics_positive_control",
+      "source_project_id": "Blueprint-controlled",
+      "status": "blocked"
+    },
+    {
+      "blockers": [
+        "scannetpp_scene_access_and_admission_missing"
+      ],
+      "component_admission_receipt_digest": "sha256:0648d90dd69f4057e3970be5bf66fa607a1eb26e93df3c2ff64bfc124371192d",
+      "component_manifest_digest": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626",
+      "exact_artifact_digest": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626",
+      "exact_revision": {
+        "kind": "content_digest",
+        "value": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626"
+      },
+      "role": "scannetpp_real_transfer",
+      "source_project_id": "ScanNet++",
+      "status": "blocked"
+    }
+  ],
+  "index_digest": "sha256:f15a2604bb66c1e64fda430eb518f86cb719041663daf604e0a9c7b7617683c7",
+  "index_id": "adp009a-public-suite-20260804",
+  "program_id": "arm-decision-proof-v1",
+  "schema_version": "public_scene_suite_index.v1"
+}

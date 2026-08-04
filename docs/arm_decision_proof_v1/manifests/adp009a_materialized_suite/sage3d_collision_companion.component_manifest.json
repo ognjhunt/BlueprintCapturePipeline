@@ -1,0 +1,190 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "generated_geometry_is_metric_truth": false,
+    "measurement_authoritative_local_surface_truth": false,
+    "physical_evidence": false,
+    "static_collision_proxy_only": true,
+    "synthetic_appearance_and_semantics_only": true
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-sage3d-840313",
+  "coordinate_frame": {
+    "T_source_world": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "T_world_source": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "handedness": "right_handed",
+    "normalization_history": "publisher_bytes_preserved_without_blueprint_normalization",
+    "origin": "publisher_scene_origin",
+    "source_axes": [
+      "right",
+      "back",
+      "up"
+    ],
+    "units": "meters",
+    "up_axis": "Z"
+  },
+  "manifest_digest": "sha256:f5666090b84e93b955726a9e7bfe4af4bb9cb17fdb2334e8d11bbd654eb5ffd3",
+  "materialized_artifacts": [
+    {
+      "external_relative_path": "shortlist/SAGE-3D_InteriorGS_usdz/InteriorGS_usdz/840313.usdz",
+      "publisher_path": "InteriorGS_usdz/840313.usdz",
+      "role": "publisher_simulation_representation",
+      "sha256": "sha256:bcdc8d36ed88c1a5c4e7cd333479e24c67cde64ed3b3ea135f37028f70d1ebb8",
+      "size_bytes": 81806718
+    },
+    {
+      "external_relative_path": "shortlist/SAGE-3D_Collision_Mesh/Collision_Mesh/840313/840313_collision.usd",
+      "publisher_path": "Collision_Mesh/840313/840313_collision.usd",
+      "role": "static_collision_geometry",
+      "sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+      "size_bytes": 42418216
+    }
+  ],
+  "observed_evidence": {
+    "method_outcomes_observed_before_selection": false,
+    "raw_bytes_inspected": true,
+    "room_count": 9,
+    "room_survey_camera_count": 36,
+    "target_closeup_camera_count": 5,
+    "viewpoint_survey_digest": "sha256:546a1aea992152d90a7daa2972ea363bc122fe6dc7e975800de06ae1148b0dcb"
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "matched_appearance_repository": "spatialverse/SAGE-3D_InteriorGS_usdz",
+    "matched_appearance_revision": "d0b6cdc0aa052d38d743339bb629799ae81e7966",
+    "repository": "spatialverse/SAGE-3D_Collision_Mesh",
+    "revision": "3ba75cc7887b62bf84211d5db08adfa64d691597"
+  },
+  "rights": {
+    "allowed_use_ceiling": "noncommercial_only",
+    "attribution_required": true,
+    "blueprint_raw_byte_redistribution": false,
+    "license": "CC-BY-NC-4.0",
+    "redistribution_allowed_under_license": true
+  },
+  "role": "sage3d_collision_companion",
+  "scene_mapping": {
+    "interiorgs_folder": "0442_840313",
+    "publisher_scene_id": "840313",
+    "sage_collision_scene_id": "840313",
+    "sage_usdz_scene_id": "840313"
+  },
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "SAGE-3D",
+  "target_binding": {
+    "collision_prim_path": "/Root/ZHQYGJJVAJYEYPTUKY888888",
+    "interiorgs_instance_id": "160",
+    "obb_aabb_max_m": [
+      3.499269501218814,
+      -3.2789889491901243,
+      0.694393096887207
+    ],
+    "obb_aabb_min_m": [
+      3.437080098781186,
+      -3.3411784508098763,
+      0.5249651031127929
+    ],
+    "obb_collision_aabb_iou": 0.901196,
+    "semantic_label": "canned_beverage",
+    "separately_removable": true,
+    "support_collision_prim_path": "/Root/_LTFTHJVAZ3VMPTUJU888888",
+    "support_coverage_fraction": 0.991811,
+    "support_instance_id": "299",
+    "support_obb_collision_aabb_iou": 0.986414,
+    "support_semantic_label": "tv_cabinet",
+    "target_coverage_fraction": 0.943957
+  },
+  "usd_inspection": {
+    "appearance_stage": {
+      "meters_per_unit": 1.0,
+      "prims": {},
+      "unresolved_dependency_count": 0,
+      "up_axis": "Z"
+    },
+    "collision_stage": {
+      "meters_per_unit": 1.0,
+      "prims": {
+        "/Root/ZHQYGJJVAJYEYPTUKY888888": {
+          "collision_api": true,
+          "type_name": "Mesh",
+          "world_aabb_max_m": [
+            3.5005898656531915,
+            -3.2804836912861983,
+            0.6954443909852115
+          ],
+          "world_aabb_min_m": [
+            3.4385898599982436,
+            -3.342483696941146,
+            0.5264443829581422
+          ]
+        },
+        "/Root/_LTFTHJVAZ3VMPTUJU888888": {
+          "collision_api": true,
+          "type_name": "Mesh",
+          "world_aabb_max_m": [
+            5.237279219123094,
+            -3.1599617703002325,
+            0.5264650138348479
+          ],
+          "world_aabb_min_m": [
+            3.23427906192642,
+            -3.5709620922662983,
+            0.0014649888986859594
+          ]
+        }
+      },
+      "unresolved_dependency_count": 0,
+      "up_axis": "Z"
+    }
+  }
+}

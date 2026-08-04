@@ -1130,7 +1130,8 @@ def _provider_plan(
                 if enable_isaac_smoke
                 else "not_required_for_public_probe",
                 "NVIDIA_DRIVER_CAPABILITIES": "present"
-                if enable_isaac_smoke or provider_bundle_kind == "adp_simpler"
+                if enable_isaac_smoke
+                or provider_bundle_kind in {"adp_simpler", "adp_content_agents"}
                 else "not_required_for_public_probe",
             },
             "blueprint_bundle_enabled": enable_blueprint_bundle,
@@ -1919,6 +1920,17 @@ def _blueprint_bundle_preflight(
         "provider_runtime/founder_sim_approval_receipt.json",
         "provider_runtime/arena_worker_request.json",
     }
+    adp_content_agents_required_entries = {
+        "provider_runtime/run_adp_content_agents_provider_runtime.sh",
+        "provider_runtime/adp_content_agents_provider_runner.py",
+        "provider_runtime/adp_content_agents_provider_manifest.json",
+        "provider_runtime/content_agents_source.zip",
+        "provider_runtime/input/adp009a_840313_canned_beverage_control.usda",
+        "provider_runtime/input/adp009a_840313_canned_beverage_control_reference.png",
+        "provider_runtime/configs/material_agent.yaml",
+        "provider_runtime/configs/texture_agent.yaml",
+        "provider_runtime/configs/physics_agent.yaml",
+    }
     if provider_bundle_kind == "isaac":
         required_entries = isaac_required_entries
         entrypoint_member = "provider_runtime/run_isaac_realistic_runtime.sh"
@@ -1934,6 +1946,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "adp_content_agents":
+        required_entries = adp_content_agents_required_entries
+        entrypoint_member = "provider_runtime/run_adp_content_agents_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_content_agents_provider_runner.py"
+        readiness_name = "adp_content_agents_provider_manifest.json"
     elif provider_bundle_kind == "unitree_unifolm":
         required_entries = unitree_unifolm_required_entries
         entrypoint_member = "provider_runtime/run_unitree_unifolm_provider_runtime.sh"
@@ -1970,7 +1987,13 @@ def _blueprint_bundle_preflight(
     )
     if (
         provider_bundle_kind
-        in {"unitree_unifolm", "unitree_groot_n17_sonic", "adp_simpler", "adp_arena"}
+        in {
+            "unitree_unifolm",
+            "unitree_groot_n17_sonic",
+            "adp_simpler",
+            "adp_arena",
+            "adp_content_agents",
+        }
         and not readiness_path.is_file()
     ):
         readiness_path = (
@@ -2507,6 +2530,7 @@ def _resolve_launch_mode(
             "unitree_unifolm",
             "adp_simpler",
             "adp_arena",
+            "adp_content_agents",
         }:
             return "ssh_direct"
         return "args" if enable_isaac_smoke else "ssh_direct"
@@ -2560,7 +2584,7 @@ def _probe_env(
                 "NVIDIA_DRIVER_CAPABILITIES": "all",
             }
         )
-    elif provider_bundle_kind == "adp_simpler":
+    elif provider_bundle_kind in {"adp_simpler", "adp_content_agents"}:
         # SIMPLER's headless SAPIEN renderer still needs the NVIDIA Vulkan
         # driver injected by the container runtime. This accepts no Isaac terms.
         env["NVIDIA_DRIVER_CAPABILITIES"] = "all"
@@ -3101,6 +3125,57 @@ def _probe_shell_script(
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
                 'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_arena_provider_runtime_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
+            )
+        elif provider_bundle_kind == "adp_content_agents":
+            script += (
+                common_start + "RUNTIME_PY=''; "
+                "if command -v apt-get >/dev/null 2>&1; then "
+                "apt-get update >/tmp/blueprint_adp_content_agents_apt_update.log 2>&1 && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip git build-essential libgl1 libglib2.0-0 libopengl0 libvulkan1 xvfb >/tmp/blueprint_adp_content_agents_apt_install.log 2>&1; "
+                "fi; "
+                "if [ -x /usr/bin/python3 ]; then RUNTIME_PY=/usr/bin/python3; "
+                "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); fi; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
+                "else "
+                'rm -rf "$WORK_DIR/adp_content_agents_provider_bundle" "$WORK_DIR/adp_content_agents_provider_runtime_bundle.zip" "$WORK_DIR/adp_content_agents_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp_content_agents_provider_runtime_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp_content_agents_provider_runtime_bundle.zip" "$WORK_DIR/adp_content_agents_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/adp_content_agents_provider_bundle/provider_runtime/run_adp_content_agents_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR="$WORK_DIR/adp_content_agents_provider_bundle/runtime_output"; '
+                'mkdir -p "$BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$WORK_DIR/adp_content_agents_provider_bundle/provider_runtime/run_adp_content_agents_provider_runtime.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR', '/workspace/adp_content_agents_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'adp_content_agents_provider_runtime_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file():\n"
+                "                size = path.stat().st_size\n"
+                "                if size <= 100_000_000:\n"
+                "                    archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_content_agents_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -3743,7 +3818,14 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
             DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
         )
-        if provider_bundle_kind in {"wam", "evaluator", "adp_simpler", "adp_arena"}
+        if provider_bundle_kind
+        in {
+            "wam",
+            "evaluator",
+            "adp_simpler",
+            "adp_arena",
+            "adp_content_agents",
+        }
         else 60
     )
 

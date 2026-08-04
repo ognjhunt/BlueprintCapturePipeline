@@ -1,0 +1,50 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "content_agents_candidate_complete": false,
+    "dry_runs_are_not_agent_execution": true,
+    "inpainting_result": false,
+    "physical_evidence": false,
+    "static_validation_is_not_dynamic_simulation": true
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-usd-content-agents-candidate",
+  "manifest_digest": "sha256:5012430d63f2679d2db9ff34d47153b89552a97f0a1dfa222fa49e3a3cc92e22",
+  "materialized_artifacts": [
+    {
+      "external_relative_path": "docs/arm_decision_proof_v1/manifests/adp009a_usd_content_agents_preflight_receipt.v1.json",
+      "publisher_path": "docs/arm_decision_proof_v1/manifests/adp009a_usd_content_agents_preflight_receipt.v1.json",
+      "role": "content_agents_preflight_receipt",
+      "sha256": "sha256:5cae7fdcd8782698e8508215e895a001695a6bee0e7ea8ebdb0bf8f2cba1304a",
+      "size_bytes": 10143
+    }
+  ],
+  "observed_evidence": {
+    "joint_agent_inapplicable_single_rigid_body": true,
+    "material_agent_dry_run": true,
+    "material_agent_full_execution": false,
+    "paid_resource_allocated": false,
+    "physics_agent_dry_run": true,
+    "physics_agent_full_execution": false,
+    "texture_agent_dry_run": true,
+    "texture_agent_full_execution": false,
+    "validation_agent_static_check_executed": true,
+    "validation_agent_static_check_passed": true
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "container_image_digest": "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574",
+    "container_platform": "linux/arm64",
+    "repository": "https://github.com/NVIDIA-Omniverse/usd-content-agents",
+    "repository_tree": "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3",
+    "revision": "36dbf3f274f8e256637230a05a085853f65cc175",
+    "version": "0.5.2"
+  },
+  "rights": {
+    "model_or_remote_backend_rights_exercised": false,
+    "source_license": "Apache-2.0"
+  },
+  "role": "usd_content_agents_candidate",
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "NVIDIA-Omniverse/usd-content-agents"
+}

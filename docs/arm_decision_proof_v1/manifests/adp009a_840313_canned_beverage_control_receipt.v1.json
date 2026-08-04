@@ -1,0 +1,262 @@
+{
+  "adp_item": "ADP-009A",
+  "blockers": [
+    "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
+  ],
+  "cad_evidence": {
+    "generator": {
+      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.py",
+      "sha256": "sha256:05204c3873cf435088925df57b648f83217e66e4e5656b20eb9ef708883a3cb7",
+      "size_bytes": 852
+    },
+    "inspection": {
+      "relative_path": "simready/cad/adp009a_840313_canned_beverage_control.inspection.json",
+      "sha256": "sha256:7d976a33ed88c3758cdf9d6e6524c2a8f7ac71db0224823d62e41d46e2210d98",
+      "size_bytes": 3810
+    },
+    "mesh": {
+      "body_count": 1,
+      "bounds_m": [
+        [
+          -0.0310947265625,
+          -0.0310947265625,
+          0.0
+        ],
+        [
+          0.0310947265625,
+          0.0310947265625,
+          0.16942799377441406
+        ]
+      ],
+      "size_m": [
+        0.062189453125,
+        0.062189453125,
+        0.16942799377441406
+      ],
+      "source_length_unit": "millimeter",
+      "triangle_count": 1004,
+      "vertex_count": 504,
+      "watertight": true,
+      "winding_consistent": true
+    },
+    "mesh_angular_deflection_rad": 0.05,
+    "mesh_linear_deflection_mm": 0.05,
+    "scene_target_contact_sheet": {
+      "relative_path": "selection_inspection/840313/target_160_contact_sheet.png",
+      "sha256": "sha256:61ee9aebc9bf17fc961d755c113d205e5c6cc29e25dedffc2d3d717be2537417",
+      "size_bytes": 767702
+    },
+    "snapshot": {
+      "relative_path": "simready/cad/adp009a_840313_canned_beverage_control_20260804T202406Z.png",
+      "sha256": "sha256:80954198df572d782e095d8670e0d4e8ceea530c8fe53c8476a487d1aebe137f",
+      "size_bytes": 88139
+    },
+    "source_skill": {
+      "commit": "4fd71ea75fbb8a80b0d7c76862e0fd73c52a8989",
+      "license": "MIT",
+      "repository": "https://github.com/earthtojake/text-to-cad",
+      "skill_path": "skills/cad/SKILL.md",
+      "tree": "a5bf8c8eb14561557f44064c59c254d031665c65"
+    },
+    "step": {
+      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.step",
+      "sha256": "sha256:4f4a1432bacd7985f10e65a9ec5ead6cac4b0674b068563200d08095fd0ba098",
+      "size_bytes": 6819
+    },
+    "stl": {
+      "relative_path": "simready/cad/adp009a_840313_canned_beverage_control.stl",
+      "sha256": "sha256:065c227252b80dd58683e87bf53a722857cd6b9b0e32489524460d5482bd16d0",
+      "size_bytes": 50284
+    }
+  },
+  "checks": {
+    "cad_inspection_passed": true,
+    "cad_mesh_watertight_single_body": true,
+    "cad_snapshot_and_scene_contact_sheet_verified": true,
+    "cad_source_and_step_hashed": true,
+    "collision_and_mesh_collision_apis_present": true,
+    "contact_material_authored": true,
+    "mass_and_inertia_authored": true,
+    "mesh_geometry_authored": true,
+    "rigid_body_api_present": true,
+    "scene_component_digest_verified": true,
+    "simready_foundation_profile_passed": true,
+    "target_dimensions_derived_not_caller_asserted": true,
+    "usd_readback_passed": true,
+    "vision_selected_grasp_curve_authored": true,
+    "visual_material_bound": true,
+    "world_placement_separate_from_asset": true
+  },
+  "claim_ceiling": "development_only",
+  "control_id": "adp009a-840313-canned-beverage-cad-control",
+  "geometry": {
+    "diameter_m": 0.062189452028690084,
+    "height_m": 0.1694279937744141,
+    "kind": "text_to_cad_step_derived_triangle_mesh",
+    "local_origin": "center_of_base_datum",
+    "measurement_authoritative": false,
+    "source": "publisher_semantic_obb_plus_materialized_cad",
+    "world_placement_authored_into_asset": false,
+    "world_placement_m": [
+      3.4681748,
+      -3.3100837000000003,
+      0.6096790999999999
+    ]
+  },
+  "grasp_selection": {
+    "coordinate_note": "The STEP and generated USD both use a base-centered local origin, +Z height, and the points are converted from millimeters to meters.",
+    "points_local_m": [
+      [
+        -0.031094726218814,
+        0.0,
+        0.084713996887207
+      ],
+      [
+        0.031094726218814,
+        0.0,
+        0.084713996887207
+      ]
+    ],
+    "rationale": "Vision review selected a diameter through the rigid central body at mid-height, avoiding the top rim and support-contact base."
+  },
+  "inpainting_result": false,
+  "physical_material_authority": false,
+  "physics": {
+    "authority": "frozen_authoring_priors_not_measurements",
+    "center_of_mass_m": [
+      0.0,
+      0.0,
+      0.08471399688720704
+    ],
+    "diagonal_inertia_kg_m2": [
+      0.0009350253597009403,
+      0.0009350253597009403,
+      0.00017162155249852556
+    ],
+    "dynamic_friction": 0.4,
+    "mass_kg": 0.355,
+    "restitution": 0.1,
+    "static_friction": 0.5
+  },
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:da55a4d5dd4b1c872571a113ff61642dca586585c81092d927a6d9c296b5b561",
+  "schema_version": "adp009a_parametric_simready_receipt.v1",
+  "simready_foundation_validation": {
+    "asset_sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
+    "command": [
+      "/private/tmp/adp009a-simready-validator-venv/bin/simready-validate",
+      "--profile",
+      "Prop-Robotics-Physx",
+      "--version",
+      "2.0.0",
+      "--rules-path",
+      "/private/tmp/adp009a-nvidia-20260804/simready-foundation/nv_core/sr_specs/docs/capabilities",
+      "--features-path",
+      "/private/tmp/adp009a-nvidia-20260804/simready-foundation/nv_core/sr_specs/docs/features",
+      "--profiles-path",
+      "/private/tmp/adp009a-nvidia-20260804/simready-foundation/nv_core/sr_specs/docs/profiles/profiles.toml",
+      "--output",
+      "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready/.840313_canned_beverage_control.validation.bound.json.pending",
+      "-v",
+      "/private/tmp/blueprint-adp009a-tranche1-20260804/docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda"
+    ],
+    "commit": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
+    "exit_status": 0,
+    "features": {
+      "FET000_CORE": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET001_BASE_NEUTRAL": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "1.0.0"
+      },
+      "FET003_BASE_NEUTRAL": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET003_BASE_PHYSX": {
+        "dependencies": "[{'FET003_BASE_NEUTRAL': {'version': '0.1.0'}}]",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET004_BASE_NEUTRAL": {
+        "dependencies": "[{'FET003_BASE_NEUTRAL': {'version': '0.1.0'}}]",
+        "optional requirements": "['RB.MB.001']",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET004_BASE_PHYSX": {
+        "dependencies": "[{'FET003_BASE_PHYSX': {'version': '0.1.0'}}, {'FET004_BASE_NEUTRAL': {'version': '0.1.0'}}]",
+        "optional requirements": "['RB.MB.001']",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET005_BASE_NEUTRAL": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET006_BASE_MDL": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "0.1.0"
+      }
+    },
+    "finished_at": "2026-08-04T20:40:12.109437Z",
+    "license": "Apache-2.0",
+    "license_file": {
+      "relative_path": "LICENSE.txt",
+      "sha256": "sha256:5d3c30d3dbce415a760a6d10dc6976d6e02a38b861ade08b13850a2d860a5b38",
+      "size_bytes": 11346
+    },
+    "log": {
+      "relative_path": "simready/840313_canned_beverage_control.validation.bound.log",
+      "sha256": "sha256:894219eba47e5a82f5067dabdf15e410ce8084c50ea83d9f64dfc5e9935e4ec7",
+      "size_bytes": 59597
+    },
+    "passed": true,
+    "profile": "Prop-Robotics-Physx",
+    "profile_version": "2.0.0",
+    "repository": "https://github.com/NVIDIA/simready-foundation",
+    "result": {
+      "relative_path": "simready/840313_canned_beverage_control.validation.bound.json",
+      "sha256": "sha256:b5ce42783701796e232aa7d787a6511d91a62a4ed37553b7bd1e01501c801d72",
+      "size_bytes": 1801
+    },
+    "started_at": "2026-08-04T20:40:10.301863Z",
+    "tree": "3794fa2eeb96e3e48c3f4874f638f6ab5a9636d5",
+    "validator_version": "simready-validate 2026.6.4"
+  },
+  "source_component_manifest_digest": "sha256:f96681e8d23499926b7417196415840a69f5bfd22425eedd61e0b2dbac475e38",
+  "source_instance_id": "160",
+  "source_scene_id": "840313",
+  "source_semantic_label": "canned_beverage",
+  "status": "statically_validated",
+  "usd": {
+    "collision_prim": "/canned_beverage/colliders/body_collider",
+    "default_prim": "/canned_beverage",
+    "grasp_prim": "/canned_beverage/grasp_identifier_01",
+    "meters_per_unit": 1.0,
+    "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda",
+    "sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
+    "size_bytes": 200375,
+    "up_axis": "Z",
+    "visual_and_collision_prims_distinct": true,
+    "visual_prim": "/canned_beverage/visuals/body"
+  },
+  "visual_material": {
+    "authority": "InteriorGS target contact-sheet appearance evidence; not a measured physical material",
+    "diffuse_color": [
+      0.08,
+      0.7,
+      0.3
+    ],
+    "metallic": 0.1,
+    "roughness": 0.42,
+    "strategy": "observed_scene_green_usd_preview_control"
+  }
+}

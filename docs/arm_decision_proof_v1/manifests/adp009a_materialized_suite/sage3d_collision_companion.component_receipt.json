@@ -1,0 +1,24 @@
+{
+  "adp_item": "ADP-009A",
+  "artifact_bytes_opened": true,
+  "blockers": [],
+  "checks": {
+    "exact_scene_id_join": true,
+    "inverse_transform_present": true,
+    "materialized_files_hashed": true,
+    "meters_and_z_up_verified": true,
+    "rights_authority_bound": true,
+    "support_collider_identity_verified": true,
+    "target_camera_coverage_verified": true,
+    "target_collider_identity_verified": true,
+    "usd_dependencies_resolved": true
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-sage3d-840313",
+  "component_manifest_digest": "sha256:f5666090b84e93b955726a9e7bfe4af4bb9cb17fdb2334e8d11bbd654eb5ffd3",
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:61e63b52e444e964f38beebe87c0f9bf3656e62a11517baed16ac4835ddbfa95",
+  "role": "sage3d_collision_companion",
+  "schema_version": "public_scene_component_admission_receipt.v1",
+  "status": "admitted"
+}

@@ -1,0 +1,18 @@
+{
+  "adp_item": "ADP-009A",
+  "artifact_bytes_opened": false,
+  "blockers": [
+    "physics_positive_control_receipt_missing"
+  ],
+  "checks": {
+    "required_receipt_present": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-physics_positive_control",
+  "component_manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:94202cd5fe0b5bc38f4dfd774adde0dac15abae5e2c7b66d6b4911434a1cb7b4",
+  "role": "physics_positive_control",
+  "schema_version": "public_scene_component_admission_receipt.v1",
+  "status": "blocked"
+}

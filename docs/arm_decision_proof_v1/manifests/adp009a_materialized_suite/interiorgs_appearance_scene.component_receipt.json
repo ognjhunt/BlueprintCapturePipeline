@@ -1,0 +1,24 @@
+{
+  "adp_item": "ADP-009A",
+  "artifact_bytes_opened": true,
+  "blockers": [],
+  "checks": {
+    "exact_scene_id_join": true,
+    "inverse_transform_present": true,
+    "materialized_files_hashed": true,
+    "meters_and_z_up_verified": true,
+    "rights_authority_bound": true,
+    "support_collider_identity_verified": true,
+    "target_camera_coverage_verified": true,
+    "target_collider_identity_verified": true,
+    "usd_dependencies_resolved": true
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-interiorgs-840313",
+  "component_manifest_digest": "sha256:f96681e8d23499926b7417196415840a69f5bfd22425eedd61e0b2dbac475e38",
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:b497bef714075e6b46fdfdab1864fdede24459872d5f5bbb645398175e0b47e3",
+  "role": "interiorgs_appearance_scene",
+  "schema_version": "public_scene_component_admission_receipt.v1",
+  "status": "admitted"
+}

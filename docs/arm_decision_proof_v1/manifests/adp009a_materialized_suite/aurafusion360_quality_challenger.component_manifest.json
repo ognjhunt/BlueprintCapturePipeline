@@ -1,0 +1,94 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "inpainting_result": false,
+    "method_source_checkout_is_not_execution": true,
+    "metric_geometry_qualified": false,
+    "physical_evidence": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-aurafusion360_quality_challenger",
+  "manifest_digest": "sha256:d4e2b6f3eb7454ca53c37fcb7260b8a5ec9fb29cdd3118ae46e06407188e67cf",
+  "materialized_artifacts": [
+    {
+      "external_relative_path": "AuraFusion360_official/LICENSE",
+      "publisher_path": "LICENSE",
+      "role": "source_license",
+      "sha256": "sha256:43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "size_bytes": 11356
+    },
+    {
+      "external_relative_path": "AuraFusion360_official/install.sh",
+      "publisher_path": "install.sh",
+      "role": "dependency_declaration",
+      "sha256": "sha256:8fff4127ca422a1670d4569d0e4b034fc350b567748deb05aa45ade44ce61e0d",
+      "size_bytes": 524
+    },
+    {
+      "external_relative_path": "AuraFusion360_official/requirements.txt",
+      "publisher_path": "requirements.txt",
+      "role": "dependency_declaration",
+      "sha256": "sha256:85cb4af15087331561b0d21a77567178cb89a62dd98ac04ad6a8bf16bd8058cb",
+      "size_bytes": 349
+    },
+    {
+      "external_relative_path": "AuraFusion360_official/.gitmodules",
+      "publisher_path": ".gitmodules",
+      "role": "dependency_declaration",
+      "sha256": "sha256:fb2e8e763e87e680e01b2256ee57b1ed2589b375586543d87e9945f4a4c02ec9",
+      "size_bytes": 276
+    },
+    {
+      "external_relative_path": "AuraFusion360_official/submodules/diff-surfel-rasterization/LICENSE.md",
+      "publisher_path": "submodules/diff-surfel-rasterization/LICENSE.md",
+      "role": "dependency_declaration",
+      "sha256": "sha256:cd5c95b3cfff3acc1bd412420c770f88809331c3db6872df11a970147aa8e81f",
+      "size_bytes": 4275
+    },
+    {
+      "external_relative_path": "AuraFusion360_official/submodules/simple-knn/LICENSE.md",
+      "publisher_path": "submodules/simple-knn/LICENSE.md",
+      "role": "dependency_declaration",
+      "sha256": "sha256:c5ba70a2194af2aefe85dfe3da68608dcb3abd21a3aa53b55aa297c2f0b60eb3",
+      "size_bytes": 4662
+    },
+    {
+      "external_relative_path": "AuraFusion360_official/README.md",
+      "publisher_path": "README.md",
+      "role": "author_workflow_declaration",
+      "sha256": "sha256:e39e6b6b741a43818be4ecf07c096869862d9f951d734402ce57069a3b10b3de",
+      "size_bytes": 5244
+    }
+  ],
+  "observed_evidence": {
+    "author_method_executed": false,
+    "author_smoke_receipt_bound": false,
+    "author_workflow_declarations_hashed": true,
+    "dependency_declarations_hashed": true,
+    "official_remote_head_verified": true,
+    "source_checkout_opened": true,
+    "source_tree_clean": true,
+    "source_tree_matches_expected": true,
+    "submodule_revisions_verified": true
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "official_remote_head": "f23b26c44ba84608306ba952510533ebf4c7877d",
+    "repository": "https://github.com/kkennethwu/AuraFusion360_official",
+    "repository_tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
+    "revision": "f23b26c44ba84608306ba952510533ebf4c7877d",
+    "submodules": {
+      "submodules/diff-surfel-rasterization": "e0ed0207b3e0669960cfad70852200a4a5847f61",
+      "submodules/diff-surfel-rasterization/third_party/glm": "5c46b9c07008ae65cb81ab79cd677ecc1934b903",
+      "submodules/simple-knn": "86710c2d4b46680c02301765dd79e465819c8f19"
+    }
+  },
+  "rights": {
+    "checkpoint_or_author_data_rights_established": false,
+    "source_license": "Apache-2.0",
+    "source_license_file_hashed": true
+  },
+  "role": "aurafusion360_quality_challenger",
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "AuraFusion360"
+}

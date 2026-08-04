@@ -1,0 +1,32 @@
+{
+  "schema_version": "adp009a_scene_candidate_visibility_failure.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009A",
+  "scene_id": "841757",
+  "target_instance_id": "344",
+  "recorded_at": "2026-08-04T19:26:00Z",
+  "supersedes_selection_seal_digest": "sha256:ecfb88efc8b2c222f6bc32429cd20594c25171fadd4d6eb12d2e4abf4c1ce115",
+  "camera_ring_digest": "sha256:06072a35606132e9ba4932576d07dcd3507462ed7ae2f5c77c4bf96175e6a8a4",
+  "rendered_source": {"path": "0839_841757/3dgs_compressed.ply", "sha256": "sha256:22150c41ca85d2f9f3b89d070a767d9f2daa8d39abd14f464ddb85657e8a8897"},
+  "rendered_by": "reference_spark_renderer",
+  "render_status": "completed",
+  "camera_count": 8,
+  "views_showing_semantically_consistent_target": 0,
+  "required_visible_view_count": 4,
+  "view_artifacts": [
+    {"id":"orbit_000","size_bytes":1330332,"sha256":"sha256:a8d31be39953c19c4b809d69847b118fc2ca0ea15dc7ae8136f8daeb4c9e1a8d"},
+    {"id":"orbit_045","size_bytes":1413987,"sha256":"sha256:98e59d79c6b0d3cbdebd3ea008fb2f7bd4e0d4d923b8ecddac76a44beca4160a"},
+    {"id":"orbit_090","size_bytes":1337480,"sha256":"sha256:6a2082378c954789d924d253e5944a53e75bea4950b9daf718606cae69dc5b1f"},
+    {"id":"orbit_135","size_bytes":1034644,"sha256":"sha256:f4f6e19e263b142a4dd7ec03778587a82f60784ee70a352f7de5db674ef407b0"},
+    {"id":"orbit_180","size_bytes":930710,"sha256":"sha256:3a2c4a3257ca205ee3ff630d8d1a8af3b918ea482b7a679bea5804ddb73f3bcf"},
+    {"id":"orbit_225","size_bytes":1102857,"sha256":"sha256:94d828d890b41afd97dfee940618e3564ea9347909b0b816f8b664f16eb45988"},
+    {"id":"orbit_270","size_bytes":1207237,"sha256":"sha256:369449bb2f86df07bdbc8f78a66b61d042617e8a4f194b867086f0e47f56c337"},
+    {"id":"orbit_315","size_bytes":1260168,"sha256":"sha256:f5471436a4d441de7eb9cb0ab8f1f3db8cee3f13fc7cf5dfc335a00a7fcd8098"}
+  ],
+  "candidate_outcome": "rejected",
+  "smallest_blocker": "candidate_841757_target_not_visible_in_preregistered_camera_ring",
+  "method_outcomes_observed": false,
+  "inpainting_result": false,
+  "claim_ceiling": "development_only",
+  "record_digest": "sha256:5164501dba68556c698f4dc9965f1ce3a1e990ba0d49fa4f2ce8254ec8505e0d"
+}

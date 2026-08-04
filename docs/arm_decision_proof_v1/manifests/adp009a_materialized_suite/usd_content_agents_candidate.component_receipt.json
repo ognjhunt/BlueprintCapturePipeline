@@ -1,0 +1,23 @@
+{
+  "adp_item": "ADP-009A",
+  "artifact_bytes_opened": true,
+  "blockers": [
+    "nvidia_content_agents_material_texture_physics_full_execution_missing"
+  ],
+  "checks": {
+    "full_material_texture_physics_execution": false,
+    "joint_agent_inapplicability_recorded": true,
+    "preflight_receipt_digest_valid": true,
+    "source_and_container_bound": true,
+    "three_native_dry_runs_executed": true,
+    "validation_agent_static_check_passed": true
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-usd-content-agents-candidate",
+  "component_manifest_digest": "sha256:5012430d63f2679d2db9ff34d47153b89552a97f0a1dfa222fa49e3a3cc92e22",
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:a0a74ef8fe272e1af9262f1eb108f6b4f040705156b82a467abfa17f2df803a1",
+  "role": "usd_content_agents_candidate",
+  "schema_version": "public_scene_component_admission_receipt.v1",
+  "status": "blocked"
+}

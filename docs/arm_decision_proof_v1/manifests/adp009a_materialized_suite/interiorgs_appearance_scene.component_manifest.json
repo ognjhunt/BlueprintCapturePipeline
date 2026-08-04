@@ -1,0 +1,153 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "generated_geometry_is_metric_truth": false,
+    "measurement_authoritative_local_surface_truth": false,
+    "physical_evidence": false,
+    "static_collision_proxy_only": true,
+    "synthetic_appearance_and_semantics_only": true
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-interiorgs-840313",
+  "coordinate_frame": {
+    "T_source_world": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "T_world_source": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "handedness": "right_handed",
+    "normalization_history": "publisher_bytes_preserved_without_blueprint_normalization",
+    "origin": "publisher_scene_origin",
+    "source_axes": [
+      "right",
+      "back",
+      "up"
+    ],
+    "units": "meters",
+    "up_axis": "Z"
+  },
+  "manifest_digest": "sha256:f96681e8d23499926b7417196415840a69f5bfd22425eedd61e0b2dbac475e38",
+  "materialized_artifacts": [
+    {
+      "external_relative_path": "shortlist/InteriorGS/0442_840313/3dgs_compressed.ply",
+      "publisher_path": "0442_840313/3dgs_compressed.ply",
+      "role": "appearance_3dgs",
+      "sha256": "sha256:57c71edcb450f2323a5b8ad290b5672b437fc73b9283a7485804ce607da12254",
+      "size_bytes": 33137360
+    },
+    {
+      "external_relative_path": "shortlist/InteriorGS/0442_840313/labels.json",
+      "publisher_path": "0442_840313/labels.json",
+      "role": "semantic_metadata",
+      "sha256": "sha256:4062733cc2913373db3db534d1930af2692fd20028881cbb19ca3f746475592c",
+      "size_bytes": 223314
+    },
+    {
+      "external_relative_path": "shortlist/InteriorGS/0442_840313/structure.json",
+      "publisher_path": "0442_840313/structure.json",
+      "role": "scene_structure",
+      "sha256": "sha256:418202ebe828cda5b20b36ff88100499c962ffc6e0fc429189dffa856d6e2982",
+      "size_bytes": 35892
+    }
+  ],
+  "observed_evidence": {
+    "method_outcomes_observed_before_selection": false,
+    "raw_bytes_inspected": true,
+    "room_count": 9,
+    "room_survey_camera_count": 36,
+    "target_closeup_camera_count": 5,
+    "viewpoint_survey_digest": "sha256:546a1aea992152d90a7daa2972ea363bc122fe6dc7e975800de06ae1148b0dcb"
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "repository": "spatialverse/InteriorGS",
+    "revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530"
+  },
+  "rights": {
+    "allowed_use_ceiling": "internal_noncommercial_research_only",
+    "attribution_required": true,
+    "authority_record_digest": "sha256:65c64e28363c0fd367962bdc062e00d3762942032d678b02fa1ceccd7c788e7d",
+    "license": "custom_InteriorGS_terms",
+    "redistribution_allowed": false,
+    "terms_artifact_sha256": "sha256:508b0ec62ff1b5bee3c47524dd36f2402f5f70a09afbe62a4d0041078856356b"
+  },
+  "role": "interiorgs_appearance_scene",
+  "scene_mapping": {
+    "interiorgs_folder": "0442_840313",
+    "publisher_scene_id": "840313",
+    "sage_collision_scene_id": "840313",
+    "sage_usdz_scene_id": "840313"
+  },
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "InteriorGS",
+  "target_binding": {
+    "collision_prim_path": "/Root/ZHQYGJJVAJYEYPTUKY888888",
+    "interiorgs_instance_id": "160",
+    "obb_aabb_max_m": [
+      3.499269501218814,
+      -3.2789889491901243,
+      0.694393096887207
+    ],
+    "obb_aabb_min_m": [
+      3.437080098781186,
+      -3.3411784508098763,
+      0.5249651031127929
+    ],
+    "obb_collision_aabb_iou": 0.901196,
+    "semantic_label": "canned_beverage",
+    "separately_removable": true,
+    "support_collision_prim_path": "/Root/_LTFTHJVAZ3VMPTUJU888888",
+    "support_coverage_fraction": 0.991811,
+    "support_instance_id": "299",
+    "support_obb_collision_aabb_iou": 0.986414,
+    "support_semantic_label": "tv_cabinet",
+    "target_coverage_fraction": 0.943957
+  }
+}

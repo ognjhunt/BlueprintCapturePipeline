@@ -1,0 +1,25 @@
+{
+  "schema_version": "adp009a_scene_shortlist_extension_preregistration.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009A",
+  "frozen_at": "2026-08-04T19:26:00Z",
+  "parent_shortlist_digest": "sha256:aa083b49198ab7d8404fa78990c62176338234606f8f9f8227995a249a01e675",
+  "trigger": "candidate_841757_target_not_visible_in_preregistered_camera_ring",
+  "ordering_rule": "continue_ascending_sha256_of_ADP-009A-scene-shortlist-v1_colon_scene_id",
+  "shortlist": [
+    {"rank":6,"interiorgs_folder":"0239_840874","scene_id":"840874","ordering_digest":"sha256:014470a3f595cc42326a601428af1cfe588a53a614868549f22e4d46f9019de8"},
+    {"rank":7,"interiorgs_folder":"0161_840076","scene_id":"840076","ordering_digest":"sha256:018a51314d81c5c624d21898fa25b8f2b881360b887320c412287ce03f261d4f"},
+    {"rank":8,"interiorgs_folder":"0619_841193","scene_id":"841193","ordering_digest":"sha256:01afb35c1dfe9f8f72d5e02b49cb7030143f84623ae497ff8c4937999c6d46e3"},
+    {"rank":9,"interiorgs_folder":"0442_840313","scene_id":"840313","ordering_digest":"sha256:0225c258d254b83c45d0ba7e021ef71d55cf7797b59a7bdc8f1359d56b8b6ad6"},
+    {"rank":10,"interiorgs_folder":"0498_840796","scene_id":"840796","ordering_digest":"sha256:0377596e2624776286a18b4b2ae9d925ec6a2a0dfcc97426693e64d9d633bf6d"}
+  ],
+  "screening_sequence": [
+    "download_and_hash_labels_structure_and_collision_only",
+    "derive_unique_nonoverlapped_target_collider_and_horizontal_support",
+    "download_ply_and_usdz_for_first_geometry_eligible_candidate",
+    "apply_same_eight_view_target_centered_camera_ring",
+    "select_only_if_at_least_four_views_show_the_same_semantically_consistent_target"
+  ],
+  "method_outcomes_may_not_influence_selection": true,
+  "record_digest": "sha256:adef2d80c8c49500a346df351187790efe5456bbfedd0888b18b0b8ce70e0865"
+}

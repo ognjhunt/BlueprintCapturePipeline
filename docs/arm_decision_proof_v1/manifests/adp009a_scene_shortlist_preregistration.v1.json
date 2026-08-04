@@ -1,0 +1,48 @@
+{
+  "schema_version": "adp009a_scene_shortlist_preregistration.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009A",
+  "frozen_at": "2026-08-04T19:15:24Z",
+  "parent_selection_preregistration_digest": "sha256:f946b1d674fee977b6132b20d28cbd24185fd60dc5909e64c8582c651c13f407",
+  "trigger": "candidate_841244_no_target_satisfies_frozen_identity_visibility_and_removability_criteria",
+  "publisher_revisions": {
+    "interiorgs": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+    "sage_usdz": "d0b6cdc0aa052d38d743339bb629799ae81e7966",
+    "sage_collision": "3ba75cc7887b62bf84211d5db08adfa64d691597"
+  },
+  "eligible_population_rule": {
+    "required_exact_paths": [
+      "<interiorgs_folder>/3dgs_compressed.ply",
+      "<interiorgs_folder>/labels.json",
+      "<interiorgs_folder>/structure.json",
+      "InteriorGS_usdz/<scene_id>.usdz",
+      "Collision_Mesh/<scene_id>/<scene_id>_collision.usd"
+    ],
+    "maximum_sizes_bytes": {
+      "interiorgs_ply": 50000000,
+      "sage_usdz": 150000000,
+      "sage_collision": 50000000
+    },
+    "excluded_scene_ids": ["841244"],
+    "observed_eligible_scene_count": 567
+  },
+  "ordering_rule": "ascending_sha256_of_ADP-009A-scene-shortlist-v1_colon_scene_id",
+  "shortlist_size": 5,
+  "shortlist": [
+    {"rank": 1, "interiorgs_folder": "0893_840411", "scene_id": "840411", "ordering_digest": "sha256:000245e4e828a7b6010a97ceb31c7647be10620bcd34db5be24eec0e9f1cdfc4"},
+    {"rank": 2, "interiorgs_folder": "0589_841151", "scene_id": "841151", "ordering_digest": "sha256:003848c591f52bde43aca41f85f6e10c03cef09f1fb52e1dd24b6c24ccf4b20c"},
+    {"rank": 3, "interiorgs_folder": "0839_841757", "scene_id": "841757", "ordering_digest": "sha256:0061220ab0a309d1ebfbc9e3af01a08043ea43f8958746f55202907ad41ffe2d"},
+    {"rank": 4, "interiorgs_folder": "0492_840920", "scene_id": "840920", "ordering_digest": "sha256:00648d6fdee8bd23022e5c1a7614e43d8453338b7c5493e5553364c6c808fc8a"},
+    {"rank": 5, "interiorgs_folder": "0016_840873", "scene_id": "840873", "ordering_digest": "sha256:00cdc94f1c97aa4d572775f5568a93756e02bc93333f894edd11dbab1c058db4"}
+  ],
+  "screening_sequence": [
+    "download_and_hash_labels_structure_and_collision_only",
+    "derive_instance_to_collision_matches_and_horizontal_support",
+    "reject_identity_or_removability_failures_without_opening_method_outputs",
+    "download_ply_and_usdz_only_for_the_first_geometrically_eligible_candidate",
+    "inspect_appearance_and_package_resolution_then_select_or_retain_failure"
+  ],
+  "method_outcomes_may_not_influence_selection": true,
+  "claim_ceiling": "development_only",
+  "record_digest": "sha256:aa083b49198ab7d8404fa78990c62176338234606f8f9f8227995a249a01e675"
+}

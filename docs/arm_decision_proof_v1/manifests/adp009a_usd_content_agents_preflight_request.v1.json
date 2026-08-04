@@ -1,0 +1,49 @@
+{
+  "schema_version": "adp009a_usd_content_agents_preflight_request.v1",
+  "source": {
+    "repository": "https://github.com/NVIDIA-Omniverse/usd-content-agents",
+    "commit": "36dbf3f274f8e256637230a05a085853f65cc175",
+    "tree": "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3",
+    "version": "0.5.2",
+    "license": "Apache-2.0",
+    "license_path": "LICENSE",
+    "skill_paths": [
+      ".agents/skills/material-agent-cli/SKILL.md",
+      ".agents/skills/texture-agent-cli/SKILL.md",
+      ".agents/skills/physics-agent-cli/SKILL.md",
+      ".agents/skills/validation-agent-cli/SKILL.md"
+    ]
+  },
+  "image": {
+    "reference": "blueprint/adp009a-content-agents:0.5.2",
+    "digest": "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574",
+    "platform": "linux/arm64"
+  },
+  "dockerfile_path": "docs/arm_decision_proof_v1/assets/adp009a_usd_content_agents_linux_arm64.Dockerfile",
+  "native_install_failure_log": "simready/content_agents/native_install_preflight.log",
+  "installed_packages_path": "simready/content_agents/linux-arm64-installed-packages.freeze.txt",
+  "agents": {
+    "material": {
+      "config_path": "simready/content_agents/configs/material_agent_840313_can.yaml",
+      "dry_run_log_path": "simready/content_agents/material-agent-dry-run.bound.log",
+      "smallest_blocker": "linux_nvidia_gpu_renderer_or_reviewed_render_endpoint_required"
+    },
+    "texture": {
+      "config_path": "simready/content_agents/configs/texture_agent_840313_can.yaml",
+      "dry_run_log_path": "simready/content_agents/texture-agent-dry-run.bound.log",
+      "smallest_blocker": "authorized_texture_generation_backend_and_linux_nvidia_renderer_required"
+    },
+    "physics": {
+      "config_path": "simready/content_agents/configs/physics_agent_840313_can.yaml",
+      "dry_run_log_path": "simready/content_agents/physics-agent-dry-run.bound.log",
+      "smallest_blocker": "linux_nvidia_gpu_ovphysx_runtime_or_reviewed_render_and_optimizer_endpoints_required"
+    },
+    "validation": {
+      "stage_path": "simready/content_agents/adp009a_840313_canned_beverage_validation_stage.usda",
+      "stage_receipt_path": "simready/content_agents/adp009a_840313_canned_beverage_validation_stage.receipt.json",
+      "output_dir": "simready/content_agents/validation-agent-preflight-replay",
+      "log_path": "simready/content_agents/validation-agent-preflight-replay.log",
+      "task": "Validate the digest-bound canned beverage validation context physics authoring; do not infer dynamic or physical truth."
+    }
+  }
+}

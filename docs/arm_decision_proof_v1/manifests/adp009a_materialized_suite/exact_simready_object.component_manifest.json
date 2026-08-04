@@ -1,0 +1,58 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "inpainting_result": false,
+    "measurement_authoritative_geometry": false,
+    "physical_evidence": false,
+    "physics_values_are_authoring_priors": true,
+    "static_profile_is_not_isaac_runtime": true
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-840313-canned-beverage-cad-control",
+  "manifest_digest": "sha256:f95832848f2c8fe82607f9fb0b942e5997dc3a3940b48b5c6a84107f60cf817e",
+  "materialized_artifacts": [
+    {
+      "external_relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda",
+      "publisher_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda",
+      "role": "cad_derived_simready_usd",
+      "sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
+      "size_bytes": 200375
+    },
+    {
+      "external_relative_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
+      "publisher_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
+      "role": "materialization_and_static_validation_receipt",
+      "sha256": "sha256:771c48f8f408826ee5c33564b344e5d0da04de0d7ec95a45b436872c7b5a5aff",
+      "size_bytes": 9407
+    }
+  ],
+  "observed_evidence": {
+    "cad_step_and_mesh_opened": true,
+    "isaac_dynamic_probes_executed": false,
+    "simready_foundation_profile": "Prop-Robotics-Physx",
+    "simready_foundation_profile_passed": true,
+    "simready_foundation_profile_version": "2.0.0",
+    "usd_readback_passed": true
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "cad_skill_repository": "https://github.com/earthtojake/text-to-cad",
+    "cad_skill_revision": "4fd71ea75fbb8a80b0d7c76862e0fd73c52a8989",
+    "repository_tree": "3794fa2eeb96e3e48c3f4874f638f6ab5a9636d5",
+    "revision": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
+    "simready_foundation_repository": "https://github.com/NVIDIA/simready-foundation"
+  },
+  "rights": {
+    "allowed_use_ceiling": "internal_noncommercial_research_only",
+    "blueprint_asset_redistribution": false,
+    "cad_skill_license": "MIT",
+    "simready_foundation_license": "Apache-2.0"
+  },
+  "role": "exact_simready_object",
+  "scene_mapping": {
+    "interiorgs_instance_id": "160",
+    "publisher_scene_id": "840313"
+  },
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "SimReady"
+}

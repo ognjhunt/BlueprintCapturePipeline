@@ -1,0 +1,24 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "physical_evidence": false,
+    "qualified": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-scannetpp_real_transfer",
+  "manifest_digest": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626",
+  "materialized_artifacts": [],
+  "observed_evidence": {
+    "required_receipt_present": false
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "revision": "not_materialized"
+  },
+  "rights": {
+    "established": false
+  },
+  "role": "scannetpp_real_transfer",
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "ScanNet++"
+}

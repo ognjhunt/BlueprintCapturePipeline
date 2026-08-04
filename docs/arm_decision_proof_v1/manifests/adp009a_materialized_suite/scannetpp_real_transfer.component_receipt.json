@@ -1,0 +1,18 @@
+{
+  "adp_item": "ADP-009A",
+  "artifact_bytes_opened": false,
+  "blockers": [
+    "scannetpp_scene_access_and_admission_missing"
+  ],
+  "checks": {
+    "required_receipt_present": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-scannetpp_real_transfer",
+  "component_manifest_digest": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626",
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:0648d90dd69f4057e3970be5bf66fa607a1eb26e93df3c2ff64bfc124371192d",
+  "role": "scannetpp_real_transfer",
+  "schema_version": "public_scene_component_admission_receipt.v1",
+  "status": "blocked"
+}

@@ -1,0 +1,24 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "physical_evidence": false,
+    "qualified": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-physics_positive_control",
+  "manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
+  "materialized_artifacts": [],
+  "observed_evidence": {
+    "required_receipt_present": false
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "revision": "not_materialized"
+  },
+  "rights": {
+    "established": false
+  },
+  "role": "physics_positive_control",
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "Blueprint-controlled"
+}
