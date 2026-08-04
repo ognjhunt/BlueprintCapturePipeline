@@ -15,6 +15,7 @@ from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     DEFAULT_IMAGE,
     PROBE_KIND,
     _next_attempt_root,
+    _remaining_session_live_minutes,
     build_arena_native_control_bundle,
 )
 from blueprint_pipeline.common import write_json
@@ -135,6 +136,30 @@ def test_paid_attempt_roots_are_fresh_and_preserve_prior_evidence(tmp_path: Path
     assert number == 3
     assert root == tmp_path / "attempts" / "attempt_003"
     assert (prior / "prior_evidence.txt").read_text(encoding="utf-8") == "preserve"
+
+
+def test_successor_ttl_reserves_only_remaining_cumulative_budget(tmp_path: Path) -> None:
+    write_json(
+        tmp_path / "adp_arena_vast_session_budget.json",
+        {
+            "attempts": [
+                {
+                    "actual_live_runtime_seconds_observed_by_adapter": 560.9,
+                    "estimated_cost_usd": 0.083795,
+                }
+            ]
+        },
+    )
+
+    assert (
+        _remaining_session_live_minutes(
+            job=tmp_path,
+            hard_cap_usd=4.0,
+            hard_ttl_seconds=14_400,
+            max_hourly_rate_usd=1.0,
+        )
+        == 230
+    )
 
 
 def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:

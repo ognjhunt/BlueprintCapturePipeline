@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -17,6 +18,7 @@ from .adp_isaac_lab_arena_request import build_arena_worker_request
 from .common import ensure_dir, utc_now_iso, write_json
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .vast_provider_adapter import run_vast_provider_adapter
+from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
     stage_wam_provider_bundle_object_store,
@@ -109,6 +111,22 @@ def _write_run_result(job: Path, attempt_root: Path, result: Mapping[str, Any]) 
     ensure_dir(attempt_root)
     write_json(attempt_root / "adp_arena_vast_result.json", dict(result))
     write_json(job / "adp_arena_vast_result.json", dict(result))
+
+
+def _remaining_session_live_minutes(
+    *, job: Path, hard_cap_usd: float, hard_ttl_seconds: int, max_hourly_rate_usd: float
+) -> int:
+    """Compile cumulative spend/runtime evidence into a safe successor TTL."""
+
+    ledger = _read_json(job / "adp_arena_vast_session_budget.json")
+    attempts = [item for item in ledger.get("attempts") or [] if isinstance(item, Mapping)]
+    prior_seconds = sum(attempt_runtime_seconds(item) for item in attempts)
+    prior_cost = sum(attempt_estimated_cost(item) for item in attempts)
+    runtime_minutes = math.floor(max(0.0, hard_ttl_seconds - prior_seconds) / 60.0)
+    spend_minutes = math.floor(
+        max(0.0, hard_cap_usd - prior_cost) * 60.0 / max_hourly_rate_usd
+    )
+    return max(0, min(runtime_minutes, spend_minutes))
 
 
 @contextmanager
@@ -274,6 +292,25 @@ def run_arena_native_control_vast(
 
     attempt_number, attempt_root = _next_attempt_root(job)
     ensure_dir(attempt_root)
+    remaining_live_minutes = _remaining_session_live_minutes(
+        job=job,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+    )
+    if remaining_live_minutes < 30:
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "attempt_number": attempt_number,
+            "attempt_root": str(attempt_root),
+            "remaining_live_minutes": remaining_live_minutes,
+            "provider_mutations_performed": 0,
+            "blockers": ["adp_arena_cumulative_budget_below_minimum_live_window"],
+        }
+        _write_run_result(job, attempt_root, result)
+        return result
     staging_dir = attempt_root / "object_store_staging"
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
@@ -314,7 +351,7 @@ def run_arena_native_control_vast(
                 max_hourly_rate=max_hourly_rate_usd,
                 target_spend_usd=hard_cap_usd,
                 hard_cap_usd=hard_cap_usd,
-                max_live_minutes=hard_ttl_seconds // 60,
+                max_live_minutes=remaining_live_minutes,
                 session_max_live_minutes=hard_ttl_seconds // 60,
                 public_image=DEFAULT_IMAGE,
                 isaac_image=DEFAULT_IMAGE,
@@ -333,7 +370,7 @@ def run_arena_native_control_vast(
                 disk_gb=200,
                 min_gpu_ram_mb=24_000,
                 poll_interval_seconds=15,
-                startup_timeout_seconds=hard_ttl_seconds,
+                startup_timeout_seconds=remaining_live_minutes * 60,
                 heartbeat_no_progress_seconds=1800,
                 session_budget_ledger_path=job / "adp_arena_vast_session_budget.json",
                 verify_staging_urls=True,
@@ -373,6 +410,7 @@ def run_arena_native_control_vast(
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
+        "attempt_max_live_minutes": remaining_live_minutes,
         "retry_cap": 0,
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
