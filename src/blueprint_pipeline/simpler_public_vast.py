@@ -99,6 +99,10 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _adp_session_budget_ledger(job: Path) -> Path:
+    return job.resolve() / "adp_vast_session_budget.json"
+
+
 @contextmanager
 def _vast_authority_environment():
     """Bridge the canonical grant to the adapter's defense-in-depth env gates."""
@@ -330,6 +334,7 @@ def run_simpler_public_vast(
                 poll_interval_seconds=15,
                 startup_timeout_seconds=hard_ttl_seconds,
                 heartbeat_no_progress_seconds=900,
+                session_budget_ledger_path=_adp_session_budget_ledger(job),
                 verify_staging_urls=True,
                 preferred_gpu_keywords=("RTX 4090", "RTX 3090", "RTX A5000"),
                 instance_label_prefix="blueprint-adp-simpler-",

@@ -13,6 +13,7 @@ from blueprint_pipeline.provider_runtime_bundle_contract import (
 )
 from blueprint_pipeline.simpler_public_vast import (
     PROBE_KIND,
+    _adp_session_budget_ledger,
     _vast_authority_environment,
     build_simpler_public_vast_bundle,
 )
@@ -72,6 +73,12 @@ def test_canonical_grant_bridge_sets_and_restores_adapter_mutation_gates(
 
     assert "BLUEPRINT_ALLOW_VAST_API_CALLS" not in allocator.os.environ
     assert allocator.os.environ["BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"] == "prior"
+
+
+def test_adp_budget_ledger_is_run_local(tmp_path: Path) -> None:
+    assert _adp_session_budget_ledger(tmp_path) == (
+        tmp_path.resolve() / "adp_vast_session_budget.json"
+    )
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
