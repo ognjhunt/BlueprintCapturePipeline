@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import math
+import re
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -27,6 +28,8 @@ from .droid_policy_bridge import (
     validate_droid_action_chunk,
     validate_droid_observation,
 )
+from .decision_evidence_contracts import canonical_digest
+from .episode_visual_evidence import finalize_visual_evidence, persist_observation_frame
 from .franka_can_tray_feasibility import (
     _ARM_SEED,
     _CAN_INITIAL,
@@ -121,9 +124,7 @@ class ScriptedDroidOracleClient:
             self._initial_joints = planned.copy()
         rows: list[Any] = []
         for offset in range(DROID_ACTION_CHUNK_SHAPE[0]):
-            phase, previous, within, length, gripper = self._phase_at(
-                self._cursor + offset
-            )
+            phase, previous, within, length, gripper = self._phase_at(self._cursor + offset)
             ratio = min(1.0, (within + 1) / max(1, length))
             blend = ratio * ratio * (3.0 - 2.0 * ratio)
             phase_start = (
@@ -308,7 +309,9 @@ def _render_link_mounted_observation(
     return image
 
 
-def _render_observation(renderer: Any, model: Any, data: Any, spec: Mapping[str, Any], mujoco: Any, np: Any) -> Any:
+def _render_observation(
+    renderer: Any, model: Any, data: Any, spec: Mapping[str, Any], mujoco: Any, np: Any
+) -> Any:
     model.vis.global_.fovy = float(spec.get("fov", 60.0))
     renderer.update_scene(data, camera=_camera_from_spec(spec, mujoco, np))
     image = renderer.render().copy()
@@ -360,9 +363,7 @@ def _composite_mujoco_interaction(
     # Channel 0 is the MuJoCo object id and channel 1 is the object type. The
     # generated workcell's only excluded geom is floor (geom id 0); tray,
     # spraycan, and all Panda visual geoms therefore remain action-conditioned.
-    mask = (segmentation[:, :, 1] == int(geom_object_type)) & (
-        segmentation[:, :, 0] != 0
-    )
+    mask = (segmentation[:, :, 1] == int(geom_object_type)) & (segmentation[:, :, 0] != 0)
     composite = np.asarray(background, dtype=np.uint8).copy()
     composite[mask] = interaction_rgb[mask]
     return composite, int(mask.sum())
@@ -433,7 +434,9 @@ def _enable_panda_gravity_compensation(model: Any, mujoco: Any) -> list[str]:
     return compensated
 
 
-def prepare_franka_droid_runtime(*, menagerie_root: str | Path, output_dir: str | Path) -> dict[str, Any]:
+def prepare_franka_droid_runtime(
+    *, menagerie_root: str | Path, output_dir: str | Path
+) -> dict[str, Any]:
     """Stage the pinned model and return model/data IDs plus scripted targets."""
     import mujoco
     import numpy as np
@@ -487,8 +490,24 @@ def run_franka_droid_closed_loop(
     external_background_kind: str = "captured_3dgs",
     external_background_scene_id: str | None = None,
     initial_can_position_m: Sequence[float] = _CAN_INITIAL,
+    trial_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute one simulator episode through the exact DROID observation seam."""
+    supplied_trial_id = str(trial_id).strip() if trial_id is not None else ""
+    if (
+        supplied_trial_id
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", supplied_trial_id) is None
+    ):
+        raise ValueError("episode_trial_id_invalid")
+    if bool(getattr(policy_client, "learned_policy", False)) and not supplied_trial_id:
+        raise ValueError("learned_policy_trial_id_required")
+    episode_limit = int(
+        max_action_steps
+        if max_action_steps is not None
+        else getattr(policy_client, "total_action_steps", 160)
+    )
+    if episode_limit < 1:
+        raise ValueError("episode_action_limit_invalid")
     if captured_site_background_path is not None and external_background_kind not in {
         "captured_3dgs",
         "controlled_nvidia_usd",
@@ -539,24 +558,30 @@ def run_franka_droid_closed_loop(
     initial_can_z = float(data.xpos[ids["can"], 2])
     max_can_z = initial_can_z
     trace: list[dict[str, Any]] = []
+    policy_input_frames: list[dict[str, Any]] = []
     blockers: list[str] = []
     action_step = 0
-    episode_limit = int(
-        max_action_steps
-        if max_action_steps is not None
-        else getattr(policy_client, "total_action_steps", 160)
-    )
     joint_limits = np.asarray(model.jnt_range[:7], dtype=float)
     action_space = str(getattr(policy_client, "action_space", "joint_velocity"))
     action_chunk_rows = int(getattr(policy_client, "action_chunk_rows", 10))
     if action_space not in {"joint_velocity", "joint_position"}:
         raise ValueError(f"unsupported_droid_action_space:{action_space}")
-    if action_chunk_rows not in {10, 15}:
+    if action_chunk_rows < DROID_OPEN_LOOP_HORIZON:
         raise ValueError(f"unsupported_droid_action_chunk_rows:{action_chunk_rows}")
     learned_policy = bool(getattr(policy_client, "learned_policy", False))
     client_evidence_factory = getattr(policy_client, "evidence_summary", None)
     policy_client_evidence = (
         client_evidence_factory() if callable(client_evidence_factory) else None
+    )
+    episode_id = supplied_trial_id or (
+        "franka-droid-"
+        + canonical_sha256(
+            {
+                "policy_id": str(policy_client.policy_id),
+                "prompt": str(prompt),
+                "initial_can_position_m": [float(value) for value in initial_can_position],
+            }
+        )[:24]
     )
 
     try:
@@ -572,9 +597,7 @@ def run_franka_droid_closed_loop(
             )
             interaction_pixel_count = None
             if captured_site_background is None:
-                external = _render_observation(
-                    renderer, model, data, _EXTERNAL_CAMERA, mujoco, np
-                )
+                external = _render_observation(renderer, model, data, _EXTERNAL_CAMERA, mujoco, np)
             else:
                 external, interaction_pixel_count = _render_hybrid_external_observation(
                     renderer,
@@ -595,10 +618,16 @@ def run_franka_droid_closed_loop(
                 mujoco=mujoco,
                 np=np,
             )
+            from .groot_n17_droid_policy_runtime import droid_eef_9d
+
             observation = {
                 "observation/exterior_image_1_left": external,
                 "observation/wrist_image_left": wrist,
                 "observation/joint_position": np.asarray(data.qpos[:7], dtype=float).copy(),
+                "observation/eef_9d": droid_eef_9d(
+                    position_m=data.site_xpos[ids["site"]],
+                    rotation_row_major=data.site_xmat[ids["site"]],
+                ),
                 # DROID reports 0=open and 1=closed, while this MuJoCo model's
                 # finger coordinate is 0=closed and 0.04=open.
                 "observation/gripper_position": np.asarray(
@@ -612,13 +641,22 @@ def run_franka_droid_closed_loop(
                 blockers.extend(observation_blockers)
                 break
 
-            query_index = len(trace)
+            query_index = len(policy_input_frames)
             from PIL import Image
 
             external_path = frames_dir / f"query_{query_index:03d}_external.png"
             wrist_path = frames_dir / f"query_{query_index:03d}_wrist.png"
             Image.fromarray(external).save(external_path)
             Image.fromarray(wrist).save(wrist_path)
+            policy_input_frames.append(
+                persist_observation_frame(
+                    np.concatenate((external, wrist), axis=1),
+                    output_dir=output,
+                    episode_id=episode_id,
+                    frame_index=query_index,
+                    kind="policy-input",
+                )
+            )
             started = time.monotonic()
             try:
                 response = policy_client.infer(observation)
@@ -627,9 +665,7 @@ def run_franka_droid_closed_loop(
                 blockers.append(f"policy_inference_failed:{type(exc).__name__}:{exc}")
                 break
             latency = time.monotonic() - started
-            action_blockers = validate_droid_action_chunk(
-                actions, expected_rows=action_chunk_rows
-            )
+            action_blockers = validate_droid_action_chunk(actions, expected_rows=action_chunk_rows)
             if action_blockers:
                 blockers.extend(action_blockers)
                 break
@@ -649,9 +685,7 @@ def run_franka_droid_closed_loop(
                         row,
                         joint_limits=joint_limits,
                     )
-                target_arm_control = np.asarray(
-                    mapped["joint_position_target_rad"], dtype=float
-                )
+                target_arm_control = np.asarray(mapped["joint_position_target_rad"], dtype=float)
                 target_gripper_control = float(mapped["gripper_position_target_m"])
                 # DROID's non-blocking controller immediately updates the
                 # desired joint positions, then the outer loop waits for the
@@ -669,12 +703,8 @@ def run_franka_droid_closed_loop(
                         "mapped": _jsonable(mapped),
                         "joint_position_rad": [float(value) for value in data.qpos[:7]],
                         "gripper_position_m": float(data.qpos[7]),
-                        "spraycan_center_m": [
-                            float(value) for value in data.xpos[ids["can"]]
-                        ],
-                        "gripper_site_m": [
-                            float(value) for value in data.site_xpos[ids["site"]]
-                        ],
+                        "spraycan_center_m": [float(value) for value in data.xpos[ids["can"]]],
+                        "gripper_site_m": [float(value) for value in data.site_xpos[ids["site"]]],
                     }
                 )
                 action_step += 1
@@ -700,6 +730,72 @@ def run_franka_droid_closed_loop(
         mujoco.mj_step(model, data)
         max_can_z = max(max_can_z, float(data.xpos[ids["can"], 2]))
 
+    terminal_observation = None
+    visual_evidence: dict[str, Any] = {
+        "status": "incomplete",
+        "human_review_available": False,
+        "terminal_observation_frame_present": False,
+    }
+    media_artifacts: list[dict[str, Any]] = []
+    if policy_input_frames:
+        terminal_renderer = mujoco.Renderer(model, height=224, width=224)
+        try:
+            terminal_wrist_spec = link_mounted_camera_spec(
+                parent_translation=data.xpos[ids["hand"]],
+                parent_rotation_row_major=data.xmat[ids["hand"]],
+                mount_translation=(0.0, 0.10, 0.03),
+                mount_forward=(0.0, 0.0, 1.0),
+                mount_up=(0.0, 1.0, 0.0),
+                look_distance_m=0.5,
+                fov_deg=82.0,
+            )
+            if captured_site_background is None:
+                terminal_external = _render_observation(
+                    terminal_renderer, model, data, _EXTERNAL_CAMERA, mujoco, np
+                )
+            else:
+                terminal_external, _ = _render_hybrid_external_observation(
+                    terminal_renderer,
+                    model,
+                    data,
+                    _EXTERNAL_CAMERA,
+                    captured_site_background,
+                    mujoco,
+                    np,
+                )
+            terminal_wrist = _render_link_mounted_observation(
+                terminal_renderer,
+                model,
+                data,
+                terminal_wrist_spec,
+                camera_id=int(ids["wrist_camera"]),
+                camera_mocap_id=int(ids["wrist_camera_mocap"]),
+                mujoco=mujoco,
+                np=np,
+            )
+            terminal_observation = persist_observation_frame(
+                np.concatenate((terminal_external, terminal_wrist), axis=1),
+                output_dir=output,
+                episode_id=episode_id,
+                frame_index=len(policy_input_frames),
+                kind="terminal-observation",
+            )
+            visual_evidence, media_artifacts = finalize_visual_evidence(
+                output_dir=output,
+                episode_id=episode_id,
+                identity={
+                    "policy_id": str(policy_client.policy_id),
+                    "prompt": str(prompt),
+                    "initial_can_position_m": [float(value) for value in initial_can_position],
+                },
+                policy_input_frames=policy_input_frames,
+                terminal_observation=terminal_observation,
+            )
+        except Exception as exc:  # noqa: BLE001 - missing media invalidates episode
+            blockers.append(f"episode_visual_evidence_failed:{type(exc).__name__}:{exc}")
+        finally:
+            terminal_renderer.close()
+
     final_position = np.asarray(data.xpos[ids["can"]], dtype=float).copy()
     final_speed = float(np.linalg.norm(data.cvel[ids["can"], 3:]))
     contained = bool(
@@ -711,6 +807,7 @@ def run_franka_droid_closed_loop(
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "blocked" if blockers else "completed",
+        "episode_id": episode_id,
         "policy_id": str(policy_client.policy_id),
         "policy_client_evidence": policy_client_evidence,
         "captured_site_observation": {
@@ -764,7 +861,22 @@ def run_franka_droid_closed_loop(
             },
         },
         "action_steps_executed": action_step,
-        "policy_query_count": len(trace),
+        "policy_query_count": len(policy_input_frames),
+        "observation_trace_digest": canonical_digest(
+            {"observations": [row["raw_rgb_sha256"] for row in policy_input_frames]}
+        ),
+        "visual_evidence": visual_evidence,
+        "artifacts": media_artifacts,
+        "evaluator": {
+            "owner": "environment_not_policy",
+            "grader_type": "deterministic_simulator_state",
+            "success_source": "frozen_object_state_predicates",
+            "policy_self_report_used": False,
+        },
+        "success_evidence": {
+            "grader_type": "deterministic_simulator_state",
+            "policy_self_report_used": False,
+        },
         "blockers": blockers,
         "metrics": {
             "initial_spraycan_z_m": initial_can_z,
@@ -786,9 +898,7 @@ def run_franka_droid_closed_loop(
         "trace": trace,
         "claim_boundary": {
             "simulator_policy_execution": not blockers,
-            "learned_policy_execution": bool(
-                learned_policy and not blockers and action_step > 0
-            ),
+            "learned_policy_execution": bool(learned_policy and not blockers and action_step > 0),
             "wam_executed": False,
             "nvidia_warehouse_executed": bool(
                 captured_site_background is not None
@@ -796,8 +906,7 @@ def run_franka_droid_closed_loop(
                 and not blockers
             ),
             "captured_3dgs_composited": bool(
-                captured_site_background is not None
-                and external_background_kind == "captured_3dgs"
+                captured_site_background is not None and external_background_kind == "captured_3dgs"
             ),
             "nvidia_warehouse_is_physical_answer_key": False,
             "isaac_physics_executed": False,
@@ -838,6 +947,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--policy-host")
     parser.add_argument("--policy-port", type=int, default=8000)
     parser.add_argument("--policy-api-key-file")
+    parser.add_argument("--trial-id")
     parser.add_argument("--captured-site-background")
     parser.add_argument(
         "--external-background-kind",
@@ -865,9 +975,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         if not args.cohort or not args.policy_id or not args.policy_host:
-            parser.error(
-                "learned_joint_position requires --cohort, --policy-id, and --policy-host"
-            )
+            parser.error("learned_joint_position requires --cohort, --policy-id, and --policy-host")
         from .openpi_droid_policy_runtime import (
             OpenPIWebsocketDroidPolicyClient,
             load_policy_spec,
@@ -876,10 +984,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         api_key = None
         if args.policy_api_key_file:
             api_key = (
-                Path(args.policy_api_key_file)
-                .expanduser()
-                .read_text(encoding="utf-8")
-                .strip()
+                Path(args.policy_api_key_file).expanduser().read_text(encoding="utf-8").strip()
             )
             if not api_key:
                 parser.error("--policy-api-key-file is empty")
@@ -901,6 +1006,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         captured_site_background_path=args.captured_site_background,
         external_background_kind=args.external_background_kind,
         external_background_scene_id=args.external_background_scene_id,
+        trial_id=args.trial_id,
     )
     if result["status"] == "blocked":
         return 2

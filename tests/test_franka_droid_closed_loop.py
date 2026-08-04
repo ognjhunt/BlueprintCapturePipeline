@@ -20,9 +20,7 @@ def _observation(joints: np.ndarray | None = None) -> dict:
     return {
         "observation/exterior_image_1_left": np.zeros((224, 224, 3), dtype=np.uint8),
         "observation/wrist_image_left": np.zeros((224, 224, 3), dtype=np.uint8),
-        "observation/joint_position": (
-            np.zeros(7, dtype=float) if joints is None else joints
-        ),
+        "observation/joint_position": (np.zeros(7, dtype=float) if joints is None else joints),
         "observation/gripper_position": np.asarray([1.0]),
         "prompt": "Pick up the can and place it inside the marked tray.",
     }
@@ -118,6 +116,42 @@ def test_external_scene_identity_without_background_fails_closed() -> None:
             policy_client=StationaryDroidJointPositionClient(),
             output_dir="unused",
             external_background_scene_id="warehouse_control",
+        )
+
+
+def test_nonpositive_episode_limit_fails_before_runtime_execution() -> None:
+    with pytest.raises(ValueError, match="episode_action_limit_invalid"):
+        run_franka_droid_closed_loop(
+            runtime={
+                "mujoco": None,
+                "np": np,
+                "model": None,
+                "data": None,
+                "ids": {},
+                "targets": {},
+                "gravity_compensated_bodies": [],
+            },
+            policy_client=StationaryDroidJointPositionClient(),
+            output_dir="unused",
+            max_action_steps=0,
+        )
+
+
+def test_learned_episode_requires_safe_explicit_trial_id_before_runtime() -> None:
+    client = StationaryDroidJointPositionClient()
+    client.learned_policy = True
+    with pytest.raises(ValueError, match="learned_policy_trial_id_required"):
+        run_franka_droid_closed_loop(
+            runtime={},
+            policy_client=client,
+            output_dir="unused",
+        )
+    with pytest.raises(ValueError, match="episode_trial_id_invalid"):
+        run_franka_droid_closed_loop(
+            runtime={},
+            policy_client=client,
+            output_dir="unused",
+            trial_id="../unsafe",
         )
 
 
