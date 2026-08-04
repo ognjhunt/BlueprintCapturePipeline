@@ -26,8 +26,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = "simpler_closed_loop_execution.v1"
+SCHEMA_VERSION = "simpler_closed_loop_execution.v2"
 RUNTIME_LOCK_SCHEMA_VERSION = "simpler_runtime_lock.v1"
+FRAME_MANIFEST_SCHEMA_VERSION = "adp_observation_frame_manifest.v1"
+VISUAL_EVIDENCE_SCHEMA_VERSION = "adp_episode_visual_evidence.v1"
 PHASE_LABEL = "retrospective_external_reference"
 CLAIM_CEILING = "development_only"
 GCS_BUCKET = "gdm-robotics-open-x-embodiment"
@@ -86,6 +88,202 @@ def _file_sha256(path: Path) -> str:
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_observation_png(
+    image: Any,
+    *,
+    output_dir: Path,
+    episode_id: str,
+    frame_index: int,
+    kind: str,
+) -> dict[str, Any]:
+    """Persist the exact RGB array used by the policy as a lossless PNG."""
+
+    import numpy as np
+    from PIL import Image
+
+    array = np.asarray(image)
+    if array.dtype != np.uint8:
+        raise ValueError(f"observation_frame_dtype_not_uint8:{array.dtype}")
+    if array.ndim != 3 or array.shape[2] != 3:
+        raise ValueError(f"observation_frame_shape_not_rgb:{array.shape}")
+    frame_dir = output_dir / "media" / episode_id / "frames"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    path = frame_dir / f"{frame_index:06d}-{kind}.png"
+    Image.fromarray(array, mode="RGB").save(
+        path,
+        format="PNG",
+        compress_level=6,
+        optimize=False,
+    )
+    return {
+        "frame_index": frame_index,
+        "kind": kind,
+        "relative_path": path.relative_to(output_dir).as_posix(),
+        "raw_rgb_sha256": "sha256:" + hashlib.sha256(array.tobytes()).hexdigest(),
+        "png_sha256": _file_sha256(path),
+        "size_bytes": path.stat().st_size,
+        "width": int(array.shape[1]),
+        "height": int(array.shape[0]),
+        "channels": 3,
+        "dtype": "uint8",
+    }
+
+
+def _encode_episode_video(
+    frame_paths: Sequence[Path],
+    *,
+    video_path: Path,
+    frames_per_second: float,
+) -> dict[str, Any]:
+    """Encode a human-review MP4 derived from the authoritative PNG sequence."""
+
+    import cv2
+
+    if not frame_paths:
+        raise ValueError("episode_video_requires_at_least_one_frame")
+    first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_COLOR)
+    if first is None:
+        raise ValueError("episode_video_first_frame_unreadable")
+    height, width = first.shape[:2]
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        float(frames_per_second),
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError("episode_video_encoder_unavailable")
+    try:
+        for path in frame_paths:
+            frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if frame is None:
+                raise ValueError(f"episode_video_frame_unreadable:{path.name}")
+            if frame.shape[:2] != (height, width):
+                raise ValueError(f"episode_video_frame_shape_mismatch:{path.name}")
+            writer.write(frame)
+    finally:
+        writer.release()
+    if not video_path.is_file() or video_path.stat().st_size <= 0:
+        raise RuntimeError("episode_video_not_written")
+    return {
+        "relative_path": video_path.as_posix(),
+        "sha256": _file_sha256(video_path),
+        "size_bytes": video_path.stat().st_size,
+        "container": "mp4",
+        "codec": "mp4v",
+        "frames_per_second": float(frames_per_second),
+        "frame_count": len(frame_paths),
+    }
+
+
+def _finalize_visual_evidence(
+    *,
+    output_dir: Path,
+    episode_id: str,
+    identity: Mapping[str, Any],
+    policy_input_frames: Sequence[Mapping[str, Any]],
+    terminal_observation: Mapping[str, Any] | None,
+    frames_per_second: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Write the authoritative frame manifest and derived review video."""
+
+    ordered_frames = [dict(row) for row in policy_input_frames]
+    if terminal_observation is not None:
+        ordered_frames.append(dict(terminal_observation))
+    manifest = {
+        "schema_version": FRAME_MANIFEST_SCHEMA_VERSION,
+        "episode_id": episode_id,
+        "identity": dict(identity),
+        "policy_input_frames": [dict(row) for row in policy_input_frames],
+        "terminal_observation": dict(terminal_observation)
+        if terminal_observation is not None
+        else None,
+        "policy_input_frame_count": len(policy_input_frames),
+        "video_frame_order": [row["relative_path"] for row in ordered_frames],
+        "lossless_policy_inputs_are_authoritative": True,
+        "derived_video_is_human_review_convenience": True,
+    }
+    manifest["frame_manifest_digest"] = _canonical_digest(
+        manifest, digest_field="frame_manifest_digest"
+    )
+    manifest_path = output_dir / "media" / episode_id / "frame_manifest.json"
+    _write_json(manifest_path, manifest)
+    artifacts = [
+        {
+            "role": "observation_frame_manifest",
+            "relative_path": manifest_path.relative_to(output_dir).as_posix(),
+            "sha256": _file_sha256(manifest_path),
+            "size_bytes": manifest_path.stat().st_size,
+        }
+    ]
+    for row in policy_input_frames:
+        artifacts.append(
+            {
+                "role": "policy_input_frame",
+                "relative_path": row["relative_path"],
+                "sha256": row["png_sha256"],
+                "size_bytes": row["size_bytes"],
+                "raw_rgb_sha256": row["raw_rgb_sha256"],
+                "frame_index": row["frame_index"],
+            }
+        )
+    if terminal_observation is not None:
+        artifacts.append(
+            {
+                "role": "terminal_observation_frame",
+                "relative_path": terminal_observation["relative_path"],
+                "sha256": terminal_observation["png_sha256"],
+                "size_bytes": terminal_observation["size_bytes"],
+                "raw_rgb_sha256": terminal_observation["raw_rgb_sha256"],
+                "frame_index": terminal_observation["frame_index"],
+            }
+        )
+    if not ordered_frames:
+        return (
+            {
+                "schema_version": VISUAL_EVIDENCE_SCHEMA_VERSION,
+                "status": "unavailable_before_first_observation",
+                "human_review_available": False,
+                "frame_manifest_digest": manifest["frame_manifest_digest"],
+                "policy_input_frame_count": 0,
+                "terminal_observation_frame_present": False,
+                "vlm_grading_used": False,
+            },
+            artifacts,
+        )
+    video_path = output_dir / "media" / episode_id / "episode.mp4"
+    video = _encode_episode_video(
+        [output_dir / row["relative_path"] for row in ordered_frames],
+        video_path=video_path,
+        frames_per_second=frames_per_second,
+    )
+    video["relative_path"] = video_path.relative_to(output_dir).as_posix()
+    video["derived_from_frame_manifest_digest"] = manifest["frame_manifest_digest"]
+    artifacts.append(
+        {
+            "role": "episode_video",
+            "relative_path": video["relative_path"],
+            "sha256": video["sha256"],
+            "size_bytes": video["size_bytes"],
+            "media_type": "video/mp4",
+        }
+    )
+    return (
+        {
+            "schema_version": VISUAL_EVIDENCE_SCHEMA_VERSION,
+            "status": "complete",
+            "human_review_available": True,
+            "frame_manifest_digest": manifest["frame_manifest_digest"],
+            "policy_input_frame_count": len(policy_input_frames),
+            "terminal_observation_frame_present": terminal_observation is not None,
+            "video": video,
+            "vlm_grading_used": False,
+        },
+        artifacts,
+    )
 
 
 def _run(command: Sequence[str], *, cwd: Path | None = None, timeout: int = 3600) -> dict[str, Any]:
@@ -297,11 +495,22 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
         raise RuntimeError("simpler_dependency_install_failed:" + install["output_tail"][-4000:])
     for editable in (source_dir / "ManiSkill2_real2sim", source_dir):
         installed = _run(
-            [sys.executable, "-m", "pip", "install", "--no-input", "--no-deps", "-e", str(editable)],
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-input",
+                "--no-deps",
+                "-e",
+                str(editable),
+            ],
             timeout=600,
         )
         if installed["returncode"] != 0:
-            raise RuntimeError("simpler_editable_install_failed:" + installed["output_tail"][-2000:])
+            raise RuntimeError(
+                "simpler_editable_install_failed:" + installed["output_tail"][-2000:]
+            )
     _phase("dependency_install", "completed")
 
     _phase("language_encoder_acquisition")
@@ -454,16 +663,23 @@ def run_episodes(
                 "condition_id": condition_id,
                 "seed": 0,
             }
-            episode_id = "adp-" + hashlib.sha256(_canonical_json(identity).encode()).hexdigest()[:24]
+            episode_id = (
+                "adp-" + hashlib.sha256(_canonical_json(identity).encode()).hexdigest()[:24]
+            )
             observations: list[str] = []
             actions: list[dict[str, Any]] = []
             metrics: list[dict[str, Any]] = []
+            policy_input_frames: list[dict[str, Any]] = []
             failure: dict[str, Any] | None = None
             status = "failed"
             success: bool | None = None
             step_count = 0
             policy_queries = 0
             env = None
+            latest_image: Any = None
+            predicted_terminated = False
+            truncated = False
+            environment_terminated = False
             reset = {
                 "condition": condition["reset_binding"],
                 "robot_xy": manifest["task"]["reset"]["robot_xy"],
@@ -493,12 +709,19 @@ def run_episodes(
                 instruction = unwrapped.get_language_instruction()
                 model.reset(instruction)
                 image = get_image_from_maniskill2_obs_dict(unwrapped, obs)
-                predicted_terminated = False
-                truncated = False
+                latest_image = image
                 while not (predicted_terminated or truncated):
-                    observations.append("sha256:" + hashlib.sha256(image.tobytes()).hexdigest())
-                    raw_action, action = model.step(image, instruction)
+                    frame = _write_observation_png(
+                        image,
+                        output_dir=output_dir,
+                        episode_id=episode_id,
+                        frame_index=policy_queries,
+                        kind="policy-input",
+                    )
+                    policy_input_frames.append(frame)
+                    observations.append(frame["raw_rgb_sha256"])
                     policy_queries += 1
+                    raw_action, action = model.step(image, instruction)
                     actions.append(
                         {
                             "raw": _jsonable(raw_action),
@@ -515,18 +738,72 @@ def run_episodes(
                         )
                     )
                     step_count += 1
-                    metrics.append(_jsonable(info))
-                    success = bool(done)
+                    environment_terminated = bool(done)
+                    metric = _jsonable(info)
+                    if not isinstance(metric, Mapping) or not isinstance(
+                        metric.get("success"), bool
+                    ):
+                        raise RuntimeError("environment_success_metric_missing")
+                    metrics.append(dict(metric))
+                    success = bool(metric["success"])
                     new_instruction = unwrapped.get_language_instruction()
                     if new_instruction != instruction:
                         instruction = new_instruction
                     image = get_image_from_maniskill2_obs_dict(unwrapped, obs)
+                    latest_image = image
                 status = "completed"
             except Exception as exc:  # retain a typed terminal record for every cell.
                 failure = {"type": type(exc).__name__, "message": str(exc)[:1000]}
             finally:
                 if env is not None:
                     env.close()
+            terminal_observation: dict[str, Any] | None = None
+            visual_artifacts: list[dict[str, Any]] = []
+            try:
+                if latest_image is not None and step_count > 0:
+                    terminal_observation = _write_observation_png(
+                        latest_image,
+                        output_dir=output_dir,
+                        episode_id=episode_id,
+                        frame_index=len(policy_input_frames),
+                        kind="terminal-observation",
+                    )
+                visual_evidence, visual_artifacts = _finalize_visual_evidence(
+                    output_dir=output_dir,
+                    episode_id=episode_id,
+                    identity=identity,
+                    policy_input_frames=policy_input_frames,
+                    terminal_observation=terminal_observation,
+                    frames_per_second=float(manifest["task"]["controller"]["control_frequency_hz"]),
+                )
+                if status == "completed" and visual_evidence["status"] != "complete":
+                    raise RuntimeError("completed_episode_visual_evidence_incomplete")
+            except Exception as exc:
+                previous_failure = failure
+                failure = {
+                    "type": "VisualEvidenceCaptureError",
+                    "message": f"{type(exc).__name__}:{str(exc)[:1000]}",
+                    "prior_failure": previous_failure,
+                }
+                if status == "completed":
+                    status = "invalid"
+                visual_evidence = {
+                    "schema_version": VISUAL_EVIDENCE_SCHEMA_VERSION,
+                    "status": "capture_failed",
+                    "human_review_available": False,
+                    "policy_input_frame_count": len(policy_input_frames),
+                    "terminal_observation_frame_present": terminal_observation is not None,
+                    "vlm_grading_used": False,
+                    "failure": failure,
+                }
+            success_evidence = {
+                "grader_type": "deterministic_simulator_state",
+                "source_field": "environment_step_info.success",
+                "final_value": success,
+                "vlm_used": False,
+                "human_grade_used": False,
+                "policy_self_report_used": False,
+            }
             trace = {
                 "schema_version": "simpler_episode_trace.v1",
                 "episode_id": episode_id,
@@ -535,6 +812,14 @@ def run_episodes(
                 "observation_sha256_trace": observations,
                 "action_trace": actions,
                 "environment_metric_trace": metrics,
+                "success_evidence": success_evidence,
+                "termination": {
+                    "policy_predicted_terminated": predicted_terminated,
+                    "simulator_truncated": bool(truncated),
+                    "environment_terminated": environment_terminated,
+                    "step_count": step_count,
+                },
+                "visual_evidence": visual_evidence,
                 "status": status,
                 "success": success,
                 "failure": failure,
@@ -553,9 +838,7 @@ def run_episodes(
                     "dependency_lock_digest": runtime_lock["runtime_lock_digest"],
                     "checkpoint_identity_digest": checkpoint_digest,
                     "reset_digest": _canonical_digest(reset),
-                    "observation_trace_digest": _canonical_digest(
-                        {"observations": observations}
-                    ),
+                    "observation_trace_digest": _canonical_digest({"observations": observations}),
                     "action_trace_digest": _canonical_digest({"actions": actions}),
                     "metric_trace_digest": _canonical_digest({"metrics": metrics}),
                     "policy_query_count": policy_queries,
@@ -563,9 +846,15 @@ def run_episodes(
                     "evaluator": {
                         "owner": "environment_not_policy",
                         "policy_self_report_used": False,
+                        "grader_type": "deterministic_simulator_state",
+                        "success_source": "environment_step_info.success",
+                        "vlm_used": False,
+                        "human_grade_used": False,
                         "source_git_blob_sha1": evaluator["source_git_blob_sha1"],
                         "success_semantics": evaluator["success_semantics"],
                     },
+                    "success_evidence": success_evidence,
+                    "visual_evidence": visual_evidence,
                     "failure": failure,
                     "artifacts": [
                         {
@@ -573,7 +862,8 @@ def run_episodes(
                             "relative_path": trace_path.relative_to(output_dir).as_posix(),
                             "sha256": _file_sha256(trace_path),
                             "size_bytes": trace_path.stat().st_size,
-                        }
+                        },
+                        *visual_artifacts,
                     ],
                 }
             )

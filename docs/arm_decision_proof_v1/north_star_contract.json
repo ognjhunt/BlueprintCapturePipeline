@@ -36,6 +36,8 @@
     "qualified_robot_camera_site_registration",
     "qualified_observation_and_collision_replica",
     "two_frozen_real_policy_or_configuration_receipts",
+    "lossless_policy_input_frames_and_digest_bound_human_review_video_per_episode",
+    "explicit_non_policy_success_grader_identity_and_metric_trace",
     "sealed_simulation_decision_before_holdout",
     "randomized_or_interleaved_heldout_physical_trials",
     "exact_condition_id_physical_outcome_join",
@@ -48,6 +50,7 @@
     "at_least_one_site_relevant_failure_boundary_is_correctly_localized",
     "trial_count_is_justified_by_preregistered_power_analysis",
     "every_result_is_digest_bound_and_replayable",
+    "every_completed_episode_is_visually_reviewable_from_authoritative_lossless_frames_and_a_derived_video",
     "partner_confirms_the_result_changes_or_reduces_the_next_physical_test_allocation",
     "claims_remain_bounded_to_the_exact_site_task_robot_policies_and_validation_envelope"
   ],

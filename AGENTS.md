@@ -152,6 +152,13 @@ dependent step as blocked instead of guessing.
 - Compatibility work must preserve prior proof boundaries. In particular,
   generated-video or simulator execution never becomes physical truth, and a
   candidate policy or provider never grades itself.
+- Every newly executed policy-evaluation episode must retain the exact lossless
+  observation frames shown to the policy, a digest-bound frame manifest, and a
+  derived human-review video. Completed episodes without all three are invalid;
+  failures before the first observation must retain an explicit typed media gap.
+  The receipt must identify whether success came from deterministic simulator
+  state, a human, or a learned evaluator. A policy may never grade itself, and a
+  review video remains derived visual evidence rather than physical truth.
 - For Paperclip/autonomous-loop closeouts, apply the Blueprint-WebApp
   `docs/autonomous-loop-evidence-checklist-2026-05-03.md` (sibling checkout; see
   the sibling-checkout convention above) before claiming `done`, `blocked`, or

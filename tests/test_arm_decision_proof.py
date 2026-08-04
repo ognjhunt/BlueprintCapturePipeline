@@ -5,6 +5,7 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from blueprint_pipeline.arm_decision_proof import (
@@ -18,6 +19,10 @@ from blueprint_pipeline.arm_decision_proof import (
     validate_paid_runtime_canary,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.simpler_public_runtime_worker import (
+    _finalize_visual_evidence,
+    _write_observation_png,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -114,6 +119,62 @@ def _execution(manifest: dict) -> dict:
     return value
 
 
+def _add_required_visual_evidence(execution: dict, output_root: Path) -> None:
+    for index, episode in enumerate(execution["episodes"]):
+        image = np.full((32, 48, 3), index * 20, dtype=np.uint8)
+        policy_frame = _write_observation_png(
+            image,
+            output_dir=output_root,
+            episode_id=episode["episode_id"],
+            frame_index=0,
+            kind="policy-input",
+        )
+        terminal_frame = _write_observation_png(
+            image,
+            output_dir=output_root,
+            episode_id=episode["episode_id"],
+            frame_index=1,
+            kind="terminal-observation",
+        )
+        visual, artifacts = _finalize_visual_evidence(
+            output_dir=output_root,
+            episode_id=episode["episode_id"],
+            identity={
+                "candidate_id": episode["candidate_id"],
+                "condition_id": episode["condition_id"],
+                "seed": episode["seed"],
+            },
+            policy_input_frames=[policy_frame],
+            terminal_observation=terminal_frame,
+            frames_per_second=3.0,
+        )
+        episode["policy_query_count"] = 1
+        episode["simulator_step_count"] = 1
+        episode["observation_trace_digest"] = canonical_digest(
+            {"observations": [policy_frame["raw_rgb_sha256"]]}
+        )
+        episode["evaluator"].update(
+            {
+                "grader_type": "deterministic_simulator_state",
+                "success_source": "environment_step_info.success",
+                "vlm_used": False,
+                "human_grade_used": False,
+            }
+        )
+        episode["success_evidence"] = {
+            "grader_type": "deterministic_simulator_state",
+            "source_field": "environment_step_info.success",
+            "final_value": episode["success"],
+            "vlm_used": False,
+            "human_grade_used": False,
+            "policy_self_report_used": False,
+        }
+        episode["visual_evidence"] = visual
+        episode["artifacts"].extend(artifacts)
+    execution["schema_version"] = "simpler_closed_loop_execution.v2"
+    execution["execution_digest"] = canonical_digest(execution, digest_field="execution_digest")
+
+
 def test_full_reconstruction_seals_before_release_and_renders_every_cell(
     tmp_path: Path,
 ) -> None:
@@ -147,6 +208,8 @@ def test_full_reconstruction_seals_before_release_and_renders_every_cell(
         matrix["cells"][0]["physical_release_receipt_digest"] == release["release_receipt_digest"]
     )
     assert matrix["cells"][0]["qualification_status"] == "admitted"
+    assert matrix["human_review_coverage"] == 0.0
+    assert matrix["human_review_media_required_for_new_executions"] is True
     assert verdict["sealed_development_decision"] == "abstain"
     assert verdict["verdict"] == "inconclusive"
     decision = json.loads((output / "bounded_development_decision.json").read_text())
@@ -168,6 +231,47 @@ def test_duplicate_candidate_identity_is_never_padding() -> None:
 
     assert "execution_duplicate_candidate_identity" in caught.value.blockers
     assert "execution_candidate_set_mismatch" in caught.value.blockers
+
+
+def test_v2_execution_requires_and_validates_human_visual_evidence(
+    tmp_path: Path,
+) -> None:
+    manifest = _admitted_manifest()
+    execution = _execution(manifest)
+    _add_required_visual_evidence(execution, tmp_path)
+
+    validation = validate_execution_package(
+        execution,
+        manifest,
+        execution_root=tmp_path,
+    )
+
+    assert validation["human_visual_evidence_status"] == "complete"
+    first = execution["episodes"][0]
+    assert first["visual_evidence"]["human_review_available"] is True
+    video_path = tmp_path / first["visual_evidence"]["video"]["relative_path"]
+    assert video_path.read_bytes()[4:8] == b"ftyp"
+
+
+def test_v2_execution_rejects_missing_episode_video(tmp_path: Path) -> None:
+    manifest = _admitted_manifest()
+    execution = _execution(manifest)
+    _add_required_visual_evidence(execution, tmp_path)
+    first = execution["episodes"][0]
+    first["artifacts"] = [row for row in first["artifacts"] if row.get("role") != "episode_video"]
+    execution["execution_digest"] = canonical_digest(execution, digest_field="execution_digest")
+
+    with pytest.raises(ArmDecisionProofError) as caught:
+        validate_execution_package(
+            execution,
+            manifest,
+            execution_root=tmp_path,
+        )
+
+    assert any(
+        blocker.startswith("execution_episode_video_binding_invalid:")
+        for blocker in caught.value.blockers
+    )
 
 
 def test_paid_runtime_canary_rejects_changed_provider_receipt(tmp_path: Path) -> None:

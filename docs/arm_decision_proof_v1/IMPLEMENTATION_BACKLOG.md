@@ -110,11 +110,16 @@ Wire:
 
 ```text
 condition cell -> environment reset -> policy query -> simulator steps
--> metric -> validity status -> digest-bound episode receipt
+-> independent environment metric -> lossless policy-input frames
+-> derived human-review video -> validity status -> digest-bound episode receipt
 ```
 
 Acceptance: replay produces the same normalized receipt or an explicit
-non-reproducibility failure; candidate self-reported success cannot grade itself.
+non-reproducibility failure; candidate self-reported success cannot grade itself;
+every completed episode includes decodable lossless policy-input frames, a
+terminal observation, a frame manifest that reproduces the observation-trace
+digest, and a digest-bound review video. A missing or changed media artifact
+invalidates the new execution version rather than silently degrading review.
 
 ### ADP-005 — Enforce calibration/holdout separation and decision sealing
 

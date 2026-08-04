@@ -23,7 +23,10 @@ from .evaluation_run_contract import compile_evaluation_run
 from .public_reference_admission import build_public_reference_admission_receipt
 
 
-EXECUTION_SCHEMA_VERSION = "simpler_closed_loop_execution.v1"
+EXECUTION_SCHEMA_VERSION = "simpler_closed_loop_execution.v2"
+LEGACY_EXECUTION_SCHEMA_VERSION = "simpler_closed_loop_execution.v1"
+FRAME_MANIFEST_SCHEMA_VERSION = "adp_observation_frame_manifest.v1"
+VISUAL_EVIDENCE_SCHEMA_VERSION = "adp_episode_visual_evidence.v1"
 EPISODE_RECEIPT_SCHEMA_VERSION = "adp_episode_receipt.v1"
 SEAL_SCHEMA_VERSION = "adp_development_decision_seal.v1"
 RELEASE_SCHEMA_VERSION = "adp_physical_outcome_release_receipt.v1"
@@ -388,6 +391,158 @@ def validate_paid_runtime_canary(
     return result
 
 
+def _validate_episode_visual_evidence(
+    episode: Mapping[str, Any],
+    *,
+    artifacts: Sequence[Mapping[str, Any]],
+    execution_root: Path | None,
+) -> list[str]:
+    """Require lossless policy inputs and a digest-bound review video for v2."""
+
+    candidate_id = _string(episode.get("candidate_id"))
+    condition_id = _string(episode.get("condition_id"))
+    cell = f"{candidate_id}/{condition_id}"
+    blockers: list[str] = []
+    visual = _mapping(episode.get("visual_evidence"))
+    if visual.get("schema_version") != VISUAL_EVIDENCE_SCHEMA_VERSION:
+        blockers.append(f"execution_visual_evidence_schema_invalid:{cell}")
+    policy_query_count = episode.get("policy_query_count")
+    visual_status = _string(visual.get("status"))
+    if isinstance(policy_query_count, int) and policy_query_count > 0:
+        if visual_status != "complete" or visual.get("human_review_available") is not True:
+            blockers.append(f"execution_human_visual_evidence_incomplete:{cell}")
+    elif visual_status not in {"complete", "unavailable_before_first_observation"}:
+        blockers.append(f"execution_visual_evidence_status_invalid:{cell}")
+    if visual.get("vlm_grading_used") is not False:
+        blockers.append(f"execution_visual_evidence_vlm_flag_invalid:{cell}")
+
+    evaluator = _mapping(episode.get("evaluator"))
+    success_evidence = _mapping(episode.get("success_evidence"))
+    if (
+        evaluator.get("grader_type") != "deterministic_simulator_state"
+        or evaluator.get("success_source") != "environment_step_info.success"
+        or evaluator.get("vlm_used") is not False
+        or evaluator.get("human_grade_used") is not False
+    ):
+        blockers.append(f"execution_success_grader_binding_invalid:{cell}")
+    if (
+        success_evidence.get("grader_type") != "deterministic_simulator_state"
+        or success_evidence.get("source_field") != "environment_step_info.success"
+        or success_evidence.get("vlm_used") is not False
+        or success_evidence.get("human_grade_used") is not False
+        or success_evidence.get("final_value") != episode.get("success")
+    ):
+        blockers.append(f"execution_success_evidence_invalid:{cell}")
+
+    by_role: dict[str, list[dict[str, Any]]] = {}
+    by_path: dict[str, dict[str, Any]] = {}
+    for artifact_value in artifacts:
+        artifact = dict(artifact_value)
+        by_role.setdefault(_string(artifact.get("role")), []).append(artifact)
+        relative_path = _string(artifact.get("relative_path"))
+        if relative_path:
+            by_path[relative_path] = artifact
+    manifests = by_role.get("observation_frame_manifest", [])
+    if len(manifests) != 1:
+        blockers.append(f"execution_frame_manifest_binding_invalid:{cell}")
+        return blockers
+    if execution_root is None:
+        return blockers
+    manifest_path = (execution_root / _string(manifests[0].get("relative_path"))).resolve()
+    if not manifest_path.is_file():
+        return blockers
+    try:
+        frame_manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        blockers.append(f"execution_frame_manifest_invalid_json:{cell}")
+        return blockers
+    frame_manifest = _mapping(frame_manifest_value)
+    if frame_manifest.get("schema_version") != FRAME_MANIFEST_SCHEMA_VERSION:
+        blockers.append(f"execution_frame_manifest_schema_invalid:{cell}")
+    if frame_manifest.get("episode_id") != episode.get("episode_id"):
+        blockers.append(f"execution_frame_manifest_episode_mismatch:{cell}")
+    expected_manifest_digest = canonical_digest(
+        frame_manifest, digest_field="frame_manifest_digest"
+    )
+    if (
+        frame_manifest.get("frame_manifest_digest") != expected_manifest_digest
+        or visual.get("frame_manifest_digest") != expected_manifest_digest
+    ):
+        blockers.append(f"execution_frame_manifest_digest_mismatch:{cell}")
+    frame_rows = _rows(frame_manifest.get("policy_input_frames"))
+    if (
+        len(frame_rows) != policy_query_count
+        or frame_manifest.get("policy_input_frame_count") != policy_query_count
+    ):
+        blockers.append(f"execution_policy_input_frame_count_mismatch:{cell}")
+    if visual.get("policy_input_frame_count") != policy_query_count:
+        blockers.append(f"execution_visual_policy_input_frame_count_mismatch:{cell}")
+    raw_trace = [row.get("raw_rgb_sha256") for row in frame_rows]
+    if canonical_digest({"observations": raw_trace}) != episode.get("observation_trace_digest"):
+        blockers.append(f"execution_observation_frame_trace_mismatch:{cell}")
+
+    terminal = _mapping(frame_manifest.get("terminal_observation"))
+    expected_terminal = visual.get("terminal_observation_frame_present") is True
+    if bool(terminal) != expected_terminal:
+        blockers.append(f"execution_terminal_observation_binding_mismatch:{cell}")
+    all_frame_rows = [*frame_rows, *([terminal] if terminal else [])]
+    for row in all_frame_rows:
+        relative_path = _string(row.get("relative_path"))
+        artifact = by_path.get(relative_path, {})
+        expected_role = (
+            "terminal_observation_frame"
+            if row.get("kind") == "terminal-observation"
+            else "policy_input_frame"
+        )
+        if (
+            artifact.get("role") != expected_role
+            or artifact.get("sha256") != row.get("png_sha256")
+            or artifact.get("raw_rgb_sha256") != row.get("raw_rgb_sha256")
+        ):
+            blockers.append(f"execution_observation_frame_binding_mismatch:{cell}:{relative_path}")
+            continue
+        target = (execution_root / relative_path).resolve()
+        if not target.is_file():
+            continue
+        try:
+            from PIL import Image
+
+            with Image.open(target) as image:
+                rgb = image.convert("RGB")
+                decoded_digest = "sha256:" + hashlib.sha256(rgb.tobytes()).hexdigest()
+                decoded_size = rgb.size
+        except (OSError, ValueError):
+            blockers.append(f"execution_observation_frame_not_decodable:{cell}:{relative_path}")
+            continue
+        if decoded_digest != row.get("raw_rgb_sha256") or decoded_size != (
+            row.get("width"),
+            row.get("height"),
+        ):
+            blockers.append(f"execution_observation_frame_pixels_mismatch:{cell}:{relative_path}")
+
+    if isinstance(policy_query_count, int) and policy_query_count > 0:
+        videos = by_role.get("episode_video", [])
+        video = _mapping(visual.get("video"))
+        if (
+            len(videos) != 1
+            or videos[0].get("relative_path") != video.get("relative_path")
+            or videos[0].get("sha256") != video.get("sha256")
+            or video.get("derived_from_frame_manifest_digest") != expected_manifest_digest
+            or video.get("frame_count") != len(all_frame_rows)
+        ):
+            blockers.append(f"execution_episode_video_binding_invalid:{cell}")
+        elif execution_root is not None:
+            video_path = (execution_root / _string(video.get("relative_path"))).resolve()
+            if video_path.is_file():
+                try:
+                    header = video_path.read_bytes()[:12]
+                except OSError:
+                    header = b""
+                if len(header) < 8 or header[4:8] != b"ftyp":
+                    blockers.append(f"execution_episode_video_not_mp4:{cell}")
+    return blockers
+
+
 def validate_execution_package(
     execution: Mapping[str, Any],
     manifest: Mapping[str, Any],
@@ -395,7 +550,11 @@ def validate_execution_package(
     execution_root: Path | None = None,
 ) -> dict[str, Any]:
     blockers: list[str] = []
-    if execution.get("schema_version") != EXECUTION_SCHEMA_VERSION:
+    execution_schema = execution.get("schema_version")
+    if execution_schema not in {
+        EXECUTION_SCHEMA_VERSION,
+        LEGACY_EXECUTION_SCHEMA_VERSION,
+    }:
         blockers.append("execution_schema_invalid")
     if execution.get("status") != "completed":
         blockers.append("execution_not_completed")
@@ -519,6 +678,14 @@ def validate_execution_package(
                     blockers.append(
                         f"execution_artifact_digest_mismatch:{candidate_id}/{condition_id}:{relative_path}"
                     )
+        if execution_schema == EXECUTION_SCHEMA_VERSION:
+            blockers.extend(
+                _validate_episode_visual_evidence(
+                    episode,
+                    artifacts=artifacts,
+                    execution_root=execution_root,
+                )
+            )
     if len(pairs) != len(set(pairs)):
         blockers.append("execution_duplicate_candidate_condition_episode")
     if set(pairs) != expected:
@@ -533,11 +700,17 @@ def validate_execution_package(
     if blockers:
         raise ArmDecisionProofError(blockers)
     return {
+        "schema_version": execution_schema,
         "status": "passed",
         "candidate_count": 2,
         "episode_count": len(episodes),
         "pair_count": len(expected),
         "execution_digest": expected_digest,
+        "human_visual_evidence_status": (
+            "complete"
+            if execution_schema == EXECUTION_SCHEMA_VERSION
+            else "legacy_execution_missing_required_media"
+        ),
     }
 
 
@@ -564,6 +737,8 @@ def _episode_receipt(
         "policy_query_count": episode["policy_query_count"],
         "simulator_step_count": episode["simulator_step_count"],
         "evaluator": episode["evaluator"],
+        "success_evidence": episode.get("success_evidence"),
+        "visual_evidence": episode.get("visual_evidence"),
         "failure": episode.get("failure"),
         "artifacts": episode["artifacts"],
         "phase_label": PHASE_LABEL,
@@ -1036,7 +1211,30 @@ def reconstruct_evidence_package(
                 "action_trace_digest": receipt["action_trace_digest"],
                 "metric_trace_digest": receipt["metric_trace_digest"],
                 "trace_artifacts": receipt["artifacts"],
+                "human_review_available": _mapping(receipt.get("visual_evidence")).get(
+                    "human_review_available"
+                )
+                is True,
+                "visual_evidence": receipt.get("visual_evidence"),
+                "human_review_artifacts": [
+                    {
+                        **artifact,
+                        "evidence_package_relative_path": (
+                            "immutable_inputs/execution_artifacts/"
+                            + _string(artifact.get("relative_path"))
+                        ),
+                    }
+                    for artifact in _rows(receipt.get("artifacts"))
+                    if artifact.get("role")
+                    in {
+                        "policy_input_frame",
+                        "terminal_observation_frame",
+                        "observation_frame_manifest",
+                        "episode_video",
+                    }
+                ],
                 "evaluator": receipt["evaluator"],
+                "success_evidence": receipt.get("success_evidence"),
                 "failure": receipt["failure"],
                 "physical_outcomes_digest": outcomes["outcomes_digest"],
                 "physical_release_receipt_digest": release["release_receipt_digest"],
@@ -1057,6 +1255,12 @@ def reconstruct_evidence_package(
         ),
         "environment_lock_digest": execution["runtime_lock_digest"],
         "cells": matrix_cells,
+        "human_review_coverage": (
+            sum(cell["human_review_available"] for cell in matrix_cells) / len(matrix_cells)
+            if matrix_cells
+            else 0.0
+        ),
+        "human_review_media_required_for_new_executions": True,
         "missing_outcomes_visible": True,
         "missing_outcomes": joined["missing_outcomes"],
     }

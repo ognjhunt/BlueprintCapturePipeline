@@ -83,6 +83,10 @@ Existing captures, fixtures, OpenUSD scenes, and SimReady candidates may exercis
 - reset/evaluator orchestration;
 - closed-loop execution plumbing;
 - complete episode receipts and replay;
+- authoritative lossless policy-input frames and digest-bound human-review
+  video for every newly completed episode;
+- explicit success-grader provenance distinguishing deterministic simulator
+  state from VLM, human, or policy self-report;
 - decision aggregation and abstention;
 - calibration/holdout partition enforcement;
 - exact Physical Outcome Join mechanics;

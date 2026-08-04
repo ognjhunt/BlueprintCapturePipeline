@@ -52,9 +52,7 @@ def test_bundle_contains_public_runtime_but_not_physical_outcome_values(
     assert receipt["physical_outcome_values_bundled"] is False
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
-        entrypoint = archive.read(
-            "provider_runtime/run_adp_simpler_provider_runtime.sh"
-        ).decode()
+        entrypoint = archive.read("provider_runtime/run_adp_simpler_provider_runtime.sh").decode()
         runner = archive.read("provider_runtime/adp_simpler_provider_runner.py").decode()
         bundled_manifest = json.loads(
             archive.read("provider_runtime/public_reference_manifest.json")
@@ -71,11 +69,19 @@ def test_bundle_contains_public_runtime_but_not_physical_outcome_values(
     assert "paid_runtime_plan" not in runner
     assert "BLUEPRINT_WAM_RUNTIME_PHASE:adp_simpler" in runner
     assert 'source_dir / "ManiSkill2_real2sim"' in runner
-    assert provider_runtime_contract_blockers(
-        provider_bundle_kind="adp_simpler",
-        entrypoint_text=entrypoint,
-        runner_text=runner,
-    ) == []
+    assert 'SCHEMA_VERSION = "simpler_closed_loop_execution.v2"' in runner
+    assert "observation_frame_manifest" in runner
+    assert "episode_video" in runner
+    assert "environment_step_info.success" in runner
+    assert '"vlm_used": False' in runner
+    assert (
+        provider_runtime_contract_blockers(
+            provider_bundle_kind="adp_simpler",
+            entrypoint_text=entrypoint,
+            runner_text=runner,
+        )
+        == []
+    )
     second = build_simpler_public_vast_bundle(
         manifest_path=MANIFEST, job_dir=tmp_path / "bundle-2", generated_at="fixed"
     )
@@ -105,9 +111,7 @@ def test_adp_budget_ledger_is_run_local(tmp_path: Path) -> None:
 def test_adp_runtime_pins_only_observed_vulkan_capable_machine() -> None:
     assert ADMITTED_MACHINE_IDS == (41950,)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["runtime"]["environment_lock"]["admitted_vast_machine_ids"] == [
-        41950
-    ]
+    assert manifest["runtime"]["environment_lock"]["admitted_vast_machine_ids"] == [41950]
     assert _search_payload(
         limit=100,
         max_hourly_rate=0.8,
@@ -271,9 +275,10 @@ def test_canonical_allocator_issues_grant_only_for_execute(
     assert admission["physical_outcome_values_uploaded"] is False
     assert admission["hard_cap_usd"] == 2.0
     assert admission["hard_ttl_seconds"] == 7200
-    assert admission["allocation_binding"]["bundle_sha256"] == observed[
-        "prepared_bundle"
-    ]["bundle_sha256"]
+    assert (
+        admission["allocation_binding"]["bundle_sha256"]
+        == observed["prepared_bundle"]["bundle_sha256"]
+    )
     assert admission["allocation_binding_digest"].startswith("sha256:")
     assert admission["allocation_binding"]["machine_avoidlist_digest"] is None
 
@@ -310,7 +315,5 @@ def test_allocator_digest_binds_reviewed_machine_avoidlist(
 
     assert allocator.main(args) == 0
     admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["allocation_binding"]["machine_avoidlist_digest"].startswith(
-        "sha256:"
-    )
+    assert admission["allocation_binding"]["machine_avoidlist_digest"].startswith("sha256:")
     assert observed["machine_avoidlist_path"] == str(avoidlist)

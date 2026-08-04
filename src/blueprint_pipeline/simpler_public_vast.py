@@ -41,7 +41,7 @@ _VAST_MUTATION_ENV = (
 )
 
 
-ENTRYPOINT = r'''#!/usr/bin/env bash
+ENTRYPOINT = r"""#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${BLUEPRINT_ADP_SIMPLER_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
@@ -64,7 +64,7 @@ from pathlib import Path
 out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
 (out / "adp_simpler_closed_loop_execution.json").write_text(json.dumps({
-    "schema_version": "simpler_closed_loop_execution.v1",
+    "schema_version": "simpler_closed_loop_execution.v2",
     "status": "blocked",
     "blockers": [
         "adp_simpler_runner_failed_without_runtime_result",
@@ -77,7 +77,7 @@ out.mkdir(parents=True, exist_ok=True)
 PY
 fi
 exit $runner_rc
-'''
+"""
 
 
 def _file_sha256(path: Path) -> str:
@@ -158,12 +158,8 @@ def build_simpler_public_vast_bundle(
         "reference_id": manifest.get("reference_id"),
         "source_identity_digest": manifest.get("source_identity_digest"),
         "source_manifest_digest": manifest.get("manifest_digest"),
-        "candidate_ids": [
-            row.get("candidate_id") for row in manifest.get("candidates") or []
-        ],
-        "condition_ids": [
-            row.get("condition_id") for row in manifest.get("conditions") or []
-        ],
+        "candidate_ids": [row.get("candidate_id") for row in manifest.get("candidates") or []],
+        "condition_ids": [row.get("condition_id") for row in manifest.get("conditions") or []],
         "container_image": environment.get("container_image"),
         "runtime_entrypoint": "provider_runtime/run_adp_simpler_provider_runtime.sh",
         "expected_output_filename": "adp_simpler_closed_loop_execution.json",
@@ -301,12 +297,12 @@ def run_simpler_public_vast(
         return result
 
     bundle_url = (staging_dir / "provider_bundle_url.txt").read_text(encoding="utf-8").strip()
-    output_put_url = (staging_dir / "provider_output_put_url.txt").read_text(
-        encoding="utf-8"
-    ).strip()
-    output_get_url = (staging_dir / "provider_output_get_url.txt").read_text(
-        encoding="utf-8"
-    ).strip()
+    output_put_url = (
+        (staging_dir / "provider_output_put_url.txt").read_text(encoding="utf-8").strip()
+    )
+    output_get_url = (
+        (staging_dir / "provider_output_get_url.txt").read_text(encoding="utf-8").strip()
+    )
     provider_run = job / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     local_avoidlist = job / "adp_vast_machine_avoidlist.json"
@@ -358,6 +354,30 @@ def run_simpler_public_vast(
     blockers.extend(extracted.get("blockers") or [])
     if execution.get("status") not in {"completed", "completed_with_retained_failures"}:
         blockers.extend(execution.get("blockers") or ["adp_execution_not_completed"])
+    if execution.get("schema_version") != "simpler_closed_loop_execution.v2":
+        blockers.append("adp_execution_visual_evidence_schema_missing")
+    for episode in execution.get("episodes") or []:
+        if not isinstance(episode, Mapping):
+            blockers.append("adp_execution_episode_invalid")
+            continue
+        visual = dict(episode.get("visual_evidence") or {})
+        roles = {
+            row.get("role") for row in episode.get("artifacts") or [] if isinstance(row, Mapping)
+        }
+        if episode.get("policy_query_count", 0) > 0 and (
+            visual.get("status") != "complete"
+            or visual.get("human_review_available") is not True
+            or not {
+                "observation_frame_manifest",
+                "policy_input_frame",
+                "terminal_observation_frame",
+                "episode_video",
+            }.issubset(roles)
+        ):
+            blockers.append(
+                "adp_execution_human_visual_evidence_incomplete:"
+                + str(episode.get("episode_id") or "unknown")
+            )
     if execution and execution.get("physical_outcome_values_accessed") is not False:
         blockers.append("adp_execution_outcome_firebreak_violated")
     if teardown.get("continuing_spend_from_this_run") is not False:
@@ -375,9 +395,7 @@ def run_simpler_public_vast(
         "runtime_lock_digest": execution.get("runtime_lock_digest"),
         "adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
         "teardown_manifest_path": str(provider_run / "vast_teardown_manifest.json"),
-        "object_store_cleanup_path": str(
-            staging_dir / "wam_provider_object_store_cleanup.json"
-        ),
+        "object_store_cleanup_path": str(staging_dir / "wam_provider_object_store_cleanup.json"),
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,

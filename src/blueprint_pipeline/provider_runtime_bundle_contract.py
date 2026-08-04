@@ -116,8 +116,11 @@ def provider_runtime_contract_blockers(
         )
         runner_valid = (
             "adp_simpler_closed_loop_execution.json" in runner_text
-            and "simpler_closed_loop_execution.v1" in runner_text
+            and "simpler_closed_loop_execution.v2" in runner_text
             and "environment_not_policy" in runner_text
+            and "observation_frame_manifest" in runner_text
+            and "episode_video" in runner_text
+            and "environment_step_info.success" in runner_text
         )
         runner_blocker = "provider_runner_missing_adp_simpler_runtime_contract"
     elif provider_bundle_kind == "unitree_unifolm":
