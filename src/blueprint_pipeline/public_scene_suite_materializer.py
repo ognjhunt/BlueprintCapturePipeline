@@ -12,6 +12,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -62,6 +63,64 @@ def _file_record(path: Path, *, root: Path, publisher_path: str, role: str) -> d
         "size_bytes": path.stat().st_size,
         "sha256": _sha256_file(path),
     }
+
+
+def _verified_external_artifacts(
+    *, records: Any, artifact_root: Path, data_root: Path, agent_name: str
+) -> list[dict[str, Any]]:
+    if not isinstance(records, list) or not records:
+        raise PublicSceneSuiteMaterializationError(
+            f"content_agents_artifacts_missing:{agent_name}"
+        )
+    verified: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise PublicSceneSuiteMaterializationError(
+                f"content_agents_artifact_record_invalid:{agent_name}"
+            )
+        relative = str(record.get("relative_path") or "")
+        path = _rooted(artifact_root, relative)
+        if not path.is_file() or path.stat().st_size != record.get("size_bytes"):
+            raise PublicSceneSuiteMaterializationError(
+                f"content_agents_artifact_size_mismatch:{agent_name}:{relative}"
+            )
+        if _sha256_file(path) != record.get("sha256"):
+            raise PublicSceneSuiteMaterializationError(
+                f"content_agents_artifact_digest_mismatch:{agent_name}:{relative}"
+            )
+        if path.stat().st_size == 0:
+            continue
+        verified.append(
+            _file_record(
+                path,
+                root=data_root,
+                publisher_path=path.relative_to(data_root).as_posix(),
+                role=f"content_agents_{agent_name}_artifact",
+            )
+        )
+    return verified
+
+
+def _reject_secret_like_execution_text(root: Path) -> None:
+    patterns = (
+        re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
+        re.compile(r"AIza[A-Za-z0-9_-]{20,}"),
+    )
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {
+            ".json",
+            ".jsonl",
+            ".log",
+            ".txt",
+            ".yaml",
+            ".yml",
+        }:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if any(pattern.search(text) for pattern in patterns):
+            raise PublicSceneSuiteMaterializationError(
+                f"content_agents_secret_like_value_retained:{path.name}"
+            )
 
 
 def _require_under(path: Path, roots: Sequence[Path]) -> Path:
@@ -634,7 +693,7 @@ def _simready_control_component(
 
 
 def _content_agents_component(
-    *, spec: Mapping[str, Any], repo_root: Path
+    *, spec: Mapping[str, Any], repo_root: Path, data_root: Path
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     receipt_path = _rooted(repo_root, str(spec["receipt_path"]))
     receipt = _read_json(receipt_path)
@@ -695,7 +754,334 @@ def _content_agents_component(
         raise PublicSceneSuiteMaterializationError(
             "content_agents_preflight_runtime_claim_invalid"
         )
-    blocker = str(spec["smallest_blocker"])
+    execution_result_value = spec.get("execution_result_path")
+    if execution_result_value is None:
+        blocker = str(spec["smallest_blocker"])
+        execution_artifacts: list[dict[str, Any]] = []
+        execution_observed = False
+        paid_resource_allocated = False
+        model_backend_rights_exercised = False
+        source_input_usd_sha256 = None
+        normalized_input_usd_sha256 = None
+        container_image_digest = runtime.get("image_digest")
+        container_platform = runtime.get("platform")
+        container_image_reference = runtime.get("image_reference")
+    else:
+        execution_result_path = _rooted(data_root, str(execution_result_value))
+        execution_root = execution_result_path.parent
+        allocator_result_path = _rooted(
+            data_root, str(spec["allocator_result_path"])
+        )
+        bundle_receipt_path = _rooted(
+            data_root, str(spec["bundle_receipt_path"])
+        )
+        bundle_path = _rooted(data_root, str(spec["bundle_path"]))
+        final_validation_path = _rooted(
+            data_root, str(spec["final_validation_path"])
+        )
+        teardown_manifest_path = _rooted(
+            data_root, str(spec["teardown_manifest_path"])
+        )
+        object_cleanup_path = _rooted(
+            data_root, str(spec["object_cleanup_path"])
+        )
+        execution = _read_json(execution_result_path)
+        allocator = _read_json(allocator_result_path)
+        bundle = _read_json(bundle_receipt_path)
+        final_validation = _read_json(final_validation_path)
+        teardown = _read_json(teardown_manifest_path)
+        object_cleanup = _read_json(object_cleanup_path)
+
+        if (
+            execution.get("schema_version") != "adp_content_agents_vast_result.v1"
+            or execution.get("status") != "completed"
+            or execution.get("blockers") != []
+            or execution.get("raw_secret_values_recorded") is not False
+            or execution.get("retry_cap") != 0
+            or execution.get("paid_gpu_execution") is not True
+            or execution.get("model_backend_call_authorized") is not True
+            or execution.get("material_agent_executed") is not True
+            or execution.get("texture_agent_executed") is not True
+            or execution.get("physics_agent_executed") is not True
+            or execution.get("validation_agent_executed") is not True
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_execution_receipt_invalid"
+            )
+        if (
+            execution.get("source_commit") != source.get("commit")
+            or execution.get("source_tree") != source.get("tree")
+            or execution.get("source_version") != source.get("version")
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_execution_source_mismatch"
+            )
+        if (
+            bundle.get("schema_version") != "adp_content_agents_provider_bundle.v1"
+            or bundle.get("status") != "ready"
+            or bundle.get("blockers") != []
+            or bundle.get("raw_secret_values_recorded") is not False
+            or bundle.get("retry_cap") != 0
+            or bundle.get("source_commit") != source.get("commit")
+            or bundle.get("source_tree") != source.get("tree")
+            or bundle.get("source_version") != source.get("version")
+            or bundle.get("bundle_sha256") != _sha256_file(bundle_path)
+            or bundle.get("bundle_size_bytes") != bundle_path.stat().st_size
+            or bundle.get("input_usd_sha256") != execution.get("input_usd_sha256")
+            or bundle.get("reference_image_authority")
+            != "blueprint_cad_render_not_interiorgs_dataset_bytes"
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_execution_bundle_invalid"
+            )
+        normalization = bundle.get("input_usd_normalization")
+        if (
+            not isinstance(normalization, Mapping)
+            or normalization.get("normalized_input_usd_sha256")
+            != execution.get("input_usd_sha256")
+            or normalization.get("default_purpose_bbox_nonempty") is not True
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_input_normalization_invalid"
+            )
+        source_input_usd_sha256 = normalization.get("source_input_usd_sha256")
+        normalized_input_usd_sha256 = normalization.get(
+            "normalized_input_usd_sha256"
+        )
+        container_image_reference = bundle.get("container_image")
+        if not isinstance(container_image_reference, str) or "@sha256:" not in container_image_reference:
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_execution_container_identity_invalid"
+            )
+        container_image_digest = "sha256:" + container_image_reference.rsplit(
+            "@sha256:", 1
+        )[1]
+        container_platform = bundle.get("container_platform")
+        if (
+            allocator.get("schema_version") != "adp_content_agents_vast_run.v1"
+            or allocator.get("status") != "completed"
+            or allocator.get("blockers") != []
+            or allocator.get("bundle_sha256") != bundle.get("bundle_sha256")
+            or allocator.get("retry_cap") != 0
+            or allocator.get("continuing_spend_from_this_run") is not False
+            or allocator.get("all_staged_objects_absent") is not True
+            or allocator.get("raw_secret_values_recorded") is not False
+            or not isinstance(allocator.get("estimated_cost_usd"), (int, float))
+            or not isinstance(allocator.get("hard_cap_usd"), (int, float))
+            or allocator.get("estimated_cost_usd") < 0
+            or allocator.get("estimated_cost_usd") > allocator.get("hard_cap_usd")
+            or allocator.get("hard_cap_usd") > 2.0
+            or allocator.get("hard_ttl_seconds") != 7200
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_allocator_receipt_invalid"
+            )
+        if (
+            final_validation.get("schema_version") != "vast_final_validation.v1"
+            or final_validation.get("status") != "passed"
+            or final_validation.get("blockers") != []
+            or final_validation.get("continuing_spend_from_this_run") is not False
+            or final_validation.get("all_vast_instances_destroyed_by_adapter")
+            is not True
+            or final_validation.get("raw_secret_values_recorded") is not False
+            or final_validation.get("estimated_cost_usd")
+            != allocator.get("estimated_cost_usd")
+            or teardown.get("schema_version") != "vast_teardown_manifest.v1"
+            or teardown.get("status") != "completed"
+            or teardown.get("continuing_spend_from_this_run") is not False
+            or teardown.get("runner_gpu_teardown_completed") is not True
+            or teardown.get("raw_secret_values_recorded") is not False
+            or object_cleanup.get("schema_version")
+            != "wam_provider_object_store_cleanup.v1"
+            or object_cleanup.get("status") != "completed"
+            or object_cleanup.get("all_objects_absent") is not True
+            or object_cleanup.get("blockers") != []
+            or object_cleanup.get("raw_secret_values_recorded") is not False
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_teardown_or_cleanup_invalid"
+            )
+
+        execution_agents = execution.get("agents")
+        if not isinstance(execution_agents, Mapping):
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_execution_agents_missing"
+            )
+        execution_artifacts = [
+            _file_record(
+                execution_result_path,
+                root=data_root,
+                publisher_path=execution_result_path.relative_to(data_root).as_posix(),
+                role="content_agents_execution_result",
+            ),
+            _file_record(
+                allocator_result_path,
+                root=data_root,
+                publisher_path=allocator_result_path.relative_to(data_root).as_posix(),
+                role="content_agents_allocator_result",
+            ),
+            _file_record(
+                bundle_receipt_path,
+                root=data_root,
+                publisher_path=bundle_receipt_path.relative_to(data_root).as_posix(),
+                role="content_agents_bundle_receipt",
+            ),
+            _file_record(
+                bundle_path,
+                root=data_root,
+                publisher_path=bundle_path.relative_to(data_root).as_posix(),
+                role="content_agents_immutable_bundle",
+            ),
+            _file_record(
+                final_validation_path,
+                root=data_root,
+                publisher_path=final_validation_path.relative_to(data_root).as_posix(),
+                role="content_agents_provider_final_validation",
+            ),
+            _file_record(
+                teardown_manifest_path,
+                root=data_root,
+                publisher_path=teardown_manifest_path.relative_to(data_root).as_posix(),
+                role="content_agents_provider_teardown",
+            ),
+            _file_record(
+                object_cleanup_path,
+                root=data_root,
+                publisher_path=object_cleanup_path.relative_to(data_root).as_posix(),
+                role="content_agents_object_store_cleanup",
+            ),
+        ]
+        agent_roots = {
+            "material": execution_root / "material_workdir",
+            "texture": execution_root / "texture_workdir",
+            "physics": execution_root / "physics_workdir",
+        }
+        for name, artifact_root in agent_roots.items():
+            agent = execution_agents.get(name)
+            run = agent.get("execution") if isinstance(agent, Mapping) else None
+            if (
+                not isinstance(agent, Mapping)
+                or agent.get(f"{name}_agent_attempted") is not True
+                or agent.get(f"{name}_agent_executed") is not True
+                or agent.get("retry_count") != 0
+                or not isinstance(run, Mapping)
+                or run.get("returncode") != 0
+                or run.get("timed_out") is not False
+            ):
+                raise PublicSceneSuiteMaterializationError(
+                    f"content_agents_full_execution_invalid:{name}"
+                )
+            records = agent.get("produced_artifacts")
+            execution_artifacts.extend(
+                _verified_external_artifacts(
+                    records=records,
+                    artifact_root=artifact_root,
+                    data_root=data_root,
+                    agent_name=name,
+                )
+            )
+            relative_paths = {
+                str(record.get("relative_path"))
+                for record in records
+                if isinstance(record, Mapping)
+            }
+            if name in {"material", "physics"}:
+                if ".pipeline_state.json" not in relative_paths:
+                    raise PublicSceneSuiteMaterializationError(
+                        f"content_agents_pipeline_state_missing:{name}"
+                    )
+                state = _read_json(artifact_root / ".pipeline_state.json")
+                required_steps = {
+                    "material": {
+                        "validate_input",
+                        "build_dataset_usd",
+                        "build_dataset_prepare_dataset",
+                        "predict",
+                        "validate_predictions",
+                        "apply",
+                        "validate_output",
+                        "render",
+                    },
+                    "physics": {
+                        "build_dataset_usd",
+                        "build_dataset_prepare_dataset",
+                        "predict",
+                        "apply_physics",
+                    },
+                }[name]
+                if (
+                    not required_steps.issubset(set(state.get("completed_steps") or []))
+                    or state.get("failed_steps") != []
+                ):
+                    raise PublicSceneSuiteMaterializationError(
+                        f"content_agents_pipeline_state_invalid:{name}"
+                    )
+            else:
+                if "artifacts_manifest.json" not in relative_paths:
+                    raise PublicSceneSuiteMaterializationError(
+                        "content_agents_texture_manifest_missing"
+                    )
+                texture_manifest = _read_json(
+                    artifact_root / "artifacts_manifest.json"
+                )
+                texture_status = texture_manifest.get("status")
+                if (
+                    texture_manifest.get("schema_version")
+                    != "texture-agent-artifacts.v1"
+                    or not isinstance(texture_status, Mapping)
+                    or texture_status.get("state") != "completed"
+                    or texture_status.get("failed_step") is not None
+                ):
+                    raise PublicSceneSuiteMaterializationError(
+                        "content_agents_texture_manifest_invalid"
+                    )
+        validation_execution = execution_agents.get("validation")
+        validation_run = (
+            validation_execution.get("execution")
+            if isinstance(validation_execution, Mapping)
+            else None
+        )
+        validation_result_path = execution_root / "validation_agent" / "validation_result.json"
+        validation_result = _read_json(validation_result_path)
+        if (
+            not isinstance(validation_execution, Mapping)
+            or validation_execution.get("validation_agent_attempted") is not True
+            or validation_execution.get("validation_agent_executed") is not True
+            or validation_execution.get("verdict") != "pass"
+            or not isinstance(validation_run, Mapping)
+            or validation_run.get("returncode") != 0
+            or validation_run.get("timed_out") is not False
+            or validation_execution.get("result_sha256")
+            != _sha256_file(validation_result_path)
+            or validation_result.get("verdict") != "pass"
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_validation_execution_invalid"
+            )
+        joint_execution = execution_agents.get("joint")
+        if (
+            not isinstance(joint_execution, Mapping)
+            or joint_execution.get("joint_agent_executed") is not False
+            or joint_execution.get("joint_agent_inapplicable_single_rigid_body")
+            is not True
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_joint_execution_applicability_invalid"
+            )
+        execution_artifacts.append(
+            _file_record(
+                validation_result_path,
+                root=data_root,
+                publisher_path=validation_result_path.relative_to(data_root).as_posix(),
+                role="content_agents_validation_result",
+            )
+        )
+        _reject_secret_like_execution_text(execution_root)
+        blocker = ""
+        execution_observed = True
+        paid_resource_allocated = True
+        model_backend_rights_exercised = True
+
     manifest: dict[str, Any] = {
         "schema_version": COMPONENT_SCHEMA_VERSION,
         "program_id": PROGRAM_ID,
@@ -708,8 +1094,11 @@ def _content_agents_component(
             "revision": source.get("commit"),
             "repository_tree": source.get("tree"),
             "version": source.get("version"),
-            "container_image_digest": runtime.get("image_digest"),
-            "container_platform": runtime.get("platform"),
+            "container_image_reference": container_image_reference,
+            "container_image_digest": container_image_digest,
+            "container_platform": container_platform,
+            "preflight_image_digest": runtime.get("image_digest"),
+            "preflight_platform": runtime.get("platform"),
         },
         "materialized_artifacts": [
             _file_record(
@@ -718,10 +1107,12 @@ def _content_agents_component(
                 publisher_path=receipt_path.relative_to(repo_root).as_posix(),
                 role="content_agents_preflight_receipt",
             )
-        ],
+        ]
+        + execution_artifacts,
         "rights": {
             "source_license": source.get("license"),
-            "model_or_remote_backend_rights_exercised": False,
+            "model_or_remote_backend_rights_exercised": model_backend_rights_exercised,
+            "dataset_bytes_uploaded": False,
         },
         "observed_evidence": {
             "material_agent_dry_run": True,
@@ -730,16 +1121,21 @@ def _content_agents_component(
             "validation_agent_static_check_executed": True,
             "validation_agent_static_check_passed": True,
             "joint_agent_inapplicable_single_rigid_body": True,
-            "material_agent_full_execution": False,
-            "texture_agent_full_execution": False,
-            "physics_agent_full_execution": False,
-            "paid_resource_allocated": False,
+            "material_agent_full_execution": execution_observed,
+            "texture_agent_full_execution": execution_observed,
+            "physics_agent_full_execution": execution_observed,
+            "validation_agent_full_execution": execution_observed,
+            "paid_resource_allocated": paid_resource_allocated,
+            "continuing_spend_zero_verified": execution_observed,
+            "staged_objects_absent": execution_observed,
+            "source_input_usd_sha256": source_input_usd_sha256,
+            "normalized_input_usd_sha256": normalized_input_usd_sha256,
         },
         "claim_ceiling": CLAIM_CEILING,
         "claim_boundaries": {
             "dry_runs_are_not_agent_execution": True,
             "static_validation_is_not_dynamic_simulation": True,
-            "content_agents_candidate_complete": False,
+            "content_agents_candidate_complete": execution_observed,
             "inpainting_result": False,
             "physical_evidence": False,
         },
@@ -756,7 +1152,9 @@ def _content_agents_component(
             "three_native_dry_runs_executed": True,
             "validation_agent_static_check_passed": True,
             "joint_agent_inapplicability_recorded": True,
-            "full_material_texture_physics_execution": False,
+            "full_material_texture_physics_execution": execution_observed,
+            "execution_artifact_hashes_verified": execution_observed,
+            "teardown_and_object_cleanup_verified": execution_observed,
         },
     )
 
@@ -802,6 +1200,7 @@ def materialize_public_scene_suite(
         by_role["usd_content_agents_candidate"] = _content_agents_component(
             spec=content_agents,
             repo_root=repo_root,
+            data_root=data_root,
         )
     if set(by_role) != set(REQUIRED_ROLE_PROJECTS):
         raise PublicSceneSuiteMaterializationError("request_does_not_cover_exact_ten_roles")

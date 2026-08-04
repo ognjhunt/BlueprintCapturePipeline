@@ -1,23 +1,23 @@
 {
   "adp_item": "ADP-009A",
   "artifact_bytes_opened": true,
-  "blockers": [
-    "nvidia_content_agents_material_texture_physics_full_execution_missing"
-  ],
+  "blockers": [],
   "checks": {
-    "full_material_texture_physics_execution": false,
+    "execution_artifact_hashes_verified": true,
+    "full_material_texture_physics_execution": true,
     "joint_agent_inapplicability_recorded": true,
     "preflight_receipt_digest_valid": true,
     "source_and_container_bound": true,
+    "teardown_and_object_cleanup_verified": true,
     "three_native_dry_runs_executed": true,
     "validation_agent_static_check_passed": true
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-usd-content-agents-candidate",
-  "component_manifest_digest": "sha256:5012430d63f2679d2db9ff34d47153b89552a97f0a1dfa222fa49e3a3cc92e22",
+  "component_manifest_digest": "sha256:9c9e71c17aa2ed61737c58f132ca121d678008dd6693e21def12b98ab22b4798",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:a0a74ef8fe272e1af9262f1eb108f6b4f040705156b82a467abfa17f2df803a1",
+  "receipt_digest": "sha256:ec32d52a92e501aaac821ba7862929c560dbb5d6bc46a86e08af9799fa99e98b",
   "role": "usd_content_agents_candidate",
   "schema_version": "public_scene_component_admission_receipt.v1",
-  "status": "blocked"
+  "status": "admitted"
 }

@@ -257,6 +257,208 @@ def _add_content_agents_preflight(paths: dict[str, Path]) -> Path:
     return receipt_path
 
 
+def _add_content_agents_execution(paths: dict[str, Path]) -> Path:
+    _add_content_agents_preflight(paths)
+    candidate_root = paths["data"] / "content_agents" / "candidate"
+    run_root = paths["data"] / "content_agents" / "run"
+    execution_root = run_root / "immutable_execution"
+    bundle_path = candidate_root / "bundle.zip"
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    bundle_path.write_bytes(b"immutable-provider-bundle")
+    input_sha256 = "sha256:" + "7" * 64
+    bundle_receipt = {
+        "schema_version": "adp_content_agents_provider_bundle.v1",
+        "status": "ready",
+        "source_commit": "4" * 40,
+        "source_tree": "5" * 40,
+        "source_version": "0.5.2",
+        "container_image": "example/content-agents@sha256:" + "6" * 64,
+        "container_platform": "linux/amd64",
+        "input_usd_sha256": input_sha256,
+        "reference_image_authority": "blueprint_cad_render_not_interiorgs_dataset_bytes",
+        "input_usd_normalization": {
+            "source_input_usd_sha256": "sha256:" + "8" * 64,
+            "normalized_input_usd_sha256": input_sha256,
+            "default_purpose_bbox_nonempty": True,
+        },
+        "bundle_sha256": "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+        "bundle_size_bytes": bundle_path.stat().st_size,
+        "retry_cap": 0,
+        "blockers": [],
+        "raw_secret_values_recorded": False,
+    }
+    bundle_receipt_path = candidate_root / "bundle_receipt.json"
+    _write_json(bundle_receipt_path, bundle_receipt)
+
+    agents: dict[str, object] = {}
+    for name in ("material", "texture", "physics"):
+        artifact = execution_root / f"{name}_workdir" / "output" / f"{name}.usd"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(f"{name}-output".encode())
+        extra_records = []
+        if name in {"material", "physics"}:
+            state_path = execution_root / f"{name}_workdir" / ".pipeline_state.json"
+            steps = (
+                [
+                    "validate_input",
+                    "build_dataset_usd",
+                    "build_dataset_prepare_dataset",
+                    "predict",
+                    "validate_predictions",
+                    "apply",
+                    "validate_output",
+                    "render",
+                ]
+                if name == "material"
+                else [
+                    "build_dataset_usd",
+                    "build_dataset_prepare_dataset",
+                    "predict",
+                    "apply_physics",
+                ]
+            )
+            _write_json(state_path, {"completed_steps": steps, "failed_steps": []})
+            extra_records.append(
+                {
+                    "relative_path": ".pipeline_state.json",
+                    "size_bytes": state_path.stat().st_size,
+                    "sha256": "sha256:"
+                    + hashlib.sha256(state_path.read_bytes()).hexdigest(),
+                }
+            )
+        else:
+            manifest_path = execution_root / "texture_workdir" / "artifacts_manifest.json"
+            _write_json(
+                manifest_path,
+                {
+                    "schema_version": "texture-agent-artifacts.v1",
+                    "status": {"state": "completed", "failed_step": None},
+                },
+            )
+            extra_records.append(
+                {
+                    "relative_path": "artifacts_manifest.json",
+                    "size_bytes": manifest_path.stat().st_size,
+                    "sha256": "sha256:"
+                    + hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                }
+            )
+        agents[name] = {
+            f"{name}_agent_attempted": True,
+            f"{name}_agent_executed": True,
+            "retry_count": 0,
+            "execution": {"returncode": 0, "timed_out": False},
+            "produced_artifacts": [
+                {
+                    "relative_path": f"output/{name}.usd",
+                    "size_bytes": artifact.stat().st_size,
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                }
+            ]
+            + extra_records,
+        }
+    validation_result = execution_root / "validation_agent" / "validation_result.json"
+    _write_json(validation_result, {"verdict": "pass"})
+    agents["validation"] = {
+        "validation_agent_attempted": True,
+        "validation_agent_executed": True,
+        "verdict": "pass",
+        "result_sha256": "sha256:" + hashlib.sha256(validation_result.read_bytes()).hexdigest(),
+        "execution": {"returncode": 0, "timed_out": False},
+    }
+    agents["joint"] = {
+        "joint_agent_executed": False,
+        "joint_agent_inapplicable_single_rigid_body": True,
+    }
+    execution_result = {
+        "schema_version": "adp_content_agents_vast_result.v1",
+        "status": "completed",
+        "source_commit": "4" * 40,
+        "source_tree": "5" * 40,
+        "source_version": "0.5.2",
+        "input_usd_sha256": input_sha256,
+        "material_agent_executed": True,
+        "texture_agent_executed": True,
+        "physics_agent_executed": True,
+        "validation_agent_executed": True,
+        "paid_gpu_execution": True,
+        "model_backend_call_authorized": True,
+        "retry_cap": 0,
+        "blockers": [],
+        "raw_secret_values_recorded": False,
+        "agents": agents,
+    }
+    execution_result_path = execution_root / "adp_content_agents_vast_result.json"
+    _write_json(execution_result_path, execution_result)
+    allocator_result_path = run_root / "allocator_result.live.json"
+    _write_json(
+        allocator_result_path,
+        {
+            "schema_version": "adp_content_agents_vast_run.v1",
+            "status": "completed",
+            "bundle_sha256": bundle_receipt["bundle_sha256"],
+            "estimated_cost_usd": 0.1,
+            "hard_cap_usd": 2.0,
+            "hard_ttl_seconds": 7200,
+            "retry_cap": 0,
+            "continuing_spend_from_this_run": False,
+            "all_staged_objects_absent": True,
+            "raw_secret_values_recorded": False,
+            "blockers": [],
+        },
+    )
+    final_validation_path = run_root / "vast_provider_run" / "vast_final_validation.json"
+    _write_json(
+        final_validation_path,
+        {
+            "schema_version": "vast_final_validation.v1",
+            "status": "passed",
+            "estimated_cost_usd": 0.1,
+            "continuing_spend_from_this_run": False,
+            "all_vast_instances_destroyed_by_adapter": True,
+            "raw_secret_values_recorded": False,
+            "blockers": [],
+        },
+    )
+    teardown_path = run_root / "vast_provider_run" / "vast_teardown_manifest.json"
+    _write_json(
+        teardown_path,
+        {
+            "schema_version": "vast_teardown_manifest.v1",
+            "status": "completed",
+            "continuing_spend_from_this_run": False,
+            "runner_gpu_teardown_completed": True,
+            "raw_secret_values_recorded": False,
+        },
+    )
+    cleanup_path = run_root / "object_store_staging" / "cleanup.json"
+    _write_json(
+        cleanup_path,
+        {
+            "schema_version": "wam_provider_object_store_cleanup.v1",
+            "status": "completed",
+            "all_objects_absent": True,
+            "raw_secret_values_recorded": False,
+            "blockers": [],
+        },
+    )
+    request = json.loads(paths["request"].read_text())
+    request["content_agents"].update(
+        {
+            "execution_result_path": execution_result_path.relative_to(paths["data"]).as_posix(),
+            "allocator_result_path": allocator_result_path.relative_to(paths["data"]).as_posix(),
+            "bundle_receipt_path": bundle_receipt_path.relative_to(paths["data"]).as_posix(),
+            "bundle_path": bundle_path.relative_to(paths["data"]).as_posix(),
+            "final_validation_path": final_validation_path.relative_to(paths["data"]).as_posix(),
+            "teardown_manifest_path": teardown_path.relative_to(paths["data"]).as_posix(),
+            "object_cleanup_path": cleanup_path.relative_to(paths["data"]).as_posix(),
+        }
+    )
+    request["content_agents"].pop("smallest_blocker")
+    _write_json(paths["request"], request)
+    return execution_result_path
+
+
 def test_materializer_derives_two_admissions_and_blocks_source_only_methods(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paths = _fixture(tmp_path, monkeypatch)
     result = _run(paths)
@@ -337,6 +539,45 @@ def test_content_agents_preflight_rejects_mutated_receipt(
     with pytest.raises(
         PublicSceneSuiteMaterializationError,
         match="content_agents_preflight_receipt_digest_mismatch",
+    ):
+        _run(paths)
+
+
+def test_content_agents_full_execution_is_admitted_from_verified_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_content_agents_execution(paths)
+
+    result = _run(paths)
+
+    manifest = json.loads(
+        (paths["output"] / "usd_content_agents_candidate.component_manifest.json").read_text()
+    )
+    receipt = json.loads(
+        (paths["output"] / "usd_content_agents_candidate.component_receipt.json").read_text()
+    )
+    assert result["admitted_role_count"] == 3
+    assert manifest["observed_evidence"]["material_agent_full_execution"] is True
+    assert manifest["observed_evidence"]["continuing_spend_zero_verified"] is True
+    assert receipt["status"] == "admitted"
+    assert receipt["blockers"] == []
+
+
+def test_content_agents_full_execution_rejects_changed_output_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_content_agents_execution(paths)
+    artifact = (
+        paths["data"]
+        / "content_agents/run/immutable_execution/material_workdir/output/material.usd"
+    )
+    artifact.write_bytes(b"mutated")
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="content_agents_artifact_(size|digest)_mismatch",
     ):
         _run(paths)
 
