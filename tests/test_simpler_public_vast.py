@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import zipfile
 from pathlib import Path
 
@@ -16,6 +17,9 @@ from blueprint_pipeline.simpler_public_vast import (
     _adp_session_budget_ledger,
     _vast_authority_environment,
     build_simpler_public_vast_bundle,
+)
+from blueprint_pipeline.simpler_public_runtime_worker import (
+    _activate_verified_source_roots,
 )
 
 
@@ -52,6 +56,8 @@ def test_bundle_contains_public_runtime_but_not_physical_outcome_values(
     assert "cells" not in bundled_manifest["physical_reference"]
     assert 'manifest["runtime"]["environment_lock"]["container_image"]' in runner
     assert "paid_runtime_plan" not in runner
+    assert "BLUEPRINT_WAM_RUNTIME_PHASE:adp_simpler" in runner
+    assert 'source_dir / "ManiSkill2_real2sim"' in runner
     assert provider_runtime_contract_blockers(
         provider_bundle_kind="adp_simpler",
         entrypoint_text=entrypoint,
@@ -81,6 +87,17 @@ def test_adp_budget_ledger_is_run_local(tmp_path: Path) -> None:
     assert _adp_session_budget_ledger(tmp_path) == (
         tmp_path.resolve() / "adp_vast_session_budget.json"
     )
+
+
+def test_worker_activates_only_verified_editable_source_roots(tmp_path: Path) -> None:
+    source = tmp_path / "SimplerEnv"
+    original = list(sys.path)
+    try:
+        roots = _activate_verified_source_roots({"source_dir": source})
+        assert roots == [str(source / "ManiSkill2_real2sim"), str(source)]
+        assert all(root in sys.path for root in roots)
+    finally:
+        sys.path[:] = original
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:

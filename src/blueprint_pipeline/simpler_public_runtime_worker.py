@@ -60,6 +60,10 @@ PYTHON_REQUIREMENTS = (
 )
 
 
+def _phase(name: str, status: str = "running") -> None:
+    print(f"BLUEPRINT_WAM_RUNTIME_PHASE:adp_simpler:{name}:{status}", flush=True)
+
+
 def _canonical_json(value: Mapping[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -159,6 +163,7 @@ def _checkpoint_identity_digest(candidate: Mapping[str, Any]) -> str:
 
 
 def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, Any]:
+    _phase("source_checkout")
     source_dir = work_dir / "SimplerEnv"
     repository = manifest["source"]["repository"]
     if not source_dir.is_dir():
@@ -186,7 +191,9 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
         raise RuntimeError("simpler_source_commit_mismatch")
     if repository["submodules"][0]["commit"] not in observed_submodule["output_tail"]:
         raise RuntimeError("simpler_submodule_commit_mismatch")
+    _phase("source_checkout", "completed")
 
+    _phase("dependency_install")
     install = _run(
         [sys.executable, "-m", "pip", "install", "--no-input", *PYTHON_REQUIREMENTS],
         timeout=2400,
@@ -200,7 +207,9 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
         )
         if installed["returncode"] != 0:
             raise RuntimeError("simpler_editable_install_failed:" + installed["output_tail"][-2000:])
+    _phase("dependency_install", "completed")
 
+    _phase("language_encoder_acquisition")
     encoder = manifest["runtime"]["language_encoder"]
     encoder_archive = work_dir / "universal_sentence_encoder_large_v5.tar.gz"
     if not encoder_archive.is_file() or _file_sha256(encoder_archive) != encoder["archive_sha256"]:
@@ -227,7 +236,9 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
             if member.issym() or member.islnk():
                 raise ValueError("language_encoder_archive_link_member")
         archive.extractall(encoder_dir)  # noqa: S202 - digest-bound members validated above.
+    _phase("language_encoder_acquisition", "completed")
 
+    _phase("checkpoint_acquisition")
     checkpoints_root = work_dir / "checkpoints"
     for candidate in manifest["candidates"]:
         prefix = candidate["checkpoint_prefix"]
@@ -238,6 +249,7 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
             if target.is_file() and target.stat().st_size == row["size_bytes"]:
                 continue
             _download_checkpoint_object(row, target)
+    _phase("checkpoint_acquisition", "completed")
 
     freeze = _run([sys.executable, "-m", "pip", "freeze", "--all"], timeout=120)
     if freeze["returncode"] != 0:
@@ -268,6 +280,7 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
         "nvidia_smi": nvidia["output_tail"].strip(),
     }
     lock["runtime_lock_digest"] = _canonical_digest(lock, digest_field="runtime_lock_digest")
+    _phase("runtime_lock", "completed")
     return {
         "source_dir": source_dir,
         "encoder_dir": encoder_dir,
@@ -289,9 +302,23 @@ def _jsonable(value: Any) -> Any:
     return repr(value)
 
 
+def _activate_verified_source_roots(prepared: Mapping[str, Any]) -> list[str]:
+    source_dir = Path(prepared["source_dir"]).resolve()
+    roots = [source_dir / "ManiSkill2_real2sim", source_dir]
+    for import_root in roots:
+        if str(import_root) not in sys.path:
+            sys.path.insert(0, str(import_root))
+    return [str(path) for path in roots]
+
+
 def run_episodes(
     manifest: Mapping[str, Any], prepared: Mapping[str, Any], output_dir: Path
 ) -> list[dict[str, Any]]:
+    # The editable installs are performed by child pip processes after this
+    # interpreter starts, so their new .pth entries are not automatically
+    # processed in the current process. Insert only the two commit-verified
+    # roots returned by prepare_runtime before importing the public runtime.
+    _activate_verified_source_roots(prepared)
     import numpy as np
     import tensorflow as tf
 
@@ -348,6 +375,7 @@ def run_episodes(
                 "seed": 0,
                 "representative_fixed_reset_not_published_25_trial_grid": True,
             }
+            _phase(f"episode:{candidate_id}:{condition_id}")
             try:
                 env = simpler_env.make(
                     task_names[condition_id],
@@ -452,10 +480,12 @@ def run_episodes(
                     ],
                 }
             )
+            _phase(f"episode:{candidate_id}:{condition_id}", status)
     return episodes
 
 
 def run(manifest_path: Path, output_dir: Path) -> dict[str, Any]:
+    _phase("worker")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     output_dir.mkdir(parents=True, exist_ok=True)
     work_dir = Path(os.environ.get("BLUEPRINT_ADP_SIMPLER_WORK_DIR", "/workspace/adp_simpler"))
@@ -509,6 +539,7 @@ def run(manifest_path: Path, output_dir: Path) -> dict[str, Any]:
         }
     result["execution_digest"] = _canonical_digest(result, digest_field="execution_digest")
     _write_json(output_dir / "adp_simpler_closed_loop_execution.json", result)
+    _phase("worker", result["status"])
     return result
 
 
