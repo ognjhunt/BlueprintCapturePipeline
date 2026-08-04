@@ -554,6 +554,86 @@ def _runtime(
         # SetActive: deactivating a body mid-session repopulates the scene).
         translate_op.Set(Gf.Vec3d(*map(float, capsule_park_m)))
 
+        # Persist a complete asset-level result before the Franka stage: three
+        # runs died to a clean native exit at first Franka-sink contact, and
+        # that must never again destroy already-proven evidence.
+        texture_inputs: list[str] = []
+        omni_pbr_shader_count = 0
+        for prim in Usd.PrimRange(sink_prim):
+            if prim.IsA(UsdShade.Shader):
+                source_asset = UsdShade.Shader(prim).GetSourceAsset("mdl")
+                if source_asset and "OmniPBR.mdl" in str(source_asset):
+                    omni_pbr_shader_count += 1
+            for attribute in prim.GetAttributes():
+                if attribute.GetTypeName() == Sdf.ValueTypeNames.Asset:
+                    value = attribute.Get()
+                    if value:
+                        texture_inputs.append(str(value))
+        wrapper_section = {
+            "physics_scene_present": stage.GetPrimAtPath("/World/physicsScene").IsValid(),
+            "articulation_root_api_present": sink_prim.HasAPI(UsdPhysics.ArticulationRootAPI),
+            "fixed_root_joint_present": stage.GetPrimAtPath("/World/Sink/BlueprintFixedRoot").IsValid(),
+            "collider_session_overrides": collider_overrides,
+            "source_asset_modified": False,
+        }
+        asset_section = {
+            "sink_dof_names": dof_names,
+            "handle_joint_limits_degrees": [float(joint.GetLowerLimitAttr().Get()), float(joint.GetUpperLimitAttr().Get())],
+            "handle_pivot_world_m": pivot.tolist(),
+            "handle_center_world_m": center.tolist(),
+            "handle_tangent_world": tangent.tolist(),
+            "sweep_trace": sweep_trace,
+            "capsule_push_trace": pusher_trace,
+            "capsule_contact_records": pusher_contacts,
+        }
+
+        def rendering_section() -> dict[str, Any]:
+            return {
+                "renderer": config["renderer"],
+                "omnipbr_shader_count": omni_pbr_shader_count,
+                "material_asset_inputs": sorted(set(texture_inputs)),
+                "frames": list(frames),
+            }
+
+        interim_root = np.asarray(_world_position(stage, str(config["base_prim_path"]), UsdGeom))
+        interim_angle, interim_velocity, interim_effort = _joint_values(sink, handle_index)
+        interim_separations = [
+            float(sample["separation_m"])
+            for row in pusher_contacts
+            for sample in row.get("samples", [])
+        ]
+        capsule_motion_degrees = (
+            max(float(row["handle_degrees"]) for row in pusher_trace)
+            - min(float(row["handle_degrees"]) for row in pusher_trace)
+            if pusher_trace
+            else 0.0
+        )
+        persist(
+            {
+                "wrapper": wrapper_section,
+                "asset": asset_section,
+                "franka": {},
+                "measurements": {
+                    "final_handle_degrees": math.degrees(interim_angle),
+                    "final_handle_velocity_rad_s": interim_velocity,
+                    "final_handle_effort_nm": interim_effort,
+                    "capsule_handle_motion_degrees": capsule_motion_degrees,
+                    "root_displacement_m": float(np.linalg.norm(interim_root - root_initial)),
+                    "maximum_penetration_m": max(
+                        [0.0, *[-value for value in interim_separations if value < 0.0]]
+                    ),
+                    "numerical_state_finite": _finite_vector(
+                        [math.degrees(interim_angle), interim_velocity, *interim_root.tolist()]
+                    ),
+                    "pusher_contact_count": len(pusher_contacts),
+                    "franka_handle_contact_count": 0,
+                },
+                "rendering": rendering_section(),
+            },
+            ["lightwheel_sink_franka_stage_incomplete"],
+        )
+        checkpoint("interim_asset_result_persisted", frame_count=len(frames))
+
         # Scripted differential-IK Franka push against a re-zeroed handle.
         sink.set_joint_positions(np.asarray([0.0]), joint_indices=np.asarray([handle_index]))
         for _ in range(30):
@@ -579,11 +659,13 @@ def _runtime(
         waypoints = [center - tangent * 0.13, center - tangent * 0.025, center + tangent * 0.09]
         franka_trace: list[dict[str, Any]] = []
         franka_contacts: list[dict[str, Any]] = []
+        jacobians = probe_jacobians
         for waypoint_index, waypoint in enumerate(waypoints):
             for step in range(int(config["ik_steps_per_waypoint"])):
                 current = np.asarray(_world_position(stage, hand_path, UsdGeom))
                 error = waypoint - current
-                jacobians = np.asarray(franka._articulation_view.get_jacobians())
+                if step % 5 == 0:
+                    jacobians = np.asarray(franka._articulation_view.get_jacobians())
                 if jacobians.ndim == 4:
                     jacobians = jacobians[0]
                 jacobian_index = body_index - 1 if jacobians.shape[0] == len(body_names) - 1 else body_index
@@ -610,7 +692,14 @@ def _runtime(
                     )
                     franka_contacts.extend(contacts)
                     efforts_getter = getattr(franka, "get_measured_joint_efforts", None)
-                    efforts = np.asarray(efforts_getter()).reshape(-1).tolist() if callable(efforts_getter) else []
+                    try:
+                        efforts = (
+                            np.asarray(efforts_getter()).reshape(-1).tolist()
+                            if callable(efforts_getter)
+                            else []
+                        )
+                    except Exception:  # noqa: BLE001 - effort telemetry is optional
+                        efforts = []
                     _phase(
                         "franka_ik_step",
                         started=started,
@@ -650,36 +739,9 @@ def _runtime(
         final_angle, final_velocity, final_effort = _joint_values(sink, handle_index)
         all_contacts = pusher_contacts + franka_contacts
         separations = [float(sample["separation_m"]) for row in all_contacts for sample in row.get("samples", [])]
-        texture_inputs = []
-        omni_pbr_shader_count = 0
-        for prim in Usd.PrimRange(sink_prim):
-            if prim.IsA(UsdShade.Shader):
-                source_asset = UsdShade.Shader(prim).GetSourceAsset("mdl")
-                if source_asset and "OmniPBR.mdl" in str(source_asset):
-                    omni_pbr_shader_count += 1
-            for attribute in prim.GetAttributes():
-                if attribute.GetTypeName() == Sdf.ValueTypeNames.Asset:
-                    value = attribute.Get()
-                    if value:
-                        texture_inputs.append(str(value))
         result = {
-            "wrapper": {
-                "physics_scene_present": stage.GetPrimAtPath("/World/physicsScene").IsValid(),
-                "articulation_root_api_present": sink_prim.HasAPI(UsdPhysics.ArticulationRootAPI),
-                "fixed_root_joint_present": stage.GetPrimAtPath("/World/Sink/BlueprintFixedRoot").IsValid(),
-                "collider_session_overrides": collider_overrides,
-                "source_asset_modified": False,
-            },
-            "asset": {
-                "sink_dof_names": dof_names,
-                "handle_joint_limits_degrees": [float(joint.GetLowerLimitAttr().Get()), float(joint.GetUpperLimitAttr().Get())],
-                "handle_pivot_world_m": pivot.tolist(),
-                "handle_center_world_m": center.tolist(),
-                "handle_tangent_world": tangent.tolist(),
-                "sweep_trace": sweep_trace,
-                "capsule_push_trace": pusher_trace,
-                "capsule_contact_records": pusher_contacts,
-            },
+            "wrapper": wrapper_section,
+            "asset": asset_section,
             "franka": {
                 "asset_uri": franka_asset,
                 "base_translation_world_m": franka_base_translation,
@@ -702,24 +764,14 @@ def _runtime(
                 "franka_handle_motion_degrees": abs(
                     math.degrees(final_angle) - franka_initial_handle_angle
                 ),
-                "capsule_handle_motion_degrees": (
-                    max(float(row["handle_degrees"]) for row in pusher_trace)
-                    - min(float(row["handle_degrees"]) for row in pusher_trace)
-                    if pusher_trace
-                    else 0.0
-                ),
+                "capsule_handle_motion_degrees": capsule_motion_degrees,
                 "root_displacement_m": float(np.linalg.norm(root_final - root_initial)),
                 "maximum_penetration_m": max([0.0, *[-value for value in separations if value < 0.0]]),
                 "numerical_state_finite": _finite_vector([math.degrees(final_angle), final_velocity, *root_final.tolist()]),
                 "pusher_contact_count": len(pusher_contacts),
                 "franka_handle_contact_count": len(franka_contacts),
             },
-            "rendering": {
-                "renderer": config["renderer"],
-                "omnipbr_shader_count": omni_pbr_shader_count,
-                "material_asset_inputs": sorted(set(texture_inputs)),
-                "frames": frames,
-            },
+            "rendering": rendering_section(),
         }
         _phase("runtime_result_ready", started=started, frame_count=len(frames))
         persist(result, [])
