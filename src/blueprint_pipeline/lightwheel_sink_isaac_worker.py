@@ -268,7 +268,11 @@ def _frame_record(camera: Any, label: str) -> dict[str, Any]:  # pragma: no cove
     }
 
 
-def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:  # pragma: no cover - Isaac runtime only
+def _runtime(
+    bundle_root: Path,
+    manifest: Mapping[str, Any],
+    persist: Any,
+) -> dict[str, Any]:  # pragma: no cover - Isaac runtime only
     import numpy as np
 
     started = time.monotonic()
@@ -406,10 +410,26 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
             float(item)
             for item in (config.get("franka_base_translation_world_m") or [0.35, 0.30, 0.0])
         ]
-        UsdGeom.Xformable(stage.GetPrimAtPath(str(config["franka_prim_path"]))).AddTranslateOp().Set(
-            Gf.Vec3d(*franka_base_translation)
+        franka_xformable = UsdGeom.Xformable(stage.GetPrimAtPath(str(config["franka_prim_path"])))
+        franka_translate_op = next(
+            (
+                op
+                for op in franka_xformable.GetOrderedXformOps()
+                if op.GetOpType() == UsdGeom.XformOp.TypeTranslate
+            ),
+            None,
         )
+        if franka_translate_op is None:
+            franka_translate_op = franka_xformable.AddTranslateOp()
+        franka_translate_op.Set(Gf.Vec3d(*franka_base_translation))
+        checkpoint("franka_base_translated", translation=franka_base_translation)
         hand_path = str(config["franka_prim_path"]) + "/panda_hand"
+        if not stage.GetPrimAtPath(hand_path).IsValid():
+            children = [
+                str(prim.GetPath())
+                for prim in stage.GetPrimAtPath(str(config["franka_prim_path"])).GetChildren()
+            ]
+            raise RuntimeError(f"lightwheel_sink_franka_hand_prim_missing:{children}")
         for root_path in (str(config["franka_prim_path"]), hand_path):
             api = PhysxSchema.PhysxContactReportAPI.Apply(stage.GetPrimAtPath(root_path))
             api.CreateThresholdAttr().Set(0.0)
@@ -650,7 +670,14 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
             },
         }
         _phase("runtime_result_ready", started=started, frame_count=len(frames))
+        persist(result, [])
         return result
+    except (Exception, SystemExit) as exc:
+        # SimulationApp.close() in the finally below terminates the whole
+        # process (attempts 46754204/46755181 exited 0 there), so the terminal
+        # result must be on disk before this frame unwinds.
+        persist({}, [f"lightwheel_sink_runtime_failed:{type(exc).__name__}:{str(exc)[:400]}"])
+        raise
     finally:
         simulation_app.close()
 
@@ -689,13 +716,58 @@ def run_lightwheel_sink_canary(bundle_root: Path, output_path: Path) -> int:
     wrapper = bundle_root / str(manifest.get("wrapper_path") or "")
     if not wrapper.is_file() or _sha256(wrapper) != manifest.get("wrapper_digest"):
         blockers.append("lightwheel_sink_wrapper_digest_mismatch")
-    runtime: dict[str, Any] = {}
     if not blockers:
+        finalized: dict[str, int] = {}
+
+        def _persist(runtime_value: Mapping[str, Any], runtime_blockers: Sequence[str]) -> None:
+            finalized["exit_code"] = _finalize_result(
+                bundle_root=bundle_root,
+                manifest=manifest,
+                expected=expected,
+                asset_before=asset_before,
+                runtime=dict(runtime_value),
+                blockers=[*blockers, *runtime_blockers],
+                output_path=output_path,
+                process_started=process_started,
+            )
+
         try:
             _phase("bundle_validation_complete", started=process_started)
-            runtime = _runtime(bundle_root, manifest)
+            _runtime(bundle_root, manifest, _persist)
         except (Exception, SystemExit) as exc:  # noqa: BLE001 - terminal evidence must survive runtime failure, including Isaac's sys.exit on startup rejection
-            blockers.append(f"lightwheel_sink_runtime_failed:{type(exc).__name__}:{str(exc)[:400]}")
+            if "exit_code" not in finalized:
+                blockers.append(
+                    f"lightwheel_sink_runtime_failed:{type(exc).__name__}:{str(exc)[:400]}"
+                )
+        if "exit_code" in finalized:
+            return finalized["exit_code"]
+    return _finalize_result(
+        bundle_root=bundle_root,
+        manifest=manifest,
+        expected=expected,
+        asset_before=asset_before,
+        runtime={},
+        blockers=blockers,
+        output_path=output_path,
+        process_started=process_started,
+    )
+
+
+def _finalize_result(
+    *,
+    bundle_root: Path,
+    manifest: Mapping[str, Any],
+    expected: Mapping[str, str],
+    asset_before: Mapping[str, str],
+    runtime: dict[str, Any],
+    blockers: Sequence[str],
+    output_path: Path,
+    process_started: float,
+) -> int:
+    """Assemble, gate, and write the terminal result; must run before app close."""
+
+    blockers = list(blockers)
+    asset_before = dict(asset_before)
     asset_after = {
         str(record["path"]): _sha256(bundle_root / str(record["path"]))
         for record in manifest.get("asset_files", [])
