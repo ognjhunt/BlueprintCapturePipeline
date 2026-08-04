@@ -20,6 +20,7 @@ from blueprint_pipeline.simpler_public_vast import (
 )
 from blueprint_pipeline.simpler_public_runtime_worker import (
     _activate_verified_source_roots,
+    _cuda_toolkit_evidence,
 )
 
 
@@ -55,6 +56,9 @@ def test_bundle_contains_public_runtime_but_not_physical_outcome_values(
     assert not any("physical_outcomes" in name for name in names)
     assert "cells" not in bundled_manifest["physical_reference"]
     assert 'manifest["runtime"]["environment_lock"]["container_image"]' in runner
+    assert "cuda_toolkit_ptxas_missing" in runner
+    assert "cuda_toolkit_libdevice_missing" in runner
+    assert "--xla_gpu_cuda_data_dir=" in runner
     assert "paid_runtime_plan" not in runner
     assert "BLUEPRINT_WAM_RUNTIME_PHASE:adp_simpler" in runner
     assert 'source_dir / "ManiSkill2_real2sim"' in runner
@@ -98,6 +102,40 @@ def test_worker_activates_only_verified_editable_source_roots(tmp_path: Path) ->
         assert all(root in sys.path for root in roots)
     finally:
         sys.path[:] = original
+
+
+def test_worker_binds_xla_compiler_inputs_into_runtime_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cuda_root = tmp_path / "cuda"
+    libdevice = cuda_root / "nvvm" / "libdevice" / "libdevice.10.bc"
+    libdevice.parent.mkdir(parents=True)
+    libdevice.write_bytes(b"immutable-libdevice")
+    monkeypatch.setattr(
+        "blueprint_pipeline.simpler_public_runtime_worker.shutil.which",
+        lambda name: "/usr/local/cuda/bin/ptxas" if name == "ptxas" else None,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.simpler_public_runtime_worker._run",
+        lambda *args, **kwargs: {"returncode": 0, "output_tail": "ptxas 12.2"},
+    )
+
+    evidence = _cuda_toolkit_evidence(cuda_root)
+
+    assert evidence["xla_flags"] == f"--xla_gpu_cuda_data_dir={cuda_root}"
+    assert evidence["libdevice_files"][0]["sha256"].startswith("sha256:")
+
+
+def test_worker_rejects_image_without_xla_compiler_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "blueprint_pipeline.simpler_public_runtime_worker.shutil.which",
+        lambda name: None,
+    )
+
+    with pytest.raises(RuntimeError, match="cuda_toolkit_ptxas_missing"):
+        _cuda_toolkit_evidence(tmp_path / "cuda")
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:

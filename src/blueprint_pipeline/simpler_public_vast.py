@@ -30,8 +30,8 @@ from .wam_provider_object_store import (
 PROBE_KIND = "adp-simpler-public-reference"
 RESULT_SCHEMA_VERSION = "adp_simpler_vast_run.v1"
 DEFAULT_IMAGE = (
-    "nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04@"
-    "sha256:131e238d724ee145317f10d6c8eba0d301439c6c8764b02473510e7035756e81"
+    "nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04@"
+    "sha256:693d4bcb5b05ec381cf815ed0085d4cbc0757d46ccbaa5fab097bb5c250bc69d"
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/simpler"
 _VAST_MUTATION_ENV = (

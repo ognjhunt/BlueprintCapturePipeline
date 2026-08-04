@@ -107,6 +107,37 @@ def _run(command: Sequence[str], *, cwd: Path | None = None, timeout: int = 3600
     }
 
 
+def _cuda_toolkit_evidence(
+    cuda_root: Path = Path("/usr/local/cuda"),
+) -> dict[str, Any]:
+    """Fail closed unless the pinned image supplies the XLA CUDA compiler inputs."""
+
+    ptxas = shutil.which("ptxas")
+    libdevice_files = sorted((cuda_root / "nvvm" / "libdevice").glob("libdevice*.bc"))
+    if not ptxas:
+        raise RuntimeError("cuda_toolkit_ptxas_missing")
+    if not libdevice_files:
+        raise RuntimeError("cuda_toolkit_libdevice_missing")
+    ptxas_version = _run([ptxas, "--version"], timeout=60)
+    if ptxas_version["returncode"] != 0:
+        raise RuntimeError("cuda_toolkit_ptxas_version_failed")
+    os.environ["XLA_FLAGS"] = f"--xla_gpu_cuda_data_dir={cuda_root}"
+    return {
+        "cuda_root": str(cuda_root),
+        "xla_flags": os.environ["XLA_FLAGS"],
+        "ptxas_path": ptxas,
+        "ptxas_version": ptxas_version["output_tail"].strip(),
+        "libdevice_files": [
+            {
+                "path": str(path),
+                "size_bytes": path.stat().st_size,
+                "sha256": _file_sha256(path),
+            }
+            for path in libdevice_files
+        ],
+    }
+
+
 def _download(url: str, path: Path, *, expected_size: int, expected_sha256: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "BlueprintADPSimpler/1.0"})
@@ -163,6 +194,10 @@ def _checkpoint_identity_digest(candidate: Mapping[str, Any]) -> str:
 
 
 def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, Any]:
+    _phase("cuda_toolkit_preflight")
+    cuda_toolkit = _cuda_toolkit_evidence()
+    _phase("cuda_toolkit_preflight", "completed")
+
     _phase("source_checkout")
     source_dir = work_dir / "SimplerEnv"
     repository = manifest["source"]["repository"]
@@ -278,6 +313,7 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
         },
         "language_encoder_archive_sha256": encoder["archive_sha256"],
         "nvidia_smi": nvidia["output_tail"].strip(),
+        "cuda_toolkit": cuda_toolkit,
     }
     lock["runtime_lock_digest"] = _canonical_digest(lock, digest_field="runtime_lock_digest")
     _phase("runtime_lock", "completed")

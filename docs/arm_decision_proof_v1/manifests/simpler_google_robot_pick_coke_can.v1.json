@@ -303,7 +303,13 @@
     "environment_lock": {
       "status": "upstream_partially_pinned",
       "digest": null,
-      "container_image": "nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04@sha256:131e238d724ee145317f10d6c8eba0d301439c6c8764b02473510e7035756e81",
+      "container_image": "nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04@sha256:693d4bcb5b05ec381cf815ed0085d4cbc0757d46ccbaa5fab097bb5c250bc69d",
+      "container_terms": {
+        "publisher": "NVIDIA",
+        "terms_url": "https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license",
+        "review_status": "public_terms_recorded_no_acceptance_by_agent"
+      },
+      "xla_cuda_data_dir": "/usr/local/cuda",
       "unresolved_requirements": [
         "exact_python_patch",
         "numpy",
@@ -356,5 +362,5 @@
     "universal_robot_or_simulator_support": false,
     "two_candidates_establish_rank_correlation": false
   },
-  "manifest_digest": "sha256:53f9aaa69365997340eca5dfcd858ca250e8d7ca71c3ad29bddf0d422672789f"
+  "manifest_digest": "sha256:4420ece2de1aee3ea51a4e50289ea541ffb61010408fa82f77d8210cb3eee8cd"
 }
