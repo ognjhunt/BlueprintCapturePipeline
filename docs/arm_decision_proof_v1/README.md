@@ -1,18 +1,22 @@
 # Arm Decision Proof v1
 
 Status: **sole active Blueprint program**
-Approved: 2026-08-03
+Approved: 2026-08-04
 Machine-readable contract: [`north_star_contract.json`](north_star_contract.json)
 
 ## North Star
 
-From one qualified, rights-cleared representation of one previously unseen
-fixed-arm workcell—imported from an existing scene/capture when possible and
-newly captured only for measured gaps—prospectively decide which of two frozen
-policy or configuration candidates
-deserves the next scarce physical-test budget, or explicitly abstain, then
-verify that decision and at least one predicted failure boundary with randomized
-held-out physical trials.
+After qualifying every reusable service seam on a digest-bound, rights-cleared
+public evidence ladder—including removal of one source object from a
+metric-frame splat/collision scene, released-code background completion, and replacement by
+one exact SimReady USD—take one fresh, rights-cleared capture of one previously
+unseen fixed-arm workcell. Construct a candidate MSER whose observed metric
+geometry, registered appearance, collision geometry, and physics-authored task
+objects remain distinct but share one measured frame. Prospectively decide
+which of exactly two frozen policy or configuration candidates deserves the next
+scarce physical-test budget, or explicitly abstain, then verify that decision
+and at least one predicted failure boundary with randomized held-out physical
+trials.
 
 The company metric is
 `prospectively_physically_validated_new_site_task_decisions`. Its current value
@@ -28,28 +32,59 @@ The replica is called a *candidate* until held-out physical outcomes establish
 that it was sufficient for the exact decision. Visual coherence, simulator
 execution, or a completed report cannot establish sufficiency.
 
-## Execution Strategy: Public Harness First
+## Execution Strategy: Public Evidence Ladder, Then Fresh Site
 
-The north star still requires one eventual partner-specific physical proof, but
-the immediate engineering program is **harness-first**.
+ADP-008 is observed complete: SIMPLER already exercised the retrospective
+two-candidate decision, receipt, sealing, external-outcome join, and replay
+machinery. The active engineering item is **ADP-009 public-scene
+qualification**.
 
-Until the harness is complete:
+Until ADP-009 is complete:
 
-- dominant engineering effort goes to accepting an already-built environment,
-  normalizing the two candidates, executing the condition matrix, producing
-  receipts, sealing the result, joining external physical-reference outcomes,
-  and rendering the evidence matrix;
-- new capture or reconstruction feature development is zero unless a measured
-  harness or later partner blocker identifies the smallest missing measurement;
+- dominant engineering effort goes to exact dataset/method admission, metric
+  transforms, 3DGS object selection/removal, released-code inpainting, exact
+  SimReady USD replacement, independent collision/contact qualification,
+  deterministic variation, typed abstention, and full simulator-side rehearsal;
+- InteriorGS/SAGE-3D is the preferred paired synthetic hybrid control after
+  exact rights; an authored positive control is separate and can never
+  substitute for that exact pair. ScanNet++ is the second and only public real
+  measured transfer after exact access/rights admission; lack of access leaves
+  the day-21 gate incomplete;
+- [Inpaint360GS](https://github.com/dfki-av/Inpaint360GS) is the unchanged
+  author-data reproducibility control. [InFusion](https://github.com/ali-vilab/Infusion) is
+  the primary Blueprint interface-adapter candidate because its released path
+  accepts depth, camera-to-world, and intrinsics, emits a supplemental PLY, and
+  explicitly composes it with an original PLY.
+  [AuraFusion360](https://github.com/kkennethwu/AuraFusion360_official) is the 360-quality
+  challenger but starts from its own trained/checkpoint representation and needs
+  a separate adapter.
+  [3DGIC](https://github.com/peterjohnsonhuang/3dgic),
+  [GPGS](https://github.com/yongjoon99/GPGS), and
+  [GOR-IS](https://github.com/applezyh/GOR-IS) are conditional research ablations;
+- when a synthetic scene lacks the original multiview bundle, frozen virtual
+  cameras render object-present RGB into disjoint calibration/test trajectories.
+  Those frames and cameras are synthetic method inputs and self-consistency
+  probes, never independent observation evidence. External metric depth remains
+  outside every default method-input allowlist; InFusion's admitted default
+  depth input is its own incomplete-splat render. Clean-background truth stays withheld until the
+  result digest is sealed;
+- InteriorGS/SAGE supplies a metric frame, semantic OBBs, and matched static
+  collision proxy, but no measurement-authoritative local surface mesh;
+- NVIDIA USD Content Agents v0.5.2 is a candidate USD conversion,
+  material/physics-authoring, and static SimReady-validation backend after
+  deterministic geometry exists; it is not image-to-CAD authority;
+- new capture feature development remains zero. The final proof uses the
+  existing Raw V3.2 path for one fresh workcell unless a measured gate identifies
+  a missing measurement;
 - partner discovery, protocol design, rights, and physical-access planning run
-  as a small parallel human lane so the harness is not built around a fictional
+  as a small parallel human lane so the public stack is not built around a fictional
   interface.
 
-[`PUBLIC_REFERENCE_SUBSTRATE.md`](PUBLIC_REFERENCE_SUBSTRATE.md) selects SIMPLER
-as the first candidate to pin and audit. Its public environments, policies, and
-real performance tables can exercise the complete harness retrospectively. They
-cannot produce the prospective north-star claim because those physical outcomes
-are already public.
+[`PUBLIC_EVIDENCE_LADDER.md`](PUBLIC_EVIDENCE_LADDER.md) is the active stack and
+step-by-step test contract. [`PUBLIC_REFERENCE_SUBSTRATE.md`](PUBLIC_REFERENCE_SUBSTRATE.md)
+is retained as the immutable historical ADP-002 through ADP-008 decision.
+The dataset order is exact: InteriorGS plus matching SAGE-3D first, then
+ScanNet++. ARKitScenes and WildRGB-D are excluded from ADP v1.
 
 ## Exact v1 Envelope
 
@@ -59,6 +94,8 @@ are already public.
 - one bounded rigid-object pick-and-place task owned by the partner;
 - fixed cameras and a parallel-jaw gripper;
 - two real, runnable, frozen policy checkpoints or configurations;
+- one source rigid object removed from appearance and collision and one exact
+  SimReady USD replacement;
 - a small set of owner-approved, site-grounded conditions;
 - one prospective selection, elimination, or explicit abstention;
 - one predicted failure boundary;
@@ -70,12 +107,13 @@ tray-to-fixture placement with generous tolerance. The partner, not Blueprint,
 supplies the real task and the candidates it would otherwise spend hardware time
 comparing.
 
-## Why Existing Captures And SimReady Scenes Are Used Now
+## Why The New Datasets And Inpainting Are Used Now
 
 They should be used. Waiting for the final capture would serialize work that can
 be completed safely today.
 
-Existing captures, fixtures, OpenUSD scenes, and SimReady candidates may exercise:
+Exact public scenes, released editing code, fixtures, OpenUSD scenes, and
+SimReady candidates must exercise:
 
 - request and testbed compilation;
 - robot, policy, runtime, and proof adapter seams;
@@ -87,18 +125,37 @@ Existing captures, fixtures, OpenUSD scenes, and SimReady candidates may exercis
   video for every newly completed episode;
 - explicit success-grader provenance distinguishing deterministic simulator
   state from VLM, human, or policy self-report;
+- metric-frame preservation across cameras, 3DGS, collision, and Isaac, plus
+  depth/mesh only where the source actually provides authoritative geometry;
+- one exact source-object Gaussian/collider partition and removal;
+- unchanged Inpaint360GS author-data reproducibility, InFusion interface-adapter
+  completion, AuraFusion360 quality-challenger, and controlled known-background
+  factual-recovery tests;
+- insertion of one exact visual/collider/physics-authored SimReady USD;
+- visual/collider/contact/dynamics alignment;
+- deterministic scene-construction variation and typed abstention;
 - decision aggregation and abstention;
-- calibration/holdout partition enforcement;
+- calibration/test-trajectory partition enforcement;
 - exact Physical Outcome Join mechanics;
 - the evidence matrix and case-study renderer.
 
-Use the smallest fixed corpus:
+Use the smallest exact corpus that covers the orthogonal claims:
 
 1. `tests/fixtures/decision_evidence_rigid_object_v1/vertical_slice.json` for
    claim routing, partial decisions, abstention, and physical-outcome versioning;
 2. `tests/fixtures/new_site_loading_bay_v1` for capture-to-testbed compiler shape;
 3. `tests/fixtures/kitchen_task_min` only where an existing USD/runtime artifact
-   is required to exercise execution and receipt plumbing.
+   is required to exercise execution and receipt plumbing;
+4. one exact rights-admitted matched InteriorGS/SAGE-3D scene; an authored
+   positive control may be added but never substitutes;
+5. one exact rights-admitted targeted ScanNet++ scene;
+6. the released Inpaint360GS author data for the unchanged reproducibility
+   control, exact InFusion and AuraFusion360 releases, and a separate controlled
+   clean-background case for the factual-recovery firebreak;
+7. one exact SimReady USD replacement asset;
+8. one pinned NVIDIA USD Content Agents authoring candidate and a known-good
+   manual USD control; SimReadyGen is optional comparison input only when
+   separately admitted.
 
 These are **development substrates**, not qualification evidence. They cannot
 qualify:
@@ -114,9 +171,10 @@ qualify:
 This creates two phases of one program, not two product lanes:
 
 ```text
-public and existing development substrates
-  -> qualify the complete harness retrospectively and fail-closed
-  -> replace fixture inputs with the partner capture and owner truth
+immutable SIMPLER decision-harness replay
+  -> qualify public metric-scene removal/inpainting/USD replacement fail-closed
+  -> freeze partner protocol and capture one fresh clean/object-present site
+  -> replace public inputs with fresh observations and owner truth
   -> seal the prospective simulated decision
   -> adjudicate it with the physical holdout
 ```
@@ -178,17 +236,23 @@ not establish general rank correlation or universal policy ordering.
 
 The technical showcase passes only when all of the following are observed:
 
-1. A real learned partner policy executes closed loop in the candidate replica.
-2. The simulation result is sealed before physical holdout access.
-3. The physical holdout supports the same practical selection or elimination
+1. The public ladder removes one source object from both appearance and
+   collision, completes the background with released code, inserts one exact
+   SimReady USD, and independently qualifies metric, visual, collision, contact,
+   dynamics, variation, media, and replay evidence.
+2. One fresh, previously unseen site supplies registered clean-background and
+   object-present evidence through the existing capture contract.
+3. A real learned partner policy executes closed loop in the candidate replica.
+4. The simulation result is sealed before physical holdout access.
+5. The physical holdout supports the same practical selection or elimination
    decision under the preregistered rule.
-4. At least one site-relevant failure boundary is correctly localized at useful
+6. At least one site-relevant failure boundary is correctly localized at useful
    resolution.
-5. Every condition, reset, execution, metric, and outcome is traceable and
+7. Every condition, reset, execution, metric, and outcome is traceable and
    replayable.
-6. The partner confirms the result changed or reduced its next physical-test
+8. The partner confirms the result changed or reduced its next physical-test
    allocation.
-7. The result states uncertainty, unsupported conditions, and the exact claim
+9. The result states uncertainty, unsupported conditions, and the exact claim
    ceiling.
 
 An honest abstention demonstrates integrity but does not complete the showcase
@@ -199,14 +263,22 @@ as evidence and diagnosed, never relabeled as success.
 
 Stop or pivot rather than adding infrastructure when:
 
-- the public reference cannot be pinned by harness day 7;
-- two public candidates cannot emit complete receipts by harness day 14;
-- the development result cannot be sealed and joined to programmatically
-  withheld public outcomes by harness day 21;
-- the one-command harness and evidence matrix are incomplete by harness day 28;
+- the mandatory capability matrix lacks an admitted component or explicit
+  rights/runtime outcome by public-scene day 7;
+- the exact rights-admitted InteriorGS/SAGE-3D pair is unavailable, or one
+  object cannot be removed from appearance and collision through the frozen
+  render-derived InFusion adapter and AuraFusion360 challenger, replaced by one
+  exact SimReady USD, and qualified in Isaac
+  by public-scene day 14;
+- the exact ScanNet++ real measured transfer, controlled
+  known-background score, or deterministic fault/abstention matrix is incomplete
+  by public-scene day 21;
+- the one-command public-data replacement rehearsal and evidence matrix are
+  incomplete by public-scene day 28;
 - after the partner-proof clock starts, no suitable partner, task, candidates,
   holdout authority, or rights are secured by partner day 7;
 - the partner task/protocol/inputs cannot be frozen by partner day 14;
+- the fresh site capture and candidate replica are incomplete by partner day 21;
 - a real partner policy cannot run closed loop by partner day 28;
 - the prospective decision cannot be sealed by partner day 35;
 - the physical holdout cannot be exactly joined by partner day 42;
@@ -239,7 +311,8 @@ requires the smallest possible use of them:
 - world-model or evaluator expansion;
 - reconstruction/provider bakeoffs and marketplaces;
 - universal robot, simulator, or provider support;
-- dynamic 3DGS and general scene research;
+- dynamic 3DGS or general scene research beyond the one required rigid-object
+  removal/replacement case;
 - post-training and policy-improvement products;
 - multi-site generalization;
 - unrelated WebApp, growth, city-launch, and public-site polish.
@@ -252,5 +325,6 @@ readable. They are not active roadmap authority and do not authorize new work.
 - [`north_star_contract.json`](north_star_contract.json) — machine-validated focus lock
 - [`PARTNER_SELECTION_PACKET.md`](PARTNER_SELECTION_PACKET.md) — partner qualification and intake
 - [`IMPLEMENTATION_BACKLOG.md`](IMPLEMENTATION_BACKLOG.md) — sole active backlog
-- [`PUBLIC_REFERENCE_SUBSTRATE.md`](PUBLIC_REFERENCE_SUBSTRATE.md) — public harness substrate decision
+- [`PUBLIC_EVIDENCE_LADDER.md`](PUBLIC_EVIDENCE_LADDER.md) — active datasets, released-code stack, and step-by-step tests
+- [`PUBLIC_REFERENCE_SUBSTRATE.md`](PUBLIC_REFERENCE_SUBSTRATE.md) — historical ADP-002 through ADP-008 SIMPLER decision
 - [`MASTER_GOAL_PROMPT.md`](MASTER_GOAL_PROMPT.md) — paste-ready autonomous execution goal

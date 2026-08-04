@@ -9,11 +9,12 @@ Read first (repo-root-relative):
 1. `docs/arm_decision_proof_v1/north_star_contract.json`
 2. `docs/arm_decision_proof_v1/README.md`
 3. `docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`
-4. `docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`
-5. `PLATFORM_CONTEXT.md`
-6. `WORLD_MODEL_STRATEGY_CONTEXT.md`
-7. `AGENTS.md`
-8. `docs/DOCTRINE_PRECEDENCE.md` (when docs disagree)
+4. `docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`
+5. `docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md` (historical ADP-008 decision)
+6. `PLATFORM_CONTEXT.md`
+7. `WORLD_MODEL_STRATEGY_CONTEXT.md`
+8. `AGENTS.md`
+9. `docs/DOCTRINE_PRECEDENCE.md` (when docs disagree)
 
 Key rules (full text and precedents in `AGENTS.md`):
 
@@ -22,8 +23,12 @@ Key rules (full text and precedents in `AGENTS.md`):
   and physically adjudicated.
 - Every task must name the ADP backlog item and day gate it unblocks. Existing
   captures/scenes may exercise downstream seams only as `development_only`.
-- Complete the pinned public-reference harness through ADP-008 before new
-  capture/reconstruction features; SIMPLER is the first candidate to audit.
+- ADP-008 is observed complete. Complete ADP-009 with exact Inpaint360GS author
+  smoke; InFusion as the primary adapter and AuraFusion360 as the quality
+  challenger on one exact rights-admitted InteriorGS/SAGE-3D pair; targeted
+  ScanNet++ real measured transfer after access; one exact SimReady USD; and a bounded
+  NVIDIA USD Content Agents comparison before the fresh-site phase. Paper-only
+  methods and unrecorded rights fail closed.
 - Humanoid, deformable, five-policy/general-ranking, world-model, provider
   bakeoff, post-training, multi-site, and unrelated product work is frozen.
 - Keep world-model backends swappable behind stable contracts.

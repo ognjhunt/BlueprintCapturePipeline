@@ -7,13 +7,13 @@ Blueprint's sole active program is **Arm Decision Proof v1**
 
 Its north star is:
 
-> From one qualified, rights-cleared representation of one previously unseen
-> fixed-arm workcell—imported from an existing scene/capture when possible and
-> newly captured only for measured gaps—prospectively decide which of two frozen
-> policy or configuration candidates
-> deserves the next scarce physical-test budget, or explicitly abstain, then
-> verify that decision and at least one predicted failure boundary with
-> randomized held-out physical trials.
+> After qualifying every reusable service seam on a digest-bound,
+> rights-cleared public evidence ladder—including one metric 3DGS/collision
+> object removal, released-code background completion, and exact SimReady USD
+> replacement—take one fresh capture of one previously unseen fixed-arm
+> workcell, prospectively decide which of exactly two frozen candidates deserves
+> the next scarce physical-test budget or abstain, and adjudicate that decision
+> and one predicted failure boundary with randomized held-out physical trials.
 
 The north-star metric is
 `prospectively_physically_validated_new_site_task_decisions`: current `0`, next
@@ -23,17 +23,24 @@ No other research, product, growth, infrastructure, provider, embodiment, or
 market-expansion lane is active unless an observed Arm Decision Proof blocker
 shows that it is the smallest necessary dependency.
 
-The immediate engineering phase is **public-reference harness first**. Blueprint
-must accept an already-built public real-to-sim environment and complete the
-two-candidate execution, receipt, sealing, external physical-reference outcome
-join, uncertainty, abstention, replay, and evidence-matrix path before building
-new capture or reconstruction features. SIMPLER is the first candidate to pin
-and audit, not a permanent backend.
+ADP-008's SIMPLER decision-harness replay is observed complete and immutable.
+The immediate engineering phase is **ADP-009 public scene qualification**:
+exact dataset/code/rights admission; an unchanged Inpaint360GS author-data
+reproducibility smoke; an InFusion primary adapter and AuraFusion360 quality
+challenger on one exact rights-admitted InteriorGS/SAGE-3D pair using a frozen
+render-derived camera bundle; exact SimReady USD replacement;
+NVIDIA USD Content Agents as a bounded authoring candidate against a manual USD
+control; targeted ScanNet++ real measured transfer after access; hybrid Isaac
+tests; and a complete simulator-side rehearsal. All outputs remain
+`development_only`.
 
-New capture/reconstruction feature development is zero until the harness or
-later partner proof records a specific missing measurement that existing inputs
-cannot supply. Partner discovery, task/protocol design, rights, and physical
-access remain a small parallel human lane.
+After ADP-009 and partner protocol freeze, collect one fresh Raw V3.2 workcell
+capture with registered clean-background and object-present observations. That
+is the final new construction input, followed by replica qualification,
+two-candidate execution, sealing, held-out physical trials, and the Physical
+Outcome Join. New capture feature development remains zero unless a measured
+gate proves the smallest missing measurement. Partner discovery, protocol,
+rights, and physical access remain a small parallel human lane.
 
 ### Product And Artifact Boundary
 
@@ -88,27 +95,43 @@ rank correlation.
 
 ### Existing Capture And Scene Policy
 
-Existing captures, fixtures, OpenUSD scenes, SimReady candidates, and simulator
-artifacts should exercise every downstream seam that does not require new
-physical truth. This is the first phase of the Arm Decision Proof, not a separate
-fixture product.
+Existing captures, exact public datasets, fixtures, released editing code,
+OpenUSD scenes, SimReady candidates, and simulator artifacts must exercise every
+seam that does not require new physical truth. This is one phase of Arm Decision
+Proof, not a separate fixture or editing product.
 
-The public phase should use one pinned real-to-sim reference with genuine
-policies and published physical outcomes. Those outcomes may be programmatically
-withheld until after sealing to test software separation, but the result remains
-retrospective and `development_only`; published labels cannot become a
-prospective holdout.
+SIMPLER remains the pinned decision/outcome reference. Exact InteriorGS plus its
+matching SAGE-3D scene is the first synthetic metric-frame appearance/static-
+collision editing control after explicit rights; an authored scene is a
+separate physics positive control and cannot substitute for that dataset gate.
+Because the published pair lacks the original training cameras and a local
+measurement-authoritative surface, Blueprint may fly frozen virtual cameras,
+render object-present RGB and method-native splat depth/disparity, and emit
+digest-bound intrinsics and poses without rerunning unscaled SfM. External
+metric depth/geometry and clean-background truth stay out of method inputs.
+Calibration and test trajectories are synthetic self-consistency evidence,
+never independent capture truth. ScanNet++ is the second and only public real
+measured transfer after access. Inpaint360GS is the unchanged author-data
+reproducibility control; InFusion is the primary world-frame supplemental-Ply
+adapter; AuraFusion360 is the multiview quality challenger; GOR-IS is a
+conditional glossy/shadow ablation. NVIDIA USD Content Agents may convert and physicalize
+already-authoritative geometry, but cannot
+create measurement authority. Paper-only methods cannot enter the critical
+path.
 
-They may validate contract shape, testbed compilation, two-candidate matrix
-planning, condition IDs, reset/evaluator plumbing, policy/runtime adapters,
-closed-loop execution, episode receipts, replay, decision sealing, holdout
-separation, Physical Outcome Join mechanics, aggregation, abstention, and report
-rendering.
+They may validate contract shape, metric frames, source-object partition and
+removal, visual background completion, exact SimReady USD insertion, static and
+dynamic collision/contact checks, deterministic variation, testbed compilation,
+two-candidate matrix planning, condition IDs, reset/evaluator plumbing,
+policy/runtime adapters, closed-loop execution, episode receipts, replay,
+decision sealing, holdout separation, Physical Outcome Join mechanics,
+aggregation, abstention, and report rendering.
 
-They remain `development_only` and cannot qualify the partner capture, owner task
-truth, robot/camera/workcell registration, task-specific geometry or dynamics,
-observation-domain match, sim-to-real decision fidelity, or partner value. No
-fixture field may be copied into qualified evidence to make a gate pass.
+They remain `development_only` and cannot qualify the fresh partner capture,
+owner task truth, robot/camera/workcell registration, real task-specific
+dynamics, observation-domain match, factual recovery of an unobserved surface,
+sim-to-real decision fidelity, or partner value. No fixture/generated field may
+be copied into qualified evidence to make a gate pass.
 
 ### Truth Hierarchy
 

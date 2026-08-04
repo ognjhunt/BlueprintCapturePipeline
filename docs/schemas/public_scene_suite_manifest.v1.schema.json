@@ -1,0 +1,841 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/public_scene_suite_manifest.v1.schema.json",
+  "title": "Public Scene Suite Manifest v1",
+  "description": "ADP-009A development-only admission contract for exact public scene inputs. Admission proves manifest completeness, not artifact-byte verification, metric geometry, task physics, partner capture, or physical validity.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "program_id",
+    "adp_item",
+    "phase_label",
+    "suite_id",
+    "admission_as_of",
+    "suite_purpose",
+    "component_scope",
+    "sources",
+    "scene_pairings",
+    "rights_reviews",
+    "code_dependencies",
+    "coordinate_frames",
+    "splits",
+    "observation_bundle",
+    "representations",
+    "claim_ceiling",
+    "claim_boundaries",
+    "manifest_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "public_scene_suite_manifest.v1"},
+    "program_id": {"const": "arm-decision-proof-v1"},
+    "adp_item": {"const": "ADP-009A"},
+    "phase_label": {"const": "public_scene_qualification"},
+    "suite_id": {"$ref": "#/$defs/identifier"},
+    "admission_as_of": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "suite_purpose": {"const": "public_scene_software_qualification"},
+    "component_scope": {"const": "hybrid_edit_replacement_case"},
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "scene_pairings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/scenePairing"}
+    },
+    "rights_reviews": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/rightsReview"}
+    },
+    "code_dependencies": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/codeDependency"}
+    },
+    "coordinate_frames": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/coordinateFrame"}
+    },
+    "splits": {"$ref": "#/$defs/splits"},
+    "observation_bundle": {"$ref": "#/$defs/observationBundle"},
+    "representations": {"$ref": "#/$defs/representations"},
+    "claim_ceiling": {"const": "development_only"},
+    "claim_boundaries": {"$ref": "#/$defs/claimBoundaries"},
+    "manifest_digest": {"$ref": "#/$defs/sha256"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:+-]{0,191}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nonemptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {
+          "enum": ["git_commit", "release_tag", "content_digest"]
+        },
+        "value": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "artifact_id",
+        "scene_id",
+        "role",
+        "relative_path",
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "artifact_id": {"$ref": "#/$defs/identifier"},
+        "scene_id": {"$ref": "#/$defs/identifier"},
+        "role": {
+          "enum": [
+            "appearance_3dgs",
+            "calibration_observation",
+            "static_collision_geometry",
+            "metric_geometry",
+            "validation_depth_oracle",
+            "method_input_rgb",
+            "method_input_mask",
+            "method_input_splat_depth",
+            "task_object_visual_geometry",
+            "task_object_collision_geometry",
+            "task_object_physics_metadata",
+            "simready_usd_package",
+            "unit_conversion_receipt",
+            "metric_scale_evidence",
+            "semantic_metadata",
+            "calibration_metadata",
+            "camera_model_bundle",
+            "test_observation",
+            "clean_background_rgb_truth",
+            "clean_background_depth_truth",
+            "clean_background_geometry_truth"
+          ]
+        },
+        "relative_path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "upstream_project_id",
+        "source_kind",
+        "scene_id",
+        "revision",
+        "source_url",
+        "artifacts"
+      ],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "upstream_project_id": {
+          "enum": ["InteriorGS", "SAGE-3D", "ScanNet++", "Blueprint-controlled"]
+        },
+        "source_kind": {
+          "enum": [
+            "synthetic_metric_scene",
+            "real_metric_scene",
+            "collision_companion",
+            "simready_task_object",
+            "other_public_scene_source"
+          ]
+        },
+        "scene_id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/revision"},
+        "source_url": {"type": "string", "minLength": 1},
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/artifact"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "scenePairing": {
+      "type": "object",
+      "required": [
+        "pairing_id",
+        "appearance_source_id",
+        "appearance_scene_id",
+        "appearance_artifact_id",
+        "collision_source_id",
+        "collision_scene_id",
+        "collision_artifact_id",
+        "exact_scene_match_required"
+      ],
+      "properties": {
+        "pairing_id": {"$ref": "#/$defs/identifier"},
+        "appearance_source_id": {"$ref": "#/$defs/identifier"},
+        "appearance_scene_id": {"$ref": "#/$defs/identifier"},
+        "appearance_artifact_id": {"$ref": "#/$defs/identifier"},
+        "collision_source_id": {"$ref": "#/$defs/identifier"},
+        "collision_scene_id": {"$ref": "#/$defs/identifier"},
+        "collision_artifact_id": {"$ref": "#/$defs/identifier"},
+        "exact_scene_match_required": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "rightsReview": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "license_expression",
+        "terms_url",
+        "terms_text_sha256",
+        "use_scope",
+        "reviewer_status",
+        "reviewer_id",
+        "reviewed_on",
+        "access_authority_reference",
+        "expiration_policy",
+        "valid_through",
+        "agent_accepted_terms"
+      ],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "license_expression": {"type": "string", "minLength": 1},
+        "terms_url": {"type": "string", "minLength": 1},
+        "terms_text_sha256": {"$ref": "#/$defs/sha256"},
+        "use_scope": {
+          "enum": [
+            "noncommercial_internal_research",
+            "commercial_internal_development",
+            "commercial_and_redistribution"
+          ]
+        },
+        "reviewer_status": {
+          "enum": ["approved_for_declared_use", "pending", "rejected"]
+        },
+        "reviewer_id": {"$ref": "#/$defs/identifier"},
+        "reviewed_on": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "access_authority_reference": {"$ref": "#/$defs/identifier"},
+        "expiration_policy": {
+          "enum": ["no_expiration_declared", "expires_on_valid_through"]
+        },
+        "valid_through": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            },
+            {"type": "null"}
+          ]
+        },
+        "agent_accepted_terms": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "codeLicense": {
+      "type": "object",
+      "required": ["license_expression", "terms_url", "text_sha256"],
+      "properties": {
+        "license_expression": {"type": "string", "minLength": 1},
+        "terms_url": {"type": "string", "minLength": 1},
+        "text_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "codeDependency": {
+      "type": "object",
+      "required": [
+        "dependency_id",
+        "purpose",
+        "capability_role",
+        "upstream_project_id",
+        "repository_url",
+        "availability",
+        "revision",
+        "license",
+        "smoke_status",
+        "smoke_receipt_digest",
+        "runtime_lock_digest",
+        "dependency_license_inventory_digest"
+      ],
+      "properties": {
+        "dependency_id": {"$ref": "#/$defs/identifier"},
+        "purpose": {"type": "string", "minLength": 1},
+        "capability_role": {
+          "enum": [
+            "scene_materialization",
+            "segmentation",
+            "background_completion_reproducibility_control",
+            "background_completion_primary_adapter",
+            "background_completion_quality_challenger",
+            "background_completion_effect_ablation",
+            "simready_authoring",
+            "simulator_integration"
+          ]
+        },
+        "upstream_project_id": {"$ref": "#/$defs/identifier"},
+        "repository_url": {"type": "string", "minLength": 1},
+        "availability": {
+          "enum": ["released", "paper_only", "proprietary_unverified"]
+        },
+        "revision": {"$ref": "#/$defs/revision"},
+        "license": {"$ref": "#/$defs/codeLicense"},
+        "smoke_status": {"enum": ["passed", "failed", "not_run"]},
+        "smoke_receipt_digest": {
+          "anyOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "runtime_lock_digest": {"$ref": "#/$defs/sha256"},
+        "dependency_license_inventory_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "matrix4x4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {"type": "number"}
+      }
+    },
+    "metricScaleAuthority": {
+      "type": "object",
+      "required": ["kind", "authority_reference", "evidence_artifact_ids"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "authority_reference": {"type": "string", "minLength": 1},
+        "evidence_artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "coordinateFrame": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "scene_id",
+        "native_units",
+        "native_unit_scale_to_meters",
+        "units",
+        "handedness",
+        "up_axis",
+        "world_frame",
+        "normalization_history",
+        "unit_conversion_artifact_ids",
+        "source_to_world",
+        "world_to_source",
+        "metric_scale_authority"
+      ],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "scene_id": {"$ref": "#/$defs/identifier"},
+        "native_units": {
+          "enum": ["meters", "centimeters", "millimeters", "unitless_normalized"]
+        },
+        "native_unit_scale_to_meters": {"type": "number", "exclusiveMinimum": 0},
+        "units": {"const": "meters"},
+        "handedness": {"enum": ["right_handed", "left_handed"]},
+        "up_axis": {"enum": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]},
+        "world_frame": {"const": "blueprint_world_right_handed_z_up_meters"},
+        "normalization_history": {"$ref": "#/$defs/normalizationHistory"},
+        "unit_conversion_artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "source_to_world": {"$ref": "#/$defs/matrix4x4"},
+        "world_to_source": {"$ref": "#/$defs/matrix4x4"},
+        "metric_scale_authority": {"$ref": "#/$defs/metricScaleAuthority"}
+      },
+      "additionalProperties": false
+    },
+    "normalizationHistory": {
+      "type": "object",
+      "required": ["status", "reference", "inverse_transform"],
+      "properties": {
+        "status": {"enum": ["none", "applied_and_inverted"]},
+        "reference": {"type": "string", "minLength": 1},
+        "inverse_transform": {
+          "anyOf": [
+            {"$ref": "#/$defs/matrix4x4"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "splits": {
+      "type": "object",
+      "required": ["calibration_trajectory_ids", "test_trajectory_ids"],
+      "properties": {
+        "calibration_trajectory_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "test_trajectory_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "observationBundle": {
+      "type": "object",
+      "required": [
+        "bundle_id",
+        "origin",
+        "camera_model",
+        "camera_model_artifact_id",
+        "appearance_artifact_id",
+        "materialization_dependency_id",
+        "rgb_authority",
+        "camera_preparation",
+        "calibration_artifact_ids",
+        "test_artifact_ids",
+        "method_profiles",
+        "validation_oracle",
+        "truth_contract",
+        "object_present_inputs",
+        "unscaled_sfm_rerun",
+        "partitions_disjoint",
+        "independent_capture_evidence"
+      ],
+      "properties": {
+        "bundle_id": {"$ref": "#/$defs/identifier"},
+        "origin": {
+          "enum": ["render_derived_synthetic", "source_captured"]
+        },
+        "camera_model": {
+          "enum": ["COLMAP_PINHOLE", "COLMAP_OPENCV"]
+        },
+        "camera_model_artifact_id": {"$ref": "#/$defs/identifier"},
+        "appearance_artifact_id": {
+          "anyOf": [
+            {"$ref": "#/$defs/identifier"},
+            {"type": "null"}
+          ]
+        },
+        "materialization_dependency_id": {
+          "anyOf": [
+            {"$ref": "#/$defs/identifier"},
+            {"type": "null"}
+          ]
+        },
+        "rgb_authority": {
+          "enum": ["appearance_3dgs_render", "source_rgb"]
+        },
+        "camera_preparation": {
+          "enum": ["prebuilt_metric_colmap_without_mapper", "source_calibration"]
+        },
+        "calibration_artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "test_artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "method_profiles": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"$ref": "#/$defs/methodProfile"}
+        },
+        "validation_oracle": {"$ref": "#/$defs/validationOracle"},
+        "truth_contract": {"$ref": "#/$defs/truthContract"},
+        "object_present_inputs": {"const": true},
+        "unscaled_sfm_rerun": {"const": false},
+        "partitions_disjoint": {"const": true},
+        "independent_capture_evidence": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "methodProfile": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "method_role",
+        "dependency_id",
+        "upstream_project_id",
+        "input_artifact_ids",
+        "input_modalities",
+        "input_mount_policy",
+        "writes_delta_layer",
+        "preserves_source_world_frame",
+        "external_validation_oracle_access"
+      ],
+      "properties": {
+        "profile_id": {"$ref": "#/$defs/identifier"},
+        "method_role": {
+          "enum": ["primary_interface_adapter", "multiview_quality_challenger"]
+        },
+        "dependency_id": {"$ref": "#/$defs/identifier"},
+        "upstream_project_id": {"enum": ["InFusion", "AuraFusion360"]},
+        "input_artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "input_modalities": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "object_present_rgb",
+              "multiview_object_masks",
+              "splat_rendered_inverse_depth",
+              "camera_intrinsics",
+              "camera_to_world",
+              "source_3dgs"
+            ]
+          }
+        },
+        "input_mount_policy": {"const": "allowlist_only"},
+        "writes_delta_layer": {"const": true},
+        "preserves_source_world_frame": {"const": true},
+        "external_validation_oracle_access": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "validationOracle": {
+      "type": "object",
+      "required": [
+        "availability",
+        "depth_artifact_id",
+        "geometry_artifact_id",
+        "authority",
+        "usage",
+        "method_access",
+        "independent_of_method_inputs"
+      ],
+      "properties": {
+        "availability": {"enum": ["unavailable", "available"]},
+        "depth_artifact_id": {
+          "anyOf": [{"$ref": "#/$defs/identifier"}, {"type": "null"}]
+        },
+        "geometry_artifact_id": {
+          "anyOf": [{"$ref": "#/$defs/identifier"}, {"type": "null"}]
+        },
+        "authority": {
+          "enum": ["none", "controlled_ground_truth", "source_sensor_or_laser"]
+        },
+        "usage": {"enum": ["not_available", "evaluation_only"]},
+        "method_access": {"const": false},
+        "independent_of_method_inputs": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "truthContract": {
+      "type": "object",
+      "required": [
+        "availability",
+        "clean_background_artifact_ids",
+        "method_access",
+        "edit_result_digest",
+        "edit_seal_digest",
+        "truth_release_join_digest"
+      ],
+      "properties": {
+        "availability": {
+          "enum": ["unavailable", "available_withheld", "released_after_edit_seal"]
+        },
+        "clean_background_artifact_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "method_access": {"const": false},
+        "edit_result_digest": {
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "edit_seal_digest": {
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "truth_release_join_digest": {
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        }
+      },
+      "additionalProperties": false
+    },
+    "appearanceRepresentation": {
+      "type": "object",
+      "required": [
+        "kind",
+        "usage",
+        "artifact_ids",
+        "metric_measurement_authority",
+        "collision_authority"
+      ],
+      "properties": {
+        "kind": {"const": "3dgs"},
+        "usage": {"const": "appearance_only"},
+        "artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "metric_measurement_authority": {"const": false},
+        "collision_authority": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "collisionRepresentation": {
+      "type": "object",
+      "required": ["kind", "usage", "artifact_ids", "separate_from_appearance"],
+      "properties": {
+        "kind": {"enum": ["mesh", "openusd_collision"]},
+        "usage": {"const": "collision_only"},
+        "artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "separate_from_appearance": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "metricGeometryRepresentation": {
+      "type": "object",
+      "required": ["kind", "usage", "artifact_ids", "measurement_authority"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "publisher_metric_frame_and_boxes",
+            "authored_metric_geometry",
+            "calibrated_depth_surface",
+            "laser_mesh",
+            "rgbd_surface"
+          ]
+        },
+        "usage": {"enum": ["metric_frame_reference_only", "measurement_authority"]},
+        "artifact_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "measurement_authority": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "taskObject": {
+      "type": "object",
+      "required": [
+        "task_object_id",
+        "source_object_id",
+        "replacement_mode",
+        "asset_format",
+        "asset_source_id",
+        "usd_artifact_id",
+        "visual_artifact_ids",
+        "collision_artifact_ids",
+        "physics_artifact_ids",
+        "physics_properties",
+        "visual_and_collision_are_separate",
+        "source_object_pose_world",
+        "replacement_pose_world",
+        "reset_pose_world",
+        "pose_authority",
+        "dimensions_uncertainty_m",
+        "support_contact_point_world_m",
+        "support_normal_world",
+        "semantic_label",
+        "reset_state_id"
+      ],
+      "properties": {
+        "task_object_id": {"$ref": "#/$defs/identifier"},
+        "source_object_id": {"$ref": "#/$defs/identifier"},
+        "replacement_mode": {"const": "remove_source_then_insert_exact_usd"},
+        "asset_format": {"const": "simready_usd"},
+        "asset_source_id": {"$ref": "#/$defs/identifier"},
+        "usd_artifact_id": {"$ref": "#/$defs/identifier"},
+        "visual_artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "collision_artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "physics_artifact_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "physics_properties": {"$ref": "#/$defs/taskObjectPhysics"},
+        "visual_and_collision_are_separate": {"const": true},
+        "source_object_pose_world": {"$ref": "#/$defs/matrix4x4"},
+        "replacement_pose_world": {"$ref": "#/$defs/matrix4x4"},
+        "reset_pose_world": {"$ref": "#/$defs/matrix4x4"},
+        "pose_authority": {
+          "enum": ["measured", "source_annotation", "preregistered_candidate"]
+        },
+        "dimensions_uncertainty_m": {"$ref": "#/$defs/nonnegativeVector3"},
+        "support_contact_point_world_m": {"$ref": "#/$defs/vector3"},
+        "support_normal_world": {"$ref": "#/$defs/vector3"},
+        "semantic_label": {"type": "string", "minLength": 1},
+        "reset_state_id": {"$ref": "#/$defs/identifier"}
+      },
+      "additionalProperties": false
+    },
+    "vector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    },
+    "positiveVector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number", "exclusiveMinimum": 0}
+    },
+    "nonnegativeVector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number", "minimum": 0}
+    },
+    "matrix3x3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": {"type": "number"}
+      }
+    },
+    "taskObjectPhysics": {
+      "type": "object",
+      "required": [
+        "dimensions_m",
+        "mass_kg",
+        "center_of_mass_m",
+        "inertia_tensor_kg_m2",
+        "static_friction",
+        "dynamic_friction",
+        "restitution",
+        "authority",
+        "contact_material_id"
+      ],
+      "properties": {
+        "dimensions_m": {"$ref": "#/$defs/positiveVector3"},
+        "mass_kg": {"type": "number", "exclusiveMinimum": 0},
+        "center_of_mass_m": {"$ref": "#/$defs/vector3"},
+        "inertia_tensor_kg_m2": {"$ref": "#/$defs/matrix3x3"},
+        "static_friction": {"type": "number", "minimum": 0},
+        "dynamic_friction": {"type": "number", "minimum": 0},
+        "restitution": {"type": "number", "minimum": 0, "maximum": 1},
+        "authority": {
+          "enum": [
+            "measured",
+            "manufacturer_specification",
+            "preregistered_candidate"
+          ]
+        },
+        "contact_material_id": {"$ref": "#/$defs/identifier"}
+      },
+      "additionalProperties": false
+    },
+    "representations": {
+      "type": "object",
+      "required": [
+        "active_pairing_id",
+        "appearance",
+        "metric_geometry",
+        "collision",
+        "task_objects"
+      ],
+      "properties": {
+        "active_pairing_id": {"$ref": "#/$defs/identifier"},
+        "appearance": {"$ref": "#/$defs/appearanceRepresentation"},
+        "metric_geometry": {"$ref": "#/$defs/metricGeometryRepresentation"},
+        "collision": {"$ref": "#/$defs/collisionRepresentation"},
+        "task_objects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/taskObject"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "claimBoundaries": {
+      "type": "object",
+      "required": [
+        "public_scene_manifest_admission",
+        "public_scene_software_qualification",
+        "artifact_bytes_verified",
+        "metric_geometry_qualified",
+        "task_physics_qualified",
+        "partner_capture_qualified",
+        "prospective_validation",
+        "digital_twin",
+        "deployment_readiness",
+        "physical_safety",
+        "customer_value",
+        "general_sim_to_real_fidelity"
+      ],
+      "properties": {
+        "public_scene_manifest_admission": {"const": true},
+        "public_scene_software_qualification": {"const": false},
+        "artifact_bytes_verified": {"const": false},
+        "metric_geometry_qualified": {"const": false},
+        "task_physics_qualified": {"const": false},
+        "partner_capture_qualified": {"const": false},
+        "prospective_validation": {"const": false},
+        "digital_twin": {"const": false},
+        "deployment_readiness": {"const": false},
+        "physical_safety": {"const": false},
+        "customer_value": {"const": false},
+        "general_sim_to_real_fidelity": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  }
+}

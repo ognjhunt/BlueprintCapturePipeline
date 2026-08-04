@@ -10,11 +10,12 @@ Read completely, in order:
 2. [`../arm_decision_proof_v1/north_star_contract.json`](../arm_decision_proof_v1/north_star_contract.json)
 3. [`../arm_decision_proof_v1/README.md`](../arm_decision_proof_v1/README.md)
 4. [`../arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](../arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-5. [`../arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](../arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md)
-6. [`../../PLATFORM_CONTEXT.md`](../../PLATFORM_CONTEXT.md)
-7. [`../../WORLD_MODEL_STRATEGY_CONTEXT.md`](../../WORLD_MODEL_STRATEGY_CONTEXT.md)
-8. [`source-of-truth-map.md`](source-of-truth-map.md)
-9. [`../DOCTRINE_PRECEDENCE.md`](../DOCTRINE_PRECEDENCE.md)
+5. [`../arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`](../arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md)
+6. [`../arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](../arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md) — historical ADP-008 decision
+7. [`../../PLATFORM_CONTEXT.md`](../../PLATFORM_CONTEXT.md)
+8. [`../../WORLD_MODEL_STRATEGY_CONTEXT.md`](../../WORLD_MODEL_STRATEGY_CONTEXT.md)
+9. [`source-of-truth-map.md`](source-of-truth-map.md)
+10. [`../DOCTRINE_PRECEDENCE.md`](../DOCTRINE_PRECEDENCE.md)
 
 The north star is one prospective two-candidate fixed-arm decision on a new
 partner workcell, adjudicated by matched held-out physical trials. The Task
@@ -42,25 +43,33 @@ Inspect before adding. Prefer a thin adapter over a parallel SiteBench stack.
 
 ## Development Substrates
 
-Audit and pin SIMPLER first as the single external real-to-sim harness candidate.
-Use existing local assets to isolate downstream paths:
+Preserve the completed SIMPLER ADP-008 replay. ADP-009 now uses an exact
+Inpaint360GS author smoke; InFusion as primary adapter and AuraFusion360 as
+quality challenger on one rights-admitted InteriorGS scene plus its matching
+SAGE-3D collision companion with frozen render-derived cameras; one targeted
+ScanNet++ real measured transfer after access; one exact SimReady USD; and a
+manual-versus-NVIDIA Content Agents authoring comparison to
+qualify object removal, background completion, replacement, metric/collision
+registration, variation, abstention, and full simulator-side replay. Use
+existing local assets to isolate downstream paths:
 
 - `tests/fixtures/decision_evidence_rigid_object_v1/vertical_slice.json` —
   routing, partial decisions, abstention, and outcome versioning;
 - `tests/fixtures/new_site_loading_bay_v1` — capture-to-testbed compiler shape;
 - `tests/fixtures/kitchen_task_min` — existing USD/runtime plumbing only.
 
-Select at most one other existing SimReady/OpenUSD artifact when a recorded
-runtime blocker cannot be exercised by these fixtures.
+GOR-IS is allowed only as a separately admitted glossy/shadow ablation.
+Paper-only editing methods remain inadmissible.
 
 All are `development_only`. They cannot establish the partner capture, task
 truth, site/robot registration, task dynamics, observation-domain match,
 sim-to-real decision fidelity, or customer value. Do not hand-author substitute
 evidence. A missing partner measurement remains a typed blocker.
 
-Complete ADP-008 before new capture/reconstruction features. Public outcomes may
-be programmatically withheld until after sealing to test software separation,
-but the run remains retrospective because the labels are published.
+Complete ADP-009 before fresh-site acquisition. Then use the existing Raw V3.2
+path for one fresh clean-background/object-present workcell capture. Public
+outputs remain `development_only`; the fresh run still requires a prospective
+seal and physical holdout.
 
 ## Truth Route
 
@@ -85,7 +94,7 @@ and reports. Each derived method keeps its own claim ceiling.
 Before editing, answer:
 
 1. Which ADP backlog item is this?
-2. Which day-7/day-14/day-28/day-35/day-42 gate does it unblock?
+2. Which day-7/day-14/day-21/day-28/day-35/day-42 gate does it unblock?
 3. What observed artifact proves completion?
 4. Why is the existing implementation insufficient?
 5. What is the smallest reversible change?

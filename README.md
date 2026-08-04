@@ -5,13 +5,11 @@
 Blueprint's only active objective is to produce one prospectively physically
 validated, site-specific fixed-arm decision.
 
-> From one qualified, rights-cleared representation of one previously unseen
-> fixed-arm workcell—imported from an existing scene/capture when possible and
-> newly captured only for measured gaps—prospectively decide which of two frozen
-> policy or configuration candidates
-> deserves the next scarce physical-test budget, or explicitly abstain, then
-> verify that decision and at least one predicted failure boundary with
-> randomized held-out physical trials.
+> Qualify the reusable service on exact public datasets first—including one
+> metric 3DGS/collision object removal, released-code inpainting, and exact
+> SimReady USD replacement—then take one fresh capture of one previously unseen
+> fixed-arm workcell, make a prospective decision between exactly two frozen
+> candidates or abstain, and adjudicate it with held-out physical trials.
 
 North-star metric:
 `prospectively_physically_validated_new_site_task_decisions`, current `0`, target
@@ -23,8 +21,9 @@ Start here:
 2. [`docs/arm_decision_proof_v1/README.md`](docs/arm_decision_proof_v1/README.md)
 3. [`docs/arm_decision_proof_v1/PARTNER_SELECTION_PACKET.md`](docs/arm_decision_proof_v1/PARTNER_SELECTION_PACKET.md)
 4. [`docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-5. [`docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md)
-6. [`docs/arm_decision_proof_v1/MASTER_GOAL_PROMPT.md`](docs/arm_decision_proof_v1/MASTER_GOAL_PROMPT.md)
+5. [`docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`](docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md)
+6. [`docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md) — historical ADP-008 decision
+7. [`docs/arm_decision_proof_v1/MASTER_GOAL_PROMPT.md`](docs/arm_decision_proof_v1/MASTER_GOAL_PROMPT.md)
 
 [`docs/README.md`](docs/README.md) defines documentation authority. Other docs
 remain stable contracts, compatibility material, or historical evidence; they
@@ -48,38 +47,53 @@ deformables, five-policy campaigns, universal runtime support, general ranking,
 provider bakeoffs, world-model expansion, post-training products, and multi-site
 generalization are frozen.
 
-## Existing Captures And SimReady Scenes
+## Public Datasets, Inpainting, And SimReady Replacement
 
-The immediate engineering objective is a **public-reference harness
-qualification**, not new capture technology. Audit and pin SIMPLER as the first
-external candidate, then run two genuine public policies through Blueprint's
-complete execution, receipt, sealing, external-outcome-join, abstention, replay,
-and evidence-matrix path.
+ADP-008's SIMPLER decision-harness replay is observed complete. The immediate
+engineering objective is **ADP-009 public-scene qualification**, not new capture
+technology: smoke exact Inpaint360GS on unchanged author data, then run an
+InFusion primary adapter and AuraFusion360 quality challenger on one exact
+rights-admitted InteriorGS/SAGE-3D pair; generate frozen object-present
+render-derived method inputs where original cameras are unavailable, while
+withholding external validation geometry and clean-background truth and
+preserving the published metric frame;
+remove one source object from appearance and collision; insert one exact
+SimReady USD; compare manual authoring with NVIDIA USD Content Agents; then
+transfer the frozen contracts to one targeted ScanNet++ scene after access.
 
 Use existing assets now to exercise every downstream seam that does not require
 new physical truth. Waiting for the partner capture would unnecessarily
 serialize the valuable work.
 
-The pinned development corpus is:
+The bounded development corpus is:
 
 - `tests/fixtures/decision_evidence_rigid_object_v1/vertical_slice.json`;
 - `tests/fixtures/new_site_loading_bay_v1`;
 - `tests/fixtures/kitchen_task_min` only for existing USD/runtime plumbing.
+- one exact rights-admitted InteriorGS scene and its matching SAGE-3D collision
+  companion; an authored scene is a separate physics control, not a substitute;
+- one targeted access-admitted ScanNet++ scene;
+- exact Inpaint360GS, InFusion, and AuraFusion360 revisions, weights,
+  dependencies, licenses, and author-data smokes;
+- one exact replacement SimReady USD;
+- one manual authoring control and one pinned NVIDIA USD Content Agents
+  candidate after deterministic geometry exists.
 
-At most one additional existing SimReady/OpenUSD asset may be selected when a
-recorded missing runtime seam requires it. This is not a bakeoff.
+GOR-IS may be added only as a separately admitted glossy/shadow ablation. A
+paper-only method cannot enter the critical path. This is a claim-complete
+ladder, not a provider or reconstruction bakeoff.
 
 All reused assets remain `development_only`. They cannot qualify partner
 capture, task-owner truth, registration, task-specific dynamics, policy-domain
 match, sim-to-real decision fidelity, or customer value. Fixture success is a
 software result, not the proof.
 
-Until that one-command public harness passes, new capture/reconstruction feature
-development is frozen unless the harness identifies a specific missing
-measurement. Partner discovery and protocol/rights work continue as a small
-parallel human lane. Public outcomes can qualify harness mechanics only
-retrospectively; the later partner holdout is still required for the prospective
-north-star claim.
+Until the one-command ADP-009 rehearsal passes, new capture feature development
+is frozen unless a gate identifies a specific missing measurement. Partner
+discovery and protocol/rights work continue as a small parallel human lane. The
+next construction phase uses the existing Raw V3.2 path for one fresh workcell
+with clean-background and object-present observations; physical holdout remains
+required for the prospective north-star claim.
 
 ## Architecture To Reuse
 
@@ -141,7 +155,7 @@ python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <ar
 
 Before accepting work, answer:
 
-1. Which Arm Decision Proof backlog item and day-7/day-14/day-28/day-35/day-42
+1. Which Arm Decision Proof backlog item and day-7/day-14/day-21/day-28/day-35/day-42
    gate does it unblock?
 2. What observed artifact proves the blocker is removed?
 3. Why is existing infrastructure insufficient?

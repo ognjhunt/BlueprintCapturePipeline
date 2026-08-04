@@ -175,6 +175,8 @@ def test_da3_depth_artifacts_frame_loading_and_provider(tmp_path: Path, monkeypa
     assert warnings == ["runtime-missing"]
     assert metrics["backend"] == "synthetic_fallback"
     assert Path(updated[0]["depth_path"]).is_file()
+    assert updated[0]["metric_depth_truth"] is False
+    assert updated[0]["depth_measurement_source"] == "monocular_depth_estimate"
 
     class RuntimeNoDepth:
         def infer_image(self, _rgb):  # type: ignore[no-untyped-def]
@@ -189,6 +191,7 @@ def test_da3_depth_artifacts_frame_loading_and_provider(tmp_path: Path, monkeypa
     )
     assert metrics["backend"] == "da3_python_runtime"
     assert warnings == ["da3_frame_inference_failed:frame_000001:synthetic_depth_used"]
+    assert updated[0]["metric_depth_truth"] is False
 
     assert da3._intrinsics_from_probe({"width": 100, "height": 50})["fx"] == 92.0
     pose = da3._pose_for_frame(2, 1.0)
@@ -210,4 +213,15 @@ def test_da3_depth_artifacts_frame_loading_and_provider(tmp_path: Path, monkeypa
     )
     assert result["provider"] == "da3"
     assert result["keyframe_indices"] == [0]
-    assert result["frames"][0]["pose_confidence"] == 0.98
+    assert result["frames"][0]["pose_confidence"] == 0.0
+    assert result["frames"][0]["metric_depth_truth"] is False
+    assert result["frames"][0]["metric_pose_truth"] is False
+    assert result["frames"][0]["pose_measurement_source"] == (
+        "synthetic_trajectory_placeholder"
+    )
+    assert result["intrinsics"]["metric_intrinsics_truth"] is False
+    assert result["intrinsics"]["intrinsics_measurement_source"] == (
+        "heuristic_from_image_dimensions"
+    )
+    assert result["qualification_role"] == "diagnostic_cross_check_only"
+    assert result["metric_geometry_authority"] is False

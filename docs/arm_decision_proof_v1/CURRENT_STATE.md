@@ -18,6 +18,31 @@ fixture does not promote a public-reference gate.
 All entries are `retrospective_external_reference` and `development_only`.
 No capture or reconstruction feature was added.
 
+## Public Scene Qualification Phase
+
+| Item | Status | Observed evidence |
+|---|---|---|
+| ADP-009A | `partial` | [`PUBLIC_EVIDENCE_LADDER.md`](PUBLIC_EVIDENCE_LADDER.md), [`public_scene_suite_manifest.v1.schema.json`](../schemas/public_scene_suite_manifest.v1.schema.json), [`public_scene_suite_index.v1.schema.json`](../schemas/public_scene_suite_index.v1.schema.json), and the fail-closed component/index tests define rights/revision/digest/frame/role/code-smoke admission, method-input allowlists, oracle/truth isolation, exact project-role binding, and aggregate matrix rules. Component receipts cannot claim matrix completion; the index rejects ARKitScenes, WildRGB-D, authored dataset substitutes, and SimReadyGen in the NVIDIA Content Agents role. No actual InteriorGS/SAGE pair, ScanNet++ scene, Inpaint360GS author-data control, InFusion adapter, AuraFusion360 challenger, NVIDIA Content Agents runtime, controlled background case, SimReady object, or physics control is yet admitted. |
+| ADP-009B | `missing` | No unchanged Inpaint360GS author-data smoke, InFusion format/license/frame adapter, or AuraFusion360 representation/checkpoint adapter exists. No exact rights-admitted InteriorGS/SAGE-3D source object has been removed from both appearance and collision, completed, replaced by an exact SimReady USD, and qualified in Isaac. An authored positive control cannot substitute. NVIDIA USD Content Agents is audited as a candidate backend but has not been executed or admitted. |
+| ADP-009C | `missing` | No exact ScanNet++ real measured scene or controlled known-background completion has passed the new metric/editing tests. |
+| ADP-009D | `missing` | No deterministic InteriorGS/SAGE-to-ScanNet++ variation matrix or one-command public-data replacement rehearsal exists. ARKitScenes and WildRGB-D were explicitly removed from the required stack. |
+
+An earlier development run retained local InteriorGS `0787_841244` PLY and
+semantic sidecars and exercised import/render paths. Those bytes are useful
+candidate inputs, but they do not satisfy ADP-009A: no current rights-authority
+receipt, exactly matched SAGE collision binding, released-method runtime/license
+smoke, or independently sourced SimReady USD admission exists yet. The
+InteriorGS/SAGE release provides a metric frame, OBBs, and static collision
+pairing, not a measurement-authoritative local surface mesh. Rendered cameras
+and RGB will therefore be synthetic method inputs/self-consistency probes;
+external metric depth remains a validation oracle unless a released method
+explicitly accepts it through a preregistered adapter. No completion run has yet
+demonstrated the required seal-before-clean-background-release firebreak.
+
+ADP-009 is now the active engineering item. Every public artifact remains
+`development_only`; this phase cannot qualify a fresh site, partner physics,
+sim-to-real decision fidelity, or customer value.
+
 ## Prospective Partner Phase
 
 | Item | Status | Observed evidence |
@@ -41,7 +66,7 @@ a later physical phase.
 |---|---|---|
 | Sim-only protocol | `observed_complete` | [`FOUNDER_SIM_ONLY_PROTOCOL.md`](FOUNDER_SIM_ONLY_PROTOCOL.md) freezes Isaac Lab-Arena's built-in Rubik's-cube-to-bowl task on Isaac Sim 6.0.1/PhysX, the DROID Franka-plus-Robotiq embodiment, explicit π0.5 baseline, Arena-supported GR00T N1.6-DROID alternative, 44 paired reset seeds per candidate, and an 88-episode schedule. A pre-spend audit superseded v1 before any candidate outcome or paid compute. Blueprint's founder approved exact v2 digest `sha256:05eb6f5c187fd69da6f40e7428634181b39fe7f02501bd7ccb9a4331801c01fc`; the immutable [v2 approval receipt](manifests/founder_sim_approval_receipt.v2.json) and [v2 execution admission](manifests/founder_sim_execution_admission.v2.json) remain simulation-only. [`adp_isaac_lab_arena_request.py`](../../src/blueprint_pipeline/adp_isaac_lab_arena_request.py) compiles its 88 frozen logical worker jobs without authorizing them before native controls. |
 | GR00T adapter | `observed_complete` | [`groot_n16_arena_policy_runtime.py`](../../src/blueprint_pipeline/groot_n16_arena_policy_runtime.py) binds Arena's native NVIDIA ZMQ/DROID seam to the N1.6 source and checkpoint revisions with mandatory materialized-worker identity evidence. |
-| Existing scene/assets | `partial` | Arena already registers the maple table, Rubik's cube, YCB bowl, home-office HDR, DROID embodiment, task, success metric, and OpenPI/GR00T remote-policy seams, so no generation or custom environment is required. [`adp_isaac_lab_arena_materialization.py`](../../src/blueprint_pipeline/adp_isaac_lab_arena_materialization.py) now fails closed unless a future native worker proves clean exact-revision source checkouts and byte-complete runtime, asset, embodiment, and checkpoint groups. The actual worker receipt remains intentionally absent because no native/paid worker was started. |
+| Existing scene/assets | `partial` | Arena already registers the maple table, Rubik's cube, YCB bowl, home-office HDR, DROID embodiment, task, success metric, and OpenPI/GR00T remote-policy seams, so no generation or custom environment is required. [`adp_isaac_lab_arena_materialization.py`](../../src/blueprint_pipeline/adp_isaac_lab_arena_materialization.py) fails closed unless a native worker proves clean exact-revision source checkouts and byte-complete runtime, asset, embodiment, and checkpoint groups. Attempt 003 started only the paid native-control precursor and blocked before the Arena entrypoint, so no materialized worker or candidate evidence exists. |
 | Local control preflight | `observed_complete` | [`franka_droid_control_preflight.py`](../../src/blueprint_pipeline/franka_droid_control_preflight.py) ran the pinned MuJoCo/Menagerie proxy and produced receipt digest `sha256:30cc9636bc4a90b023f89e7aca65c6ebd66229462562902e89ad4b5ef48c1106`: the scripted control succeeded, the stationary control failed, and both retained complete visual evidence. This is local control evidence only, not candidate or native-Isaac evidence. |
 | Scenario cousins | `missing` | Deliberately excluded from the first digest. The 44 seeded placements per candidate are paired repetitions, not cousins. Future object, lighting, background, camera, mass, or friction cousins require a new protocol digest and should use Isaac Lab-Arena's frozen variation system; agentic generation is proposal-only. |
-| Production simulation | `missing` | Founder v2 approval is complete. [`adp_isaac_lab_arena_vast.py`](../../src/blueprint_pipeline/adp_isaac_lab_arena_vast.py) provides the canonical exact-image, zero-retry, capped Vast lane for the native zero-action control with output return, watchdog, teardown, and provider-zero enforcement. Checkpoint/asset materialization, native positive/parity controls, and media-complete model-adapter dry runs remain prerequisites to the 88 candidate episodes. |
+| Production simulation | `missing` | Founder v2 approval is complete. Paid attempt 003 reached Isaac Sim 6.0.1/Warp startup on one RTX A6000 but the fail-closed CUDA sanity classifier returned `cuda_runtime_incompatible` before the Arena entrypoint. [`adp_arena_vast_result.json`](../../output/arm_decision_proof_v1/arena_native_control_v2/attempts/attempt_003/adp_arena_vast_result.json) is `blocked`: no provider output ZIP, MP4, controller result, candidate policy result, or ranking evidence exists. The exact attempt ran for 741.886 seconds, cost `$0.097086`, used no retry, destroyed its instance, removed staged objects, and independent inventory verification found zero active Vast instances and no continuing spend. The contradictory GPU-observability probe is a diagnostic blocker, not an experiment result. |

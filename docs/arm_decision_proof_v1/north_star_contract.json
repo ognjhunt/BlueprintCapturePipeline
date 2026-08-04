@@ -1,9 +1,9 @@
 {
-  "schema_version": "arm_decision_proof_north_star.v1",
+  "schema_version": "arm_decision_proof_north_star.v2",
   "program_id": "arm-decision-proof-v1",
   "status": "sole_active_program",
-  "approved_on": "2026-08-03",
-  "north_star": "From one qualified, rights-cleared representation of one previously unseen fixed-arm workcell, imported from an existing scene or capture when possible and newly captured only for measured gaps, prospectively decide which of two frozen policy or configuration candidates deserves the next scarce physical-test budget, or explicitly abstain, then verify that decision and at least one predicted failure boundary with randomized held-out physical trials.",
+  "approved_on": "2026-08-04",
+  "north_star": "After qualifying every reusable service seam on a digest-bound, rights-cleared public evidence ladder, including removal of one source object from a metric splat/collision scene, released-code background completion, and replacement with one exact SimReady USD, take one fresh, rights-cleared capture of one previously unseen fixed-arm workcell; construct a candidate Minimum Sufficient Evaluation Replica whose observed metric geometry, registered appearance, collision geometry, and physics-authored task objects remain distinct but share one measured frame; prospectively decide which of exactly two frozen policy or configuration candidates deserves the next scarce physical-test budget, or explicitly abstain, then verify that decision and at least one predicted failure boundary with randomized held-out physical trials.",
   "north_star_metric": {
     "name": "prospectively_physically_validated_new_site_task_decisions",
     "current": 0,
@@ -13,9 +13,11 @@
   "construction_method": "candidate_minimum_sufficient_evaluation_replica",
   "showcase_label": "SiteBench",
   "execution_strategy": {
-    "mode": "public_reference_harness_first",
-    "harness_engineering": "dominant_until_harness_complete",
-    "capture_feature_development": "zero_unless_measured_blocker",
+    "mode": "public_evidence_ladder_then_fresh_site_proof",
+    "completed_precursor": "ADP-008_simpler_decision_harness",
+    "active_item": "ADP-009_public_scene_qualification",
+    "public_scene_qualification": "dominant_until_digest_bound_matrix_complete",
+    "fresh_site_capture": "mandatory_final_construction_input_after_public_qualification_and_protocol_freeze",
     "partner_recruitment_and_protocol": "parallel_human_lane"
   },
   "scope": {
@@ -26,15 +28,97 @@
     "candidate_count": 2,
     "task_family": "bounded_rigid_object_pick_place",
     "object_class": "rigid_opaque",
+    "scene_edit_count": 1,
+    "replacement_asset": "simready_usd_with_distinct_visual_and_collision_geometry",
     "camera_arrangement": "fixed",
     "gripper": "parallel_jaw"
   },
+  "representation_contract": {
+    "appearance": "registered_3dgs_or_explicit_visual_geometry_candidate",
+    "static_metric_geometry": "observed_laser_rgbd_lidar_stereo_or_surveyed_surface_evidence",
+    "static_collision": "separate_simplified_mesh_independently_checked_against_metric_geometry",
+    "dynamic_task_objects": "explicit_visual_mesh_and_separate_collider_with_measured_dimensions_and_task_physics",
+    "shared_frame": "one_digest_bound_metric_transform_chain_from_source_to_simulator",
+    "metric_authority_order": [
+      "laser_rgbd_or_calibrated_stereo",
+      "surveyed_control_or_known_measurement",
+      "dataset_metric_camera_poses_and_geometry"
+    ],
+    "non_authoritative_aids": [
+      "sam31_semantic_mask_proposal",
+      "da3_depth_or_pose_cross_check",
+      "gaussian_extent_or_covariance",
+      "generated_hidden_surface_completion"
+    ],
+    "hidden_surface_rule": "unobserved_surface_may_be_visual_candidate_only_never_factual_recovery",
+    "preferred_background_rule": "use_observed_clean_background_or_source_view_coverage_before_generation"
+  },
+  "scene_edit_contract": {
+    "source_object_selection": "multiview_semantic_masks_plus_3d_partition_with_boundary_review",
+    "source_object_removal": "remove_or_deactivate_both_object_appearance_and_source_collision_without_touching_background_identity",
+    "background_completion": "released_code_inpainting_baseline_with_generated_regions_labeled_visual_candidate_only",
+    "render_derived_observation_rule": "when_original_multiview_inputs_are_unavailable_freeze_collision_aware_virtual_cameras_render_object_present_RGB_and_only_the_exact_adapter_declared_splat_rendered_depth_or_disparity_inputs_emit_digest_bound_intrinsics_and_camera_poses_without_running_an_unscaled_mapper_keep_independent_metric_depth_geometry_and_clean_background_truth_out_of_method_inputs_and_keep_calibration_and_test_trajectories_disjoint",
+    "inpaint360gs_interface_rule": "the_unchanged_author_data_smoke_is_a_reproducibility_control_not_the_primary_Blueprint_interface_adapter_and_any_future_render_derived_Inpaint360GS_adapter_must_separately_prove_prebuilt_camera_preservation_default_mapper_bypass_and_the_boundary_between_its_virtual_poses_and_Blueprint_source_render_cameras",
+    "render_derived_edit_identity": "InFusion_may_add_supplemental_world_aligned_Gaussians_to_a_transcoded_copy_of_the_publisher_PLY_while_AuraFusion360_may_load_or_retrain_an_editable_model_from_frozen_renders_and_neither_path_may_be_called_an_in_place_edit_until_exact_PLY_fields_SH_degree_and_world_transform_round_trip_are_verified",
+    "released_reproducibility_control": "Inpaint360GS_exact_revision_on_author_data_after_license_and_dependency_admission",
+    "primary_released_interface_adapter": "InFusion_exact_revision_after_license_weight_and_dependency_admission",
+    "primary_adapter_reason": "accepts_rendered_depth_intrinsics_and_camera_to_world_emits_supplemental_PLY_in_the_existing_world_frame_and_explicitly_composes_with_an_original_PLY",
+    "primary_adapter_required_patch": "transcode_publisher_PLY_without_coordinate_change_infer_and_preserve_spherical_harmonic_degree_preserve_all_required_fields_and_prove_original_plus_supplemental_round_trip",
+    "released_360_quality_challenger": "AuraFusion360_exact_revision_after_license_weight_and_dependency_admission",
+    "quality_challenger_required_patch": "add_a_generic_dataset_loader_bind_the_custom_masked_Gaussian_PLY_fields_and_prove_camera_frame_and_PLY_round_trip_before_comparison",
+    "conditional_released_effect_ablation": "GOR-IS_exact_revision_for_preregistered_shadow_reflection_or_gloss_cases_after_separate_noncommercial_license_admission",
+    "released_noncritical_methods": [
+      "3DGIC_suboptimal_custom_representation_and_noncommercial_release",
+      "GPGS_retraining_heavy_Point-MAE_path_with_missing_root_license",
+      "GS-PatchMatch_mesh_dependent_structure_weak_path_with_missing_root_license",
+      "CoIn_retraining_based_removal_with_unfinished_insertion_and_missing_root_license",
+      "Gaussian-Grouping_removal_control_with_custom_identity_representation"
+    ],
+    "replacement": "insert_one_exact_digest_bound_SimReady_USD_with_explicit_visual_mesh_collider_dimensions_pose_mass_inertia_and_contact_material",
+    "ground_truth_levels": [
+      "public_scene_test_trajectory_edit_locality_multiview_self_consistency_and_visual_plausibility",
+      "controlled_known_background_factual_recovery",
+      "fresh_site_clean_background_factual_recovery"
+    ],
+    "paper_only_exclusions": [
+      "ArtisanGS",
+      "BEA-GS",
+      "GSCompleter",
+      "3D-GIMP",
+      "FocusGS",
+      "TRACE",
+      "LightHarmony3D",
+      "D3DR",
+      "UniMGS"
+    ]
+  },
+  "method_admission": {
+    "software_rule": "exact_retrievable_released_revision_license_dependencies_weights_and_smoke_receipt_required",
+    "paper_only_rule": "inadmissible_for_critical_path",
+    "proprietary_tool_rule": "optional_replaceable_non_authoritative_adapter_only_when_already_authorized",
+    "rights_rule": "each_scene_and_dependency_fails_closed_without_recorded_allowed_use",
+    "threshold_rule": "preregister_from_task_tolerance_sensor_uncertainty_and_robot_clearance_not_paper_average",
+    "generative_editing_rule": "mandatory_released_baseline_when_completion_is_required_but_generated_content_remains_visual_candidate_only_and_never_metric_collision_or_hidden_surface_authority"
+  },
+  "asset_authoring_contract": {
+    "geometry_authority": "measured_scan_manufacturer_cad_or_checked_in_parametric_geometry_never_vlm_inference",
+    "provider_interface": "replaceable_simready_authoring_backend",
+    "released_candidate": "NVIDIA_USD_Content_Agents_v0.5.2_after_exact_admission",
+    "candidate_scope": "existing_geometry_to_usd_material_physics_schema_and_static_simready_validation",
+    "candidate_limit": "not_image_to_cad_not_hidden_geometry_not_measured_physics_and_not_task_qualification",
+    "required_control": "known_good_manually_authored_usd",
+    "optional_comparison": "SimReadyGen_only_after_separate_code_rights_runtime_and_smoke_admission",
+    "required_blueprint_completion": "deterministic_separate_collider_mass_center_of_mass_inertia_pose_contact_and_reset_authoring",
+    "qualification": "geometry_preservation_static_usd_validation_and_dynamic_isaac_contact_grasp_tests"
+  },
   "required_evidence": [
+    "digest_bound_public_scene_qualification_matrix",
     "partner_owned_task_and_decision",
-    "immutable_partner_capture",
+    "immutable_fresh_partner_capture",
     "owner_approved_task_distribution_and_reset",
     "qualified_robot_camera_site_registration",
     "qualified_observation_and_collision_replica",
+    "separate_registered_appearance_metric_geometry_collision_and_task_object_roles",
     "two_frozen_real_policy_or_configuration_receipts",
     "lossless_policy_input_frames_and_digest_bound_human_review_video_per_episode",
     "explicit_non_policy_success_grader_identity_and_metric_trace",
@@ -44,6 +128,12 @@
     "bounded_decision_with_uncertainty_and_invalid_region"
   ],
   "acceptance": [
+    "public_ladder_rehearses_every_non_site_specific_seam_or_records_a_typed_abstention",
+    "one_source_object_is_removed_from_appearance_and_collision_and_replaced_by_one_exact_simready_usd",
+    "inpainting_is_scored_separately_for_visual_plausibility_and_factual_known_background_recovery",
+    "render_derived_camera_bundles_are_labeled_synthetic_and_never_promoted_to_independent_capture_evidence",
+    "clean_background_rgb_depth_and_geometry_remain_withheld_from_the_completion_method_until_the_edit_digest_is_sealed",
+    "fresh_site_capture_is_the_final_new_construction_input_before_candidate_replica_qualification",
     "real_learned_policy_executes_closed_loop_in_the_replica",
     "simulation_decision_is_sealed_before_physical_holdout",
     "physical_holdout_supports_the_same_practical_selection_or_elimination_decision",
@@ -54,25 +144,108 @@
     "partner_confirms_the_result_changes_or_reduces_the_next_physical_test_allocation",
     "claims_remain_bounded_to_the_exact_site_task_robot_policies_and_validation_envelope"
   ],
+  "public_evidence_ladder": [
+    {
+      "order": 0,
+      "id": "decision_harness_replay",
+      "status": "observed_complete",
+      "substrate": "SIMPLER",
+      "purpose": "two_candidate_execution_receipts_sealing_external_outcome_join_and_replay",
+      "claim_ceiling": "retrospective_development_only"
+    },
+    {
+      "order": 1,
+      "id": "released_code_and_dataset_admission",
+      "status": "required",
+      "substrate": "exact_scene_manifests",
+      "purpose": "rights_revisions_digests_roles_units_frames_partitions_and_code_smokes",
+      "claim_ceiling": "admission_only"
+    },
+    {
+      "order": 2,
+      "id": "physics_authored_positive_control",
+      "status": "required",
+      "substrate": "native_Isaac_or_partner_equivalent_authored_task_island",
+      "purpose": "isolate_runtime_reset_contact_success_media_and_receipt_health_from_reconstruction",
+      "claim_ceiling": "simulator_control_only"
+    },
+    {
+      "order": 3,
+      "id": "released_inpainting_author_smokes",
+      "status": "required",
+      "substrate": "exact_Inpaint360GS_InFusion_and_AuraFusion360_revisions_with_author_inputs",
+      "purpose": "reproduce_each_unmodified_released_path_before_testing_the_Blueprint_render_derived_interface",
+      "claim_ceiling": "released_method_reproduction_only"
+    },
+    {
+      "order": 4,
+      "id": "synthetic_hybrid_scene_control",
+      "status": "required_after_explicit_rights",
+      "substrate": "matched_InteriorGS_and_SAGE-3D_scene",
+      "purpose": "render_derived_calibration_and_test_trajectories_appearance_semantics_static_collision_pairing_object_removal_InFusion_primary_adapter_AuraFusion360_challenger_and_hybrid_composition",
+      "claim_ceiling": "synthetic_static_scene_control_only"
+    },
+    {
+      "order": 5,
+      "id": "simready_authoring_backend_bakeoff",
+      "status": "required_candidate_evaluation",
+      "substrate": "manual_USD_control_and_parametric_geometry_plus_NVIDIA_USD_Content_Agents_v0.5.2",
+      "purpose": "test_geometry_preserving_usd_conversion_material_physics_authoring_static_validation_and_dynamic_Isaac_qualification_without_promoting_vlm_predictions",
+      "claim_ceiling": "candidate_asset_authoring_only"
+    },
+    {
+      "order": 6,
+      "id": "controlled_known_background_recovery",
+      "status": "required",
+      "substrate": "released_author_data_with_truth_or_Blueprint_authored_metric_clean_background_control",
+      "purpose": "score_factual_background_recovery_only_where_clean_rgb_and_metric_geometry_are_withheld_then_released_after_sealing",
+      "claim_ceiling": "controlled_counterfactual_recovery_only"
+    },
+    {
+      "order": 7,
+      "id": "real_metrology_transfer",
+      "status": "required_after_access_and_terms_acceptance",
+      "substrate": "one_admitted_ScanNet++_scene",
+      "purpose": "transfer_the_frozen_editing_measurement_and_replacement_contract_to_laser_registered_real_capture",
+      "claim_ceiling": "noncommercial_real_measured_benchmark_only"
+    },
+    {
+      "order": 8,
+      "id": "deterministic_variation_and_full_rehearsal",
+      "status": "required",
+      "substrate": "admitted_InteriorGS_SAGE_control_then_admitted_ScanNet++_transfer_plus_physics_authored_task_island",
+      "purpose": "stress_scale_frame_pose_depth_coverage_appearance_collider_and_task_parameter_variations_then_run_the_complete_simulator_side_Task_Evaluation_Run",
+      "claim_ceiling": "construction_robustness_not_multi_site_generalization"
+    },
+    {
+      "order": 9,
+      "id": "fresh_site_acquisition_and_prospective_proof",
+      "status": "mandatory_final_acquisition_phase",
+      "substrate": "one_previously_unseen_rights_cleared_partner_workcell",
+      "purpose": "replace_public_proxies_with_fresh_observations_then_seal_and_physically_adjudicate_the_two_candidate_decision",
+      "claim_ceiling": "exact_site_task_robot_candidates_and_validation_envelope"
+    }
+  ],
   "development_substrates": {
     "allowed": true,
-    "purpose": "exercise_downstream_harness_before_partner_capture",
+    "purpose": "qualify_non_site_specific_service_seams_before_fresh_site_capture",
     "claim_ceiling": "development_only",
     "canonical_fixtures": [
       "tests/fixtures/decision_evidence_rigid_object_v1/vertical_slice.json",
       "tests/fixtures/new_site_loading_bay_v1",
       "tests/fixtures/kitchen_task_min"
     ],
-    "primary_public_reference_candidate": "SIMPLER",
-    "public_reference_admission_status": "requires_exact_revision_asset_license_and_runtime_pin",
+    "historical_public_decision_reference": "SIMPLER",
+    "public_scene_admission_status": "each_exact_scene_requires_revision_digest_rights_roles_frame_and_code_smoke",
     "cannot_qualify": [
-      "partner_capture_path",
+      "fresh_partner_capture",
       "site_task_owner_truth",
       "robot_camera_site_registration",
       "task_specific_collision_or_dynamics",
       "partner_observation_domain_match",
       "sim_to_real_decision_fidelity",
-      "customer_value_or_reuse_economics"
+      "customer_value_or_reuse_economics",
+      "multi_site_generalization"
     ]
   },
   "non_goals": [
@@ -83,7 +256,8 @@
     "five_policy_campaigns_or_general_rank_correlation",
     "universal_robot_or_simulator_support",
     "new_reconstruction_or_world_model_research_without_a_measured_blocker",
-    "new_capture_feature_development_without_a_measured_harness_or_partner_blocker",
+    "paper_only_or_unreleased_method_integration",
+    "generative_object_removal_or_insertion_as_a_product_or_truth_source",
     "provider_marketplaces_or_multi_provider_bakeoffs",
     "post_training_or_policy_improvement_products",
     "multi_site_generalization",
@@ -93,45 +267,52 @@
   "gates": [
     {
       "day": 7,
-      "phase": "public_reference_harness",
-      "id": "public_reference_pinned",
-      "required_outcome": "One public real-to-sim reference substrate is pinned by exact revision, assets, license, policies, task, physical reference outcomes, and claim ceiling.",
+      "phase": "public_scene_qualification",
+      "id": "scene_admission_and_positive_control",
+      "required_outcome": "Component receipts plus one suite index bind exact Inpaint360GS InFusion and AuraFusion360 author smokes, the rights-admitted InteriorGS/SAGE hybrid control, a controlled clean-background case, an exact SimReady object, and a physics control; ScanNet++ access and terms, GOR-IS when preregistered, and NVIDIA Content Agents each have an exact admitted receipt, and no component receipt claims matrix completion.",
       "failure_action": "stop"
     },
     {
       "day": 14,
-      "phase": "public_reference_harness",
-      "id": "two_candidate_execution",
-      "required_outcome": "Two genuine public policy candidates execute through the normalized runtime and emit complete condition-level episode receipts.",
+      "phase": "public_scene_qualification",
+      "id": "metric_hybrid_scene",
+      "required_outcome": "One exact rights-admitted InteriorGS/SAGE hybrid control preserves the publisher metric frame object boxes and active splat/static-collision pairing without claiming measurement-authoritative local surface geometry, runs the InFusion world-frame supplemental-PLY adapter and AuraFusion360 multiview challenger on one frozen render packet, removes one source object from appearance and matching collision, and inserts one exact SimReady USD; the manual control and NVIDIA Content Agents candidate pass standalone geometry, static, and dynamic Isaac gates.",
       "failure_action": "stop"
     },
     {
       "day": 21,
-      "phase": "public_reference_harness",
-      "id": "retrospective_seal_and_join",
-      "required_outcome": "The harness seals a development-only simulated decision before programmatic release of public reference outcomes and performs an exact external outcome join.",
+      "phase": "public_scene_qualification",
+      "id": "variation_and_abstention",
+      "required_outcome": "Released-code inpainting is scored for outside-mask locality and multiview self-consistency on object-present test trajectories and for full-reference factual recovery only on controlled clean-background truth released after the edit digest is sealed; one exact ScanNet++ real measured transfer is complete; the replacement USD passes visual collider contact and reset checks; deterministic variations preserve the bounded result or emit typed abstention.",
       "failure_action": "pivot_or_stop"
     },
     {
       "day": 28,
-      "phase": "public_reference_harness",
-      "id": "harness_complete",
-      "required_outcome": "One command reproduces the two-candidate matrix, receipts, sealed development decision, external outcome join, bounded verdict, and inspectable evidence matrix.",
+      "phase": "public_scene_qualification",
+      "id": "public_data_rehearsal",
+      "required_outcome": "One command reproduces the admitted component index, render-derived inpainting adapter, removal and exact replacement receipts, asset-authoring comparison, hybrid-scene checks, variation outcomes, simulator-side two-candidate Task Evaluation Run, complete media receipts, failures, claim ceilings, and replay without using partner data.",
       "failure_action": "stop"
     },
     {
       "day": 7,
       "phase": "partner_proof",
       "id": "partner_and_authority",
-      "required_outcome": "Partner, robot, real task, two runnable candidates, holdout authority, rights, and case-study terms are secured.",
+      "required_outcome": "Partner, robot, real task, two runnable candidates, holdout authority, rights, fresh capture authority, and case-study terms are secured.",
       "failure_action": "stop"
     },
     {
       "day": 14,
       "phase": "partner_proof",
-      "id": "protocol_and_capture",
-      "required_outcome": "Task distribution, reset, metric, condition IDs, power plan, invalid region, and immutable partner inputs are frozen; new capture work is limited to measured missing evidence.",
+      "id": "protocol_freeze",
+      "required_outcome": "Task distribution, reset, metric, condition IDs, power plan, invalid region, capture measurements, object-present views, clean-background observations, replacement USD, and immutable partner inputs are frozen before new site acquisition.",
       "failure_action": "stop"
+    },
+    {
+      "day": 21,
+      "phase": "partner_proof",
+      "id": "fresh_capture_and_replica",
+      "required_outcome": "One fresh rights-cleared site capture supplies the preregistered metric, appearance, registration, collision, and task-object evidence; unobserved or uncertain regions remain typed gaps.",
+      "failure_action": "pivot_or_stop"
     },
     {
       "day": 28,
@@ -158,6 +339,7 @@
   "compatibility": {
     "preserve_readers": true,
     "preserve_historical_evidence": true,
+    "historical_adp_008_digest_unchanged": true,
     "allow_unrelated_new_work": false
   }
 }

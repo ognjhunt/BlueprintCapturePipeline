@@ -1,7 +1,20 @@
 # Public Reference Substrate Decision
 
-Status: candidate selection for the `public_reference_harness` phase
-Decision: audit and pin **SIMPLER** first; do not run a multi-backend bakeoff
+Status: **historical ADP-002 through ADP-008 decision; observed complete**
+Decision: SIMPLER remains the immutable retrospective decision-harness reference
+
+The active post-ADP-008 strategy is
+[`PUBLIC_EVIDENCE_LADDER.md`](PUBLIC_EVIDENCE_LADDER.md). It requires released
+[Inpaint360GS](https://github.com/dfki-av/Inpaint360GS) unchanged author-data
+smoke; the exact rights-admitted InteriorGS/SAGE-3D pair; an
+[InFusion](https://github.com/ali-vilab/Infusion) primary interface adapter;
+an [AuraFusion360](https://github.com/kkennethwu/AuraFusion360_official)
+360-quality challenger; exact SimReady USD replacement; targeted ScanNet++ real
+measured transfer after exact access/rights admission; a bounded NVIDIA USD Content Agents authoring
+comparison; and a final fresh-site acquisition phase. An authored scene may be
+a separate positive control but never a substitute for the exact public pair.
+Nothing in that additive program changes or relabels the historical SIMPLER
+artifacts described below.
 
 ## Why The Program Is Harness-First
 
@@ -92,12 +105,14 @@ DROID alone is not a complete SiteBench reference: it does not provide a
 qualified interactive simulator replica and matched per-condition simulated and
 physical evaluation result for each captured scene.
 
-### Existing Site-Capture Datasets
+### Excluded Site-Capture Datasets
 
-ARKitScenes and similar reconstruction datasets remain useful for import,
-provenance, scale, registration, and abstention tests. They do not contain the
+ARKitScenes, WildRGB-D, and similar breadth/object-only datasets are not active
+ADP-009 inputs. Their geometry or scope is below the quality and site-level
+splat/collision target of this bounded rehearsal, and they do not contain the
 paired robot policies, task/reset truth, and physical decision outcomes needed
-to test the whole evaluation claim.
+to test the whole evaluation claim. Consumer-capture behavior is deferred to
+Blueprint's final Raw V3.2 site capture.
 
 ## What Public Data Can And Cannot Prove
 
