@@ -163,41 +163,53 @@ def _world_position(stage: Any, path: str, UsdGeom: Any) -> list[float]:  # prag
     return [float(value[index]) for index in range(3)]
 
 
-def _contact_records(*, prefixes: Sequence[str], limit: int = 80) -> list[dict[str, Any]]:  # pragma: no cover
+def _impulse_magnitude(value: Any) -> float:  # pragma: no cover - Isaac runtime only
     try:
-        import omni.physx
-        from pxr import PhysicsSchemaTools
-
-        report = omni.physx.get_physx_simulation_interface().get_contact_report()
-        headers = report[0] if report else []
-        samples = report[1] if report and len(report) > 1 else []
-    except Exception:
-        return []
-    records: list[dict[str, Any]] = []
-    for header in headers:
-        paths: list[str] = []
-        for name in ("actor0", "actor1", "collider0", "collider1"):
-            encoded = getattr(header, name, "")
-            try:
-                paths.append(str(PhysicsSchemaTools.intToSdfPath(int(encoded))))
-            except Exception:
-                paths.append(str(encoded))
-        if not any(any(path == prefix or path.startswith(prefix + "/") for path in paths) for prefix in prefixes):
-            continue
-        offset = int(getattr(header, "contact_data_offset", 0) or 0)
-        count = int(getattr(header, "num_contact_data", 0) or 0)
-        contact_samples = []
-        for sample in list(samples)[offset : offset + min(count, 4)]:
-            contact_samples.append(
-                {
-                    "impulse": float(getattr(sample, "impulse", 0.0) or 0.0),
-                    "separation_m": float(getattr(sample, "separation", 0.0) or 0.0),
-                }
+        return abs(float(value))
+    except (TypeError, ValueError):
+        try:
+            return math.sqrt(
+                sum(float(getattr(value, axis, 0.0)) ** 2 for axis in ("x", "y", "z"))
             )
-        records.append({"paths": paths, "samples": contact_samples})
-        if len(records) >= limit:
-            break
-    return records
+        except (TypeError, ValueError):
+            return 0.0
+
+
+def _subscribe_contact_reports(contact_log: list) -> Any:  # pragma: no cover - Isaac runtime only
+    """Collect PhysX contact headers via the supported subscription callback.
+
+    Polling get_contact_report() outside a simulation callback crashed the app
+    natively on the first capsule step (instances 46754204 and 46755516)."""
+
+    from omni.physx import get_physx_simulation_interface
+    from pxr import PhysicsSchemaTools
+
+    def _on_contact_report(contact_headers: Any, contact_data: Any) -> None:
+        try:
+            data = list(contact_data)
+            for header in contact_headers:
+                paths: list[str] = []
+                for name in ("actor0", "actor1", "collider0", "collider1"):
+                    encoded = getattr(header, name, 0)
+                    try:
+                        paths.append(str(PhysicsSchemaTools.intToSdfPath(int(encoded))))
+                    except Exception:  # noqa: BLE001 - path decode is best effort
+                        paths.append(str(encoded))
+                offset = int(getattr(header, "contact_data_offset", 0) or 0)
+                count = int(getattr(header, "num_contact_data", 0) or 0)
+                samples = [
+                    {
+                        "impulse": _impulse_magnitude(getattr(sample, "impulse", 0.0)),
+                        "separation_m": float(getattr(sample, "separation", 0.0) or 0.0),
+                    }
+                    for sample in data[offset : offset + min(count, 4)]
+                ]
+                if len(contact_log) < 4000:
+                    contact_log.append({"paths": paths, "samples": samples})
+        except Exception:  # noqa: BLE001 - a reporting fault must never kill physics
+            pass
+
+    return get_physx_simulation_interface().subscribe_contact_report_events(_on_contact_report)
 
 
 def _between_contacts(
@@ -442,6 +454,21 @@ def _runtime(
         checkpoint("world_reset_start")
         world.reset()
         checkpoint("world_reset_complete")
+        contact_log: list[dict[str, Any]] = []
+        contact_subscription = _subscribe_contact_reports(contact_log)
+
+        def _drain_contacts(prefixes: Sequence[str]) -> list[dict[str, Any]]:
+            drained = [
+                row
+                for row in contact_log
+                if any(
+                    any(path == prefix or path.startswith(prefix + "/") for path in row["paths"])
+                    for prefix in prefixes
+                )
+            ]
+            del contact_log[:]
+            return drained
+
         for camera in cameras.values():
             camera.initialize()
         for _ in range(8):
@@ -500,13 +527,11 @@ def _runtime(
             alpha = step / max(1, int(config["pusher_steps"]) - 1)
             position_m = center + tangent * (-0.11 + 0.22 * alpha)
             translate_op.Set(Gf.Vec3d(*map(float, position_m)))
-            world.step(render=step in {0, int(config["pusher_steps"]) - 1})
+            world.step(render=step == int(config["pusher_steps"]) - 1)
             if step % 10 == 0 or step == int(config["pusher_steps"]) - 1:
                 angle, velocity, effort = _joint_values(sink, handle_index)
                 records = _between_contacts(
-                    _contact_records(
-                        prefixes=[pusher_path, str(config["handle_prim_path"])]
-                    ),
+                    _drain_contacts([pusher_path, str(config["handle_prim_path"])]),
                     pusher_path,
                     str(config["handle_prim_path"]),
                 )
@@ -559,8 +584,8 @@ def _runtime(
                 if step % 15 == 0 or step == int(config["ik_steps_per_waypoint"]) - 1:
                     sink_angle, _, sink_effort = _joint_values(sink, handle_index)
                     contacts = _between_contacts(
-                        _contact_records(
-                            prefixes=[
+                        _drain_contacts(
+                            [
                                 str(config["franka_prim_path"]),
                                 str(config["handle_prim_path"]),
                             ]
@@ -592,6 +617,10 @@ def _runtime(
             )
         frames.extend([_frame_record(cameras["front"], "franka_push_front"), _frame_record(cameras["close"], "franka_push_close")])
         checkpoint("franka_push_complete", contact_count=len(franka_contacts))
+        try:
+            contact_subscription.unsubscribe()
+        except Exception:  # noqa: BLE001 - teardown of the reporter is best effort
+            pass
 
         root_final = np.asarray(_world_position(stage, str(config["base_prim_path"]), UsdGeom))
         franka_base_final = np.asarray(_world_position(stage, franka_base_path, UsdGeom))
