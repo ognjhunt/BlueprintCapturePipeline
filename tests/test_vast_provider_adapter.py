@@ -4642,15 +4642,17 @@ def test_vast_adapter_small_provider_helper_edges(
         provider_bundle_kind="isaac",
     )
     assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing" in script
-    assert "cudaGetDeviceCount" in script
+    # Isaac images do not reliably expose a standalone libcudart to their
+    # bundled Python.  The paid Isaac path therefore defers CUDA admission to
+    # the SimulationApp + Warp smoke rather than running the generic ctypes
+    # probe used by non-Isaac bundles.
+    assert "BLUEPRINT_VAST_CUDA_RUNTIME_DEFERRED_TO_ISAAC_SIMULATION_APP" in script
+    assert "wp.get_devices()" in script
+    assert "isaac_simulation_app_warp" in script
+    assert "cudaGetDeviceCount" not in script
     assert "BLUEPRINT_VAST_CUDA_RUNTIME_OK" in script
     assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:cuda_runtime_incompatible" in script
     assert "/isaac-sim/python.sh" in script
-    assert "apt-get install -y python3" in script
-    assert script.index("apt-get install -y python3") < script.index("cudaGetDeviceCount")
-    assert script.index("cudaGetDeviceCount") < script.index(
-        "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED"
-    )
     with pytest.raises(ValueError, match="unsupported_provider_bundle_kind"):
         vpa._probe_shell_script("https://heartbeat.example", provider_bundle_kind="bad")
     wam_script = vpa._probe_shell_script(
