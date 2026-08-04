@@ -1,0 +1,18 @@
+{
+  "adp_item": "ADP-009A",
+  "artifact_bytes_opened": false,
+  "blockers": [
+    "controlled_background_truth_case_missing"
+  ],
+  "checks": {
+    "required_receipt_present": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-controlled_background_truth",
+  "component_manifest_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:58a0d75a13ba5bd0afc77cd070fbc70c60f516e41f4b0256549f8cde431fca32",
+  "role": "controlled_background_truth",
+  "schema_version": "public_scene_component_admission_receipt.v1",
+  "status": "blocked"
+}

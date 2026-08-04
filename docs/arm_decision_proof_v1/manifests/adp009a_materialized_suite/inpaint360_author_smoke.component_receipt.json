@@ -1,0 +1,24 @@
+{
+  "adp_item": "ADP-009A",
+  "artifact_bytes_opened": true,
+  "blockers": [
+    "inpaint360_author_data_and_weight_rights_or_smoke_missing"
+  ],
+  "checks": {
+    "clean_source_tree": true,
+    "exact_source_revision": true,
+    "exact_source_tree": true,
+    "official_remote_head": true,
+    "source_license_and_dependency_files_hashed": true,
+    "submodule_revisions": true,
+    "unchanged_author_smoke_executed": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-inpaint360_author_smoke",
+  "component_manifest_digest": "sha256:9a75f0ee9206fb6391b7c71de56f3a5c234693d81ac87b143589f57d62bb3f07",
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:c877f68f2621fecdfcdbb29f51a98399b436d733cf737be6aa1c3aa958ac74d5",
+  "role": "inpaint360_author_smoke",
+  "schema_version": "public_scene_component_admission_receipt.v1",
+  "status": "blocked"
+}

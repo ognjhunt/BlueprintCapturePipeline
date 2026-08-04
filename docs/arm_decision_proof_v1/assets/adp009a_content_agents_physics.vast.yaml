@@ -1,0 +1,79 @@
+project:
+  name: adp009a_840313_canned_beverage_physics
+  session_id: adp009a_840313_canned_beverage_physics
+  description: NVIDIA Physics Agent challenger; outputs remain authored priors.
+  working_dir: .physics
+input:
+  usd_path: ../input/adp009a_840313_canned_beverage_control.usda
+  reference_images:
+    - ../input/adp009a_840313_canned_beverage_control_reference.png
+steps:
+  optimize_usd:
+    enabled: false
+  identify_asset:
+    # The upstream whole-scene preview computes bounds from the pseudo-root and
+    # fails on this otherwise valid component stage. Per-component rendering
+    # and classification below remain enabled and are the evidence we need.
+    enabled: false
+    vlm:
+      backend: openai
+      model: gpt-4.1
+      temperature: 0.1
+      max_tokens: 4096
+    renderer:
+      backend: ovrtx
+      image_width: 512
+      image_height: 512
+      cameras: ["+x+y+z", "-x+y+z", "-x-y+z", "+x-y+z"]
+  build_dataset_usd:
+    enabled: true
+    renderer:
+      backend: ovrtx
+      image_width: 512
+      image_height: 512
+      log_level: warn
+      camera_view_type: corner
+      rendering_modes:
+        composition:
+          margin: 1.5
+          cameras: ["+x", "-x", "+y", "-y", "+z"]
+          camera_focus_mode: stage
+          skip_occluded_images: false
+          use_original_materials: true
+        prim_only:
+          margin: 1.2
+          cameras: ["+x+y+z", "-x-y+z"]
+          camera_focus_mode: prim
+          use_original_materials: true
+    prim_filters:
+      types: [UsdGeom.Mesh]
+      skip_instances: true
+      skip_prototypes: false
+      skip_invisible: true
+    extract_hierarchy: true
+    extract_metadata: true
+    skip_existing: false
+    batch_size: 1
+    num_workers: 1
+  build_dataset_prepare_dataset:
+    enabled: true
+    include_prim_path_context: true
+    include_geometric_context: true
+  predict:
+    enabled: true
+    vlm:
+      backend: openai
+      model: gpt-4.1
+      temperature: 0.1
+      max_tokens: 4096
+    max_workers: 1
+    output_key: classification
+    allow_empty_predictions: false
+  apply_physics:
+    enabled: true
+    collision_approx: convexHull
+    mass_scale_policy: skip_mass
+    allow_empty_predictions: false
+advanced:
+  keep_temp_files: true
+  log_level: INFO

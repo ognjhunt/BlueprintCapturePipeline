@@ -1,0 +1,66 @@
+project:
+  name: adp009a_840313_canned_beverage_texture
+  session_id: adp009a_840313_canned_beverage_texture
+  description: NVIDIA Texture Agent challenger on the CAD-derived can control.
+  working_dir: .texture
+input:
+  usd_path: ../input/adp009a_840313_canned_beverage_control.usda
+texture:
+  backend: simple_image_gen
+  detail_policy: surface_only
+  uv_policy: generate_missing
+  uv_scope: target_prims
+  uv_target_prim_paths:
+    - /canned_beverage/visuals/body
+  uv_generation_mode: projection
+  uv_projection: box
+  image_gen:
+    backend: openai
+    model: gpt-image-1
+  size: 1024
+  workers: 1
+target_prims:
+  - /canned_beverage/visuals/body
+material_textures:
+  green_can:
+    prompt: bright green aluminum beverage can surface, clean non-branded packaging
+    opacity: 1.0
+    material_path: /canned_beverage/materials/green_can
+    prim_paths:
+      - /canned_beverage/visuals/body
+auto_prompt:
+  enabled: false
+variations:
+  count: 1
+steps:
+  discover_materials:
+    enabled: true
+  prepare_uvs:
+    enabled: true
+  render_previews:
+    enabled: true
+    backend: ovrtx
+    image_width: 512
+    image_height: 512
+  generate_textures:
+    enabled: true
+    max_workers: 1
+    skip_existing: false
+  blend_textures:
+    enabled: true
+    default_opacity: 1.0
+    output_size: 1024
+  apply_textures:
+    enabled: true
+  render:
+    enabled: true
+    backend: ovrtx
+    image_width: 1024
+    image_height: 1024
+    focus_prim_paths: [/canned_beverage/visuals/body]
+    focus_camera_direction: "+x+y+z"
+    focus_camera_margin: 1.2
+    focus_camera_focal_length: 60.0
+advanced:
+  keep_temp_files: true
+  log_level: INFO

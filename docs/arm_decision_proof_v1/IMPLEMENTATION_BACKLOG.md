@@ -217,6 +217,13 @@ Deliverables:
   roles, allowed use, exact revisions, hashes, sizes, and claim ceilings;
 - released-code smoke receipts; paper-only methods remain inadmissible.
 
+Observed 2026-08-04: the matched InteriorGS/SAGE-3D `840313` roles and the
+bounded NVIDIA USD Content Agents authoring comparison are admitted. The
+ten-role index remains blocked at three admitted roles because the released
+inpainting-method smokes, controlled-background truth, dynamic exact-SimReady
+qualification, physics positive control, and ScanNet++ transfer are still
+missing. The Content Agents execution is not an inpainting-method smoke.
+
 Acceptance: missing/expired rights, mismatched scene IDs, changed digests,
 unknown frames, calibration/test-trajectory overlap, DA3-as-scale-authority, paper-only
 code, or claim elevation fails closed with the smallest blocker.

@@ -110,6 +110,27 @@ dependent step as blocked instead of guessing.
 - Work the Arm Decision Proof critical path in order. Prefer changes that turn an
   existing development-only seam into a replayable, fail-closed precursor of the
   partner proof; do not optimize unrelated platform breadth.
+- For splat survey, inspection, or scene-understanding work, first use and extend
+  the existing `scene_placement/interiorgs_index.py`, `splat_scene_analysis.py`,
+  `scene_placement/perception_views.py`, and object-index Splat Analyzer seams.
+  Survey the full known room topology before target close-ups, keep model-derived
+  Splat Analyzer boxes candidate-only, and report unseen or uncaptured regions
+  explicitly; moving a virtual camera cannot recover missing source observations.
+- Keep splat survey previews separate from method inputs. A preview may use the
+  complete splat for reconnaissance, but an ADP method input must additionally
+  bind the exact renderer and version, calibrated camera pose and intrinsics,
+  source-splat digest and retained count, output dimensions and supersampling,
+  color/alpha settings, image digests, and a renderer-fidelity qualification.
+  Do not call a browser preview, an unrecorded screenshot, or a camera plan a
+  maximum-quality or evaluation-authorized render. Render SAGE collision geometry
+  only for alignment/debug evidence; InteriorGS remains the appearance source.
+- Do not impose a blanket local-only or no-external-provider rule. External CAD,
+  model, reconstruction, and agent services may be proposed or used when the
+  exact input bytes are rights-admitted for that disclosure, provider retention
+  and training terms are accepted by an authorized human, secrets stay in the
+  canonical secret integration, and any spend or upload has the required
+  authority. Third-party dataset nonredistribution terms still fail closed;
+  user preference cannot waive a publisher's license or another owner's rights.
 - Choose the partner and its actual stack before choosing a permanent robot,
   simulator, provider, or reconstruction backend. Build from scratch as little
   as possible and use thin adapters.

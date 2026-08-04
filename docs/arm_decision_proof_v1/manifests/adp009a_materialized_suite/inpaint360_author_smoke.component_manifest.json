@@ -1,0 +1,97 @@
+{
+  "adp_item": "ADP-009A",
+  "claim_boundaries": {
+    "inpainting_result": false,
+    "method_source_checkout_is_not_execution": true,
+    "metric_geometry_qualified": false,
+    "physical_evidence": false
+  },
+  "claim_ceiling": "development_only",
+  "component_id": "adp009a-inpaint360_author_smoke",
+  "manifest_digest": "sha256:9a75f0ee9206fb6391b7c71de56f3a5c234693d81ac87b143589f57d62bb3f07",
+  "materialized_artifacts": [
+    {
+      "external_relative_path": "Inpaint360GS/LICENSE.txt",
+      "publisher_path": "LICENSE.txt",
+      "role": "source_license",
+      "sha256": "sha256:41d805773f2aa0b36c2fb69491f64c3079fe3e0671c9848680645fc9e65d5a10",
+      "size_bytes": 11369
+    },
+    {
+      "external_relative_path": "Inpaint360GS/pyproject.toml",
+      "publisher_path": "pyproject.toml",
+      "role": "dependency_declaration",
+      "sha256": "sha256:b75dff01c3174ef6e8b4f7d18d80fb97b1a15f3edf7b5d41e094a7548eb177bc",
+      "size_bytes": 478
+    },
+    {
+      "external_relative_path": "Inpaint360GS/docs/install.md",
+      "publisher_path": "docs/install.md",
+      "role": "author_workflow_declaration",
+      "sha256": "sha256:92aac3c75665dd5f715a705f02b4212ff5f87600f13351e5359ac4a233c79711",
+      "size_bytes": 1490
+    },
+    {
+      "external_relative_path": "Inpaint360GS/gaussian_splatting/environment.yml",
+      "publisher_path": "gaussian_splatting/environment.yml",
+      "role": "dependency_declaration",
+      "sha256": "sha256:f01d8ab869570609cbc3ae7981f552900d063ec2463ef0041de0e2d2dcc69a20",
+      "size_bytes": 371
+    },
+    {
+      "external_relative_path": "Inpaint360GS/LaMa/conda_env.yml",
+      "publisher_path": "LaMa/conda_env.yml",
+      "role": "dependency_declaration",
+      "sha256": "sha256:4ecbf273c3d3c537f627319a2f1485cc3ba23f1d6e13de2da3564d3703568bbd",
+      "size_bytes": 5074
+    },
+    {
+      "external_relative_path": "Inpaint360GS/LaMa/requirements.txt",
+      "publisher_path": "LaMa/requirements.txt",
+      "role": "dependency_declaration",
+      "sha256": "sha256:e4d03ba097b2db1be5f9c729d077f472eefc8c0b947f12bdbbc746ef3e69c3cb",
+      "size_bytes": 542
+    },
+    {
+      "external_relative_path": "Inpaint360GS/Segment-and-Track-Anything/licenses.md",
+      "publisher_path": "Segment-and-Track-Anything/licenses.md",
+      "role": "dependency_declaration",
+      "sha256": "sha256:1d95ff8f94c7cb97bdc9411623c18acc23e1dc508dd75b84b15268c098811439",
+      "size_bytes": 37414
+    },
+    {
+      "external_relative_path": "Inpaint360GS/README.md",
+      "publisher_path": "README.md",
+      "role": "author_workflow_declaration",
+      "sha256": "sha256:d7ac9169e04f6dc54cdef9d54c042def33375beef393d55fd7e2c80150db7d66",
+      "size_bytes": 8221
+    }
+  ],
+  "observed_evidence": {
+    "author_method_executed": false,
+    "author_smoke_receipt_bound": false,
+    "author_workflow_declarations_hashed": true,
+    "dependency_declarations_hashed": true,
+    "official_remote_head_verified": true,
+    "source_checkout_opened": true,
+    "source_tree_clean": true,
+    "source_tree_matches_expected": true,
+    "submodule_revisions_verified": true
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_identity": {
+    "official_remote_head": "d54c893285c6cb27788e05cce607e7d3cca6388a",
+    "repository": "https://github.com/dfki-av/Inpaint360GS",
+    "repository_tree": "671626f4825cbf3d7c1ca37cc97a153d45e49b1c",
+    "revision": "d54c893285c6cb27788e05cce607e7d3cca6388a",
+    "submodules": {}
+  },
+  "rights": {
+    "checkpoint_or_author_data_rights_established": false,
+    "source_license": "Apache-2.0",
+    "source_license_file_hashed": true
+  },
+  "role": "inpaint360_author_smoke",
+  "schema_version": "public_scene_component_manifest.v1",
+  "source_project_id": "Inpaint360GS"
+}

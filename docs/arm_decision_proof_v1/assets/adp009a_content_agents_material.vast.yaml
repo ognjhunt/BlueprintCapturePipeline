@@ -1,0 +1,112 @@
+project:
+  name: adp009a_840313_canned_beverage_material
+  session_id: adp009a_840313_canned_beverage_material
+  description: NVIDIA Material Agent challenger on the CAD-derived can control.
+  working_dir: .material
+input:
+  usd_path: ../input/adp009a_840313_canned_beverage_control.usda
+  reference_images:
+    - ../input/adp009a_840313_canned_beverage_control_reference.png
+output:
+  layer_only: false
+  flatten_output: false
+materials:
+  path: ../content_agents_source/apps/material_agent/data/materials/material_libs_default/materials.yaml
+steps:
+  validate_input:
+    enabled: true
+    # NVIDIA's validator reports the grasp-guide extent and USDA performance as
+    # advisory issues. Preserve those diagnostics without blocking material
+    # inference on the separately Foundation-validated control asset.
+    on_failure: warn
+  optimize_usd:
+    enabled: false
+  build_dataset_usd:
+    enabled: true
+    renderer:
+      backend: ovrtx
+      image_width: 512
+      image_height: 512
+      log_level: warn
+      camera_view_type: corner
+      rendering_modes:
+        composition:
+          margin: 1.5
+          cameras: ["+x", "-x", "+y", "-y", "+z"]
+          camera_focus_mode: stage
+          skip_occluded_images: false
+          use_original_materials: true
+        prim_only:
+          margin: 1.2
+          cameras: ["+x+y+z", "-x+y+z", "-x-y+z", "+x-y+z"]
+          camera_focus_mode: prim
+          use_original_materials: true
+    prim_filters:
+      types: [UsdGeom.Mesh]
+      skip_instances: true
+      skip_prototypes: false
+      skip_invisible: true
+    extract_material_bindings: true
+    extract_hierarchy: true
+    extract_metadata: true
+    skip_existing: false
+    batch_size: 1
+    num_workers: 1
+  build_dataset_pdf_vectorstore:
+    enabled: false
+  build_dataset_prepare_dataset:
+    enabled: true
+    include_ground_truth: false
+    include_prim_path_context: true
+    prompts:
+      vlm_system: |
+        Identify the visible real-world material of this single rigid beverage can.
+        Use the multi-view renders and the supplied Blueprint-owned CAD reference.
+        Select only from the provided material library. Do not treat the prompt,
+        prim path, or frozen physics priors as measurement truth.
+        Available materials: {materials_list}
+        Respond as <reasoning>brief reasoning</reasoning><answer>{{"material": "material name"}}</answer>.
+      vlm_user: "Classify the visible material of the bright green beverage can."
+  predict:
+    enabled: true
+    prediction_batch_size: 1
+    vlm:
+      backend: openai
+      model: gpt-4.1
+      temperature: 0.1
+      max_completion_tokens: 4096
+    llm:
+      backend: openai
+      model: gpt-4.1
+      temperature: 0.1
+      max_tokens: 1024
+    max_workers: 1
+    allow_empty_predictions: false
+  validate_predictions:
+    enabled: true
+    allow_unknown_material: true
+  harmonize_predictions:
+    enabled: false
+  apply:
+    enabled: true
+    layer_only: false
+    flatten_output: false
+    allow_empty_predictions: false
+    fail_on_unknown_material: false
+  restore_usd:
+    enabled: false
+  validate_output:
+    enabled: true
+    on_failure: warn
+  render:
+    enabled: true
+    backend: ovrtx
+    image_width: 1024
+    image_height: 1024
+    camera_corners: ["+x+y+z", "-x+y+z", "-x-y+z", "+x-y+z"]
+    camera_margin: 1.2
+    background_color: [1.0, 1.0, 1.0]
+    max_workers: 1
+advanced:
+  keep_temp_files: true
+  log_level: INFO

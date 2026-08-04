@@ -1,0 +1,97 @@
+{
+  "schema_version": "adp009a_scene_candidate_inspection.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009A",
+  "candidate_id": "candidate-a-0787-841244",
+  "publisher_scene_id": "841244",
+  "inspection_completed_at": "2026-08-04T19:15:24Z",
+  "selection_preregistration_digest": "sha256:f946b1d674fee977b6132b20d28cbd24185fd60dc5909e64c8582c651c13f407",
+  "method_outcomes_observed": false,
+  "new_virtual_camera_render_executed": false,
+  "source_bindings": {
+    "interiorgs_revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+    "sage_usdz_revision": "d0b6cdc0aa052d38d743339bb629799ae81e7966",
+    "sage_collision_revision": "3ba75cc7887b62bf84211d5db08adfa64d691597",
+    "interiorgs_scene_path": "0787_841244",
+    "sage_usdz_path": "InteriorGS_usdz/841244.usdz",
+    "sage_collision_path": "Collision_Mesh/841244/841244_collision.usd"
+  },
+  "usd_inspection": {
+    "usdz_default_prim": "/World",
+    "usdz_meters_per_unit": 1.0,
+    "usdz_up_axis": "Z",
+    "usdz_resolved_package_members": [
+      "default.usda",
+      "841244.usdz.nurec",
+      "gauss.usda"
+    ],
+    "collision_default_prim": "/Root",
+    "collision_meters_per_unit": 1.0,
+    "collision_up_axis": "Z",
+    "collision_mesh_count": 136,
+    "collision_meshes_with_collision_api": 136,
+    "unresolved_payloads_or_references": []
+  },
+  "existing_render_evidence": [
+    {"view_id": "star_01", "sha256": "sha256:a281ff1d8f4a45b1aae4841a959c04dba7d26b92c9466956db27e958748ae7ba"},
+    {"view_id": "star_04", "sha256": "sha256:683e4b76fa62b9120e613767b77a9132d79a14b725708815d5f58beacb8c98ee"},
+    {"view_id": "star_06", "sha256": "sha256:dffc797fb8faca2bfd9590ee001b2d413300e20459d5c0eb7cb576f90ec55434"},
+    {"view_id": "star_07", "sha256": "sha256:b2af5674f05b037eca3e47c5b06826314a1e93c7678283b9b2c349a730d1c61a"},
+    {"view_id": "pullback_02", "sha256": "sha256:0f5d48a5d164ecd766d55a552a59bf4fb84b22591815f24c785b3740eeb2f468"},
+    {"view_id": "pullback_03", "sha256": "sha256:398bea8a74a185bc48d4906eca42a7f70c06935f49335828eedf4100be424bbb"}
+  ],
+  "target_checks": [
+    {
+      "interiorgs_instance_id": "102",
+      "semantic_label": "rice cooker",
+      "collision_prim_path": "/Root/ZEE3JMJVAI3GQPTULA888888",
+      "obb_collision_aabb_iou": 0.978367,
+      "outcome": "rejected",
+      "blockers": ["target_collider_overlapped_by_unrelated_cupboard_collision"]
+    },
+    {
+      "interiorgs_instance_id": "118",
+      "semantic_label": "Notebook computer",
+      "collision_prim_path": "/Root/ZF2M3CBVAIMOSPTUKQ888888",
+      "obb_collision_aabb_iou": 0.968705,
+      "outcome": "rejected",
+      "blockers": ["publisher_semantic_and_visible_object_identity_conflict", "target_appearance_dominated_by_dark_glossy_display"]
+    },
+    {
+      "interiorgs_instance_id": "129",
+      "semantic_label": "table lamp",
+      "collision_prim_path": "/Root/SOO37E6O7PRR6IRELE888888",
+      "obb_collision_aabb_iou": 0.974726,
+      "outcome": "rejected",
+      "blockers": ["publisher_semantic_and_visible_object_identity_conflict"]
+    },
+    {
+      "interiorgs_instance_id": "157",
+      "semantic_label": "trash can",
+      "collision_prim_path": "/Root/_IVU4JRVAZUUKPTUKQ888888",
+      "obb_collision_aabb_iou": 0.976891,
+      "outcome": "rejected",
+      "blockers": ["existing_views_do_not_establish_unoccluded_coverage", "floor_location_not_suitable_for_later_fixed_arm_replacement"]
+    },
+    {
+      "interiorgs_instance_id": "161",
+      "semantic_label": "trash can",
+      "collision_prim_path": "/Root/_M5LXNBVAVFX2PTUKI888888",
+      "obb_collision_aabb_iou": 0.975765,
+      "outcome": "rejected",
+      "blockers": ["existing_views_do_not_establish_unoccluded_coverage", "floor_location_not_suitable_for_later_fixed_arm_replacement"]
+    },
+    {
+      "interiorgs_instance_id": "179",
+      "semantic_label": "ornament",
+      "collision_prim_path": "/Root/_ADJ2EMTDD52G5QZKU888888",
+      "obb_collision_aabb_iou": 0.931188,
+      "outcome": "rejected",
+      "blockers": ["existing_views_show_target_region_occluded_by_seating", "target_too_small_for_stable_later_replacement"]
+    }
+  ],
+  "candidate_outcome": "rejected",
+  "smallest_blocker": "candidate_841244_no_target_satisfies_frozen_identity_visibility_and_removability_criteria",
+  "claim_ceiling": "development_only",
+  "record_digest": "sha256:f1cd85e2933b82057cc93d32cff75c88f060efe41e5356e499da5a8038701315"
+}

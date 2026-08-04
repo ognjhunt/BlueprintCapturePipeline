@@ -1,0 +1,57 @@
+{
+  "schema_version": "adp009a_parametric_simready_request.v1",
+  "control_id": "adp009a-840313-canned-beverage-cad-control",
+  "scene_component_manifest_path": "docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite/interiorgs_appearance_scene.component_manifest.json",
+  "cad_evidence": {
+    "generator_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.py",
+    "step_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.step",
+    "stl_relative_path": "simready/cad/adp009a_840313_canned_beverage_control.stl",
+    "inspection_relative_path": "simready/cad/adp009a_840313_canned_beverage_control.inspection.json",
+    "snapshot_relative_path": "simready/cad/adp009a_840313_canned_beverage_control_20260804T202406Z.png",
+    "scene_target_contact_sheet_relative_path": "selection_inspection/840313/target_160_contact_sheet.png",
+    "length_unit": "millimeter",
+    "mesh_linear_deflection_mm": 0.05,
+    "mesh_angular_deflection_rad": 0.05,
+    "source_skill": {
+      "repository": "https://github.com/earthtojake/text-to-cad",
+      "commit": "4fd71ea75fbb8a80b0d7c76862e0fd73c52a8989",
+      "tree": "a5bf8c8eb14561557f44064c59c254d031665c65",
+      "license": "MIT",
+      "skill_path": "skills/cad/SKILL.md"
+    }
+  },
+  "grasp_selection": {
+    "points_local_m": [
+      [-0.031094726218814, 0.0, 0.084713996887207],
+      [0.031094726218814, 0.0, 0.084713996887207]
+    ],
+    "rationale": "Vision review selected a diameter through the rigid central body at mid-height, avoiding the top rim and support-contact base.",
+    "coordinate_note": "The STEP and generated USD both use a base-centered local origin, +Z height, and the points are converted from millimeters to meters."
+  },
+  "visual_material": {
+    "strategy": "observed_scene_green_usd_preview_control",
+    "diffuse_color": [0.08, 0.70, 0.30],
+    "roughness": 0.42,
+    "metallic": 0.10,
+    "authority": "InteriorGS target contact-sheet appearance evidence; not a measured physical material"
+  },
+  "mass_kg": 0.355,
+  "static_friction": 0.50,
+  "dynamic_friction": 0.40,
+  "restitution": 0.10,
+  "physics_value_authority": "frozen_authoring_priors_not_measurements",
+  "requested_static_profile": "Prop-Robotics-Physx",
+  "requested_simready_foundation_revision": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
+  "simready_foundation_validation": {
+    "repository": "https://github.com/NVIDIA/simready-foundation",
+    "commit": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
+    "tree": "3794fa2eeb96e3e48c3f4874f638f6ab5a9636d5",
+    "license": "Apache-2.0",
+    "validator_version": "simready-validate 2026.6.4",
+    "profile": "Prop-Robotics-Physx",
+    "profile_version": "2.0.0",
+    "result_relative_path": "simready/840313_canned_beverage_control.validation.bound.json",
+    "log_relative_path": "simready/840313_canned_beverage_control.validation.bound.log"
+  },
+  "usd_date_generated": "2026-08-04"
+}

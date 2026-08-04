@@ -1,0 +1,268 @@
+{
+  "adp_item": "ADP-009A",
+  "agents": {
+    "joint": {
+      "applicable": false,
+      "executed": false,
+      "reason": "selected_target_is_one_rigid_body_with_zero_articulated_joints"
+    },
+    "material": {
+      "cli": "material-agent",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--platform",
+        "linux/arm64",
+        "-v",
+        "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804:/adp",
+        "--entrypoint",
+        "material-agent",
+        "blueprint/adp009a-content-agents:0.5.2",
+        "run",
+        "/adp/simready/content_agents/configs/material_agent_840313_can.yaml",
+        "--dry-run"
+      ],
+      "dry_run_executed": true,
+      "full_agent_executed": false,
+      "smallest_blocker": "linux_nvidia_gpu_renderer_or_reviewed_render_endpoint_required",
+      "version": "Material Agent version 0.5.2"
+    },
+    "physics": {
+      "cli": "physics-agent",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--platform",
+        "linux/arm64",
+        "-v",
+        "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804:/adp",
+        "--entrypoint",
+        "physics-agent",
+        "blueprint/adp009a-content-agents:0.5.2",
+        "run",
+        "/adp/simready/content_agents/configs/physics_agent_840313_can.yaml",
+        "--dry-run"
+      ],
+      "dry_run_executed": true,
+      "full_agent_executed": false,
+      "smallest_blocker": "linux_nvidia_gpu_ovphysx_runtime_or_reviewed_render_and_optimizer_endpoints_required",
+      "version": "Physics Agent version 0.5.2"
+    },
+    "texture": {
+      "cli": "texture-agent",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--platform",
+        "linux/arm64",
+        "-v",
+        "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804:/adp",
+        "--entrypoint",
+        "texture-agent",
+        "blueprint/adp009a-content-agents:0.5.2",
+        "run",
+        "/adp/simready/content_agents/configs/texture_agent_840313_can.yaml",
+        "--dry-run"
+      ],
+      "dry_run_executed": true,
+      "full_agent_executed": false,
+      "smallest_blocker": "authorized_texture_generation_backend_and_linux_nvidia_renderer_required",
+      "version": "texture-agent 0.5.2"
+    },
+    "validation": {
+      "cli": "validation-agent",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--platform",
+        "linux/arm64",
+        "-v",
+        "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804:/adp",
+        "--entrypoint",
+        "validation-agent",
+        "blueprint/adp009a-content-agents:0.5.2",
+        "validate",
+        "/adp/simready/content_agents/adp009a_840313_canned_beverage_validation_stage.usda",
+        "--task",
+        "Validate the digest-bound canned beverage validation context physics authoring; do not infer dynamic or physical truth.",
+        "--template",
+        "physics_sane",
+        "--output-dir",
+        "/adp/simready/content_agents/validation-agent-preflight-replay",
+        "--format",
+        "json"
+      ],
+      "dry_run": false,
+      "executed": true,
+      "metrics": {
+        "collider_count": 1,
+        "mass_api_count": 1,
+        "material_api_count": 1,
+        "physics_scene_count": 1,
+        "rigid_body_count": 1
+      },
+      "template": "physics_sane",
+      "verdict": "pass",
+      "version": "Validation Agent version 0.5.2"
+    }
+  },
+  "artifacts": [
+    {
+      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_usd_content_agents_linux_arm64.Dockerfile",
+      "role": "linux_arm64_container_recipe",
+      "sha256": "sha256:9992a691a70c59448d2b11bb89213324405b93b3ffb50cb96e7c7141b4c3610e",
+      "size_bytes": 404
+    },
+    {
+      "relative_path": "simready/content_agents/native_install_preflight.log",
+      "role": "native_macos_install_failure",
+      "sha256": "sha256:9b6856433168c2ef7eb8bc8494791aaed736132a33d37ca73c162df23f6f3005",
+      "size_bytes": 1336
+    },
+    {
+      "relative_path": "simready/content_agents/linux-arm64-installed-packages.freeze.txt",
+      "role": "installed_dependency_freeze",
+      "sha256": "sha256:978327339ae579dacf2e6afe81059dd7dd30f8430a4d94291773478cb9ae8f07",
+      "size_bytes": 2246
+    },
+    {
+      "relative_path": "LICENSE",
+      "role": "source_license",
+      "sha256": "sha256:ef19b519dfed322eb3eb05a77c764c0caf9a7fad1189d0f0a30aedca95f0dc76",
+      "size_bytes": 11457
+    },
+    {
+      "relative_path": ".agents/skills/material-agent-cli/SKILL.md",
+      "role": "agent_skill_contract",
+      "sha256": "sha256:243e026493d52cdd6ddfa3bafed115ea0685dfd109781444d86f9d14c65f979c",
+      "size_bytes": 17631
+    },
+    {
+      "relative_path": ".agents/skills/texture-agent-cli/SKILL.md",
+      "role": "agent_skill_contract",
+      "sha256": "sha256:577a102ef952814fa30e7085a27d30cf7d5fc20a7834903691e22fd1465eadcb",
+      "size_bytes": 12178
+    },
+    {
+      "relative_path": ".agents/skills/physics-agent-cli/SKILL.md",
+      "role": "agent_skill_contract",
+      "sha256": "sha256:b5d4525d824322360c6eff009862a9c4152f7f1f18e24fb327cff4d82f9ebaba",
+      "size_bytes": 20416
+    },
+    {
+      "relative_path": ".agents/skills/validation-agent-cli/SKILL.md",
+      "role": "agent_skill_contract",
+      "sha256": "sha256:e4a7545595d264697453c3f1dace8b256bf22c16ed20d950c34f5c955b9d3a00",
+      "size_bytes": 10293
+    },
+    {
+      "relative_path": "simready/content_agents/configs/material_agent_840313_can.yaml",
+      "role": "material_agent_config",
+      "sha256": "sha256:0439935495370a3f9442456c1f2ad1ca1fa1b1f2479abc35052e1245747d186a",
+      "size_bytes": 2545
+    },
+    {
+      "relative_path": "simready/content_agents/material-agent-dry-run.bound.log",
+      "role": "material_agent_dry_run_log",
+      "sha256": "sha256:99d909b53ea656746589d279dcc9c4587bd7188d23eeeaf185eb49f199ede115",
+      "size_bytes": 1951
+    },
+    {
+      "relative_path": "simready/content_agents/configs/texture_agent_840313_can.yaml",
+      "role": "texture_agent_config",
+      "sha256": "sha256:9bb312120e8a62e21df54b3175eea6074303fa6711f7bc7a5e5abe98cc673add",
+      "size_bytes": 1575
+    },
+    {
+      "relative_path": "simready/content_agents/texture-agent-dry-run.bound.log",
+      "role": "texture_agent_dry_run_log",
+      "sha256": "sha256:6a67c44fbaec1e967dee438903f188da401eb34fd23e1bab21820948d4832245",
+      "size_bytes": 1603
+    },
+    {
+      "relative_path": "simready/content_agents/configs/physics_agent_840313_can.yaml",
+      "role": "physics_agent_config",
+      "sha256": "sha256:cece6a7c1774c49e4c157816b0aa851877d30cb2dae2006ef469d0f41e6fd224",
+      "size_bytes": 2056
+    },
+    {
+      "relative_path": "simready/content_agents/physics-agent-dry-run.bound.log",
+      "role": "physics_agent_dry_run_log",
+      "sha256": "sha256:90d91c34fda0e53bb82083f58740fa781dc0090e2e652acfeb2c051ac1b0b0d0",
+      "size_bytes": 1326
+    },
+    {
+      "relative_path": "simready/content_agents/adp009a_840313_canned_beverage_validation_stage.usda",
+      "role": "validation_context_stage",
+      "sha256": "sha256:21740e42e603f5c41f7631853238ca7438f38a78aa4da3d4677c8ff6ec9b0ad7",
+      "size_bytes": 668
+    },
+    {
+      "relative_path": "simready/content_agents/adp009a_840313_canned_beverage_validation_stage.receipt.json",
+      "role": "validation_context_receipt",
+      "sha256": "sha256:02ecf5e1cd77d307a136094985634d28db04fad6e6019d63c5772e9c9ace83e9",
+      "size_bytes": 1167
+    },
+    {
+      "relative_path": "simready/content_agents/validation-agent-preflight-replay.log",
+      "role": "validation_agent_execution_log",
+      "sha256": "sha256:3cebfc7d0a71bfbd8e45c8c8cf5f8d66da09af8c120dd66dcf87af738cc6ca47",
+      "size_bytes": 7105
+    },
+    {
+      "relative_path": "simready/content_agents/validation-agent-preflight-replay/validation_request.json",
+      "role": "validation_request",
+      "sha256": "sha256:252c9a8630ec41a6102913d31ff4af2b498905b6745ef18c7c5629523eab70c2",
+      "size_bytes": 813
+    },
+    {
+      "relative_path": "simready/content_agents/validation-agent-preflight-replay/validation_plan.json",
+      "role": "validation_plan",
+      "sha256": "sha256:bbab1b33673c48be815b1b2176a7ed80bbdc0c5efcae30c7ff6a244383147674",
+      "size_bytes": 1522
+    },
+    {
+      "relative_path": "simready/content_agents/validation-agent-preflight-replay/validation_result.json",
+      "role": "validation_result",
+      "sha256": "sha256:3cebfc7d0a71bfbd8e45c8c8cf5f8d66da09af8c120dd66dcf87af738cc6ca47",
+      "size_bytes": 7105
+    }
+  ],
+  "blockers": [
+    "authorized_texture_generation_backend_and_linux_nvidia_renderer_required",
+    "linux_nvidia_gpu_ovphysx_runtime_or_reviewed_render_and_optimizer_endpoints_required",
+    "linux_nvidia_gpu_renderer_or_reviewed_render_endpoint_required"
+  ],
+  "claim_boundaries": {
+    "dry_runs_are_not_agent_execution": true,
+    "no_inpainting_result": true,
+    "no_physical_evidence": true,
+    "static_validation_is_not_dynamic_simulation": true,
+    "static_validation_is_not_material_or_texture_prediction": true
+  },
+  "claim_ceiling": "development_only",
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:d7596b38f04a7a60429887bb5c96e85028eef89aa9a6864d6bcdd0be5679c18e",
+  "runtime": {
+    "image_digest": "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574",
+    "image_id": "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574",
+    "image_reference": "blueprint/adp009a-content-agents:0.5.2",
+    "model_or_remote_renderer_called": false,
+    "paid_resource_allocated": false,
+    "platform": "linux/arm64"
+  },
+  "schema_version": "adp009a_usd_content_agents_preflight_receipt.v1",
+  "source": {
+    "clean": true,
+    "commit": "36dbf3f274f8e256637230a05a085853f65cc175",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/NVIDIA-Omniverse/usd-content-agents",
+    "tree": "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3",
+    "version": "0.5.2"
+  },
+  "status": "prepared_static_validation_passed"
+}

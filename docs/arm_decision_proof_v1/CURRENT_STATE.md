@@ -22,22 +22,35 @@ No capture or reconstruction feature was added.
 
 | Item | Status | Observed evidence |
 |---|---|---|
-| ADP-009A | `partial` | [`PUBLIC_EVIDENCE_LADDER.md`](PUBLIC_EVIDENCE_LADDER.md), [`public_scene_suite_manifest.v1.schema.json`](../schemas/public_scene_suite_manifest.v1.schema.json), [`public_scene_suite_index.v1.schema.json`](../schemas/public_scene_suite_index.v1.schema.json), and the fail-closed component/index tests define rights/revision/digest/frame/role/code-smoke admission, method-input allowlists, oracle/truth isolation, exact project-role binding, and aggregate matrix rules. Component receipts cannot claim matrix completion; the index rejects ARKitScenes, WildRGB-D, authored dataset substitutes, and SimReadyGen in the NVIDIA Content Agents role. No actual InteriorGS/SAGE pair, ScanNet++ scene, Inpaint360GS author-data control, InFusion adapter, AuraFusion360 challenger, NVIDIA Content Agents runtime, controlled background case, SimReady object, or physics control is yet admitted. |
-| ADP-009B | `missing` | No unchanged Inpaint360GS author-data smoke, InFusion format/license/frame adapter, or AuraFusion360 representation/checkpoint adapter exists. No exact rights-admitted InteriorGS/SAGE-3D source object has been removed from both appearance and collision, completed, replaced by an exact SimReady USD, and qualified in Isaac. An authored positive control cannot substitute. NVIDIA USD Content Agents is audited as a candidate backend but has not been executed or admitted. |
+| ADP-009A | `partial` | The deterministic [`public_scene_suite_index.v1.json`](manifests/adp009a_materialized_suite/public_scene_suite_index.v1.json) now admits three of ten roles from inspected bytes: InteriorGS scene `840313`, its exact SAGE-3D USDZ/collision companion, and NVIDIA USD Content Agents v0.5.2. Scene `840313` was selected under the preregistered criteria with target `ins160` (`canned_beverage`) mapped to removable collider `/Root/ZHQYGJJVAJYEYPTUKY888888`; candidate `841244` and the subsequent shortlist failures remain retained rather than silently relaxed. The Content Agents run executed Material, Texture, Physics, and Validation Agents against exact source commit `36dbf3f274f8e256637230a05a085853f65cc175`; its [component receipt](manifests/adp009a_materialized_suite/usd_content_agents_candidate.component_receipt.json) recomputes 75 retained artifact identities and binds provider teardown and object-store cleanup. Inpaint360GS author smoke, InFusion, AuraFusion360, controlled-background truth, dynamically qualified exact SimReady replacement, physics positive control, and ScanNet++ remain blocked, so the suite is correctly `blocked`, not complete. |
+| ADP-009B | `missing` | No unchanged Inpaint360GS author-data smoke, InFusion format/license/frame adapter, or AuraFusion360 representation/checkpoint adapter exists. No exact rights-admitted InteriorGS/SAGE-3D source object has yet been removed from both appearance and collision, completed, replaced, and qualified dynamically in Isaac. NVIDIA USD Content Agents did execute on the deterministic parametric can control: Material assigned a green OpenPBR/MaterialX material, Texture produced albedo/normal/ORM maps and a textured USD, Physics authored a thin-aluminum-can candidate, and Validation passed its static `physics_sane` check. Those are authoring candidates, not inpainting, measured geometry, dynamic simulation, or physical evidence. |
 | ADP-009C | `missing` | No exact ScanNet++ real measured scene or controlled known-background completion has passed the new metric/editing tests. |
 | ADP-009D | `missing` | No deterministic InteriorGS/SAGE-to-ScanNet++ variation matrix or one-command public-data replacement rehearsal exists. ARKitScenes and WildRGB-D were explicitly removed from the required stack. |
 
-An earlier development run retained local InteriorGS `0787_841244` PLY and
-semantic sidecars and exercised import/render paths. Those bytes are useful
-candidate inputs, but they do not satisfy ADP-009A: no current rights-authority
-receipt, exactly matched SAGE collision binding, released-method runtime/license
-smoke, or independently sourced SimReady USD admission exists yet. The
-InteriorGS/SAGE release provides a metric frame, OBBs, and static collision
-pairing, not a measurement-authoritative local surface mesh. Rendered cameras
-and RGB will therefore be synthetic method inputs/self-consistency probes;
+Candidate `0787_841244` remains a retained, rejected warm start rather than the
+selected scene. Direct inspection could not establish a suitable target whose
+InteriorGS instance identity mapped to a separately removable SAGE collider
+without unrelated collision overlap. The expanded preregistered survey selected
+scene `840313` instead and retained its whole-splat room survey and target
+closeups. The InteriorGS/SAGE release provides a metric frame, OBBs, and static
+collision pairing, not a measurement-authoritative local surface mesh. Rendered
+cameras and RGB are therefore synthetic method inputs/self-consistency probes;
 external metric depth remains a validation oracle unless a released method
 explicitly accepts it through a preregistered adapter. No completion run has yet
 demonstrated the required seal-before-clean-background-release firebreak.
+
+The successful Content Agents execution used a deterministic NVIDIA-compatible
+derivative of the canonical SimReady control: visual purpose was normalized to
+USD `default` for v0.5.2 bounding-box discovery and the grasp-identifier extent
+was recomputed from its curve width. The canonical source USD remains unchanged.
+The external run cost `$0.100418`, used zero retries, destroyed Vast instance
+`46835085`, removed all staged provider objects, and left zero active Vast
+instances. A pre-allocation gate now rejects unsupported config fields, invalid
+render modes, missing model access, changed container/source/bundle identities,
+empty default-purpose bounds, failed native dry runs, failed Material input
+validation, dirty orchestrator commits, or mutated preflight receipts before a
+GPU can be allocated. Raw provider status is no longer used for monitoring;
+the safe status path allowlists non-secret fields.
 
 ADP-009 is now the active engineering item. Every public artifact remains
 `development_only`; this phase cannot qualify a fresh site, partner physics,

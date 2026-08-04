@@ -1,0 +1,45 @@
+{
+  "schema_version": "adp009a_scene_selection_preregistration.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009A",
+  "gate_id": "public_scene_day7_exact_admission",
+  "frozen_at": "2026-08-04T19:00:46Z",
+  "frozen_before_method_outcomes": true,
+  "selection_rule": "Select the first candidate whose publisher bytes and direct InteriorGS/SAGE inspection satisfy every frozen criterion. Method outputs and inpainting scores are forbidden selection inputs.",
+  "criteria": [
+    "exact_matching_interiorgs_ply_and_metadata",
+    "exact_matching_sage3d_usdz_and_collision_usd",
+    "identical_publisher_scene_identity_across_representations",
+    "documented_shared_frame_or_measured_invertible_registration",
+    "explicit_meters_handedness_up_axis_origin_and_normalization_history",
+    "rigid_target_with_stable_semantic_and_instance_identity",
+    "interiorgs_semantic_label_and_oriented_bounding_box",
+    "separately_identifiable_removable_sage_collision_body_for_same_target",
+    "horizontal_support_surface",
+    "unoccluded_space_for_deterministic_virtual_camera_coverage",
+    "target_size_and_location_suitable_for_exact_simready_replacement",
+    "target_and_support_not_dominated_by_transparency_gloss_or_mirrors",
+    "generated_geometry_not_required_as_metric_truth",
+    "simple_rigid_manipulable_object_preferred_over_structure_or_room_component"
+  ],
+  "forbidden_selection_signals": [
+    "visual_convenience",
+    "mask_ease",
+    "completion_attractiveness",
+    "known_inpainting_score",
+    "collider_removal_that_deletes_unrelated_geometry"
+  ],
+  "candidates": [
+    {
+      "candidate_id": "A",
+      "interiorgs_scene_id": "0787_841244",
+      "publisher_sage_scene_id": "841244",
+      "status": "pending_direct_inspection",
+      "preselected": false,
+      "inclusion_reason": "Exact InteriorGS bytes are already local and the publisher indexes map scene 0787_841244 to SAGE scene 841244; this is a warm-start cost fact only."
+    }
+  ],
+  "candidate_failure_policy": "Retain a failure receipt without relaxing criteria. If candidate A fails, construct a preregistered three-to-five-scene shortlist from publisher metadata before downloading candidate bytes or observing method outcomes.",
+  "claim_ceiling": "selection_preregistration_only",
+  "manifest_digest": "sha256:f946b1d674fee977b6132b20d28cbd24185fd60dc5909e64c8582c651c13f407"
+}

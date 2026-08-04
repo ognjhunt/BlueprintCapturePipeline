@@ -1,0 +1,133 @@
+{
+  "schema_version": "public_scene_suite_materialization_request.v1",
+  "index_id": "adp009a-public-suite-20260804",
+  "evaluated_on": "2026-08-04",
+  "scene": {
+    "publisher_scene_id": "840313",
+    "interiorgs_folder": "0442_840313",
+    "interiorgs_revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+    "sage_usdz_revision": "d0b6cdc0aa052d38d743339bb629799ae81e7966",
+    "sage_collision_revision": "3ba75cc7887b62bf84211d5db08adfa64d691597",
+    "splat_path": "shortlist/InteriorGS/0442_840313/3dgs_compressed.ply",
+    "labels_path": "shortlist/InteriorGS/0442_840313/labels.json",
+    "structure_path": "shortlist/InteriorGS/0442_840313/structure.json",
+    "sage_usdz_path": "shortlist/SAGE-3D_InteriorGS_usdz/InteriorGS_usdz/840313.usdz",
+    "sage_collision_path": "shortlist/SAGE-3D_Collision_Mesh/Collision_Mesh/840313/840313_collision.usd",
+    "survey_path": "selection_inspection/840313/room_survey_with_target_160.json",
+    "interiorgs_rights_authority_path": "docs/arm_decision_proof_v1/manifests/adp009a_interiorgs_rights_authority.v1.json",
+    "interiorgs_terms_path": "rights/InteriorGS_Terms_of_Use.pdf",
+    "target_instance_id": "160",
+    "target_label": "canned_beverage",
+    "target_collision_prim": "/Root/ZHQYGJJVAJYEYPTUKY888888",
+    "minimum_target_collider_iou": 0.85,
+    "support_instance_id": "299",
+    "support_label": "tv_cabinet",
+    "support_collision_prim": "/Root/_LTFTHJVAZ3VMPTUJU888888",
+    "minimum_support_collider_iou": 0.90
+  },
+  "methods": {
+    "inpaint360_author_smoke": {
+      "repository": "https://github.com/dfki-av/Inpaint360GS",
+      "local_path": "Inpaint360GS",
+      "commit": "d54c893285c6cb27788e05cce607e7d3cca6388a",
+      "tree": "671626f4825cbf3d7c1ca37cc97a153d45e49b1c",
+      "verify_official_remote_head": true,
+      "submodules": {},
+      "source_license": "Apache-2.0",
+      "source_license_path": "LICENSE.txt",
+      "dependency_files": [
+        "pyproject.toml",
+        "docs/install.md",
+        "gaussian_splatting/environment.yml",
+        "LaMa/conda_env.yml",
+        "LaMa/requirements.txt",
+        "Segment-and-Track-Anything/licenses.md"
+      ],
+      "documented_inputs": {
+        "README.md": [
+          "bash scripts/download_inpaint360gs_dataset.sh",
+          "bash run_seg.sh",
+          "bash run_remove.sh",
+          "bash run_inpaint.sh"
+        ],
+        "docs/install.md": [
+          "CropFormer_hornet_3x_03823a.pth",
+          "big-lama.zip"
+        ]
+      },
+      "smallest_blocker": "inpaint360_author_data_and_weight_rights_or_smoke_missing"
+    },
+    "infusion_primary_adapter": {
+      "repository": "https://github.com/ali-vilab/Infusion",
+      "local_path": "Infusion",
+      "commit": "788da7f40cad4314831a053b7419df277d7814c4",
+      "tree": "39f437f353114f7958b28a3a5b816d37ed2936a5",
+      "verify_official_remote_head": true,
+      "submodules": {},
+      "source_license": "MIT",
+      "source_license_path": "LICENSE",
+      "dependency_files": [
+        "environment.yaml",
+        "gaussian_splatting/submodules/diff-gaussian-rasterization-confidence/LICENSE.md"
+      ],
+      "documented_inputs": {
+        "README.md": [
+          "https://huggingface.co/Johanan0528/Infusion/tree/main",
+          "We will upload the masks used in the experiments",
+          "python compose.py",
+          "run_inference_inpainting.py"
+        ]
+      },
+      "smallest_blocker": "infusion_author_masks_and_checkpoint_license_or_smoke_missing"
+    },
+    "aurafusion360_quality_challenger": {
+      "repository": "https://github.com/kkennethwu/AuraFusion360_official",
+      "local_path": "AuraFusion360_official",
+      "commit": "f23b26c44ba84608306ba952510533ebf4c7877d",
+      "tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
+      "verify_official_remote_head": true,
+      "submodules": {
+        "submodules/diff-surfel-rasterization": "e0ed0207b3e0669960cfad70852200a4a5847f61",
+        "submodules/diff-surfel-rasterization/third_party/glm": "5c46b9c07008ae65cb81ab79cd677ecc1934b903",
+        "submodules/simple-knn": "86710c2d4b46680c02301765dd79e465819c8f19"
+      },
+      "source_license": "Apache-2.0",
+      "source_license_path": "LICENSE",
+      "dependency_files": [
+        "install.sh",
+        "requirements.txt",
+        ".gitmodules",
+        "submodules/diff-surfel-rasterization/LICENSE.md",
+        "submodules/simple-knn/LICENSE.md"
+      ],
+      "documented_inputs": {
+        "README.md": [
+          "https://huggingface.co/datasets/kkennethwu/360-USID",
+          "python train.py",
+          "python remove.py",
+          "python inpaint.py"
+        ]
+      },
+      "smallest_blocker": "aurafusion360_unpinned_runtime_weights_or_author_smoke_missing"
+    }
+  },
+  "simready_control": {
+    "receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
+    "smallest_blocker": "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
+  },
+  "content_agents": {
+    "receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_usd_content_agents_preflight_receipt.v1.json",
+    "execution_result_path": "simready/content_agents/vast_run_004/immutable_execution/adp_content_agents_vast_result.json",
+    "allocator_result_path": "simready/content_agents/vast_run_004/allocator_result.live.json",
+    "bundle_receipt_path": "simready/content_agents/vast_candidate_006/adp_content_agents_bundle_receipt.json",
+    "bundle_path": "simready/content_agents/vast_candidate_006/adp_content_agents_provider_runtime_bundle.zip",
+    "final_validation_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_final_validation.json",
+    "teardown_manifest_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_teardown_manifest.json",
+    "object_cleanup_path": "simready/content_agents/vast_run_004/object_store_staging/wam_provider_object_store_cleanup.json"
+  },
+  "missing_roles": {
+    "controlled_background_truth": "controlled_background_truth_case_missing",
+    "physics_positive_control": "physics_positive_control_receipt_missing",
+    "scannetpp_real_transfer": "scannetpp_scene_access_and_admission_missing"
+  }
+}
