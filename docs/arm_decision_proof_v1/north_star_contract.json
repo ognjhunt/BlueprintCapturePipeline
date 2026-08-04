@@ -1,0 +1,160 @@
+{
+  "schema_version": "arm_decision_proof_north_star.v1",
+  "program_id": "arm-decision-proof-v1",
+  "status": "sole_active_program",
+  "approved_on": "2026-08-03",
+  "north_star": "From one qualified, rights-cleared representation of one previously unseen fixed-arm workcell, imported from an existing scene or capture when possible and newly captured only for measured gaps, prospectively decide which of two frozen policy or configuration candidates deserves the next scarce physical-test budget, or explicitly abstain, then verify that decision and at least one predicted failure boundary with randomized held-out physical trials.",
+  "north_star_metric": {
+    "name": "prospectively_physically_validated_new_site_task_decisions",
+    "current": 0,
+    "target": 1
+  },
+  "product": "task_evaluation_run",
+  "construction_method": "candidate_minimum_sufficient_evaluation_replica",
+  "showcase_label": "SiteBench",
+  "execution_strategy": {
+    "mode": "public_reference_harness_first",
+    "harness_engineering": "dominant_until_harness_complete",
+    "capture_feature_development": "zero_unless_measured_blocker",
+    "partner_recruitment_and_protocol": "parallel_human_lane"
+  },
+  "scope": {
+    "partners": 1,
+    "sites": 1,
+    "tasks": 1,
+    "embodiment": "fixed_robot_arm",
+    "candidate_count": 2,
+    "task_family": "bounded_rigid_object_pick_place",
+    "object_class": "rigid_opaque",
+    "camera_arrangement": "fixed",
+    "gripper": "parallel_jaw"
+  },
+  "required_evidence": [
+    "partner_owned_task_and_decision",
+    "immutable_partner_capture",
+    "owner_approved_task_distribution_and_reset",
+    "qualified_robot_camera_site_registration",
+    "qualified_observation_and_collision_replica",
+    "two_frozen_real_policy_or_configuration_receipts",
+    "sealed_simulation_decision_before_holdout",
+    "randomized_or_interleaved_heldout_physical_trials",
+    "exact_condition_id_physical_outcome_join",
+    "bounded_decision_with_uncertainty_and_invalid_region"
+  ],
+  "acceptance": [
+    "real_learned_policy_executes_closed_loop_in_the_replica",
+    "simulation_decision_is_sealed_before_physical_holdout",
+    "physical_holdout_supports_the_same_practical_selection_or_elimination_decision",
+    "at_least_one_site_relevant_failure_boundary_is_correctly_localized",
+    "trial_count_is_justified_by_preregistered_power_analysis",
+    "every_result_is_digest_bound_and_replayable",
+    "partner_confirms_the_result_changes_or_reduces_the_next_physical_test_allocation",
+    "claims_remain_bounded_to_the_exact_site_task_robot_policies_and_validation_envelope"
+  ],
+  "development_substrates": {
+    "allowed": true,
+    "purpose": "exercise_downstream_harness_before_partner_capture",
+    "claim_ceiling": "development_only",
+    "canonical_fixtures": [
+      "tests/fixtures/decision_evidence_rigid_object_v1/vertical_slice.json",
+      "tests/fixtures/new_site_loading_bay_v1",
+      "tests/fixtures/kitchen_task_min"
+    ],
+    "primary_public_reference_candidate": "SIMPLER",
+    "public_reference_admission_status": "requires_exact_revision_asset_license_and_runtime_pin",
+    "cannot_qualify": [
+      "partner_capture_path",
+      "site_task_owner_truth",
+      "robot_camera_site_registration",
+      "task_specific_collision_or_dynamics",
+      "partner_observation_domain_match",
+      "sim_to_real_decision_fidelity",
+      "customer_value_or_reuse_economics"
+    ]
+  },
+  "non_goals": [
+    "humanoids_or_locomotion",
+    "deformables_cables_cloth_liquids_or_granular_tasks",
+    "tight_insertion_or_force_sensitive_assembly",
+    "dynamic_people_or_unbounded_workcells",
+    "five_policy_campaigns_or_general_rank_correlation",
+    "universal_robot_or_simulator_support",
+    "new_reconstruction_or_world_model_research_without_a_measured_blocker",
+    "new_capture_feature_development_without_a_measured_harness_or_partner_blocker",
+    "provider_marketplaces_or_multi_provider_bakeoffs",
+    "post_training_or_policy_improvement_products",
+    "multi_site_generalization",
+    "humanoid_productization",
+    "webapp_polish_unrelated_to_partner_intake_evidence_review_or_case_study"
+  ],
+  "gates": [
+    {
+      "day": 7,
+      "phase": "public_reference_harness",
+      "id": "public_reference_pinned",
+      "required_outcome": "One public real-to-sim reference substrate is pinned by exact revision, assets, license, policies, task, physical reference outcomes, and claim ceiling.",
+      "failure_action": "stop"
+    },
+    {
+      "day": 14,
+      "phase": "public_reference_harness",
+      "id": "two_candidate_execution",
+      "required_outcome": "Two genuine public policy candidates execute through the normalized runtime and emit complete condition-level episode receipts.",
+      "failure_action": "stop"
+    },
+    {
+      "day": 21,
+      "phase": "public_reference_harness",
+      "id": "retrospective_seal_and_join",
+      "required_outcome": "The harness seals a development-only simulated decision before programmatic release of public reference outcomes and performs an exact external outcome join.",
+      "failure_action": "pivot_or_stop"
+    },
+    {
+      "day": 28,
+      "phase": "public_reference_harness",
+      "id": "harness_complete",
+      "required_outcome": "One command reproduces the two-candidate matrix, receipts, sealed development decision, external outcome join, bounded verdict, and inspectable evidence matrix.",
+      "failure_action": "stop"
+    },
+    {
+      "day": 7,
+      "phase": "partner_proof",
+      "id": "partner_and_authority",
+      "required_outcome": "Partner, robot, real task, two runnable candidates, holdout authority, rights, and case-study terms are secured.",
+      "failure_action": "stop"
+    },
+    {
+      "day": 14,
+      "phase": "partner_proof",
+      "id": "protocol_and_capture",
+      "required_outcome": "Task distribution, reset, metric, condition IDs, power plan, invalid region, and immutable partner inputs are frozen; new capture work is limited to measured missing evidence.",
+      "failure_action": "stop"
+    },
+    {
+      "day": 28,
+      "phase": "partner_proof",
+      "id": "real_policy_closed_loop",
+      "required_outcome": "At least one partner policy executes closed loop in the candidate replica with complete episode receipts.",
+      "failure_action": "pivot_or_stop"
+    },
+    {
+      "day": 35,
+      "phase": "partner_proof",
+      "id": "sealed_simulation_decision",
+      "required_outcome": "The prospective selection, elimination, or abstention and predicted failure boundary are sealed before holdout access.",
+      "failure_action": "stop"
+    },
+    {
+      "day": 42,
+      "phase": "partner_proof",
+      "id": "physical_adjudication",
+      "required_outcome": "Held-out physical outcomes are exactly joined and the bounded technical and partner-value verdict is published.",
+      "failure_action": "pivot_or_stop"
+    }
+  ],
+  "compatibility": {
+    "preserve_readers": true,
+    "preserve_historical_evidence": true,
+    "allow_unrelated_new_work": false
+  }
+}

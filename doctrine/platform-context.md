@@ -1,218 +1,206 @@
 ## Shared Platform Doctrine
 
-### System Framing
+### Sole Active Program
 
-- `BlueprintCapture` is the capture client and supply-side evidence collection
-  tool. It collects immutable, provenance-linked real-site evidence.
-- `BlueprintCapturePipeline` composes capture bundles, cards, evaluators, and
-  reset artifacts into maintained Site-Task Testbeds, then produces claim-level
-  Task Evaluation Run plans, evidence, decisions, or explicit abstentions. It
-  owns the versioned Site-Task Testbed manifest, Decision/Evidence Request,
-  Evidence Plan, Evidence Method Profile, normalized Evidence Result, Decision
-  Envelope, and Physical Outcome Join, plus method qualification, routing,
-  aggregation, and scientific verdicts.
-- `Blueprint-WebApp` is the buyer, licensing, ops, and hosted-access surface for
-  Task Evaluation Runs. It owns authenticated intake, request validation,
-  idempotency, entitlement and authorization, durable queue/outbox state, status
-  projection, artifact access, redacted presentation, and operator workflows. It
-  collects constraints and displays Pipeline-owned results; it does not select
-  providers or recompute scientific verdicts.
-- `BlueprintValidation` remains optional downstream infrastructure for
-  benchmarking, runtime checks, robot evaluation support, and specialized
-  validation after the primary package or run is scoped.
+Blueprint's sole active program is **Arm Decision Proof v1**
+(`arm-decision-proof-v1`).
 
-This platform is capture-first and real-site decision-evaluation first. Raw
-capture, timestamps, poses, device metadata, rights/privacy records, and
-provenance remain authoritative. World models, site-world routes, simulation
-outputs, generated media, editing assets, legacy data-package exports, and
-model-derived artifacts are evidence or support artifacts inside a run. They are
-not additional public offers, and they do not silently upgrade the claim.
+Its north star is:
 
-### One Customer-Facing Product
+> From one qualified, rights-cleared representation of one previously unseen
+> fixed-arm workcell—imported from an existing scene/capture when possible and
+> newly captured only for measured gaps—prospectively decide which of two frozen
+> policy or configuration candidates
+> deserves the next scarce physical-test budget, or explicitly abstain, then
+> verify that decision and at least one predicted failure boundary with
+> randomized held-out physical trials.
+
+The north-star metric is
+`prospectively_physically_validated_new_site_task_decisions`: current `0`, next
+target `1`.
+
+No other research, product, growth, infrastructure, provider, embodiment, or
+market-expansion lane is active unless an observed Arm Decision Proof blocker
+shows that it is the smallest necessary dependency.
+
+The immediate engineering phase is **public-reference harness first**. Blueprint
+must accept an already-built public real-to-sim environment and complete the
+two-candidate execution, receipt, sealing, external physical-reference outcome
+join, uncertainty, abstention, replay, and evidence-matrix path before building
+new capture or reconstruction features. SIMPLER is the first candidate to pin
+and audit, not a permanent backend.
+
+New capture/reconstruction feature development is zero until the harness or
+later partner proof records a specific missing measurement that existing inputs
+cannot supply. Partner discovery, task/protocol design, rights, and physical
+access remain a small parallel human lane.
+
+### Product And Artifact Boundary
 
 Blueprint sells one product: **Task Evaluation Run**.
 
-The maintained Site-Task Testbed is the reusable substrate behind runs. Robot
-teams and site operators are personas using the same service, decision request,
-workflow, result model, pricing concept, and call to action. Post-training is
-only a permitted use of qualifying evidence inside a run; it is not a SKU,
-add-on, navigation item, checkout flow, or delivery promise.
+- A maintained **Site-Task Testbed** is the versioned reusable substrate.
+- A **candidate Minimum Sufficient Evaluation Replica** is the construction
+  method for this program. It is not proven sufficient before physical
+  adjudication.
+- A **Physical Outcome Join** binds the prospective result to authoritative
+  held-out physical outcomes.
+- **SiteBench** may name the bounded public case study. It is not a second
+  product, general benchmark platform, or digital-twin offer.
 
-The normal customer describes the site-task, decision, candidates when
-applicable, claims, thresholds, false-safe consequence, acceptable risk, budget,
-deadline, available evidence, rights/privacy restrictions, and physical-testing
-constraints. The WebApp does not ask ordinary users to choose a simulator, world
-model, or provider.
+A run returns a bounded selection, elimination, equivalence/inconclusive result,
+partial decision, explicit abstention, or the smallest missing measurement. It
+does not guarantee ranking, deployment, physical success, or safety.
 
-### Product Center of Gravity
+### Exact v1 Scope
 
-The center of gravity is:
+The first proof is deliberately limited to:
 
-- broad real-world capture coverage
-- strong capture quality and provenance
-- Task Evaluation Runs for robot teams
-- maintained, immutable-version Site-Task Testbeds reused across successive runs
-- claim-level routing to the cheapest currently qualified evidence method or
-  combination, with explicit escalation and abstention
-- rights-cleared evidence-use determinations inside a run; post-training use is
-  allowed only after rights, provenance, action-alignment, quality, and leakage
-  gates
-- hosted access for request-scoped review
-- rights, privacy, and commercialization controls
-- buyer-facing product surfaces that make real sites easy to browse, buy, run,
-  and manage
+- one admitted design partner;
+- one previously unseen workcell;
+- one fixed robot arm;
+- one partner-owned bounded rigid-object pick-and-place task;
+- fixed cameras, rigid opaque objects, and a parallel-jaw gripper;
+- two genuine runnable frozen policy checkpoints or configurations;
+- a small owner-approved condition distribution and repeatable reset;
+- one prospective decision and one predicted failure boundary;
+- one randomized or interleaved held-out physical trial set using the same
+  condition IDs.
 
-The center of gravity is not:
+The task, candidates, minimum meaningful difference, protocol, partitions,
+decision rule, code, assets, and evidence are frozen before holdout release.
+Two candidates may establish one bounded decision; they cannot establish general
+rank correlation.
 
-- generic marketplace browsing as the main story
-- qualification/readiness as the main thing Blueprint sells
-- world models are not the primary public product, and Blueprint is not a generic
-  world-model marketplace
-- one-off model demos disconnected from real capture
-- a single permanent world-model backend
+### System Responsibilities
 
-### Market Structure
+- `BlueprintCapture` records immutable, provenance-linked real-site evidence.
+- `BlueprintCapturePipeline` compiles the testbed, routes claims to qualified
+  evidence, executes authorized leaf runs, seals the prospective decision,
+  performs the Physical Outcome Join, and owns the scientific verdict.
+- `Blueprint-WebApp` handles partner intake, authorization, durable workflow
+  state, evidence review, and bounded case-study presentation. It does not
+  select evidence providers or recompute verdicts.
+- Agents may inspect, propose, implement, validate, and assemble artifacts.
+  Deterministic contracts authorize or abstain. Humans retain authority over
+  task truth, resets, rights/privacy, physical robot motion and safety, holdout
+  release, publication, and claim promotion.
 
-The core business engine is two-sided:
+### Existing Capture And Scene Policy
 
-- **Capturers** supply real-site evidence packages.
-- **Robot teams** buy Task Evaluation Runs.
+Existing captures, fixtures, OpenUSD scenes, SimReady candidates, and simulator
+artifacts should exercise every downstream seam that does not require new
+physical truth. This is the first phase of the Arm Decision Proof, not a separate
+fixture product.
 
-`Site operators` remain important, but they are an optional third lane at
-capture time, covering:
+The public phase should use one pinned real-to-sim reference with genuine
+policies and published physical outcomes. Those outcomes may be programmatically
+withheld until after sealing to test software separation, but the result remains
+retrospective and `development_only`; published labels cannot become a
+prospective holdout.
 
-- access control
-- rights / consent / privacy boundaries
-- commercialization and revenue sharing
+They may validate contract shape, testbed compilation, two-candidate matrix
+planning, condition IDs, reset/evaluator plumbing, policy/runtime adapters,
+closed-loop execution, episode receipts, replay, decision sealing, holdout
+separation, Physical Outcome Join mechanics, aggregation, abstention, and report
+rendering.
 
-The platform must support lawful capture and packaging even when a site has not
-already gone through a pre-negotiated intake flow. Site-operator involvement is
-a supported workflow branch, not a universal prerequisite for all capture.
-
-Optional at capture time is not the same as unimportant at adoption time. The
-long-horizon direction (see `VISION.md`, rung 2) is that site operators become
-the demand-side channel that routes deployment decisions through Blueprint
-evaluation — requiring a Task Evaluation Run before a robot reaches their floor.
-That is a strategic adoption bet about where the standard gets enforced, not a
-current capture prerequisite; the two statements describe different lifecycle
-stages and do not conflict.
-
-### Decision And Evidence Router
-
-Pipeline routes every decision-relevant claim to the least expensive currently
-qualified combination of fixture data, geometry, real observations, traditional
-simulation, world models, provider tools, and physical evidence. It escalates
-only when stronger evidence is required.
-
-A valid run outcome may be:
-
-- bounded positive;
-- bounded negative;
-- elimination of an incompatible candidate;
-- partial decision;
-- explicit abstention;
-- blocked or failed;
-- a request for the next evidence needed.
-
-A run does not guarantee ranking, shortlist, winner, deployment, pilot
-readiness, physical success, or safety approval. Unknown future states fail
-closed. An abstained result never implies a winner from raw scores.
+They remain `development_only` and cannot qualify the partner capture, owner task
+truth, robot/camera/workcell registration, task-specific geometry or dynamics,
+observation-domain match, sim-to-real decision fidelity, or partner value. No
+fixture field may be copied into qualified evidence to make a gate pass.
 
 ### Truth Hierarchy
 
-- raw capture, timestamps, poses, device metadata, and provenance are
-  authoritative
-- rights / privacy / consent metadata are authoritative
-- Site Cards, Task Cards, Scenario Cards, Eval Cards, package manifests,
-  generated/model-derived support assets, and hosted-session artifacts are
-  downstream artifacts with explicit proof boundaries
-- Task Evaluation Run is the one primary sellable downstream product
-- maintained Site-Task Testbeds are reusable substrates, not a second product
-- post-training is a permitted use of qualifying run evidence, never proof that
-  training occurred or a policy improved
-- qualification / readiness / review outputs are optional trust layers that can
-  guide buying, commercialization, and deployment decisions
-- downstream outputs must not rewrite capture truth or provenance truth
+1. Raw capture, timestamps, poses, device metadata, rights/privacy records, and
+   provenance are authoritative for captured truth.
+2. Owner-approved task distribution, reset, outcome, and invalid-condition
+   records are authoritative for task truth within their stated scope.
+3. Accepted physical trial logs and exact join identifiers are authoritative for
+   physical outcomes.
+4. Site/Task/Scenario/Eval Cards, replicas, geometry, generated appearance,
+   SimReady assets, simulations, learned evaluators, provider outputs, reports,
+   and hosted views are derived artifacts with independent claim ceilings.
 
-### Result Contract
+Derived artifacts never rewrite higher-authority truth. Realistic appearance,
+successful loading, completed execution, or provider status does not establish
+collision validity, physical fidelity, task success, deployment, or safety.
 
-Buyer-facing results expose the requested decision, per-claim outcomes, selected
-methods and selection reasons, measurements, validation envelope, unsupported
-conditions, coverage, uncertainty, disagreements and correlated-evidence
-warnings, claim ceiling, next cheapest experiment, physical-evidence
-requirements, cost/time when available, exact artifact versions and digests, and
-permitted evidence uses.
+### Evidence And Result Contract
 
-An evidence export does not prove training happened or a policy improved.
-Physical outcome ingestion requires authoritative evidence and exact join
-identifiers; a user note alone cannot recalibrate a method.
+Every decision exposes:
 
-### Product Stack
+- the requested decision and minimum meaningful difference;
+- exact site, task, robot, candidate, condition, reset, and runtime identities;
+- selected evidence methods and why they qualified;
+- measurements, coverage, uncertainty, invalid trials, disagreements, and known
+  unsupported conditions;
+- the sealed pre-holdout result;
+- exact physical outcome joins;
+- the final agreement, contradiction, or abstention;
+- the correctly or incorrectly localized failure boundary;
+- the next smallest measurement;
+- exact artifact versions and digests;
+- the partner-value verdict and reuse estimate.
 
-1. supply and truth layer: real-site capture, rights, privacy, and provenance
-2. reusable substrate: maintained Site-Task Testbeds
-3. single buyer product: Task Evaluation Runs
-4. evidence methods: geometry, captured observations, traditional simulation,
-   learned/world-model evaluation, provider tools, physical evidence, and
-   bounded owner inputs
-5. access and support layer: hosted review, licensing, entitlements, operator
-   workflows, evidence export/use, legacy compatibility, generated/model-derived
-   data, editing, and augmentation
+An honest abstention is valid behavior but does not complete the showcase target.
+A wrong prospective decision is a failed experiment and remains immutable
+evidence.
 
-### Commercial Wedge Overlay
+### Partner And Economic Gate
 
-The current PMF wedge is the Task Evaluation Run: a decision request bound to an
-exact maintained testbed. The router decomposes the decision into claims,
-selects only qualified methods, and returns a partial or complete decision or an
-explicit abstention with the next cheapest experiment. A run may emit
-rights-cleared evidence for later evaluation or post-training use, but the
-evidence export is not another product and does not imply training or
-improvement.
+The first partner must bring a real testing decision, two runnable candidates,
+a bounded task, holdout authority, a named operator/task owner, documented
+rights, and a credible reuse or physical-scarcity reason.
 
-Wedge claims stay inside the proof boundary. The current comparative
-policy-ranking scientific verdict is `thesis_not_supported`; physical success,
-deployment readiness, and safety claims require separately accepted physical
-evidence. Generated frames are support, never real-world proof.
+The technical result alone is insufficient. The program must measure whether the
+partner changed or reduced its next physical-test allocation, how much manual
+authoring and compute the replica required, and whether direct physical testing
+would have been cheaper. If reuse economics are not supported, Blueprint stops
+or considers a bounded capture/testbed-preparation service rather than expanding
+the platform.
 
-### Commercial And Compatibility Rules
+### Compatibility
 
-- One run is scoped and quoted according to decision, evidence, candidates,
-  scenarios, compute, deadline, rights, and physical requirements.
-- The server owns authoritative pricing. The client cannot supply it.
-- No new subscription, standalone evidence package, improvement add-on, or
-  vendor submission fee.
-- Historical data, URLs, transactions, and entitlements remain readable through
-  explicit compatibility paths.
-- Legacy paid or customer-visible intent is never silently reinterpreted.
-- Live provider, physical robot, deployment, payment, rights, calibration, and
-  customer claims require proof from the system that owns them.
+Historical schemas, evidence, URLs, records, entitlements, readers, paid-resource
+safety gates, and provider adapters remain readable and secure. They are not
+active product surfaces or roadmap authority. Legacy behavior is preserved by
+explicit translation or deprecation rather than silent reinterpretation.
 
-### Default Lifecycle
+The existence of compatibility code does not authorize new work on its former
+lane.
 
-1. A capture is sourced proactively or through a buyer / site / ops request.
-2. `BlueprintCapture` records and uploads a truthful evidence bundle.
-3. `BlueprintCapturePipeline` composes a versioned Site-Task Testbed and routes a
-   Task Evaluation Run at claim level through qualified evidence adapters.
-4. `Blueprint-WebApp` exposes the request, plan status, decision envelope,
-   abstentions, and proof-bound supporting artifacts.
-5. Optional world-model, simulation, deeper evaluation, validation, or managed
-   support follows only when commercially useful and proof-bounded.
+### Frozen Work
+
+Unless the Arm Decision Proof records a direct blocker, do not start or expand:
+
+- humanoid/G1 or locomotion work;
+- deformable, cable, cloth, granular, insertion, or force-task work;
+- five-policy campaigns or general rank-correlation claims;
+- world-model/evaluator expansion;
+- reconstruction/provider bakeoffs or marketplaces;
+- universal robot, simulator, or provider support;
+- dynamic-scene and general 3DGS research;
+- post-training or policy-improvement products;
+- multi-site generalization;
+- unrelated city-launch, growth, marketplace, or WebApp polish.
+
+Humanoids are not automatically the next phase. A later embodiment must be
+earned by this proof and a real partner need.
 
 ### Practical Rule For Agents
 
-When changing any Blueprint repo, optimize for:
+Before accepting any work, answer:
 
-1. stronger real-site capture supply and capture truth
-2. better Task Evaluation Runs, maintained testbeds, routing, abstention, and
-   learning from authoritative physical outcomes
-3. stable rights / privacy / provenance contracts and stable versioned testbeds
-4. secure decision intake, durable state, and buyer and ops surfaces that make
-   those outputs easy to sell and use
-5. optional trust, readiness, world-model, simulation, generated-data, and
-   validation layers that support the product without becoming the product story
+1. Which public-harness or partner-proof Arm Decision Proof gate does it unblock?
+2. What observed artifact will prove the blocker was removed?
+3. Why is existing infrastructure insufficient?
+4. What is the smallest reversible change?
 
-Do not assume that every capture must begin with formal site qualification.
-Do not treat qualification/readiness as the universal center of the company.
-Do not overstate world-model quality beyond what capture, privacy, and runtime
-artifacts support.
-Do not move scientific routing or scoring into WebApp.
+If any answer is missing, the work is out of focus.
+
+Prefer thin adapters over new infrastructure. Preserve raw truth and stable
+contracts. Never hand-author fake evidence. Do not run paid providers, upload
+data, move a robot, release holdouts, or publish externally without the existing
+explicit authority. Use the smallest risk-based verification that protects the
+changed claim.

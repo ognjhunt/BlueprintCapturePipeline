@@ -3,6 +3,10 @@
 This directory is the **one editable place** for doctrine shared across
 `BlueprintCapture`, `BlueprintCapturePipeline`, and `Blueprint-WebApp`.
 
+The shared doctrine currently locks all three repos to Arm Decision Proof v1 as
+the sole active program. Broader historical strategies are recoverable from git
+history but are not active doctrine.
+
 Edit here. Never edit a shared block in a repo's `PLATFORM_CONTEXT.md`,
 `VISION.md`, or `WORLD_MODEL_STRATEGY_CONTEXT.md` directly — those regions are
 generated, and CI will reject a hand edit.
