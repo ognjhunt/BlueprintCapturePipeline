@@ -269,8 +269,10 @@ for row in [*manifest.get("source_files", []), *manifest.get("asset_files", [])]
 PY
 export PYTHONPATH="$bundle/src"
 set +e
+echo 'BLUEPRINT_LIGHTWHEEL_SINK_PHASE:{"name":"worker_process_start"}'
 /isaac-sim/python.sh "$bundle/scripts/run_lightwheel_sink_isaac_bundle.py" --bundle-root "$bundle" --output "$result"
 worker_status=$?
+echo "BLUEPRINT_LIGHTWHEEL_SINK_PHASE:{\"name\":\"worker_process_exit\",\"exit_code\":$worker_status}"
 set -e
 if [ ! -s "$result" ]; then
   exit "$worker_status"

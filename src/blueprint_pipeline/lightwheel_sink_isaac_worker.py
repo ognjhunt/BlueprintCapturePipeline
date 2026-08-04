@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -38,6 +39,23 @@ def _finite_vector(values: Sequence[Any]) -> bool:
         return bool(values) and all(math.isfinite(float(item)) for item in values)
     except (TypeError, ValueError):
         return False
+
+
+def _phase(name: str, *, started: float, **detail: Any) -> None:
+    """Emit secret-free progress evidence to the provider container log."""
+
+    print(
+        "BLUEPRINT_LIGHTWHEEL_SINK_PHASE:"
+        + json.dumps(
+            {
+                "name": name,
+                "elapsed_seconds": round(max(0.0, time.monotonic() - started), 3),
+                **detail,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
 
 
 def handle_tangent(handle_center: Sequence[float], pivot: Sequence[float]) -> list[float]:
@@ -253,12 +271,15 @@ def _frame_record(camera: Any, label: str) -> dict[str, Any]:  # pragma: no cove
 def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:  # pragma: no cover - Isaac runtime only
     import numpy as np
 
+    started = time.monotonic()
+    _phase("simulation_app_launch_start", started=started)
     SimulationApp = _simulation_app_type()
     config = dict(manifest["test_configuration"])
     width, height = map(int, config["render_resolution"])
     simulation_app = SimulationApp(
         {"headless": True, "renderer": config["renderer"], "width": width, "height": height}
     )
+    _phase("simulation_app_launch_complete", started=started)
     try:
         from isaacsim.core.api import World
         from isaacsim.core.utils.stage import add_reference_to_stage
@@ -267,8 +288,10 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
         world = World(stage_units_in_meters=1.0, physics_dt=float(config["physics_dt_seconds"]), rendering_dt=float(config["physics_dt_seconds"]))
+        _phase("world_created", started=started)
         stage = world.stage
         add_reference_to_stage(str(bundle_root / manifest["wrapper_path"]), "/World")
+        _phase("sink_wrapper_referenced", started=started)
         sink_path = str(config["sink_prim_path"])
         sink_prim = stage.GetPrimAtPath(sink_path)
         if not sink_prim.IsValid():
@@ -322,6 +345,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         sink = Articulation(prim_path=sink_path, name="lightwheel_sink")
         world.scene.add(sink)
         world.reset()
+        _phase("sink_world_reset_complete", started=started)
         for camera in cameras.values():
             camera.initialize()
         for _ in range(8):
@@ -334,6 +358,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         root_initial = np.asarray(_world_position(stage, str(config["base_prim_path"]), UsdGeom))
 
         frames = [_frame_record(cameras["front"], "asset_initial_front"), _frame_record(cameras["side"], "asset_initial_side")]
+        _phase("initial_frames_captured", started=started, frame_count=len(frames))
         sweep_trace: list[dict[str, Any]] = []
         for target_deg in config["handle_joint_targets_degrees"]:
             _apply_targets(sink, np.asarray([math.radians(float(target_deg))]), np.asarray([handle_index]))
@@ -351,6 +376,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                 }
             )
         frames.extend([_frame_record(cameras["front"], "asset_sweep_120_front"), _frame_record(cameras["close"], "asset_sweep_120_close")])
+        _phase("joint_target_sweep_complete", started=started, target_count=len(sweep_trace))
 
         # Restore a passive handle, then sweep a kinematic capsule through it tangentially.
         drive.CreateStiffnessAttr().Set(0.0)
@@ -374,6 +400,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         contact_api = PhysxSchema.PhysxContactReportAPI.Apply(capsule.GetPrim())
         contact_api.CreateThresholdAttr().Set(0.0)
         world.reset()
+        _phase("capsule_world_reset_complete", started=started)
         pusher_trace: list[dict[str, Any]] = []
         pusher_contacts: list[dict[str, Any]] = []
         for step in range(int(config["pusher_steps"])):
@@ -395,6 +422,11 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                     {"step": step, "capsule_position_m": position_m.tolist(), "handle_degrees": math.degrees(angle), "handle_velocity_rad_s": velocity, "handle_effort_nm": effort, "contact_count": len(records)}
                 )
         frames.append(_frame_record(cameras["close"], "capsule_push_close"))
+        _phase(
+            "capsule_push_complete",
+            started=started,
+            contact_count=len(pusher_contacts),
+        )
         capsule.GetPrim().SetActive(False)
 
         # Official fixed-base Franka, controlled only by scripted differential IK.
@@ -406,6 +438,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
         franka = Articulation(prim_path=str(config["franka_prim_path"]), name="lightwheel_sink_franka")
         world.scene.add(franka)
         world.reset()
+        _phase("franka_world_reset_complete", started=started)
         for camera in cameras.values():
             camera.initialize()
         initial_joints = np.asarray([0.2897, 0.50732, -0.140016, -2.176, -0.0310497, 2.51592, -0.49251, 0.04, 0.04])
@@ -477,6 +510,11 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                         }
                     )
         frames.extend([_frame_record(cameras["front"], "franka_push_front"), _frame_record(cameras["close"], "franka_push_close")])
+        _phase(
+            "franka_push_complete",
+            started=started,
+            contact_count=len(franka_contacts),
+        )
 
         root_final = np.asarray(_world_position(stage, str(config["base_prim_path"]), UsdGeom))
         franka_base_final = np.asarray(_world_position(stage, franka_base_path, UsdGeom))
@@ -495,7 +533,7 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                     value = attribute.Get()
                     if value:
                         texture_inputs.append(str(value))
-        return {
+        result = {
             "wrapper": {
                 "physics_scene_present": stage.GetPrimAtPath("/World/physicsScene").IsValid(),
                 "articulation_root_api_present": sink_prim.HasAPI(UsdPhysics.ArticulationRootAPI),
@@ -552,6 +590,8 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
                 "frames": frames,
             },
         }
+        _phase("runtime_result_ready", started=started, frame_count=len(frames))
+        return result
     finally:
         simulation_app.close()
 
@@ -559,6 +599,8 @@ def _runtime(bundle_root: Path, manifest: Mapping[str, Any]) -> dict[str, Any]: 
 def run_lightwheel_sink_canary(bundle_root: Path, output_path: Path) -> int:
     """Validate immutable inputs, execute Isaac, and always emit a terminal JSON result."""
 
+    process_started = time.monotonic()
+    _phase("bundle_validation_start", started=process_started)
     manifest = _read_object(bundle_root / "bundle_manifest.json")
     blockers: list[str] = []
     if manifest.get("schema_version") != BUNDLE_SCHEMA_VERSION:
@@ -591,6 +633,7 @@ def run_lightwheel_sink_canary(bundle_root: Path, output_path: Path) -> int:
     runtime: dict[str, Any] = {}
     if not blockers:
         try:
+            _phase("bundle_validation_complete", started=process_started)
             runtime = _runtime(bundle_root, manifest)
         except Exception as exc:  # noqa: BLE001 - terminal evidence must survive runtime failure
             blockers.append(f"lightwheel_sink_runtime_failed:{type(exc).__name__}:{str(exc)[:400]}")
@@ -686,6 +729,12 @@ def run_lightwheel_sink_canary(bundle_root: Path, output_path: Path) -> int:
     result["runtime_result_digest"] = canonical_digest(result, digest_field="runtime_result_digest")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _phase(
+        "terminal_result_written",
+        started=process_started,
+        status=result["status"],
+        blocker_count=len(result["blockers"]),
+    )
     return 0 if result["status"] == "passed" else 1
 
 
