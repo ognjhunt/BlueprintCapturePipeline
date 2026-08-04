@@ -1177,7 +1177,12 @@ def _truth_boundaries() -> dict[str, Any]:
     }
 
 
-def _search_payload(*, limit: int, max_hourly_rate: float | None) -> dict[str, Any]:
+def _search_payload(
+    *,
+    limit: int,
+    max_hourly_rate: float | None,
+    allowed_machine_ids: Iterable[Any] = (),
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "limit": limit,
         "type": "on-demand",
@@ -1188,6 +1193,12 @@ def _search_payload(*, limit: int, max_hourly_rate: float | None) -> dict[str, A
     }
     if max_hourly_rate is not None:
         payload["dph_total"] = {"lte": max_hourly_rate}
+    allowed = sorted(_machine_id_set(allowed_machine_ids))
+    if allowed:
+        # Apply the allowlist at the provider query, not only after the
+        # response. Otherwise an admitted machine can be omitted by the
+        # endpoint's bounded result page even while it is rentable.
+        payload["machine_id"] = {"in": allowed}
     return payload
 
 
@@ -5221,7 +5232,11 @@ def run_vast_provider_adapter(
             # regular Python exceptions below.
             previous_signal_handlers.pop(signum, None)
     try:
-        search_request = _search_payload(limit=100, max_hourly_rate=max_hourly_rate)
+        search_request = _search_payload(
+            limit=100,
+            max_hourly_rate=max_hourly_rate,
+            allowed_machine_ids=resolved_allowed_machine_ids,
+        )
         create_retry_attempts: list[dict[str, Any]] = []
         pre_provider_mutation_result: dict[str, Any] | None = None
         max_stale_offer_retries = _vast_stale_offer_create_retry_attempts()

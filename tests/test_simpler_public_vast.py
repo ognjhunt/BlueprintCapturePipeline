@@ -24,7 +24,11 @@ from blueprint_pipeline.simpler_public_runtime_worker import (
     _cuda_toolkit_evidence,
     _vulkan_runtime_evidence,
 )
-from blueprint_pipeline.vast_provider_adapter import _probe_env, _probe_shell_script
+from blueprint_pipeline.vast_provider_adapter import (
+    _probe_env,
+    _probe_shell_script,
+    _search_payload,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -104,6 +108,11 @@ def test_adp_runtime_pins_only_observed_vulkan_capable_machine() -> None:
     assert manifest["runtime"]["environment_lock"]["admitted_vast_machine_ids"] == [
         41950
     ]
+    assert _search_payload(
+        limit=100,
+        max_hourly_rate=0.8,
+        allowed_machine_ids=ADMITTED_MACHINE_IDS,
+    )["machine_id"] == {"in": [41950]}
 
 
 def test_worker_activates_only_verified_editable_source_roots(tmp_path: Path) -> None:
