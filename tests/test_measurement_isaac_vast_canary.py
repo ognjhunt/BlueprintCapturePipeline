@@ -168,7 +168,13 @@ def test_lightwheel_bootstrap_runs_sink_worker_and_rehashes_every_member() -> No
     assert "BLUEPRINT_LIGHTWHEEL_SINK_INPUT_BUNDLE_DIGEST" in script
     assert "lightwheel_sink_member_digest_mismatch" in script
     assert "source_files" in script and "asset_files" in script
-    assert script.count("/isaac-sim/python.sh") == 3
+    # download+verify, worker, fallback-result writer, output upload
+    assert script.count("/isaac-sim/python.sh") == 4
+    # A hung worker must be killed and a crashed worker must still ship evidence.
+    assert "timeout --signal=TERM --kill-after=60 960" in script
+    assert "worker_log_tail" in script
+    assert "lightwheel_sink_worker_no_terminal_result" in script
+    assert "host_driver" in script
 
 
 def test_watchdog_validation_binds_live_process_and_exact_nonsymlink_evidence(
