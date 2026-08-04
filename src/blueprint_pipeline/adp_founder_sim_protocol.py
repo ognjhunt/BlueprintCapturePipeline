@@ -9,6 +9,7 @@ visual evidence, or independent simulator-state grading contracts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -366,6 +367,54 @@ def admit_founder_sim_execution(
         result, digest_field="execution_admission_digest"
     )
     return result
+
+
+def expected_founder_approval_statement(
+    protocol: Mapping[str, Any] | None = None,
+) -> str:
+    canonical = build_founder_sim_protocol()
+    if protocol is not None and dict(protocol) != canonical:
+        raise FounderSimProtocolError(["founder_sim_protocol_not_canonical"])
+    return (
+        f"I approve protocol {PROTOCOL_ID} with digest "
+        f"{canonical['protocol_digest']} as Blueprint founder and simulation task owner."
+    )
+
+
+def build_founder_approval_receipt(
+    *, statement: str, evidence_ref: str
+) -> dict[str, Any]:
+    """Convert an observed exact-digest human statement into a durable receipt."""
+
+    observed = " ".join(str(statement).split())
+    expected = expected_founder_approval_statement()
+    blockers: list[str] = []
+    if observed != expected:
+        blockers.append("founder_sim_approval_statement_not_exact")
+    if not str(evidence_ref).strip():
+        blockers.append("founder_sim_approval_evidence_ref_missing")
+    if blockers:
+        raise FounderSimProtocolError(blockers)
+    protocol = build_founder_sim_protocol()
+    receipt: dict[str, Any] = {
+        "schema_version": APPROVAL_SCHEMA_VERSION,
+        "approved": True,
+        "approver_role": "blueprint_founder_sim_owner",
+        "protocol_id": PROTOCOL_ID,
+        "protocol_digest": protocol["protocol_digest"],
+        "approval_statement": observed,
+        "approval_statement_sha256": hashlib.sha256(observed.encode("utf-8")).hexdigest(),
+        "evidence_ref": str(evidence_ref).strip(),
+        "approved_scope": "development_only_simulation",
+        "physical_execution_authorized": False,
+        "deployment_authorized": False,
+        "publication_authorized": False,
+        "uncapped_paid_compute_authorized": False,
+    }
+    receipt["approval_receipt_digest"] = canonical_digest(
+        receipt, digest_field="approval_receipt_digest"
+    )
+    return receipt
 
 
 def main(argv: Sequence[str] | None = None) -> int:

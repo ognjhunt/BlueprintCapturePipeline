@@ -1,6 +1,6 @@
 # Founder Sim-Only Decision Test
 
-Status: **frozen pending exact-digest founder approval**
+Status: **frozen and exact-digest founder approved; runtime not started**
 Claim ceiling: **development-only simulation**
 Protocol ID:
 `adp-founder-sim-arena-droid-pi05-vs-groot-n17-v1`
@@ -94,8 +94,15 @@ physical holdout. Approval must quote the exact protocol digest after review:
 > development-only simulation phase; this does not authorize physical robot
 > motion, deployment, publication, or uncapped paid compute.
 
-This file records the approval text to use; it does not fabricate the human's
-approval.
+Blueprint's founder supplied that exact statement in the Codex task on
+2026-08-04. The deterministic receipt is
+[`founder_sim_approval_receipt.json`](manifests/founder_sim_approval_receipt.json),
+digest
+`sha256:94ae151d8a7dca5a86bef37ef32233b13b9aa0a2ba0a73eba9d2c0dcdb69c9e9`.
+The resulting non-paid execution admission is
+[`founder_sim_execution_admission.json`](manifests/founder_sim_execution_admission.json),
+digest
+`sha256:5f586feea7211996edac22413d2a320d7ba79a231e3983fe64f964f9d595b4fa`.
 
 The exact 88 logical Arena jobs are compiled by
 [`adp_isaac_lab_arena_request.py`](../../src/blueprint_pipeline/adp_isaac_lab_arena_request.py).
@@ -120,6 +127,13 @@ Before production simulation:
    is ignored at this gate.
 5. Use the canonical paid-resource allocator with a quoted price, hard spend
    cap, TTL, watchdog, teardown, and provider-zero verification.
+
+The worker-side byte receipt and admission boundary are implemented in
+[`adp_isaac_lab_arena_materialization.py`](../../src/blueprint_pipeline/adp_isaac_lab_arena_materialization.py).
+It requires clean exact-revision Arena, Isaac Lab, OpenPI, and GR00T checkouts;
+the frozen Arena lock; byte-complete inventories for the runtime lock, five
+registered environment/embodiment groups, and both checkpoints. Passing it
+authorizes only native control canaries, never candidate jobs or paid compute.
 
 No production simulation, capture, reconstruction, physical trial, upload, or
 paid allocation was started while freezing this protocol.

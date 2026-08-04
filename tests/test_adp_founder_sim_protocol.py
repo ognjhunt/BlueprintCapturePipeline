@@ -9,7 +9,9 @@ from blueprint_pipeline.adp_founder_sim_protocol import (
     PROTOCOL_ID,
     FounderSimProtocolError,
     admit_founder_sim_execution,
+    build_founder_approval_receipt,
     build_founder_sim_protocol,
+    expected_founder_approval_statement,
 )
 from blueprint_pipeline.adp_prospective_design import validate_schedule_for_execution
 
@@ -102,3 +104,32 @@ def test_any_protocol_change_invalidates_canonical_admission() -> None:
     protocol["task"]["termination"]["maximum_action_steps"] = 599
     with pytest.raises(FounderSimProtocolError, match="protocol_not_canonical"):
         admit_founder_sim_execution(protocol, approval)
+
+
+def test_observed_exact_digest_statement_compiles_to_durable_approval_receipt() -> None:
+    statement = expected_founder_approval_statement()
+    receipt = build_founder_approval_receipt(
+        statement=statement,
+        evidence_ref="codex-task://019fccab-db18-78d2-8f11-1e8a55076c2f/user-message",
+    )
+
+    assert receipt["approval_statement"] == statement
+    assert receipt["approval_statement_sha256"]
+    assert receipt["approved_scope"] == "development_only_simulation"
+    assert receipt["physical_execution_authorized"] is False
+    assert receipt["uncapped_paid_compute_authorized"] is False
+    admitted = admit_founder_sim_execution(build_founder_sim_protocol(), receipt)
+    assert admitted["approval"] == receipt
+
+
+def test_approval_receipt_rejects_paraphrase_or_missing_evidence_reference() -> None:
+    with pytest.raises(FounderSimProtocolError, match="approval_statement_not_exact"):
+        build_founder_approval_receipt(
+            statement="I broadly approve this simulation.",
+            evidence_ref="codex-task://observed",
+        )
+    with pytest.raises(FounderSimProtocolError, match="approval_evidence_ref_missing"):
+        build_founder_approval_receipt(
+            statement=expected_founder_approval_statement(),
+            evidence_ref="",
+        )
