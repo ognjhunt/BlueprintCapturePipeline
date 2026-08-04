@@ -167,6 +167,19 @@ def test_successor_ttl_reserves_only_remaining_cumulative_budget(tmp_path: Path)
     )
 
 
+def test_paid_attempt_roots_are_fresh_and_preserve_prior_evidence(tmp_path: Path) -> None:
+    write_json(tmp_path / "adp_arena_vast_session_budget.json", {"attempt_count": 1})
+    prior = tmp_path / "attempts" / "attempt_002"
+    prior.mkdir(parents=True)
+    (prior / "prior_evidence.txt").write_text("preserve", encoding="utf-8")
+
+    number, root = _next_attempt_root(tmp_path)
+
+    assert number == 3
+    assert root == tmp_path / "attempts" / "attempt_003"
+    assert (prior / "prior_evidence.txt").read_text(encoding="utf-8") == "preserve"
+
+
 def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:
     values = [
         "gpu-canary",
