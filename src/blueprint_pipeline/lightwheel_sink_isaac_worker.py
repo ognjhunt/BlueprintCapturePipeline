@@ -15,6 +15,13 @@ from .decision_evidence_contracts import canonical_digest
 from .lightwheel_sink_isaac_bundle import BUNDLE_SCHEMA_VERSION, RUNTIME_RESULT_SCHEMA_VERSION
 from .measurement_isaac_runtime_release import ISAAC_VERSION, RUNTIME_IMAGE
 
+try:  # a native fault must dump its C-level stack into the recovered log tail
+    import faulthandler
+
+    faulthandler.enable()
+except Exception:  # noqa: BLE001 - diagnostics only
+    pass
+
 
 def _environment(name: str) -> str:
     value = os.environ.get(name, "").strip()
@@ -357,10 +364,13 @@ def _runtime(
         drive.CreateDampingAttr().Set(0.35)
         drive.CreateMaxForceAttr().Set(3.0)
 
-        for root_path in (sink_path, str(config["handle_prim_path"])):
-            root = stage.GetPrimAtPath(root_path)
-            api = PhysxSchema.PhysxContactReportAPI.Apply(root)
-            api.CreateThresholdAttr().Set(0.0)
+        # Report contacts only on genuine rigid links; a reporter on an
+        # articulation ROOT prim first fires when the Franka touches the sink,
+        # right where instances 46755835/46756087 died natively.
+        handle_report = PhysxSchema.PhysxContactReportAPI.Apply(
+            stage.GetPrimAtPath(str(config["handle_prim_path"]))
+        )
+        handle_report.CreateThresholdAttr().Set(0.0)
 
         dome = UsdLux.DomeLight.Define(stage, "/World/Lights/Dome")
         dome.CreateIntensityAttr(900.0)
@@ -442,9 +452,8 @@ def _runtime(
                 for prim in stage.GetPrimAtPath(str(config["franka_prim_path"])).GetChildren()
             ]
             raise RuntimeError(f"lightwheel_sink_franka_hand_prim_missing:{children}")
-        for root_path in (str(config["franka_prim_path"]), hand_path):
-            api = PhysxSchema.PhysxContactReportAPI.Apply(stage.GetPrimAtPath(root_path))
-            api.CreateThresholdAttr().Set(0.0)
+        hand_report = PhysxSchema.PhysxContactReportAPI.Apply(stage.GetPrimAtPath(hand_path))
+        hand_report.CreateThresholdAttr().Set(0.0)
 
         Articulation = _single_articulation_type()
         sink = Articulation(prim_path=sink_path, name="lightwheel_sink")
@@ -602,6 +611,13 @@ def _runtime(
                     franka_contacts.extend(contacts)
                     efforts_getter = getattr(franka, "get_measured_joint_efforts", None)
                     efforts = np.asarray(efforts_getter()).reshape(-1).tolist() if callable(efforts_getter) else []
+                    _phase(
+                        "franka_ik_step",
+                        started=started,
+                        waypoint=waypoint_index,
+                        step=step,
+                        error_m=round(float(np.linalg.norm(error)), 4),
+                    )
                     franka_trace.append(
                         {
                             "waypoint_index": waypoint_index,
