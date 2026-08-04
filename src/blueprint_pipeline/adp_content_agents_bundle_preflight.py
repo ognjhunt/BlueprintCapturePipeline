@@ -8,6 +8,8 @@ import json
 import os
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -21,7 +23,8 @@ SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v1"
 LOCAL_IMAGE = "blueprint/adp009a-content-agents:0.5.2"
 LOCAL_IMAGE_ID = "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574"
 LOCAL_IMAGE_PLATFORM = "linux/arm64"
-SECRET_ENV_NAMES = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY")
+SECRET_ENV_NAMES = ("OPENAI_API_KEY",)
+REQUIRED_MODELS = ("gpt-4.1", "gpt-image-1")
 ORCHESTRATOR_REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_MEMBERS = {
     "material": "provider_runtime/configs/material_agent.yaml",
@@ -81,8 +84,34 @@ def _secret() -> str:
         value = str(os.getenv(name) or "").strip()
         if value:
             return value
-    path = Path("~/.blueprint-secrets/gemini_api_key").expanduser()
+    path = Path("~/.blueprint-secrets/openai_api_key").expanduser()
     return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+
+def _probe_model_access(secret: str) -> dict[str, Any]:
+    models: dict[str, dict[str, Any]] = {}
+    for model in REQUIRED_MODELS:
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/models/" + model,
+            headers={
+                "Authorization": "Bearer " + secret,
+                "User-Agent": "BlueprintContentAgentsPreflight/1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                value = json.loads(response.read())
+                status = int(response.status)
+        except (OSError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+            raise ContentAgentsBundlePreflightError(
+                f"openai_model_access_probe_failed:{model}"
+            ) from exc
+        if status != 200 or not isinstance(value, Mapping) or value.get("id") != model:
+            raise ContentAgentsBundlePreflightError(
+                f"openai_model_access_probe_failed:{model}"
+            )
+        models[model] = {"http_status": status, "returned_id": str(value["id"])}
+    return {"provider": "openai", "models": models, "paid_inference_performed": False}
 
 
 def _redact(value: str, secrets: Sequence[str]) -> str:
@@ -187,7 +216,8 @@ def materialize_bundle_config_preflight(
     source_identity = _orchestrator_source_identity()
     secret = _secret()
     if not secret:
-        raise ContentAgentsBundlePreflightError("gemini_secret_missing")
+        raise ContentAgentsBundlePreflightError("openai_secret_missing")
+    model_access = _probe_model_access(secret)
     environment = os.environ.copy()
     for name in SECRET_ENV_NAMES:
         environment[name] = secret
@@ -265,6 +295,7 @@ def materialize_bundle_config_preflight(
         "content_agents_source_commit": SOURCE_COMMIT,
         "content_agents_source_tree": SOURCE_TREE,
         "local_container_image": image_record,
+        "model_access": model_access,
         "configs": config_records,
         "executions": executions,
         "all_required_dry_runs_executed": True,
@@ -316,6 +347,15 @@ def validate_bundle_config_preflight(
             "reference": LOCAL_IMAGE,
             "id": LOCAL_IMAGE_ID,
             "platform": LOCAL_IMAGE_PLATFORM,
+        }
+        or preflight.get("model_access")
+        != {
+            "provider": "openai",
+            "models": {
+                model: {"http_status": 200, "returned_id": model}
+                for model in REQUIRED_MODELS
+            },
+            "paid_inference_performed": False,
         }
         or preflight.get("all_required_dry_runs_executed") is not True
         or preflight.get("provider_mutations_performed") != 0

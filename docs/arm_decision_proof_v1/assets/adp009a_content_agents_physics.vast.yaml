@@ -11,10 +11,13 @@ steps:
   optimize_usd:
     enabled: false
   identify_asset:
-    enabled: true
+    # The upstream whole-scene preview computes bounds from the pseudo-root and
+    # fails on this otherwise valid component stage. Per-component rendering
+    # and classification below remain enabled and are the evidence we need.
+    enabled: false
     vlm:
-      backend: gemini
-      model: gemini-2.5-pro
+      backend: openai
+      model: gpt-4.1
       temperature: 0.1
       max_tokens: 4096
     renderer:
@@ -58,8 +61,8 @@ steps:
   predict:
     enabled: true
     vlm:
-      backend: gemini
-      model: gemini-2.5-pro
+      backend: openai
+      model: gpt-4.1
       temperature: 0.1
       max_tokens: 4096
     max_workers: 1

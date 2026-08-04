@@ -15,7 +15,7 @@ materials:
 steps:
   validate_input:
     enabled: true
-    on_failure: fail
+    on_failure: block
   optimize_usd:
     enabled: false
   build_dataset_usd:
@@ -68,13 +68,13 @@ steps:
     enabled: true
     prediction_batch_size: 1
     vlm:
-      backend: gemini
-      model: gemini-2.5-pro
+      backend: openai
+      model: gpt-4.1
       temperature: 0.1
       max_completion_tokens: 4096
     llm:
-      backend: gemini
-      model: gemini-2.5-pro
+      backend: openai
+      model: gpt-4.1
       temperature: 0.1
       max_tokens: 1024
     max_workers: 1

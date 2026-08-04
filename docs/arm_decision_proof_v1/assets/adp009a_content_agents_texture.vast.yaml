@@ -15,8 +15,8 @@ texture:
   uv_generation_mode: projection
   uv_projection: box
   image_gen:
-    backend: gemini
-    model: gemini-3-pro-image-preview
+    backend: openai
+    model: gpt-image-1
   size: 1024
   workers: 1
 target_prims:

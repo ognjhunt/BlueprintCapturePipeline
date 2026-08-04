@@ -125,6 +125,45 @@ def test_bundle_rejects_changed_reference_bytes(
         )
 
 
+@pytest.mark.parametrize(
+    ("filename", "before", "after"),
+    [
+        ("material_agent.yaml", "on_failure: block", "on_failure: fail"),
+        ("texture_agent.yaml", "model: gpt-image-1", "model: unavailable-image"),
+        (
+            "physics_agent.yaml",
+            "    enabled: false\n    vlm:\n      backend: openai",
+            "    enabled: true\n    vlm:\n      backend: openai",
+        ),
+    ],
+)
+def test_remote_config_contract_rejects_known_paid_runtime_failure_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    before: str,
+    after: str,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    config_sources = {}
+    for name in ("material_agent.yaml", "texture_agent.yaml", "physics_agent.yaml"):
+        source_name = "adp009a_content_agents_" + name.removesuffix("_agent.yaml") + ".vast.yaml"
+        destination = tmp_path / name
+        value = (assets / source_name).read_text(encoding="utf-8")
+        if name == filename:
+            assert before in value
+            value = value.replace(before, after, 1)
+        destination.write_text(value, encoding="utf-8")
+        config_sources[name] = destination
+
+    with pytest.raises(ValueError, match="remote_config_contract_invalid"):
+        content_agents._validate_remote_configs(
+            source=source,
+            config_sources=config_sources,
+        )
+
+
 def test_vast_adapter_uses_gpu_rendering_and_bounded_bundle_path(tmp_path: Path) -> None:
     assert (
         _resolve_launch_mode(
@@ -213,6 +252,14 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
             "reference": bundle_preflight.LOCAL_IMAGE,
             "id": bundle_preflight.LOCAL_IMAGE_ID,
             "platform": bundle_preflight.LOCAL_IMAGE_PLATFORM,
+        },
+        "model_access": {
+            "provider": "openai",
+            "models": {
+                model: {"http_status": 200, "returned_id": model}
+                for model in bundle_preflight.REQUIRED_MODELS
+            },
+            "paid_inference_performed": False,
         },
         "configs": bundle_preflight._bundle_config_records(
             Path(bundle_receipt["bundle_path"])
@@ -442,7 +489,7 @@ def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
                 ]
             )
             return subprocess.CompletedProcess(command, 0, stdout, "")
-        assert kwargs["env"]["GEMINI_API_KEY"] == secret
+        assert kwargs["env"]["OPENAI_API_KEY"] == secret
         assert secret not in " ".join(command)
         entrypoint = command[command.index("--entrypoint") + 1]
         name = next(
@@ -456,6 +503,18 @@ def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
 
     monkeypatch.setattr(bundle_preflight.subprocess, "run", fake_run)
     monkeypatch.setattr(bundle_preflight, "_secret", lambda: secret)
+    monkeypatch.setattr(
+        bundle_preflight,
+        "_probe_model_access",
+        lambda _secret: {
+            "provider": "openai",
+            "models": {
+                model: {"http_status": 200, "returned_id": model}
+                for model in bundle_preflight.REQUIRED_MODELS
+            },
+            "paid_inference_performed": False,
+        },
+    )
     evidence = tmp_path / "evidence"
 
     receipt = bundle_preflight.materialize_bundle_config_preflight(
@@ -522,6 +581,18 @@ def test_exact_bundle_preflight_fails_before_receipt_when_any_cli_fails(
 
     monkeypatch.setattr(bundle_preflight.subprocess, "run", fake_run)
     monkeypatch.setattr(bundle_preflight, "_secret", lambda: secret)
+    monkeypatch.setattr(
+        bundle_preflight,
+        "_probe_model_access",
+        lambda _secret: {
+            "provider": "openai",
+            "models": {
+                model: {"http_status": 200, "returned_id": model}
+                for model in bundle_preflight.REQUIRED_MODELS
+            },
+            "paid_inference_performed": False,
+        },
+    )
     evidence = tmp_path / "failed-evidence"
 
     with pytest.raises(

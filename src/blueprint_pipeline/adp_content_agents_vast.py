@@ -47,9 +47,7 @@ _VAST_MUTATION_ENV = (
 )
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 _FORWARDED_SECRET_NAMES = (
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GOOGLE_GENAI_API_KEY",
+    "OPENAI_API_KEY",
 )
 
 
@@ -99,7 +97,13 @@ def _validate_remote_configs(
     texture_config = dict(texture.get("texture") or {})
     texture_spec = dict((texture.get("material_textures") or {}).get("green_can") or {})
     physics_steps = dict(physics.get("steps") or {})
+    material_steps = dict(material.get("steps") or {})
+    material_predict = dict(material_steps.get("predict") or {})
+    material_vlm = dict(material_predict.get("vlm") or {})
+    material_llm = dict(material_predict.get("llm") or {})
+    material_validation = dict(material_steps.get("validate_input") or {})
     identify_vlm = dict((physics_steps.get("identify_asset") or {}).get("vlm") or {})
+    identify_enabled = (physics_steps.get("identify_asset") or {}).get("enabled")
     predict_vlm = dict((physics_steps.get("predict") or {}).get("vlm") or {})
     if (
         not material_path.is_file()
@@ -111,8 +115,18 @@ def _validate_remote_configs(
         or texture_spec.get("material_path")
         != "/canned_beverage/materials/green_can"
         or texture_spec.get("prim_paths") != ["/canned_beverage/visuals/body"]
-        or identify_vlm.get("backend") != "gemini"
-        or predict_vlm.get("backend") != "gemini"
+        or texture_config.get("image_gen")
+        != {"backend": "openai", "model": "gpt-image-1"}
+        or material_validation.get("on_failure") != "block"
+        or material_vlm.get("backend") != "openai"
+        or material_vlm.get("model") != "gpt-4.1"
+        or material_llm.get("backend") != "openai"
+        or material_llm.get("model") != "gpt-4.1"
+        or identify_enabled is not False
+        or identify_vlm.get("backend") != "openai"
+        or identify_vlm.get("model") != "gpt-4.1"
+        or predict_vlm.get("backend") != "openai"
+        or predict_vlm.get("model") != "gpt-4.1"
     ):
         raise ValueError("adp_content_agents_remote_config_contract_invalid")
 
@@ -291,12 +305,12 @@ def _extract(path: Path, destination: Path) -> dict[str, Any]:
     }
 
 
-def _gemini_secret() -> str:
+def _model_secret() -> str:
     for name in _FORWARDED_SECRET_NAMES:
         value = str(os.getenv(name) or "").strip()
         if value:
             return value
-    path = Path("~/.blueprint-secrets/gemini_api_key").expanduser()
+    path = Path("~/.blueprint-secrets/openai_api_key").expanduser()
     return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
 
 
@@ -309,9 +323,9 @@ def _authority_environment():
         "BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS",
     )
     previous = {name: os.environ.get(name) for name in names}
-    secret = _gemini_secret()
+    secret = _model_secret()
     if not secret:
-        raise ValueError("adp_content_agents_gemini_secret_missing")
+        raise ValueError("adp_content_agents_openai_secret_missing")
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
