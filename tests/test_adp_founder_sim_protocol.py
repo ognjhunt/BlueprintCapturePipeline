@@ -14,6 +14,7 @@ from blueprint_pipeline.adp_founder_sim_protocol import (
     expected_founder_approval_statement,
 )
 from blueprint_pipeline.adp_prospective_design import validate_schedule_for_execution
+from blueprint_pipeline.adp_isaac_lab_arena_request import build_arena_worker_request
 
 
 def test_protocol_freezes_one_sim_task_two_real_candidates_and_no_physical_claim() -> None:
@@ -36,6 +37,13 @@ def test_protocol_freezes_one_sim_task_two_real_candidates_and_no_physical_claim
     assert protocol["scene"]["simulator_stack"]["environment_type"] == ("ManagerBasedRLEnv")
     assert protocol["scene"]["simulator_stack"]["arena_environment"] == (
         "pick_and_place_maple_table"
+    )
+    assert protocol["shared_interface"]["candidate_specific_translation"][
+        "nvidia/GR00T-N1.6-DROID"
+    ] == "Blueprint NVIDIA N1.6 DROID ZMQ adapter"
+    assert all(
+        "N1.7" not in value
+        for value in protocol["shared_interface"]["candidate_specific_translation"].values()
     )
     assert protocol["scene"]["scenario_variation_policy"]["scene_cousins_in_this_protocol"] is (
         False
@@ -94,6 +102,22 @@ def test_protocol_is_deterministic_and_requires_exact_founder_digest() -> None:
     changed["protocol_digest"] = "sha256:" + "0" * 64
     with pytest.raises(FounderSimProtocolError, match="approval_protocol_digest_mismatch"):
         admit_founder_sim_execution(first, changed)
+
+
+def test_v3_protocol_schedule_and_worker_request_digests_are_frozen() -> None:
+    protocol = build_founder_sim_protocol()
+    request = build_arena_worker_request(protocol)
+
+    assert protocol["protocol_id"] == "adp-founder-sim-arena-droid-pi05-vs-groot-n16-v3"
+    assert protocol["protocol_digest"] == (
+        "sha256:c9aac12d5643a788ef3195e5f959cc73677bd0f51f3583dd36dd4861d4e12924"
+    )
+    assert protocol["schedule"]["schedule_digest"] == (
+        "sha256:f8c4b35234a70c37c04f2e95c1d9792585aa56ca02d647e83fde411447a47005"
+    )
+    assert request["worker_request_digest"] == (
+        "sha256:f5c19a42190052161f6a6e999760542b840f60d845607e11db123f8d552dba9c"
+    )
 
 
 def test_any_protocol_change_invalidates_canonical_admission() -> None:

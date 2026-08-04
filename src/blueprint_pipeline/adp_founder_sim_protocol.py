@@ -35,15 +35,15 @@ from .franka_droid_control_preflight import SCHEMA_VERSION as CONTROL_PREFLIGHT_
 from .groot_n16_arena_policy_runtime import GrootN16ArenaPolicySpec
 
 
-PROTOCOL_SCHEMA_VERSION = "adp_founder_sim_only_protocol.v2"
+PROTOCOL_SCHEMA_VERSION = "adp_founder_sim_only_protocol.v3"
 APPROVAL_SCHEMA_VERSION = "adp_founder_sim_only_approval.v1"
-EXECUTION_ADMISSION_SCHEMA_VERSION = "adp_founder_sim_execution_admission.v2"
-PROTOCOL_ID = "adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2"
+EXECUTION_ADMISSION_SCHEMA_VERSION = "adp_founder_sim_execution_admission.v3"
+PROTOCOL_ID = "adp-founder-sim-arena-droid-pi05-vs-groot-n16-v3"
 BASELINE_ID = "pi05_droid_jointpos_polaris"
 ALTERNATIVE_ID = "nvidia/GR00T-N1.6-DROID"
-SUPERSEDED_PROTOCOL_ID = "adp-founder-sim-arena-droid-pi05-vs-groot-n17-v1"
+SUPERSEDED_PROTOCOL_ID = "adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2"
 SUPERSEDED_PROTOCOL_DIGEST = (
-    "sha256:3940d30009c4d9fdadac1ba4419eb2f04f8b22fd0273131f31d0112e1e2f6ad2"
+    "sha256:05eb6f5c187fd69da6f40e7428634181b39fe7f02501bd7ccb9a4331801c01fc"
 )
 ARENA_OPENPI_REVISION = "c23745b5ad24e98f66967ea795a07b2588ed6c79"
 
@@ -118,11 +118,13 @@ def build_founder_sim_protocol() -> dict[str, Any]:
             "supersedes_protocol_id": SUPERSEDED_PROTOCOL_ID,
             "supersedes_protocol_digest": SUPERSEDED_PROTOCOL_DIGEST,
             "reason": (
-                "live source audit found that the pinned Arena Docker stack uses Isaac Sim "
-                "6.0.1 and its documented DROID GR00T seam supports N1.6, not N1.7"
+                "pre-candidate execution audit found one stale N1.7 descriptive label in "
+                "the v2 shared-interface contract even though every runnable identity was N1.6"
             ),
             "candidate_outcomes_accessed_before_amendment": False,
-            "paid_compute_started_before_amendment": False,
+            "candidate_policy_queried_before_amendment": False,
+            "paid_candidate_compute_started_before_amendment": False,
+            "native_control_paid_compute_attempted_before_amendment": True,
         },
         "authority_model": {
             "required_approvers": ["blueprint_founder_sim_owner"],
@@ -294,7 +296,7 @@ def build_founder_sim_protocol() -> dict[str, Any]:
             "environment_actions": "absolute_joint_position_rad_7_plus_gripper_position",
             "candidate_specific_translation": {
                 BASELINE_ID: "pinned Arena OpenPI DROID adapter plus Blueprint identity receipt",
-                ALTERNATIVE_ID: "Blueprint NVIDIA N1.7 DROID ZMQ adapter",
+                ALTERNATIVE_ID: "Blueprint NVIDIA N1.6 DROID ZMQ adapter",
             },
             "same_controller_reset_cameras_termination_and_scorer": True,
         },

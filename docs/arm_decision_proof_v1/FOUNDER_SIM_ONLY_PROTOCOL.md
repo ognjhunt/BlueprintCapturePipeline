@@ -1,14 +1,17 @@
 # Founder Sim-Only Decision Test
 
-Status: **v2 frozen and exact-digest founder approved; native control pending**
+Status: **v3 correction frozen; exact-digest founder reapproval pending**
 Claim ceiling: **development-only simulation**
 Protocol ID:
-`adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2`
+`adp-founder-sim-arena-droid-pi05-vs-groot-n16-v3`
 
-The approved v1 protocol is retained as a superseded audit artifact. A
-pre-spend source audit found that the pinned Arena revision uses Isaac Sim
-6.0.1 and its documented DROID GR00T runtime is N1.6, not N1.7. No candidate
-outcome was accessed and no paid compute was started before the v2 amendment.
+The approved v1 and v2 protocols are retained as superseded audit artifacts.
+A pre-candidate execution audit found that v2 correctly pinned every runnable
+GR00T identity to N1.6 but retained one stale descriptive `N1.7` label in its
+shared-interface map. Native-control infrastructure was attempted under v2,
+but no candidate policy was queried and no candidate outcome was accessed.
+V3 changes only that label and amendment provenance; the task, candidates,
+stack, statistical design, resets, schedule, and evidence rules are unchanged.
 
 This is the deliberately thinner stage requested by Blueprint's founder. It
 tests the decision harness against an existing simulated workcell before any
@@ -79,11 +82,11 @@ and the GR00T ZMQ/DROID translation is isolated in
 ## Immutable Digests
 
 - Protocol digest:
-  `sha256:05eb6f5c187fd69da6f40e7428634181b39fe7f02501bd7ccb9a4331801c01fc`
+  `sha256:c9aac12d5643a788ef3195e5f959cc73677bd0f51f3583dd36dd4861d4e12924`
 - Executable schedule digest:
   `sha256:f8c4b35234a70c37c04f2e95c1d9792585aa56ca02d647e83fde411447a47005`
 - Frozen non-executable Arena worker-request digest:
-  `sha256:52cd00e886354236f63ee68eaa0bbc1b42c64ee0881bffa8aeea4fbeec6d0b71`
+  `sha256:f5c19a42190052161f6a6e999760542b840f60d845607e11db123f8d552dba9c`
 
 Any candidate, model revision, scene, reset, metric, schedule, controller,
 evidence, or claim change creates a different digest and requires a new
@@ -95,19 +98,14 @@ One human approval is sufficient because this phase has no partner and no
 physical holdout. Approval must quote the exact protocol digest after review:
 
 > I approve protocol
-> `adp-founder-sim-arena-droid-pi05-vs-groot-n16-v2` with digest
-> `sha256:05eb6f5c187fd69da6f40e7428634181b39fe7f02501bd7ccb9a4331801c01fc`
+> `adp-founder-sim-arena-droid-pi05-vs-groot-n16-v3` with digest
+> `sha256:c9aac12d5643a788ef3195e5f959cc73677bd0f51f3583dd36dd4861d4e12924`
 > as Blueprint founder and simulation task owner.
 
-Blueprint's founder supplied that exact statement in the Codex task on
-2026-08-04. The deterministic receipt is
-[`founder_sim_approval_receipt.v2.json`](manifests/founder_sim_approval_receipt.v2.json),
-digest
-`sha256:073065217f29e07bbb909dbc63c8e0cf673ece04253e24c0dc53426eb55fe253`.
-The resulting non-paid execution admission is
-[`founder_sim_execution_admission.v2.json`](manifests/founder_sim_execution_admission.v2.json),
-digest
-`sha256:c0003d810aeec6b8cc0a87d97637982b7b927a07b2afdb9b9abe4d963595fb0d`.
+That exact v3 statement has not yet been supplied. The immutable v2 approval
+and execution-admission receipts remain retained as superseded provenance; they
+do not approve the v3 digest. Missing v3 approval blocks all further paid or
+candidate execution.
 
 The exact 88 logical Arena jobs are compiled by
 [`adp_isaac_lab_arena_request.py`](../../src/blueprint_pipeline/adp_isaac_lab_arena_request.py).
@@ -147,8 +145,9 @@ exact Isaac image, permits zero retries, and requires the shared price, TTL,
 watchdog, teardown, output-return, and provider-zero contracts. Its first
 execution target is only the Arena zero-action negative control.
 
-No production simulation, capture, reconstruction, physical trial, upload, or
-paid allocation was started while freezing this protocol.
+No candidate production simulation, capture, reconstruction, or physical trial
+was started while freezing this correction. Prior v2 native-control attempts
+are retained as failed precursor evidence and queried no candidate policy.
 
 The reusable local harness-control command has now passed. Its receipt used schema
 `franka_droid_control_preflight.v1` and digest
