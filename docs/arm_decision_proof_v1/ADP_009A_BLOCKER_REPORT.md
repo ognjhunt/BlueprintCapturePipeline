@@ -19,7 +19,7 @@ completion.
 |---|---|---|
 | Inpaint360GS author smoke | `inpaint360_author_dataset_license_authority_missing` | Publisher statement or other durable authority covering the exact author-data archive; user permission cannot grant the publisher's copyright. |
 | InFusion primary adapter | `infusion_checkpoint_license_missing` | Publisher license for `Johanan0528/Infusion` revision `83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2`; author masks remain a later missing input. |
-| AuraFusion360 challenger | `aurafusion360_unchanged_author_smoke_missing` | Execute and retain the unchanged sunflower workflow on admitted Linux NVIDIA compute. |
+| AuraFusion360 challenger | `aurafusion360_unchanged_author_smoke_missing` | Execute the corrected immutable sunflower bundle once on admitted Linux NVIDIA compute. Attempt `live_v1` reached an RTX 4090 but stopped before the author command at the upstream Torch-dependent native-extension build; the correction is encoded and unexecuted. |
 | Controlled-background truth | `controlled_background_truth_case_missing` | One rights-cleared, metric known-background edit case and receipt. |
 | Exact SimReady object | `isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing` | Dynamic Isaac contact, drop, slide, tip, and gripper probes on the exact static-validated USD. |
 | Physics positive control | `physics_positive_control_receipt_missing` | A digest-bound positive-control execution receipt. |
@@ -41,3 +41,12 @@ No Inpaint360GS method has run on InteriorGS, no selected source object has been
 removed from the appearance or collision representation, and no replacement USD
 has been inserted into scene `840313`. The Content Agents asset remains a static
 authoring candidate until the dynamic Isaac probes pass.
+
+Aura attempt `live_v1` is retained outside git under the rights-safe validation
+tree. It used exact bundle
+`sha256:3c6f6f889ca3ccd242e4e56153c2311bfe2649f0d2041e01e553ec8b42483a62`,
+made one provider allocation, executed no author inpainting command, cost an
+estimated `$0.024798`, and ended with both provider and staged-object zero. The
+smallest observed runtime blocker was isolated native-extension builds lacking
+Torch. The production bundle contract now requires pinned build tooling and
+`--no-build-isolation`; that corrected bundle is prepared but has not been run.
