@@ -294,17 +294,13 @@ def test_bundle_derives_source_and_rights_evidence(
         for model in smoke_spec["runtime_models"]
         if model["repository"] == "prs-eth/marigold-depth-v1-0"
     )
-    assert len(marigold["materialized_files"]) == 12
-    assert marigold["materialized_total_size_bytes"] == 5_161_601_761
+    assert len(marigold["materialized_files"]) == 24
+    assert marigold["materialized_total_size_bytes"] == 15_482_514_887
     assert {
-        item["path"] for item in marigold["materialized_files"]
-    }.isdisjoint(
-        {
-            "text_encoder/model.fp16.safetensors",
-            "unet/diffusion_pytorch_model.fp16.safetensors",
-            "vae/diffusion_pytorch_model.fp16.safetensors",
-        }
-    )
+        "text_encoder/model.fp16.safetensors",
+        "unet/diffusion_pytorch_model.fp16.safetensors",
+        "vae/diffusion_pytorch_model.fp16.safetensors",
+    } <= {item["path"] for item in marigold["materialized_files"]}
     assert "allow_patterns=" in runner
     assert "_verify_runtime_model_snapshot(snapshot, model)" in runner
     assert "HF_HUB_DISABLE_XET=1" in entrypoint

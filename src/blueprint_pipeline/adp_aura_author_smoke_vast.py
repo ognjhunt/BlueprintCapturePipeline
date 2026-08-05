@@ -96,6 +96,21 @@ _EXPECTED_OUTPUT = {
 }
 _MARIGOLD_RUNTIME_FILES = [
     {
+        "path": ".gitattributes",
+        "size_bytes": 1_590,
+        "sha256": "sha256:911843d31d0caba635dd7891f4e14cf677fc74dd15a72c7993e2c57d50c89717",
+    },
+    {
+        "path": "LICENSE.txt",
+        "size_bytes": 10_173,
+        "sha256": "sha256:0cec06e0e55fbc3dc5cee4fca9b607f66cb8f4e4dbcf3b3c013594dd156732e9",
+    },
+    {
+        "path": "README.md",
+        "size_bytes": 6_131,
+        "sha256": "sha256:3dd3e316d12f872f1cc6345b3015e3b13fdfebc8fa1606859223e3dcfaac449b",
+    },
+    {
         "path": "model_index.json",
         "size_bytes": 535,
         "sha256": "sha256:73dbf767cfd1b4bfd8b731c9e110610d98258d805a6439157cc6549aba2c29f9",
@@ -111,9 +126,24 @@ _MARIGOLD_RUNTIME_FILES = [
         "sha256": "sha256:6b34b0bf6cff02e2afe88145740ef5e0316caf7add8307c8ec0b021a7923cc42",
     },
     {
+        "path": "text_encoder/model.fp16.safetensors",
+        "size_bytes": 680_820_392,
+        "sha256": "sha256:bc1827c465450322616f06dea41596eac7d493f4e95904dcb51f0fc745c4e13f",
+    },
+    {
         "path": "text_encoder/model.safetensors",
         "size_bytes": 1_361_597_016,
         "sha256": "sha256:1e4aa519f64dc6386f88221a66c106a09fa027b47a20cc0e126687695f2a6669",
+    },
+    {
+        "path": "text_encoder/pytorch_model.bin",
+        "size_bytes": 1_361_679_905,
+        "sha256": "sha256:e9c787e9388134c1a25dc69934a51a32a2683b38b8a9b017e1f3a692b8ed6b98",
+    },
+    {
+        "path": "text_encoder/pytorch_model.fp16.bin",
+        "size_bytes": 680_899_947,
+        "sha256": "sha256:bfc767ee894a2d26166aa7c22b7b297a1ff8e246493734490dd048087d4c9c07",
     },
     {
         "path": "tokenizer/merges.txt",
@@ -141,6 +171,21 @@ _MARIGOLD_RUNTIME_FILES = [
         "sha256": "sha256:95a39ce997b9d4f1ca9439f8d61d517737841cbc71b687a8b0924667023a7a6f",
     },
     {
+        "path": "unet/diffusion_pytorch_model.bin",
+        "size_bytes": 3_463_980_773,
+        "sha256": "sha256:667b3a84dd7f5d6ecdf884ddc412027da1c86e812d050eed7837bd58e21b36f2",
+    },
+    {
+        "path": "unet/diffusion_pytorch_model.fp16.bin",
+        "size_bytes": 1_732_130_133,
+        "sha256": "sha256:794aca23894df15815c39312aaaa8e1243d6ab98e64d1cd6fdb703bd68878e90",
+    },
+    {
+        "path": "unet/diffusion_pytorch_model.fp16.safetensors",
+        "size_bytes": 1_731_927_776,
+        "sha256": "sha256:da9c13e214461c2cf82e4a0f125d914976522e53806a54d508e30ea5b8cd67f2",
+    },
+    {
         "path": "unet/diffusion_pytorch_model.safetensors",
         "size_bytes": 3_463_772_592,
         "sha256": "sha256:3416c9fde3f826a4cc29f1e65f6dc6c82aa01fa9d4efa89c27a35ca85ab96048",
@@ -149,6 +194,21 @@ _MARIGOLD_RUNTIME_FILES = [
         "path": "vae/config.json",
         "size_bytes": 611,
         "sha256": "sha256:d69281aa3f6a0f3c41aaf6778e35464fc6ee8a92e6ac8a8b1eb679f6df6423eb",
+    },
+    {
+        "path": "vae/diffusion_pytorch_model.bin",
+        "size_bytes": 334_715_313,
+        "sha256": "sha256:a4302e1efa25f3a47ceb7536bc335715ad9d1f203e90c2d25507600d74006e89",
+    },
+    {
+        "path": "vae/diffusion_pytorch_model.fp16.bin",
+        "size_bytes": 167_405_651,
+        "sha256": "sha256:44915add42092106e70bffac475aae4283b5e8167a8a0c5f55ccc667ee4ebeb5",
+    },
+    {
+        "path": "vae/diffusion_pytorch_model.fp16.safetensors",
+        "size_bytes": 167_335_342,
+        "sha256": "sha256:3e4c08995484ee61270175e9e7a072b66a6e4eeb5f0c266667fe1f45b90daf9a",
     },
     {
         "path": "vae/diffusion_pytorch_model.safetensors",
@@ -171,7 +231,7 @@ _RUNTIME_MODELS = [
             "sha256:d8c2d2dfdc297008d7f4314593b8dcd381fa6c120ce9780e93f1a9c15c206e74"
         ),
         "materialized_files": _MARIGOLD_RUNTIME_FILES,
-        "materialized_total_size_bytes": 5_161_601_761,
+        "materialized_total_size_bytes": 15_482_514_887,
     },
 ]
 _SD2 = {
