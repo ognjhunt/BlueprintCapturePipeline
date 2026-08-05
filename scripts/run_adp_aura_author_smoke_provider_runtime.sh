@@ -57,6 +57,7 @@ if [ "${uv_rc}" -ne 0 ]; then
   exit "${uv_rc}"
 fi
 UV_BIN="$(command -v uv)"
+export UV_NATIVE_TLS=true
 "${UV_BIN}" python install 3.10
 "${UV_BIN}" venv "${SOURCE_DIR}/.venv" --python 3.10
 venv_rc=$?
