@@ -62,6 +62,8 @@ def _sha256(path: Path) -> str:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("adp_inpaint360_json_object_required")
