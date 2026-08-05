@@ -437,6 +437,7 @@ def run_aura_author_smoke_vast(
     hard_cap_usd: float = 5.0,
     hard_ttl_seconds: int = 10_800,
     public_image: str = DEFAULT_IMAGE,
+    machine_avoidlist_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run one attempt and require both Vast and staged-object provider zero."""
 
@@ -537,6 +538,7 @@ def run_aura_author_smoke_vast(
                 require_known_supported_isaac_driver=False,
                 preferred_gpu_keywords=("RTX 4090", "RTX A6000", "L40S", "A100"),
                 prefer_isaac_rt=False,
+                machine_avoidlist_path=machine_avoidlist_path,
                 instance_label_prefix="blueprint-adp-aura-smoke-",
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,

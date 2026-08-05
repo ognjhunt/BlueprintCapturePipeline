@@ -1336,6 +1336,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if receipt_path and receipt_path.is_file()
                 else None
             )
+            avoidlist_path: Path | None = None
+            avoidlist_sha256: str | None = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                try:
+                    avoidlist = _load(avoidlist_path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("adp_aura_machine_avoidlist_invalid")
+                else:
+                    if (
+                        avoidlist.get("schema_version") != "vast_machine_avoidlist.v1"
+                        or not isinstance(avoidlist.get("machine_ids"), list)
+                        or any(
+                            not isinstance(machine_id, int) or machine_id <= 0
+                            for machine_id in avoidlist["machine_ids"]
+                        )
+                    ):
+                        blockers.append("adp_aura_machine_avoidlist_invalid")
+                    avoidlist_sha256 = (
+                        "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+                    )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_AURA_SMOKE_PROBE_KIND,
@@ -1353,6 +1374,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "machine_avoidlist_sha256": avoidlist_sha256,
                 "retry_cap": 0,
             }
             allocation_binding_digest = (
@@ -1419,6 +1441,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     public_image=ADP_AURA_SMOKE_IMAGE,
+                    machine_avoidlist_path=avoidlist_path,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

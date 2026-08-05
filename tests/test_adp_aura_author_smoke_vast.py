@@ -280,6 +280,7 @@ def test_vast_adapter_preflights_dedicated_aura_bundle(
         provider_bundle_kind="adp_aura_smoke",
     )
     assert "run_adp_aura_author_smoke_provider_runtime.sh" in script
+    assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
     assert "adp_aura_provider_runtime_output.zip" in script
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         entrypoint = archive.read(
@@ -301,7 +302,11 @@ def test_vast_adapter_preflights_dedicated_aura_bundle(
 
 
 def _allocator_args(
-    tmp_path: Path, bundle_receipt: Path, *, execute: bool
+    tmp_path: Path,
+    bundle_receipt: Path,
+    *,
+    execute: bool,
+    machine_avoidlist: Path | None = None,
 ) -> list[str]:
     args = [
         "gpu-canary",
@@ -336,6 +341,8 @@ def _allocator_args(
         "--adp-hard-ttl-seconds",
         "10800",
     ]
+    if machine_avoidlist is not None:
+        args.extend(["--adp-machine-avoidlist", str(machine_avoidlist)])
     if execute:
         args.append("--execute")
     return args
@@ -371,7 +378,22 @@ def test_canonical_allocator_issues_aura_grant_only_for_execute(
         return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
 
     monkeypatch.setattr(allocator, "run_aura_author_smoke_vast", fake_run)
-    assert allocator.main(_allocator_args(tmp_path, receipt_path, execute=execute)) == 0
+    avoidlist = tmp_path / "avoidlist.json"
+    _write_json(
+        avoidlist,
+        {"schema_version": "vast_machine_avoidlist.v1", "machine_ids": [25706]},
+    )
+    assert (
+        allocator.main(
+            _allocator_args(
+                tmp_path,
+                receipt_path,
+                execute=execute,
+                machine_avoidlist=avoidlist,
+            )
+        )
+        == 0
+    )
     assert observed["execute"] is execute
     assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is (
         execute
@@ -381,6 +403,10 @@ def test_canonical_allocator_issues_aura_grant_only_for_execute(
     assert admission["aura_inpaint_init_author_smoke_only"] is True
     assert admission["full_author_workflow_claimed"] is False
     assert admission["hard_cap_usd"] == 5.0
+    assert observed["machine_avoidlist_path"] == avoidlist
+    assert admission["allocation_binding"]["machine_avoidlist_sha256"].startswith(
+        "sha256:"
+    )
 
 
 def test_output_inspector_recognizes_aura_runtime_result(tmp_path: Path) -> None:
