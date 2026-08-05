@@ -61,6 +61,39 @@ def _extract_verified(
             raise ValueError("aurafusion360_interiorgs_materialized_bytes_changed")
 
 
+def _copy_tree_additions(source: Path, destination: Path) -> None:
+    """Add an adapter subtree without deleting or replacing publisher files."""
+
+    if not source.is_dir():
+        raise ValueError("aurafusion360_interiorgs_adapter_subtree_missing")
+    destination.mkdir(parents=True, exist_ok=True)
+    for item in sorted(source.rglob("*")):
+        relative = item.relative_to(source)
+        target = destination / relative
+        if item.is_dir():
+            if target.exists() and not target.is_dir():
+                raise ValueError("aurafusion360_interiorgs_adapter_path_conflict")
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if not item.is_file() or target.exists():
+            raise ValueError("aurafusion360_interiorgs_adapter_path_conflict")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, target)
+
+
+def _runtime_environments(
+    *, dependencies: Path, lama_source: Path
+) -> tuple[dict[str, str], dict[str, str]]:
+    aura_env = dict(os.environ)
+    inherited_pythonpath = aura_env.get("PYTHONPATH")
+    aura_env["PYTHONPATH"] = str(dependencies) + (
+        os.pathsep + inherited_pythonpath if inherited_pythonpath else ""
+    )
+    lama_env = dict(aura_env)
+    lama_env["PYTHONPATH"] = str(lama_source) + os.pathsep + aura_env["PYTHONPATH"]
+    return aura_env, lama_env
+
+
 def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -76,9 +109,7 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     for name in ("data", "configs", "reference_lama_input"):
         src = adapter / name
         dst = source / name if name != "reference_lama_input" else runtime / name
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
+        _copy_tree_additions(src, dst)
 
     lama_source = source / "LaMa"
     _extract_verified(
@@ -156,19 +187,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     dependencies = runtime / "runtime_dependencies"
     if not dependencies.is_dir():
         raise ValueError("aurafusion360_interiorgs_runtime_dependencies_missing")
-    os.environ["PYTHONPATH"] = str(dependencies) + (
-        os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""
+    aura_env, lama_env = _runtime_environments(
+        dependencies=dependencies,
+        lama_source=source / "LaMa",
     )
     source_before = shared._source_identity(source, spec)
     aura_python = str(source / ".venv/bin/python")
     lama_python = str(source / "LaMa/.venv/bin/python")
     workflow: list[dict[str, Any]] = []
     commands = [
-        ("reference_lama", [lama_python, "bin/predict.py", "model.path=./big-lama", f"indir={runtime / 'reference_lama_input'}", f"outdir={runtime / 'reference_lama_output'}"], source / "LaMa"),
-        *[(row["stage"], [aura_python, *row["command"][1:]], source) for row in spec["workflow"]],
+        (
+            "reference_lama",
+            [
+                lama_python,
+                "bin/predict.py",
+                "model.path=./big-lama",
+                f"indir={runtime / 'reference_lama_input'}",
+                f"outdir={runtime / 'reference_lama_output'}",
+            ],
+            source / "LaMa",
+            lama_env,
+        ),
+        *[
+            (row["stage"], [aura_python, *row["command"][1:]], source, aura_env)
+            for row in spec["workflow"]
+        ],
     ]
-    for stage, command, cwd in commands:
-        observed = shared._run(command, cwd=cwd, log_path=output / f"aura-{stage}.log")
+    for stage, command, cwd, env in commands:
+        observed = shared._run(
+            command,
+            cwd=cwd,
+            log_path=output / f"aura-{stage}.log",
+            env=env,
+        )
         observed["stage"] = stage
         workflow.append(observed)
         if observed["returncode"] != 0:
