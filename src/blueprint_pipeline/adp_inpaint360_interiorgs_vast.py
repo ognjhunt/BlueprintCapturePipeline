@@ -45,6 +45,7 @@ PREREQUISITE_RECEIPT_DIGEST = (
 )
 BIG_LAMA_SHA256 = "sha256:d7161bba4d68b438f9fa7f09dcb750a223804c300c68d214a5e0be16251fba8d"
 BIG_LAMA_SIZE_BYTES = 381_428_720
+MIN_RASTERIZER_COMPUTE_CAP = 890
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/inpaint360-interiorgs"
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
@@ -529,13 +530,14 @@ def run_inpaint360_interiorgs_vast(
                 allow_cold_isaac_image_pull=False,
                 disk_gb=192,
                 min_gpu_ram_mb=24_000,
+                min_compute_cap=MIN_RASTERIZER_COMPUTE_CAP,
                 poll_interval_seconds=15,
                 startup_timeout_seconds=remaining_minutes * 60,
                 heartbeat_no_progress_seconds=3600,
                 session_budget_ledger_path=job / "adp_inpaint360_vast_session_budget.json",
                 verify_staging_urls=True,
                 require_known_supported_isaac_driver=False,
-                preferred_gpu_keywords=("RTX 4090", "RTX A6000", "L40S", "A100"),
+                preferred_gpu_keywords=("RTX 4090", "L40S"),
                 prefer_isaac_rt=False,
                 machine_avoidlist_path=machine_avoidlist_path,
                 instance_label_prefix="blueprint-adp-inpaint360-interiorgs-",

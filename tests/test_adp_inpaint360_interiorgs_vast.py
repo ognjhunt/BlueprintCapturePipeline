@@ -698,3 +698,9 @@ def test_fresh_live_job_has_full_budget_without_preexisting_ledger(tmp_path: Pat
         hard_ttl_seconds=14_400,
         max_hourly_rate_usd=1.5,
     ) == 240
+
+
+def test_live_runner_requires_observed_rasterizer_architecture_floor() -> None:
+    assert runtime.MIN_RASTERIZER_COMPUTE_CAP == 890
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "min_compute_cap=MIN_RASTERIZER_COMPUTE_CAP" in source
