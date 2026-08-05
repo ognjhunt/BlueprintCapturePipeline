@@ -161,6 +161,9 @@ def provider_runtime_contract_blockers(
         entrypoint_valid = (
             "adp_aura_smoke_runner_failed_without_runtime_result" in entrypoint_text
             and "blocked_adp_aura_smoke_process_exited_without_result" in entrypoint_text
+            and "--no-build-isolation" in entrypoint_text
+            and "setuptools==80.9.0" in entrypoint_text
+            and "torch==2.5.1" in entrypoint_text
         )
         runner_valid = all(
             token in runner_text

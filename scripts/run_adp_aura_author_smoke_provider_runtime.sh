@@ -78,14 +78,26 @@ if [ "${torch_rc}" -ne 0 ]; then
   exit "${torch_rc}"
 fi
 "${UV_BIN}" pip install --python "${PYTHON}" \
+  setuptools==80.9.0 wheel==0.45.1 ninja==1.13.0 packaging==25.0
+build_tools_rc=$?
+if [ "${build_tools_rc}" -ne 0 ]; then
+  write_missing_result "aurafusion360_build_tooling_install_failed"
+  exit "${build_tools_rc}"
+fi
+"${UV_BIN}" pip install --python "${PYTHON}" --no-build-isolation \
   "${SOURCE_DIR}/submodules/diff-surfel-rasterization" \
   "${SOURCE_DIR}/submodules/simple-knn" \
-  -r "${SOURCE_DIR}/requirements.txt" \
   "${SAM2_SOURCE_DIR}"
-install_rc=$?
-if [ "${install_rc}" -ne 0 ]; then
-  write_missing_result "aurafusion360_dependency_install_failed"
-  exit "${install_rc}"
+native_install_rc=$?
+if [ "${native_install_rc}" -ne 0 ]; then
+  write_missing_result "aurafusion360_native_dependency_install_failed"
+  exit "${native_install_rc}"
+fi
+"${UV_BIN}" pip install --python "${PYTHON}" -r "${SOURCE_DIR}/requirements.txt"
+requirements_rc=$?
+if [ "${requirements_rc}" -ne 0 ]; then
+  write_missing_result "aurafusion360_python_requirements_install_failed"
+  exit "${requirements_rc}"
 fi
 "${UV_BIN}" pip freeze --python "${PYTHON}" > "${OUTPUT_DIR}/pip-freeze.txt"
 

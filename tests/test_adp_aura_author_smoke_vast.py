@@ -216,10 +216,27 @@ def test_provider_contract_rejects_generic_import_smoke() -> None:
     blockers = provider_runtime_contract_blockers(
         provider_bundle_kind="adp_aura_smoke",
         entrypoint_text="adp_aura_smoke_runner_failed_without_runtime_result "
-        "blocked_adp_aura_smoke_process_exited_without_result",
+        "blocked_adp_aura_smoke_process_exited_without_result "
+        "--no-build-isolation setuptools==80.9.0 torch==2.5.1",
         runner_text="import torch",
     )
     assert blockers == ["provider_runner_missing_adp_aura_smoke_runtime_contract"]
+
+
+def test_provider_contract_rejects_isolated_native_extension_build() -> None:
+    blockers = provider_runtime_contract_blockers(
+        provider_bundle_kind="adp_aura_smoke",
+        entrypoint_text=(
+            "adp_aura_smoke_runner_failed_without_runtime_result "
+            "blocked_adp_aura_smoke_process_exited_without_result torch==2.5.1"
+        ),
+        runner_text=(
+            "adp_aura_author_smoke_result.json inpaint_init_executed "
+            "author_source_modified published_expected_output_bound "
+            "depth_anything3_used"
+        ),
+    )
+    assert blockers == ["provider_entrypoint_missing_runtime_result_crash_fallback"]
 
 
 def test_vast_adapter_preflights_dedicated_aura_bundle(
@@ -258,6 +275,12 @@ def test_vast_adapter_preflights_dedicated_aura_bundle(
     )
     assert "run_adp_aura_author_smoke_provider_runtime.sh" in script
     assert "adp_aura_provider_runtime_output.zip" in script
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        entrypoint = archive.read(
+            "provider_runtime/run_adp_aura_author_smoke_provider_runtime.sh"
+        ).decode()
+    assert "--no-build-isolation" in entrypoint
+    assert "setuptools==80.9.0" in entrypoint
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
         generated_at="fixed",
