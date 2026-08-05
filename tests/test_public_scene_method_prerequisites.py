@@ -154,6 +154,26 @@ def test_materializes_remote_and_local_checkpoint_identity(
     assert receipt["raw_secret_values_recorded"] is False
 
 
+def test_git_rights_authority_supports_mit_dependency_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    request = json.loads(paths["request"].read_text())
+    authority = request["methods"]["inpaint360_author_smoke"]["rights_authorities"][0]
+    authority["license_id"] = "MIT"
+    authority["evidence_files"] = [
+        {"path": "LICENSE", "required_text": ["CC BY-NC 4.0"]}
+    ]
+    _write_json(paths["request"], request)
+
+    receipt = _run(paths)
+
+    observed = receipt["methods"]["inpaint360_author_smoke"]["rights_authorities"][0]
+    assert observed["license_id"] == "MIT"
+    assert observed["commercial_use_allowed"] is True
+    assert observed["attribution_required_when_shared"] is True
+
+
 def test_changed_local_checkpoint_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

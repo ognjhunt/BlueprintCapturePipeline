@@ -117,14 +117,14 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
         local_dir=source / "data",
     )
     expected = spec["expected_output"]
-    snapshot_download(
-        repo_id=expected["repository"],
-        repo_type="dataset",
-        revision=expected["revision"],
-        allow_patterns=[expected["path_prefix"] + "*"],
-        local_dir=source / "output",
+    expected_ply = Path(
+        hf_hub_download(
+            repo_id=expected["repository"],
+            repo_type="dataset",
+            revision=expected["revision"],
+            filename=expected["expected_ply_path"],
+        )
     )
-    expected_ply = source / "output" / expected["expected_ply_path"]
     reference = runtime / "published_expected_point_cloud.ply"
     shutil.copy2(expected_ply, reference)
     if _sha256(reference) != expected["expected_ply_sha256"]:

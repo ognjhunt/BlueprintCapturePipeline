@@ -1,0 +1,97 @@
+{
+  "schema_version": "public_scene_method_prerequisite_request.v1",
+  "evaluated_on": "2026-08-04",
+  "methods": {
+    "inpaint360_runtime_dependencies": {
+      "rights_authorities": [
+        {
+          "authority_id": "segment_anything_apache_2_0",
+          "local_path": "segment-anything",
+          "repository": "https://github.com/facebookresearch/segment-anything",
+          "revision": "dca509fe793f601edb92606367a655c15ac00fdf",
+          "tree": "747ccd2b4acca4adc5d09df1333ae4a042c4cdf2",
+          "verify_official_remote_head": true,
+          "license_id": "Apache-2.0",
+          "evidence_files": [
+            {
+              "path": "LICENSE",
+              "required_text": [
+                "Apache License",
+                "Version 2.0, January 2004"
+              ]
+            }
+          ]
+        },
+        {
+          "authority_id": "groundingdino_apache_2_0",
+          "local_path": "GroundingDINO",
+          "repository": "https://github.com/IDEA-Research/GroundingDINO",
+          "revision": "856dde20aee659246248e20734ef9ba5214f5e44",
+          "tree": "ece4d4d7eb9b4fc5b25bb375e746c8a94ca5b2f9",
+          "verify_official_remote_head": true,
+          "license_id": "Apache-2.0",
+          "evidence_files": [
+            {
+              "path": "LICENSE",
+              "required_text": [
+                "Apache License",
+                "Version 2.0, January 2004"
+              ]
+            }
+          ]
+        },
+        {
+          "authority_id": "pytorch_correlation_mit",
+          "local_path": "Pytorch-Correlation-extension-f00",
+          "repository": "https://github.com/ClementPinard/Pytorch-Correlation-extension",
+          "revision": "f00f0cd49b191dbd720814b1a6fe8781f3e4a74a",
+          "tree": "06adf9b8f837c0062ee12067c506d8bb8776ac52",
+          "verify_official_remote_head": false,
+          "license_id": "MIT",
+          "evidence_files": [
+            {
+              "path": "LICENSE",
+              "required_text": [
+                "MIT License",
+                "Permission is hereby granted, free of charge"
+              ]
+            }
+          ]
+        },
+        {
+          "authority_id": "ast_bsd_3_clause",
+          "local_path": "ast",
+          "repository": "https://github.com/YuanGongND/ast",
+          "revision": "31088be8a3f6ef96416145c4b8d43c81f99eba7a",
+          "tree": "13deba334da0c2ecd1eff049471bfcbd3c5931b5",
+          "verify_official_remote_head": true,
+          "license_id": "BSD-3-Clause",
+          "evidence_files": [
+            {
+              "path": "LICENSE",
+              "required_text": [
+                "BSD 3-Clause License",
+                "Copyright (c) 2021, Yuan Gong"
+              ]
+            }
+          ]
+        }
+      ],
+      "artifacts": [],
+      "remote_snapshots": [
+        {
+          "artifact_id": "groundingdino_swint_ogc",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "ShilongLiu/GroundingDINO",
+          "revision": "a94c9b567a2a374598f05c584e96798a170c56fb",
+          "path_prefix": "groundingdino_swint_ogc.pth",
+          "expected_file_count": 1,
+          "expected_total_size_bytes": 693997677,
+          "expected_snapshot_digest": "sha256:994ea1d7dfc7aea20f6620e2a58db4723525f1c0276c5c0acb04f9fbdb9941df",
+          "expected_license_id": "Apache-2.0"
+        }
+      ]
+    }
+  }
+}
