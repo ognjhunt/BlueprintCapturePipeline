@@ -1132,7 +1132,12 @@ def _provider_plan(
                 "NVIDIA_DRIVER_CAPABILITIES": "present"
                 if enable_isaac_smoke
                 or provider_bundle_kind
-                in {"adp_simpler", "adp_content_agents", "adp_aura_smoke"}
+                in {
+                    "adp_simpler",
+                    "adp_content_agents",
+                    "adp_aura_smoke",
+                    "adp_inpaint360_interiorgs",
+                }
                 else "not_required_for_public_probe",
             },
             "blueprint_bundle_enabled": enable_blueprint_bundle,
@@ -1940,6 +1945,16 @@ def _blueprint_bundle_preflight(
         "provider_runtime/aurafusion360_source.zip",
         "provider_runtime/smoke_spec.json",
     }
+    adp_inpaint360_required_entries = {
+        "provider_runtime/run_adp_inpaint360_interiorgs_provider_runtime.sh",
+        "provider_runtime/adp_inpaint360_interiorgs_provider_runner.py",
+        "provider_runtime/adp_inpaint360_interiorgs_provider_manifest.json",
+        "provider_runtime/materialize_inpaint360_virtual_masks.py",
+        "provider_runtime/execution_spec.json",
+        "provider_runtime/inpaint360gs_source.tar",
+        "provider_runtime/interiorgs_adapter.zip",
+        "provider_runtime/big-lama.zip",
+    }
     if provider_bundle_kind == "isaac":
         required_entries = isaac_required_entries
         entrypoint_member = "provider_runtime/run_isaac_realistic_runtime.sh"
@@ -1965,6 +1980,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_aura_author_smoke_provider_runtime.sh"
         runner_member = "provider_runtime/adp_aura_author_smoke_provider_runner.py"
         readiness_name = "adp_aura_author_smoke_provider_manifest.json"
+    elif provider_bundle_kind == "adp_inpaint360_interiorgs":
+        required_entries = adp_inpaint360_required_entries
+        entrypoint_member = "provider_runtime/run_adp_inpaint360_interiorgs_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_inpaint360_interiorgs_provider_runner.py"
+        readiness_name = "adp_inpaint360_interiorgs_provider_manifest.json"
     elif provider_bundle_kind == "unitree_unifolm":
         required_entries = unitree_unifolm_required_entries
         entrypoint_member = "provider_runtime/run_unitree_unifolm_provider_runtime.sh"
@@ -2008,6 +2028,7 @@ def _blueprint_bundle_preflight(
             "adp_arena",
             "adp_content_agents",
             "adp_aura_smoke",
+            "adp_inpaint360_interiorgs",
         }
         and not readiness_path.is_file()
     ):
@@ -2547,6 +2568,7 @@ def _resolve_launch_mode(
             "adp_arena",
             "adp_content_agents",
             "adp_aura_smoke",
+            "adp_inpaint360_interiorgs",
         }:
             return "ssh_direct"
         return "args" if enable_isaac_smoke else "ssh_direct"
@@ -2600,7 +2622,12 @@ def _probe_env(
                 "NVIDIA_DRIVER_CAPABILITIES": "all",
             }
         )
-    elif provider_bundle_kind in {"adp_simpler", "adp_content_agents", "adp_aura_smoke"}:
+    elif provider_bundle_kind in {
+        "adp_simpler",
+        "adp_content_agents",
+        "adp_aura_smoke",
+        "adp_inpaint360_interiorgs",
+    }:
         # SIMPLER's headless SAPIEN renderer still needs the NVIDIA Vulkan
         # driver injected by the container runtime. This accepts no Isaac terms.
         env["NVIDIA_DRIVER_CAPABILITIES"] = "all"
@@ -2837,7 +2864,11 @@ def _probe_shell_script(
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     quoted_url = shlex.quote(heartbeat_url)
-    curl_download_protocol = "--http1.1 " if provider_bundle_kind == "adp_aura_smoke" else ""
+    curl_download_protocol = (
+        "--http1.1 "
+        if provider_bundle_kind in {"adp_aura_smoke", "adp_inpaint360_interiorgs"}
+        else ""
+    )
     script = (
         "set +e; WORK_DIR=/workspace; "
         'mkdir -p "$WORK_DIR/blueprint_vast_probe" 2>/dev/null || '
@@ -2961,8 +2992,7 @@ def _probe_shell_script(
     isaac_provider_bundle = _is_isaac_provider_bundle(provider_bundle_kind)
     if enable_blueprint_bundle and isaac_provider_bundle:
         script += (
-            "cuda_runtime_rc=1; "
-            "echo BLUEPRINT_VAST_CUDA_RUNTIME_DEFERRED_TO_ISAAC_SIMULATION_APP; "
+            "cuda_runtime_rc=1; echo BLUEPRINT_VAST_CUDA_RUNTIME_DEFERRED_TO_ISAAC_SIMULATION_APP; "
         )
     else:
         script += cuda_runtime_probe_shell_fragment(required=enable_blueprint_bundle)
@@ -3242,6 +3272,63 @@ def _probe_shell_script(
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
                 'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_aura_provider_runtime_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
+            )
+        elif provider_bundle_kind == "adp_inpaint360_interiorgs":
+            script += (
+                common_start + "RUNTIME_PY=''; "
+                "if command -v apt-get >/dev/null 2>&1; then "
+                "apt-get update >/tmp/blueprint_adp_inpaint360_apt_update.log 2>&1 && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip curl unzip git build-essential libgl1 libglib2.0-0 >/tmp/blueprint_adp_inpaint360_apt_install.log 2>&1; "
+                "fi; "
+                "if [ -x /usr/bin/python3 ]; then RUNTIME_PY=/usr/bin/python3; "
+                "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); fi; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
+                "else "
+                'rm -rf "$WORK_DIR/adp_inpaint360_provider_bundle" "$WORK_DIR/adp_inpaint360_provider_runtime_bundle.zip" "$WORK_DIR/adp_inpaint360_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp_inpaint360_provider_runtime_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp_inpaint360_provider_runtime_bundle.zip" "$WORK_DIR/adp_inpaint360_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/adp_inpaint360_provider_bundle/provider_runtime/run_adp_inpaint360_interiorgs_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_ADP_INPAINT360_OUTPUT_DIR="$WORK_DIR/adp_inpaint360_provider_bundle/runtime_output"; '
+                'mkdir -p "$BLUEPRINT_ADP_INPAINT360_OUTPUT_DIR"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$WORK_DIR/adp_inpaint360_provider_bundle/provider_runtime/run_adp_inpaint360_interiorgs_provider_runtime.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_ADP_INPAINT360_OUTPUT_DIR', '/workspace/adp_inpaint360_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'adp_inpaint360_provider_runtime_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        skipped = []\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file():\n"
+                "                relative = path.relative_to(output_dir).as_posix()\n"
+                "                size = path.stat().st_size\n"
+                "                if size <= 500_000_000:\n"
+                "                    archive.write(path, relative)\n"
+                "                else:\n"
+                "                    skipped.append({'path': relative, 'size_bytes': size, 'reason': 'file_exceeds_provider_output_limit'})\n"
+                "        if skipped:\n"
+                "            archive.writestr('provider_output_zip_exclusions.json', json.dumps({'schema_version': 'adp_inpaint360_provider_output_zip_exclusions.v1', 'skipped': skipped}, indent=2, sort_keys=True))\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_inpaint360_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -3892,6 +3979,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp_arena",
             "adp_content_agents",
             "adp_aura_smoke",
+            "adp_inpaint360_interiorgs",
         }
         else 60
     )
