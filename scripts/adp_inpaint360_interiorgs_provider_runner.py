@@ -374,6 +374,240 @@ def _materialize_nonempty_virtual_view_adapter(
     return receipt
 
 
+def _materialize_target_centered_virtual_view_adapter(
+    *, source: Path, runtime: Path, spec: dict[str, Any], output: Path
+) -> dict[str, Any]:
+    source_virtual = source / "tools/virtual_pose.py"
+    source_pose_utils = source / "utils/pose_utils.py"
+    adapted_virtual = runtime / "adapted_virtual_pose.py"
+    adapted_pose_utils = runtime / "adapted_pose_utils.py"
+    retained_virtual = output / "adapter_overlays/virtual_pose.target_centered.py"
+    retained_pose_utils = output / "adapter_overlays/pose_utils.target_centered.py"
+    corners = spec.get("target_obb_corners_m")
+    blockers: list[str] = []
+    if (
+        not isinstance(corners, list)
+        or len(corners) != 8
+        or any(not isinstance(row, list) or len(row) != 3 for row in corners)
+    ):
+        blockers.append("inpaint360_target_centered_camera_obb_invalid")
+        center: list[float] | None = None
+    else:
+        center = [sum(float(row[axis]) for row in corners) / 8.0 for axis in range(3)]
+    target_id = spec.get("target_method_instance_id")
+    if not isinstance(target_id, int) or not 1 <= target_id <= 255:
+        blockers.append("inpaint360_target_centered_camera_instance_id_invalid")
+    if not source_virtual.is_file() or not source_pose_utils.is_file():
+        blockers.append("inpaint360_target_centered_camera_publisher_source_missing")
+        virtual_text = ""
+        pose_text = ""
+    else:
+        virtual_text = source_virtual.read_text(encoding="utf-8")
+        pose_text = source_pose_utils.read_text(encoding="utf-8")
+
+    import_anchor = (
+        "from utils.pose_utils import generate_ellipse_path, generate_virtual_radius"
+    )
+    call_anchor = (
+        "        poses = generate_ellipse_path(views, n_frames=30, \n"
+        "                                    is_circle=is_circle, circle_radius=args.circle_radius)"
+    )
+    append_anchor = (
+        "            virtual_pose_list.append(view_tmp)\n\n"
+        "        # Step 1: Generate the full scene containing all objects"
+    )
+    signature_anchor = (
+        "def generate_ellipse_path(views, n_frames=240, const_speed=True, z_variation=0., "
+        "z_phase=0., \n"
+        "                          is_circle=False, circle_radius=1.0, ellipse_radius=1.0, "
+        "gaussians=None, \n"
+        "                          object_centered=False):"
+    )
+    center_anchor = (
+        "    if object_centered:\n"
+        "        xyz = gaussians.get_xyz.cpu().numpy()\n"
+        "        xyz_homo = np.concatenate([xyz, np.ones((xyz.shape[0], 1))], axis=1)  # (N, 4)\n\n"
+        "        xyz_transformed = (transform @ xyz_homo.T).T[:, :3]  # shape (N, 3)\n"
+        "        center = xyz_transformed.mean(axis=0)\n"
+        "    else:\n"
+        "        # Calculate the focal point for the path (cameras point toward this).\n"
+        "        center = focus_point_fn(poses)"
+    )
+    circle_anchor = (
+        "    if is_circle:\n"
+        "        r = np.max(sc) * circle_radius \n"
+        "        def get_positions(theta):\n"
+        "            return np.stack([\n"
+        "                center[0] + r * np.cos(theta),\n"
+        "                center[1] + r * np.sin(theta),\n"
+        "                z_variation * (z_low[2] + (z_high - z_low)[2] *\n"
+        "                               (np.cos(theta + 2 * np.pi * z_phase) * .5 + .5)),\n"
+        "            ], -1)"
+    )
+    for anchor, blocker in (
+        (import_anchor, "inpaint360_target_centered_camera_import_anchor_changed"),
+        (call_anchor, "inpaint360_target_centered_camera_call_anchor_changed"),
+        (append_anchor, "inpaint360_target_centered_mask_anchor_changed"),
+    ):
+        if virtual_text.count(anchor) != 1:
+            blockers.append(blocker)
+    for anchor, blocker in (
+        (signature_anchor, "inpaint360_target_centered_pose_signature_changed"),
+        (center_anchor, "inpaint360_target_centered_pose_center_anchor_changed"),
+        (circle_anchor, "inpaint360_target_centered_pose_circle_anchor_changed"),
+    ):
+        if pose_text.count(anchor) != 1:
+            blockers.append(blocker)
+
+    if not blockers and center is not None:
+        center_literal = json.dumps(center, separators=(",", ":"))
+        corners_literal = json.dumps(corners, separators=(",", ":"))
+        adapted_virtual_text = virtual_text.replace(
+            import_anchor,
+            "from adapted_pose_utils import generate_ellipse_path, generate_virtual_radius",
+        )
+        adapted_virtual_text = adapted_virtual_text.replace(
+            call_anchor,
+            (
+                "        poses = generate_ellipse_path(views, n_frames=30,\n"
+                "                                    is_circle=is_circle, "
+                "circle_radius=args.circle_radius,\n"
+                f"                                    explicit_center_world=np.asarray({center_literal}, "
+                "dtype=np.float64),\n"
+                "                                    target_elevation_ratio=0.2)"
+            ),
+        )
+        mask_helper = f'''\n\ndef blueprint_materialize_exact_obb_masks(views, output_dir):
+    corners = torch.tensor({corners_literal}, dtype=torch.float32, device="cuda")
+    homogeneous = torch.cat(
+        [corners, torch.ones((corners.shape[0], 1), device=corners.device)], dim=1
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    for view in views:
+        clip = homogeneous @ view.full_proj_transform
+        if torch.any(clip[:, 3] <= 1e-6):
+            raise ValueError("inpaint360_projected_obb_behind_virtual_camera")
+        ndc = clip[:, :2] / clip[:, 3:4]
+        pixels = torch.empty_like(ndc)
+        pixels[:, 0] = (ndc[:, 0] + 1.0) * 0.5 * (view.image_width - 1)
+        pixels[:, 1] = (1.0 - ndc[:, 1]) * 0.5 * (view.image_height - 1)
+        hull = cv2.convexHull(np.rint(pixels.detach().cpu().numpy()).astype(np.int32))
+        mask = np.zeros((view.image_height, view.image_width), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, hull, color={target_id})
+        if int(np.count_nonzero(mask)) == 0:
+            raise ValueError("inpaint360_projected_obb_virtual_mask_empty")
+        cv2.imwrite(os.path.join(output_dir, view.image_name + ".png"), mask)
+'''
+        adapted_virtual_text = adapted_virtual_text.replace(
+            "\ndef  virtual(dataset : ModelParams, iteration : int, pipeline : PipelineParams):",
+            mask_helper
+            + "\n\ndef  virtual(dataset : ModelParams, iteration : int, pipeline : PipelineParams):",
+        )
+        adapted_virtual_text = adapted_virtual_text.replace(
+            append_anchor,
+            (
+                "            virtual_pose_list.append(view_tmp)\n\n"
+                "        blueprint_materialize_exact_obb_masks(\n"
+                "            virtual_pose_list,\n"
+                "            os.path.join(dataset.model_path, \"virtual\", \"blueprint_obb_masks\"),\n"
+                "        )\n\n"
+                "        # Step 1: Generate the full scene containing all objects"
+            ),
+        )
+
+        adapted_pose_text = pose_text.replace(
+            signature_anchor,
+            (
+                "def generate_ellipse_path(views, n_frames=240, const_speed=True, "
+                "z_variation=0., z_phase=0.,\n"
+                "                          is_circle=False, circle_radius=1.0, "
+                "ellipse_radius=1.0, gaussians=None,\n"
+                "                          object_centered=False, explicit_center_world=None,\n"
+                "                          target_elevation_ratio=0.0):"
+            ),
+        )
+        adapted_pose_text = adapted_pose_text.replace(
+            center_anchor,
+            (
+                "    if explicit_center_world is not None:\n"
+                "        explicit_center_homo = np.concatenate([\n"
+                "            np.asarray(explicit_center_world, dtype=np.float64), np.ones(1)\n"
+                "        ])\n"
+                "        center = (transform @ explicit_center_homo)[:3]\n"
+                "    elif object_centered:\n"
+                "        xyz = gaussians.get_xyz.cpu().numpy()\n"
+                "        xyz_homo = np.concatenate([xyz, np.ones((xyz.shape[0], 1))], axis=1)\n\n"
+                "        xyz_transformed = (transform @ xyz_homo.T).T[:, :3]\n"
+                "        center = xyz_transformed.mean(axis=0)\n"
+                "    else:\n"
+                "        center = focus_point_fn(poses)"
+            ),
+        )
+        adapted_pose_text = adapted_pose_text.replace(
+            circle_anchor,
+            (
+                "    if is_circle:\n"
+                "        r = np.max(sc) * circle_radius\n"
+                "        def get_positions(theta):\n"
+                "            if explicit_center_world is not None:\n"
+                "                z_positions = center[2] + (r * target_elevation_ratio * "
+                "np.sin(2.0 * theta))\n"
+                "            else:\n"
+                "                z_positions = z_variation * (z_low[2] + "
+                "(z_high - z_low)[2] *\n"
+                "                    (np.cos(theta + 2 * np.pi * z_phase) * .5 + .5))\n"
+                "            return np.stack([\n"
+                "                center[0] + r * np.cos(theta),\n"
+                "                center[1] + r * np.sin(theta),\n"
+                "                z_positions,\n"
+                "            ], -1)"
+            ),
+        )
+        adapted_virtual.parent.mkdir(parents=True, exist_ok=True)
+        adapted_virtual.write_text(adapted_virtual_text, encoding="utf-8")
+        adapted_pose_utils.write_text(adapted_pose_text, encoding="utf-8")
+        retained_virtual.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(adapted_virtual, retained_virtual)
+        shutil.copy2(adapted_pose_utils, retained_pose_utils)
+
+    receipt = {
+        "schema_version": "inpaint360_target_centered_virtual_view_adapter.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "publisher_virtual_pose_sha256": (
+            _sha256(source_virtual) if source_virtual.is_file() else None
+        ),
+        "publisher_pose_utils_sha256": (
+            _sha256(source_pose_utils) if source_pose_utils.is_file() else None
+        ),
+        "adapted_virtual_pose_sha256": (
+            _sha256(adapted_virtual) if adapted_virtual.is_file() else None
+        ),
+        "adapted_pose_utils_sha256": (
+            _sha256(adapted_pose_utils) if adapted_pose_utils.is_file() else None
+        ),
+        "retained_virtual_pose_relative_path": (
+            retained_virtual.relative_to(output).as_posix() if retained_virtual.is_file() else None
+        ),
+        "retained_pose_utils_relative_path": (
+            retained_pose_utils.relative_to(output).as_posix()
+            if retained_pose_utils.is_file()
+            else None
+        ),
+        "target_center_m": center,
+        "target_elevation_ratio": 0.2,
+        "virtual_view_count": spec.get("runtime", {}).get("virtual_view_count"),
+        "virtual_mask_source_kind": "blueprint_exact_obb_projected_virtual_masks",
+        "camera_contract": "exact_obb_centered_circle_with_two_vertical_oscillations",
+        "mask_contract": "solid_convex_hull_of_exact_obb_projection",
+        "publisher_source_files_modified": False,
+        "unchanged_source_execution_claimed": False,
+        "blockers": blockers,
+    }
+    _write_json(output / "target_centered_virtual_view_adapter.json", receipt)
+    return receipt
+
+
 def _materialize_obb_removal_adapter(
     *, source: Path, runtime: Path, spec: dict[str, Any], output: Path
 ) -> dict[str, Any]:
@@ -895,7 +1129,7 @@ def main() -> int:
                 "--evidence-root",
                 str(output),
                 "--predicted-mask-dir",
-                str(model / "virtual/ours_2000/objects_pred"),
+                str(model / "virtual/blueprint_obb_masks"),
                 "--output-dir",
                 str(source / "Segment-and-Track-Anything/tracking_results/images/images_masks"),
                 "--receipt",
@@ -904,6 +1138,8 @@ def main() -> int:
                 str(spec["target_method_instance_id"]),
                 "--expected-count",
                 str(spec["runtime"]["virtual_view_count"]),
+                "--source-kind",
+                "blueprint_exact_obb_projected_virtual_masks",
             ],
             source,
             main_env,
@@ -1043,6 +1279,10 @@ def main() -> int:
         "status": "not_executed",
         "blockers": ["inpaint360_obb_removal_adapter_not_executed"],
     }
+    target_centered_view_adapter: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_target_centered_virtual_view_adapter_not_executed"],
+    }
     lama_depth_validation: dict[str, Any] = {
         "status": "not_executed",
         "blockers": ["inpaint360_lama_depth_numerical_validation_not_executed"],
@@ -1072,6 +1312,32 @@ def main() -> int:
                     break
                 command = list(command)
                 command[1] = str(runtime / "adapted_edit_object_removal.py")
+            if stage == "virtual_views":
+                target_centered_view_adapter = (
+                    _materialize_target_centered_virtual_view_adapter(
+                        source=source,
+                        runtime=runtime,
+                        spec=spec,
+                        output=output,
+                    )
+                )
+                target_centered_adapter_accepted = (
+                    target_centered_view_adapter["status"] == "accepted"
+                )
+                workflow.append(
+                    {
+                        "stage": "target_centered_virtual_view_adapter",
+                        "operation": "bind_exact_obb_centered_cameras_and_projected_masks",
+                        "cwd": str(runtime),
+                        "returncode": 0 if target_centered_adapter_accepted else 52,
+                        "timed_out": False,
+                        "receipt": "target_centered_virtual_view_adapter.json",
+                    }
+                )
+                if not target_centered_adapter_accepted:
+                    break
+                command = list(command)
+                command[1] = str(runtime / "adapted_virtual_pose.py")
             if stage == "inpaint_3d":
                 nonempty_view_adapter = _materialize_nonempty_virtual_view_adapter(
                     source=source,
@@ -1212,6 +1478,8 @@ def main() -> int:
         required.append(stage)
         if stage == "removal":
             required.append("obb_removal_adapter")
+        if stage == "virtual_views":
+            required.append("target_centered_virtual_view_adapter")
         if stage == "lama_depth":
             required.append("lama_depth_numerical_validation")
         if stage == "baseline_render":
@@ -1275,6 +1543,7 @@ def main() -> int:
         "nonempty_virtual_view_selection": nonempty_view_selection,
         "nonempty_virtual_view_adapter": nonempty_view_adapter,
         "obb_removal_adapter": obb_removal_adapter,
+        "target_centered_virtual_view_adapter": target_centered_view_adapter,
         "lama_depth_numerical_validation": lama_depth_validation,
         "method_resolution_execution": resolution_accepted,
         "mask_association_executed": False,

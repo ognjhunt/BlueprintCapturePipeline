@@ -13,6 +13,10 @@ from PIL import Image
 
 
 SCHEMA_VERSION = "inpaint360_virtual_mask_handoff.v1"
+ALLOWED_SOURCE_KINDS = {
+    "inpaint360gs_full_scene_virtual_objects_pred",
+    "blueprint_exact_obb_projected_virtual_masks",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -41,6 +45,7 @@ def materialize_virtual_masks(
     receipt_path: Path,
     target_instance_id: int,
     expected_count: int = 30,
+    source_kind: str = "inpaint360gs_full_scene_virtual_objects_pred",
 ) -> dict[str, object]:
     root = runtime_root.expanduser().resolve()
     evidence = (evidence_root or runtime_root).expanduser().resolve()
@@ -63,6 +68,8 @@ def materialize_virtual_masks(
         raise ValueError("inpaint360_virtual_predicted_mask_dir_missing")
     if not 1 <= target_instance_id <= 255:
         raise ValueError("inpaint360_virtual_target_instance_id_invalid")
+    if source_kind not in ALLOWED_SOURCE_KINDS:
+        raise ValueError("inpaint360_virtual_mask_source_kind_invalid")
     source_paths = sorted(source.glob("*.png"))
     if len(source_paths) != expected_count:
         raise ValueError("inpaint360_virtual_predicted_mask_count_mismatch")
@@ -138,7 +145,7 @@ def materialize_virtual_masks(
         "target_absent_view_names": target_absent_view_names,
         "image_height": expected_shape[0] if expected_shape else None,
         "image_width": expected_shape[1] if expected_shape else None,
-        "source_kind": "inpaint360gs_full_scene_virtual_objects_pred",
+        "source_kind": source_kind,
         "handoff_kind": "binary_target_mask_without_interactive_refinement",
         "source_masks": source_records,
         "output_masks": output_records,
@@ -157,6 +164,11 @@ def main() -> int:
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--target-instance-id", type=int, required=True)
     parser.add_argument("--expected-count", type=int, default=30)
+    parser.add_argument(
+        "--source-kind",
+        choices=sorted(ALLOWED_SOURCE_KINDS),
+        default="inpaint360gs_full_scene_virtual_objects_pred",
+    )
     args = parser.parse_args()
     materialize_virtual_masks(
         runtime_root=args.runtime_root,
@@ -166,6 +178,7 @@ def main() -> int:
         receipt_path=args.receipt,
         target_instance_id=args.target_instance_id,
         expected_count=args.expected_count,
+        source_kind=args.source_kind,
     )
     return 0
 

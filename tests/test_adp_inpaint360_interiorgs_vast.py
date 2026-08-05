@@ -881,6 +881,92 @@ def test_obb_removal_adapter_replaces_semantic_convex_hull_without_mutating_sour
     compile(adapted, "adapted_edit_object_removal.py", "exec")
 
 
+def test_target_centered_virtual_view_adapter_binds_exact_obb_without_source_mutation(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    source = tmp_path / "source"
+    (source / "tools").mkdir(parents=True)
+    (source / "utils").mkdir()
+    virtual_source = source / "tools/virtual_pose.py"
+    virtual_source.write_text(
+        "import os\nimport cv2\nimport numpy as np\nimport torch\n"
+        "from utils.pose_utils import generate_ellipse_path, generate_virtual_radius\n\n"
+        "def  virtual(dataset : ModelParams, iteration : int, pipeline : PipelineParams):\n"
+        "        poses = generate_ellipse_path(views, n_frames=30, \n"
+        "                                    is_circle=is_circle, circle_radius=args.circle_radius)\n"
+        "        virtual_pose_list = []\n"
+        "        for view_tmp in views:\n"
+        "            virtual_pose_list.append(view_tmp)\n\n"
+        "        # Step 1: Generate the full scene containing all objects\n"
+        "        return poses\n",
+        encoding="utf-8",
+    )
+    pose_source = source / "utils/pose_utils.py"
+    pose_source.write_text(
+        "import numpy as np\n\n"
+        "def generate_ellipse_path(views, n_frames=240, const_speed=True, z_variation=0., z_phase=0., \n"
+        "                          is_circle=False, circle_radius=1.0, ellipse_radius=1.0, gaussians=None, \n"
+        "                          object_centered=False):\n"
+        "    poses, transform = source_poses(views)\n"
+        "    if object_centered:\n"
+        "        xyz = gaussians.get_xyz.cpu().numpy()\n"
+        "        xyz_homo = np.concatenate([xyz, np.ones((xyz.shape[0], 1))], axis=1)  # (N, 4)\n\n"
+        "        xyz_transformed = (transform @ xyz_homo.T).T[:, :3]  # shape (N, 3)\n"
+        "        center = xyz_transformed.mean(axis=0)\n"
+        "    else:\n"
+        "        # Calculate the focal point for the path (cameras point toward this).\n"
+        "        center = focus_point_fn(poses)\n"
+        "    sc = np.ones(3)\n"
+        "    z_low = np.zeros(3)\n"
+        "    z_high = np.ones(3)\n"
+        "    if is_circle:\n"
+        "        r = np.max(sc) * circle_radius \n"
+        "        def get_positions(theta):\n"
+        "            return np.stack([\n"
+        "                center[0] + r * np.cos(theta),\n"
+        "                center[1] + r * np.sin(theta),\n"
+        "                z_variation * (z_low[2] + (z_high - z_low)[2] *\n"
+        "                               (np.cos(theta + 2 * np.pi * z_phase) * .5 + .5)),\n"
+        "            ], -1)\n"
+        "    return get_positions(np.zeros(n_frames))\n",
+        encoding="utf-8",
+    )
+    before_virtual = virtual_source.read_bytes()
+    before_pose = pose_source.read_bytes()
+    spec = {
+        "target_obb_corners_m": [
+            [float(x), float(y), float(z)]
+            for x in (0, 1)
+            for y in (0, 1)
+            for z in (0, 1)
+        ],
+        "target_method_instance_id": 1,
+        "runtime": {"virtual_view_count": 30},
+    }
+
+    receipt = runner._materialize_target_centered_virtual_view_adapter(
+        source=source,
+        runtime=tmp_path / "runtime",
+        spec=spec,
+        output=tmp_path / "evidence",
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["target_center_m"] == [0.5, 0.5, 0.5]
+    assert receipt["publisher_source_files_modified"] is False
+    assert virtual_source.read_bytes() == before_virtual
+    assert pose_source.read_bytes() == before_pose
+    adapted_virtual = (tmp_path / "runtime/adapted_virtual_pose.py").read_text()
+    adapted_pose = (tmp_path / "runtime/adapted_pose_utils.py").read_text()
+    assert "blueprint_materialize_exact_obb_masks" in adapted_virtual
+    assert "explicit_center_world=np.asarray([0.5,0.5,0.5]" in adapted_virtual
+    assert "target_elevation_ratio=0.2" in adapted_virtual
+    assert "explicit_center_world is not None" in adapted_pose
+    compile(adapted_virtual, "adapted_virtual_pose.py", "exec")
+    compile(adapted_pose, "adapted_pose_utils.py", "exec")
+
+
 def test_virtual_view_quality_gate_rejects_fragmented_and_low_coverage_masks(
     tmp_path: Path,
 ) -> None:
