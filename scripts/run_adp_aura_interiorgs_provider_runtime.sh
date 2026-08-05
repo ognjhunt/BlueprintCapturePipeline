@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="${SCRIPT_DIR}/AuraFusion360_official"
+SAM2_SOURCE_DIR="${SCRIPT_DIR}/sam2_source"
+OUTPUT_DIR="${BLUEPRINT_ADP_AURA_INTERIORGS_OUTPUT_DIR:-${SCRIPT_DIR}/../runtime_output}"
+RESULT_PATH="${OUTPUT_DIR}/adp_aura_interiorgs_result.json"
+mkdir -p "${OUTPUT_DIR}"
+
+write_missing_result() {
+  local blocker="$1"
+  python3 - "${RESULT_PATH}" "${blocker}" <<'PY'
+import datetime as dt, json, sys
+from pathlib import Path
+p=Path(sys.argv[1])
+if not p.exists():
+    p.write_text(json.dumps({"schema_version":"adp_aura_interiorgs_result.v1","generated_at":dt.datetime.now(dt.timezone.utc).isoformat(),"status":"blocked","blockers":[sys.argv[2]],"inpaint_finetune_executed":False,"retry_cap":0,"raw_secret_values_recorded":False},indent=2,sort_keys=True)+"\n")
+PY
+}
+
+rm -rf "${SOURCE_DIR}" "${SAM2_SOURCE_DIR}"
+mkdir -p "${SOURCE_DIR}" "${SAM2_SOURCE_DIR}"
+python3 -m zipfile -e "${SCRIPT_DIR}/aurafusion360_source.zip" "${SOURCE_DIR}" || { write_missing_result "aurafusion360_interiorgs_source_extract_failed"; exit 2; }
+python3 -m zipfile -e "${SCRIPT_DIR}/sam2_source.zip" "${SAM2_SOURCE_DIR}" || { write_missing_result "aurafusion360_interiorgs_sam2_extract_failed"; exit 2; }
+
+python3 -m pip install --disable-pip-version-check --no-cache-dir uv==0.10.7 || { write_missing_result "aurafusion360_interiorgs_uv_install_failed"; exit 2; }
+UV_BIN="$(command -v uv)"
+export UV_NATIVE_TLS=true
+"${UV_BIN}" python install 3.10 3.8
+"${UV_BIN}" venv "${SOURCE_DIR}/.venv" --python 3.10
+export CC=/usr/bin/gcc-11 CXX=/usr/bin/g++-11 CUDA_HOME=/usr/local/cuda
+AURA_PY="${SOURCE_DIR}/.venv/bin/python"
+"${UV_BIN}" pip install --python "${AURA_PY}" torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124 || { write_missing_result "aurafusion360_interiorgs_torch_install_failed"; exit 2; }
+"${UV_BIN}" pip install --python "${AURA_PY}" setuptools==80.9.0 wheel==0.45.1 ninja==1.13.0 packaging==25.0
+"${UV_BIN}" pip install --python "${AURA_PY}" --no-build-isolation "${SOURCE_DIR}/submodules/diff-surfel-rasterization" "${SOURCE_DIR}/submodules/simple-knn" "${SAM2_SOURCE_DIR}" || { write_missing_result "aurafusion360_interiorgs_native_install_failed"; exit 2; }
+"${UV_BIN}" pip install --python "${AURA_PY}" -r "${SOURCE_DIR}/requirements.txt" || { write_missing_result "aurafusion360_interiorgs_requirements_failed"; exit 2; }
+
+"${UV_BIN}" pip freeze --python "${AURA_PY}" > "${OUTPUT_DIR}/aura-pip-freeze.txt"
+
+export HF_HOME="${SOURCE_DIR}/.hf_home" HF_HUB_CACHE="${SOURCE_DIR}/.hf_home/hub" HF_HUB_DISABLE_XET=1 HF_HUB_DOWNLOAD_TIMEOUT=600
+"${AURA_PY}" "${SCRIPT_DIR}/adp_aura_interiorgs_provider_runner.py" --prepare-only || { write_missing_result "aurafusion360_interiorgs_prepare_failed"; exit 2; }
+"${UV_BIN}" venv "${SOURCE_DIR}/LaMa/.venv" --python 3.8
+LAMA_PY="${SOURCE_DIR}/LaMa/.venv/bin/python"
+"${UV_BIN}" pip install --python "${LAMA_PY}" torch==1.8.0+cu111 torchvision==0.9.0+cu111 -f https://download.pytorch.org/whl/torch_stable.html || { write_missing_result "aurafusion360_interiorgs_lama_torch_failed"; exit 2; }
+"${UV_BIN}" pip install --python "${LAMA_PY}" setuptools==57.5.0 wheel==0.37.1 Cython==0.29.37
+"${UV_BIN}" pip install --python "${LAMA_PY}" --no-build-isolation pyyaml==5.4.1
+"${UV_BIN}" pip install --python "${LAMA_PY}" numpy==1.21.6 tqdm==4.67.1 easydict==1.9.0 scikit-image==0.19.3 scikit-learn==1.0.2 scipy==1.7.3 opencv-python-headless==4.5.5.64 joblib==1.1.1 matplotlib==3.5.3 pandas==1.3.5 albumentations==0.5.2 hydra-core==1.1.0 pytorch-lightning==1.2.9 tabulate==0.9.0 kornia==0.5.0 webdataset==0.1.103 packaging==24.2 tensorboard==2.11.2 || { write_missing_result "aurafusion360_interiorgs_lama_dependencies_failed"; exit 2; }
+"${UV_BIN}" pip freeze --python "${LAMA_PY}" > "${OUTPUT_DIR}/lama-pip-freeze.txt"
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+"${AURA_PY}" "${SCRIPT_DIR}/adp_aura_interiorgs_provider_runner.py"
+runner_rc=$?
+if [ ! -f "${RESULT_PATH}" ]; then
+  write_missing_result "adp_aura_interiorgs_runner_failed_without_runtime_result"
+  echo "blocked_adp_aura_interiorgs_process_exited_without_result:${runner_rc}"
+fi
+exit "${runner_rc}"

@@ -15,6 +15,9 @@ from blueprint_pipeline.public_scene_aura_adapter import (
     AuraAdapterError,
     materialize_aura_adapter,
 )
+from blueprint_pipeline.provider_runtime_bundle_contract import (
+    provider_runtime_contract_blockers,
+)
 
 
 def _record(path: Path, root: Path) -> dict:
@@ -244,3 +247,19 @@ def test_aura_adapter_rejects_unproven_author_smoke(
     paths["smoke"].write_text(json.dumps(smoke), encoding="utf-8")
     with pytest.raises(AuraAdapterError, match="unchanged_author_smoke_not_proven"):
         _materialize(paths)
+
+
+def test_aura_interiorgs_provider_runtime_has_distinct_fail_closed_contract() -> None:
+    root = Path(__file__).resolve().parents[1]
+    entrypoint = (root / "scripts/run_adp_aura_interiorgs_provider_runtime.sh").read_text()
+    runner = (root / "scripts/adp_aura_interiorgs_provider_runner.py").read_text()
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="adp_aura_interiorgs",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) == []
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="adp_aura_smoke",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) != []
