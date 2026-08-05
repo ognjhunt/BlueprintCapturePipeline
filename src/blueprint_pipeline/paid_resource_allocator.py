@@ -1048,6 +1048,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-max-spend-usd", type=float, default=2.00)
     gpu.add_argument("--adp-hard-ttl-seconds", type=int, default=7200)
     gpu.add_argument("--adp-machine-avoidlist")
+    gpu.add_argument(
+        "--adp-allowed-active-vast-instance-id",
+        action="append",
+        type=int,
+        default=[],
+    )
     gpu.add_argument("--adp-content-agents-bundle-receipt")
     gpu.add_argument("--adp-content-agents-config-preflight-receipt")
     gpu.add_argument("--adp-aura-bundle-receipt")
@@ -1501,6 +1507,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp_aura_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
                 blockers.append("adp_aura_budget_invalid")
+            if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
+                blockers.append("adp_aura_allowed_active_vast_instance_id_invalid")
             minimum_aura_ttl = 7200 if aura_interiorgs else 5400
             if not minimum_aura_ttl <= args.adp_hard_ttl_seconds <= 14_400:
                 blockers.append("adp_aura_hard_ttl_invalid")
@@ -1588,6 +1596,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                 "machine_avoidlist_sha256": avoidlist_sha256,
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
                 "retry_cap": 0,
             }
             allocation_binding_digest = (
@@ -1610,6 +1621,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "hard_cap_usd": args.adp_max_spend_usd,
                     "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                     "retry_cap": 0,
+                    "explicit_concurrent_gpu_authority_bound": bool(
+                        args.adp_allowed_active_vast_instance_id
+                    ),
                     "authority": (
                         "user_authorized_all_in_scope_goal_resources_including_gpu_usage"
                     ),
@@ -1663,6 +1677,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     public_image=ADP_AURA_SMOKE_IMAGE,
                     machine_avoidlist_path=avoidlist_path,
+                    allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

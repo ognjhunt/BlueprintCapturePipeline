@@ -3757,6 +3757,7 @@ def _prelaunch_inventory_guard(
     job_dir: Path,
     generated_at: str,
     api_key: str,
+    allowed_active_instance_ids: Iterable[Any] = (),
 ) -> dict[str, Any]:
     blockers: list[str] = []
     active_instances: list[dict[str, Any]] = []
@@ -3787,7 +3788,13 @@ def _prelaunch_inventory_guard(
             query_error = f"{type(exc).__name__}:{str(exc)[:300]}"
             blockers.append("vast_prelaunch_inventory_query_failed")
             break
-    if active_instances:
+    allowed_ids = _machine_id_set(allowed_active_instance_ids)
+    unexpected_active_instances = [
+        row
+        for row in active_instances
+        if int(_number(row.get("id")) or -1) not in allowed_ids
+    ]
+    if unexpected_active_instances:
         blockers.append("active_vast_instances_detected_before_new_launch")
     manifest = {
         "schema_version": "vast_prelaunch_inventory_guard.v1",
@@ -3797,6 +3804,9 @@ def _prelaunch_inventory_guard(
         "api_http_status_code": status_code,
         "active_instance_count": len(active_instances),
         "active_instances": active_instances,
+        "allowed_active_instance_ids": sorted(allowed_ids),
+        "unexpected_active_instance_count": len(unexpected_active_instances),
+        "unexpected_active_instances": unexpected_active_instances,
         "continuing_spend_detected_before_new_launch": bool(active_instances),
         "query_error": query_error,
         "query_attempt_count": query_attempt_count,
@@ -4531,6 +4541,7 @@ def run_vast_provider_adapter(
     heartbeat_no_progress_seconds: int | None = None,
     machine_avoidlist_path: str | Path | None = None,
     allowed_machine_ids: Iterable[Any] = (),
+    allowed_active_instance_ids: Iterable[Any] = (),
     session_budget_ledger_path: str | Path | None = None,
     session_max_live_minutes: int | None = DEFAULT_SESSION_MAX_LIVE_MINUTES,
     verify_staging_urls: bool = False,
@@ -4625,6 +4636,7 @@ def run_vast_provider_adapter(
     avoidlist = _load_machine_avoidlist(resolved_machine_avoidlist_path)
     excluded_machine_ids = _avoidlist_machine_ids(resolved_machine_avoidlist_path)
     resolved_allowed_machine_ids = _machine_id_set(allowed_machine_ids)
+    resolved_allowed_active_instance_ids = _machine_id_set(allowed_active_instance_ids)
     launch_mode = _resolve_launch_mode(
         requested=vast_launch_mode,
         enable_isaac_smoke=enable_isaac_smoke,
@@ -4834,6 +4846,7 @@ def run_vast_provider_adapter(
         "excluded_machine_ids": sorted(excluded_machine_ids),
         "allowed_machine_ids": sorted(resolved_allowed_machine_ids),
         "machine_allowlist_active": bool(resolved_allowed_machine_ids),
+        "allowed_active_instance_ids": sorted(resolved_allowed_active_instance_ids),
         "min_gpu_ram_mb": resolved_min_gpu_ram_mb,
         "min_compute_cap": resolved_min_compute_cap,
         "max_compute_cap": resolved_max_compute_cap,
@@ -5479,6 +5492,7 @@ def run_vast_provider_adapter(
         job_dir=resolved_job_dir,
         generated_at=generated_at,
         api_key=api_key,
+        allowed_active_instance_ids=resolved_allowed_active_instance_ids,
     )
     prelaunch_inventory_blockers = _string_list(prelaunch_inventory_guard.get("blockers"))
     base_result.update(
