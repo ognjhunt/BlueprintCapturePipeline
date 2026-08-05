@@ -17,7 +17,7 @@ completion.
 
 | Role | Smallest observed blocker | Smallest next authority or evidence |
 |---|---|---|
-| Inpaint360GS author smoke | `inpaint360_author_dataset_license_authority_missing` | Publisher statement or other durable authority covering the exact author-data archive; user permission cannot grant the publisher's copyright. |
+| Inpaint360GS author smoke | `inpaint360_author_dataset_license_authority_missing` | Publisher statement or other durable authority covering the exact author-data archive; user permission cannot grant the publisher's copyright. Exact default-scene input/output ranges are already bound, so no bulk archive download is needed after authority exists. |
 | InFusion primary adapter | `infusion_checkpoint_license_missing` | Publisher license for `Johanan0528/Infusion` revision `83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2`; author masks remain a later missing input. |
 | AuraFusion360 challenger | `aurafusion360_unchanged_author_smoke_missing` | Execute the corrected immutable sunflower bundle once on admitted Linux NVIDIA compute. Attempt `live_v1` reached an RTX 4090 but stopped before the author command at the upstream Torch-dependent native-extension build; the correction is encoded and unexecuted. |
 | Controlled-background truth | `controlled_background_truth_case_missing` | One rights-cleared, metric known-background edit case and receipt. |
@@ -31,7 +31,12 @@ The external prerequisite receipt
 `sha256:93246e28fefb26b37a4b2e6cb0fce44aec47d554166093775117ae7308b0c80f`
 binds the exact method source trees and dependencies. Inpaint360GS has four
 materialized checkpoint identities with established checkpoint rights, but no
-author-data rights. InFusion has a 14-file, 6,858,056,617-byte pinned checkpoint
+author-data rights. The deterministic archive probe verified the publisher's
+8,020,567,705-byte input ZIP and 4,307,622,065-byte evaluation ZIP through their
+exact central-directory bytes. It found the same 11 scenes in each archive, no
+license/terms filename, and bound the unchanged default `doppelherz` case to
+563,474,353 input bytes plus 222,225,460 expected-output bytes. InFusion has a
+14-file, 6,858,056,617-byte pinned checkpoint
 snapshot whose publisher card declares no license. AuraFusion360 has admitted
 sunflower input data, SAM2, Marigold, Stable Diffusion 2 inpainting, and a pinned
 8,463,892,136-byte publisher expected-output snapshot; none of that is an

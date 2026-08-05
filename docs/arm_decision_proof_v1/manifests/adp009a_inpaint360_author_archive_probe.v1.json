@@ -1,0 +1,390 @@
+{
+  "schema_version": "public_scene_inpaint360_author_archive_probe.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009A",
+  "generated_at": "2026-08-05T02:08:52.507575+00:00",
+  "status": "blocked",
+  "blockers": [
+    "inpaint360_author_dataset_license_authority_missing"
+  ],
+  "materializer_source": {
+    "repository_root": "/private/tmp/blueprint-adp009b-inpaint360-probe-clean-20260804",
+    "commit": "e240bc15e7207444509e41b705a08ab063bcec2f",
+    "tree": "4dfa65660a0c98ffdbffd923adfd76df3c28f23c",
+    "clean_before_write": true
+  },
+  "source": {
+    "repository": "https://github.com/dfki-av/Inpaint360GS",
+    "commit": "d54c893285c6cb27788e05cce607e7d3cca6388a",
+    "tree": "671626f4825cbf3d7c1ca37cc97a153d45e49b1c",
+    "clean": true,
+    "observed_checkout_path": "/private/tmp/adp009a-methods-20260804/Inpaint360GS",
+    "source_license": "Apache-2.0",
+    "source_license_sha256": "sha256:41d805773f2aa0b36c2fb69491f64c3079fe3e0671c9848680645fc9e65d5a10",
+    "readme_sha256": "sha256:d7ac9169e04f6dc54cdef9d54c042def33375beef393d55fd7e2c80150db7d66",
+    "readme_declares_dataset_license": false
+  },
+  "author_command": [
+    "bash run_seg.sh",
+    "bash run_remove.sh",
+    "bash run_inpaint.sh"
+  ],
+  "default_author_scene": "doppelherz",
+  "archives": [
+    {
+      "role": "author_input",
+      "publisher": "Google Drive link declared by the official source repository",
+      "file_id": "1YLpop12JRbzglJfx0FUFUZ2GLaBfZX_x",
+      "filename": "inpaint360.zip",
+      "size_bytes": 8020567705,
+      "last_modified": "Fri, 16 Jan 2026 13:21:29 GMT",
+      "whole_archive_sha256": null,
+      "whole_archive_materialized": false,
+      "central_directory": {
+        "offset": 8019750855,
+        "size_bytes": 816752,
+        "sha256": "sha256:01e983a66db22ce1d08e1415f1d7ff5db6d8fbcba68381c9cdc670b957197524",
+        "entry_count": 6566
+      },
+      "scene_summaries": [
+        {
+          "scene": "bag",
+          "entry_count": 694,
+          "compressed_payload_bytes": 837314173,
+          "uncompressed_payload_bytes": 857255319,
+          "contiguous_archive_range": {
+            "start": 73,
+            "end_inclusive": 837394436,
+            "size_bytes": 837394364
+          },
+          "entry_manifest_digest": "sha256:8be59bfa3895e96ab6ca14d8abea664ad85388e63368e2ba1c8948c6c3a8ff13"
+        },
+        {
+          "scene": "car",
+          "entry_count": 480,
+          "compressed_payload_bytes": 706279470,
+          "uncompressed_payload_bytes": 720395565,
+          "contiguous_archive_range": {
+            "start": 837394437,
+            "end_inclusive": 1543729295,
+            "size_bytes": 706334859
+          },
+          "entry_manifest_digest": "sha256:6740a43652b7e69648b8e1d16ae66b1c2d98b25a3fbfb84a0477ea6c93483254"
+        },
+        {
+          "scene": "cone_red",
+          "entry_count": 607,
+          "compressed_payload_bytes": 924571020,
+          "uncompressed_payload_bytes": 943864078,
+          "contiguous_archive_range": {
+            "start": 1543729296,
+            "end_inclusive": 2468373011,
+            "size_bytes": 924643716
+          },
+          "entry_manifest_digest": "sha256:5297277768d74ac5c5cc1058ac934b6b76a53e15ac470aaf9c591cdffc081b6a"
+        },
+        {
+          "scene": "cone_yellow",
+          "entry_count": 451,
+          "compressed_payload_bytes": 625379949,
+          "uncompressed_payload_bytes": 639358454,
+          "contiguous_archive_range": {
+            "start": 2468373012,
+            "end_inclusive": 3093808295,
+            "size_bytes": 625435284
+          },
+          "entry_manifest_digest": "sha256:a97f8b00b57ac01a019c18fbe5b45d8ef07665c22305ce316adfbb8110cde7a4"
+        },
+        {
+          "scene": "cube",
+          "entry_count": 602,
+          "compressed_payload_bytes": 538580532,
+          "uncompressed_payload_bytes": 548516955,
+          "contiguous_archive_range": {
+            "start": 3093808296,
+            "end_inclusive": 3632459064,
+            "size_bytes": 538650769
+          },
+          "entry_manifest_digest": "sha256:08870d13138d6d8350b3369c1e85bb161069334bd1860f610634db969ac1c14e"
+        },
+        {
+          "scene": "doppelherz",
+          "entry_count": 496,
+          "compressed_payload_bytes": 563414132,
+          "uncompressed_payload_bytes": 580359882,
+          "contiguous_archive_range": {
+            "start": 3632459065,
+            "end_inclusive": 4195933417,
+            "size_bytes": 563474353
+          },
+          "entry_manifest_digest": "sha256:875fe81e0be826b8ea04f647c8e43c5be73ced9b7c937cb648ff96e56ef11e0c"
+        },
+        {
+          "scene": "fruits",
+          "entry_count": 468,
+          "compressed_payload_bytes": 403487663,
+          "uncompressed_payload_bytes": 417253210,
+          "contiguous_archive_range": {
+            "start": 7616208078,
+            "end_inclusive": 8019750854,
+            "size_bytes": 403542777
+          },
+          "entry_manifest_digest": "sha256:887782799f9a29b3b1e8be5a1fee8769f695156577b6c8ab82c49b0bcf839d73"
+        },
+        {
+          "scene": "garden_toys",
+          "entry_count": 602,
+          "compressed_payload_bytes": 896668812,
+          "uncompressed_payload_bytes": 918884387,
+          "contiguous_archive_range": {
+            "start": 4195933418,
+            "end_inclusive": 5092675882,
+            "size_bytes": 896742465
+          },
+          "entry_manifest_digest": "sha256:f4d9cee62eee7823f67d39fd9c26e4274f676f8dd7458a9e87c49ab33156a93c"
+        },
+        {
+          "scene": "redbull",
+          "entry_count": 835,
+          "compressed_payload_bytes": 1026309769,
+          "uncompressed_payload_bytes": 1051286492,
+          "contiguous_archive_range": {
+            "start": 5092675883,
+            "end_inclusive": 6119085898,
+            "size_bytes": 1026410016
+          },
+          "entry_manifest_digest": "sha256:559259655181a613637f3f1a1d47525d62b0e26ec41a6e2318e448a029647197"
+        },
+        {
+          "scene": "toys",
+          "entry_count": 542,
+          "compressed_payload_bytes": 667030586,
+          "uncompressed_payload_bytes": 685996366,
+          "contiguous_archive_range": {
+            "start": 6949115379,
+            "end_inclusive": 7616208077,
+            "size_bytes": 667092699
+          },
+          "entry_manifest_digest": "sha256:25dd6961dde02cf4e7f59e99f71f4496e31bdb8784869bd8c3b386b08cfe48a5"
+        },
+        {
+          "scene": "truck",
+          "entry_count": 788,
+          "compressed_payload_bytes": 829937557,
+          "uncompressed_payload_bytes": 854650089,
+          "contiguous_archive_range": {
+            "start": 6119085899,
+            "end_inclusive": 6949115378,
+            "size_bytes": 830029480
+          },
+          "entry_manifest_digest": "sha256:a054d830bc0a7bc12acbf23f02d301ce497cf871fc7f5254777b7e3449028c5f"
+        }
+      ],
+      "selected_author_scene": {
+        "scene": "doppelherz",
+        "entry_count": 496,
+        "compressed_payload_bytes": 563414132,
+        "uncompressed_payload_bytes": 580359882,
+        "contiguous_archive_range": {
+          "start": 3632459065,
+          "end_inclusive": 4195933417,
+          "size_bytes": 563474353
+        },
+        "entry_manifest_digest": "sha256:875fe81e0be826b8ea04f647c8e43c5be73ced9b7c937cb648ff96e56ef11e0c"
+      },
+      "license_or_terms_filename_candidates": [],
+      "raw_bytes_inspected": 947825
+    },
+    {
+      "role": "published_evaluation_output",
+      "publisher": "Google Drive link declared by the official source repository",
+      "file_id": "1SgB4grTSKhFeKp8-l1TGcjhpmtTkvx0W",
+      "filename": "inpaint360gs.zip",
+      "size_bytes": 4307622065,
+      "last_modified": "Fri, 16 Jan 2026 15:58:09 GMT",
+      "whole_archive_sha256": null,
+      "whole_archive_materialized": false,
+      "central_directory": {
+        "offset": 4307411053,
+        "size_bytes": 210914,
+        "sha256": "sha256:5828e3c7b2709d1d1c17765ed2a44aa3e2d152c61f21249a76d00bde14bdcf52",
+        "entry_count": 1751
+      },
+      "scene_summaries": [
+        {
+          "scene": "bag",
+          "entry_count": 236,
+          "compressed_payload_bytes": 556496593,
+          "uncompressed_payload_bytes": 622229272,
+          "contiguous_archive_range": {
+            "start": 75,
+            "end_inclusive": 556524318,
+            "size_bytes": 556524244
+          },
+          "entry_manifest_digest": "sha256:ab69e0eec9046425738e1d298913036a63c61227b3859718e8762cbe22f83008"
+        },
+        {
+          "scene": "car",
+          "entry_count": 164,
+          "compressed_payload_bytes": 611854463,
+          "uncompressed_payload_bytes": 680008693,
+          "contiguous_archive_range": {
+            "start": 556524319,
+            "end_inclusive": 1168397954,
+            "size_bytes": 611873636
+          },
+          "entry_manifest_digest": "sha256:e3c93bb93e55b6c6dd8c0392256beaa7842b14f90798ff23b21a1517ef560ae8"
+        },
+        {
+          "scene": "cone_red",
+          "entry_count": 144,
+          "compressed_payload_bytes": 404609614,
+          "uncompressed_payload_bytes": 443169370,
+          "contiguous_archive_range": {
+            "start": 1168397955,
+            "end_inclusive": 1573025106,
+            "size_bytes": 404627152
+          },
+          "entry_manifest_digest": "sha256:bbc1925d565995c8cd4a198a8984392c08801340fef1345dfef34561d8b17f79"
+        },
+        {
+          "scene": "cone_yellow",
+          "entry_count": 112,
+          "compressed_payload_bytes": 287682416,
+          "uncompressed_payload_bytes": 316931735,
+          "contiguous_archive_range": {
+            "start": 1573025107,
+            "end_inclusive": 1860721468,
+            "size_bytes": 287696362
+          },
+          "entry_manifest_digest": "sha256:849c330d290f774e5cdcd6ee5e5e436ecb3add128d1f02df17f734d2c18badbd"
+        },
+        {
+          "scene": "cube",
+          "entry_count": 224,
+          "compressed_payload_bytes": 429073979,
+          "uncompressed_payload_bytes": 485874390,
+          "contiguous_archive_range": {
+            "start": 1860721469,
+            "end_inclusive": 2289821908,
+            "size_bytes": 429100440
+          },
+          "entry_manifest_digest": "sha256:9b68b3be5ea93f9d2c207efda297f2962cda941e9da3609c3438504417082ffd"
+        },
+        {
+          "scene": "doppelherz",
+          "entry_count": 100,
+          "compressed_payload_bytes": 222213123,
+          "uncompressed_payload_bytes": 247229723,
+          "contiguous_archive_range": {
+            "start": 2289821909,
+            "end_inclusive": 2512047368,
+            "size_bytes": 222225460
+          },
+          "entry_manifest_digest": "sha256:ab914e98029407258d28180d545fa7892841c81f78a839d5cdc54c0446af287b"
+        },
+        {
+          "scene": "fruits",
+          "entry_count": 116,
+          "compressed_payload_bytes": 219735314,
+          "uncompressed_payload_bytes": 249959846,
+          "contiguous_archive_range": {
+            "start": 2512047369,
+            "end_inclusive": 2731796571,
+            "size_bytes": 219749203
+          },
+          "entry_manifest_digest": "sha256:41e55c31f17bb35cbf6856f943f77cff8b5714b997ade617c6d213c8d7f91a86"
+        },
+        {
+          "scene": "garden_toys",
+          "entry_count": 108,
+          "compressed_payload_bytes": 293759100,
+          "uncompressed_payload_bytes": 320938759,
+          "contiguous_archive_range": {
+            "start": 2731796572,
+            "end_inclusive": 3025569114,
+            "size_bytes": 293772543
+          },
+          "entry_manifest_digest": "sha256:178401a4b721b2a143725ca82d968d0e040330412b4212ae137a9f667ae5cfef"
+        },
+        {
+          "scene": "redbull",
+          "entry_count": 336,
+          "compressed_payload_bytes": 849413497,
+          "uncompressed_payload_bytes": 936952225,
+          "contiguous_archive_range": {
+            "start": 3025569115,
+            "end_inclusive": 3875023381,
+            "size_bytes": 849454267
+          },
+          "entry_manifest_digest": "sha256:b7c837d62131ea97c3298d0e770fa664dca6eed8838b102dcd3ef6d90a17db0f"
+        },
+        {
+          "scene": "toys",
+          "entry_count": 44,
+          "compressed_payload_bytes": 95107853,
+          "uncompressed_payload_bytes": 106746478,
+          "contiguous_archive_range": {
+            "start": 3875023382,
+            "end_inclusive": 3970136321,
+            "size_bytes": 95112940
+          },
+          "entry_manifest_digest": "sha256:2d34fe2c613be3234e2e0447083ecceaeac3cd3347d69017f67dbb118757621e"
+        },
+        {
+          "scene": "truck",
+          "entry_count": 166,
+          "compressed_payload_bytes": 337254991,
+          "uncompressed_payload_bytes": 380188324,
+          "contiguous_archive_range": {
+            "start": 3970136322,
+            "end_inclusive": 4307411052,
+            "size_bytes": 337274731
+          },
+          "entry_manifest_digest": "sha256:3c878d8c23c9c3c4cf2aa7f9c735282b7bd217f737551c690b7c9fc719c277b8"
+        }
+      ],
+      "selected_author_scene": {
+        "scene": "doppelherz",
+        "entry_count": 100,
+        "compressed_payload_bytes": 222213123,
+        "uncompressed_payload_bytes": 247229723,
+        "contiguous_archive_range": {
+          "start": 2289821909,
+          "end_inclusive": 2512047368,
+          "size_bytes": 222225460
+        },
+        "entry_manifest_digest": "sha256:ab914e98029407258d28180d545fa7892841c81f78a839d5cdc54c0446af287b"
+      },
+      "license_or_terms_filename_candidates": [],
+      "raw_bytes_inspected": 341987
+    }
+  ],
+  "rights": {
+    "author_dataset_license_authority_established": false,
+    "source_code_license_not_inherited_by_dataset": true,
+    "archive_license_or_terms_filename_candidates": []
+  },
+  "execution": {
+    "author_method_executed": false,
+    "gpu_allocated": false,
+    "publisher_archive_bytes_fully_downloaded": false,
+    "range_only_retrieval_plan_bound": true,
+    "selected_scene_total_range_bytes": 785699813
+  },
+  "claim_ceiling": "archive_identity_and_range_plan_only_no_inpainting_result",
+  "replay_command": [
+    "python",
+    "-m",
+    "blueprint_pipeline.public_scene_inpaint360_author_archive",
+    "--repo-root",
+    "/private/tmp/blueprint-adp009b-inpaint360-probe-clean-20260804",
+    "--source-root",
+    "/private/tmp/adp009a-methods-20260804/Inpaint360GS",
+    "--output",
+    "/private/tmp/blueprint-adp009b-inpaint360-runtime-20260804/docs/arm_decision_proof_v1/manifests/adp009a_inpaint360_author_archive_probe.v1.json",
+    "--generated-at",
+    "2026-08-05T02:08:52.507575+00:00"
+  ],
+  "receipt_digest": "sha256:88c1930164be341d5e78e7855b30469c8198369d356b856f52d039d464c2d3d1"
+}
