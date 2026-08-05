@@ -19,6 +19,28 @@ if not p.exists():
 PY
 }
 
+run_with_progress() {
+  local stage="$1"
+  shift
+  echo "BLUEPRINT_ADP_AURA_INTERIORGS_STAGE_STARTED:${stage}"
+  "$@" &
+  local child_pid=$!
+  (
+    while kill -0 "${child_pid}" 2>/dev/null; do
+      output_bytes="$(du -sk "${OUTPUT_DIR}" 2>/dev/null | awk '{print $1 * 1024}')"
+      echo "BLUEPRINT_ADP_AURA_INTERIORGS_RUNTIME_PROGRESS:${stage}:$(date -u +%Y-%m-%dT%H:%M:%SZ):output_bytes=${output_bytes:-0}"
+      sleep 60
+    done
+  ) &
+  local progress_pid=$!
+  wait "${child_pid}"
+  local child_rc=$?
+  kill "${progress_pid}" 2>/dev/null || true
+  wait "${progress_pid}" 2>/dev/null || true
+  echo "BLUEPRINT_ADP_AURA_INTERIORGS_STAGE_FINISHED:${stage}:returncode=${child_rc}"
+  return "${child_rc}"
+}
+
 rm -rf "${SOURCE_DIR}" "${SAM2_SOURCE_DIR}"
 mkdir -p "${SOURCE_DIR}" "${SAM2_SOURCE_DIR}"
 python3 -m zipfile -e "${SCRIPT_DIR}/aurafusion360_source.zip" "${SOURCE_DIR}" || { write_missing_result "aurafusion360_interiorgs_source_extract_failed"; exit 2; }
@@ -39,7 +61,7 @@ AURA_PY="${SOURCE_DIR}/.venv/bin/python"
 "${UV_BIN}" pip freeze --python "${AURA_PY}" > "${OUTPUT_DIR}/aura-pip-freeze.txt"
 
 export HF_HOME="${SOURCE_DIR}/.hf_home" HF_HUB_CACHE="${SOURCE_DIR}/.hf_home/hub" HF_HUB_DISABLE_XET=1 HF_HUB_DOWNLOAD_TIMEOUT=600
-"${AURA_PY}" "${SCRIPT_DIR}/adp_aura_interiorgs_provider_runner.py" --prepare-only || { write_missing_result "aurafusion360_interiorgs_prepare_failed"; exit 2; }
+run_with_progress prepare "${AURA_PY}" "${SCRIPT_DIR}/adp_aura_interiorgs_provider_runner.py" --prepare-only || { write_missing_result "aurafusion360_interiorgs_prepare_failed"; exit 2; }
 "${UV_BIN}" venv "${SOURCE_DIR}/LaMa/.venv" --python 3.8
 LAMA_PY="${SOURCE_DIR}/LaMa/.venv/bin/python"
 "${UV_BIN}" pip install --python "${LAMA_PY}" torch==1.8.0+cu111 torchvision==0.9.0+cu111 -f https://download.pytorch.org/whl/torch_stable.html || { write_missing_result "aurafusion360_interiorgs_lama_torch_failed"; exit 2; }
@@ -66,7 +88,7 @@ assert numpy.__version__ == "1.21.6"
 PY
 "${UV_BIN}" pip freeze --python "${LAMA_PY}" > "${OUTPUT_DIR}/lama-pip-freeze.txt"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-"${AURA_PY}" "${SCRIPT_DIR}/adp_aura_interiorgs_provider_runner.py"
+run_with_progress execute "${AURA_PY}" "${SCRIPT_DIR}/adp_aura_interiorgs_provider_runner.py"
 runner_rc=$?
 if [ ! -f "${RESULT_PATH}" ]; then
   write_missing_result "adp_aura_interiorgs_runner_failed_without_runtime_result"

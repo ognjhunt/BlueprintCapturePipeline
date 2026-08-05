@@ -208,3 +208,14 @@ def test_aura_reference_lama_command_rejects_missing_checkpoint_bytes(
         assert str(exc) == "aurafusion360_interiorgs_lama_checkpoint_path_unresolved"
     else:
         raise AssertionError("missing LaMa checkpoint bytes were not rejected")
+
+
+def test_aura_interiorgs_entrypoint_emits_long_stage_liveness() -> None:
+    entrypoint = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp_aura_interiorgs_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
+    assert "BLUEPRINT_ADP_AURA_INTERIORGS_RUNTIME_PROGRESS" in entrypoint
+    assert "BLUEPRINT_ADP_AURA_INTERIORGS_STAGE_STARTED" in entrypoint
+    assert "run_with_progress prepare" in entrypoint
+    assert "run_with_progress execute" in entrypoint
