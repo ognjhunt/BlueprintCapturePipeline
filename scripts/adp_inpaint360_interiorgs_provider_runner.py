@@ -16,8 +16,8 @@ from PIL import Image
 
 
 SCHEMA_VERSION = "adp_inpaint360_interiorgs_result.v1"
-METHOD_NATIVE_MAX_WIDTH = 1600
-MASK_ASSOCIATION_MODE = "pre_registered_single_target_method_native_resolution"
+METHOD_RESOLUTION_ARGUMENT = 2
+MASK_ASSOCIATION_MODE = "pre_registered_single_target_resolution_divisor_2"
 COMMAND_TIMEOUT_SECONDS = 10_800
 
 
@@ -160,11 +160,10 @@ def _materialize_pre_registered_mask_binding(
             if source_size != mask_size:
                 invalid_masks.append(path.name)
             width, height = source_size
-            if width > METHOD_NATIVE_MAX_WIDTH:
-                scale = width / METHOD_NATIVE_MAX_WIDTH
-                method_size = [int(width / scale), int(height / scale)]
-            else:
-                method_size = source_size
+            method_size = [
+                (width + METHOD_RESOLUTION_ARGUMENT - 1) // METHOD_RESOLUTION_ARGUMENT,
+                (height + METHOD_RESOLUTION_ARGUMENT - 1) // METHOD_RESOLUTION_ARGUMENT,
+            ]
             derived = grayscale.resize(tuple(method_size), resample=Image.Resampling.NEAREST)
             derived_histogram = derived.histogram()
             derived_values = {
@@ -217,7 +216,7 @@ def _materialize_pre_registered_mask_binding(
                 "raw_mask_folder": str(source_data / "raw_hqsam"),
                 "associated_mask_folder": str(associated_dir),
                 "target_method_instance_id": target_method_instance_id,
-                "method_native_max_width": METHOD_NATIVE_MAX_WIDTH,
+                "method_resolution_argument": METHOD_RESOLUTION_ARGUMENT,
                 "categorical_resize_filter": "nearest",
             },
         )
@@ -231,7 +230,7 @@ def _materialize_pre_registered_mask_binding(
         "source_image_count": len(source_images),
         "existing_associated_mask_count": len(existing_masks),
         "full_resolution_source_preserved": valid,
-        "method_native_max_width": METHOD_NATIVE_MAX_WIDTH,
+        "method_resolution_argument": METHOD_RESOLUTION_ARGUMENT,
         "categorical_resize_filter": "nearest",
         "image_mask_dimensions": image_mask_dimensions,
         "target_pixel_counts": target_pixel_counts,
@@ -248,19 +247,19 @@ def _materialize_pre_registered_mask_binding(
     return receipt
 
 
-def _validate_method_native_resolution_commands(
+def _validate_method_resolution_commands(
     commands: list[tuple[str, list[str], Path, dict[str, str]]], *, output: Path
 ) -> dict[str, Any]:
     """Bind model stages to 1.6K native loading and LaMa handoff to its folder contract."""
 
     required_stage_resolutions = {
-        "distillation": "-1",
-        "removal": "-1",
-        "virtual_views": "-1",
+        "distillation": str(METHOD_RESOLUTION_ARGUMENT),
+        "removal": str(METHOD_RESOLUTION_ARGUMENT),
+        "virtual_views": str(METHOD_RESOLUTION_ARGUMENT),
         "lama_prepare": "1",
         "lama_collect": "1",
-        "ply_fusion": "-1",
-        "inpaint_3d": "-1",
+        "ply_fusion": str(METHOD_RESOLUTION_ARGUMENT),
+        "inpaint_3d": str(METHOD_RESOLUTION_ARGUMENT),
     }
     observed: dict[str, str | None] = {}
     violations: list[str] = []
@@ -280,17 +279,17 @@ def _validate_method_native_resolution_commands(
     violations.extend(missing_stages)
     valid = not violations
     receipt = {
-        "schema_version": "adp_inpaint360_method_native_resolution_command_contract.v1",
+        "schema_version": "adp_inpaint360_method_resolution_command_contract.v1",
         "status": "accepted" if valid else "blocked",
-        "method_native_max_width": METHOD_NATIVE_MAX_WIDTH,
+        "method_resolution_argument": METHOD_RESOLUTION_ARGUMENT,
         "required_stage_resolutions": required_stage_resolutions,
         "observed_stage_resolutions": observed,
         "violating_or_missing_stages": sorted(set(violations)),
         "blockers": (
-            [] if valid else ["inpaint360_method_native_resolution_command_contract_invalid"]
+            [] if valid else ["inpaint360_method_resolution_command_contract_invalid"]
         ),
     }
-    _write_json(output / "method_native_resolution_command_contract.json", receipt)
+    _write_json(output / "method_resolution_command_contract.json", receipt)
     return receipt
 
 
@@ -367,6 +366,32 @@ def main() -> int:
     vanilla = packet / "vanilla_3dgs"
     commands: list[tuple[str, list[str], Path, dict[str, str]]] = [
         (
+            "camera_rasterizer_preflight",
+            [
+                main_python,
+                str(runtime / "probe_inpaint360_camera_rasterizer.py"),
+                "--source_path",
+                str(source_data),
+                "--model_path",
+                str(model),
+                "--vanilla_3dgs_path",
+                str(vanilla),
+                "--images",
+                "images",
+                "--object_path",
+                "associated_hqsam",
+                "--eval",
+                "--resolution",
+                str(METHOD_RESOLUTION_ARGUMENT),
+                "--expected-camera-count",
+                str(spec["runtime"]["expected_input_camera_count"]),
+                "--receipt",
+                str(output / "camera_rasterizer_preflight.json"),
+            ],
+            source,
+            main_env,
+        ),
+        (
             "distillation",
             [
                 main_python,
@@ -385,7 +410,7 @@ def main() -> int:
                 "--config_file",
                 str(packet / "config/distill.json"),
                 "--resolution",
-                "-1",
+                str(METHOD_RESOLUTION_ARGUMENT),
                 "--save_iterations",
                 "2000",
             ],
@@ -408,7 +433,7 @@ def main() -> int:
                 "--config_file",
                 str(config_removal),
                 "--resolution",
-                "-1",
+                str(METHOD_RESOLUTION_ARGUMENT),
                 "--skip_test",
             ],
             source,
@@ -430,7 +455,7 @@ def main() -> int:
                 "--config_file",
                 str(config_removal),
                 "--resolution",
-                "-1",
+                str(METHOD_RESOLUTION_ARGUMENT),
             ],
             source,
             main_env,
@@ -511,7 +536,7 @@ def main() -> int:
                 "--config_file",
                 str(config_removal),
                 "--resolution",
-                "-1",
+                str(METHOD_RESOLUTION_ARGUMENT),
             ],
             source,
             main_env,
@@ -528,7 +553,7 @@ def main() -> int:
                 "--config_file",
                 str(config_inpaint),
                 "--resolution",
-                "-1",
+                str(METHOD_RESOLUTION_ARGUMENT),
                 "--render_video",
             ],
             source,
@@ -536,18 +561,18 @@ def main() -> int:
         ),
     ]
     workflow: list[dict[str, Any]] = []
-    method_native_resolution_validation = _validate_method_native_resolution_commands(
+    method_resolution_validation = _validate_method_resolution_commands(
         commands, output=output
     )
-    resolution_accepted = method_native_resolution_validation["status"] == "accepted"
+    resolution_accepted = method_resolution_validation["status"] == "accepted"
     workflow.append(
         {
-            "stage": "method_native_resolution_contract",
-            "operation": "bind_author_native_1_6k_loading_and_lama_folder_resolution",
+            "stage": "method_resolution_contract",
+            "operation": "bind_author_supported_divisor_2_and_lama_folder_resolution",
             "cwd": str(packet),
             "returncode": 0 if resolution_accepted else 44,
             "timed_out": False,
-            "receipt": "method_native_resolution_command_contract.json",
+            "receipt": "method_resolution_command_contract.json",
         }
     )
     mask_association_validation = _materialize_pre_registered_mask_binding(
@@ -580,7 +605,7 @@ def main() -> int:
     source_after = _source_identity(source, spec)
     blockers: list[str] = []
     required = [
-        "method_native_resolution_contract",
+        "method_resolution_contract",
         "pre_registered_mask_binding",
         *[stage for stage, _, _, _ in commands],
     ]
@@ -623,8 +648,8 @@ def main() -> int:
         "hardware_probe": hardware,
         "workflow": workflow,
         "mask_association_validation": mask_association_validation,
-        "method_native_resolution_validation": method_native_resolution_validation,
-        "method_native_resolution_execution": resolution_accepted,
+        "method_resolution_validation": method_resolution_validation,
+        "method_resolution_execution": resolution_accepted,
         "mask_association_executed": False,
         "mask_association_mode": MASK_ASSOCIATION_MODE,
         "pre_registered_mask_binding_materialized": (
