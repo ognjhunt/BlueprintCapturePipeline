@@ -2837,6 +2837,7 @@ def _probe_shell_script(
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     quoted_url = shlex.quote(heartbeat_url)
+    curl_download_protocol = "--http1.1 " if provider_bundle_kind == "adp_aura_smoke" else ""
     script = (
         "set +e; WORK_DIR=/workspace; "
         'mkdir -p "$WORK_DIR/blueprint_vast_probe" 2>/dev/null || '
@@ -2899,7 +2900,7 @@ def _probe_shell_script(
         "PY\n"
         "return $?; "
         "fi; "
-        'if command -v curl >/dev/null 2>&1; then curl -fL "$blueprint_download_src" -o "$blueprint_download_dst"; return $?; fi; '
+        f'if command -v curl >/dev/null 2>&1; then curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst"; return $?; fi; '
         'if command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src"; return $?; fi; '
         'blueprint_download_py="${PY_NET:-${RUNTIME_PY:-}}"; '
         'if [ -n "$blueprint_download_py" ]; then '

@@ -234,6 +234,197 @@ def _submodule_revisions(repo: Path) -> dict[str, str]:
     return dict(sorted(observed.items()))
 
 
+def _aura_author_smoke_evidence(
+    *,
+    spec: Mapping[str, Any],
+    data_root: Path,
+    expected_source_commit: str,
+    expected_source_tree: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    run_path = _rooted(data_root, str(spec.get("author_smoke_receipt") or ""))
+    bundle_receipt_path = _rooted(
+        data_root, str(spec.get("author_smoke_bundle_receipt") or "")
+    )
+    cleanup_path = _rooted(
+        data_root, str(spec.get("author_smoke_object_cleanup_receipt") or "")
+    )
+    run = _read_json(run_path)
+    bundle_receipt = _read_json(bundle_receipt_path)
+    cleanup = _read_json(cleanup_path)
+    if (
+        run.get("schema_version") != "adp_aura_author_smoke_vast_run.v1"
+        or run.get("status") != "completed"
+        or run.get("blockers") not in ([], None)
+        or run.get("retry_cap") != 0
+        or run.get("continuing_spend_from_this_run") is not False
+        or run.get("all_staged_objects_absent") is not True
+    ):
+        raise PublicSceneSuiteMaterializationError("aura_author_smoke_run_invalid")
+    if (
+        bundle_receipt.get("schema_version")
+        != "adp_aura_author_smoke_provider_bundle.v1"
+        or bundle_receipt.get("status") != "ready"
+        or bundle_receipt.get("blockers") not in ([], None)
+        or bundle_receipt.get("retry_cap") != 0
+        or bundle_receipt.get("source_commit") != expected_source_commit
+        or bundle_receipt.get("source_tree") != expected_source_tree
+    ):
+        raise PublicSceneSuiteMaterializationError("aura_author_smoke_bundle_receipt_invalid")
+    bundle_path = _require_under(
+        Path(str(bundle_receipt.get("bundle_path") or "")), (data_root,)
+    )
+    if (
+        not bundle_path.is_file()
+        or bundle_path.stat().st_size != bundle_receipt.get("bundle_size_bytes")
+        or _sha256_file(bundle_path) != bundle_receipt.get("bundle_sha256")
+        or run.get("bundle_sha256") != bundle_receipt.get("bundle_sha256")
+    ):
+        raise PublicSceneSuiteMaterializationError("aura_author_smoke_bundle_bytes_changed")
+    if (
+        cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("status") != "completed"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("blockers") not in ([], None)
+    ):
+        raise PublicSceneSuiteMaterializationError("aura_author_smoke_object_cleanup_invalid")
+
+    nested_paths = {
+        "execution": _require_under(
+            Path(str(run.get("execution_result_path") or "")), (data_root,)
+        ),
+        "adapter": _require_under(
+            Path(str(run.get("adapter_result_path") or "")), (data_root,)
+        ),
+        "teardown": _require_under(
+            Path(str(run.get("teardown_manifest_path") or "")), (data_root,)
+        ),
+    }
+    execution = _read_json(nested_paths["execution"])
+    adapter = _read_json(nested_paths["adapter"])
+    teardown = _read_json(nested_paths["teardown"])
+    final_validation_path = nested_paths["adapter"].parent / "vast_final_validation.json"
+    final_validation = _read_json(final_validation_path)
+    source_before = execution.get("source_identity_before") or {}
+    source_after = execution.get("source_identity_after") or {}
+    command = execution.get("author_command") or {}
+    hardware = execution.get("hardware_probe") or {}
+    command_argv = command.get("command") or []
+    if (
+        execution.get("schema_version") != "adp_aura_author_smoke_result.v1"
+        or execution.get("status") != "completed"
+        or execution.get("blockers") not in ([], None)
+        or execution.get("source_commit") != expected_source_commit
+        or execution.get("source_tree") != expected_source_tree
+        or source_before.get("matches") is not True
+        or source_before.get("changed_files") not in ([], None)
+        or source_after.get("matches") is not True
+        or source_after.get("changed_files") not in ([], None)
+        or execution.get("author_source_modified") is not False
+        or execution.get("inpaint_init_executed") is not True
+        or execution.get("published_expected_output_bound") is not True
+        or execution.get("depth_anything3_used") is not False
+        or execution.get("retry_cap") != 0
+        or command.get("returncode") != 0
+        or command.get("timed_out") is not False
+        or hardware.get("returncode") != 0
+        or hardware.get("timed_out") is not False
+        or len(command_argv) != 4
+        or not str(command_argv[0]).endswith("/.venv/bin/python")
+        or command_argv[1:] != [
+            "inpaint.py",
+            "--config",
+            "configs/360-USID/sunflower/inpaint.config",
+        ]
+    ):
+        raise PublicSceneSuiteMaterializationError("aura_author_smoke_execution_invalid")
+
+    produced = execution.get("produced_point_cloud") or {}
+    produced_path = _rooted(
+        nested_paths["execution"].parent, str(produced.get("retained_relative_path") or "")
+    )
+    if (
+        not produced_path.is_file()
+        or produced_path.stat().st_size != produced.get("size_bytes")
+        or _sha256_file(produced_path) != produced.get("sha256")
+        or int(produced.get("vertex_count") or 0) <= 0
+    ):
+        raise PublicSceneSuiteMaterializationError("aura_author_smoke_output_bytes_changed")
+    environment = execution.get("python_environment") or {}
+    environment_path = _rooted(
+        nested_paths["execution"].parent, str(environment.get("path") or "")
+    )
+    command_log_path = _rooted(
+        nested_paths["execution"].parent, str(command.get("log") or "")
+    )
+    hardware_log_path = _rooted(
+        nested_paths["execution"].parent, str(hardware.get("log") or "")
+    )
+    if (
+        _sha256_file(environment_path) != environment.get("sha256")
+        or _sha256_file(command_log_path) != command.get("stdout_stderr_sha256")
+        or _sha256_file(hardware_log_path) != hardware.get("stdout_stderr_sha256")
+    ):
+        raise PublicSceneSuiteMaterializationError("aura_author_smoke_runtime_bytes_changed")
+
+    instance_ids = list(adapter.get("vast_instance_ids") or [])
+    if (
+        adapter.get("schema_version") != "vast_provider_adapter_result.v1"
+        or adapter.get("status") != "completed"
+        or adapter.get("reason") != "vast_startup_probe_completed"
+        or adapter.get("blockers") not in ([], None)
+        or adapter.get("continuing_spend_from_this_run") is not False
+        or len(instance_ids) != 1
+        or teardown.get("schema_version") != "vast_teardown_manifest.v1"
+        or teardown.get("status") != "completed"
+        or teardown.get("vast_instance_ids") != instance_ids
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or final_validation.get("schema_version") != "vast_final_validation.v1"
+        or final_validation.get("status") != "passed"
+        or final_validation.get("vast_instance_ids") != instance_ids
+        or final_validation.get("all_vast_instances_destroyed_by_adapter") is not True
+        or final_validation.get("continuing_spend_from_this_run") is not False
+    ):
+        raise PublicSceneSuiteMaterializationError("aura_author_smoke_provider_evidence_invalid")
+
+    paths = {
+        "run_receipt": run_path,
+        "bundle_receipt": bundle_receipt_path,
+        "bundle": bundle_path,
+        "execution_receipt": nested_paths["execution"],
+        "adapter_receipt": nested_paths["adapter"],
+        "teardown_receipt": nested_paths["teardown"],
+        "final_validation": final_validation_path,
+        "object_cleanup": cleanup_path,
+        "produced_point_cloud": produced_path,
+        "python_environment": environment_path,
+        "author_command_log": command_log_path,
+        "hardware_probe_log": hardware_log_path,
+    }
+    artifacts = [
+        _file_record(
+            path,
+            root=data_root,
+            publisher_path=path.relative_to(data_root).as_posix(),
+            role=f"author_smoke_{name}",
+        )
+        for name, path in paths.items()
+    ]
+    return artifacts, {
+        "author_method_executed": True,
+        "author_smoke_receipt_bound": True,
+        "author_source_modified": False,
+        "inpaint_init_executed": True,
+        "produced_point_cloud_sha256": produced["sha256"],
+        "produced_point_cloud_size_bytes": produced["size_bytes"],
+        "produced_point_cloud_vertex_count": produced["vertex_count"],
+        "published_expected_output_bound": True,
+        "provider_instance_ids": instance_ids,
+        "estimated_cost_usd": run.get("estimated_cost_usd"),
+        "provider_zero_proven": True,
+        "object_store_zero_proven": True,
+    }
+
+
 def _method_component(
     *,
     role: str,
@@ -382,6 +573,7 @@ def _method_component(
             )
         )
 
+    smoke_evidence: dict[str, Any] = {}
     smoke_path = spec.get("author_smoke_receipt")
     if not smoke_path:
         blockers.append(str(spec["smallest_blocker"]))
@@ -389,6 +581,14 @@ def _method_component(
         smoke_receipt_path = _rooted(data_root, str(smoke_path))
         if not smoke_receipt_path.is_file():
             blockers.append(str(spec["smallest_blocker"]))
+        elif role == "aurafusion360_quality_challenger":
+            smoke_artifacts, smoke_evidence = _aura_author_smoke_evidence(
+                spec=spec,
+                data_root=data_root,
+                expected_source_commit=expected,
+                expected_source_tree=expected_tree,
+            )
+            source_files.extend(smoke_artifacts)
         else:
             raise PublicSceneSuiteMaterializationError(
                 f"method_author_smoke_receipt_validation_not_implemented:{role}"
@@ -399,6 +599,10 @@ def _method_component(
     author_data_rights = bool(
         prerequisite and prerequisite["methods"][role].get("author_data_rights_established") is True
     )
+    if smoke_evidence and not checkpoint_rights:
+        blockers.append("method_checkpoint_rights_missing")
+    if smoke_evidence and not author_data_rights:
+        blockers.append("method_author_data_rights_missing")
     manifest = {
         "schema_version": COMPONENT_SCHEMA_VERSION,
         "program_id": PROGRAM_ID,
@@ -434,8 +638,9 @@ def _method_component(
             "author_workflow_declarations_hashed": bool(documented_inputs),
             "method_prerequisite_receipt_bound": prerequisite is not None,
             "checkpoint_bytes_verified": checkpoint_rights,
-            "author_method_executed": False,
-            "author_smoke_receipt_bound": False,
+            "author_method_executed": bool(smoke_evidence),
+            "author_smoke_receipt_bound": bool(smoke_evidence),
+            **smoke_evidence,
         },
         "prerequisite_evidence": {
             "local_artifact_count": len(method_prerequisite.get("artifacts") or []),
@@ -445,6 +650,7 @@ def _method_component(
         "claim_boundaries": {
             "method_source_checkout_is_not_execution": True,
             "inpainting_result": False,
+            "author_smoke_is_not_interiorgs_inpainting": True,
             "metric_geometry_qualified": False,
             "physical_evidence": False,
         },
@@ -460,7 +666,7 @@ def _method_component(
             "official_remote_head": remote_head == expected if remote_head else False,
             "submodule_revisions": observed_submodules == dict(sorted(expected_submodules.items())),
             "source_license_and_dependency_files_hashed": True,
-            "unchanged_author_smoke_executed": False,
+            "unchanged_author_smoke_executed": bool(smoke_evidence),
         },
     )
     return manifest, receipt

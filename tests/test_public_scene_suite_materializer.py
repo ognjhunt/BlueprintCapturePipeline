@@ -286,6 +286,198 @@ def _add_method_prerequisite_receipt(paths: dict[str, Path]) -> Path:
     return checkpoint
 
 
+def _add_completed_aura_author_smoke(paths: dict[str, Path]) -> Path:
+    request = json.loads(paths["request"].read_text())
+    method = request["methods"]["aurafusion360_quality_challenger"]
+    prerequisite: dict[str, object] = {
+        "schema_version": "public_scene_method_prerequisite_receipt.v1",
+        "methods": {
+            "aurafusion360_quality_challenger": {
+                "artifacts": [],
+                "rights_authorities": [],
+                "remote_snapshots": [
+                    {
+                        "artifact_id": "author-data",
+                        "category": "author_data",
+                        "rights_established": True,
+                    },
+                    {
+                        "artifact_id": "checkpoint",
+                        "category": "checkpoint",
+                        "rights_established": True,
+                    },
+                ],
+                "checkpoint_rights_established": True,
+                "author_data_rights_established": True,
+            }
+        },
+        "receipt_digest": "",
+    }
+    prerequisite["receipt_digest"] = canonical_digest(
+        prerequisite, digest_field="receipt_digest"
+    )
+    prerequisite_path = paths["data"] / "aura/prerequisite.json"
+    _write_json(prerequisite_path, prerequisite)
+
+    bundle = paths["data"] / "aura/bundle/runtime.zip"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    bundle.write_bytes(b"real-immutable-aura-bundle")
+    bundle_sha = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
+    bundle_receipt = {
+        "schema_version": "adp_aura_author_smoke_provider_bundle.v1",
+        "status": "ready",
+        "blockers": [],
+        "retry_cap": 0,
+        "source_commit": method["commit"],
+        "source_tree": method.get("tree", ""),
+        "bundle_path": str(bundle),
+        "bundle_size_bytes": bundle.stat().st_size,
+        "bundle_sha256": bundle_sha,
+    }
+    bundle_receipt_path = paths["data"] / "aura/bundle/receipt.json"
+    _write_json(bundle_receipt_path, bundle_receipt)
+
+    immutable = paths["data"] / "aura/live/immutable_execution"
+    artifacts = immutable / "artifacts"
+    artifacts.mkdir(parents=True)
+    produced = artifacts / "point_cloud.ply"
+    produced.write_bytes(b"ply\nformat ascii 1.0\nelement vertex 1\nend_header\n0 0 0\n")
+    produced_sha = "sha256:" + hashlib.sha256(produced.read_bytes()).hexdigest()
+    command_log = immutable / "aura-inpaint-init.log"
+    command_log.write_text("author command completed", encoding="utf-8")
+    hardware_log = immutable / "nvidia-smi.log"
+    hardware_log.write_text("RTX 4090", encoding="utf-8")
+    freeze = immutable / "pip-freeze.txt"
+    freeze.write_text("torch==2.5.1+cu124\n", encoding="utf-8")
+    execution = {
+        "schema_version": "adp_aura_author_smoke_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "source_commit": method["commit"],
+        "source_tree": method.get("tree", ""),
+        "source_identity_before": {"matches": True, "changed_files": []},
+        "source_identity_after": {"matches": True, "changed_files": []},
+        "author_source_modified": False,
+        "author_command": {
+            "command": [
+                "/worker/AuraFusion360_official/.venv/bin/python",
+                "inpaint.py",
+                "--config",
+                "configs/360-USID/sunflower/inpaint.config",
+            ],
+            "returncode": 0,
+            "timed_out": False,
+            "runtime_seconds": 12.5,
+            "stdout_stderr_sha256": "sha256:"
+            + hashlib.sha256(command_log.read_bytes()).hexdigest(),
+            "log": command_log.name,
+        },
+        "hardware_probe": {
+            "returncode": 0,
+            "timed_out": False,
+            "runtime_seconds": 0.1,
+            "stdout_stderr_sha256": "sha256:"
+            + hashlib.sha256(hardware_log.read_bytes()).hexdigest(),
+            "log": hardware_log.name,
+        },
+        "inpaint_init_executed": True,
+        "published_expected_output_bound": True,
+        "produced_point_cloud": {
+            "size_bytes": produced.stat().st_size,
+            "sha256": produced_sha,
+            "vertex_count": 1,
+            "retained_relative_path": "artifacts/point_cloud.ply",
+        },
+        "python_environment": {
+            "path": freeze.name,
+            "sha256": "sha256:" + hashlib.sha256(freeze.read_bytes()).hexdigest(),
+        },
+        "depth_anything3_used": False,
+        "retry_cap": 0,
+    }
+    execution_path = immutable / "adp_aura_author_smoke_result.json"
+    _write_json(execution_path, execution)
+
+    provider = paths["data"] / "aura/live/vast_provider_run"
+    provider.mkdir(parents=True)
+    instance_ids = [12345]
+    adapter_path = provider / "vast_provider_adapter_result.json"
+    _write_json(
+        adapter_path,
+        {
+            "schema_version": "vast_provider_adapter_result.v1",
+            "status": "completed",
+            "reason": "vast_startup_probe_completed",
+            "blockers": [],
+            "vast_instance_ids": instance_ids,
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    teardown_path = provider / "vast_teardown_manifest.json"
+    _write_json(
+        teardown_path,
+        {
+            "schema_version": "vast_teardown_manifest.v1",
+            "status": "completed",
+            "vast_instance_ids": instance_ids,
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    _write_json(
+        provider / "vast_final_validation.json",
+        {
+            "schema_version": "vast_final_validation.v1",
+            "status": "passed",
+            "vast_instance_ids": instance_ids,
+            "all_vast_instances_destroyed_by_adapter": True,
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    cleanup_path = paths["data"] / "aura/live/object_store_staging/cleanup.json"
+    _write_json(
+        cleanup_path,
+        {
+            "schema_version": "wam_provider_object_store_cleanup.v1",
+            "status": "completed",
+            "all_objects_absent": True,
+            "blockers": [],
+        },
+    )
+    run_path = paths["data"] / "aura/live/adp_aura_author_smoke_vast_result.json"
+    _write_json(
+        run_path,
+        {
+            "schema_version": "adp_aura_author_smoke_vast_run.v1",
+            "status": "completed",
+            "blockers": [],
+            "retry_cap": 0,
+            "bundle_sha256": bundle_sha,
+            "execution_result_path": str(execution_path),
+            "adapter_result_path": str(adapter_path),
+            "teardown_manifest_path": str(teardown_path),
+            "estimated_cost_usd": 0.1,
+            "continuing_spend_from_this_run": False,
+            "all_staged_objects_absent": True,
+        },
+    )
+    method.update(
+        {
+            "prerequisite_receipt": prerequisite_path.relative_to(
+                paths["data"]
+            ).as_posix(),
+            "author_smoke_receipt": run_path.relative_to(paths["data"]).as_posix(),
+            "author_smoke_bundle_receipt": bundle_receipt_path.relative_to(
+                paths["data"]
+            ).as_posix(),
+            "author_smoke_object_cleanup_receipt": cleanup_path.relative_to(
+                paths["data"]
+            ).as_posix(),
+        }
+    )
+    _write_json(paths["request"], request)
+    return produced
+
+
 def _add_statically_validated_simready_control(paths: dict[str, Path]) -> Path:
     asset = paths["repo"] / "assets" / "control.usda"
     asset.parent.mkdir(parents=True, exist_ok=True)
@@ -651,6 +843,60 @@ def test_method_prerequisite_rejects_changed_checkpoint_bytes(
     with pytest.raises(
         PublicSceneSuiteMaterializationError,
         match="method_prerequisite_artifact_bytes_changed:inpaint360_author_smoke",
+    ):
+        _run(paths)
+
+
+def test_aura_author_smoke_is_admitted_only_from_executed_digest_bound_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_completed_aura_author_smoke(paths)
+
+    result = _run(paths)
+
+    manifest = json.loads(
+        (paths["output"] / "aurafusion360_quality_challenger.component_manifest.json").read_text()
+    )
+    receipt = json.loads(
+        (paths["output"] / "aurafusion360_quality_challenger.component_receipt.json").read_text()
+    )
+    assert result["admitted_role_count"] == 3
+    assert manifest["observed_evidence"]["author_method_executed"] is True
+    assert manifest["observed_evidence"]["inpaint_init_executed"] is True
+    assert manifest["observed_evidence"]["provider_zero_proven"] is True
+    assert manifest["rights"]["author_data_rights_established"] is True
+    assert receipt["status"] == "admitted"
+    assert receipt["blockers"] == []
+
+
+def test_aura_author_smoke_rejects_mutated_produced_point_cloud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    produced = _add_completed_aura_author_smoke(paths)
+    produced.write_bytes(produced.read_bytes() + b"mutated")
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="aura_author_smoke_output_bytes_changed",
+    ):
+        _run(paths)
+
+
+def test_aura_author_smoke_rejects_success_flag_without_provider_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_completed_aura_author_smoke(paths)
+    teardown_path = paths["data"] / "aura/live/vast_provider_run/vast_teardown_manifest.json"
+    teardown = json.loads(teardown_path.read_text())
+    teardown["continuing_spend_from_this_run"] = True
+    _write_json(teardown_path, teardown)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="aura_author_smoke_provider_evidence_invalid",
     ):
         _run(paths)
 
