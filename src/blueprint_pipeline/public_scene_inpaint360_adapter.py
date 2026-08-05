@@ -205,11 +205,17 @@ def materialize_inpaint360_adapter(
     data_root: str | Path,
     method_root: str | Path,
     output_root: str | Path,
+    receipt_output: str | Path | None = None,
 ) -> dict[str, Any]:
     repo = Path(repo_root).expanduser().resolve()
     data = Path(data_root).expanduser().resolve()
     input_dir = _under(input_root, data, "inpaint360_input_root_outside_data")
     output = _under(output_root, data, "inpaint360_output_root_outside_data")
+    retained_receipt = (
+        _under(receipt_output, repo, "inpaint360_receipt_output_outside_repo")
+        if receipt_output is not None
+        else None
+    )
     receipt_path = _under(input_receipt_path, repo, "inpaint360_input_receipt_outside_repo")
     receipt = _read_object(receipt_path, "inpaint360_input_receipt_invalid")
     if canonical_digest(receipt, digest_field="receipt_digest") != receipt.get("receipt_digest"):
@@ -361,6 +367,9 @@ def materialize_inpaint360_adapter(
     )
     receipt_out = output / "adp009b_inpaint360_adapter_receipt.v1.json"
     receipt_out.write_text(canonical_json(adapter_receipt) + "\n", encoding="utf-8")
+    if retained_receipt is not None:
+        retained_receipt.parent.mkdir(parents=True, exist_ok=True)
+        retained_receipt.write_text(canonical_json(adapter_receipt) + "\n", encoding="utf-8")
     return adapter_receipt
 
 
@@ -372,6 +381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--method-root", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--receipt-output")
     args = parser.parse_args(argv)
     receipt = materialize_inpaint360_adapter(
         input_receipt_path=args.input_receipt,
@@ -380,6 +390,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         data_root=args.data_root,
         method_root=args.method_root,
         output_root=args.output_root,
+        receipt_output=args.receipt_output,
     )
     print(canonical_json({"status": receipt["status"], "receipt_digest": receipt["receipt_digest"]}))
     return 0

@@ -126,6 +126,7 @@ def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
         input_receipt_path=paths["receipt"], input_root=paths["input"],
         repo_root=paths["repo"], data_root=paths["data"], method_root=paths["method"],
         output_root=paths["data"] / "adapter",
+        receipt_output=paths["repo"] / "retained" / "adapter_receipt.json",
     )
     output = paths["data"] / "adapter"
     assert receipt["status"] == "prepared_unexecuted"
@@ -163,6 +164,7 @@ def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
     assert (output / "vanilla_3dgs" / "point_cloud" / "iteration_30000" / "point_cloud.ply").is_file()
     assert (output / "vanilla_3dgs" / "cfg_args").read_text() == "Namespace()\n"
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
+    assert json.loads((paths["repo"] / "retained" / "adapter_receipt.json").read_text()) == receipt
 
 
 def test_adapter_rejects_mutated_frame(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
