@@ -446,6 +446,7 @@ def run_inpaint360_interiorgs_vast(
     hard_ttl_seconds: int = 14_400,
     public_image: str = DEFAULT_IMAGE,
     machine_avoidlist_path: str | Path | None = None,
+    allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Run one immutable InteriorGS edit with no automatic retry."""
 
@@ -551,6 +552,7 @@ def run_inpaint360_interiorgs_vast(
                 prefer_isaac_rt=False,
                 gpu_selection_policy=INPAINT360_GPU_SELECTION_POLICY,
                 machine_avoidlist_path=machine_avoidlist_path,
+                allowed_active_instance_ids=allowed_active_instance_ids,
                 instance_label_prefix="blueprint-adp-inpaint360-interiorgs-",
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
