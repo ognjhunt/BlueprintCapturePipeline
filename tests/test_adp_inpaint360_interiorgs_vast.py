@@ -712,6 +712,6 @@ def test_live_runner_requires_observed_rasterizer_architecture_floor() -> None:
 
 def test_live_runner_bounds_provider_startup_without_reducing_scientific_ttl() -> None:
     assert runtime.PROVIDER_STARTUP_TIMEOUT_SECONDS == 600
-    assert runtime.PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS == 600
+    assert runtime.PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS == 1800
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     assert "startup_timeout_seconds=min(" in source
