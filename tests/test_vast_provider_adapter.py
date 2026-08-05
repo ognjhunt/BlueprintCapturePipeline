@@ -6545,6 +6545,7 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     wam_bundle = tmp_path / "wam.zip"
     _write_valid_wam_provider_bundle(wam_bundle)
     mutation_order: list[str] = []
+    drop_bundle_after_preflight = {"enabled": True}
 
     def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
         assert kwargs["api_key"] == secret
@@ -6577,6 +6578,8 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
 
     def consume_authorization() -> dict[str, object]:
         mutation_order.append("authorization_consumed")
+        if drop_bundle_after_preflight["enabled"]:
+            wam_bundle.unlink()
         return {"status": "consumed", "blockers": []}
 
     original_write_json = vpa.write_json
@@ -6625,6 +6628,9 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     assert mutation_order.index("offer_search") < mutation_order.index("authorization_consumed")
     assert mutation_order.index("authorization_consumed") < mutation_order.index("provider_create")
     assert wam["pre_provider_mutation_hook_result"]["status"] == "consumed"
+    assert "provider_runtime_bundle_missing" not in _read_json(
+        tmp_path / "wam-live" / "vast_provider_command_result.json"
+    )["blockers"]
     assert (
         _read_json(tmp_path / "wam-live" / "vast_isaac_smoke_result.json")["status"]
         == "not_required"
@@ -6635,6 +6641,8 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
         "record_terminal_lifecycle",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("journal write failed")),
     )
+    _write_valid_wam_provider_bundle(wam_bundle)
+    drop_bundle_after_preflight["enabled"] = False
     delete_count_before = mutation_order.count("provider_delete")
     lifecycle_failed = run_vast_provider_adapter(
         job_dir=tmp_path / "wam-lifecycle-failed",

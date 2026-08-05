@@ -96,6 +96,41 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     monkeypatch.setattr(runtime, "SOURCE_COMMIT", commit)
     monkeypatch.setattr(runtime, "SOURCE_TREE", tree)
     monkeypatch.setattr(runtime, "SOURCE_LICENSE_SHA256", runtime._sha256(license_path))
+    lama_source = tmp_path / "LaMa-upstream"
+    lama_source.mkdir()
+    subprocess.run(["git", "init", "-q", str(lama_source)], check=True)
+    subprocess.run(
+        ["git", "-C", str(lama_source), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(lama_source), "config", "user.name", "Test"], check=True
+    )
+    lama_license = lama_source / "LICENSE"
+    lama_license.write_text("Apache fixture", encoding="utf-8")
+    for relative in runtime.LAMA_REQUIRED_RUNTIME_FILES:
+        path = lama_source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {relative}\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(lama_source), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(lama_source), "commit", "-qm", "fixture"], check=True)
+    lama_commit = subprocess.run(
+        ["git", "-C", str(lama_source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    lama_tree = subprocess.run(
+        ["git", "-C", str(lama_source), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(runtime, "LAMA_SOURCE_COMMIT", lama_commit)
+    monkeypatch.setattr(runtime, "LAMA_SOURCE_TREE", lama_tree)
+    monkeypatch.setattr(
+        runtime, "LAMA_SOURCE_LICENSE_SHA256", runtime._sha256(lama_license)
+    )
     packet = tmp_path / "adapter"
     required = {
         "config/distill.json": b"{}\n",
@@ -163,6 +198,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     return {
         "repo": repo,
         "source": source,
+        "lama_source": lama_source,
         "packet": packet,
         "adapter_receipt": adapter_receipt_path,
         "prerequisite": prerequisite_path,
@@ -175,6 +211,7 @@ def _build(paths: dict[str, Path]) -> dict[str, object]:
     return runtime.build_inpaint360_interiorgs_bundle(
         repo_root=paths["repo"],
         inpaint360_root=paths["source"],
+        lama_root=paths["lama_source"],
         adapter_root=paths["packet"],
         adapter_receipt_path=paths["adapter_receipt"],
         prerequisite_receipt_path=paths["prerequisite"],
@@ -205,17 +242,25 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
     )
     assert spec["runtime"]["method_resolution_argument"] == 2
     assert spec["runtime"]["method_input_resolution"] == "1024x768"
+    assert spec["nested_dependencies"]["lama"]["commit"]
+    assert spec["nested_dependencies"]["lama"]["tree"]
+    assert spec["nested_dependencies"]["lama"]["materialization"] == (
+        "add_missing_publisher_runtime_modules_without_overwrite"
+    )
+    assert spec["runtime"]["source_modifications"] == []
+    assert spec["runtime"]["source_materialization_additions"] == list(
+        runtime.LAMA_REQUIRED_RUNTIME_FILES
+    )
     entrypoint = (
         runtime_root / "run_adp_inpaint360_interiorgs_provider_runtime.sh"
     ).read_text(encoding="utf-8")
     assert 'pip uninstall --python "${LAMA_PY}" opencv-python' in entrypoint
-    assert (
-        'pip install --python "${LAMA_PY}" --reinstall '
-        "opencv-python-headless==4.5.5.64"
-    ) in entrypoint
+    assert 'pip install --python "${LAMA_PY}" --reinstall --no-deps \\' in entrypoint
+    assert "opencv-python-headless==4.5.5.64" in entrypoint
     assert "inpaint360_lama_opencv_conflict_resolution_failed" in entrypoint
     assert "inpaint360_lama_opencv_runtime_validation_failed" in entrypoint
     assert 'metadata.version("opencv-python-headless") == "4.5.5.64"' in entrypoint
+    assert 'numpy.__version__ == "1.21.6"' in entrypoint
     with tarfile.open(runtime_root / "inpaint360gs_source.tar") as archive:
         link = archive.getmember("docs/link.md")
         assert link.issym()
@@ -224,6 +269,7 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
         names = set(archive.namelist())
     assert "provider_runtime/execution_spec.json" in names
     assert "provider_runtime/big-lama.zip" in names
+    assert "provider_runtime/lama_training_data.zip" in names
     assert "provider_runtime/probe_inpaint360_camera_rasterizer.py" in names
 
 
@@ -270,6 +316,17 @@ def test_bundle_rejects_mutated_adapter_artifact(
     paths = _fixture(tmp_path, monkeypatch)
     (paths["packet"] / "config/distill.json").write_text("changed", encoding="utf-8")
     with pytest.raises(ValueError, match="adapter_artifact_changed"):
+        _build(paths)
+
+
+def test_bundle_rejects_mutated_lama_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    (paths["lama_source"] / runtime.LAMA_REQUIRED_RUNTIME_FILES[0]).write_text(
+        "changed", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="lama_dependency_identity_mismatch"):
         _build(paths)
 
 
@@ -643,6 +700,16 @@ def test_canonical_allocator_issues_inpaint360_grant_only_for_execute(
         allocator,
         "ADP_INPAINT360_SOURCE_TREE",
         receipt["source_tree"],
+    )
+    monkeypatch.setattr(
+        allocator,
+        "ADP_INPAINT360_LAMA_SOURCE_COMMIT",
+        receipt["lama_source_commit"],
+    )
+    monkeypatch.setattr(
+        allocator,
+        "ADP_INPAINT360_LAMA_SOURCE_TREE",
+        receipt["lama_source_tree"],
     )
     monkeypatch.setattr(
         allocator,

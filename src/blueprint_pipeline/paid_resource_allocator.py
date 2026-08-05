@@ -145,6 +145,8 @@ from .adp_aura_interiorgs_vast import (
 )
 from .adp_inpaint360_interiorgs_vast import (
     DEFAULT_IMAGE as ADP_INPAINT360_INTERIORGS_IMAGE,
+    LAMA_SOURCE_COMMIT as ADP_INPAINT360_LAMA_SOURCE_COMMIT,
+    LAMA_SOURCE_TREE as ADP_INPAINT360_LAMA_SOURCE_TREE,
     PREREQUISITE_RECEIPT_DIGEST as ADP_INPAINT360_PREREQUISITE_RECEIPT_DIGEST,
     PROBE_KIND as ADP_INPAINT360_INTERIORGS_PROBE_KIND,
     SOURCE_COMMIT as ADP_INPAINT360_SOURCE_COMMIT,
@@ -1346,6 +1348,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prepared_bundle.get("status") != "ready"
                     or prepared_bundle.get("source_commit") != ADP_INPAINT360_SOURCE_COMMIT
                     or prepared_bundle.get("source_tree") != ADP_INPAINT360_SOURCE_TREE
+                    or prepared_bundle.get("lama_source_commit")
+                    != ADP_INPAINT360_LAMA_SOURCE_COMMIT
+                    or prepared_bundle.get("lama_source_tree")
+                    != ADP_INPAINT360_LAMA_SOURCE_TREE
                     or prepared_bundle.get("prerequisite_receipt_digest")
                     != ADP_INPAINT360_PREREQUISITE_RECEIPT_DIGEST
                     or prepared_bundle.get("container_image") != ADP_INPAINT360_INTERIORGS_IMAGE
@@ -1398,6 +1404,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "inpaint360_source_commit": ADP_INPAINT360_SOURCE_COMMIT,
                 "inpaint360_source_tree": ADP_INPAINT360_SOURCE_TREE,
+                "lama_source_commit": ADP_INPAINT360_LAMA_SOURCE_COMMIT,
+                "lama_source_tree": ADP_INPAINT360_LAMA_SOURCE_TREE,
                 "prerequisite_receipt_digest": ADP_INPAINT360_PREREQUISITE_RECEIPT_DIGEST,
                 "adapter_receipt_digest": (
                     prepared_bundle.get("adapter_receipt_digest") if prepared_bundle else None

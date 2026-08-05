@@ -6289,12 +6289,11 @@ def run_vast_provider_adapter(
             and not enable_isaac_smoke
         ):
             provider_blockers.append("blueprint_bundle_execution_requires_isaac_smoke_path")
-        if not bundle_path or not bundle_path.is_file():
-            provider_blockers.append(
-                "isaac_provider_runtime_bundle_missing"
-                if _is_isaac_provider_bundle(provider_bundle_kind)
-                else "provider_runtime_bundle_missing"
-            )
+        # Bundle presence and integrity were already checked before allocation by
+        # ``bundle_preflight``.  Once the exact bytes are staged and the remote
+        # entrypoint has run, local retention is not required to collect its
+        # uploaded output.  Rechecking this mutable path here can discard a valid
+        # terminal receipt after an operator safely reclaims a staged duplicate.
         if enable_blueprint_bundle and not _string(provider_bundle_url):
             provider_blockers.append("provider_bundle_fetch_url_missing")
         if enable_blueprint_bundle and not _string(provider_output_put_url):

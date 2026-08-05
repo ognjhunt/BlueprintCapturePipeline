@@ -111,6 +111,26 @@ def _packet_identity(packet: Path, spec: dict[str, Any]) -> dict[str, Any]:
     return {"matches": not changed, "changed_files": changed[:100]}
 
 
+def _nested_dependency_identity(source: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    changed: list[str] = []
+    dependency = spec["nested_dependencies"]["lama"]
+    for record in dependency["files"]:
+        path = source / "LaMa" / str(record["path"])
+        if (
+            not path.is_file()
+            or path.stat().st_size != record["size_bytes"]
+            or _sha256(path) != record["sha256"]
+        ):
+            changed.append(str(record["path"]))
+    return {
+        "repository": dependency["repository"],
+        "commit": dependency["commit"],
+        "tree": dependency["tree"],
+        "matches": not changed,
+        "changed_files": changed[:100],
+    }
+
+
 def _artifact(path: Path, output: Path) -> dict[str, Any] | None:
     if not path.is_file() or path.stat().st_size == 0:
         return None
@@ -390,6 +410,7 @@ def main() -> int:
     main_python = str(source / ".venv/bin/python")
     lama_python = str(source / "LaMa/.venv/bin/python")
     source_before = _source_identity(source, spec)
+    dependency_before = _nested_dependency_identity(source, spec)
     packet_before = _packet_identity(packet, spec)
     hardware = _run(["nvidia-smi", "-q"], cwd=source, log_path=output / "nvidia-smi.log")
     main_env = _prepend_pythonpath(dict(os.environ), source)
@@ -687,6 +708,7 @@ def main() -> int:
     final_video = model / "video/ours__object_inpaint_virtual/iteration_5000/final_video.mp4"
     final_render_dir = final_video.parent
     source_after = _source_identity(source, spec)
+    dependency_after = _nested_dependency_identity(source, spec)
     blockers: list[str] = []
     required = ["method_resolution_contract", "pre_registered_mask_binding"]
     for stage, _, _, _ in commands:
@@ -701,6 +723,8 @@ def main() -> int:
         blockers.append("inpaint360_nvidia_hardware_probe_failed")
     if not source_before["matches"] or not source_after["matches"]:
         blockers.append("inpaint360_author_source_modified")
+    if not dependency_before["matches"] or not dependency_after["matches"]:
+        blockers.append("inpaint360_lama_dependency_changed")
     if not packet_before["matches"]:
         blockers.append("inpaint360_adapter_input_changed_before_execution")
     if not final_ply.is_file() or final_ply.stat().st_size == 0:
@@ -728,6 +752,8 @@ def main() -> int:
         "source_identity_before": source_before,
         "source_identity_after": source_after,
         "source_modified": not source_after["matches"],
+        "nested_dependency_identity_before": dependency_before,
+        "nested_dependency_identity_after": dependency_after,
         "adapter_identity_before": packet_before,
         "hardware_probe": hardware,
         "workflow": workflow,
