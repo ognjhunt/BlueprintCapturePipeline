@@ -437,6 +437,7 @@ def test_provider_runner_requires_method_resolution_on_image_loading_stages(
     env: dict[str, str] = {}
     stages = (
         "distillation",
+        "baseline_render",
         "removal",
         "virtual_views",
         "lama_prepare",
@@ -461,6 +462,51 @@ def test_provider_runner_requires_method_resolution_on_image_loading_stages(
     )
     assert blocked["status"] == "blocked"
     assert blocked["violating_or_missing_stages"] == ["distillation"]
+
+
+def test_provider_runner_requires_one_baseline_depth_per_frozen_camera(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    source = tmp_path / "source"
+    model = tmp_path / "model"
+    images = source / "images"
+    train_depth = model / "train/ours_2000/depth"
+    test_depth = model / "test/ours_2000/depth"
+    images.mkdir(parents=True)
+    train_depth.mkdir(parents=True)
+    test_depth.mkdir(parents=True)
+    for name in ("view_a", "view_b"):
+        (images / f"{name}.png").write_bytes(b"image")
+    (train_depth / "view_a.npy").write_bytes(b"depth-a")
+    (test_depth / "view_b.npy").write_bytes(b"depth-b")
+
+    accepted = runner._validate_baseline_depth_inventory(
+        source_data=source, model=model, iteration=2000, output=tmp_path / "output"
+    )
+    assert accepted["status"] == "accepted"
+    assert accepted["observed_camera_splits"] == {
+        "view_a": ["train"],
+        "view_b": ["test"],
+    }
+
+    (test_depth / "view_b.npy").unlink()
+    blocked = runner._validate_baseline_depth_inventory(
+        source_data=source, model=model, iteration=2000, output=tmp_path / "output"
+    )
+    assert blocked["status"] == "blocked"
+    assert blocked["missing_camera_names"] == ["view_b"]
+    assert blocked["blockers"] == ["inpaint360_baseline_depth_inventory_invalid"]
+
+
+def test_provider_runner_runs_author_baseline_render_before_removal() -> None:
+    runner_path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/adp_inpaint360_interiorgs_provider_runner.py"
+    )
+    source = runner_path.read_text(encoding="utf-8")
+    assert source.index('"baseline_render"') < source.index('"removal"')
+    assert source.count('"render.py"') == 1
 
 
 def test_provider_runner_derives_divisor_2_mask_without_mutating_source(
