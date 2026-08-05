@@ -668,6 +668,120 @@ def test_supplemental_fusion_view_is_frozen_from_pre_inpainting_mask_coverage(
     assert receipt["selection_timing"] == "before_lama_color_depth_inpainting"
 
 
+def test_nonempty_virtual_views_are_frozen_before_inpainting_and_filter_adapter_is_bound(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    handoff = {
+        "output_masks": [
+            {
+                "relative_path": "masks/00000.png",
+                "foreground_pixels": 430,
+                "foreground_bbox_width": 20,
+                "foreground_bbox_height": 24,
+                "sha256": "a",
+            },
+            {
+                "relative_path": "masks/00001.png",
+                "foreground_pixels": 0,
+                "foreground_bbox_width": 0,
+                "foreground_bbox_height": 0,
+                "sha256": "b",
+            },
+            {
+                "relative_path": "masks/00002.png",
+                "foreground_pixels": 22,
+                "foreground_bbox_width": 4,
+                "foreground_bbox_height": 6,
+                "sha256": "c",
+            },
+        ]
+    }
+    selection = runner._freeze_nonempty_virtual_views(
+        handoff=handoff, output=tmp_path / "evidence"
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    publisher = source / "edit_object_inpaint.py"
+    publisher.write_text(
+        "def run():\n"
+        "    virtual_pose_list = []\n"
+        "    for view_tmp in []:\n"
+        "        virtual_pose_list.append(view_tmp)\n\n"
+        "    # 2. inpaint selected object\n"
+        "    return virtual_pose_list\n",
+        encoding="utf-8",
+    )
+    publisher_before = publisher.read_bytes()
+
+    receipt = runner._materialize_nonempty_virtual_view_adapter(
+        source=source,
+        runtime=tmp_path / "runtime",
+        selection=selection,
+        output=tmp_path / "evidence",
+    )
+
+    assert selection["status"] == "accepted"
+    assert selection["selected_count"] == 2
+    assert selection["empty_view_count"] == 1
+    assert selection["bbox_ineligible_view_count"] == 0
+    assert selection["excluded_view_count"] == 1
+    assert [row["view_id"] for row in selection["selected_views"]] == ["00000", "00002"]
+    assert receipt["status"] == "accepted"
+    assert receipt["selected_view_ids"] == ["00000", "00002"]
+    assert receipt["publisher_source_files_modified"] is False
+    assert receipt["mask_pixels_or_images_modified"] is False
+    assert receipt["unchanged_source_execution_claimed"] is False
+    assert publisher.read_bytes() == publisher_before
+    adapted = (tmp_path / "runtime/adapted_edit_object_inpaint.py").read_text()
+    assert 'set(["00000","00002"])' in adapted
+    assert "if view_tmp.image_name in blueprint_nonempty_view_ids" in adapted
+    compile(adapted, "adapted_edit_object_inpaint.py", "exec")
+
+
+def test_nonempty_virtual_view_adapter_rejects_empty_selection_and_source_drift(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    blocked_selection = runner._freeze_nonempty_virtual_views(
+        handoff={
+            "output_masks": [
+                {
+                    "relative_path": "00000.png",
+                    "foreground_pixels": 0,
+                    "foreground_bbox_width": 0,
+                    "foreground_bbox_height": 0,
+                },
+                {
+                    "relative_path": "00001.png",
+                    "foreground_pixels": 1,
+                    "foreground_bbox_width": 1,
+                    "foreground_bbox_height": 1,
+                }
+            ]
+        },
+        output=tmp_path / "empty",
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "edit_object_inpaint.py").write_text("publisher anchor changed\n")
+
+    receipt = runner._materialize_nonempty_virtual_view_adapter(
+        source=source,
+        runtime=tmp_path / "runtime",
+        selection=blocked_selection,
+        output=tmp_path / "evidence",
+    )
+
+    assert blocked_selection["status"] == "blocked"
+    assert blocked_selection["empty_view_count"] == 1
+    assert blocked_selection["bbox_ineligible_view_count"] == 1
+    assert receipt["status"] == "blocked"
+    assert "inpaint360_nonempty_virtual_view_selection_not_accepted" in receipt["blockers"]
+    assert "inpaint360_nonempty_virtual_view_adapter_anchor_changed" in receipt["blockers"]
+    assert not (tmp_path / "runtime/adapted_edit_object_inpaint.py").exists()
+
+
 def test_supplemental_fusion_view_materialization_rejects_empty_and_binds_selected(
     tmp_path: Path,
 ) -> None:

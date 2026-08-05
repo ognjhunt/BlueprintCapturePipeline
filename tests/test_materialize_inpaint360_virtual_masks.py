@@ -40,6 +40,9 @@ def test_materializes_exact_binary_masks_and_receipt(tmp_path: Path) -> None:
     assert receipt["view_count"] == 3
     assert receipt["handoff_kind"] == "binary_target_mask_without_interactive_refinement"
     assert all(row["foreground_pixels"] == 6 for row in receipt["output_masks"])
+    assert all(row["foreground_bbox_xyxy"] == [3, 2, 5, 3] for row in receipt["output_masks"])
+    assert all(row["foreground_bbox_width"] == 3 for row in receipt["output_masks"])
+    assert all(row["foreground_bbox_height"] == 2 for row in receipt["output_masks"])
     observed = np.asarray(Image.open(output / "00000.png"))
     assert set(np.unique(observed)) == {0, 255}
     assert int(np.count_nonzero(observed)) == 6
@@ -79,6 +82,9 @@ def test_retains_and_records_valid_zero_target_view(tmp_path: Path) -> None:
 
     assert receipt["target_positive_view_count"] == 1
     assert receipt["target_absent_view_names"] == ["00001.png"]
+    assert receipt["output_masks"][1]["foreground_bbox_xyxy"] is None
+    assert receipt["output_masks"][1]["foreground_bbox_width"] == 0
+    assert receipt["output_masks"][1]["foreground_bbox_height"] == 0
     assert np.count_nonzero(np.asarray(Image.open(tmp_path / "output/00001.png"))) == 0
 
 
