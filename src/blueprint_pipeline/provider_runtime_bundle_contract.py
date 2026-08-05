@@ -18,6 +18,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_arena",
     "adp_content_agents",
     "adp_aura_smoke",
+    "adp_aura_interiorgs",
     "adp_inpaint360_interiorgs",
 )
 
@@ -177,6 +178,26 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp_aura_smoke_runtime_contract"
+    elif provider_bundle_kind == "adp_aura_interiorgs":
+        entrypoint_valid = (
+            "adp_aura_interiorgs_runner_failed_without_runtime_result" in entrypoint_text
+            and "blocked_adp_aura_interiorgs_process_exited_without_result" in entrypoint_text
+            and "torch==2.5.1" in entrypoint_text
+            and "torch==1.8.0" in entrypoint_text
+            and "--no-build-isolation" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp_aura_interiorgs_result.json",
+                "reference_generation_executed",
+                "inpaint_finetune_executed",
+                "source_modified",
+                "hidden_background_truth_available",
+                "visual_candidate_only",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp_aura_interiorgs_runtime_contract"
     elif provider_bundle_kind == "adp_inpaint360_interiorgs":
         entrypoint_valid = (
             "adp_inpaint360_runner_failed_without_runtime_result" in entrypoint_text
