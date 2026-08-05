@@ -4,6 +4,7 @@ import json
 import importlib.util
 import os
 import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -298,6 +299,35 @@ def test_provider_runner_validates_target_identity_and_retains_hd_review_frames(
     assert frames[0]["rgb"]["width"] == 8
     assert frames[0]["rgb"]["height"] == 6
     assert frames[0]["rgb_and_mask"]["width"] == 16
+
+
+def test_provider_runner_prefers_method_local_tools_over_installed_package(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    source = tmp_path / "Inpaint360GS"
+    script_dir = source / "seg"
+    method_tools = source / "tools"
+    installed = tmp_path / "site-packages"
+    installed_tools = installed / "tools"
+    script_dir.mkdir(parents=True)
+    method_tools.mkdir()
+    installed_tools.mkdir(parents=True)
+    (method_tools / "__init__.py").write_text("IDENTITY = 'method'\n", encoding="utf-8")
+    (installed_tools / "__init__.py").write_text("IDENTITY = 'installed'\n", encoding="utf-8")
+
+    env = runner._prepend_pythonpath({"PYTHONPATH": str(installed)}, source)
+    completed = subprocess.run(
+        [sys.executable, "-c", "import tools; print(tools.IDENTITY)"],
+        cwd=script_dir,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.strip() == "method"
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(source.resolve()), str(installed)]
 
 
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:
