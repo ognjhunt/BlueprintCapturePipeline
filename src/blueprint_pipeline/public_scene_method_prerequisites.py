@@ -416,6 +416,27 @@ def _hf_remote_snapshot(spec: Mapping[str, Any]) -> dict[str, Any]:
         raise PublicSceneMethodPrerequisiteError(
             f"hf_remote_snapshot_digest_changed:{artifact_id}"
         )
+    single_file_identity: dict[str, Any] | None = None
+    expected_single = spec.get("expected_single_file_identity")
+    if expected_single is not None:
+        if not isinstance(expected_single, Mapping) or file_count != 1:
+            raise PublicSceneMethodPrerequisiteError(
+                f"hf_remote_snapshot_single_file_identity_invalid:{artifact_id}"
+            )
+        observed_file = files[0]
+        raw_lfs_sha256 = observed_file.get("lfs_sha256")
+        single_file_identity = {
+            "path": observed_file["path"],
+            "size_bytes": observed_file["size_bytes"],
+            "lfs_sha256": (
+                "sha256:" + str(raw_lfs_sha256) if raw_lfs_sha256 else None
+            ),
+            "git_blob_id": observed_file.get("git_blob_id"),
+        }
+        if single_file_identity != dict(expected_single):
+            raise PublicSceneMethodPrerequisiteError(
+                f"hf_remote_snapshot_single_file_identity_changed:{artifact_id}"
+            )
     raw_license = str((info.get("cardData") or {}).get("license") or "")
     license_id = _HF_LICENSE_IDS.get(raw_license.lower())
     expected_license = str(spec.get("expected_license_id") or "")
@@ -437,6 +458,7 @@ def _hf_remote_snapshot(spec: Mapping[str, Any]) -> dict[str, Any]:
             "file_count": file_count,
             "total_size_bytes": total_size,
             "snapshot_digest": snapshot_digest,
+            "single_file_identity": single_file_identity,
             "gated": info.get("gated", False),
             "private": bool(info.get("private")),
             "card_license": raw_license or None,

@@ -106,6 +106,17 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
             "aurafusion360_sd2_inpainting_exact_checkpoint",
         )
     ]
+    snapshots[-1]["publisher"] = {
+        "repository": aura._SD2["repository"],
+        "revision": aura._SD2["revision"],
+        "path_prefix": aura._SD2["path"],
+        "single_file_identity": {
+            "path": aura._SD2["path"],
+            "size_bytes": 5_214_921_607,
+            "lfs_sha256": "sha256:" + "a" * 64,
+            "git_blob_id": "b" * 40,
+        },
+    }
     receipt: dict[str, object] = {
         "methods": {
             "aurafusion360_quality_challenger": {
@@ -145,6 +156,8 @@ def test_bundle_derives_source_and_rights_evidence(
     assert receipt["retry_cap"] == 0
     assert receipt["depth_anything3_used"] is False
     assert receipt["smoke_scope"] == "unchanged_author_inpaint_init_stage_only"
+    assert receipt["sd2_checkpoint_identity"]["size_bytes"] == 5_214_921_607
+    assert receipt["sd2_checkpoint_identity"]["sha256"] == "sha256:" + "a" * 64
     assert Path(receipt["bundle_path"]).is_file()
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         runner = archive.read(
@@ -152,6 +165,7 @@ def test_bundle_derives_source_and_rights_evidence(
         ).decode()
     assert 'filename=expected["expected_ply_path"]' in runner
     assert 'allow_patterns=[expected["path_prefix"] + "*"]' not in runner
+    assert 'destination.stat().st_size != sd2["size_bytes"]' in runner
 
 
 def test_bundle_rejects_missing_publisher_rights(

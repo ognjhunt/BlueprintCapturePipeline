@@ -52,7 +52,7 @@ DEFAULT_IMAGE = (
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/aurafusion360-author-smoke"
 PREREQUISITE_RECEIPT_DIGEST = (
-    "sha256:93246e28fefb26b37a4b2e6cb0fce44aec47d554166093775117ae7308b0c80f"
+    "sha256:026ab58fb71d1bb7eb0fb2530f9e181f9d32d2e7b9a526ca5156a7c3fc4b2c17"
 )
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
@@ -99,7 +99,6 @@ _SD2 = {
     "repository": "sd2-community/stable-diffusion-2-inpainting",
     "revision": "5f74973cbb64c8568780732c17f43eb269d63a0d",
     "path": "512-inpainting-ema.ckpt",
-    "sha256": "sha256:2a208a7db3998527263f15a50e324bfae5f1cbd4a477507ecb1a9e670e47d4e3",
 }
 
 
@@ -189,7 +188,7 @@ def _deterministic_zip_directory(source: Path, destination: Path) -> None:
     )
 
 
-def _validate_prerequisite(receipt: Mapping[str, Any]) -> None:
+def _validate_prerequisite(receipt: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     if (
         receipt.get("receipt_digest") != PREREQUISITE_RECEIPT_DIGEST
         or canonical_digest(receipt, digest_field="receipt_digest")
@@ -220,6 +219,23 @@ def _validate_prerequisite(receipt: Mapping[str, Any]) -> None:
         item.get("rights_established") is not True for item in snapshots.values()
     ):
         raise ValueError("adp_aura_prerequisite_snapshot_binding_invalid")
+    sd2_publisher = snapshots["aurafusion360_sd2_inpainting_exact_checkpoint"].get(
+        "publisher"
+    )
+    if not isinstance(sd2_publisher, Mapping):
+        raise ValueError("adp_aura_sd2_publisher_identity_missing")
+    sd2_identity = sd2_publisher.get("single_file_identity")
+    if (
+        sd2_publisher.get("repository") != _SD2["repository"]
+        or sd2_publisher.get("revision") != _SD2["revision"]
+        or sd2_publisher.get("path_prefix") != _SD2["path"]
+        or not isinstance(sd2_identity, Mapping)
+        or sd2_identity.get("path") != _SD2["path"]
+        or int(sd2_identity.get("size_bytes") or 0) <= 0
+        or not str(sd2_identity.get("lfs_sha256") or "").startswith("sha256:")
+    ):
+        raise ValueError("adp_aura_sd2_publisher_identity_invalid")
+    return snapshots
 
 
 def build_aura_author_smoke_vast_bundle(
@@ -265,7 +281,15 @@ def build_aura_author_smoke_vast_bundle(
     if not sam2_license.is_file() or _sha256(sam2_license) != SAM2_LICENSE_SHA256:
         raise ValueError("adp_aura_sam2_source_license_mismatch")
     prerequisite = _read_json(prerequisite_path)
-    _validate_prerequisite(prerequisite)
+    prerequisite_snapshots = _validate_prerequisite(prerequisite)
+    sd2_identity = prerequisite_snapshots[
+        "aurafusion360_sd2_inpainting_exact_checkpoint"
+    ]["publisher"]["single_file_identity"]
+    sd2_checkpoint = {
+        **_SD2,
+        "size_bytes": sd2_identity["size_bytes"],
+        "sha256": sd2_identity["lfs_sha256"],
+    }
 
     rows = _source_files(source)
     source_manifest = _source_manifest(rows)
@@ -291,7 +315,7 @@ def build_aura_author_smoke_vast_bundle(
         "author_data": _AUTHOR_DATA,
         "expected_output": _EXPECTED_OUTPUT,
         "runtime_models": _RUNTIME_MODELS,
-        "sd2_checkpoint": _SD2,
+        "sd2_checkpoint": sd2_checkpoint,
         "author_command": [
             "python",
             "inpaint.py",
@@ -340,6 +364,7 @@ def build_aura_author_smoke_vast_bundle(
         "sam2_source_commit": SAM2_SOURCE_COMMIT,
         "sam2_source_tree": SAM2_SOURCE_TREE,
         "sam2_source_license": "Apache-2.0",
+        "sd2_checkpoint_identity": sd2_checkpoint,
         "runtime_entrypoint": (
             "provider_runtime/run_adp_aura_author_smoke_provider_runtime.sh"
         ),

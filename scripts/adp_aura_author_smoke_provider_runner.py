@@ -143,7 +143,10 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     destination = source / "utils/LeftRefill/pretrained_models/512-inpainting-ema.ckpt"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(checkpoint, destination)
-    if _sha256(destination) != sd2["sha256"]:
+    if (
+        destination.stat().st_size != sd2["size_bytes"]
+        or _sha256(destination) != sd2["sha256"]
+    ):
         raise ValueError("aurafusion360_sd2_checkpoint_changed")
 
     working_output = source / "output/360-USID/sunflower"
