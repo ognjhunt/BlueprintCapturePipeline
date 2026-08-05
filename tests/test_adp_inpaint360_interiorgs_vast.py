@@ -702,5 +702,9 @@ def test_fresh_live_job_has_full_budget_without_preexisting_ledger(tmp_path: Pat
 
 def test_live_runner_requires_observed_rasterizer_architecture_floor() -> None:
     assert runtime.MIN_RASTERIZER_COMPUTE_CAP == 890
+    assert runtime.INPAINT360_GPU_SELECTION_POLICY["allowed_gpu_keywords"] == (
+        "RTX 4090",
+    )
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     assert "min_compute_cap=MIN_RASTERIZER_COMPUTE_CAP" in source
+    assert "gpu_selection_policy=INPAINT360_GPU_SELECTION_POLICY" in source

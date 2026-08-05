@@ -46,6 +46,12 @@ PREREQUISITE_RECEIPT_DIGEST = (
 BIG_LAMA_SHA256 = "sha256:d7161bba4d68b438f9fa7f09dcb750a223804c300c68d214a5e0be16251fba8d"
 BIG_LAMA_SIZE_BYTES = 381_428_720
 MIN_RASTERIZER_COMPUTE_CAP = 890
+INPAINT360_GPU_SELECTION_POLICY = {
+    "policy_id": "inpaint360_rtx_4090_observed_control",
+    "allowed_gpu_keywords": ("RTX 4090",),
+    "denied_gpu_keywords": (),
+    "reason": "exact InteriorGS cameras passed only on the observed RTX 4090 control",
+}
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/inpaint360-interiorgs"
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
@@ -537,8 +543,9 @@ def run_inpaint360_interiorgs_vast(
                 session_budget_ledger_path=job / "adp_inpaint360_vast_session_budget.json",
                 verify_staging_urls=True,
                 require_known_supported_isaac_driver=False,
-                preferred_gpu_keywords=("RTX 4090", "L40S"),
+                preferred_gpu_keywords=("RTX 4090",),
                 prefer_isaac_rt=False,
+                gpu_selection_policy=INPAINT360_GPU_SELECTION_POLICY,
                 machine_avoidlist_path=machine_avoidlist_path,
                 instance_label_prefix="blueprint-adp-inpaint360-interiorgs-",
                 forward_hf_token=False,
