@@ -37,6 +37,17 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _prepend_pythonpath(env: dict[str, str], root: Path) -> dict[str, str]:
+    """Put the checked-out method ahead of similarly named installed packages."""
+
+    updated = dict(env)
+    existing = updated.get("PYTHONPATH", "")
+    updated["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(root.resolve()), existing) if part
+    )
+    return updated
+
+
 def _run(
     command: Sequence[str], *, cwd: Path, log_path: Path, env: dict[str, str] | None = None
 ) -> dict[str, Any]:
@@ -211,7 +222,7 @@ def main() -> int:
     source_before = _source_identity(source, spec)
     packet_before = _packet_identity(packet, spec)
     hardware = _run(["nvidia-smi", "-q"], cwd=source, log_path=output / "nvidia-smi.log")
-    main_env = dict(os.environ)
+    main_env = _prepend_pythonpath(dict(os.environ), source)
     main_env.update({"CUDA_HOME": "/usr/local/cuda", "PYTHONUNBUFFERED": "1"})
     lama_env = dict(main_env)
     lama_env["TORCH_HOME"] = str(source / "LaMa")
