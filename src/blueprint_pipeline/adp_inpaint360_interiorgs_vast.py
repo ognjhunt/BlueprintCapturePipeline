@@ -259,6 +259,7 @@ def build_inpaint360_interiorgs_bundle(
     for name in (
         "adp_inpaint360_interiorgs_provider_runner.py",
         "materialize_inpaint360_virtual_masks.py",
+        "probe_inpaint360_camera_rasterizer.py",
     ):
         shutil.copy2(scripts / name, runtime / name)
     spec = {
@@ -299,9 +300,12 @@ def build_inpaint360_interiorgs_bundle(
             "lama_environment_relation": "compatibility_environment_not_exact_publisher_conda_env",
             "source_modifications": [],
             "virtual_view_count": 30,
+            "expected_input_camera_count": 8,
             "input_resolution": "2048x1536",
+            "method_resolution_argument": 2,
+            "method_input_resolution": "1024x768",
             "mask_association_mode": (
-                "pre_registered_single_target_method_native_resolution"
+                "pre_registered_single_target_resolution_divisor_2"
             ),
         },
         "claim_boundary": {

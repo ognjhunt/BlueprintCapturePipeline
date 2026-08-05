@@ -40,6 +40,15 @@ def _load_provider_runner():
     return module
 
 
+def _load_rasterizer_probe():
+    path = Path(__file__).resolve().parents[1] / "scripts/probe_inpaint360_camera_rasterizer.py"
+    spec = importlib.util.spec_from_file_location("inpaint360_camera_rasterizer_test", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
@@ -49,6 +58,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         "run_adp_inpaint360_interiorgs_provider_runtime.sh",
         "adp_inpaint360_interiorgs_provider_runner.py",
         "materialize_inpaint360_virtual_masks.py",
+        "probe_inpaint360_camera_rasterizer.py",
     ):
         (scripts / name).write_bytes((real_root / "scripts" / name).read_bytes())
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -191,8 +201,10 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
     )
     assert spec["runtime"]["source_modifications"] == []
     assert spec["runtime"]["mask_association_mode"] == (
-        "pre_registered_single_target_method_native_resolution"
+        "pre_registered_single_target_resolution_divisor_2"
     )
+    assert spec["runtime"]["method_resolution_argument"] == 2
+    assert spec["runtime"]["method_input_resolution"] == "1024x768"
     with tarfile.open(runtime_root / "inpaint360gs_source.tar") as archive:
         link = archive.getmember("docs/link.md")
         assert link.issym()
@@ -201,6 +213,7 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
         names = set(archive.namelist())
     assert "provider_runtime/execution_spec.json" in names
     assert "provider_runtime/big-lama.zip" in names
+    assert "provider_runtime/probe_inpaint360_camera_rasterizer.py" in names
 
 
 def test_bundle_passes_vast_preflight_and_has_fail_closed_launch_script(
@@ -328,10 +341,12 @@ def test_provider_runner_materializes_pre_registered_single_target_masks(
     raw.mkdir(parents=True)
     images.mkdir(parents=True)
     for index in range(3):
-        image = Image.new("L", (5, 4), color=0)
-        image.putpixel((index, index), 1)
+        image = Image.new("L", (10, 8), color=0)
+        image.paste(1, (index * 2, index * 2, index * 2 + 2, index * 2 + 2))
         image.save(raw / f"view_{index}.png")
-        Image.new("RGB", (5, 4), color=(index, 0, 0)).save(images / f"view_{index}.png")
+        Image.new("RGB", (10, 8), color=(index, 0, 0)).save(
+            images / f"view_{index}.png"
+        )
 
     receipt = runner._materialize_pre_registered_mask_binding(
         source_data=source,
@@ -342,22 +357,25 @@ def test_provider_runner_materializes_pre_registered_single_target_masks(
     assert receipt["status"] == "accepted"
     assert receipt["full_resolution_source_preserved"] is True
     assert receipt["image_mask_dimensions"]["view_0.png"] == {
-        "source_image": [5, 4],
-        "raw_mask": [5, 4],
+        "source_image": [10, 8],
+        "raw_mask": [10, 8],
         "method_image_and_associated_mask": [5, 4],
     }
     assert receipt["target_pixel_counts"] == {
-        "view_0.png": 1,
-        "view_1.png": 1,
-        "view_2.png": 1,
+        "view_0.png": 4,
+        "view_1.png": 4,
+        "view_2.png": 4,
     }
     associated = source / "associated_hqsam"
     for path in sorted(raw.glob("*.png")):
-        assert (associated / path.name).read_bytes() == path.read_bytes()
+        with Image.open(associated / path.name) as derived:
+            assert derived.size == (5, 4)
+            assert set(derived.getdata()) == {0, 1}
+        assert (associated / path.name).read_bytes() != path.read_bytes()
     scene = json.loads((associated / "scene.json").read_text())
     assert scene["num_classes"] == 2
     assert scene["association_mode"] == (
-        "pre_registered_single_target_method_native_resolution"
+        "pre_registered_single_target_resolution_divisor_2"
     )
 
 
@@ -412,7 +430,7 @@ def test_provider_runner_rejects_unpaired_or_resized_target_masks(
     assert not (source / "associated_hqsam").exists()
 
 
-def test_provider_runner_requires_method_native_resolution_on_image_loading_stages(
+def test_provider_runner_requires_method_resolution_on_image_loading_stages(
     tmp_path: Path,
 ) -> None:
     runner = _load_provider_runner()
@@ -428,24 +446,24 @@ def test_provider_runner_requires_method_native_resolution_on_image_loading_stag
     )
     commands = []
     for stage in stages:
-        resolution = "1" if stage in {"lama_prepare", "lama_collect"} else "-1"
+        resolution = "1" if stage in {"lama_prepare", "lama_collect"} else "2"
         commands.append(
             (stage, ["python", "script.py", "--resolution", resolution], tmp_path, env)
         )
 
-    accepted = runner._validate_method_native_resolution_commands(
+    accepted = runner._validate_method_resolution_commands(
         commands, output=tmp_path
     )
     assert accepted["status"] == "accepted"
-    commands[0][1][-1] = "1"
-    blocked = runner._validate_method_native_resolution_commands(
+    commands[0][1][-1] = "-1"
+    blocked = runner._validate_method_resolution_commands(
         commands, output=tmp_path
     )
     assert blocked["status"] == "blocked"
     assert blocked["violating_or_missing_stages"] == ["distillation"]
 
 
-def test_provider_runner_derives_native_1_6k_mask_without_mutating_source(
+def test_provider_runner_derives_divisor_2_mask_without_mutating_source(
     tmp_path: Path,
 ) -> None:
     runner = _load_provider_runner()
@@ -470,13 +488,32 @@ def test_provider_runner_derives_native_1_6k_mask_without_mutating_source(
     assert receipt["image_mask_dimensions"]["view.png"] == {
         "source_image": [2048, 1536],
         "raw_mask": [2048, 1536],
-        "method_image_and_associated_mask": [1600, 1200],
+        "method_image_and_associated_mask": [1024, 768],
     }
     assert receipt["associated_target_pixel_counts"]["view.png"] > 0
     assert (raw / "view.png").read_bytes() == raw_before
     with Image.open(source / "associated_hqsam/view.png") as associated:
-        assert associated.size == (1600, 1200)
+        assert associated.size == (1024, 768)
         assert set(associated.getdata()) == {0, 1}
+
+
+def test_camera_rasterizer_preflight_requires_every_frozen_view() -> None:
+    probe = _load_rasterizer_probe()
+    rendered = {
+        "image_name": "view_a.png",
+        "status": "rendered",
+        "maximum_projected_radius_px": 120.0,
+    }
+    accepted = probe._summarize([rendered, {**rendered, "image_name": "view_b.png"}], expected_count=2)
+    assert accepted["status"] == "accepted"
+    failed = probe._summarize(
+        [rendered, {"image_name": "view_b.png", "status": "blocked"}],
+        expected_count=2,
+    )
+    assert failed["status"] == "blocked"
+    assert failed["failed_camera_names"] == ["view_b.png"]
+    missing = probe._summarize([rendered], expected_count=2)
+    assert "inpaint360_camera_rasterizer_view_count_mismatch" in missing["blockers"]
 
 
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:
