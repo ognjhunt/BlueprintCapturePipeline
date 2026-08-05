@@ -15,9 +15,9 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-aurafusion360_quality_challenger",
-  "component_manifest_digest": "sha256:4936a42697753c82afff94230025426f932b8e21cb92b2379ab5f8a8c6498db9",
+  "component_manifest_digest": "sha256:6acccfc100b8da28e4fce515a34b45688fe6b5fc7ffd900723ab50f4c116c3e9",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:f199c71d59354bcad48d67a031014345ff9f2ba71eb21bfd175b8237b2d7d0fc",
+  "receipt_digest": "sha256:e7beaed97813bd517f230e91e65d4c16ccff8aa0b2b91e9b6065613087420e08",
   "role": "aurafusion360_quality_challenger",
   "schema_version": "public_scene_component_admission_receipt.v1",
   "status": "blocked"

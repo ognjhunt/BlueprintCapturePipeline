@@ -9,7 +9,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-infusion_primary_adapter",
-  "manifest_digest": "sha256:2864a2b0c1251a6e8e5c54d158f2e184d908edd3a58813ac2fbb0e24ca6c2aec",
+  "manifest_digest": "sha256:17cde71bb26ac1e133756e367a575b1e8f20b53bd18909f8f0d7dd21beb64140",
   "materialized_artifacts": [
     {
       "external_relative_path": "Infusion/LICENSE",
@@ -40,11 +40,11 @@
       "size_bytes": 9043
     },
     {
-      "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
-      "publisher_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v2.json",
+      "publisher_path": "methods/adp009a_method_prerequisite_receipt.v2.json",
       "role": "method_prerequisite_receipt",
-      "sha256": "sha256:661951f1b96fbc0b6fcd3e10c932f8698bf4c46c1290390d0933d0d756c1ed56",
-      "size_bytes": 17798
+      "sha256": "sha256:a618da9bfc305d48dcf9d758cc11529616ce409bb30bebfec9c9bc55ee6ff6fa",
+      "size_bytes": 18899
     }
   ],
   "observed_evidence": {

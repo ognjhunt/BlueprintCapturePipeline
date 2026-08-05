@@ -15,9 +15,9 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-infusion_primary_adapter",
-  "component_manifest_digest": "sha256:2864a2b0c1251a6e8e5c54d158f2e184d908edd3a58813ac2fbb0e24ca6c2aec",
+  "component_manifest_digest": "sha256:17cde71bb26ac1e133756e367a575b1e8f20b53bd18909f8f0d7dd21beb64140",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:cbf8b0f0f521e569f2b06f356d0ed5875904bab2887116f40192d41195fdff19",
+  "receipt_digest": "sha256:ac95964a33ff90f88ce853116dc25d79b949319d4f056ee07314aa38b8f5b0f2",
   "role": "infusion_primary_adapter",
   "schema_version": "public_scene_component_admission_receipt.v1",
   "status": "blocked"

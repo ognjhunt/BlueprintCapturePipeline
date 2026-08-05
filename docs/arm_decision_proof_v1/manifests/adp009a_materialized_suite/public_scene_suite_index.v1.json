@@ -20,9 +20,9 @@
       "blockers": [
         "inpaint360_author_dataset_license_authority_missing"
       ],
-      "component_admission_receipt_digest": "sha256:905b0a237afe2eafcf6945e3b80b0704dd4a157881f98f1d21f25fd1b32e1275",
-      "component_manifest_digest": "sha256:820fa95d11564a7a30396356fb9d9785d910e6e1e90e4fdde6e40e85ac842570",
-      "exact_artifact_digest": "sha256:7b9088ba1ae7340aee6d740db154bf25a3eeeb08566df76bd3dba2b5db612c95",
+      "component_admission_receipt_digest": "sha256:2272d18596b60c8ed4c103476bddaafc3b96422bff970ea6537f872b94a5d95c",
+      "component_manifest_digest": "sha256:08cbf7d2c1cdc43bae23823c37b742c975538950074d98483751bebaa0eab88e",
+      "exact_artifact_digest": "sha256:83796e013dc37b3607027a23df76007f8957e00028039584431d854836c5125c",
       "exact_revision": {
         "kind": "git_commit",
         "value": "d54c893285c6cb27788e05cce607e7d3cca6388a"
@@ -35,9 +35,9 @@
       "blockers": [
         "infusion_checkpoint_license_missing"
       ],
-      "component_admission_receipt_digest": "sha256:cbf8b0f0f521e569f2b06f356d0ed5875904bab2887116f40192d41195fdff19",
-      "component_manifest_digest": "sha256:2864a2b0c1251a6e8e5c54d158f2e184d908edd3a58813ac2fbb0e24ca6c2aec",
-      "exact_artifact_digest": "sha256:1381e04dc4d60104e163a2ba8ea50c9248e3d1a9e3861c5d4c64a31adf4c5547",
+      "component_admission_receipt_digest": "sha256:ac95964a33ff90f88ce853116dc25d79b949319d4f056ee07314aa38b8f5b0f2",
+      "component_manifest_digest": "sha256:17cde71bb26ac1e133756e367a575b1e8f20b53bd18909f8f0d7dd21beb64140",
+      "exact_artifact_digest": "sha256:7fdb3220ff7c8100f6d6206739bd564f299a68baec6ac22974f36d4e4e9f5bbb",
       "exact_revision": {
         "kind": "git_commit",
         "value": "788da7f40cad4314831a053b7419df277d7814c4"
@@ -50,9 +50,9 @@
       "blockers": [
         "aurafusion360_unchanged_author_smoke_missing"
       ],
-      "component_admission_receipt_digest": "sha256:f199c71d59354bcad48d67a031014345ff9f2ba71eb21bfd175b8237b2d7d0fc",
-      "component_manifest_digest": "sha256:4936a42697753c82afff94230025426f932b8e21cb92b2379ab5f8a8c6498db9",
-      "exact_artifact_digest": "sha256:053a181cfee102a9d64c73c5b6e150d875e39dd9086fc657cb7fc4a9d7807ffc",
+      "component_admission_receipt_digest": "sha256:e7beaed97813bd517f230e91e65d4c16ccff8aa0b2b91e9b6065613087420e08",
+      "component_manifest_digest": "sha256:6acccfc100b8da28e4fce515a34b45688fe6b5fc7ffd900723ab50f4c116c3e9",
+      "exact_artifact_digest": "sha256:d0e8dc02b2d5f9db4c8a2cd19d4555867a525bca69d0d6082bfcde31f882d125",
       "exact_revision": {
         "kind": "git_commit",
         "value": "f23b26c44ba84608306ba952510533ebf4c7877d"
@@ -161,7 +161,7 @@
       "status": "blocked"
     }
   ],
-  "index_digest": "sha256:a202dad18868d69dedeee5ae37e67f7449a3b72ae893580e078ab4058e1456a0",
+  "index_digest": "sha256:b506e71e907759a14407e0c02b47b1a1496f9d31e45bd84690cf8328a9ef4615",
   "index_id": "adp009a-public-suite-20260804",
   "program_id": "arm-decision-proof-v1",
   "schema_version": "public_scene_suite_index.v1"

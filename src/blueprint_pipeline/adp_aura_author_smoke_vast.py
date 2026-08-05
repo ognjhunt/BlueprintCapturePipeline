@@ -67,7 +67,7 @@ DEFAULT_IMAGE = (
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/aurafusion360-author-smoke"
 PREREQUISITE_RECEIPT_DIGEST = (
-    "sha256:026ab58fb71d1bb7eb0fb2530f9e181f9d32d2e7b9a526ca5156a7c3fc4b2c17"
+    "sha256:ed309230e5dd216117789ef3abab947e3a0dabfe66afacd7b0de7732217b4902"
 )
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
@@ -230,6 +230,16 @@ _RUNTIME_MODELS = [
         "snapshot_digest": (
             "sha256:d8c2d2dfdc297008d7f4314593b8dcd381fa6c120ce9780e93f1a9c15c206e74"
         ),
+        "materialized_files": _MARIGOLD_RUNTIME_FILES,
+        "materialized_total_size_bytes": 15_482_514_887,
+    },
+    {
+        "repository": "prs-eth/marigold-v1-0",
+        "revision": "f4fc453d7d217cbe30ddcad3eb311d1ad9a11c4c",
+        "snapshot_digest": (
+            "sha256:d8c2d2dfdc297008d7f4314593b8dcd381fa6c120ce9780e93f1a9c15c206e74"
+        ),
+        "cache_alias_of": "prs-eth/marigold-depth-v1-0",
         "materialized_files": _MARIGOLD_RUNTIME_FILES,
         "materialized_total_size_bytes": 15_482_514_887,
     },
@@ -557,6 +567,7 @@ def _validate_prerequisite(receipt: Mapping[str, Any]) -> dict[str, Mapping[str,
         "aurafusion360_sunflower_expected_output",
         "aurafusion360_sam2_hiera_large",
         "aurafusion360_marigold_depth_v1_0",
+        "aurafusion360_marigold_agdd_v1_0",
         "aurafusion360_sd2_inpainting_exact_checkpoint",
     }
     if set(snapshots) != required or any(

@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ from typing import Any, Sequence
 
 SCHEMA_VERSION = "adp_aura_author_smoke_result.v1"
 COMMAND_TIMEOUT_SECONDS = 7200
+QUALITY_FRAME_INDICES = (0, 34, 68, 102, 136, 170, 204, 239)
 
 
 def _sha256(path: Path) -> str:
@@ -81,6 +83,103 @@ def _ply_vertex_count(path: Path) -> int | None:
             if line == "end_header":
                 return None
     return None
+
+
+def _compare_quality_frames(
+    *,
+    produced_render_dir: Path,
+    reference_render_dir: Path,
+    retained_root: Path,
+) -> dict[str, Any]:
+    import numpy as np
+    from PIL import Image
+
+    retained_root.mkdir(parents=True, exist_ok=True)
+    comparisons: list[dict[str, Any]] = []
+    for index in QUALITY_FRAME_INDICES:
+        name = f"{index:05d}.png"
+        produced = produced_render_dir / name
+        reference = reference_render_dir / name
+        if not produced.is_file() or not reference.is_file():
+            raise ValueError("aurafusion360_quality_frame_missing")
+        produced_image = Image.open(produced).convert("RGB")
+        reference_image = Image.open(reference).convert("RGB")
+        if produced_image.size != reference_image.size:
+            raise ValueError("aurafusion360_quality_frame_shape_mismatch")
+        produced_array = np.asarray(produced_image, dtype=np.float64)
+        reference_array = np.asarray(reference_image, dtype=np.float64)
+        difference = produced_array - reference_array
+        mean_absolute_error = float(np.mean(np.abs(difference)))
+        mean_squared_error = float(np.mean(np.square(difference)))
+        psnr_db = (
+            None
+            if mean_squared_error == 0.0
+            else float(10.0 * math.log10((255.0**2) / mean_squared_error))
+        )
+        produced_retained = retained_root / f"produced_{name}"
+        reference_retained = retained_root / f"publisher_reference_{name}"
+        shutil.copy2(produced, produced_retained)
+        shutil.copy2(reference, reference_retained)
+        comparisons.append(
+            {
+                "frame_index": index,
+                "width": produced_image.width,
+                "height": produced_image.height,
+                "produced": {
+                    "relative_path": produced_retained.relative_to(
+                        retained_root.parent.parent
+                    ).as_posix(),
+                    "size_bytes": produced_retained.stat().st_size,
+                    "sha256": _sha256(produced_retained),
+                },
+                "publisher_reference": {
+                    "relative_path": reference_retained.relative_to(
+                        retained_root.parent.parent
+                    ).as_posix(),
+                    "size_bytes": reference_retained.stat().st_size,
+                    "sha256": _sha256(reference_retained),
+                },
+                "mean_absolute_error_8bit": mean_absolute_error,
+                "mean_squared_error_8bit": mean_squared_error,
+                "psnr_db": psnr_db,
+            }
+        )
+    return {
+        "claim_ceiling": "same_camera_similarity_to_publisher_expected_point_cloud",
+        "physical_or_hidden_surface_truth": False,
+        "frame_indices": list(QUALITY_FRAME_INDICES),
+        "frame_comparisons": comparisons,
+        "mean_absolute_error_8bit": float(
+            sum(item["mean_absolute_error_8bit"] for item in comparisons)
+            / len(comparisons)
+        ),
+        "mean_psnr_db": (
+            None
+            if any(item["psnr_db"] is None for item in comparisons)
+            else float(sum(item["psnr_db"] for item in comparisons) / len(comparisons))
+        ),
+    }
+
+
+def _prepare_quality_reference_model(
+    *,
+    runtime: Path,
+    working_output: Path,
+    expected_point_cloud: Path,
+) -> Path:
+    reference_model = runtime / "quality_reference_model"
+    if reference_model.exists():
+        shutil.rmtree(reference_model)
+    point_cloud_dir = (
+        reference_model / "point_cloud/iteration_object_inpaint_init"
+    )
+    point_cloud_dir.mkdir(parents=True)
+    os.link(expected_point_cloud.resolve(), point_cloud_dir / "point_cloud.ply")
+    cfg_args = working_output / "cfg_args"
+    if not cfg_args.is_file():
+        raise ValueError("aurafusion360_quality_reference_cfg_args_missing")
+    shutil.copy2(cfg_args, reference_model / "cfg_args")
+    return reference_model
 
 
 def _source_identity(source: Path, manifest: dict[str, Any]) -> dict[str, Any]:
@@ -198,6 +297,36 @@ def _verify_runtime_model_snapshot(snapshot: Path, model: dict[str, Any]) -> Non
         raise ValueError("aurafusion360_runtime_model_total_size_changed")
 
 
+def _materialize_cache_alias(
+    *,
+    cache: Path,
+    source_snapshot: Path,
+    model: dict[str, Any],
+) -> Path:
+    alias_of = str(model.get("cache_alias_of") or "")
+    if not alias_of:
+        raise ValueError("aurafusion360_runtime_model_cache_alias_missing")
+    destination = (
+        cache
+        / ("models--" + str(model["repository"]).replace("/", "--"))
+        / "snapshots"
+        / str(model["revision"])
+    )
+    if destination.exists():
+        raise ValueError("aurafusion360_runtime_model_cache_alias_destination_exists")
+    for item in model.get("materialized_files") or []:
+        relative = str(item["path"])
+        source = source_snapshot / relative
+        target = destination / relative
+        if not source.is_file():
+            raise ValueError("aurafusion360_runtime_model_cache_alias_source_missing")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.link(source.resolve(), target)
+    _verify_runtime_model_snapshot(destination, model)
+    _pin_hf_ref(cache, str(model["repository"]), str(model["revision"]))
+    return destination
+
+
 def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -213,22 +342,35 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
         raise ValueError("aurafusion360_published_expected_ply_changed")
 
     cache = Path(os.environ["HF_HUB_CACHE"])
+    resolved_snapshots: dict[str, Path] = {}
     for model in spec["runtime_models"]:
         materialized_files = model.get("materialized_files")
-        snapshot = Path(
-            snapshot_download(
-                repo_id=model["repository"],
-                revision=model["revision"],
-                allow_patterns=(
-                    [str(item["path"]) for item in materialized_files]
-                    if materialized_files
-                    else None
-                ),
-                max_workers=1,
+        alias_of = str(model.get("cache_alias_of") or "")
+        if alias_of:
+            source_snapshot = resolved_snapshots.get(alias_of)
+            if source_snapshot is None:
+                raise ValueError("aurafusion360_runtime_model_cache_alias_source_unresolved")
+            snapshot = _materialize_cache_alias(
+                cache=cache,
+                source_snapshot=source_snapshot,
+                model=model,
             )
-        )
+        else:
+            snapshot = Path(
+                snapshot_download(
+                    repo_id=model["repository"],
+                    revision=model["revision"],
+                    allow_patterns=(
+                        [str(item["path"]) for item in materialized_files]
+                        if materialized_files
+                        else None
+                    ),
+                    max_workers=1,
+                )
+            )
+            _pin_hf_ref(cache, model["repository"], model["revision"])
         _verify_runtime_model_snapshot(snapshot, model)
-        _pin_hf_ref(cache, model["repository"], model["revision"])
+        resolved_snapshots[str(model["repository"])] = snapshot
     sd2 = spec["sd2_checkpoint"]
     checkpoint = hf_hub_download(
         repo_id=sd2["repository"],
@@ -339,8 +481,57 @@ def main(argv: Sequence[str] | None = None) -> int:
             "executed": False,
         },
     )
-    produced = source / "output/360-USID/sunflower/point_cloud/iteration_object_inpaint_init/point_cloud.ply"
+    working_output = source / "output/360-USID/sunflower"
+    produced = working_output / "point_cloud/iteration_object_inpaint_init/point_cloud.ply"
     expected = runtime / "published_expected_point_cloud.ply"
+    quality_command: dict[str, Any] = {
+        "command": None,
+        "returncode": None,
+        "timed_out": False,
+        "runtime_seconds": 0.0,
+        "stdout_stderr_sha256": None,
+        "log": "aura-publisher-reference-render.log",
+        "executed": False,
+    }
+    quality_comparison: dict[str, Any] | None = None
+    if execution.get("returncode") == 0 and produced.is_file():
+        try:
+            reference_model = _prepare_quality_reference_model(
+                runtime=runtime,
+                working_output=working_output,
+                expected_point_cloud=expected,
+            )
+            quality_command = _run(
+                [
+                    python,
+                    "render.py",
+                    "-s",
+                    "data/360-USID/sunflower",
+                    "-m",
+                    str(reference_model),
+                    "--skip_train",
+                    "--skip_test",
+                    "--skip_mesh",
+                    "--render_path",
+                    "--iteration",
+                    "object_inpaint_init",
+                ],
+                cwd=source,
+                log_path=output / "aura-publisher-reference-render.log",
+            )
+            quality_command["executed"] = True
+            if quality_command["returncode"] == 0:
+                quality_comparison = _compare_quality_frames(
+                    produced_render_dir=(
+                        working_output / "traj/ours_object_inpaint_init/renders"
+                    ),
+                    reference_render_dir=(
+                        reference_model / "traj/ours_object_inpaint_init/renders"
+                    ),
+                    retained_root=output / "artifacts/quality_frames",
+                )
+        except (OSError, ValueError) as error:
+            quality_command["error"] = str(error)
     source_after = _source_identity(source, spec)
     blockers: list[str] = []
     if not source_before["matches"] or not source_after["matches"]:
@@ -355,6 +546,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         blockers.append("aurafusion360_nvidia_hardware_probe_failed")
     if not produced.is_file() or produced.stat().st_size == 0:
         blockers.append("aurafusion360_inpaint_init_point_cloud_missing")
+    if "inpaint_init" in completed_stages and produced.is_file():
+        if quality_command.get("returncode") != 0:
+            blockers.append("aurafusion360_quality_reference_render_failed")
+        elif quality_comparison is None:
+            blockers.append("aurafusion360_quality_frame_comparison_missing")
     retained_produced = output / "artifacts/aurafusion360_inpaint_init_point_cloud.ply"
     if produced.is_file():
         retained_produced.parent.mkdir(parents=True, exist_ok=True)
@@ -396,6 +592,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "sha256": _sha256(expected),
             "vertex_count": _ply_vertex_count(expected),
         },
+        "quality_validation_command": quality_command,
+        "quality_comparison": quality_comparison,
         "python_environment": (
             {"path": freeze.name, "sha256": _sha256(freeze)} if freeze.is_file() else None
         ),

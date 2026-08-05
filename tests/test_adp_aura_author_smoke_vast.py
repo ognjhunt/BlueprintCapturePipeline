@@ -155,6 +155,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
             "aurafusion360_sunflower_expected_output",
             "aurafusion360_sam2_hiera_large",
             "aurafusion360_marigold_depth_v1_0",
+            "aurafusion360_marigold_agdd_v1_0",
             "aurafusion360_sd2_inpainting_exact_checkpoint",
         )
     ]
@@ -301,6 +302,15 @@ def test_bundle_derives_source_and_rights_evidence(
         "unet/diffusion_pytorch_model.fp16.safetensors",
         "vae/diffusion_pytorch_model.fp16.safetensors",
     } <= {item["path"] for item in marigold["materialized_files"]}
+    marigold_alias = next(
+        model
+        for model in smoke_spec["runtime_models"]
+        if model["repository"] == "prs-eth/marigold-v1-0"
+    )
+    assert marigold_alias["cache_alias_of"] == "prs-eth/marigold-depth-v1-0"
+    assert marigold_alias["revision"] == marigold["revision"]
+    assert marigold_alias["snapshot_digest"] == marigold["snapshot_digest"]
+    assert marigold_alias["materialized_files"] == marigold["materialized_files"]
     assert "allow_patterns=" in runner
     assert "_verify_runtime_model_snapshot(snapshot, model)" in runner
     assert "HF_HUB_DISABLE_XET=1" in entrypoint
@@ -668,6 +678,126 @@ def test_provider_runner_rejects_unbound_runtime_model_file(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="aurafusion360_runtime_model_file_set_changed"):
         runner._verify_runtime_model_snapshot(snapshot, model)
+
+
+def test_provider_runner_materializes_exact_hardlinked_cache_alias(tmp_path: Path) -> None:
+    runner = _load_provider_runner()
+    cache = tmp_path / "hub"
+    source = cache / "models--prs-eth--marigold-depth-v1-0/snapshots/revision"
+    source.mkdir(parents=True)
+    source_file = source / "model_index.json"
+    source_file.write_bytes(b"exact-marigold-snapshot")
+    model = {
+        "repository": "prs-eth/marigold-v1-0",
+        "revision": "revision",
+        "cache_alias_of": "prs-eth/marigold-depth-v1-0",
+        "materialized_files": [
+            {
+                "path": source_file.name,
+                "size_bytes": source_file.stat().st_size,
+                "sha256": runner._sha256(source_file),
+            }
+        ],
+        "materialized_total_size_bytes": source_file.stat().st_size,
+    }
+
+    alias = runner._materialize_cache_alias(
+        cache=cache,
+        source_snapshot=source,
+        model=model,
+    )
+
+    alias_file = alias / source_file.name
+    assert alias_file.read_bytes() == source_file.read_bytes()
+    assert alias_file.stat().st_ino == source_file.stat().st_ino
+    assert (
+        cache / "models--prs-eth--marigold-v1-0/refs/main"
+    ).read_text(encoding="utf-8") == "revision"
+
+
+def test_provider_runner_rejects_cache_alias_with_missing_source_file(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    with pytest.raises(ValueError, match="cache_alias_source_missing"):
+        runner._materialize_cache_alias(
+            cache=tmp_path / "hub",
+            source_snapshot=tmp_path / "missing-source",
+            model={
+                "repository": "prs-eth/marigold-v1-0",
+                "revision": "revision",
+                "cache_alias_of": "prs-eth/marigold-depth-v1-0",
+                "materialized_files": [
+                    {"path": "missing.bin", "size_bytes": 1, "sha256": "sha256:x"}
+                ],
+                "materialized_total_size_bytes": 1,
+            },
+        )
+
+
+def test_provider_runner_retains_same_camera_quality_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PIL import Image
+
+    runner = _load_provider_runner()
+    monkeypatch.setattr(runner, "QUALITY_FRAME_INDICES", (0,))
+    produced = tmp_path / "produced"
+    reference = tmp_path / "reference"
+    produced.mkdir()
+    reference.mkdir()
+    Image.new("RGB", (4, 3), (10, 20, 30)).save(produced / "00000.png")
+    Image.new("RGB", (4, 3), (12, 20, 30)).save(reference / "00000.png")
+    retained = tmp_path / "output/artifacts/quality_frames"
+
+    comparison = runner._compare_quality_frames(
+        produced_render_dir=produced,
+        reference_render_dir=reference,
+        retained_root=retained,
+    )
+
+    assert comparison["claim_ceiling"] == (
+        "same_camera_similarity_to_publisher_expected_point_cloud"
+    )
+    assert comparison["physical_or_hidden_surface_truth"] is False
+    assert comparison["frame_indices"] == [0]
+    frame = comparison["frame_comparisons"][0]
+    assert frame["width"] == 4
+    assert frame["height"] == 3
+    assert frame["mean_absolute_error_8bit"] == pytest.approx(2.0 / 3.0)
+    assert frame["psnr_db"] == pytest.approx(46.8814162426)
+    assert (tmp_path / "output" / frame["produced"]["relative_path"]).is_file()
+    assert (
+        tmp_path / "output" / frame["publisher_reference"]["relative_path"]
+    ).is_file()
+
+
+def test_provider_runner_prepares_hardlinked_quality_reference_model(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    runtime = tmp_path / "runtime"
+    working_output = tmp_path / "working-output"
+    working_output.mkdir()
+    (working_output / "cfg_args").write_text("Namespace(sh_degree=3)", encoding="utf-8")
+    expected = tmp_path / "published_expected_point_cloud.ply"
+    expected.write_bytes(b"exact-publisher-reference")
+
+    reference_model = runner._prepare_quality_reference_model(
+        runtime=runtime,
+        working_output=working_output,
+        expected_point_cloud=expected,
+    )
+
+    retained = (
+        reference_model
+        / "point_cloud/iteration_object_inpaint_init/point_cloud.ply"
+    )
+    assert retained.read_bytes() == expected.read_bytes()
+    assert retained.stat().st_ino == expected.stat().st_ino
+    assert (reference_model / "cfg_args").read_text(encoding="utf-8") == (
+        "Namespace(sh_degree=3)"
+    )
 
 
 def _allocator_args(
