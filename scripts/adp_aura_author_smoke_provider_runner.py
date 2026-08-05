@@ -176,17 +176,12 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     _extract_author_data(runtime, source, spec)
     _extract_runtime_dependency(runtime, spec)
     expected = spec["expected_output"]
-    expected_ply = Path(
-        hf_hub_download(
-            repo_id=expected["repository"],
-            repo_type="dataset",
-            revision=expected["revision"],
-            filename=expected["expected_ply_path"],
-        )
-    )
-    reference = runtime / "published_expected_point_cloud.ply"
-    shutil.copy2(expected_ply, reference)
-    if _sha256(reference) != expected["expected_ply_sha256"]:
+    reference = runtime / expected["bundled_path"]
+    if (
+        not reference.is_file()
+        or reference.stat().st_size != expected["expected_ply_size_bytes"]
+        or _sha256(reference) != expected["expected_ply_sha256"]
+    ):
         raise ValueError("aurafusion360_published_expected_ply_changed")
 
     cache = Path(os.environ["HF_HUB_CACHE"])

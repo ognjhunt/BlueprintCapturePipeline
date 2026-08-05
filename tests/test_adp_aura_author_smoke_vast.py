@@ -199,6 +199,17 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     )
     author_receipt_path = tmp_path / "author-data-receipt.json"
     _write_json(author_receipt_path, author_receipt)
+    expected_output_ply = tmp_path / "published-expected-point-cloud.ply"
+    expected_output_ply.write_bytes(b"publisher expected output")
+    monkeypatch.setattr(
+        aura,
+        "_EXPECTED_OUTPUT",
+        {
+            **aura._EXPECTED_OUTPUT,
+            "expected_ply_size_bytes": expected_output_ply.stat().st_size,
+            "expected_ply_sha256": aura._sha256(expected_output_ply),
+        },
+    )
     return {
         "repo": repo,
         "source": source,
@@ -207,6 +218,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         "prerequisite": prerequisite,
         "author_data": author_data,
         "author_data_receipt": author_receipt_path,
+        "expected_output_ply": expected_output_ply,
         "job": tmp_path / "job",
     }
 
@@ -223,6 +235,7 @@ def test_bundle_derives_source_and_rights_evidence(
         prerequisite_receipt_path=paths["prerequisite"],
         author_data_root=paths["author_data"],
         author_data_receipt_path=paths["author_data_receipt"],
+        expected_output_ply_path=paths["expected_output_ply"],
         job_dir=paths["job"],
         generated_at="2026-08-04T00:00:00+00:00",
     )
@@ -238,8 +251,9 @@ def test_bundle_derives_source_and_rights_evidence(
     assert receipt["wonderworld_marigold_runtime_license"] == "Apache-2.0"
     assert Path(receipt["bundle_path"]).is_file()
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
-        assert "provider_runtime/author_data.zip" in archive.namelist()
-        assert "provider_runtime/wonderworld_marigold_runtime.zip" in archive.namelist()
+        archive_names = archive.namelist()
+        assert "provider_runtime/author_data.zip" in archive_names
+        assert "provider_runtime/wonderworld_marigold_runtime.zip" in archive_names
         dependency_archive = tmp_path / "wonderworld-runtime.zip"
         dependency_archive.write_bytes(
             archive.read("provider_runtime/wonderworld_marigold_runtime.zip")
@@ -255,8 +269,13 @@ def test_bundle_derives_source_and_rights_evidence(
         assert set(dependency.namelist()) == set(
             aura.WONDERWORLD_MARIGOLD_RUNTIME_FILES
         )
-    assert 'filename=expected["expected_ply_path"]' in runner
+    assert 'reference = runtime / expected["bundled_path"]' in runner
+    assert 'filename=expected["expected_ply_path"]' not in runner
     assert 'allow_patterns=[expected["path_prefix"] + "*"]' not in runner
+    assert "provider_runtime/published_expected_point_cloud.ply" in archive_names
+    assert smoke_spec["expected_output"]["bundled_path"] == (
+        "published_expected_point_cloud.ply"
+    )
     assert [command[1] for command in smoke_spec["author_commands"]] == [
         "train.py",
         "render.py",
@@ -329,6 +348,28 @@ def test_bundle_rejects_changed_materialized_author_data(
             prerequisite_receipt_path=paths["prerequisite"],
             author_data_root=paths["author_data"],
             author_data_receipt_path=paths["author_data_receipt"],
+            expected_output_ply_path=paths["expected_output_ply"],
+            job_dir=paths["job"],
+        )
+
+
+def test_bundle_rejects_changed_published_expected_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    paths["expected_output_ply"].write_bytes(b"changed publisher output")
+    with pytest.raises(
+        ValueError, match="adp_aura_expected_output_ply_identity_mismatch"
+    ):
+        aura.build_aura_author_smoke_vast_bundle(
+            repo_root=paths["repo"],
+            aura_root=paths["source"],
+            sam2_root=paths["sam2"],
+            wonderworld_root=paths["wonderworld"],
+            prerequisite_receipt_path=paths["prerequisite"],
+            author_data_root=paths["author_data"],
+            author_data_receipt_path=paths["author_data_receipt"],
+            expected_output_ply_path=paths["expected_output_ply"],
             job_dir=paths["job"],
         )
 
@@ -358,6 +399,7 @@ def test_bundle_rejects_caller_rehashed_fake_author_data(
             prerequisite_receipt_path=paths["prerequisite"],
             author_data_root=paths["author_data"],
             author_data_receipt_path=paths["author_data_receipt"],
+            expected_output_ply_path=paths["expected_output_ply"],
             job_dir=paths["job"],
         )
 
@@ -382,6 +424,7 @@ def test_bundle_rejects_missing_publisher_rights(
             prerequisite_receipt_path=paths["prerequisite"],
             author_data_root=paths["author_data"],
             author_data_receipt_path=paths["author_data_receipt"],
+            expected_output_ply_path=paths["expected_output_ply"],
             job_dir=paths["job"],
         )
 
@@ -407,6 +450,7 @@ def test_bundle_rejects_changed_sam2_source(
             prerequisite_receipt_path=paths["prerequisite"],
             author_data_root=paths["author_data"],
             author_data_receipt_path=paths["author_data_receipt"],
+            expected_output_ply_path=paths["expected_output_ply"],
             job_dir=paths["job"],
         )
 
@@ -434,6 +478,7 @@ def test_bundle_rejects_changed_wonderworld_source(
             prerequisite_receipt_path=paths["prerequisite"],
             author_data_root=paths["author_data"],
             author_data_receipt_path=paths["author_data_receipt"],
+            expected_output_ply_path=paths["expected_output_ply"],
             job_dir=paths["job"],
         )
 
@@ -450,6 +495,7 @@ def test_dry_run_requires_exact_bundle_without_provider_mutation(
         prerequisite_receipt_path=paths["prerequisite"],
         author_data_root=paths["author_data"],
         author_data_receipt_path=paths["author_data_receipt"],
+        expected_output_ply_path=paths["expected_output_ply"],
         job_dir=paths["job"],
     )
     result = aura.run_aura_author_smoke_vast(
@@ -501,6 +547,7 @@ def test_vast_adapter_preflights_dedicated_aura_bundle(
         prerequisite_receipt_path=paths["prerequisite"],
         author_data_root=paths["author_data"],
         author_data_receipt_path=paths["author_data_receipt"],
+        expected_output_ply_path=paths["expected_output_ply"],
         job_dir=paths["job"],
     )
     assert (
@@ -608,6 +655,7 @@ def test_canonical_allocator_issues_aura_grant_only_for_execute(
         prerequisite_receipt_path=paths["prerequisite"],
         author_data_root=paths["author_data"],
         author_data_receipt_path=paths["author_data_receipt"],
+        expected_output_ply_path=paths["expected_output_ply"],
         job_dir=paths["job"],
     )
     receipt_path = paths["job"] / "adp_aura_author_smoke_bundle_receipt.json"
