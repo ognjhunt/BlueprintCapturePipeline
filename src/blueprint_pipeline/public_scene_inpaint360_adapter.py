@@ -197,6 +197,19 @@ def _copy_exact(source: Path, destination: Path) -> None:
     shutil.copyfile(source, destination)
 
 
+def _target_object_radius_m(scene: Mapping[str, Any]) -> float:
+    """Derive the publisher target's bounding-sphere radius from its metric OBB."""
+
+    corners = np.asarray(scene.get("target_obb_corners_m"), dtype=np.float64)
+    if corners.shape != (8, 3) or not np.isfinite(corners).all():
+        raise Inpaint360AdapterError(["inpaint360_target_metric_obb_missing"])
+    center = np.mean(corners, axis=0)
+    radius = float(np.max(np.linalg.norm(corners - center, axis=1)))
+    if not np.isfinite(radius) or radius <= 0.0:
+        raise Inpaint360AdapterError(["inpaint360_target_metric_obb_degenerate"])
+    return radius
+
+
 def materialize_inpaint360_adapter(
     *,
     input_receipt_path: str | Path,
@@ -243,6 +256,8 @@ def materialize_inpaint360_adapter(
     if not isinstance(cameras, list) or len(cameras) != 8:
         raise Inpaint360AdapterError(["inpaint360_camera_count_invalid"])
 
+    scene = receipt.get("scene") or {}
+    target_object_radius_m = _target_object_radius_m(scene)
     source_dir = output / "source"
     vanilla_dir = output / "vanilla_3dgs"
     model_dir = output / "inpaint360_model"
@@ -315,6 +330,7 @@ def materialize_inpaint360_adapter(
                 "removal_thresh": 0.7,
                 "select_obj_id": [1],
                 "surrounding_ids": [],
+                "target_object_radius": target_object_radius_m,
                 "target_id": [1],
             }
         )
@@ -337,6 +353,7 @@ def materialize_inpaint360_adapter(
                 "removal_thresh": 0.7,
                 "select_obj_id": [1],
                 "surrounding_ids": [],
+                "target_object_radius": target_object_radius_m,
                 "target_id": [1],
             }
         )
@@ -383,6 +400,8 @@ def materialize_inpaint360_adapter(
             "mask_contract": "raw_hqsam_uint8_instance_id_1",
             "vanilla_gaussian_iteration": 30000,
             "target_method_instance_id": 1,
+            "target_object_radius_m": target_object_radius_m,
+            "target_object_radius_derivation": "max_distance_from_metric_obb_center",
             "paired_config_contract": (
                 "config/object_removal/blueprint/840313.json_to_"
                 "config/object_inpaint/blueprint/840313.json"
