@@ -66,6 +66,12 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         pixels[400:600, 450:550] = 255
         Image.fromarray(pixels, mode="L").save(mask)
         pose = np.eye(4)
+        angle = 0.05 * index
+        pose[:3, :3] = [
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
         pose[:3, 3] = [index * 0.1, 1.0, 0.5]
         cameras.append(
             {
@@ -128,6 +134,30 @@ def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
     assert receipt["adapter_repository"]["tracked_files_clean"] is True
     assert (output / "source" / "sparse" / "0" / "cameras.txt").is_file()
     assert len([line for line in (output / "source" / "sparse" / "0" / "images.txt").read_text().splitlines() if ".png" in line]) == 8
+    image_lines = [
+        line for line in (output / "source" / "sparse" / "0" / "images.txt").read_text().splitlines()
+        if ".png" in line
+    ]
+    source_cameras = json.loads((paths["input"] / "cameras.v1.json").read_text())
+    for line, source_camera in zip(image_lines, source_cameras, strict=True):
+        fields = line.split()
+        qw, qx, qy, qz = map(float, fields[1:5])
+        tx, ty, tz = map(float, fields[5:8])
+        rotation = np.asarray(
+            [
+                [1 - 2 * qy**2 - 2 * qz**2, 2 * qx * qy - 2 * qw * qz, 2 * qz * qx + 2 * qw * qy],
+                [2 * qx * qy + 2 * qw * qz, 1 - 2 * qx**2 - 2 * qz**2, 2 * qy * qz - 2 * qw * qx],
+                [2 * qz * qx - 2 * qw * qy, 2 * qy * qz + 2 * qw * qx, 1 - 2 * qx**2 - 2 * qy**2],
+            ]
+        )
+        world_to_camera = np.eye(4)
+        world_to_camera[:3, :3] = rotation
+        world_to_camera[:3, 3] = [tx, ty, tz]
+        np.testing.assert_allclose(
+            np.linalg.inv(world_to_camera),
+            np.asarray(source_camera["T_world_camera_opencv"]),
+            atol=1e-9,
+        )
     mask = np.asarray(Image.open(output / "source" / "raw_hqsam" / "view_00.png"))
     assert set(np.unique(mask)) == {0, 1}
     assert (output / "vanilla_3dgs" / "point_cloud" / "iteration_30000" / "point_cloud.ply").is_file()
