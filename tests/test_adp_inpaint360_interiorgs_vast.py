@@ -844,6 +844,7 @@ def test_supplemental_fusion_view_materialization_rejects_empty_and_binds_select
 
 
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:
+    receipt_payload = json.loads(receipt.read_text(encoding="utf-8"))
     args = [
         "gpu-canary",
         "--probe-kind",
@@ -866,6 +867,8 @@ def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str
         str(tmp_path / "adapter.json"),
         "--pod-name",
         "adp-inpaint360-interiorgs",
+        "--expected-source-commit",
+        receipt_payload["blueprint_repository_commit"],
         "--adp-inpaint360-bundle-receipt",
         str(receipt),
         "--adp-job-dir",
@@ -917,7 +920,13 @@ def test_canonical_allocator_issues_inpaint360_grant_only_for_execute(
     monkeypatch.setattr(
         allocator,
         "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+        lambda: (
+            [],
+            {
+                "orchestrator_source_commit": receipt["blueprint_repository_commit"],
+                "checkout_clean": True,
+            },
+        ),
     )
     observed: dict[str, object] = {}
 
@@ -936,6 +945,50 @@ def test_canonical_allocator_issues_inpaint360_grant_only_for_execute(
     assert admission["rendered_frames_have_no_hidden_background_truth"] is True
     assert admission["replacement_or_physics_result_claimed"] is False
     assert admission["hard_cap_usd"] == 6.0
+    assert admission["allocation_binding"]["expected_source_commit"] == receipt[
+        "blueprint_repository_commit"
+    ]
+
+
+def test_canonical_allocator_rejects_mistyped_expected_source_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    receipt = _build(paths)
+    receipt_path = paths["job"] / "adp_inpaint360_interiorgs_bundle_receipt.json"
+    monkeypatch.setattr(allocator, "ADP_INPAINT360_SOURCE_COMMIT", receipt["source_commit"])
+    monkeypatch.setattr(allocator, "ADP_INPAINT360_SOURCE_TREE", receipt["source_tree"])
+    monkeypatch.setattr(
+        allocator, "ADP_INPAINT360_LAMA_SOURCE_COMMIT", receipt["lama_source_commit"]
+    )
+    monkeypatch.setattr(
+        allocator, "ADP_INPAINT360_LAMA_SOURCE_TREE", receipt["lama_source_tree"]
+    )
+    monkeypatch.setattr(
+        allocator,
+        "ADP_INPAINT360_PREREQUISITE_RECEIPT_DIGEST",
+        receipt["prerequisite_receipt_digest"],
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: (
+            [],
+            {
+                "orchestrator_source_commit": receipt["blueprint_repository_commit"],
+                "checkout_clean": True,
+            },
+        ),
+    )
+    args = _allocator_args(tmp_path, receipt_path, execute=False)
+    args[args.index("--expected-source-commit") + 1] = "f" * 40
+
+    assert allocator.main(args) == 2
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["status"] == "blocked"
+    assert "adp_gpu_canary_expected_source_commit_not_control_plane_checkout" in admission[
+        "blockers"
+    ]
 
 
 def test_output_inspector_recognizes_inpaint360_runtime_result(tmp_path: Path) -> None:

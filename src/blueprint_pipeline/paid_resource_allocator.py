@@ -14,7 +14,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
 from .groot_oscar_digitalocean_builder import (
@@ -412,6 +412,22 @@ def _control_plane_checkout_blockers() -> tuple[list[str], dict[str, object]]:
         "raw_secret_values_recorded": False,
     }
     return blockers, identity
+
+
+def _adp_expected_source_commit_blockers(
+    expected_source_commit: str, control_identity: Mapping[str, object]
+) -> tuple[list[str], str]:
+    """Bind an ADP paid run to the exact clean orchestrator commit."""
+
+    expected = expected_source_commit.strip().lower()
+    blockers: list[str] = []
+    if not expected:
+        blockers.append("adp_gpu_canary_expected_source_commit_missing")
+    elif len(expected) != 40 or any(character not in "0123456789abcdef" for character in expected):
+        blockers.append("adp_gpu_canary_expected_source_commit_invalid")
+    elif expected != str(control_identity.get("orchestrator_source_commit") or "").lower():
+        blockers.append("adp_gpu_canary_expected_source_commit_not_control_plane_checkout")
+    return blockers, expected
 
 
 def _write_blocked_qualification_allocation_outputs(args: argparse.Namespace, result: dict) -> None:
@@ -1314,7 +1330,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not getattr(args, name, None)
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
-            blockers = [*missing, *control_blockers]
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            blockers = [*missing, *control_blockers, *source_blockers]
             if args.provider != "vast":
                 blockers.append("adp_inpaint360_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
@@ -1359,6 +1378,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("blockers") not in ([], None)
                     or not prepared_bundle.get("adapter_receipt_digest")
                     or prepared_bundle.get("blueprint_repository_tracked_state") != "clean"
+                    or prepared_bundle.get("blueprint_repository_commit")
+                    != expected_source_commit
                     or not bundle_path.is_file()
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
@@ -1395,6 +1416,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "orchestrator_source_commit": control_identity.get(
                     "orchestrator_source_commit"
                 ),
+                "expected_source_commit": expected_source_commit or None,
                 "bundle_receipt_sha256": receipt_sha256,
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
@@ -1519,7 +1541,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not value
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
-            blockers = [*missing, *control_blockers]
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            blockers = [*missing, *control_blockers, *source_blockers]
             if args.provider != "vast":
                 blockers.append("adp_aura_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
@@ -1560,6 +1585,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("retry_cap") != 0
                     or prepared_bundle.get("blockers") not in ([], None)
                     or (aura_interiorgs and not prepared_bundle.get("adapter_receipt_digest"))
+                    or (
+                        aura_interiorgs
+                        and prepared_bundle.get("blueprint_commit") != expected_source_commit
+                    )
                     or not bundle_path.is_file()
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
@@ -1596,6 +1625,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "orchestrator_source_commit": control_identity.get(
                     "orchestrator_source_commit"
                 ),
+                "expected_source_commit": expected_source_commit or None,
                 "bundle_receipt_sha256": receipt_sha256,
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
