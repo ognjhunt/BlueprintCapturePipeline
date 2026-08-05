@@ -604,7 +604,7 @@ def materialize_public_scene_inpainting_inputs(
         "claim_ceiling": "synthetic_public_scene_inpainting_input_candidate",
         "replay_command": (
             "python -m blueprint_pipeline.public_scene_inpainting_inputs "
-            f"--request {request_file.relative_to(repo).as_posix()} --repo-root {repo} "
+            f"--request {request_file.relative_to(repo).as_posix()} --repo-root . "
             f"--data-root {data} --output-root {output}"
         ),
     }
