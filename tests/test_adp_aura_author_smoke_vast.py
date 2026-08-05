@@ -39,6 +39,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         (scripts / name).write_bytes((real_root / "scripts" / name).read_bytes())
     source = tmp_path / "AuraFusion360_official"
     sam2 = tmp_path / "sam2"
+    wonderworld = tmp_path / "WonderWorld"
     (source / "submodules/diff-surfel-rasterization/third_party/glm").mkdir(parents=True)
     (source / "submodules/simple-knn").mkdir(parents=True)
     (source / "README.md").write_text("author source", encoding="utf-8")
@@ -51,6 +52,14 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     (source / "submodules/simple-knn/LICENSE.md").write_text("license", encoding="utf-8")
     sam2.mkdir()
     (sam2 / "LICENSE").write_text("sam2 license", encoding="utf-8")
+    (wonderworld / "marigold_module").mkdir(parents=True)
+    (wonderworld / "marigold_module/LICENSE.txt").write_text(
+        "marigold license", encoding="utf-8"
+    )
+    for source_path in aura.WONDERWORLD_MARIGOLD_RUNTIME_FILES.values():
+        path = wonderworld / source_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {path.name}\n", encoding="utf-8")
     author_data = tmp_path / "author-data"
     author_file = author_data / "360-USID/sunflower/input.txt"
     author_file.parent.mkdir(parents=True)
@@ -79,10 +88,14 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         if args == ("rev-parse", "HEAD^{tree}"):
             if path == sam2:
                 return aura.SAM2_SOURCE_TREE
+            if path == wonderworld:
+                return aura.WONDERWORLD_SOURCE_TREE
             return aura.SOURCE_TREE
         if args == ("rev-parse", "HEAD"):
             if path == sam2:
                 return aura.SAM2_SOURCE_COMMIT
+            if path == wonderworld:
+                return aura.WONDERWORLD_SOURCE_COMMIT
             for relative, revision in aura.SUBMODULES.items():
                 if path == source / relative:
                     return revision
@@ -107,6 +120,11 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         ],
     )
     monkeypatch.setattr(aura, "SAM2_LICENSE_SHA256", aura._sha256(sam2 / "LICENSE"))
+    monkeypatch.setattr(
+        aura,
+        "WONDERWORLD_MARIGOLD_LICENSE_SHA256",
+        aura._sha256(wonderworld / "marigold_module/LICENSE.txt"),
+    )
     original_tracked_files = aura._tracked_files
     monkeypatch.setattr(
         aura,
@@ -185,6 +203,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         "repo": repo,
         "source": source,
         "sam2": sam2,
+        "wonderworld": wonderworld,
         "prerequisite": prerequisite,
         "author_data": author_data,
         "author_data_receipt": author_receipt_path,
@@ -200,6 +219,7 @@ def test_bundle_derives_source_and_rights_evidence(
         repo_root=paths["repo"],
         aura_root=paths["source"],
         sam2_root=paths["sam2"],
+        wonderworld_root=paths["wonderworld"],
         prerequisite_receipt_path=paths["prerequisite"],
         author_data_root=paths["author_data"],
         author_data_receipt_path=paths["author_data_receipt"],
@@ -214,16 +234,29 @@ def test_bundle_derives_source_and_rights_evidence(
     assert receipt["sd2_checkpoint_identity"]["sha256"] == "sha256:" + "a" * 64
     assert receipt["author_data_file_count"] == 1
     assert receipt["author_data_total_size_bytes"] > 0
+    assert receipt["wonderworld_source_commit"] == aura.WONDERWORLD_SOURCE_COMMIT
+    assert receipt["wonderworld_marigold_runtime_license"] == "Apache-2.0"
     assert Path(receipt["bundle_path"]).is_file()
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         assert "provider_runtime/author_data.zip" in archive.namelist()
+        assert "provider_runtime/wonderworld_marigold_runtime.zip" in archive.namelist()
+        dependency_archive = tmp_path / "wonderworld-runtime.zip"
+        dependency_archive.write_bytes(
+            archive.read("provider_runtime/wonderworld_marigold_runtime.zip")
+        )
         runner = archive.read(
             "provider_runtime/adp_aura_author_smoke_provider_runner.py"
         ).decode()
+    with zipfile.ZipFile(dependency_archive) as dependency:
+        assert set(dependency.namelist()) == set(
+            aura.WONDERWORLD_MARIGOLD_RUNTIME_FILES
+        )
     assert 'filename=expected["expected_ply_path"]' in runner
     assert 'allow_patterns=[expected["path_prefix"] + "*"]' not in runner
     assert 'destination.stat().st_size != sd2["size_bytes"]' in runner
     assert "_extract_author_data(runtime, source, spec)" in runner
+    assert "_extract_runtime_dependency(runtime, spec)" in runner
+    assert 'os.environ["PYTHONPATH"] = str(runtime_dependencies)' in runner
     assert 'allow_patterns=[data["path_prefix"] + "*"]' not in runner
 
 
@@ -280,6 +313,7 @@ def test_bundle_rejects_changed_materialized_author_data(
             repo_root=paths["repo"],
             aura_root=paths["source"],
             sam2_root=paths["sam2"],
+            wonderworld_root=paths["wonderworld"],
             prerequisite_receipt_path=paths["prerequisite"],
             author_data_root=paths["author_data"],
             author_data_receipt_path=paths["author_data_receipt"],
@@ -308,6 +342,7 @@ def test_bundle_rejects_caller_rehashed_fake_author_data(
             repo_root=paths["repo"],
             aura_root=paths["source"],
             sam2_root=paths["sam2"],
+            wonderworld_root=paths["wonderworld"],
             prerequisite_receipt_path=paths["prerequisite"],
             author_data_root=paths["author_data"],
             author_data_receipt_path=paths["author_data_receipt"],
@@ -331,6 +366,7 @@ def test_bundle_rejects_missing_publisher_rights(
             repo_root=paths["repo"],
             aura_root=paths["source"],
             sam2_root=paths["sam2"],
+            wonderworld_root=paths["wonderworld"],
             prerequisite_receipt_path=paths["prerequisite"],
             author_data_root=paths["author_data"],
             author_data_receipt_path=paths["author_data_receipt"],
@@ -355,6 +391,34 @@ def test_bundle_rejects_changed_sam2_source(
             repo_root=paths["repo"],
             aura_root=paths["source"],
             sam2_root=paths["sam2"],
+            wonderworld_root=paths["wonderworld"],
+            prerequisite_receipt_path=paths["prerequisite"],
+            author_data_root=paths["author_data"],
+            author_data_receipt_path=paths["author_data_receipt"],
+            job_dir=paths["job"],
+        )
+
+
+def test_bundle_rejects_changed_wonderworld_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    original_git = aura._git
+
+    def changed_git(path: Path, *args: str) -> str:
+        if path == paths["wonderworld"] and args == ("status", "--porcelain"):
+            return " M marigold_lcm/util/batchsize.py"
+        return original_git(path, *args)
+
+    monkeypatch.setattr(aura, "_git", changed_git)
+    with pytest.raises(
+        ValueError, match="adp_aura_wonderworld_source_identity_mismatch"
+    ):
+        aura.build_aura_author_smoke_vast_bundle(
+            repo_root=paths["repo"],
+            aura_root=paths["source"],
+            sam2_root=paths["sam2"],
+            wonderworld_root=paths["wonderworld"],
             prerequisite_receipt_path=paths["prerequisite"],
             author_data_root=paths["author_data"],
             author_data_receipt_path=paths["author_data_receipt"],
@@ -370,6 +434,7 @@ def test_dry_run_requires_exact_bundle_without_provider_mutation(
         repo_root=paths["repo"],
         aura_root=paths["source"],
         sam2_root=paths["sam2"],
+        wonderworld_root=paths["wonderworld"],
         prerequisite_receipt_path=paths["prerequisite"],
         author_data_root=paths["author_data"],
         author_data_receipt_path=paths["author_data_receipt"],
@@ -420,6 +485,7 @@ def test_vast_adapter_preflights_dedicated_aura_bundle(
         repo_root=paths["repo"],
         aura_root=paths["source"],
         sam2_root=paths["sam2"],
+        wonderworld_root=paths["wonderworld"],
         prerequisite_receipt_path=paths["prerequisite"],
         author_data_root=paths["author_data"],
         author_data_receipt_path=paths["author_data_receipt"],
@@ -526,6 +592,7 @@ def test_canonical_allocator_issues_aura_grant_only_for_execute(
         repo_root=paths["repo"],
         aura_root=paths["source"],
         sam2_root=paths["sam2"],
+        wonderworld_root=paths["wonderworld"],
         prerequisite_receipt_path=paths["prerequisite"],
         author_data_root=paths["author_data"],
         author_data_receipt_path=paths["author_data_receipt"],

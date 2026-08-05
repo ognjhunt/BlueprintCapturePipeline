@@ -31,6 +31,11 @@ REQUEST_SCHEMA_VERSION = "public_scene_suite_materialization_request.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 ADP_ITEM = "ADP-009A"
 CLAIM_CEILING = "development_only"
+AURA_WONDERWORLD_SOURCE_COMMIT = "cae41f9a24a9c5513a7eea8939ee14fa0576162d"
+AURA_WONDERWORLD_SOURCE_TREE = "c9882769e0d8a6823055f76d66b9586fa8433003"
+AURA_WONDERWORLD_MARIGOLD_LICENSE_SHA256 = (
+    "sha256:0cec06e0e55fbc3dc5cee4fca9b607f66cb8f4e4dbcf3b3c013594dd156732e9"
+)
 
 
 class PublicSceneSuiteMaterializationError(ValueError):
@@ -268,6 +273,17 @@ def _aura_author_smoke_evidence(
         or bundle_receipt.get("retry_cap") != 0
         or bundle_receipt.get("source_commit") != expected_source_commit
         or bundle_receipt.get("source_tree") != expected_source_tree
+        or bundle_receipt.get("wonderworld_source_commit")
+        != AURA_WONDERWORLD_SOURCE_COMMIT
+        or bundle_receipt.get("wonderworld_source_tree")
+        != AURA_WONDERWORLD_SOURCE_TREE
+        or bundle_receipt.get("wonderworld_marigold_runtime_license") != "Apache-2.0"
+        or not str(
+            bundle_receipt.get("wonderworld_marigold_runtime_archive_sha256") or ""
+        ).startswith("sha256:")
+        or not str(
+            bundle_receipt.get("wonderworld_marigold_runtime_manifest_digest") or ""
+        ).startswith("sha256:")
     ):
         raise PublicSceneSuiteMaterializationError("aura_author_smoke_bundle_receipt_invalid")
     bundle_path = _require_under(
@@ -308,6 +324,8 @@ def _aura_author_smoke_evidence(
     source_after = execution.get("source_identity_after") or {}
     command = execution.get("author_command") or {}
     hardware = execution.get("hardware_probe") or {}
+    wonderworld = execution.get("wonderworld_marigold_runtime") or {}
+    wonderworld_files = wonderworld.get("source_files") or []
     command_argv = command.get("command") or []
     if (
         execution.get("schema_version") != "adp_aura_author_smoke_result.v1"
@@ -335,6 +353,18 @@ def _aura_author_smoke_evidence(
             "--config",
             "configs/360-USID/sunflower/inpaint.config",
         ]
+        or wonderworld.get("repository") != "https://github.com/KovenYu/WonderWorld"
+        or wonderworld.get("commit") != AURA_WONDERWORLD_SOURCE_COMMIT
+        or wonderworld.get("tree") != AURA_WONDERWORLD_SOURCE_TREE
+        or wonderworld.get("license") != "Apache-2.0"
+        or wonderworld.get("license_sha256")
+        != AURA_WONDERWORLD_MARIGOLD_LICENSE_SHA256
+        or wonderworld.get("archive_sha256")
+        != bundle_receipt.get("wonderworld_marigold_runtime_archive_sha256")
+        or not isinstance(wonderworld_files, list)
+        or len(wonderworld_files) != 4
+        or canonical_digest({"files": wonderworld_files})
+        != bundle_receipt.get("wonderworld_marigold_runtime_manifest_digest")
     ):
         raise PublicSceneSuiteMaterializationError("aura_author_smoke_execution_invalid")
 

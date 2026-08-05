@@ -42,6 +42,18 @@ SAM2_SOURCE_TREE = "64becbca23f880e0056449377496da248a74da43"
 SAM2_LICENSE_SHA256 = (
     "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 )
+WONDERWORLD_SOURCE_REPOSITORY = "https://github.com/KovenYu/WonderWorld"
+WONDERWORLD_SOURCE_COMMIT = "cae41f9a24a9c5513a7eea8939ee14fa0576162d"
+WONDERWORLD_SOURCE_TREE = "c9882769e0d8a6823055f76d66b9586fa8433003"
+WONDERWORLD_MARIGOLD_LICENSE_SHA256 = (
+    "sha256:0cec06e0e55fbc3dc5cee4fca9b607f66cb8f4e4dbcf3b3c013594dd156732e9"
+)
+WONDERWORLD_MARIGOLD_RUNTIME_FILES = {
+    "utils/utils/LICENSE.txt": "marigold_module/LICENSE.txt",
+    "utils/utils/batchsize.py": "marigold_lcm/util/batchsize.py",
+    "utils/utils/ensemble.py": "marigold_lcm/util/ensemble.py",
+    "utils/utils/image_util.py": "marigold_lcm/util/image_util.py",
+}
 SUBMODULES = {
     "submodules/diff-surfel-rasterization": "e0ed0207b3e0669960cfad70852200a4a5847f61",
     "submodules/diff-surfel-rasterization/third_party/glm": (
@@ -451,6 +463,7 @@ def build_aura_author_smoke_vast_bundle(
     repo_root: str | Path,
     aura_root: str | Path,
     sam2_root: str | Path,
+    wonderworld_root: str | Path,
     prerequisite_receipt_path: str | Path,
     author_data_root: str | Path,
     author_data_receipt_path: str | Path,
@@ -462,6 +475,7 @@ def build_aura_author_smoke_vast_bundle(
     repo = Path(repo_root).expanduser().resolve()
     source = Path(aura_root).expanduser().resolve()
     sam2_source = Path(sam2_root).expanduser().resolve()
+    wonderworld_source = Path(wonderworld_root).expanduser().resolve()
     prerequisite_path = Path(prerequisite_receipt_path).expanduser().resolve()
     author_root = Path(author_data_root).expanduser().resolve()
     author_receipt_path = Path(author_data_receipt_path).expanduser().resolve()
@@ -492,6 +506,25 @@ def build_aura_author_smoke_vast_bundle(
     sam2_license = sam2_source / "LICENSE"
     if not sam2_license.is_file() or _sha256(sam2_license) != SAM2_LICENSE_SHA256:
         raise ValueError("adp_aura_sam2_source_license_mismatch")
+    if (
+        _git(wonderworld_source, "rev-parse", "HEAD") != WONDERWORLD_SOURCE_COMMIT
+        or _git(wonderworld_source, "rev-parse", "HEAD^{tree}")
+        != WONDERWORLD_SOURCE_TREE
+        or _git(wonderworld_source, "status", "--porcelain")
+    ):
+        raise ValueError("adp_aura_wonderworld_source_identity_mismatch")
+    wonderworld_license = wonderworld_source / "marigold_module/LICENSE.txt"
+    if (
+        not wonderworld_license.is_file()
+        or _sha256(wonderworld_license) != WONDERWORLD_MARIGOLD_LICENSE_SHA256
+    ):
+        raise ValueError("adp_aura_wonderworld_marigold_license_mismatch")
+    wonderworld_rows = [
+        (archive_path, wonderworld_source / source_path)
+        for archive_path, source_path in sorted(WONDERWORLD_MARIGOLD_RUNTIME_FILES.items())
+    ]
+    if any(not path.is_file() for _, path in wonderworld_rows):
+        raise ValueError("adp_aura_wonderworld_marigold_runtime_file_missing")
     prerequisite = _read_json(prerequisite_path)
     prerequisite_snapshots = _validate_prerequisite(prerequisite)
     sd2_identity = prerequisite_snapshots[
@@ -513,6 +546,10 @@ def build_aura_author_smoke_vast_bundle(
     sam2_rows = _tracked_files(sam2_source)
     sam2_manifest = _source_manifest(sam2_rows)
     _deterministic_zip_files(sam2_rows, runtime / "sam2_source.zip")
+    wonderworld_manifest = _source_manifest(wonderworld_rows)
+    _deterministic_zip_files(
+        wonderworld_rows, runtime / "wonderworld_marigold_runtime.zip"
+    )
     _deterministic_zip_files(author_rows, runtime / "author_data.zip")
     author_archive_sha256 = _sha256(runtime / "author_data.zip")
     smoke_spec = {
@@ -529,6 +566,18 @@ def build_aura_author_smoke_vast_bundle(
             "license": "Apache-2.0",
             "license_sha256": SAM2_LICENSE_SHA256,
             "source_files": sam2_manifest,
+        },
+        "wonderworld_marigold_runtime": {
+            "repository": WONDERWORLD_SOURCE_REPOSITORY,
+            "commit": WONDERWORLD_SOURCE_COMMIT,
+            "tree": WONDERWORLD_SOURCE_TREE,
+            "license": "Apache-2.0",
+            "license_sha256": WONDERWORLD_MARIGOLD_LICENSE_SHA256,
+            "archive": "wonderworld_marigold_runtime.zip",
+            "archive_sha256": _sha256(
+                runtime / "wonderworld_marigold_runtime.zip"
+            ),
+            "source_files": wonderworld_manifest,
         },
         "author_data": {
             **_AUTHOR_DATA,
@@ -580,6 +629,15 @@ def build_aura_author_smoke_vast_bundle(
         "source_manifest_digest": canonical_digest({"files": source_manifest}),
         "sam2_source_archive_sha256": _sha256(runtime / "sam2_source.zip"),
         "sam2_source_manifest_digest": canonical_digest({"files": sam2_manifest}),
+        "wonderworld_source_commit": WONDERWORLD_SOURCE_COMMIT,
+        "wonderworld_source_tree": WONDERWORLD_SOURCE_TREE,
+        "wonderworld_marigold_runtime_archive_sha256": _sha256(
+            runtime / "wonderworld_marigold_runtime.zip"
+        ),
+        "wonderworld_marigold_runtime_manifest_digest": canonical_digest(
+            {"files": wonderworld_manifest}
+        ),
+        "wonderworld_marigold_runtime_license": "Apache-2.0",
         "author_data_archive_sha256": author_archive_sha256,
         "author_data_materialization_receipt_digest": author_receipt["receipt_digest"],
         "author_data_file_count": len(author_manifest),
@@ -844,6 +902,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--aura-root")
     parser.add_argument("--sam2-root")
+    parser.add_argument("--wonderworld-root")
     parser.add_argument("--prerequisite-receipt", required=True)
     parser.add_argument("--author-data-root")
     parser.add_argument("--author-data-receipt")
@@ -858,7 +917,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     missing = [
         name
-        for name in ("aura_root", "sam2_root", "author_data_root", "author_data_receipt")
+        for name in (
+            "aura_root",
+            "sam2_root",
+            "wonderworld_root",
+            "author_data_root",
+            "author_data_receipt",
+        )
         if not getattr(args, name)
     ]
     if missing:
@@ -867,6 +932,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=args.repo_root,
         aura_root=args.aura_root,
         sam2_root=args.sam2_root,
+        wonderworld_root=args.wonderworld_root,
         prerequisite_receipt_path=args.prerequisite_receipt,
         author_data_root=args.author_data_root,
         author_data_receipt_path=args.author_data_receipt,

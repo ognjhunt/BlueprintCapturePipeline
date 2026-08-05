@@ -146,10 +146,38 @@ def _extract_author_data(runtime: Path, source: Path, spec: dict[str, Any]) -> N
         raise ValueError("aurafusion360_author_data_materialized_file_set_changed")
 
 
+def _extract_runtime_dependency(runtime: Path, spec: dict[str, Any]) -> Path:
+    dependency = spec["wonderworld_marigold_runtime"]
+    archive = runtime / dependency["archive"]
+    if not archive.is_file() or _sha256(archive) != dependency["archive_sha256"]:
+        raise ValueError("aurafusion360_wonderworld_runtime_archive_changed")
+    destination = runtime / "runtime_dependencies"
+    if destination.is_dir():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    root = destination.resolve()
+    with zipfile.ZipFile(archive) as source_archive:
+        for member in source_archive.infolist():
+            target = (destination / member.filename).resolve()
+            if root != target and root not in target.parents:
+                raise ValueError("aurafusion360_wonderworld_runtime_archive_path_traversal")
+        source_archive.extractall(destination)
+    for item in dependency["source_files"]:
+        path = destination / str(item["path"])
+        if (
+            not path.is_file()
+            or path.stat().st_size != item["size_bytes"]
+            or _sha256(path) != item["sha256"]
+        ):
+            raise ValueError("aurafusion360_wonderworld_runtime_bytes_changed")
+    return destination
+
+
 def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     from huggingface_hub import hf_hub_download, snapshot_download
 
     _extract_author_data(runtime, source, spec)
+    _extract_runtime_dependency(runtime, spec)
     expected = spec["expected_output"]
     expected_ply = Path(
         hf_hub_download(
@@ -210,6 +238,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec = _read_json(runtime / "smoke_spec.json")
     if args.prepare_only:
         return _prepare(runtime, source, spec)
+
+    runtime_dependencies = runtime / "runtime_dependencies"
+    if not runtime_dependencies.is_dir():
+        raise ValueError("aurafusion360_runtime_dependencies_missing")
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = str(runtime_dependencies) + (
+        os.pathsep + existing_pythonpath if existing_pythonpath else ""
+    )
 
     source_before = _source_identity(source, spec)
     hardware = _run(
@@ -276,6 +312,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             {"path": freeze.name, "sha256": _sha256(freeze)} if freeze.is_file() else None
         ),
         "depth_model": "prs-eth/marigold-depth-v1-0",
+        "wonderworld_marigold_runtime": spec["wonderworld_marigold_runtime"],
         "depth_anything3_used": False,
         "retry_cap": 0,
         "blockers": blockers,
