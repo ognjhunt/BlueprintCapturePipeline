@@ -1,11 +1,10 @@
 {
-  "admitted_role_count": 3,
+  "admitted_role_count": 4,
   "adp009_matrix_complete": false,
   "adp_item": "ADP-009",
   "artifact_bytes_opened": false,
   "artifact_bytes_verified": false,
   "blocked_roles": [
-    "aurafusion360_quality_challenger",
     "controlled_background_truth",
     "exact_simready_object",
     "infusion_primary_adapter",
@@ -16,7 +15,6 @@
   "blockers": [
     "components[0].status:blocked",
     "components[1].status:blocked",
-    "components[2].status:blocked",
     "components[5].status:blocked",
     "components[6].status:blocked",
     "components[8].status:blocked",
@@ -26,9 +24,9 @@
   "customer_value": false,
   "declared_component_count": 10,
   "deployment_readiness": false,
-  "evaluated_on": "2026-08-04",
+  "evaluated_on": "2026-08-05",
   "gate_id": "exact_public_scene_suite_index",
-  "index_digest": "sha256:b506e71e907759a14407e0c02b47b1a1496f9d31e45bd84690cf8328a9ef4615",
+  "index_digest": "sha256:4372ad5bb688014aa7a4daa31366169de08bb4e2e3e2e1e7eb50f6503317023a",
   "index_id": "adp009a-public-suite-20260804",
   "metric_geometry_qualified": false,
   "partner_capture_qualified": false,
@@ -36,7 +34,7 @@
   "program_id": "arm-decision-proof-v1",
   "prospective_validation": false,
   "public_scene_software_qualified": false,
-  "receipt_digest": "sha256:557a3e47f55acfc3b8aa74552c229f15feb1abd875d7521cebf0ad3c6eaf6cf0",
+  "receipt_digest": "sha256:dd08d5a877d9702adc33e7d427bd0be594820c74a97f4005fe564a8a281bf6ef",
   "required_role_count": 10,
   "role_bindings": [
     {
@@ -72,13 +70,11 @@
       "source_project_id": "InFusion"
     },
     {
-      "component_admission_receipt_digest": "sha256:e7beaed97813bd517f230e91e65d4c16ccff8aa0b2b91e9b6065613087420e08",
-      "component_blockers": [
-        "aurafusion360_unchanged_author_smoke_missing"
-      ],
-      "component_manifest_digest": "sha256:6acccfc100b8da28e4fce515a34b45688fe6b5fc7ffd900723ab50f4c116c3e9",
-      "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:d0e8dc02b2d5f9db4c8a2cd19d4555867a525bca69d0d6082bfcde31f882d125",
+      "component_admission_receipt_digest": "sha256:3345f7d67e51e64e48dae177f10028ea06b65310aa7606f0a0a7dcfbb8564609",
+      "component_blockers": [],
+      "component_manifest_digest": "sha256:eafa9b0d8ac00b3a0d11876ef87ab41f44031c168463197110c52b49aa0f58c7",
+      "declared_status": "admitted",
+      "exact_artifact_digest": "sha256:dc9e1aa1ece170fb0e651ad54a21b148fd743b0970cb5a8037c91c394d530402",
       "exact_revision": {
         "kind": "git_commit",
         "value": "f23b26c44ba84608306ba952510533ebf4c7877d"
@@ -196,6 +192,6 @@
   ],
   "schema_version": "public_scene_suite_index_receipt.v1",
   "status": "blocked",
-  "supplied_index_digest": "sha256:b506e71e907759a14407e0c02b47b1a1496f9d31e45bd84690cf8328a9ef4615",
+  "supplied_index_digest": "sha256:4372ad5bb688014aa7a4daa31366169de08bb4e2e3e2e1e7eb50f6503317023a",
   "task_physics_qualified": false
 }

@@ -166,3 +166,45 @@ def test_aura_lama_checkpoint_rejects_archive_without_config(tmp_path: Path) -> 
 
     assert receipt["status"] == "blocked"
     assert "aurafusion360_interiorgs_lama_checkpoint_members_missing" in receipt["blockers"]
+
+
+def test_aura_reference_lama_command_uses_absolute_verified_checkpoint_path(
+    tmp_path: Path,
+) -> None:
+    runner = _load_runner()
+    source = tmp_path / "AuraFusion360_official"
+    checkpoint_root = source / "LaMa/big-lama"
+    (checkpoint_root / "models").mkdir(parents=True)
+    (checkpoint_root / "config.yaml").write_text("training_model: {}\n")
+    (checkpoint_root / "models/best.ckpt").write_bytes(b"checkpoint")
+
+    command = runner._reference_lama_command(
+        source=source,
+        runtime=tmp_path / "runtime",
+        lama_python=str(source / "LaMa/.venv/bin/python"),
+    )
+
+    assert command[2] == f"model.path={checkpoint_root.resolve()}"
+    assert command[3] == f"indir={(tmp_path / 'runtime/reference_lama_input').resolve()}"
+    assert command[4] == f"outdir={(tmp_path / 'runtime/reference_lama_output').resolve()}"
+
+
+def test_aura_reference_lama_command_rejects_missing_checkpoint_bytes(
+    tmp_path: Path,
+) -> None:
+    runner = _load_runner()
+    source = tmp_path / "AuraFusion360_official"
+    checkpoint_root = source / "LaMa/big-lama"
+    checkpoint_root.mkdir(parents=True)
+    (checkpoint_root / "config.yaml").write_text("training_model: {}\n")
+
+    try:
+        runner._reference_lama_command(
+            source=source,
+            runtime=tmp_path / "runtime",
+            lama_python=str(source / "LaMa/.venv/bin/python"),
+        )
+    except ValueError as exc:
+        assert str(exc) == "aurafusion360_interiorgs_lama_checkpoint_path_unresolved"
+    else:
+        raise AssertionError("missing LaMa checkpoint bytes were not rejected")

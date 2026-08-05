@@ -1,6 +1,6 @@
 # ADP-009A Blocker Report
 
-Observed state on 2026-08-04: the deterministic ten-role suite admits `3/10`
+Observed state on 2026-08-05: the deterministic ten-role suite admits `4/10`
 roles and remains `blocked`. This is useful current-state evidence, not ADP-009A
 completion.
 
@@ -12,6 +12,11 @@ completion.
   target collider `/Root/ZHQYGJJVAJYEYPTUKY888888`.
 - `usd_content_agents_candidate`: NVIDIA USD Content Agents v0.5.2 execution
   with 75 retained artifacts and verified teardown.
+- `aurafusion360_quality_challenger`: unchanged publisher workflow completed
+  with source commit `f23b26c44ba84608306ba952510533ebf4c7877d`, no source
+  modification, one 820,832-vertex produced point cloud, eight retained
+  full-resolution comparison frame pairs, `$0.788692` estimated cost, zero
+  retries, provider teardown, and object-store cleanup.
 
 ## Smallest blockers
 
@@ -19,7 +24,6 @@ completion.
 |---|---|---|
 | Inpaint360GS author smoke | `inpaint360_author_dataset_license_authority_missing` | Publisher statement or other durable authority covering the exact author-data archive; user permission cannot grant the publisher's copyright. Exact default-scene input/output ranges are already bound, so no bulk archive download is needed after authority exists. |
 | InFusion primary adapter | `infusion_checkpoint_license_missing` | Publisher license for `Johanan0528/Infusion` revision `83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2`; author masks remain a later missing input. |
-| AuraFusion360 challenger | `aurafusion360_unchanged_author_smoke_missing` | Execute the next immutable bundle once on admitted Linux NVIDIA compute. `live_v12` proved unchanged training, rendering, removal, and SAM2 execution, then retained Diffusers 0.39's rejection of a verified partial cache during offline fallback. The next bundle binds all 24 files and 15,482,514,887 bytes in the exact pinned Marigold repository, uses direct HTTP rather than Xet, and keeps method execution offline. |
 | Controlled-background truth | `controlled_background_truth_case_missing` | One rights-cleared, metric known-background edit case and receipt. |
 | Exact SimReady object | `isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing` | Dynamic Isaac contact, drop, slide, tip, and gripper probes on the exact static-validated USD. |
 | Physics positive control | `physics_positive_control_receipt_missing` | A digest-bound positive-control execution receipt. |
@@ -39,8 +43,9 @@ license/terms filename, and bound the unchanged default `doppelherz` case to
 14-file, 6,858,056,617-byte pinned checkpoint
 snapshot whose publisher card declares no license. AuraFusion360 has admitted
 sunflower input data, SAM2, Marigold, Stable Diffusion 2 inpainting, and a pinned
-8,463,892,136-byte publisher expected-output snapshot; none of that is an
-execution receipt.
+8,463,892,136-byte publisher expected-output snapshot. Its `live_v14` receipt
+additionally binds the successful unchanged execution, exact runtime,
+stdout/stderr, output bytes, same-camera comparisons, and provider cleanup.
 
 No Inpaint360GS method has run on InteriorGS, no selected source object has been
 removed from the appearance or collision representation, and no replacement USD

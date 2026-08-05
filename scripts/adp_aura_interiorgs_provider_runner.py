@@ -224,6 +224,21 @@ def _ply_count(path: Path) -> int | None:
     return None
 
 
+def _reference_lama_command(*, source: Path, runtime: Path, lama_python: str) -> list[str]:
+    checkpoint_root = (source / "LaMa/big-lama").resolve()
+    if not (checkpoint_root / "config.yaml").is_file() or not (
+        checkpoint_root / "models/best.ckpt"
+    ).is_file():
+        raise ValueError("aurafusion360_interiorgs_lama_checkpoint_path_unresolved")
+    return [
+        lama_python,
+        "bin/predict.py",
+        f"model.path={checkpoint_root}",
+        f"indir={(runtime / 'reference_lama_input').resolve()}",
+        f"outdir={(runtime / 'reference_lama_output').resolve()}",
+    ]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prepare-only", action="store_true")
@@ -259,13 +274,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = [
         (
             "reference_lama",
-            [
-                lama_python,
-                "bin/predict.py",
-                "model.path=./big-lama",
-                f"indir={runtime / 'reference_lama_input'}",
-                f"outdir={runtime / 'reference_lama_output'}",
-            ],
+            _reference_lama_command(
+                source=source,
+                runtime=runtime,
+                lama_python=lama_python,
+            ),
             source / "LaMa",
             lama_env,
         ),

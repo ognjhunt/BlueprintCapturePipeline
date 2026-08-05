@@ -47,19 +47,17 @@
       "status": "blocked"
     },
     {
-      "blockers": [
-        "aurafusion360_unchanged_author_smoke_missing"
-      ],
-      "component_admission_receipt_digest": "sha256:e7beaed97813bd517f230e91e65d4c16ccff8aa0b2b91e9b6065613087420e08",
-      "component_manifest_digest": "sha256:6acccfc100b8da28e4fce515a34b45688fe6b5fc7ffd900723ab50f4c116c3e9",
-      "exact_artifact_digest": "sha256:d0e8dc02b2d5f9db4c8a2cd19d4555867a525bca69d0d6082bfcde31f882d125",
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:3345f7d67e51e64e48dae177f10028ea06b65310aa7606f0a0a7dcfbb8564609",
+      "component_manifest_digest": "sha256:eafa9b0d8ac00b3a0d11876ef87ab41f44031c168463197110c52b49aa0f58c7",
+      "exact_artifact_digest": "sha256:dc9e1aa1ece170fb0e651ad54a21b148fd743b0970cb5a8037c91c394d530402",
       "exact_revision": {
         "kind": "git_commit",
         "value": "f23b26c44ba84608306ba952510533ebf4c7877d"
       },
       "role": "aurafusion360_quality_challenger",
       "source_project_id": "AuraFusion360",
-      "status": "blocked"
+      "status": "admitted"
     },
     {
       "blockers": [],
@@ -161,7 +159,7 @@
       "status": "blocked"
     }
   ],
-  "index_digest": "sha256:b506e71e907759a14407e0c02b47b1a1496f9d31e45bd84690cf8328a9ef4615",
+  "index_digest": "sha256:4372ad5bb688014aa7a4daa31366169de08bb4e2e3e2e1e7eb50f6503317023a",
   "index_id": "adp009a-public-suite-20260804",
   "program_id": "arm-decision-proof-v1",
   "schema_version": "public_scene_suite_index.v1"

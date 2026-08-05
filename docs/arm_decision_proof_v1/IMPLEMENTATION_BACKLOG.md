@@ -217,12 +217,14 @@ Deliverables:
   roles, allowed use, exact revisions, hashes, sizes, and claim ceilings;
 - released-code smoke receipts; paper-only methods remain inadmissible.
 
-Observed 2026-08-04: the matched InteriorGS/SAGE-3D `840313` roles and the
-bounded NVIDIA USD Content Agents authoring comparison are admitted. The
-ten-role index remains blocked at three admitted roles because the released
-inpainting-method smokes, controlled-background truth, dynamic exact-SimReady
-qualification, physics positive control, and ScanNet++ transfer are still
-missing. The Content Agents execution is not an inpainting-method smoke.
+Observed 2026-08-05: the matched InteriorGS/SAGE-3D `840313` roles, the bounded
+NVIDIA USD Content Agents authoring comparison, and AuraFusion360's unchanged
+author-data smoke are admitted. The ten-role index remains blocked at four
+admitted roles because the Inpaint360GS author smoke, InFusion primary adapter,
+controlled-background truth, dynamic exact-SimReady qualification, physics
+positive control, and ScanNet++ transfer are still missing. The Aura author
+smoke is not an InteriorGS result, and the Content Agents execution is not an
+inpainting-method smoke.
 
 Acceptance: missing/expired rights, mismatched scene IDs, changed digests,
 unknown frames, calibration/test-trajectory overlap, DA3-as-scale-authority, paper-only

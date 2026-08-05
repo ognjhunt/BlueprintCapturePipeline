@@ -1,7 +1,7 @@
 {
   "schema_version": "public_scene_suite_materialization_request.v1",
   "index_id": "adp009a-public-suite-20260804",
-  "evaluated_on": "2026-08-04",
+  "evaluated_on": "2026-08-05",
   "scene": {
     "publisher_scene_id": "840313",
     "interiorgs_folder": "0442_840313",
@@ -113,6 +113,9 @@
         ]
       },
       "prerequisite_receipt": "methods/adp009a_method_prerequisite_receipt.v2.json",
+      "author_smoke_receipt": "aura_author_smoke/live_v14_execute/adp_aura_author_smoke_vast_result.json",
+      "author_smoke_bundle_receipt": "aura_author_smoke/bundle_v14/adp_aura_author_smoke_bundle_receipt.json",
+      "author_smoke_object_cleanup_receipt": "aura_author_smoke/live_v14_execute/object_store_staging/wam_provider_object_store_cleanup.json",
       "smallest_blocker": "aurafusion360_unchanged_author_smoke_missing"
     }
   },
