@@ -21,6 +21,7 @@ from blueprint_pipeline.provider_runtime_bundle_contract import (
 )
 from blueprint_pipeline.adp_aura_interiorgs_vast import (
     AURA_INTERIORGS_GPU_SELECTION_POLICY,
+    _remaining_minutes,
     run_aura_interiorgs_vast,
 )
 from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
@@ -328,6 +329,31 @@ def test_aura_interiorgs_vast_reuses_completed_author_control_gpu_class() -> Non
         "denied_gpu_keywords": (),
         "reason": "reuse the L40S class that completed the unchanged Aura author control",
     }
+
+
+def test_aura_interiorgs_vast_budget_uses_attempt_ledger(tmp_path: Path) -> None:
+    (tmp_path / "adp_aura_interiorgs_vast_session_budget.json").write_text(
+        json.dumps(
+            {
+                "attempts": [
+                    {
+                        "runtime_seconds_observed_by_adapter": 3600,
+                        "estimated_cost_usd": 0.75,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        _remaining_minutes(
+            job=tmp_path,
+            hard_cap_usd=6.0,
+            hard_ttl_seconds=14_400,
+            max_hourly_rate_usd=1.5,
+        )
+        == 180
+    )
 
 
 def test_vast_preflight_accepts_distinct_aura_interiorgs_bundle(

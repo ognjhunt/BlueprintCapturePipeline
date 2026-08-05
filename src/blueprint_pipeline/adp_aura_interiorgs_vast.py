@@ -331,11 +331,15 @@ def build_aura_interiorgs_bundle(
 def _remaining_minutes(
     *, job: Path, hard_cap_usd: float, hard_ttl_seconds: int, max_hourly_rate_usd: float
 ) -> int:
-    spent = attempt_estimated_cost(job)
-    elapsed = attempt_runtime_seconds(job)
-    dollars = max(0.0, hard_cap_usd - spent)
-    seconds = max(0, hard_ttl_seconds - elapsed)
-    return max(0, min(seconds // 60, math.floor(dollars / max_hourly_rate_usd * 60)))
+    ledger = _read_json(job / "adp_aura_interiorgs_vast_session_budget.json")
+    attempts = [row for row in ledger.get("attempts") or [] if isinstance(row, Mapping)]
+    prior_seconds = sum(attempt_runtime_seconds(row) for row in attempts)
+    prior_cost = sum(attempt_estimated_cost(row) for row in attempts)
+    runtime_minutes = math.floor(max(0.0, hard_ttl_seconds - prior_seconds) / 60.0)
+    spend_minutes = math.floor(
+        max(0.0, hard_cap_usd - prior_cost) * 60.0 / max_hourly_rate_usd
+    )
+    return max(0, min(runtime_minutes, spend_minutes))
 
 
 def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
