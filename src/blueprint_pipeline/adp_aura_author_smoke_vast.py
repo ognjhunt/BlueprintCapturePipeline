@@ -19,6 +19,8 @@ from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
+from .public_scene_method_prerequisites import _hf_repository_info
+from .model_access_env import normalize_model_access_env
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
@@ -30,6 +32,7 @@ from .wam_provider_object_store import (
 PROBE_KIND = "adp-aurafusion360-author-smoke"
 PROVIDER_BUNDLE_KIND = "adp_aura_smoke"
 RESULT_SCHEMA_VERSION = "adp_aura_author_smoke_vast_run.v1"
+AUTHOR_DATA_RECEIPT_SCHEMA_VERSION = "adp_aura_author_data_materialization.v1"
 SOURCE_COMMIT = "f23b26c44ba84608306ba952510533ebf4c7877d"
 SOURCE_TREE = "cc8447c66448b29bb4d39fec29c031df63d4b179"
 SOURCE_REPOSITORY = "https://github.com/kkennethwu/AuraFusion360_official"
@@ -188,6 +191,211 @@ def _deterministic_zip_directory(source: Path, destination: Path) -> None:
     )
 
 
+def _publisher_file_rows(info: Mapping[str, Any], prefix: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for sibling in info.get("siblings") or []:
+        if not isinstance(sibling, Mapping):
+            continue
+        path = str(sibling.get("rfilename") or "")
+        if not path.startswith(prefix):
+            continue
+        lfs_value = sibling.get("lfs")
+        lfs = lfs_value if isinstance(lfs_value, Mapping) else {}
+        rows.append(
+            {
+                "path": path,
+                "size_bytes": int(sibling.get("size") or lfs.get("size") or 0),
+                "lfs_sha256": lfs.get("sha256"),
+                "git_blob_id": sibling.get("blobId"),
+            }
+        )
+    return sorted(rows, key=lambda row: row["path"])
+
+
+def _git_blob_id(path: Path) -> str:
+    content = path.read_bytes()
+    return hashlib.sha1(
+        f"blob {len(content)}\0".encode("ascii") + content,
+        usedforsecurity=False,
+    ).hexdigest()
+
+
+def _download_author_snapshot(destination: Path) -> None:
+    normalize_model_access_env()
+    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    previous = os.environ.get("HF_HUB_DISABLE_XET")
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(
+            repo_id=_AUTHOR_DATA["repository"],
+            repo_type="dataset",
+            revision=_AUTHOR_DATA["revision"],
+            allow_patterns=[_AUTHOR_DATA["path_prefix"] + "*"],
+            local_dir=destination,
+            max_workers=1,
+            token=token,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HF_HUB_DISABLE_XET", None)
+        else:
+            os.environ["HF_HUB_DISABLE_XET"] = previous
+
+
+def materialize_aura_author_data(
+    *,
+    prerequisite_receipt_path: str | Path,
+    output_root: str | Path,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Download the exact author scene once and bind every materialized file."""
+
+    prerequisite = _read_json(Path(prerequisite_receipt_path).expanduser().resolve())
+    snapshots = _validate_prerequisite(prerequisite)
+    author_snapshot = snapshots["aurafusion360_sunflower_author_scene"].get("publisher")
+    if (
+        not isinstance(author_snapshot, Mapping)
+        or author_snapshot.get("repository") != _AUTHOR_DATA["repository"]
+        or author_snapshot.get("revision") != _AUTHOR_DATA["revision"]
+        or author_snapshot.get("path_prefix") != _AUTHOR_DATA["path_prefix"]
+        or author_snapshot.get("snapshot_digest") != _AUTHOR_DATA["snapshot_digest"]
+    ):
+        raise ValueError("adp_aura_author_data_prerequisite_identity_invalid")
+    root = Path(output_root).expanduser().resolve()
+    if root.exists() and any(root.iterdir()):
+        raise ValueError("adp_aura_author_data_output_root_not_empty")
+    data = root / "data"
+    ensure_dir(data)
+    info = _hf_repository_info(
+        repo_type="dataset",
+        repository=_AUTHOR_DATA["repository"],
+        revision=_AUTHOR_DATA["revision"],
+    )
+    publisher_files = _publisher_file_rows(info, _AUTHOR_DATA["path_prefix"])
+    if canonical_digest({"files": publisher_files}) != _AUTHOR_DATA["snapshot_digest"]:
+        raise ValueError("adp_aura_author_data_publisher_snapshot_changed")
+    _download_author_snapshot(data)
+    cache = data / ".cache"
+    if cache.is_dir():
+        shutil.rmtree(cache)
+    actual_paths = {
+        path.relative_to(data).as_posix()
+        for path in data.rglob("*")
+        if path.is_file()
+    }
+    expected_paths = {str(row["path"]) for row in publisher_files}
+    if actual_paths != expected_paths:
+        raise ValueError("adp_aura_author_data_materialized_file_set_mismatch")
+    files: list[dict[str, Any]] = []
+    for publisher in publisher_files:
+        path = data / str(publisher["path"])
+        sha256 = _sha256(path)
+        lfs_sha256 = publisher.get("lfs_sha256")
+        git_blob_id = publisher.get("git_blob_id")
+        if not lfs_sha256 and not git_blob_id:
+            raise ValueError("adp_aura_author_data_publisher_file_identity_missing")
+        if path.stat().st_size != publisher["size_bytes"]:
+            raise ValueError("adp_aura_author_data_materialized_size_mismatch")
+        if lfs_sha256 and sha256 != "sha256:" + str(lfs_sha256):
+            raise ValueError("adp_aura_author_data_materialized_lfs_hash_mismatch")
+        if not lfs_sha256 and git_blob_id and _git_blob_id(path) != git_blob_id:
+            raise ValueError("adp_aura_author_data_materialized_git_blob_mismatch")
+        files.append({**publisher, "sha256": sha256})
+    receipt: dict[str, Any] = {
+        "schema_version": AUTHOR_DATA_RECEIPT_SCHEMA_VERSION,
+        "generated_at": generated_at or utc_now_iso(),
+        "status": "completed",
+        "publisher": {
+            "repository": _AUTHOR_DATA["repository"],
+            "revision": _AUTHOR_DATA["revision"],
+            "path_prefix": _AUTHOR_DATA["path_prefix"],
+            "snapshot_digest": _AUTHOR_DATA["snapshot_digest"],
+        },
+        "prerequisite_receipt_digest": prerequisite["receipt_digest"],
+        "files": files,
+        "file_count": len(files),
+        "total_size_bytes": sum(int(row["size_bytes"]) for row in files),
+        "rights_established": True,
+        "raw_secret_values_recorded": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(root / "adp_aura_author_data_materialization_receipt.json", receipt)
+    return receipt
+
+
+def _validate_materialized_author_data(
+    receipt: Mapping[str, Any], *, data_root: Path
+) -> tuple[list[tuple[str, Path]], list[dict[str, Any]]]:
+    if (
+        receipt.get("schema_version") != AUTHOR_DATA_RECEIPT_SCHEMA_VERSION
+        or receipt.get("status") != "completed"
+        or canonical_digest(receipt, digest_field="receipt_digest")
+        != receipt.get("receipt_digest")
+        or receipt.get("prerequisite_receipt_digest") != PREREQUISITE_RECEIPT_DIGEST
+        or receipt.get("rights_established") is not True
+    ):
+        raise ValueError("adp_aura_author_data_receipt_invalid")
+    publisher = receipt.get("publisher")
+    if not isinstance(publisher, Mapping) or any(
+        publisher.get(key) != _AUTHOR_DATA[key]
+        for key in ("repository", "revision", "path_prefix", "snapshot_digest")
+    ):
+        raise ValueError("adp_aura_author_data_receipt_publisher_mismatch")
+    files = receipt.get("files")
+    if not isinstance(files, list) or not files:
+        raise ValueError("adp_aura_author_data_receipt_files_missing")
+    if receipt.get("file_count") != len(files) or receipt.get(
+        "total_size_bytes"
+    ) != sum(int(item.get("size_bytes") or 0) for item in files if isinstance(item, Mapping)):
+        raise ValueError("adp_aura_author_data_receipt_aggregate_mismatch")
+    publisher_files: list[dict[str, Any]] = []
+    rows: list[tuple[str, Path]] = []
+    expected_paths: set[str] = set()
+    for item in files:
+        if not isinstance(item, Mapping):
+            raise ValueError("adp_aura_author_data_receipt_file_invalid")
+        relative = str(item.get("path") or "")
+        path = (data_root / relative).resolve()
+        if not relative or (data_root != path and data_root not in path.parents):
+            raise ValueError("adp_aura_author_data_path_outside_root")
+        if (
+            not path.is_file()
+            or path.stat().st_size != item.get("size_bytes")
+            or _sha256(path) != item.get("sha256")
+        ):
+            raise ValueError("adp_aura_author_data_materialized_bytes_changed")
+        lfs_sha256 = item.get("lfs_sha256")
+        git_blob_id = item.get("git_blob_id")
+        if lfs_sha256:
+            if item.get("sha256") != "sha256:" + str(lfs_sha256):
+                raise ValueError("adp_aura_author_data_receipt_lfs_hash_mismatch")
+        elif not git_blob_id or _git_blob_id(path) != git_blob_id:
+            raise ValueError("adp_aura_author_data_receipt_git_blob_mismatch")
+        expected_paths.add(relative)
+        rows.append((relative, path))
+        publisher_files.append(
+            {
+                "path": relative,
+                "size_bytes": item.get("size_bytes"),
+                "lfs_sha256": item.get("lfs_sha256"),
+                "git_blob_id": item.get("git_blob_id"),
+            }
+        )
+    actual_paths = {
+        path.relative_to(data_root).as_posix()
+        for path in data_root.rglob("*")
+        if path.is_file()
+    }
+    if actual_paths != expected_paths:
+        raise ValueError("adp_aura_author_data_materialized_file_set_changed")
+    if canonical_digest({"files": publisher_files}) != _AUTHOR_DATA["snapshot_digest"]:
+        raise ValueError("adp_aura_author_data_receipt_snapshot_digest_mismatch")
+    return sorted(rows), [dict(item) for item in files]
+
+
 def _validate_prerequisite(receipt: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     if (
         receipt.get("receipt_digest") != PREREQUISITE_RECEIPT_DIGEST
@@ -244,15 +452,19 @@ def build_aura_author_smoke_vast_bundle(
     aura_root: str | Path,
     sam2_root: str | Path,
     prerequisite_receipt_path: str | Path,
+    author_data_root: str | Path,
+    author_data_receipt_path: str | Path,
     job_dir: str | Path,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build a small immutable bundle; publisher data downloads on the worker."""
+    """Build an immutable bundle from locally inspected author-scene bytes."""
 
     repo = Path(repo_root).expanduser().resolve()
     source = Path(aura_root).expanduser().resolve()
     sam2_source = Path(sam2_root).expanduser().resolve()
     prerequisite_path = Path(prerequisite_receipt_path).expanduser().resolve()
+    author_root = Path(author_data_root).expanduser().resolve()
+    author_receipt_path = Path(author_data_receipt_path).expanduser().resolve()
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
         raise ValueError("adp_aura_bundle_job_dir_not_empty")
@@ -290,6 +502,10 @@ def build_aura_author_smoke_vast_bundle(
         "size_bytes": sd2_identity["size_bytes"],
         "sha256": sd2_identity["lfs_sha256"],
     }
+    author_receipt = _read_json(author_receipt_path)
+    author_rows, author_manifest = _validate_materialized_author_data(
+        author_receipt, data_root=author_root
+    )
 
     rows = _source_files(source)
     source_manifest = _source_manifest(rows)
@@ -297,6 +513,8 @@ def build_aura_author_smoke_vast_bundle(
     sam2_rows = _tracked_files(sam2_source)
     sam2_manifest = _source_manifest(sam2_rows)
     _deterministic_zip_files(sam2_rows, runtime / "sam2_source.zip")
+    _deterministic_zip_files(author_rows, runtime / "author_data.zip")
+    author_archive_sha256 = _sha256(runtime / "author_data.zip")
     smoke_spec = {
         "schema_version": "adp_aura_author_smoke_spec.v1",
         "source_repository": SOURCE_REPOSITORY,
@@ -312,7 +530,14 @@ def build_aura_author_smoke_vast_bundle(
             "license_sha256": SAM2_LICENSE_SHA256,
             "source_files": sam2_manifest,
         },
-        "author_data": _AUTHOR_DATA,
+        "author_data": {
+            **_AUTHOR_DATA,
+            "materialized": True,
+            "archive": "author_data.zip",
+            "archive_sha256": author_archive_sha256,
+            "materialization_receipt_digest": author_receipt["receipt_digest"],
+            "files": author_manifest,
+        },
         "expected_output": _EXPECTED_OUTPUT,
         "runtime_models": _RUNTIME_MODELS,
         "sd2_checkpoint": sd2_checkpoint,
@@ -355,6 +580,12 @@ def build_aura_author_smoke_vast_bundle(
         "source_manifest_digest": canonical_digest({"files": source_manifest}),
         "sam2_source_archive_sha256": _sha256(runtime / "sam2_source.zip"),
         "sam2_source_manifest_digest": canonical_digest({"files": sam2_manifest}),
+        "author_data_archive_sha256": author_archive_sha256,
+        "author_data_materialization_receipt_digest": author_receipt["receipt_digest"],
+        "author_data_file_count": len(author_manifest),
+        "author_data_total_size_bytes": sum(
+            int(item["size_bytes"]) for item in author_manifest
+        ),
         "prerequisite_receipt_digest": prerequisite["receipt_digest"],
         "container_image": DEFAULT_IMAGE,
         "container_platform": "linux/amd64",
@@ -609,17 +840,36 @@ def run_aura_author_smoke_vast(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--materialize-author-data", action="store_true")
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[2]))
-    parser.add_argument("--aura-root", required=True)
-    parser.add_argument("--sam2-root", required=True)
+    parser.add_argument("--aura-root")
+    parser.add_argument("--sam2-root")
     parser.add_argument("--prerequisite-receipt", required=True)
+    parser.add_argument("--author-data-root")
+    parser.add_argument("--author-data-receipt")
     parser.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
+    if args.materialize_author_data:
+        receipt = materialize_aura_author_data(
+            prerequisite_receipt_path=args.prerequisite_receipt,
+            output_root=args.job_dir,
+        )
+        print(json.dumps(receipt, indent=2, sort_keys=True))
+        return 0
+    missing = [
+        name
+        for name in ("aura_root", "sam2_root", "author_data_root", "author_data_receipt")
+        if not getattr(args, name)
+    ]
+    if missing:
+        parser.error("bundle build requires " + ", ".join("--" + name.replace("_", "-") for name in missing))
     receipt = build_aura_author_smoke_vast_bundle(
         repo_root=args.repo_root,
         aura_root=args.aura_root,
         sam2_root=args.sam2_root,
         prerequisite_receipt_path=args.prerequisite_receipt,
+        author_data_root=args.author_data_root,
+        author_data_receipt_path=args.author_data_receipt,
         job_dir=args.job_dir,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))

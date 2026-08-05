@@ -1,6 +1,7 @@
 {
   "adp_item": "ADP-009A",
   "claim_boundaries": {
+    "author_smoke_is_not_interiorgs_inpainting": true,
     "inpainting_result": false,
     "method_source_checkout_is_not_execution": true,
     "metric_geometry_qualified": false,
@@ -8,7 +9,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-aurafusion360_quality_challenger",
-  "manifest_digest": "sha256:317181f4ef82eef064ddf37fd16615a019139000e3035bc6c91862d26237f690",
+  "manifest_digest": "sha256:4936a42697753c82afff94230025426f932b8e21cb92b2379ab5f8a8c6498db9",
   "materialized_artifacts": [
     {
       "external_relative_path": "AuraFusion360_official/LICENSE",
@@ -70,8 +71,8 @@
       "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
       "publisher_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
       "role": "method_prerequisite_receipt",
-      "sha256": "sha256:7fee2d6ce04e73e48372b0a64b56c59a42a5617f395c5582d3cb7a169088f495",
-      "size_bytes": 17271
+      "sha256": "sha256:661951f1b96fbc0b6fcd3e10c932f8698bf4c46c1290390d0933d0d756c1ed56",
+      "size_bytes": 17798
     }
   ],
   "observed_evidence": {
@@ -105,6 +106,7 @@
           "repository": "kkennethwu/360-USID",
           "revision": "1c5a7863a284efe60fa33c2e4f0da19e50e55a0f",
           "service": "huggingface",
+          "single_file_identity": null,
           "snapshot_digest": "sha256:e81ad45f416349cc6364edecdb156e7ca48f8d62b25443d5ea3225c4a8af07fd",
           "total_size_bytes": 44778262
         },
@@ -132,6 +134,7 @@
           "repository": "facebook/sam2-hiera-large",
           "revision": "e6a8e8809b8f1bfa2238b6d080f3d05cc76bd251",
           "service": "huggingface",
+          "single_file_identity": null,
           "snapshot_digest": "sha256:e873cf416a96e5656a1f9641325c299399c81b28612362c4ed14375cb82169c6",
           "total_size_bytes": 1795815850
         },
@@ -159,6 +162,7 @@
           "repository": "prs-eth/marigold-depth-v1-0",
           "revision": "f4fc453d7d217cbe30ddcad3eb311d1ad9a11c4c",
           "service": "huggingface",
+          "single_file_identity": null,
           "snapshot_digest": "sha256:d8c2d2dfdc297008d7f4314593b8dcd381fa6c120ce9780e93f1a9c15c206e74",
           "total_size_bytes": 15482514887
         },
@@ -186,6 +190,12 @@
           "repository": "sd2-community/stable-diffusion-2-inpainting",
           "revision": "5f74973cbb64c8568780732c17f43eb269d63a0d",
           "service": "huggingface",
+          "single_file_identity": {
+            "git_blob_id": "5d25cff5ee4a88504967f6bf7f6a0933e3827879",
+            "lfs_sha256": "sha256:2a208a7ded5d42dcb0c0ec908b23c631002091e06afe7e76d16cd11079f8d4e3",
+            "path": "512-inpainting-ema.ckpt",
+            "size_bytes": 5214921607
+          },
           "snapshot_digest": "sha256:38e4618c75290a31e3e42b110ac8174edcc5c9b47fbc5f2bd90e455da814c1e1",
           "total_size_bytes": 5214921607
         },
@@ -213,6 +223,7 @@
           "repository": "kkennethwu/AuraFusion360_Results",
           "revision": "9682454f9829c6df013d3d22c55f3a9c53dd783f",
           "service": "huggingface",
+          "single_file_identity": null,
           "snapshot_digest": "sha256:b6c92fae7bc42253f7e5ce4afa4f4adc32c7748783e5ec54616d76de638e45cc",
           "total_size_bytes": 8463892136
         },

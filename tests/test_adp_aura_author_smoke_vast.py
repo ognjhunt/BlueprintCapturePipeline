@@ -51,6 +51,27 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     (source / "submodules/simple-knn/LICENSE.md").write_text("license", encoding="utf-8")
     sam2.mkdir()
     (sam2 / "LICENSE").write_text("sam2 license", encoding="utf-8")
+    author_data = tmp_path / "author-data"
+    author_file = author_data / "360-USID/sunflower/input.txt"
+    author_file.parent.mkdir(parents=True)
+    author_file.write_text("publisher author scene", encoding="utf-8")
+    author_publisher_files = [
+        {
+            "path": "360-USID/sunflower/input.txt",
+            "size_bytes": author_file.stat().st_size,
+            "lfs_sha256": aura._sha256(author_file).removeprefix("sha256:"),
+            "git_blob_id": "c" * 40,
+        }
+    ]
+    author_snapshot_digest = canonical_digest({"files": author_publisher_files})
+    monkeypatch.setattr(
+        aura,
+        "_AUTHOR_DATA",
+        {
+            **aura._AUTHOR_DATA,
+            "snapshot_digest": author_snapshot_digest,
+        },
+    )
 
     def fake_git(path: Path, *args: str) -> str:
         if args == ("status", "--porcelain"):
@@ -106,6 +127,12 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
             "aurafusion360_sd2_inpainting_exact_checkpoint",
         )
     ]
+    snapshots[0]["publisher"] = {
+        "repository": aura._AUTHOR_DATA["repository"],
+        "revision": aura._AUTHOR_DATA["revision"],
+        "path_prefix": aura._AUTHOR_DATA["path_prefix"],
+        "snapshot_digest": author_snapshot_digest,
+    }
     snapshots[-1]["publisher"] = {
         "repository": aura._SD2["repository"],
         "revision": aura._SD2["revision"],
@@ -131,11 +158,36 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     monkeypatch.setattr(aura, "PREREQUISITE_RECEIPT_DIGEST", receipt["receipt_digest"])
     prerequisite = tmp_path / "prerequisite.json"
     _write_json(prerequisite, receipt)
+    author_receipt: dict[str, object] = {
+        "schema_version": aura.AUTHOR_DATA_RECEIPT_SCHEMA_VERSION,
+        "generated_at": "2026-08-04T00:00:00+00:00",
+        "status": "completed",
+        "publisher": aura._AUTHOR_DATA,
+        "prerequisite_receipt_digest": receipt["receipt_digest"],
+        "files": [
+            {
+                **author_publisher_files[0],
+                "sha256": aura._sha256(author_file),
+            }
+        ],
+        "file_count": 1,
+        "total_size_bytes": author_file.stat().st_size,
+        "rights_established": True,
+        "raw_secret_values_recorded": False,
+        "receipt_digest": "",
+    }
+    author_receipt["receipt_digest"] = canonical_digest(
+        author_receipt, digest_field="receipt_digest"
+    )
+    author_receipt_path = tmp_path / "author-data-receipt.json"
+    _write_json(author_receipt_path, author_receipt)
     return {
         "repo": repo,
         "source": source,
         "sam2": sam2,
         "prerequisite": prerequisite,
+        "author_data": author_data,
+        "author_data_receipt": author_receipt_path,
         "job": tmp_path / "job",
     }
 
@@ -149,6 +201,8 @@ def test_bundle_derives_source_and_rights_evidence(
         aura_root=paths["source"],
         sam2_root=paths["sam2"],
         prerequisite_receipt_path=paths["prerequisite"],
+        author_data_root=paths["author_data"],
+        author_data_receipt_path=paths["author_data_receipt"],
         job_dir=paths["job"],
         generated_at="2026-08-04T00:00:00+00:00",
     )
@@ -158,14 +212,107 @@ def test_bundle_derives_source_and_rights_evidence(
     assert receipt["smoke_scope"] == "unchanged_author_inpaint_init_stage_only"
     assert receipt["sd2_checkpoint_identity"]["size_bytes"] == 5_214_921_607
     assert receipt["sd2_checkpoint_identity"]["sha256"] == "sha256:" + "a" * 64
+    assert receipt["author_data_file_count"] == 1
+    assert receipt["author_data_total_size_bytes"] > 0
     assert Path(receipt["bundle_path"]).is_file()
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        assert "provider_runtime/author_data.zip" in archive.namelist()
         runner = archive.read(
             "provider_runtime/adp_aura_author_smoke_provider_runner.py"
         ).decode()
     assert 'filename=expected["expected_ply_path"]' in runner
     assert 'allow_patterns=[expected["path_prefix"] + "*"]' not in runner
     assert 'destination.stat().st_size != sd2["size_bytes"]' in runner
+    assert "_extract_author_data(runtime, source, spec)" in runner
+    assert 'allow_patterns=[data["path_prefix"] + "*"]' not in runner
+
+
+def test_author_data_materializer_hashes_publisher_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    author_receipt = json.loads(paths["author_data_receipt"].read_text())
+    expected = author_receipt["files"][0]
+    monkeypatch.setattr(
+        aura,
+        "_hf_repository_info",
+        lambda **_kwargs: {
+            "sha": aura._AUTHOR_DATA["revision"],
+            "siblings": [
+                {
+                    "rfilename": expected["path"],
+                    "blobId": expected["git_blob_id"],
+                    "lfs": {
+                        "size": expected["size_bytes"],
+                        "sha256": expected["lfs_sha256"],
+                    },
+                }
+            ],
+        },
+    )
+
+    def fake_download(destination: Path) -> None:
+        output = destination / expected["path"]
+        output.parent.mkdir(parents=True)
+        output.write_bytes((paths["author_data"] / expected["path"]).read_bytes())
+
+    monkeypatch.setattr(aura, "_download_author_snapshot", fake_download)
+    receipt = aura.materialize_aura_author_data(
+        prerequisite_receipt_path=paths["prerequisite"],
+        output_root=tmp_path / "materialized-author-data",
+        generated_at="2026-08-04T00:00:00+00:00",
+    )
+    assert receipt["status"] == "completed"
+    assert receipt["file_count"] == 1
+    assert receipt["files"][0]["sha256"] == expected["sha256"]
+
+
+def test_bundle_rejects_changed_materialized_author_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    target = paths["author_data"] / "360-USID/sunflower/input.txt"
+    target.write_text("changed", encoding="utf-8")
+    with pytest.raises(
+        ValueError, match="adp_aura_author_data_materialized_bytes_changed"
+    ):
+        aura.build_aura_author_smoke_vast_bundle(
+            repo_root=paths["repo"],
+            aura_root=paths["source"],
+            sam2_root=paths["sam2"],
+            prerequisite_receipt_path=paths["prerequisite"],
+            author_data_root=paths["author_data"],
+            author_data_receipt_path=paths["author_data_receipt"],
+            job_dir=paths["job"],
+        )
+
+
+def test_bundle_rejects_caller_rehashed_fake_author_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    target = paths["author_data"] / "360-USID/sunflower/input.txt"
+    target.write_text("caller fake", encoding="utf-8")
+    receipt = json.loads(paths["author_data_receipt"].read_text())
+    receipt["files"][0]["size_bytes"] = target.stat().st_size
+    receipt["files"][0]["sha256"] = aura._sha256(target)
+    receipt["total_size_bytes"] = target.stat().st_size
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write_json(paths["author_data_receipt"], receipt)
+    with pytest.raises(
+        ValueError, match="adp_aura_author_data_receipt_lfs_hash_mismatch"
+    ):
+        aura.build_aura_author_smoke_vast_bundle(
+            repo_root=paths["repo"],
+            aura_root=paths["source"],
+            sam2_root=paths["sam2"],
+            prerequisite_receipt_path=paths["prerequisite"],
+            author_data_root=paths["author_data"],
+            author_data_receipt_path=paths["author_data_receipt"],
+            job_dir=paths["job"],
+        )
 
 
 def test_bundle_rejects_missing_publisher_rights(
@@ -185,6 +332,8 @@ def test_bundle_rejects_missing_publisher_rights(
             aura_root=paths["source"],
             sam2_root=paths["sam2"],
             prerequisite_receipt_path=paths["prerequisite"],
+            author_data_root=paths["author_data"],
+            author_data_receipt_path=paths["author_data_receipt"],
             job_dir=paths["job"],
         )
 
@@ -207,6 +356,8 @@ def test_bundle_rejects_changed_sam2_source(
             aura_root=paths["source"],
             sam2_root=paths["sam2"],
             prerequisite_receipt_path=paths["prerequisite"],
+            author_data_root=paths["author_data"],
+            author_data_receipt_path=paths["author_data_receipt"],
             job_dir=paths["job"],
         )
 
@@ -220,6 +371,8 @@ def test_dry_run_requires_exact_bundle_without_provider_mutation(
         aura_root=paths["source"],
         sam2_root=paths["sam2"],
         prerequisite_receipt_path=paths["prerequisite"],
+        author_data_root=paths["author_data"],
+        author_data_receipt_path=paths["author_data_receipt"],
         job_dir=paths["job"],
     )
     result = aura.run_aura_author_smoke_vast(
@@ -268,6 +421,8 @@ def test_vast_adapter_preflights_dedicated_aura_bundle(
         aura_root=paths["source"],
         sam2_root=paths["sam2"],
         prerequisite_receipt_path=paths["prerequisite"],
+        author_data_root=paths["author_data"],
+        author_data_receipt_path=paths["author_data_receipt"],
         job_dir=paths["job"],
     )
     assert (
@@ -372,6 +527,8 @@ def test_canonical_allocator_issues_aura_grant_only_for_execute(
         aura_root=paths["source"],
         sam2_root=paths["sam2"],
         prerequisite_receipt_path=paths["prerequisite"],
+        author_data_root=paths["author_data"],
+        author_data_receipt_path=paths["author_data_receipt"],
         job_dir=paths["job"],
     )
     receipt_path = paths["job"] / "adp_aura_author_smoke_bundle_receipt.json"

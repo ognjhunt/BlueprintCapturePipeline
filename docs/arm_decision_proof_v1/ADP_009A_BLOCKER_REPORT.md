@@ -19,7 +19,7 @@ completion.
 |---|---|---|
 | Inpaint360GS author smoke | `inpaint360_author_dataset_license_authority_missing` | Publisher statement or other durable authority covering the exact author-data archive; user permission cannot grant the publisher's copyright. Exact default-scene input/output ranges are already bound, so no bulk archive download is needed after authority exists. |
 | InFusion primary adapter | `infusion_checkpoint_license_missing` | Publisher license for `Johanan0528/Infusion` revision `83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2`; author masks remain a later missing input. |
-| AuraFusion360 challenger | `aurafusion360_unchanged_author_smoke_missing` | Execute immutable bundle `v5` once on admitted Linux NVIDIA compute. Attempts `live_v1` through `live_v4` retained distinct build, publisher-rate-limit, transport, and checkpoint-identity failures; none executed the author command. Bundle `v5` derives the exact checkpoint identity from a fresh publisher probe before allocation. |
+| AuraFusion360 challenger | `aurafusion360_unchanged_author_smoke_missing` | Execute immutable bundle `v6` once on admitted Linux NVIDIA compute. Attempts `live_v1` through `live_v5` retained distinct build, publisher-rate-limit, transport, checkpoint-identity, and author-data rate-limit failures; none executed the author command. Bundle `v6` embeds the exactly materialized sunflower scene and therefore makes no paid-startup author-data requests. |
 | Controlled-background truth | `controlled_background_truth_case_missing` | One rights-cleared, metric known-background edit case and receipt. |
 | Exact SimReady object | `isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing` | Dynamic Isaac contact, drop, slide, tip, and gripper probes on the exact static-validated USD. |
 | Physics positive control | `physics_positive_control_receipt_missing` | A digest-bound positive-control execution receipt. |
@@ -47,15 +47,20 @@ removed from the appearance or collision representation, and no replacement USD
 has been inserted into scene `840313`. The Content Agents asset remains a static
 authoring candidate until the dynamic Isaac probes pass.
 
-Aura attempts `live_v1` through `live_v4` are retained outside git under the
+Aura attempts `live_v1` through `live_v5` are retained outside git under the
 rights-safe validation tree. All used zero retries and executed no author
 inpainting command. They isolated, in order, Torch-missing isolated native
 builds, a Hugging Face publisher-results `429`, an HTTP/2 bundle transfer
 failure, and a mistranscribed Stable Diffusion checkpoint SHA-256 caught after
-the A100 had compiled the native dependencies and downloaded the pinned inputs.
-Their estimated cost totals `$0.782540`; every run ended with provider and
-staged-object zero. Bundle `v5`
-(`sha256:be0584fd007804f88feaac116776c5d67713196241f219d8fac8c54fd7febda9`)
-now binds checkpoint size `5,214,921,607` and publisher LFS SHA-256
-`2a208a7ded5d42dcb0c0ec908b23c631002091e06afe7e76d16cd11079f8d4e3`
-from the fresh prerequisite receipt before allocation; it remains unexecuted.
+the A100 had compiled the native dependencies and downloaded the pinned inputs,
+then a Hugging Face Xet `429` after 11 of the pinned author scene's 636 files.
+Their estimated cost totals `$0.839466`; every run ended with provider and
+staged-object zero. The exact 44,778,262-byte author scene is now materialized
+outside git with receipt
+`sha256:67f7fdbf6315f2d2d12d071c0598207847a68748a391232d8ce9ce075684f956`.
+Bundle `v6`
+(`sha256:56f8857a404d7c956f85716baf65f41af6ef13b1e06a8dc73313bf5ed2284af4`)
+embeds that scene, binds checkpoint size `5,214,921,607` and publisher LFS
+SHA-256
+`2a208a7ded5d42dcb0c0ec908b23c631002091e06afe7e76d16cd11079f8d4e3`,
+and remains unexecuted.

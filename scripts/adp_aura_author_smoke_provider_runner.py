@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -105,17 +106,50 @@ def _pin_hf_ref(cache: Path, repository: str, revision: str) -> None:
     (refs / "main").write_text(revision, encoding="utf-8")
 
 
+def _extract_author_data(runtime: Path, source: Path, spec: dict[str, Any]) -> None:
+    data = spec["author_data"]
+    archive = runtime / data["archive"]
+    if not archive.is_file() or _sha256(archive) != data["archive_sha256"]:
+        raise ValueError("aurafusion360_author_data_archive_changed")
+    destination = source / "data"
+    selected = destination / data["path_prefix"]
+    if selected.is_dir():
+        shutil.rmtree(selected)
+    destination.mkdir(parents=True, exist_ok=True)
+    root = destination.resolve()
+    with zipfile.ZipFile(archive) as source_archive:
+        for member in source_archive.infolist():
+            target = (destination / member.filename).resolve()
+            if root != target and root not in target.parents:
+                raise ValueError("aurafusion360_author_data_archive_path_traversal")
+        source_archive.extractall(destination)
+    expected_paths: set[str] = set()
+    for item in data["files"]:
+        relative = str(item["path"])
+        path = destination / relative
+        if (
+            not path.is_file()
+            or path.stat().st_size != item["size_bytes"]
+            or _sha256(path) != item["sha256"]
+        ):
+            raise ValueError("aurafusion360_author_data_materialized_bytes_changed")
+        expected_paths.add(relative)
+    actual_paths = {
+        path.relative_to(destination).as_posix()
+        for path in selected.rglob("*")
+        if path.is_file()
+    }
+    expected_selected = {
+        path for path in expected_paths if path.startswith(data["path_prefix"])
+    }
+    if actual_paths != expected_selected:
+        raise ValueError("aurafusion360_author_data_materialized_file_set_changed")
+
+
 def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     from huggingface_hub import hf_hub_download, snapshot_download
 
-    data = spec["author_data"]
-    snapshot_download(
-        repo_id=data["repository"],
-        repo_type="dataset",
-        revision=data["revision"],
-        allow_patterns=[data["path_prefix"] + "*"],
-        local_dir=source / "data",
-    )
+    _extract_author_data(runtime, source, spec)
     expected = spec["expected_output"]
     expected_ply = Path(
         hf_hub_download(
