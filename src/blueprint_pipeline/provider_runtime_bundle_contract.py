@@ -17,6 +17,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_simpler",
     "adp_arena",
     "adp_content_agents",
+    "adp_aura_smoke",
 )
 
 
@@ -156,6 +157,22 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp_content_agents_runtime_contract"
+    elif provider_bundle_kind == "adp_aura_smoke":
+        entrypoint_valid = (
+            "adp_aura_smoke_runner_failed_without_runtime_result" in entrypoint_text
+            and "blocked_adp_aura_smoke_process_exited_without_result" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp_aura_author_smoke_result.json",
+                "inpaint_init_executed",
+                "author_source_modified",
+                "published_expected_output_bound",
+                "depth_anything3_used",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp_aura_smoke_runtime_contract"
     elif provider_bundle_kind == "unitree_unifolm":
         entrypoint_valid = (
             "unitree_unifolm_provider_runner_failed_without_runtime_result" in entrypoint_text

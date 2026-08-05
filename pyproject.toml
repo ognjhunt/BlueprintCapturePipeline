@@ -266,6 +266,7 @@ blueprint-run-gpu-provider-launcher = "blueprint_pipeline.robot_eval_provider_la
 blueprint-run-robot-eval-provider-race = "blueprint_pipeline.robot_eval_provider_race_launcher:main"
 blueprint-run-runpod-provider-adapter = "blueprint_pipeline.runpod_provider_adapter:main"
 blueprint-run-vast-provider-adapter = "blueprint_pipeline.vast_provider_adapter:main"
+blueprint-build-adp-aura-author-smoke-bundle = "blueprint_pipeline.adp_aura_author_smoke_vast:main"
 blueprint-run-lambda-provider-adapter = "blueprint_pipeline.lambda_provider_adapter:main"
 blueprint-build-oscar-wam-provider-bundle = "blueprint_pipeline.oscar_wam_provider_bundle:main"
 blueprint-build-oscar-wam-gpu-image = "blueprint_pipeline.oscar_wam_gpu_image:main"
