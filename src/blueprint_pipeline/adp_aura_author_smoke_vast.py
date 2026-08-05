@@ -467,6 +467,7 @@ def build_aura_author_smoke_vast_bundle(
     prerequisite_receipt_path: str | Path,
     author_data_root: str | Path,
     author_data_receipt_path: str | Path,
+    expected_output_ply_path: str | Path,
     job_dir: str | Path,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -479,6 +480,7 @@ def build_aura_author_smoke_vast_bundle(
     prerequisite_path = Path(prerequisite_receipt_path).expanduser().resolve()
     author_root = Path(author_data_root).expanduser().resolve()
     author_receipt_path = Path(author_data_receipt_path).expanduser().resolve()
+    expected_output_ply = Path(expected_output_ply_path).expanduser().resolve()
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
         raise ValueError("adp_aura_bundle_job_dir_not_empty")
@@ -539,6 +541,12 @@ def build_aura_author_smoke_vast_bundle(
     author_rows, author_manifest = _validate_materialized_author_data(
         author_receipt, data_root=author_root
     )
+    if (
+        not expected_output_ply.is_file()
+        or expected_output_ply.stat().st_size != _EXPECTED_OUTPUT["expected_ply_size_bytes"]
+        or _sha256(expected_output_ply) != _EXPECTED_OUTPUT["expected_ply_sha256"]
+    ):
+        raise ValueError("adp_aura_expected_output_ply_identity_mismatch")
 
     rows = _source_files(source)
     source_manifest = _source_manifest(rows)
@@ -551,6 +559,8 @@ def build_aura_author_smoke_vast_bundle(
         wonderworld_rows, runtime / "wonderworld_marigold_runtime.zip"
     )
     _deterministic_zip_files(author_rows, runtime / "author_data.zip")
+    bundled_expected_output = runtime / "published_expected_point_cloud.ply"
+    shutil.copy2(expected_output_ply, bundled_expected_output)
     author_archive_sha256 = _sha256(runtime / "author_data.zip")
     smoke_spec = {
         "schema_version": "adp_aura_author_smoke_spec.v1",
@@ -587,7 +597,10 @@ def build_aura_author_smoke_vast_bundle(
             "materialization_receipt_digest": author_receipt["receipt_digest"],
             "files": author_manifest,
         },
-        "expected_output": _EXPECTED_OUTPUT,
+        "expected_output": {
+            **_EXPECTED_OUTPUT,
+            "bundled_path": bundled_expected_output.name,
+        },
         "runtime_models": _RUNTIME_MODELS,
         "sd2_checkpoint": sd2_checkpoint,
         "author_commands": [
@@ -649,6 +662,14 @@ def build_aura_author_smoke_vast_bundle(
         "author_data_total_size_bytes": sum(
             int(item["size_bytes"]) for item in author_manifest
         ),
+        "published_expected_output_identity": {
+            "repository": _EXPECTED_OUTPUT["repository"],
+            "revision": _EXPECTED_OUTPUT["revision"],
+            "path": _EXPECTED_OUTPUT["expected_ply_path"],
+            "size_bytes": bundled_expected_output.stat().st_size,
+            "sha256": _sha256(bundled_expected_output),
+            "materialization": "bundled_from_locally_inspected_exact_bytes",
+        },
         "prerequisite_receipt_digest": prerequisite["receipt_digest"],
         "container_image": DEFAULT_IMAGE,
         "container_platform": "linux/amd64",
@@ -911,6 +932,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prerequisite-receipt", required=True)
     parser.add_argument("--author-data-root")
     parser.add_argument("--author-data-receipt")
+    parser.add_argument("--expected-output-ply")
     parser.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
     if args.materialize_author_data:
@@ -928,6 +950,7 @@ def main(argv: list[str] | None = None) -> int:
             "wonderworld_root",
             "author_data_root",
             "author_data_receipt",
+            "expected_output_ply",
         )
         if not getattr(args, name)
     ]
@@ -941,6 +964,7 @@ def main(argv: list[str] | None = None) -> int:
         prerequisite_receipt_path=args.prerequisite_receipt,
         author_data_root=args.author_data_root,
         author_data_receipt_path=args.author_data_receipt,
+        expected_output_ply_path=args.expected_output_ply,
         job_dir=args.job_dir,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))
