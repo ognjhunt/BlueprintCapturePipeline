@@ -324,11 +324,14 @@ def test_provider_runner_materializes_pre_registered_single_target_masks(
     runner = _load_provider_runner()
     source = tmp_path / "source"
     raw = source / "raw_hqsam"
+    images = source / "images"
     raw.mkdir(parents=True)
+    images.mkdir(parents=True)
     for index in range(3):
         image = Image.new("L", (5, 4), color=0)
         image.putpixel((index, index), 1)
         image.save(raw / f"view_{index}.png")
+        Image.new("RGB", (5, 4), color=(index, 0, 0)).save(images / f"view_{index}.png")
 
     receipt = runner._materialize_pre_registered_mask_binding(
         source_data=source,
@@ -337,6 +340,11 @@ def test_provider_runner_materializes_pre_registered_single_target_masks(
     )
 
     assert receipt["status"] == "accepted"
+    assert receipt["full_resolution_preserved"] is True
+    assert receipt["image_mask_dimensions"]["view_0.png"] == {
+        "source_image": [5, 4],
+        "raw_mask": [5, 4],
+    }
     assert receipt["target_pixel_counts"] == {
         "view_0.png": 1,
         "view_1.png": 1,
@@ -357,9 +365,12 @@ def test_provider_runner_rejects_invalid_pre_registered_target_masks(
     runner = _load_provider_runner()
     source = tmp_path / "source"
     raw = source / "raw_hqsam"
+    images = source / "images"
     raw.mkdir(parents=True)
+    images.mkdir(parents=True)
     value = 0 if invalid_kind == "empty_target" else 2
     Image.new("L", (5, 4), color=value).save(raw / "bad.png")
+    Image.new("RGB", (5, 4)).save(images / "bad.png")
 
     receipt = runner._materialize_pre_registered_mask_binding(
         source_data=source,
@@ -370,6 +381,59 @@ def test_provider_runner_rejects_invalid_pre_registered_target_masks(
     assert receipt["status"] == "blocked"
     assert receipt["invalid_masks"] == ["bad.png"]
     assert not (source / "associated_hqsam").exists()
+
+
+@pytest.mark.parametrize("invalid_kind", ["missing_image", "dimension_mismatch"])
+def test_provider_runner_rejects_unpaired_or_resized_target_masks(
+    tmp_path: Path, invalid_kind: str
+) -> None:
+    runner = _load_provider_runner()
+    source = tmp_path / "source"
+    raw = source / "raw_hqsam"
+    images = source / "images"
+    raw.mkdir(parents=True)
+    images.mkdir(parents=True)
+    Image.new("L", (2048, 1536), color=1).save(raw / "view.png")
+    if invalid_kind == "dimension_mismatch":
+        Image.new("RGB", (1600, 1200)).save(images / "view.png")
+
+    receipt = runner._materialize_pre_registered_mask_binding(
+        source_data=source,
+        target_method_instance_id=1,
+        output=tmp_path / "output",
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["full_resolution_preserved"] is False
+    assert receipt["invalid_masks"] == ["view.png"]
+    assert not (source / "associated_hqsam").exists()
+
+
+def test_provider_runner_requires_full_resolution_on_every_image_loading_stage(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    env: dict[str, str] = {}
+    stages = (
+        "distillation",
+        "removal",
+        "virtual_views",
+        "lama_prepare",
+        "lama_collect",
+        "ply_fusion",
+        "inpaint_3d",
+    )
+    commands = [
+        (stage, ["python", "script.py", "--resolution", "1"], tmp_path, env)
+        for stage in stages
+    ]
+
+    accepted = runner._validate_full_resolution_commands(commands, output=tmp_path)
+    assert accepted["status"] == "accepted"
+    commands[0][1][-1] = "-1"
+    blocked = runner._validate_full_resolution_commands(commands, output=tmp_path)
+    assert blocked["status"] == "blocked"
+    assert blocked["violating_or_missing_stages"] == ["distillation"]
 
 
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:

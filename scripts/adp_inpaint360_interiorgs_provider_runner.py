@@ -128,16 +128,35 @@ def _materialize_pre_registered_mask_binding(
     """Bind one preregistered target across views without heuristic ID discovery."""
 
     raw_masks = sorted((source_data / "raw_hqsam").glob("*.png"))
+    source_images = sorted((source_data / "images").glob("*.png"))
+    source_images_by_name = {path.name: path for path in source_images}
     associated_dir = source_data / "associated_hqsam"
     existing_masks = sorted(associated_dir.glob("*.png"))
     target_pixel_counts: dict[str, int] = {}
+    image_mask_dimensions: dict[str, dict[str, list[int]]] = {}
     raw_mask_sha256: dict[str, str] = {}
     associated_mask_sha256: dict[str, str] = {}
     invalid_masks: list[str] = []
+    missing_source_images: list[str] = []
     for path in raw_masks:
         with Image.open(path) as image:
             grayscale = image.convert("L")
             histogram = grayscale.histogram()
+            mask_size = list(grayscale.size)
+        source_image = source_images_by_name.get(path.name)
+        if source_image is None:
+            missing_source_images.append(path.name)
+            invalid_masks.append(path.name)
+            source_size: list[int] = []
+        else:
+            with Image.open(source_image) as image:
+                source_size = list(image.size)
+            if source_size != mask_size:
+                invalid_masks.append(path.name)
+        image_mask_dimensions[path.name] = {
+            "source_image": source_size,
+            "raw_mask": mask_size,
+        }
         populated_values = {index for index, count in enumerate(histogram) if count}
         target_count = (
             int(histogram[target_method_instance_id])
@@ -149,7 +168,11 @@ def _materialize_pre_registered_mask_binding(
         if populated_values - {0, target_method_instance_id} or target_count <= 0:
             invalid_masks.append(path.name)
 
+    raw_mask_names = {path.name for path in raw_masks}
+    unpaired_source_images = sorted(set(source_images_by_name) - raw_mask_names)
+    invalid_masks = sorted(set(invalid_masks))
     valid = bool(raw_masks) and not existing_masks and not invalid_masks
+    valid = valid and not unpaired_source_images and len(source_images) == len(raw_masks)
     if valid:
         associated_dir.mkdir(parents=True, exist_ok=True)
         for path in raw_masks:
@@ -174,14 +197,62 @@ def _materialize_pre_registered_mask_binding(
         "association_mode": "pre_registered_single_target_identity",
         "target_method_instance_id": target_method_instance_id,
         "raw_mask_count": len(raw_masks),
+        "source_image_count": len(source_images),
         "existing_associated_mask_count": len(existing_masks),
+        "full_resolution_preserved": valid,
+        "image_mask_dimensions": image_mask_dimensions,
         "target_pixel_counts": target_pixel_counts,
         "raw_mask_sha256": raw_mask_sha256,
         "associated_mask_sha256": associated_mask_sha256,
         "invalid_masks": invalid_masks,
+        "missing_source_images": sorted(missing_source_images),
+        "unpaired_source_images": unpaired_source_images,
         "blockers": [] if valid else ["inpaint360_pre_registered_mask_binding_invalid"],
     }
     _write_json(output / "pre_registered_mask_binding.json", receipt)
+    return receipt
+
+
+def _validate_full_resolution_commands(
+    commands: list[tuple[str, list[str], Path, dict[str, str]]], *, output: Path
+) -> dict[str, Any]:
+    """Fail closed unless every image-loading stage disables implicit downscaling."""
+
+    required_stages = {
+        "distillation",
+        "removal",
+        "virtual_views",
+        "lama_prepare",
+        "lama_collect",
+        "ply_fusion",
+        "inpaint_3d",
+    }
+    observed: dict[str, str | None] = {}
+    violations: list[str] = []
+    for stage, command, _cwd, _env in commands:
+        if stage not in required_stages:
+            continue
+        positions = [index for index, value in enumerate(command) if value == "--resolution"]
+        value = (
+            command[positions[0] + 1]
+            if len(positions) == 1 and positions[0] + 1 < len(command)
+            else None
+        )
+        observed[stage] = value
+        if len(positions) != 1 or value != "1":
+            violations.append(stage)
+    missing_stages = sorted(required_stages - set(observed))
+    violations.extend(missing_stages)
+    valid = not violations
+    receipt = {
+        "schema_version": "adp_inpaint360_full_resolution_command_contract.v1",
+        "status": "accepted" if valid else "blocked",
+        "required_resolution": "1",
+        "observed_stage_resolutions": observed,
+        "violating_or_missing_stages": sorted(set(violations)),
+        "blockers": [] if valid else ["inpaint360_full_resolution_command_contract_invalid"],
+    }
+    _write_json(output / "full_resolution_command_contract.json", receipt)
     return receipt
 
 
@@ -275,6 +346,8 @@ def main() -> int:
                 "--eval",
                 "--config_file",
                 str(packet / "config/distill.json"),
+                "--resolution",
+                "1",
                 "--save_iterations",
                 "2000",
             ],
@@ -296,6 +369,8 @@ def main() -> int:
                 "2000",
                 "--config_file",
                 str(config_removal),
+                "--resolution",
+                "1",
                 "--skip_test",
             ],
             source,
@@ -316,6 +391,8 @@ def main() -> int:
                 "2000",
                 "--config_file",
                 str(config_removal),
+                "--resolution",
+                "1",
             ],
             source,
             main_env,
@@ -395,6 +472,8 @@ def main() -> int:
                 str(model),
                 "--config_file",
                 str(config_removal),
+                "--resolution",
+                "1",
             ],
             source,
             main_env,
@@ -419,6 +498,20 @@ def main() -> int:
         ),
     ]
     workflow: list[dict[str, Any]] = []
+    full_resolution_validation = _validate_full_resolution_commands(
+        commands, output=output
+    )
+    resolution_accepted = full_resolution_validation["status"] == "accepted"
+    workflow.append(
+        {
+            "stage": "full_resolution_contract",
+            "operation": "require_explicit_full_resolution_for_all_image_loading_stages",
+            "cwd": str(packet),
+            "returncode": 0 if resolution_accepted else 44,
+            "timed_out": False,
+            "receipt": "full_resolution_command_contract.json",
+        }
+    )
     mask_association_validation = _materialize_pre_registered_mask_binding(
         source_data=source_data,
         target_method_instance_id=int(spec["target_method_instance_id"]),
@@ -435,7 +528,7 @@ def main() -> int:
             "receipt": "pre_registered_mask_binding.json",
         }
     )
-    if binding_accepted:
+    if resolution_accepted and binding_accepted:
         for stage, command, cwd, env in commands:
             observed = _run(command, cwd=cwd, env=env, log_path=output / f"{stage}.log")
             observed["stage"] = stage
@@ -448,7 +541,11 @@ def main() -> int:
     final_render_dir = final_video.parent
     source_after = _source_identity(source, spec)
     blockers: list[str] = []
-    required = ["pre_registered_mask_binding", *[stage for stage, _, _, _ in commands]]
+    required = [
+        "full_resolution_contract",
+        "pre_registered_mask_binding",
+        *[stage for stage, _, _, _ in commands],
+    ]
     for stage in required:
         if stage not in completed:
             blockers.append(f"inpaint360_{stage}_failed_or_not_executed")
@@ -488,6 +585,8 @@ def main() -> int:
         "hardware_probe": hardware,
         "workflow": workflow,
         "mask_association_validation": mask_association_validation,
+        "full_resolution_validation": full_resolution_validation,
+        "full_resolution_execution": resolution_accepted,
         "mask_association_executed": False,
         "mask_association_mode": "pre_registered_single_target_identity",
         "pre_registered_mask_binding_materialized": (
