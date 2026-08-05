@@ -46,6 +46,8 @@ PREREQUISITE_RECEIPT_DIGEST = (
 BIG_LAMA_SHA256 = "sha256:d7161bba4d68b438f9fa7f09dcb750a223804c300c68d214a5e0be16251fba8d"
 BIG_LAMA_SIZE_BYTES = 381_428_720
 MIN_RASTERIZER_COMPUTE_CAP = 890
+PROVIDER_STARTUP_TIMEOUT_SECONDS = 600
+PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS = 600
 INPAINT360_GPU_SELECTION_POLICY = {
     "policy_id": "inpaint360_rtx_4090_observed_control",
     "allowed_gpu_keywords": ("RTX 4090",),
@@ -538,8 +540,10 @@ def run_inpaint360_interiorgs_vast(
                 min_gpu_ram_mb=24_000,
                 min_compute_cap=MIN_RASTERIZER_COMPUTE_CAP,
                 poll_interval_seconds=15,
-                startup_timeout_seconds=remaining_minutes * 60,
-                heartbeat_no_progress_seconds=3600,
+                startup_timeout_seconds=min(
+                    PROVIDER_STARTUP_TIMEOUT_SECONDS, remaining_minutes * 60
+                ),
+                heartbeat_no_progress_seconds=PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS,
                 session_budget_ledger_path=job / "adp_inpaint360_vast_session_budget.json",
                 verify_staging_urls=True,
                 require_known_supported_isaac_driver=False,

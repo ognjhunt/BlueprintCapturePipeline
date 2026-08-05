@@ -708,3 +708,10 @@ def test_live_runner_requires_observed_rasterizer_architecture_floor() -> None:
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     assert "min_compute_cap=MIN_RASTERIZER_COMPUTE_CAP" in source
     assert "gpu_selection_policy=INPAINT360_GPU_SELECTION_POLICY" in source
+
+
+def test_live_runner_bounds_provider_startup_without_reducing_scientific_ttl() -> None:
+    assert runtime.PROVIDER_STARTUP_TIMEOUT_SECONDS == 600
+    assert runtime.PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS == 600
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "startup_timeout_seconds=min(" in source
