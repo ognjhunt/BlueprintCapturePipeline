@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import public_scene_suite_materializer as materializer
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_suite_materializer import (
     PublicSceneSuiteMaterializationError,
@@ -333,6 +334,36 @@ def _add_completed_aura_author_smoke(paths: dict[str, Path]) -> Path:
         "bundle_path": str(bundle),
         "bundle_size_bytes": bundle.stat().st_size,
         "bundle_sha256": bundle_sha,
+        "wonderworld_source_commit": materializer.AURA_WONDERWORLD_SOURCE_COMMIT,
+        "wonderworld_source_tree": materializer.AURA_WONDERWORLD_SOURCE_TREE,
+        "wonderworld_marigold_runtime_archive_sha256": "sha256:" + "a" * 64,
+        "wonderworld_marigold_runtime_manifest_digest": canonical_digest(
+            {
+                "files": [
+                    {
+                        "path": "utils/utils/LICENSE.txt",
+                        "size_bytes": 1,
+                        "sha256": "sha256:" + "0" * 64,
+                    },
+                    {
+                        "path": "utils/utils/batchsize.py",
+                        "size_bytes": 1,
+                        "sha256": "sha256:" + "1" * 64,
+                    },
+                    {
+                        "path": "utils/utils/ensemble.py",
+                        "size_bytes": 1,
+                        "sha256": "sha256:" + "2" * 64,
+                    },
+                    {
+                        "path": "utils/utils/image_util.py",
+                        "size_bytes": 1,
+                        "sha256": "sha256:" + "3" * 64,
+                    },
+                ]
+            }
+        ),
+        "wonderworld_marigold_runtime_license": "Apache-2.0",
     }
     bundle_receipt_path = paths["data"] / "aura/bundle/receipt.json"
     _write_json(bundle_receipt_path, bundle_receipt)
@@ -394,6 +425,36 @@ def _add_completed_aura_author_smoke(paths: dict[str, Path]) -> Path:
         },
         "depth_anything3_used": False,
         "retry_cap": 0,
+        "wonderworld_marigold_runtime": {
+            "repository": "https://github.com/KovenYu/WonderWorld",
+            "commit": materializer.AURA_WONDERWORLD_SOURCE_COMMIT,
+            "tree": materializer.AURA_WONDERWORLD_SOURCE_TREE,
+            "license": "Apache-2.0",
+            "license_sha256": materializer.AURA_WONDERWORLD_MARIGOLD_LICENSE_SHA256,
+            "archive_sha256": "sha256:" + "a" * 64,
+            "source_files": [
+                {
+                    "path": "utils/utils/LICENSE.txt",
+                    "size_bytes": 1,
+                    "sha256": "sha256:" + "0" * 64,
+                },
+                {
+                    "path": "utils/utils/batchsize.py",
+                    "size_bytes": 1,
+                    "sha256": "sha256:" + "1" * 64,
+                },
+                {
+                    "path": "utils/utils/ensemble.py",
+                    "size_bytes": 1,
+                    "sha256": "sha256:" + "2" * 64,
+                },
+                {
+                    "path": "utils/utils/image_util.py",
+                    "size_bytes": 1,
+                    "sha256": "sha256:" + "3" * 64,
+                },
+            ],
+        },
     }
     execution_path = immutable / "adp_aura_author_smoke_result.json"
     _write_json(execution_path, execution)
@@ -868,6 +929,23 @@ def test_aura_author_smoke_is_admitted_only_from_executed_digest_bound_evidence(
     assert manifest["rights"]["author_data_rights_established"] is True
     assert receipt["status"] == "admitted"
     assert receipt["blockers"] == []
+
+
+def test_aura_author_smoke_rejects_unbound_wonderworld_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_completed_aura_author_smoke(paths)
+    bundle_receipt_path = paths["data"] / "aura/bundle/receipt.json"
+    bundle_receipt = json.loads(bundle_receipt_path.read_text())
+    bundle_receipt["wonderworld_source_commit"] = "f" * 40
+    _write_json(bundle_receipt_path, bundle_receipt)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="aura_author_smoke_bundle_receipt_invalid",
+    ):
+        _run(paths)
 
 
 def test_aura_author_smoke_rejects_mutated_produced_point_cloud(
