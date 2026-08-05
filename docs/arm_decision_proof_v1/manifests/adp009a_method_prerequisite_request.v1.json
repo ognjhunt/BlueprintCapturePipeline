@@ -222,6 +222,12 @@
           "expected_file_count": 1,
           "expected_total_size_bytes": 5214921607,
           "expected_snapshot_digest": "sha256:38e4618c75290a31e3e42b110ac8174edcc5c9b47fbc5f2bd90e455da814c1e1",
+          "expected_single_file_identity": {
+            "path": "512-inpainting-ema.ckpt",
+            "size_bytes": 5214921607,
+            "lfs_sha256": "sha256:2a208a7ded5d42dcb0c0ec908b23c631002091e06afe7e76d16cd11079f8d4e3",
+            "git_blob_id": "5d25cff5ee4a88504967f6bf7f6a0933e3827879"
+          },
           "expected_license_id": "OpenRAIL++"
         },
         {

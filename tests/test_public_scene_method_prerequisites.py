@@ -280,6 +280,12 @@ def test_remote_snapshot_derives_rights_from_publisher_card(
     method["remote_snapshots"][0]["expected_snapshot_digest"] = canonical_digest(
         {"files": remote_files}
     )
+    method["remote_snapshots"][0]["expected_single_file_identity"] = {
+        "path": "scene/image.png",
+        "size_bytes": 12,
+        "lfs_sha256": "sha256:" + "5" * 64,
+        "git_blob_id": "6" * 40,
+    }
     _write_json(paths["request"], request)
 
     checkpoint = paths["checkpoint"]
@@ -326,7 +332,92 @@ def test_remote_snapshot_derives_rights_from_publisher_card(
     snapshot = receipt["methods"]["inpaint360_author_smoke"]["remote_snapshots"][0]
     assert snapshot["rights_established"] is True
     assert snapshot["rights"]["license_id"] == "Apache-2.0"
+    assert snapshot["publisher"]["single_file_identity"] == method["remote_snapshots"][0][
+        "expected_single_file_identity"
+    ]
     assert receipt["methods"]["inpaint360_author_smoke"]["author_data_rights_established"] is True
+
+
+def test_remote_snapshot_rejects_changed_single_file_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    request = json.loads(paths["request"].read_text())
+    method = request["methods"]["inpaint360_author_smoke"]
+    files = [
+        {
+            "path": "model.bin",
+            "size_bytes": 99,
+            "lfs_sha256": "7" * 64,
+            "git_blob_id": "8" * 40,
+        }
+    ]
+    method["remote_snapshots"] = [
+        {
+            "artifact_id": "single-checkpoint",
+            "category": "checkpoint",
+            "repo_type": "model",
+            "repository": "example/single",
+            "revision": "1" * 40,
+            "path_prefix": "model.bin",
+            "expected_file_count": 1,
+            "expected_total_size_bytes": 99,
+            "expected_snapshot_digest": canonical_digest({"files": files}),
+            "expected_single_file_identity": {
+                "path": "model.bin",
+                "size_bytes": 99,
+                "lfs_sha256": "sha256:" + "9" * 64,
+                "git_blob_id": "8" * 40,
+            },
+            "expected_license_id": "Apache-2.0",
+        }
+    ]
+    _write_json(paths["request"], request)
+    checkpoint = paths["checkpoint"]
+    checkpoint_digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    responses = {
+        "example/weights": {
+            "sha": "1" * 40,
+            "gated": "auto",
+            "private": False,
+            "siblings": [
+                {
+                    "rfilename": "weights/cropformer.pth",
+                    "lfs": {
+                        "sha256": checkpoint_digest,
+                        "size": checkpoint.stat().st_size,
+                    },
+                }
+            ],
+        },
+        "example/single": {
+            "sha": "1" * 40,
+            "gated": False,
+            "private": False,
+            "cardData": {"license": "apache-2.0"},
+            "siblings": [
+                {
+                    "rfilename": "model.bin",
+                    "size": 99,
+                    "blobId": "8" * 40,
+                    "lfs": {"sha256": "7" * 64, "size": 99},
+                }
+            ],
+        },
+    }
+
+    def fake_get(url: str, **_kwargs: object) -> _Response:
+        repository = next(key for key in responses if key in url)
+        return _Response(responses[repository])
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_method_prerequisites.requests.get", fake_get
+    )
+    with pytest.raises(
+        PublicSceneMethodPrerequisiteError,
+        match="hf_remote_snapshot_single_file_identity_changed:single-checkpoint",
+    ):
+        _run(paths)
 
 
 def test_remote_snapshot_without_publisher_license_stays_unadmitted(
