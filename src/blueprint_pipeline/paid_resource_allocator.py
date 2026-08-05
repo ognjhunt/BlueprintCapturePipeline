@@ -131,6 +131,14 @@ from .adp_content_agents_vast import (
     run_content_agents_vast,
 )
 from .adp_content_agents_bundle_preflight import validate_bundle_config_preflight
+from .adp_aura_author_smoke_vast import (
+    DEFAULT_IMAGE as ADP_AURA_SMOKE_IMAGE,
+    PREREQUISITE_RECEIPT_DIGEST as ADP_AURA_PREREQUISITE_RECEIPT_DIGEST,
+    PROBE_KIND as ADP_AURA_SMOKE_PROBE_KIND,
+    SOURCE_COMMIT as ADP_AURA_SOURCE_COMMIT,
+    SOURCE_TREE as ADP_AURA_SOURCE_TREE,
+    run_aura_author_smoke_vast,
+)
 from .teleport_paid_allocator import (
     add_teleport_provider_arguments,
     load_teleport_credentials,
@@ -953,6 +961,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP_CONTENT_AGENTS_PROBE_KIND,
+            ADP_AURA_SMOKE_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -1027,6 +1036,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-machine-avoidlist")
     gpu.add_argument("--adp-content-agents-bundle-receipt")
     gpu.add_argument("--adp-content-agents-config-preflight-receipt")
+    gpu.add_argument("--adp-aura-bundle-receipt")
     gpu.add_argument(
         "--reconstruction-refresh-preflight",
         action="store_true",
@@ -1273,6 +1283,147 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == ADP_AURA_SMOKE_PROBE_KIND:
+            missing = [
+                name
+                for name in ("adp_aura_bundle_receipt", "adp_job_dir")
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            blockers = [*missing, *control_blockers]
+            if args.provider != "vast":
+                blockers.append("adp_aura_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("adp_aura_budget_invalid")
+            if not 5400 <= args.adp_hard_ttl_seconds <= 14_400:
+                blockers.append("adp_aura_hard_ttl_invalid")
+            prepared_bundle: dict[str, Any] | None = None
+            receipt_path: Path | None = None
+            if args.adp_aura_bundle_receipt:
+                receipt_path = Path(args.adp_aura_bundle_receipt).expanduser().resolve()
+                if not receipt_path.is_file():
+                    blockers.append("adp_aura_bundle_receipt_missing")
+                else:
+                    try:
+                        prepared_bundle = _load(receipt_path)
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        blockers.append("adp_aura_bundle_receipt_invalid")
+            bundle_path: Path | None = None
+            if prepared_bundle is not None:
+                bundle_path = Path(
+                    str(prepared_bundle.get("bundle_path") or "")
+                ).expanduser().resolve()
+                observed_bundle_sha256 = (
+                    "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+                    if bundle_path.is_file()
+                    else ""
+                )
+                if (
+                    prepared_bundle.get("status") != "ready"
+                    or prepared_bundle.get("source_commit") != ADP_AURA_SOURCE_COMMIT
+                    or prepared_bundle.get("source_tree") != ADP_AURA_SOURCE_TREE
+                    or prepared_bundle.get("prerequisite_receipt_digest")
+                    != ADP_AURA_PREREQUISITE_RECEIPT_DIGEST
+                    or prepared_bundle.get("container_image") != ADP_AURA_SMOKE_IMAGE
+                    or prepared_bundle.get("retry_cap") != 0
+                    or prepared_bundle.get("blockers") not in ([], None)
+                    or not bundle_path.is_file()
+                    or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
+                ):
+                    blockers.append("adp_aura_bundle_binding_invalid")
+            receipt_sha256 = (
+                "sha256:" + hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+                if receipt_path and receipt_path.is_file()
+                else None
+            )
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": ADP_AURA_SMOKE_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get(
+                    "orchestrator_source_commit"
+                ),
+                "bundle_receipt_sha256": receipt_sha256,
+                "bundle_sha256": (
+                    prepared_bundle.get("bundle_sha256") if prepared_bundle else None
+                ),
+                "aura_source_commit": ADP_AURA_SOURCE_COMMIT,
+                "aura_source_tree": ADP_AURA_SOURCE_TREE,
+                "prerequisite_receipt_digest": ADP_AURA_PREREQUISITE_RECEIPT_DIGEST,
+                "container_image": ADP_AURA_SMOKE_IMAGE,
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "retry_cap": 0,
+            }
+            allocation_binding_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(
+                        allocation_binding, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                ).hexdigest()
+            )
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=sorted(set(blockers))
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": ADP_AURA_SMOKE_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": (
+                        "user_authorized_all_in_scope_goal_resources_including_gpu_usage"
+                    ),
+                    "publisher_data_and_checkpoint_rights_bound": True,
+                    "full_author_workflow_claimed": False,
+                    "aura_inpaint_init_author_smoke_only": True,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if blockers or prepared_bundle is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": sorted(set(blockers)),
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_aura_author_smoke_vast(
+                    job_dir=args.adp_job_dir,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    prepared_bundle=prepared_bundle,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    public_image=ADP_AURA_SMOKE_IMAGE,
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == ADP_CONTENT_AGENTS_PROBE_KIND:
             missing = [
                 name
