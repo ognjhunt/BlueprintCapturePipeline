@@ -331,6 +331,7 @@ def test_aura_interiorgs_vast_reuses_completed_author_control_gpu_class() -> Non
     }
     source = Path(run_aura_interiorgs_vast.__code__.co_filename).read_text(encoding="utf-8")
     assert 'vast_launch_lock_file=job.parent / "aura_interiorgs_paid_launch.lock"' in source
+    assert "allowed_active_instance_ids=allowed_active_instance_ids" in source
 
 
 def test_aura_interiorgs_vast_budget_uses_attempt_ledger(tmp_path: Path) -> None:

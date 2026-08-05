@@ -403,6 +403,7 @@ def run_aura_interiorgs_vast(
     hard_ttl_seconds: int = 14_400,
     public_image: str = DEFAULT_IMAGE,
     machine_avoidlist_path: str | Path | None = None,
+    allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Run the frozen Aura InteriorGS challenger once, with no automatic retry."""
 
@@ -508,6 +509,7 @@ def run_aura_interiorgs_vast(
                 prefer_isaac_rt=False,
                 gpu_selection_policy=AURA_INTERIORGS_GPU_SELECTION_POLICY,
                 machine_avoidlist_path=machine_avoidlist_path,
+                allowed_active_instance_ids=allowed_active_instance_ids,
                 vast_launch_lock_file=job.parent / "aura_interiorgs_paid_launch.lock",
                 instance_label_prefix="blueprint-adp-aura-interiorgs-",
                 forward_hf_token=False,
