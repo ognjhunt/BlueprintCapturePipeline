@@ -16,7 +16,7 @@ from typing import Any, Sequence
 
 
 SCHEMA_VERSION = "adp_aura_author_smoke_result.v1"
-COMMAND_TIMEOUT_SECONDS = 5400
+COMMAND_TIMEOUT_SECONDS = 7200
 
 
 def _sha256(path: Path) -> str:
@@ -39,25 +39,22 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 def _run(command: Sequence[str], *, cwd: Path, log_path: Path) -> dict[str, Any]:
     started = dt.datetime.now(dt.timezone.utc)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        completed = subprocess.run(
-            list(command),
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=COMMAND_TIMEOUT_SECONDS,
-            check=False,
-        )
-        returncode = completed.returncode
-        output = completed.stdout + completed.stderr
-        timed_out = False
-    except subprocess.TimeoutExpired as exc:
+        with log_path.open("wb") as log_stream:
+            completed = subprocess.run(
+                list(command),
+                cwd=cwd,
+                stdout=log_stream,
+                stderr=subprocess.STDOUT,
+                timeout=COMMAND_TIMEOUT_SECONDS,
+                check=False,
+            )
+            returncode = completed.returncode
+            timed_out = False
+    except subprocess.TimeoutExpired:
         returncode = 124
-        stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        output = stdout + stderr
         timed_out = True
-    log_path.write_text(output, encoding="utf-8")
     finished = dt.datetime.now(dt.timezone.utc)
     return {
         "command": [str(item) for item in command],
@@ -253,21 +250,71 @@ def main(argv: Sequence[str] | None = None) -> int:
         cwd=source,
         log_path=output / "nvidia-smi.log",
     )
-    command = [
-        str(source / ".venv/bin/python"),
-        "inpaint.py",
-        "--config",
-        "configs/360-USID/sunflower/inpaint.config",
+    python = str(source / ".venv/bin/python")
+    command_specs = [
+        (
+            "train",
+            [python, "train.py", "--config", "configs/360-USID/sunflower/train.config"],
+            "aura-train.log",
+        ),
+        (
+            "render",
+            [
+                python, "render.py", "-s", "data/360-USID/sunflower", "-m",
+                "output/360-USID/sunflower", "--skip_mesh", "--render_path",
+                "--iteration", "30000",
+            ],
+            "aura-render.log",
+        ),
+        (
+            "remove",
+            [python, "remove.py", "--config", "configs/360-USID/sunflower/remove.config"],
+            "aura-remove.log",
+        ),
+        (
+            "sam2_masks",
+            [python, "utils/sam2_utils.py", "--dataset", "360-USID", "--scene", "sunflower"],
+            "aura-sam2-masks.log",
+        ),
+        (
+            "inpaint_init",
+            [python, "inpaint.py", "--config", "configs/360-USID/sunflower/inpaint.config"],
+            "aura-inpaint-init.log",
+        ),
     ]
-    execution = _run(command, cwd=source, log_path=output / "aura-inpaint-init.log")
+    workflow: list[dict[str, Any]] = []
+    for stage, command, log_name in command_specs:
+        observed = _run(command, cwd=source, log_path=output / log_name)
+        observed["stage"] = stage
+        workflow.append(observed)
+        if observed["returncode"] != 0:
+            break
+    execution = next(
+        (row for row in workflow if row["stage"] == "inpaint_init"),
+        {
+            "stage": "inpaint_init",
+            "command": command_specs[-1][1],
+            "cwd": str(source),
+            "returncode": None,
+            "timed_out": False,
+            "runtime_seconds": 0.0,
+            "stdout_stderr_sha256": None,
+            "log": "aura-inpaint-init.log",
+            "executed": False,
+        },
+    )
     produced = source / "output/360-USID/sunflower/point_cloud/iteration_object_inpaint_init/point_cloud.ply"
     expected = runtime / "published_expected_point_cloud.ply"
     source_after = _source_identity(source, spec)
     blockers: list[str] = []
     if not source_before["matches"] or not source_after["matches"]:
         blockers.append("aurafusion360_author_source_modified")
-    if execution["returncode"] != 0:
-        blockers.append("aurafusion360_inpaint_init_command_failed")
+    completed_stages = {row["stage"] for row in workflow if row["returncode"] == 0}
+    required_stages = ["train", "render", "remove", "sam2_masks", "inpaint_init"]
+    for stage in required_stages:
+        if stage not in completed_stages:
+            blockers.append(f"aurafusion360_{stage}_command_failed_or_not_executed")
+            break
     if hardware["returncode"] != 0:
         blockers.append("aurafusion360_nvidia_hardware_probe_failed")
     if not produced.is_file() or produced.stat().st_size == 0:
@@ -288,9 +335,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "source_identity_before": source_before,
         "source_identity_after": source_after,
         "author_source_modified": not source_after["matches"],
+        "author_workflow_commands": workflow,
         "author_command": execution,
         "hardware_probe": hardware,
-        "inpaint_init_executed": execution["returncode"] == 0 and produced.is_file(),
+        "training_executed": "train" in completed_stages,
+        "render_executed": "render" in completed_stages,
+        "removal_executed": "remove" in completed_stages,
+        "sam2_masks_executed": "sam2_masks" in completed_stages,
+        "inpaint_init_executed": "inpaint_init" in completed_stages and produced.is_file(),
         "published_expected_output_bound": expected.is_file()
         and _sha256(expected) == spec["expected_output"]["expected_ply_sha256"],
         "produced_point_cloud": (
