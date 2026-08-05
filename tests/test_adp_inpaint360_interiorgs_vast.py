@@ -190,6 +190,9 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
         "compatibility_environment_not_exact_publisher_conda_env"
     )
     assert spec["runtime"]["source_modifications"] == []
+    assert spec["runtime"]["mask_association_mode"] == (
+        "pre_registered_single_target_identity"
+    )
     with tarfile.open(runtime_root / "inpaint360gs_source.tar") as archive:
         link = archive.getmember("docs/link.md")
         assert link.issym()
@@ -270,26 +273,11 @@ def test_bundle_rejects_caller_asserted_big_lama_rights(
         _build(paths)
 
 
-def test_provider_runner_validates_target_identity_and_retains_hd_review_frames(
+def test_provider_runner_retains_hd_review_frames(
     tmp_path: Path,
 ) -> None:
     runner = _load_provider_runner()
-    source = tmp_path / "source"
-    raw = source / "raw_hqsam"
-    associated = source / "associated_hqsam"
-    raw.mkdir(parents=True)
-    associated.mkdir(parents=True)
-    for index in range(2):
-        Image.new("L", (4, 3), color=1).save(raw / f"view_{index}.png")
-        Image.new("L", (4, 3), color=1).save(associated / f"view_{index}.png")
-    _write_json(associated / "scene.json", {"num_classes": 2})
     output = tmp_path / "output"
-    receipt = runner._validate_mask_association(
-        source_data=source,
-        target_method_instance_id=1,
-        output=output,
-    )
-    assert receipt["status"] == "accepted"
     render_dir = tmp_path / "render"
     render_dir.mkdir()
     for index in range(10):
@@ -328,6 +316,60 @@ def test_provider_runner_prefers_method_local_tools_over_installed_package(
 
     assert completed.stdout.strip() == "method"
     assert env["PYTHONPATH"].split(os.pathsep) == [str(source.resolve()), str(installed)]
+
+
+def test_provider_runner_materializes_pre_registered_single_target_masks(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    source = tmp_path / "source"
+    raw = source / "raw_hqsam"
+    raw.mkdir(parents=True)
+    for index in range(3):
+        image = Image.new("L", (5, 4), color=0)
+        image.putpixel((index, index), 1)
+        image.save(raw / f"view_{index}.png")
+
+    receipt = runner._materialize_pre_registered_mask_binding(
+        source_data=source,
+        target_method_instance_id=1,
+        output=tmp_path / "output",
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["target_pixel_counts"] == {
+        "view_0.png": 1,
+        "view_1.png": 1,
+        "view_2.png": 1,
+    }
+    associated = source / "associated_hqsam"
+    for path in sorted(raw.glob("*.png")):
+        assert (associated / path.name).read_bytes() == path.read_bytes()
+    scene = json.loads((associated / "scene.json").read_text())
+    assert scene["num_classes"] == 2
+    assert scene["association_mode"] == "pre_registered_single_target_identity"
+
+
+@pytest.mark.parametrize("invalid_kind", ["empty_target", "unexpected_instance"])
+def test_provider_runner_rejects_invalid_pre_registered_target_masks(
+    tmp_path: Path, invalid_kind: str
+) -> None:
+    runner = _load_provider_runner()
+    source = tmp_path / "source"
+    raw = source / "raw_hqsam"
+    raw.mkdir(parents=True)
+    value = 0 if invalid_kind == "empty_target" else 2
+    Image.new("L", (5, 4), color=value).save(raw / "bad.png")
+
+    receipt = runner._materialize_pre_registered_mask_binding(
+        source_data=source,
+        target_method_instance_id=1,
+        output=tmp_path / "output",
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["invalid_masks"] == ["bad.png"]
+    assert not (source / "associated_hqsam").exists()
 
 
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:

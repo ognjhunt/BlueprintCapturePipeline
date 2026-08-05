@@ -122,42 +122,66 @@ def _artifact(path: Path, output: Path) -> dict[str, Any] | None:
     }
 
 
-def _validate_mask_association(
+def _materialize_pre_registered_mask_binding(
     *, source_data: Path, target_method_instance_id: int, output: Path
 ) -> dict[str, Any]:
+    """Bind one preregistered target across views without heuristic ID discovery."""
+
     raw_masks = sorted((source_data / "raw_hqsam").glob("*.png"))
     associated_dir = source_data / "associated_hqsam"
-    associated_masks = sorted(associated_dir.glob("*.png"))
-    scene_path = associated_dir / "scene.json"
-    scene = _read_json(scene_path) if scene_path.is_file() else {}
+    existing_masks = sorted(associated_dir.glob("*.png"))
     target_pixel_counts: dict[str, int] = {}
-    for path in associated_masks:
+    raw_mask_sha256: dict[str, str] = {}
+    associated_mask_sha256: dict[str, str] = {}
+    invalid_masks: list[str] = []
+    for path in raw_masks:
         with Image.open(path) as image:
-            histogram = image.convert("L").histogram()
-        target_pixel_counts[path.name] = (
+            grayscale = image.convert("L")
+            histogram = grayscale.histogram()
+        populated_values = {index for index, count in enumerate(histogram) if count}
+        target_count = (
             int(histogram[target_method_instance_id])
             if target_method_instance_id < len(histogram)
             else 0
         )
-    valid = (
-        isinstance(scene.get("num_classes"), int)
-        and int(scene["num_classes"]) > target_method_instance_id
-        and len(raw_masks) > 0
-        and len(associated_masks) == len(raw_masks)
-        and {path.name for path in associated_masks} == {path.name for path in raw_masks}
-        and all(count > 0 for count in target_pixel_counts.values())
-    )
+        target_pixel_counts[path.name] = target_count
+        raw_mask_sha256[path.name] = _sha256(path)
+        if populated_values - {0, target_method_instance_id} or target_count <= 0:
+            invalid_masks.append(path.name)
+
+    valid = bool(raw_masks) and not existing_masks and not invalid_masks
+    if valid:
+        associated_dir.mkdir(parents=True, exist_ok=True)
+        for path in raw_masks:
+            associated_path = associated_dir / path.name
+            shutil.copy2(path, associated_path)
+            associated_mask_sha256[path.name] = _sha256(associated_path)
+        valid = associated_mask_sha256 == raw_mask_sha256
+        _write_json(
+            associated_dir / "scene.json",
+            {
+                "association_mode": "pre_registered_single_target_identity",
+                "num_classes": target_method_instance_id + 1,
+                "raw_mask_folder": str(source_data / "raw_hqsam"),
+                "associated_mask_folder": str(associated_dir),
+                "target_method_instance_id": target_method_instance_id,
+            },
+        )
+
     receipt = {
-        "schema_version": "adp_inpaint360_mask_association_validation.v1",
+        "schema_version": "adp_inpaint360_pre_registered_mask_binding.v1",
         "status": "accepted" if valid else "blocked",
+        "association_mode": "pre_registered_single_target_identity",
         "target_method_instance_id": target_method_instance_id,
-        "num_classes": scene.get("num_classes"),
         "raw_mask_count": len(raw_masks),
-        "associated_mask_count": len(associated_masks),
+        "existing_associated_mask_count": len(existing_masks),
         "target_pixel_counts": target_pixel_counts,
-        "blockers": [] if valid else ["inpaint360_target_mask_association_not_preserved"],
+        "raw_mask_sha256": raw_mask_sha256,
+        "associated_mask_sha256": associated_mask_sha256,
+        "invalid_masks": invalid_masks,
+        "blockers": [] if valid else ["inpaint360_pre_registered_mask_binding_invalid"],
     }
-    _write_json(output / "mask_association_validation.json", receipt)
+    _write_json(output / "pre_registered_mask_binding.json", receipt)
     return receipt
 
 
@@ -233,27 +257,6 @@ def main() -> int:
     model = packet / "inpaint360_model"
     vanilla = packet / "vanilla_3dgs"
     commands: list[tuple[str, list[str], Path, dict[str, str]]] = [
-        (
-            "mask_association",
-            [
-                main_python,
-                "seg/mask_associate.py",
-                "--source_path",
-                str(source_data),
-                "--model_path",
-                str(vanilla),
-                "--images",
-                "images",
-                "--iteration",
-                "30000",
-                "--mask_generator",
-                "hqsam",
-                "--resolution",
-                "1",
-            ],
-            source,
-            main_env,
-        ),
         (
             "distillation",
             [
@@ -416,31 +419,36 @@ def main() -> int:
         ),
     ]
     workflow: list[dict[str, Any]] = []
-    mask_association_validation: dict[str, Any] = {"status": "not_executed"}
-    for stage, command, cwd, env in commands:
-        observed = _run(command, cwd=cwd, env=env, log_path=output / f"{stage}.log")
-        observed["stage"] = stage
-        if stage == "mask_association" and observed["returncode"] == 0:
-            mask_association_validation = _validate_mask_association(
-                source_data=source_data,
-                target_method_instance_id=int(spec["target_method_instance_id"]),
-                output=output,
-            )
-            if mask_association_validation["status"] != "accepted":
-                observed["returncode"] = 43
-                observed["derived_validation_blocker"] = (
-                    "inpaint360_target_mask_association_not_preserved"
-                )
-        workflow.append(observed)
-        if observed["returncode"] != 0:
-            break
+    mask_association_validation = _materialize_pre_registered_mask_binding(
+        source_data=source_data,
+        target_method_instance_id=int(spec["target_method_instance_id"]),
+        output=output,
+    )
+    binding_accepted = mask_association_validation["status"] == "accepted"
+    workflow.append(
+        {
+            "stage": "pre_registered_mask_binding",
+            "operation": "copy_digest_bound_binary_target_masks",
+            "cwd": str(packet),
+            "returncode": 0 if binding_accepted else 43,
+            "timed_out": False,
+            "receipt": "pre_registered_mask_binding.json",
+        }
+    )
+    if binding_accepted:
+        for stage, command, cwd, env in commands:
+            observed = _run(command, cwd=cwd, env=env, log_path=output / f"{stage}.log")
+            observed["stage"] = stage
+            workflow.append(observed)
+            if observed["returncode"] != 0:
+                break
     completed = {row["stage"] for row in workflow if row["returncode"] == 0}
     final_ply = model / "point_cloud_object_inpaint_virtual/iteration_5000/point_cloud.ply"
     final_video = model / "video/ours__object_inpaint_virtual/iteration_5000/final_video.mp4"
     final_render_dir = final_video.parent
     source_after = _source_identity(source, spec)
     blockers: list[str] = []
-    required = [stage for stage, _, _, _ in commands]
+    required = ["pre_registered_mask_binding", *[stage for stage, _, _, _ in commands]]
     for stage in required:
         if stage not in completed:
             blockers.append(f"inpaint360_{stage}_failed_or_not_executed")
@@ -480,7 +488,11 @@ def main() -> int:
         "hardware_probe": hardware,
         "workflow": workflow,
         "mask_association_validation": mask_association_validation,
-        "mask_association_executed": "mask_association" in completed,
+        "mask_association_executed": False,
+        "mask_association_mode": "pre_registered_single_target_identity",
+        "pre_registered_mask_binding_materialized": (
+            "pre_registered_mask_binding" in completed
+        ),
         "virtual_masks_materialized": "virtual_masks" in completed,
         "lama_color_executed": "lama_color" in completed,
         "lama_depth_executed": "lama_depth" in completed,
