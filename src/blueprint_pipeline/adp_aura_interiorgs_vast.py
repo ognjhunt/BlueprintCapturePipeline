@@ -508,6 +508,7 @@ def run_aura_interiorgs_vast(
                 prefer_isaac_rt=False,
                 gpu_selection_policy=AURA_INTERIORGS_GPU_SELECTION_POLICY,
                 machine_avoidlist_path=machine_avoidlist_path,
+                vast_launch_lock_file=job.parent / "aura_interiorgs_paid_launch.lock",
                 instance_label_prefix="blueprint-adp-aura-interiorgs-",
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
