@@ -146,6 +146,12 @@ def test_bundle_derives_source_and_rights_evidence(
     assert receipt["depth_anything3_used"] is False
     assert receipt["smoke_scope"] == "unchanged_author_inpaint_init_stage_only"
     assert Path(receipt["bundle_path"]).is_file()
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        runner = archive.read(
+            "provider_runtime/adp_aura_author_smoke_provider_runner.py"
+        ).decode()
+    assert 'filename=expected["expected_ply_path"]' in runner
+    assert 'allow_patterns=[expected["path_prefix"] + "*"]' not in runner
 
 
 def test_bundle_rejects_missing_publisher_rights(

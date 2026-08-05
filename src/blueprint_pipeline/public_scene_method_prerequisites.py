@@ -47,6 +47,12 @@ _LICENSE_POLICIES: dict[str, dict[str, Any]] = {
         "redistribution_allowed_with_conditions": True,
         "attribution_required_when_shared": True,
     },
+    "MIT": {
+        "allowed_use_ceiling": "license_terms",
+        "commercial_use_allowed": True,
+        "redistribution_allowed_with_conditions": True,
+        "attribution_required_when_shared": True,
+    },
     "OpenRAIL++": {
         "allowed_use_ceiling": "internal_evaluation_subject_to_openrail_use_restrictions",
         "commercial_use_allowed": False,
