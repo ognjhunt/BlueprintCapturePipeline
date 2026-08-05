@@ -254,6 +254,7 @@ def _validate_method_resolution_commands(
 
     required_stage_resolutions = {
         "distillation": str(METHOD_RESOLUTION_ARGUMENT),
+        "baseline_render": str(METHOD_RESOLUTION_ARGUMENT),
         "removal": str(METHOD_RESOLUTION_ARGUMENT),
         "virtual_views": str(METHOD_RESOLUTION_ARGUMENT),
         "lama_prepare": "1",
@@ -290,6 +291,43 @@ def _validate_method_resolution_commands(
         ),
     }
     _write_json(output / "method_resolution_command_contract.json", receipt)
+    return receipt
+
+
+def _validate_baseline_depth_inventory(
+    *, source_data: Path, model: Path, iteration: int, output: Path
+) -> dict[str, Any]:
+    """Require the author baseline render depths before object removal."""
+
+    expected_names = sorted(path.stem for path in (source_data / "images").glob("*.png"))
+    observed: dict[str, list[str]] = {}
+    empty_files: list[str] = []
+    for split in ("train", "test"):
+        depth_dir = model / split / f"ours_{iteration}" / "depth"
+        for path in sorted(depth_dir.glob("*.npy")):
+            observed.setdefault(path.stem, []).append(split)
+            if path.stat().st_size == 0:
+                empty_files.append(path.relative_to(model).as_posix())
+    observed_names = sorted(observed)
+    missing_names = sorted(set(expected_names) - set(observed_names))
+    unexpected_names = sorted(set(observed_names) - set(expected_names))
+    duplicate_names = sorted(name for name, splits in observed.items() if len(splits) != 1)
+    valid = bool(expected_names) and not (
+        missing_names or unexpected_names or duplicate_names or empty_files
+    )
+    receipt = {
+        "schema_version": "adp_inpaint360_baseline_depth_inventory.v1",
+        "status": "accepted" if valid else "blocked",
+        "iteration": iteration,
+        "expected_camera_names": expected_names,
+        "observed_camera_splits": observed,
+        "missing_camera_names": missing_names,
+        "unexpected_camera_names": unexpected_names,
+        "duplicate_camera_names": duplicate_names,
+        "empty_files": empty_files,
+        "blockers": [] if valid else ["inpaint360_baseline_depth_inventory_invalid"],
+    }
+    _write_json(output / "baseline_depth_inventory.json", receipt)
     return receipt
 
 
@@ -414,6 +452,26 @@ def main() -> int:
                 str(METHOD_RESOLUTION_ARGUMENT),
                 "--save_iterations",
                 "2000",
+            ],
+            source,
+            main_env,
+        ),
+        (
+            "baseline_render",
+            [
+                main_python,
+                "render.py",
+                "--source_path",
+                str(source_data),
+                "--model_path",
+                str(model),
+                "--images",
+                "images",
+                "--iteration",
+                "2000",
+                "--eval",
+                "--resolution",
+                str(METHOD_RESOLUTION_ARGUMENT),
             ],
             source,
             main_env,
@@ -592,6 +650,11 @@ def main() -> int:
             "receipt": "pre_registered_mask_binding.json",
         }
     )
+    depth_inventory: dict[str, Any] = {
+        "schema_version": "adp_inpaint360_baseline_depth_inventory.v1",
+        "status": "not_executed",
+        "blockers": ["inpaint360_baseline_depth_inventory_not_executed"],
+    }
     if resolution_accepted and binding_accepted:
         for stage, command, cwd, env in commands:
             observed = _run(command, cwd=cwd, env=env, log_path=output / f"{stage}.log")
@@ -599,17 +662,37 @@ def main() -> int:
             workflow.append(observed)
             if observed["returncode"] != 0:
                 break
+            if stage == "baseline_render":
+                depth_inventory = _validate_baseline_depth_inventory(
+                    source_data=source_data,
+                    model=model,
+                    iteration=2000,
+                    output=output,
+                )
+                inventory_accepted = depth_inventory["status"] == "accepted"
+                workflow.append(
+                    {
+                        "stage": "baseline_depth_inventory",
+                        "operation": "bind_author_baseline_depths_to_frozen_cameras",
+                        "cwd": str(model),
+                        "returncode": 0 if inventory_accepted else 45,
+                        "timed_out": False,
+                        "receipt": "baseline_depth_inventory.json",
+                    }
+                )
+                if not inventory_accepted:
+                    break
     completed = {row["stage"] for row in workflow if row["returncode"] == 0}
     final_ply = model / "point_cloud_object_inpaint_virtual/iteration_5000/point_cloud.ply"
     final_video = model / "video/ours__object_inpaint_virtual/iteration_5000/final_video.mp4"
     final_render_dir = final_video.parent
     source_after = _source_identity(source, spec)
     blockers: list[str] = []
-    required = [
-        "method_resolution_contract",
-        "pre_registered_mask_binding",
-        *[stage for stage, _, _, _ in commands],
-    ]
+    required = ["method_resolution_contract", "pre_registered_mask_binding"]
+    for stage, _, _, _ in commands:
+        required.append(stage)
+        if stage == "baseline_render":
+            required.append("baseline_depth_inventory")
     for stage in required:
         if stage not in completed:
             blockers.append(f"inpaint360_{stage}_failed_or_not_executed")
@@ -650,6 +733,7 @@ def main() -> int:
         "workflow": workflow,
         "mask_association_validation": mask_association_validation,
         "method_resolution_validation": method_resolution_validation,
+        "baseline_depth_inventory_validation": depth_inventory,
         "method_resolution_execution": resolution_accepted,
         "mask_association_executed": False,
         "mask_association_mode": MASK_ASSOCIATION_MODE,
