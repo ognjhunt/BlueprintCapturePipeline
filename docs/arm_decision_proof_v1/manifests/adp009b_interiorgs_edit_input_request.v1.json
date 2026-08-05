@@ -1,0 +1,80 @@
+{
+  "schema_version": "adp009b_interiorgs_edit_input_request.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009B",
+  "frozen_before_render": true,
+  "method_outcomes_observed_before_freeze": false,
+  "scene": {
+    "publisher_scene_id": "840313",
+    "target_instance_id": "160",
+    "target_semantic_label": "canned_beverage",
+    "component_manifest_path": "docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite/interiorgs_appearance_scene.component_manifest.json",
+    "component_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite/interiorgs_appearance_scene.component_receipt.json"
+  },
+  "rendering": {
+    "renderer": "reference_spark_renderer_exact_camera",
+    "graphics_backend": "metal",
+    "width": 2048,
+    "height": 1536,
+    "vertical_fov_deg": 50.0,
+    "warmup_ms": 3500,
+    "settle_frames": 12,
+    "settle_ms": 120,
+    "timeout_seconds": 3600
+  },
+  "camera_policy": {
+    "generator": "translated_target_coverage_v1",
+    "orbit_only_forbidden": true,
+    "selection_basis": "whole_splat_room_survey_then_accessible_room_side_target_coverage",
+    "views": [
+      {
+        "camera_id": "approach_wide",
+        "position_offset_m": [0.0, 1.5, 0.55],
+        "target_offset_m": [0.0, 0.0, 0.0]
+      },
+      {
+        "camera_id": "approach_close",
+        "position_offset_m": [0.0, 0.75, 0.3],
+        "target_offset_m": [0.0, 0.0, 0.0]
+      },
+      {
+        "camera_id": "left_translate",
+        "position_offset_m": [-0.65, 1.0, 0.4],
+        "target_offset_m": [0.0, 0.0, 0.0]
+      },
+      {
+        "camera_id": "right_translate",
+        "position_offset_m": [0.75, 1.05, 0.45],
+        "target_offset_m": [0.0, 0.0, 0.0]
+      },
+      {
+        "camera_id": "raised_left",
+        "position_offset_m": [-0.45, 1.15, 0.9],
+        "target_offset_m": [0.0, 0.0, -0.01]
+      },
+      {
+        "camera_id": "raised_right",
+        "position_offset_m": [0.55, 1.25, 0.85],
+        "target_offset_m": [0.0, 0.0, -0.01]
+      },
+      {
+        "camera_id": "low_approach",
+        "position_offset_m": [-0.15, 0.7, 0.08],
+        "target_offset_m": [0.0, 0.0, 0.02]
+      },
+      {
+        "camera_id": "cabinet_context",
+        "position_offset_m": [1.2, 1.8, 0.7],
+        "target_offset_m": [0.35, 0.0, -0.04]
+      }
+    ]
+  },
+  "mask_policy": {
+    "authority": "publisher_target_obb_plus_contained_gaussians",
+    "minimum_contained_gaussians": 16,
+    "dilation_pixels": 12,
+    "support_threshold_8bit": 24,
+    "minimum_support_inside_final_fraction": 0.99
+  },
+  "request_digest": "sha256:380cb88fb4bedf46127f0b7fbf8e218a8e2adaf26ccde98433bf24e7e06cee3c"
+}
