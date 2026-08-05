@@ -205,6 +205,17 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
     )
     assert spec["runtime"]["method_resolution_argument"] == 2
     assert spec["runtime"]["method_input_resolution"] == "1024x768"
+    entrypoint = (
+        runtime_root / "run_adp_inpaint360_interiorgs_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
+    assert 'pip uninstall --python "${LAMA_PY}" opencv-python' in entrypoint
+    assert (
+        'pip install --python "${LAMA_PY}" --reinstall '
+        "opencv-python-headless==4.5.5.64"
+    ) in entrypoint
+    assert "inpaint360_lama_opencv_conflict_resolution_failed" in entrypoint
+    assert "inpaint360_lama_opencv_runtime_validation_failed" in entrypoint
+    assert 'metadata.version("opencv-python-headless") == "4.5.5.64"' in entrypoint
     with tarfile.open(runtime_root / "inpaint360gs_source.tar") as archive:
         link = archive.getmember("docs/link.md")
         assert link.issym()

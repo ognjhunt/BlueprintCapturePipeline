@@ -140,6 +140,38 @@ if [ "${lama_deps_rc}" -ne 0 ]; then
   exit "${lama_deps_rc}"
 fi
 
+# albumentations 0.5.2 permits the non-headless OpenCV distribution as a
+# transitive dependency.  Keeping both distributions in one environment can
+# leave cv2 assembled from incompatible releases, so restore the exact
+# headless release after the complete legacy dependency solve.
+"${UV_BIN}" pip uninstall --python "${LAMA_PY}" opencv-python
+lama_opencv_cleanup_rc=$?
+"${UV_BIN}" pip install --python "${LAMA_PY}" --reinstall opencv-python-headless==4.5.5.64
+lama_opencv_pin_rc=$?
+if [ "${lama_opencv_cleanup_rc}" -ne 0 ] || [ "${lama_opencv_pin_rc}" -ne 0 ]; then
+  write_missing_result "inpaint360_lama_opencv_conflict_resolution_failed"
+  exit 2
+fi
+"${LAMA_PY}" - <<'PY'
+from importlib import metadata
+
+import cv2
+
+assert metadata.version("opencv-python-headless") == "4.5.5.64"
+try:
+    metadata.version("opencv-python")
+except metadata.PackageNotFoundError:
+    pass
+else:
+    raise RuntimeError("conflicting opencv-python distribution remains installed")
+assert cv2.__version__ == "4.5.5"
+PY
+lama_opencv_validation_rc=$?
+if [ "${lama_opencv_validation_rc}" -ne 0 ]; then
+  write_missing_result "inpaint360_lama_opencv_runtime_validation_failed"
+  exit "${lama_opencv_validation_rc}"
+fi
+
 python3 -m zipfile -e "${SCRIPT_DIR}/big-lama.zip" "${SOURCE_DIR}/LaMa"
 lama_model_rc=$?
 if [ "${lama_model_rc}" -ne 0 ] || [ ! -f "${SOURCE_DIR}/LaMa/big-lama/config.yaml" ]; then
