@@ -68,10 +68,10 @@ MIN_RASTERIZER_COMPUTE_CAP = 890
 PROVIDER_STARTUP_TIMEOUT_SECONDS = 600
 PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS = 600
 AURA_INTERIORGS_GPU_SELECTION_POLICY = {
-    "policy_id": "aura_interiorgs_rtx_4090_observed_control",
-    "allowed_gpu_keywords": ("RTX 4090",),
+    "policy_id": "aura_interiorgs_l40s_observed_control",
+    "allowed_gpu_keywords": ("L40S",),
     "denied_gpu_keywords": (),
-    "reason": "reuse the RTX 4090 class that completed the unchanged Aura author control",
+    "reason": "reuse the L40S class that completed the unchanged Aura author control",
 }
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
@@ -500,7 +500,7 @@ def run_aura_interiorgs_vast(
                 session_budget_ledger_path=job / "adp_aura_interiorgs_vast_session_budget.json",
                 verify_staging_urls=True,
                 require_known_supported_isaac_driver=False,
-                preferred_gpu_keywords=("RTX 4090",),
+                preferred_gpu_keywords=("L40S",),
                 prefer_isaac_rt=False,
                 gpu_selection_policy=AURA_INTERIORGS_GPU_SELECTION_POLICY,
                 machine_avoidlist_path=machine_avoidlist_path,

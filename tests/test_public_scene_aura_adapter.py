@@ -19,7 +19,10 @@ from blueprint_pipeline.public_scene_aura_adapter import (
 from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
 )
-from blueprint_pipeline.adp_aura_interiorgs_vast import run_aura_interiorgs_vast
+from blueprint_pipeline.adp_aura_interiorgs_vast import (
+    AURA_INTERIORGS_GPU_SELECTION_POLICY,
+    run_aura_interiorgs_vast,
+)
 from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
 
 
@@ -316,6 +319,15 @@ def test_aura_interiorgs_vast_dry_run_binds_bundle_without_provider_mutation(
     assert result["status"] == "dry_run_ready"
     assert result["provider_mutations_performed"] == 0
     assert result["retry_cap"] == 0
+
+
+def test_aura_interiorgs_vast_reuses_completed_author_control_gpu_class() -> None:
+    assert AURA_INTERIORGS_GPU_SELECTION_POLICY == {
+        "policy_id": "aura_interiorgs_l40s_observed_control",
+        "allowed_gpu_keywords": ("L40S",),
+        "denied_gpu_keywords": (),
+        "reason": "reuse the L40S class that completed the unchanged Aura author control",
+    }
 
 
 def test_vast_preflight_accepts_distinct_aura_interiorgs_bundle(
