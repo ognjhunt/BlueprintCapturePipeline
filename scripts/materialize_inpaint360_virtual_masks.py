@@ -86,8 +86,6 @@ def materialize_virtual_masks(
             raise ValueError("inpaint360_virtual_predicted_mask_shape_mismatch")
         binary = np.where(labels == target_instance_id, 255, 0).astype(np.uint8)
         foreground_pixels = int(np.count_nonzero(binary))
-        if foreground_pixels == 0:
-            raise ValueError("inpaint360_virtual_target_missing_from_view")
         output_path = output / source_path.name
         Image.fromarray(binary, mode="L").save(output_path, format="PNG", optimize=False)
         source_records.append(
@@ -106,11 +104,24 @@ def materialize_virtual_masks(
             }
         )
 
+    target_positive_view_count = sum(
+        int(record["foreground_pixels"]) > 0 for record in output_records
+    )
+    if target_positive_view_count == 0:
+        raise ValueError("inpaint360_virtual_target_missing_from_all_views")
+    target_absent_view_names = [
+        Path(str(record["relative_path"])).name
+        for record in output_records
+        if int(record["foreground_pixels"]) == 0
+    ]
+
     payload: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "status": "completed",
         "target_instance_id": target_instance_id,
         "view_count": len(output_records),
+        "target_positive_view_count": target_positive_view_count,
+        "target_absent_view_names": target_absent_view_names,
         "image_height": expected_shape[0] if expected_shape else None,
         "image_width": expected_shape[1] if expected_shape else None,
         "source_kind": "inpaint360gs_full_scene_virtual_objects_pred",
