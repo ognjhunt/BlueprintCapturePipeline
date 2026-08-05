@@ -911,6 +911,7 @@ def main() -> int:
     }
     if resolution_accepted and binding_accepted:
         for stage, command, cwd, env in commands:
+            print(f"BLUEPRINT_ADP_INPAINT360_STAGE_STARTED:{stage}", flush=True)
             if stage == "inpaint_3d":
                 nonempty_view_adapter = _materialize_nonempty_virtual_view_adapter(
                     source=source,
@@ -936,6 +937,10 @@ def main() -> int:
             observed = _run(command, cwd=cwd, env=env, log_path=output / f"{stage}.log")
             observed["stage"] = stage
             workflow.append(observed)
+            print(
+                f"BLUEPRINT_ADP_INPAINT360_STAGE_FINISHED:{stage}:returncode={observed['returncode']}",
+                flush=True,
+            )
             if observed["returncode"] != 0:
                 break
             if stage == "virtual_masks":
@@ -1052,6 +1057,9 @@ def main() -> int:
         blockers.append("inpaint360_review_frames_missing")
     main_freeze = output / "main-pip-freeze.txt"
     lama_freeze = output / "lama-pip-freeze.txt"
+    vgg16_materialization = _read_json(output / "vgg16_materialization.json")
+    if vgg16_materialization.get("status") != "accepted":
+        blockers.append("inpaint360_vgg16_materialization_receipt_missing_or_blocked")
     for freeze, blocker in (
         (main_freeze, "inpaint360_main_environment_receipt_missing"),
         (lama_freeze, "inpaint360_lama_environment_receipt_missing"),
@@ -1072,6 +1080,7 @@ def main() -> int:
         "source_modified": not source_after["matches"],
         "nested_dependency_identity_before": dependency_before,
         "nested_dependency_identity_after": dependency_after,
+        "vgg16_materialization": vgg16_materialization,
         "adapter_identity_before": packet_before,
         "hardware_probe": hardware,
         "workflow": workflow,

@@ -57,6 +57,10 @@ PREREQUISITE_RECEIPT_DIGEST = (
 )
 BIG_LAMA_SHA256 = "sha256:d7161bba4d68b438f9fa7f09dcb750a223804c300c68d214a5e0be16251fba8d"
 BIG_LAMA_SIZE_BYTES = 381_428_720
+VGG16_WEIGHTS_FILENAME = "vgg16-397923af.pth"
+VGG16_WEIGHTS_SOURCE_URL = "https://download.pytorch.org/models/vgg16-397923af.pth"
+VGG16_WEIGHTS_SHA256 = "sha256:397923af8e79cdbb6a7127f12361acd7a2f83e06b05044ddf496e83de57a5bf0"
+VGG16_WEIGHTS_SIZE_BYTES = 553_433_881
 MIN_RASTERIZER_COMPUTE_CAP = 890
 PROVIDER_STARTUP_TIMEOUT_SECONDS = 1800
 PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS = 1800
@@ -224,6 +228,7 @@ def build_inpaint360_interiorgs_bundle(
     adapter_receipt_path: str | Path,
     prerequisite_receipt_path: str | Path,
     big_lama_path: str | Path,
+    vgg16_weights_path: str | Path,
     job_dir: str | Path,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -236,6 +241,7 @@ def build_inpaint360_interiorgs_bundle(
     adapter_receipt_file = Path(adapter_receipt_path).expanduser().resolve()
     prerequisite_file = Path(prerequisite_receipt_path).expanduser().resolve()
     big_lama = Path(big_lama_path).expanduser().resolve()
+    vgg16_weights = Path(vgg16_weights_path).expanduser().resolve()
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
         raise ValueError("adp_inpaint360_bundle_job_dir_not_empty")
@@ -280,6 +286,12 @@ def build_inpaint360_interiorgs_bundle(
         or _sha256(big_lama) != BIG_LAMA_SHA256
     ):
         raise ValueError("adp_inpaint360_big_lama_bytes_changed")
+    if (
+        not vgg16_weights.is_file()
+        or vgg16_weights.stat().st_size != VGG16_WEIGHTS_SIZE_BYTES
+        or _sha256(vgg16_weights) != VGG16_WEIGHTS_SHA256
+    ):
+        raise ValueError("adp_inpaint360_vgg16_weights_bytes_changed")
     adapter_receipt = _read_json(adapter_receipt_file)
     adapter_rows = _validate_adapter(adapter_receipt, adapter_root=packet)
     source_rows = _tracked_files(source)
@@ -290,6 +302,7 @@ def build_inpaint360_interiorgs_bundle(
     _deterministic_zip(lama_rows, runtime / "lama_training_data.zip")
     _deterministic_zip(adapter_rows, runtime / "interiorgs_adapter.zip")
     shutil.copy2(big_lama, runtime / "big-lama.zip")
+    shutil.copy2(vgg16_weights, runtime / VGG16_WEIGHTS_FILENAME)
     scripts = repo / "scripts"
     _write_executable(
         runtime / "run_adp_inpaint360_interiorgs_provider_runtime.sh",
@@ -338,6 +351,15 @@ def build_inpaint360_interiorgs_bundle(
             "size_bytes": BIG_LAMA_SIZE_BYTES,
             "sha256": BIG_LAMA_SHA256,
             "rights_authority_id": big_lama_authority["rights_authority_id"],
+        },
+        "runtime_dependencies": {
+            "torchvision_vgg16_imagenet1k_v1": {
+                "filename": VGG16_WEIGHTS_FILENAME,
+                "source_url": VGG16_WEIGHTS_SOURCE_URL,
+                "size_bytes": VGG16_WEIGHTS_SIZE_BYTES,
+                "sha256": VGG16_WEIGHTS_SHA256,
+                "materialization": "bundle_to_controlled_torch_hub_cache_before_method_execution",
+            }
         },
         "runtime": {
             "container_image": DEFAULT_IMAGE,
@@ -398,6 +420,9 @@ def build_inpaint360_interiorgs_bundle(
         "adapter_archive_sha256": _sha256(runtime / "interiorgs_adapter.zip"),
         "adapter_manifest_digest": canonical_digest({"files": adapter_manifest}),
         "big_lama_sha256": BIG_LAMA_SHA256,
+        "vgg16_weights_source_url": VGG16_WEIGHTS_SOURCE_URL,
+        "vgg16_weights_sha256": VGG16_WEIGHTS_SHA256,
+        "vgg16_weights_size_bytes": VGG16_WEIGHTS_SIZE_BYTES,
         "container_image": DEFAULT_IMAGE,
         "runtime_environment_claim": (
             "exact_main_environment_method_source_unchanged_pinned_lama_dependency_materialized"
@@ -653,6 +678,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--adapter-receipt", required=True)
     parser.add_argument("--prerequisite-receipt", required=True)
     parser.add_argument("--big-lama", required=True)
+    parser.add_argument("--vgg16-weights", required=True)
     parser.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
     receipt = build_inpaint360_interiorgs_bundle(
@@ -663,6 +689,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         adapter_receipt_path=args.adapter_receipt,
         prerequisite_receipt_path=args.prerequisite_receipt,
         big_lama_path=args.big_lama,
+        vgg16_weights_path=args.vgg16_weights,
         job_dir=args.job_dir,
     )
     print(json.dumps({"status": receipt["status"], "bundle_sha256": receipt["bundle_sha256"]}))

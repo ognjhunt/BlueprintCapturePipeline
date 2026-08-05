@@ -195,6 +195,10 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     monkeypatch.setattr(runtime, "PREREQUISITE_RECEIPT_DIGEST", prerequisite["receipt_digest"])
     prerequisite_path = tmp_path / "prerequisite.json"
     _write_json(prerequisite_path, prerequisite)
+    vgg16_weights = tmp_path / runtime.VGG16_WEIGHTS_FILENAME
+    vgg16_weights.write_bytes(b"vgg16 fixture")
+    monkeypatch.setattr(runtime, "VGG16_WEIGHTS_SIZE_BYTES", vgg16_weights.stat().st_size)
+    monkeypatch.setattr(runtime, "VGG16_WEIGHTS_SHA256", runtime._sha256(vgg16_weights))
     return {
         "repo": repo,
         "source": source,
@@ -203,6 +207,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         "adapter_receipt": adapter_receipt_path,
         "prerequisite": prerequisite_path,
         "big_lama": big_lama,
+        "vgg16_weights": vgg16_weights,
         "job": tmp_path / "job",
     }
 
@@ -216,6 +221,7 @@ def _build(paths: dict[str, Path]) -> dict[str, object]:
         adapter_receipt_path=paths["adapter_receipt"],
         prerequisite_receipt_path=paths["prerequisite"],
         big_lama_path=paths["big_lama"],
+        vgg16_weights_path=paths["vgg16_weights"],
         job_dir=paths["job"],
         generated_at="2026-08-05T00:00:00+00:00",
     )
@@ -269,6 +275,7 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
         names = set(archive.namelist())
     assert "provider_runtime/execution_spec.json" in names
     assert "provider_runtime/big-lama.zip" in names
+    assert f"provider_runtime/{runtime.VGG16_WEIGHTS_FILENAME}" in names
     assert "provider_runtime/lama_training_data.zip" in names
     assert "provider_runtime/probe_inpaint360_camera_rasterizer.py" in names
 
@@ -296,6 +303,10 @@ def test_bundle_passes_vast_preflight_and_has_fail_closed_launch_script(
     assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
     assert "adp_inpaint360_provider_runtime_output.zip" in script
     assert "provider_output_zip_exclusions.json" in script
+    assert "BLUEPRINT_ADP_INPAINT360_RUNTIME_PROGRESS" in (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp_inpaint360_interiorgs_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
         generated_at="fixed",
@@ -327,6 +338,15 @@ def test_bundle_rejects_mutated_lama_dependency(
         "changed", encoding="utf-8"
     )
     with pytest.raises(ValueError, match="lama_dependency_identity_mismatch"):
+        _build(paths)
+
+
+def test_bundle_rejects_mutated_vgg16_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    paths["vgg16_weights"].write_bytes(b"changed")
+    with pytest.raises(ValueError, match="vgg16_weights_bytes_changed"):
         _build(paths)
 
 
