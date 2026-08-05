@@ -50,13 +50,17 @@ stdout/stderr, output bytes, same-camera comparisons, and provider cleanup.
 Inpaint360GS experimental run `live_v22_execute_attempt2` did execute on the
 InteriorGS packet through distillation, baseline render, object removal, virtual
 views, deterministic mask selection, Big-LaMa color/depth, PLY fusion, and the
-start of final 3D optimization. The 30-minute provider no-log-progress watchdog
-destroyed the still-active RTX 4090 while torchvision was lazily retrieving its
-528 MiB VGG16 dependency. No final result or provider output ZIP returned, so
+start of final 3D optimization. The 30-minute total request-log deadline—not the
+silence watchdog—destroyed the still-active RTX 4090 while torchvision was lazily
+retrieving its 528 MiB VGG16 dependency. The retained poll receipt records
+`break_reason=max_wait_deadline_reached` and `no_progress_timeout_reached=false`.
+No final result or provider output ZIP returned, so
 this is failed execution evidence rather than an inpainting result. The next
 packet materializes the exact 553,433,881-byte VGG16 file with SHA-256
 `397923af8e79cdbb6a7127f12361acd7a2f83e06b05044ddf496e83de57a5bf0`
-before method execution and emits minute liveness plus stage markers. No
+before method execution, emits minute liveness plus stage markers, and gives
+the execution the approved four-hour TTL while retaining a separate 30-minute
+silence watchdog. No
 selected source collider has been removed and no replacement USD has been
 inserted into scene `840313`. The Content Agents asset remains a static authoring
 candidate until the dynamic Isaac probes pass.

@@ -62,7 +62,7 @@ VGG16_WEIGHTS_SOURCE_URL = "https://download.pytorch.org/models/vgg16-397923af.p
 VGG16_WEIGHTS_SHA256 = "sha256:397923af8e79cdbb6a7127f12361acd7a2f83e06b05044ddf496e83de57a5bf0"
 VGG16_WEIGHTS_SIZE_BYTES = 553_433_881
 MIN_RASTERIZER_COMPUTE_CAP = 890
-PROVIDER_STARTUP_TIMEOUT_SECONDS = 1800
+PROVIDER_EXECUTION_TIMEOUT_SECONDS = 14_400
 PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS = 1800
 INPAINT360_GPU_SELECTION_POLICY = {
     "policy_id": "inpaint360_rtx_4090_observed_control",
@@ -615,7 +615,7 @@ def run_inpaint360_interiorgs_vast(
                 min_compute_cap=MIN_RASTERIZER_COMPUTE_CAP,
                 poll_interval_seconds=15,
                 startup_timeout_seconds=min(
-                    PROVIDER_STARTUP_TIMEOUT_SECONDS, remaining_minutes * 60
+                    PROVIDER_EXECUTION_TIMEOUT_SECONDS, remaining_minutes * 60
                 ),
                 heartbeat_no_progress_seconds=PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS,
                 session_budget_ledger_path=job / "adp_inpaint360_vast_session_budget.json",

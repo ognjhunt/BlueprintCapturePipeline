@@ -65,7 +65,7 @@ TARGET_INSTANCE_ID = "ins160"
 RESULT_SCHEMA_VERSION = "adp_aura_interiorgs_vast_run.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/aurafusion360-interiorgs"
 MIN_RASTERIZER_COMPUTE_CAP = 890
-PROVIDER_STARTUP_TIMEOUT_SECONDS = 1800
+PROVIDER_EXECUTION_TIMEOUT_SECONDS = 14_400
 PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS = 1800
 AURA_INTERIORGS_GPU_SELECTION_POLICY = {
     "policy_id": "aura_interiorgs_l40s_observed_control",
@@ -499,7 +499,7 @@ def run_aura_interiorgs_vast(
                 min_compute_cap=MIN_RASTERIZER_COMPUTE_CAP,
                 poll_interval_seconds=15,
                 startup_timeout_seconds=min(
-                    PROVIDER_STARTUP_TIMEOUT_SECONDS, remaining_minutes * 60
+                    PROVIDER_EXECUTION_TIMEOUT_SECONDS, remaining_minutes * 60
                 ),
                 heartbeat_no_progress_seconds=PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS,
                 session_budget_ledger_path=job / "adp_aura_interiorgs_vast_session_budget.json",
