@@ -467,8 +467,6 @@ def main() -> int:
                 str(model),
                 "--images",
                 "images",
-                "--iteration",
-                "2000",
                 "--eval",
                 "--resolution",
                 str(METHOD_RESOLUTION_ARGUMENT),
