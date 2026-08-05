@@ -300,7 +300,9 @@ def build_inpaint360_interiorgs_bundle(
             "source_modifications": [],
             "virtual_view_count": 30,
             "input_resolution": "2048x1536",
-            "mask_association_mode": "pre_registered_single_target_identity",
+            "mask_association_mode": (
+                "pre_registered_single_target_method_native_resolution"
+            ),
         },
         "claim_boundary": {
             "rendered_frames_have_no_hidden_background_truth": True,

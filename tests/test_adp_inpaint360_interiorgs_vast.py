@@ -191,7 +191,7 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
     )
     assert spec["runtime"]["source_modifications"] == []
     assert spec["runtime"]["mask_association_mode"] == (
-        "pre_registered_single_target_identity"
+        "pre_registered_single_target_method_native_resolution"
     )
     with tarfile.open(runtime_root / "inpaint360gs_source.tar") as archive:
         link = archive.getmember("docs/link.md")
@@ -340,10 +340,11 @@ def test_provider_runner_materializes_pre_registered_single_target_masks(
     )
 
     assert receipt["status"] == "accepted"
-    assert receipt["full_resolution_preserved"] is True
+    assert receipt["full_resolution_source_preserved"] is True
     assert receipt["image_mask_dimensions"]["view_0.png"] == {
         "source_image": [5, 4],
         "raw_mask": [5, 4],
+        "method_image_and_associated_mask": [5, 4],
     }
     assert receipt["target_pixel_counts"] == {
         "view_0.png": 1,
@@ -355,7 +356,9 @@ def test_provider_runner_materializes_pre_registered_single_target_masks(
         assert (associated / path.name).read_bytes() == path.read_bytes()
     scene = json.loads((associated / "scene.json").read_text())
     assert scene["num_classes"] == 2
-    assert scene["association_mode"] == "pre_registered_single_target_identity"
+    assert scene["association_mode"] == (
+        "pre_registered_single_target_method_native_resolution"
+    )
 
 
 @pytest.mark.parametrize("invalid_kind", ["empty_target", "unexpected_instance"])
@@ -404,12 +407,12 @@ def test_provider_runner_rejects_unpaired_or_resized_target_masks(
     )
 
     assert receipt["status"] == "blocked"
-    assert receipt["full_resolution_preserved"] is False
+    assert receipt["full_resolution_source_preserved"] is False
     assert receipt["invalid_masks"] == ["view.png"]
     assert not (source / "associated_hqsam").exists()
 
 
-def test_provider_runner_requires_full_resolution_on_every_image_loading_stage(
+def test_provider_runner_requires_method_native_resolution_on_image_loading_stages(
     tmp_path: Path,
 ) -> None:
     runner = _load_provider_runner()
@@ -423,17 +426,57 @@ def test_provider_runner_requires_full_resolution_on_every_image_loading_stage(
         "ply_fusion",
         "inpaint_3d",
     )
-    commands = [
-        (stage, ["python", "script.py", "--resolution", "1"], tmp_path, env)
-        for stage in stages
-    ]
+    commands = []
+    for stage in stages:
+        resolution = "1" if stage in {"lama_prepare", "lama_collect"} else "-1"
+        commands.append(
+            (stage, ["python", "script.py", "--resolution", resolution], tmp_path, env)
+        )
 
-    accepted = runner._validate_full_resolution_commands(commands, output=tmp_path)
+    accepted = runner._validate_method_native_resolution_commands(
+        commands, output=tmp_path
+    )
     assert accepted["status"] == "accepted"
-    commands[0][1][-1] = "-1"
-    blocked = runner._validate_full_resolution_commands(commands, output=tmp_path)
+    commands[0][1][-1] = "1"
+    blocked = runner._validate_method_native_resolution_commands(
+        commands, output=tmp_path
+    )
     assert blocked["status"] == "blocked"
     assert blocked["violating_or_missing_stages"] == ["distillation"]
+
+
+def test_provider_runner_derives_native_1_6k_mask_without_mutating_source(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    source = tmp_path / "source"
+    raw = source / "raw_hqsam"
+    images = source / "images"
+    raw.mkdir(parents=True)
+    images.mkdir(parents=True)
+    mask = Image.new("L", (2048, 1536), color=0)
+    mask.paste(1, (512, 384, 1536, 1152))
+    mask.save(raw / "view.png")
+    Image.new("RGB", (2048, 1536), color=(20, 30, 40)).save(images / "view.png")
+    raw_before = (raw / "view.png").read_bytes()
+
+    receipt = runner._materialize_pre_registered_mask_binding(
+        source_data=source,
+        target_method_instance_id=1,
+        output=tmp_path / "output",
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["image_mask_dimensions"]["view.png"] == {
+        "source_image": [2048, 1536],
+        "raw_mask": [2048, 1536],
+        "method_image_and_associated_mask": [1600, 1200],
+    }
+    assert receipt["associated_target_pixel_counts"]["view.png"] > 0
+    assert (raw / "view.png").read_bytes() == raw_before
+    with Image.open(source / "associated_hqsam/view.png") as associated:
+        assert associated.size == (1600, 1200)
+        assert set(associated.getdata()) == {0, 1}
 
 
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:
