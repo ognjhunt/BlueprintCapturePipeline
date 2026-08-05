@@ -1,9 +1,4 @@
-"""Build one immutable Inpaint360GS InteriorGS execution packet.
-
-This module intentionally stops at local packet construction. Paid execution is
-added only after the packet, two runtime environments, and crash receipts pass
-focused tests.
-"""
+"""Build and execute one immutable Inpaint360GS InteriorGS packet on Vast."""
 
 from __future__ import annotations
 
