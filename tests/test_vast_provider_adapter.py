@@ -1629,6 +1629,45 @@ def test_vast_adapter_blocks_paid_launch_when_existing_instance_active(
     assert teardown["continuing_spend_from_this_run"] is False
 
 
+def test_prelaunch_inventory_guard_allows_only_exact_authorized_active_instances(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (
+            200,
+            {
+                "instances": [
+                    {"id": 123, "actual_status": "running", "gpu_name": "RTX 4090"},
+                    {"id": 124, "actual_status": "running", "gpu_name": "L40S"},
+                ]
+            },
+        ),
+    )
+    blocked = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "blocked",
+        generated_at="2026-08-05T00:00:00Z",
+        api_key="test-key",
+        allowed_active_instance_ids=(123,),
+    )
+    assert blocked["status"] == "blocked"
+    assert blocked["allowed_active_instance_ids"] == [123]
+    assert blocked["unexpected_active_instance_count"] == 1
+    assert blocked["unexpected_active_instances"][0]["id"] == 124
+
+    passed = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "passed",
+        generated_at="2026-08-05T00:00:00Z",
+        api_key="test-key",
+        allowed_active_instance_ids=(123, 124),
+    )
+    assert passed["status"] == "passed"
+    assert passed["continuing_spend_detected_before_new_launch"] is True
+    assert passed["unexpected_active_instance_count"] == 0
+
+
 def test_vast_adapter_blocks_blueprint_bundle_missing_staging_before_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

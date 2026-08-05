@@ -68,10 +68,10 @@ MIN_RASTERIZER_COMPUTE_CAP = 890
 PROVIDER_STARTUP_TIMEOUT_SECONDS = 600
 PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS = 600
 AURA_INTERIORGS_GPU_SELECTION_POLICY = {
-    "policy_id": "aura_interiorgs_rtx_4090_observed_control",
-    "allowed_gpu_keywords": ("RTX 4090",),
+    "policy_id": "aura_interiorgs_l40s_observed_control",
+    "allowed_gpu_keywords": ("L40S",),
     "denied_gpu_keywords": (),
-    "reason": "reuse the RTX 4090 class that completed the unchanged Aura author control",
+    "reason": "reuse the L40S class that completed the unchanged Aura author control",
 }
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
@@ -331,11 +331,15 @@ def build_aura_interiorgs_bundle(
 def _remaining_minutes(
     *, job: Path, hard_cap_usd: float, hard_ttl_seconds: int, max_hourly_rate_usd: float
 ) -> int:
-    spent = attempt_estimated_cost(job)
-    elapsed = attempt_runtime_seconds(job)
-    dollars = max(0.0, hard_cap_usd - spent)
-    seconds = max(0, hard_ttl_seconds - elapsed)
-    return max(0, min(seconds // 60, math.floor(dollars / max_hourly_rate_usd * 60)))
+    ledger = _read_json(job / "adp_aura_interiorgs_vast_session_budget.json")
+    attempts = [row for row in ledger.get("attempts") or [] if isinstance(row, Mapping)]
+    prior_seconds = sum(attempt_runtime_seconds(row) for row in attempts)
+    prior_cost = sum(attempt_estimated_cost(row) for row in attempts)
+    runtime_minutes = math.floor(max(0.0, hard_ttl_seconds - prior_seconds) / 60.0)
+    spend_minutes = math.floor(
+        max(0.0, hard_cap_usd - prior_cost) * 60.0 / max_hourly_rate_usd
+    )
+    return max(0, min(runtime_minutes, spend_minutes))
 
 
 def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
@@ -399,6 +403,7 @@ def run_aura_interiorgs_vast(
     hard_ttl_seconds: int = 14_400,
     public_image: str = DEFAULT_IMAGE,
     machine_avoidlist_path: str | Path | None = None,
+    allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Run the frozen Aura InteriorGS challenger once, with no automatic retry."""
 
@@ -500,10 +505,12 @@ def run_aura_interiorgs_vast(
                 session_budget_ledger_path=job / "adp_aura_interiorgs_vast_session_budget.json",
                 verify_staging_urls=True,
                 require_known_supported_isaac_driver=False,
-                preferred_gpu_keywords=("RTX 4090",),
+                preferred_gpu_keywords=("L40S",),
                 prefer_isaac_rt=False,
                 gpu_selection_policy=AURA_INTERIORGS_GPU_SELECTION_POLICY,
                 machine_avoidlist_path=machine_avoidlist_path,
+                allowed_active_instance_ids=allowed_active_instance_ids,
+                vast_launch_lock_file=job.parent / "aura_interiorgs_paid_launch.lock",
                 instance_label_prefix="blueprint-adp-aura-interiorgs-",
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
