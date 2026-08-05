@@ -507,6 +507,12 @@ def test_provider_runner_runs_author_baseline_render_before_removal() -> None:
     source = runner_path.read_text(encoding="utf-8")
     assert source.index('"baseline_render"') < source.index('"removal"')
     assert source.count('"render.py"') == 1
+    baseline_command = source[
+        source.index('(\n            "baseline_render",') : source.index(
+            '(\n            "removal",'
+        )
+    ]
+    assert '"--iteration"' not in baseline_command
 
 
 def test_provider_runner_derives_divisor_2_mask_without_mutating_source(
