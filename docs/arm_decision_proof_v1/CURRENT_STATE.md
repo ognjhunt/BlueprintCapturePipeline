@@ -70,7 +70,7 @@ python -m blueprint_pipeline.adp_aura_author_smoke_vast \
   --prerequisite-receipt "$ADP009A_DATA_ROOT/methods/adp009a_method_prerequisite_receipt.v1.json" \
   --author-data-root "$ADP009A_DATA_ROOT/aura_author_smoke/author_data_v1/data" \
   --author-data-receipt "$ADP009A_DATA_ROOT/aura_author_smoke/author_data_v1/adp_aura_author_data_materialization_receipt.json" \
-  --job-dir "$ADP009A_DATA_ROOT/aura_author_smoke/bundle_v7"
+  --job-dir "$ADP009A_DATA_ROOT/aura_author_smoke/bundle_v8"
 python -m blueprint_pipeline.public_scene_suite_materializer \
   --request docs/arm_decision_proof_v1/manifests/adp009a_materialization_request.v1.json \
   --repo-root "$PWD" --data-root "$ADP009A_DATA_ROOT" \
