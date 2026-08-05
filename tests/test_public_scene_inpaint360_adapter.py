@@ -131,6 +131,7 @@ def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
     mask = np.asarray(Image.open(output / "source" / "raw_hqsam" / "view_00.png"))
     assert set(np.unique(mask)) == {0, 1}
     assert (output / "vanilla_3dgs" / "point_cloud" / "iteration_30000" / "point_cloud.ply").is_file()
+    assert (output / "vanilla_3dgs" / "cfg_args").read_text() == "Namespace()\n"
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
 
 

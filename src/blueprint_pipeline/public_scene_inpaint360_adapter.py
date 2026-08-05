@@ -279,6 +279,9 @@ def materialize_inpaint360_adapter(
     checkpoint = vanilla_dir / "point_cloud" / "iteration_30000" / "point_cloud.ply"
     _copy_exact(standard_splat, checkpoint)
     artifacts.append(_record(checkpoint, output))
+    vanilla_cfg = vanilla_dir / "cfg_args"
+    vanilla_cfg.write_text("Namespace()\n", encoding="utf-8")
+    artifacts.append(_record(vanilla_cfg, output))
 
     distill_config = output / "config" / "distill.json"
     distill_config.parent.mkdir(parents=True, exist_ok=True)
@@ -335,6 +338,7 @@ def materialize_inpaint360_adapter(
             "mask_contract": "raw_hqsam_uint8_instance_id_1",
             "vanilla_gaussian_iteration": 30000,
             "target_method_instance_id": 1,
+            "upstream_cfg_args_materialized": True,
             "staged_artifacts": artifacts,
         },
         "prepared_commands": {"working_directory": str(method), "commands": commands},
