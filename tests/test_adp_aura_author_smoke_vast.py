@@ -248,6 +248,9 @@ def test_bundle_derives_source_and_rights_evidence(
             "provider_runtime/adp_aura_author_smoke_provider_runner.py"
         ).decode()
         smoke_spec = json.loads(archive.read("provider_runtime/smoke_spec.json"))
+        entrypoint = archive.read(
+            "provider_runtime/run_adp_aura_author_smoke_provider_runtime.sh"
+        ).decode()
     with zipfile.ZipFile(dependency_archive) as dependency:
         assert set(dependency.namelist()) == set(
             aura.WONDERWORLD_MARIGOLD_RUNTIME_FILES
@@ -261,6 +264,7 @@ def test_bundle_derives_source_and_rights_evidence(
         "utils/sam2_utils.py",
         "inpaint.py",
     ]
+    assert "export UV_NATIVE_TLS=true" in entrypoint
     assert 'destination.stat().st_size != sd2["size_bytes"]' in runner
     assert "_extract_author_data(runtime, source, spec)" in runner
     assert "_extract_runtime_dependency(runtime, spec)" in runner
