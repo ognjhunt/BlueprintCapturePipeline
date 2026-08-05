@@ -203,6 +203,12 @@ def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
     assert receipt["adapter"]["target_object_radius_derivation"] == (
         "max_distance_from_metric_obb_center"
     )
+    assert receipt["adapter"]["target_obb_corners_m"] == receipt["scene"][
+        "target_obb_corners_m"
+    ]
+    assert receipt["adapter"]["target_removal_volume_contract"] == (
+        "gaussian_center_inside_exact_publisher_obb"
+    )
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
     assert json.loads((paths["repo"] / "retained" / "adapter_receipt.json").read_text()) == receipt
 

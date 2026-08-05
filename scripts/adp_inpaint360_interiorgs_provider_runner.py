@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,6 +20,9 @@ SCHEMA_VERSION = "adp_inpaint360_interiorgs_result.v1"
 METHOD_RESOLUTION_ARGUMENT = 2
 MASK_ASSOCIATION_MODE = "pre_registered_single_target_resolution_divisor_2"
 COMMAND_TIMEOUT_SECONDS = 10_800
+MIN_VIRTUAL_MASK_FILL_RATIO = 0.2
+MIN_VIRTUAL_MASK_REFERENCE_RATIO = 0.1
+MIN_QUALIFYING_VIRTUAL_VIEW_COUNT = 3
 
 
 def _sha256(path: Path) -> str:
@@ -157,21 +161,11 @@ def _ply_vertex_count(path: Path) -> int | None:
     return None
 
 
-def _freeze_supplemental_fusion_view(*, handoff: dict[str, Any], output: Path) -> dict[str, Any]:
-    candidates: list[dict[str, Any]] = []
-    for row in handoff.get("output_masks") or []:
-        relative = str(row.get("relative_path") or "")
-        view_id = Path(relative).stem
-        foreground_pixels = row.get("foreground_pixels")
-        if len(view_id) == 5 and view_id.isdigit() and isinstance(foreground_pixels, int):
-            candidates.append(
-                {
-                    "view_id": view_id,
-                    "foreground_pixels": foreground_pixels,
-                    "mask_sha256": row.get("sha256"),
-                }
-            )
-    positive = [row for row in candidates if row["foreground_pixels"] > 0]
+def _freeze_supplemental_fusion_view(
+    *, selection: dict[str, Any], output: Path
+) -> dict[str, Any]:
+    candidates = [dict(row) for row in selection.get("selected_views") or []]
+    positive = [row for row in candidates if int(row.get("foreground_pixels") or 0) > 0]
     selected = sorted(
         positive,
         key=lambda row: (-int(row["foreground_pixels"]), str(row["view_id"])),
@@ -182,9 +176,7 @@ def _freeze_supplemental_fusion_view(*, handoff: dict[str, Any], output: Path) -
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": "accepted" if not blockers else "blocked",
         "selection_timing": "before_lama_color_depth_inpainting",
-        "selection_basis": (
-            "max_pre_inpainting_binary_mask_foreground_pixels_tiebreak_lowest_view_id"
-        ),
+        "selection_basis": "max_pre_inpainting_quality_qualified_mask_coverage_tiebreak_lowest_view_id",
         "publisher_default_view_id": "00004",
         "selected_view": selected,
         "candidate_count": len(candidates),
@@ -196,12 +188,23 @@ def _freeze_supplemental_fusion_view(*, handoff: dict[str, Any], output: Path) -
 
 
 def _freeze_nonempty_virtual_views(
-    *, handoff: dict[str, Any], output: Path
+    *, handoff: dict[str, Any], mask_binding: dict[str, Any], output: Path
 ) -> dict[str, Any]:
     selected: list[dict[str, Any]] = []
     candidate_count = 0
     empty_view_count = 0
     bbox_ineligible_view_count = 0
+    low_fill_ratio_view_count = 0
+    low_reference_coverage_view_count = 0
+    source_counts = [
+        int(value)
+        for value in (mask_binding.get("associated_target_pixel_counts") or {}).values()
+        if isinstance(value, int) and value > 0
+    ]
+    reference_min_pixels = min(source_counts) if source_counts else 0
+    minimum_foreground_pixels = max(
+        1, round(reference_min_pixels * MIN_VIRTUAL_MASK_REFERENCE_RATIO)
+    )
     for row in handoff.get("output_masks") or []:
         relative = str(row.get("relative_path") or "")
         view_id = Path(relative).stem
@@ -220,12 +223,30 @@ def _freeze_nonempty_virtual_views(
             and bbox_height >= 2
         ):
             bbox_ineligible_view_count += 1
-        if (
+        bbox_area = (
+            int(bbox_width) * int(bbox_height)
+            if isinstance(bbox_width, int)
+            and bbox_width > 0
+            and isinstance(bbox_height, int)
+            and bbox_height > 0
+            else 0
+        )
+        fill_ratio = float(foreground_pixels) / float(bbox_area) if bbox_area else 0.0
+        bbox_eligible = (
             foreground_pixels > 0
             and isinstance(bbox_width, int)
             and bbox_width >= 2
             and isinstance(bbox_height, int)
             and bbox_height >= 2
+        )
+        if bbox_eligible and fill_ratio < MIN_VIRTUAL_MASK_FILL_RATIO:
+            low_fill_ratio_view_count += 1
+        if bbox_eligible and foreground_pixels < minimum_foreground_pixels:
+            low_reference_coverage_view_count += 1
+        if (
+            bbox_eligible
+            and fill_ratio >= MIN_VIRTUAL_MASK_FILL_RATIO
+            and foreground_pixels >= minimum_foreground_pixels
         ):
             selected.append(
                 {
@@ -233,27 +254,63 @@ def _freeze_nonempty_virtual_views(
                     "foreground_pixels": foreground_pixels,
                     "foreground_bbox_width": bbox_width,
                     "foreground_bbox_height": bbox_height,
+                    "foreground_bbox_fill_ratio": fill_ratio,
                     "mask_sha256": row.get("sha256"),
                 }
             )
     selected.sort(key=lambda row: str(row["view_id"]))
-    blockers = [] if selected else ["inpaint360_nonempty_virtual_views_missing"]
+    blockers: list[str] = []
+    if len(selected) < MIN_QUALIFYING_VIRTUAL_VIEW_COUNT:
+        blockers.append("inpaint360_target_visible_virtual_view_support_inadequate")
     receipt = {
         "schema_version": "inpaint360_nonempty_virtual_view_selection.v1",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": "accepted" if not blockers else "blocked",
         "selection_timing": "before_lama_color_depth_inpainting",
-        "selection_basis": "pre_inpainting_binary_target_mask_nonempty_bbox_at_least_2x2",
+        "selection_basis": "pre_inpainting_binary_target_mask_quality_and_source_coverage",
         "candidate_count": candidate_count,
         "selected_count": len(selected),
         "selected_views": selected,
         "empty_view_count": empty_view_count,
         "bbox_ineligible_view_count": bbox_ineligible_view_count,
+        "low_fill_ratio_view_count": low_fill_ratio_view_count,
+        "low_reference_coverage_view_count": low_reference_coverage_view_count,
+        "minimum_qualifying_view_count": MIN_QUALIFYING_VIRTUAL_VIEW_COUNT,
+        "minimum_bbox_fill_ratio": MIN_VIRTUAL_MASK_FILL_RATIO,
+        "minimum_foreground_pixels": minimum_foreground_pixels,
+        "minimum_foreground_pixels_derivation": "10_percent_of_smallest_frozen_source_mask_at_method_resolution",
+        "source_reference_min_foreground_pixels": reference_min_pixels,
         "excluded_view_count": candidate_count - len(selected),
         "mask_pixels_or_images_modified": False,
         "blockers": blockers,
     }
     _write_json(output / "nonempty_virtual_view_selection.json", receipt)
+    return receipt
+
+
+def _validate_lama_depth_numerics(*, log_path: Path, output: Path) -> dict[str, Any]:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+    non_finite_tokens = re.findall(
+        r"(?<![A-Za-z0-9_])(?:nan|[+-]?inf)(?![A-Za-z0-9_])",
+        text,
+        flags=re.IGNORECASE,
+    )
+    blockers: list[str] = []
+    if not log_path.is_file() or not text:
+        blockers.append("inpaint360_lama_depth_log_missing")
+    if non_finite_tokens:
+        blockers.append("inpaint360_lama_depth_non_finite")
+    receipt = {
+        "schema_version": "inpaint360_lama_depth_numerical_validation.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "log": log_path.name,
+        "log_sha256": _sha256(log_path) if log_path.is_file() else None,
+        "non_finite_token_count": len(non_finite_tokens),
+        "fusion_allowed": not blockers,
+        "blockers": blockers,
+    }
+    _write_json(output / "lama_depth_numerical_validation.json", receipt)
     return receipt
 
 
@@ -314,6 +371,79 @@ def _materialize_nonempty_virtual_view_adapter(
         "blockers": blockers,
     }
     _write_json(output / "nonempty_virtual_view_adapter.json", receipt)
+    return receipt
+
+
+def _materialize_obb_removal_adapter(
+    *, source: Path, runtime: Path, spec: dict[str, Any], output: Path
+) -> dict[str, Any]:
+    source_script = source / "edit_object_removal.py"
+    adapted_script = runtime / "adapted_edit_object_removal.py"
+    retained_script = output / "adapter_overlays/edit_object_removal.obb.py"
+    corners = spec.get("target_obb_corners_m")
+    blockers: list[str] = []
+    if spec.get("target_removal_volume_contract") != (
+        "gaussian_center_inside_exact_publisher_obb"
+    ):
+        blockers.append("inpaint360_target_removal_volume_contract_invalid")
+    if (
+        not isinstance(corners, list)
+        or len(corners) != 8
+        or any(not isinstance(row, list) or len(row) != 3 for row in corners)
+    ):
+        blockers.append("inpaint360_target_obb_corners_invalid")
+    if not source_script.is_file():
+        blockers.append("inpaint360_publisher_removal_script_missing")
+        source_text = ""
+    else:
+        source_text = source_script.read_text(encoding="utf-8")
+    anchor = (
+        "            mask3d_convex, object_radius = points_inside_convex_hull("
+        "gaussians._xyz.detach(), mask3d, remove_outliers=True, outlier_factor=1.0)\n"
+        "           \n"
+        "            mask3d = torch.logical_or(mask3d,mask3d_convex)"
+    )
+    if source_text.count(anchor) != 1:
+        blockers.append("inpaint360_obb_removal_adapter_anchor_changed")
+    if not blockers:
+        corners_literal = json.dumps(corners, separators=(",", ":"))
+        replacement = (
+            f"            blueprint_target_obb = np.asarray({corners_literal}, dtype=np.float64)\n"
+            "            blueprint_inside_obb = Delaunay(blueprint_target_obb).find_simplex(\n"
+            "                gaussians._xyz.detach().cpu().numpy()\n"
+            "            ) >= 0\n"
+            "            mask3d = torch.tensor(\n"
+            "                blueprint_inside_obb, device=gaussians._xyz.device, dtype=torch.bool\n"
+            "            )\n"
+            "            if not torch.any(mask3d):\n"
+            "                raise ValueError(\"inpaint360_exact_obb_selected_no_gaussians\")\n"
+            "            object_radius = get_hull_size(\n"
+            "                gaussians._xyz.detach()[mask3d].cpu().numpy()\n"
+            "            )"
+        )
+        adapted_text = source_text.replace(anchor, replacement)
+        adapted_script.parent.mkdir(parents=True, exist_ok=True)
+        adapted_script.write_text(adapted_text, encoding="utf-8")
+        retained_script.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(adapted_script, retained_script)
+    receipt = {
+        "schema_version": "inpaint360_obb_removal_adapter.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "publisher_source_relative_path": "edit_object_removal.py",
+        "publisher_source_sha256": _sha256(source_script) if source_script.is_file() else None,
+        "adapted_script_sha256": _sha256(adapted_script) if adapted_script.is_file() else None,
+        "retained_script_relative_path": (
+            retained_script.relative_to(output).as_posix() if retained_script.is_file() else None
+        ),
+        "target_obb_corners_m": corners,
+        "removal_volume_contract": spec.get("target_removal_volume_contract"),
+        "behavioral_change": "replace_semantic_convex_hull_removal_with_exact_publisher_obb_center_membership",
+        "publisher_source_files_modified": False,
+        "unchanged_source_execution_claimed": False,
+        "blockers": blockers,
+    }
+    _write_json(output / "obb_removal_adapter.json", receipt)
     return receipt
 
 
@@ -909,9 +1039,39 @@ def main() -> int:
         "status": "not_executed",
         "blockers": ["inpaint360_nonempty_virtual_view_adapter_not_executed"],
     }
+    obb_removal_adapter: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_obb_removal_adapter_not_executed"],
+    }
+    lama_depth_validation: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_lama_depth_numerical_validation_not_executed"],
+    }
     if resolution_accepted and binding_accepted:
         for stage, command, cwd, env in commands:
             print(f"BLUEPRINT_ADP_INPAINT360_STAGE_STARTED:{stage}", flush=True)
+            if stage == "removal":
+                obb_removal_adapter = _materialize_obb_removal_adapter(
+                    source=source,
+                    runtime=runtime,
+                    spec=spec,
+                    output=output,
+                )
+                obb_adapter_accepted = obb_removal_adapter["status"] == "accepted"
+                workflow.append(
+                    {
+                        "stage": "obb_removal_adapter",
+                        "operation": "bind_exact_publisher_obb_to_released_removal_runtime",
+                        "cwd": str(runtime),
+                        "returncode": 0 if obb_adapter_accepted else 51,
+                        "timed_out": False,
+                        "receipt": "obb_removal_adapter.json",
+                    }
+                )
+                if not obb_adapter_accepted:
+                    break
+                command = list(command)
+                command[1] = str(runtime / "adapted_edit_object_removal.py")
             if stage == "inpaint_3d":
                 nonempty_view_adapter = _materialize_nonempty_virtual_view_adapter(
                     source=source,
@@ -946,6 +1106,7 @@ def main() -> int:
             if stage == "virtual_masks":
                 nonempty_view_selection = _freeze_nonempty_virtual_views(
                     handoff=_read_json(output / "virtual_mask_handoff.json"),
+                    mask_binding=mask_association_validation,
                     output=output,
                 )
                 nonempty_selection_accepted = (
@@ -964,7 +1125,7 @@ def main() -> int:
                 if not nonempty_selection_accepted:
                     break
                 supplemental_selection = _freeze_supplemental_fusion_view(
-                    handoff=_read_json(output / "virtual_mask_handoff.json"),
+                    selection=nonempty_view_selection,
                     output=output,
                 )
                 selection_accepted = supplemental_selection["status"] == "accepted"
@@ -979,6 +1140,24 @@ def main() -> int:
                     }
                 )
                 if not selection_accepted:
+                    break
+            if stage == "lama_depth":
+                lama_depth_validation = _validate_lama_depth_numerics(
+                    log_path=output / "lama_depth.log",
+                    output=output,
+                )
+                numerics_accepted = lama_depth_validation["status"] == "accepted"
+                workflow.append(
+                    {
+                        "stage": "lama_depth_numerical_validation",
+                        "operation": "reject_non_finite_depth_before_point_fusion",
+                        "cwd": str(output),
+                        "returncode": 0 if numerics_accepted else 50,
+                        "timed_out": False,
+                        "receipt": "lama_depth_numerical_validation.json",
+                    }
+                )
+                if not numerics_accepted:
                     break
             if stage == "baseline_render":
                 depth_inventory = _validate_baseline_depth_inventory(
@@ -1031,6 +1210,10 @@ def main() -> int:
         if stage == "inpaint_3d":
             required.append("nonempty_virtual_view_adapter")
         required.append(stage)
+        if stage == "removal":
+            required.append("obb_removal_adapter")
+        if stage == "lama_depth":
+            required.append("lama_depth_numerical_validation")
         if stage == "baseline_render":
             required.append("baseline_depth_inventory")
         if stage == "virtual_masks":
@@ -1091,6 +1274,8 @@ def main() -> int:
         "supplemental_fusion_view_materialization": supplemental_materialization,
         "nonempty_virtual_view_selection": nonempty_view_selection,
         "nonempty_virtual_view_adapter": nonempty_view_adapter,
+        "obb_removal_adapter": obb_removal_adapter,
+        "lama_depth_numerical_validation": lama_depth_validation,
         "method_resolution_execution": resolution_accepted,
         "mask_association_executed": False,
         "mask_association_mode": MASK_ASSOCIATION_MODE,
@@ -1101,7 +1286,7 @@ def main() -> int:
         "lama_color_executed": "lama_color" in completed,
         "lama_depth_executed": "lama_depth" in completed,
         "inpaint_3d_executed": "inpaint_3d" in completed and final_ply.is_file(),
-        "execution_source_class": "released_source_with_digest_bound_blueprint_input_validity_adapter",
+        "execution_source_class": "released_source_with_digest_bound_blueprint_obb_and_input_validity_adapters",
         "unchanged_source_execution_claimed": False,
         "final_point_cloud": _artifact(final_ply, output),
         "final_review_video": _artifact(final_video, output),

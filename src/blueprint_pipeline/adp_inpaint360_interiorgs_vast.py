@@ -194,6 +194,22 @@ def _validate_adapter(receipt: Mapping[str, Any], *, adapter_root: Path) -> list
     radius = adapter.get("target_object_radius_m")
     if not isinstance(radius, (int, float)) or not 0.0 < float(radius) < 1.0:
         raise ValueError("adp_inpaint360_target_radius_invalid")
+    corners = adapter.get("target_obb_corners_m")
+    if (
+        not isinstance(corners, list)
+        or len(corners) != 8
+        or any(
+            not isinstance(row, list)
+            or len(row) != 3
+            or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in row)
+            for row in corners
+        )
+    ):
+        raise ValueError("adp_inpaint360_target_obb_invalid")
+    if adapter.get("target_removal_volume_contract") != (
+        "gaussian_center_inside_exact_publisher_obb"
+    ):
+        raise ValueError("adp_inpaint360_target_removal_volume_unbound")
     rows: list[tuple[str, Path]] = []
     for record in adapter.get("staged_artifacts") or []:
         relative = str(record.get("relative_path") or "")
@@ -321,6 +337,10 @@ def build_inpaint360_interiorgs_bundle(
         "target_semantic_label": adapter_receipt["scene"]["target_semantic_label"],
         "target_method_instance_id": TARGET_METHOD_INSTANCE_ID,
         "target_object_radius_m": adapter_receipt["adapter"]["target_object_radius_m"],
+        "target_obb_corners_m": adapter_receipt["adapter"]["target_obb_corners_m"],
+        "target_removal_volume_contract": adapter_receipt["adapter"][
+            "target_removal_volume_contract"
+        ],
         "source": {
             "repository": SOURCE_REPOSITORY,
             "commit": SOURCE_COMMIT,
