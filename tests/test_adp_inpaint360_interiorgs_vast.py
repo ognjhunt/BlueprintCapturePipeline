@@ -645,6 +645,70 @@ def test_provider_runner_enables_distillation_mode_for_camera_probe() -> None:
     assert source.count('"--train_distill"') == 1
 
 
+def test_supplemental_fusion_view_is_frozen_from_pre_inpainting_mask_coverage(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    handoff = {
+        "output_masks": [
+            {"relative_path": "masks/00004.png", "foreground_pixels": 0, "sha256": "d"},
+            {"relative_path": "masks/00001.png", "foreground_pixels": 430, "sha256": "b"},
+            {"relative_path": "masks/00000.png", "foreground_pixels": 430, "sha256": "a"},
+        ]
+    }
+
+    receipt = runner._freeze_supplemental_fusion_view(handoff=handoff, output=tmp_path)
+
+    assert receipt["status"] == "accepted"
+    assert receipt["selected_view"] == {
+        "view_id": "00000",
+        "foreground_pixels": 430,
+        "mask_sha256": "a",
+    }
+    assert receipt["selection_timing"] == "before_lama_color_depth_inpainting"
+
+
+def test_supplemental_fusion_view_materialization_rejects_empty_and_binds_selected(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    fused = (
+        tmp_path
+        / "model/virtual/ours_object_removal/iteration_2000/fused_mask_col_dep_ply"
+    )
+    fused.mkdir(parents=True)
+    (fused / "00000.ply").write_text(
+        "ply\nformat ascii 1.0\nelement vertex 2\nend_header\n", encoding="ascii"
+    )
+    (fused / "00004.ply").write_text(
+        "ply\nformat ascii 1.0\nelement vertex 0\nend_header\n", encoding="ascii"
+    )
+    selection = {
+        "status": "accepted",
+        "selection_basis": "frozen_test",
+        "selected_view": {"view_id": "00000"},
+    }
+
+    receipt = runner._materialize_supplemental_fusion_view(
+        model=tmp_path / "model", selection=selection, output=tmp_path / "evidence"
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["publisher_default_before"]["vertex_count"] == 0
+    assert receipt["materialized_vertex_count"] == 2
+    assert runner._ply_vertex_count(fused / "00004.ply") == 2
+
+    empty = fused / "00002.ply"
+    empty.write_text("ply\nformat ascii 1.0\nelement vertex 0\nend_header\n", encoding="ascii")
+    blocked = runner._materialize_supplemental_fusion_view(
+        model=tmp_path / "model",
+        selection={"status": "accepted", "selected_view": {"view_id": "00002"}},
+        output=tmp_path / "blocked",
+    )
+    assert blocked["status"] == "blocked"
+    assert "inpaint360_supplemental_fusion_selected_ply_empty" in blocked["blockers"]
+
+
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:
     args = [
         "gpu-canary",

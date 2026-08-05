@@ -144,6 +144,101 @@ def _artifact(path: Path, output: Path) -> dict[str, Any] | None:
     }
 
 
+def _ply_vertex_count(path: Path) -> int | None:
+    if not path.is_file():
+        return None
+    with path.open("rb") as stream:
+        for raw in stream:
+            line = raw.decode("ascii", errors="replace").strip()
+            if line.startswith("element vertex "):
+                return int(line.rsplit(" ", 1)[-1])
+            if line == "end_header":
+                break
+    return None
+
+
+def _freeze_supplemental_fusion_view(*, handoff: dict[str, Any], output: Path) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    for row in handoff.get("output_masks") or []:
+        relative = str(row.get("relative_path") or "")
+        view_id = Path(relative).stem
+        foreground_pixels = row.get("foreground_pixels")
+        if len(view_id) == 5 and view_id.isdigit() and isinstance(foreground_pixels, int):
+            candidates.append(
+                {
+                    "view_id": view_id,
+                    "foreground_pixels": foreground_pixels,
+                    "mask_sha256": row.get("sha256"),
+                }
+            )
+    positive = [row for row in candidates if row["foreground_pixels"] > 0]
+    selected = sorted(
+        positive,
+        key=lambda row: (-int(row["foreground_pixels"]), str(row["view_id"])),
+    )[0] if positive else None
+    blockers = [] if selected else ["inpaint360_supplemental_fusion_positive_mask_missing"]
+    receipt = {
+        "schema_version": "inpaint360_supplemental_fusion_view_selection.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "selection_timing": "before_lama_color_depth_inpainting",
+        "selection_basis": (
+            "max_pre_inpainting_binary_mask_foreground_pixels_tiebreak_lowest_view_id"
+        ),
+        "publisher_default_view_id": "00004",
+        "selected_view": selected,
+        "candidate_count": len(candidates),
+        "positive_candidate_count": len(positive),
+        "blockers": blockers,
+    }
+    _write_json(output / "supplemental_fusion_view_selection.json", receipt)
+    return receipt
+
+
+def _materialize_supplemental_fusion_view(
+    *, model: Path, selection: dict[str, Any], output: Path
+) -> dict[str, Any]:
+    selected = selection.get("selected_view") or {}
+    selected_view_id = str(selected.get("view_id") or "")
+    fused = model / "virtual/ours_object_removal/iteration_2000/fused_mask_col_dep_ply"
+    source = fused / f"{selected_view_id}.ply"
+    target = fused / "00004.ply"
+    source_vertex_count = _ply_vertex_count(source)
+    blockers: list[str] = []
+    if selection.get("status") != "accepted":
+        blockers.append("inpaint360_supplemental_fusion_view_not_frozen")
+    if source_vertex_count is None:
+        blockers.append("inpaint360_supplemental_fusion_selected_ply_missing")
+    elif source_vertex_count <= 0:
+        blockers.append("inpaint360_supplemental_fusion_selected_ply_empty")
+    publisher_default_before = {
+        "vertex_count": _ply_vertex_count(target),
+        "sha256": _sha256(target) if target.is_file() else None,
+    }
+    if not blockers and source != target:
+        shutil.copy2(source, target)
+    materialized_count = _ply_vertex_count(target)
+    if not blockers and materialized_count != source_vertex_count:
+        blockers.append("inpaint360_supplemental_fusion_materialization_changed")
+    receipt = {
+        "schema_version": "inpaint360_supplemental_fusion_view_materialization.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "selected_view_id": selected_view_id or None,
+        "selection_basis": selection.get("selection_basis"),
+        "source_vertex_count": source_vertex_count,
+        "source_sha256": _sha256(source) if source.is_file() else None,
+        "publisher_default_view_id": "00004",
+        "publisher_default_before": publisher_default_before,
+        "materialized_vertex_count": materialized_count,
+        "materialized_sha256": _sha256(target) if target.is_file() else None,
+        "publisher_source_files_modified": False,
+        "blockers": blockers,
+    }
+    _write_json(output / "supplemental_fusion_view_materialization.json", receipt)
+    return receipt
+
+
 def _materialize_pre_registered_mask_binding(
     *, source_data: Path, target_method_instance_id: int, output: Path
 ) -> dict[str, Any]:
@@ -676,6 +771,14 @@ def main() -> int:
         "status": "not_executed",
         "blockers": ["inpaint360_baseline_depth_inventory_not_executed"],
     }
+    supplemental_selection: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_supplemental_fusion_view_selection_not_executed"],
+    }
+    supplemental_materialization: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_supplemental_fusion_view_materialization_not_executed"],
+    }
     if resolution_accepted and binding_accepted:
         for stage, command, cwd, env in commands:
             observed = _run(command, cwd=cwd, env=env, log_path=output / f"{stage}.log")
@@ -683,6 +786,24 @@ def main() -> int:
             workflow.append(observed)
             if observed["returncode"] != 0:
                 break
+            if stage == "virtual_masks":
+                supplemental_selection = _freeze_supplemental_fusion_view(
+                    handoff=_read_json(output / "virtual_mask_handoff.json"),
+                    output=output,
+                )
+                selection_accepted = supplemental_selection["status"] == "accepted"
+                workflow.append(
+                    {
+                        "stage": "supplemental_fusion_view_selection",
+                        "operation": "freeze_pre_inpainting_max_mask_coverage_view",
+                        "cwd": str(model),
+                        "returncode": 0 if selection_accepted else 46,
+                        "timed_out": False,
+                        "receipt": "supplemental_fusion_view_selection.json",
+                    }
+                )
+                if not selection_accepted:
+                    break
             if stage == "baseline_render":
                 depth_inventory = _validate_baseline_depth_inventory(
                     source_data=source_data,
@@ -703,6 +824,25 @@ def main() -> int:
                 )
                 if not inventory_accepted:
                     break
+            if stage == "ply_fusion":
+                supplemental_materialization = _materialize_supplemental_fusion_view(
+                    model=model,
+                    selection=supplemental_selection,
+                    output=output,
+                )
+                materialization_accepted = supplemental_materialization["status"] == "accepted"
+                workflow.append(
+                    {
+                        "stage": "supplemental_fusion_view_materialization",
+                        "operation": "bind_selected_fused_ply_to_publisher_fixed_input_slot",
+                        "cwd": str(model),
+                        "returncode": 0 if materialization_accepted else 47,
+                        "timed_out": False,
+                        "receipt": "supplemental_fusion_view_materialization.json",
+                    }
+                )
+                if not materialization_accepted:
+                    break
     completed = {row["stage"] for row in workflow if row["returncode"] == 0}
     final_ply = model / "point_cloud_object_inpaint_virtual/iteration_5000/point_cloud.ply"
     final_video = model / "video/ours__object_inpaint_virtual/iteration_5000/final_video.mp4"
@@ -715,6 +855,10 @@ def main() -> int:
         required.append(stage)
         if stage == "baseline_render":
             required.append("baseline_depth_inventory")
+        if stage == "virtual_masks":
+            required.append("supplemental_fusion_view_selection")
+        if stage == "ply_fusion":
+            required.append("supplemental_fusion_view_materialization")
     for stage in required:
         if stage not in completed:
             blockers.append(f"inpaint360_{stage}_failed_or_not_executed")
@@ -760,6 +904,8 @@ def main() -> int:
         "mask_association_validation": mask_association_validation,
         "method_resolution_validation": method_resolution_validation,
         "baseline_depth_inventory_validation": depth_inventory,
+        "supplemental_fusion_view_selection": supplemental_selection,
+        "supplemental_fusion_view_materialization": supplemental_materialization,
         "method_resolution_execution": resolution_accepted,
         "mask_association_executed": False,
         "mask_association_mode": MASK_ASSOCIATION_MODE,
