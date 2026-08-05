@@ -715,3 +715,4 @@ def test_live_runner_bounds_provider_startup_without_reducing_scientific_ttl() -
     assert runtime.PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS == 1800
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     assert "startup_timeout_seconds=min(" in source
+    assert "allowed_active_instance_ids=allowed_active_instance_ids" in source
