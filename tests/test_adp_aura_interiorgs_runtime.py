@@ -1,6 +1,8 @@
 import importlib.util
+import hashlib
 import os
 import sys
+import zipfile
 from pathlib import Path
 
 
@@ -102,3 +104,65 @@ def test_aura_lama_environment_binds_source_before_runtime_dependencies(
         Path(__file__).resolve().parents[1] / "scripts/adp_aura_interiorgs_provider_runner.py"
     ).read_text(encoding="utf-8")
     assert "env=env" in runner_source
+
+
+def test_aura_lama_checkpoint_is_rematerialized_immediately_before_execution(
+    tmp_path: Path,
+) -> None:
+    runner = _load_runner()
+    runtime = tmp_path / "runtime"
+    source = runtime / "AuraFusion360_official"
+    runtime.mkdir()
+    archive_path = runtime / "big-lama.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("big-lama/config.yaml", "training_model:\n  kind: default\n")
+        archive.writestr("big-lama/models/best.ckpt", b"checkpoint-bytes")
+    archive_sha256 = "sha256:" + hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    spec = {
+        "lama": {
+            "checkpoint_archive": "big-lama.zip",
+            "checkpoint_sha256": archive_sha256,
+        }
+    }
+
+    first = runner._materialize_lama_checkpoint(
+        runtime=runtime, source=source, spec=spec
+    )
+    (source / "LaMa/big-lama/config.yaml").unlink()
+    receipt_path = tmp_path / "evidence/materialization.json"
+    second = runner._materialize_lama_checkpoint(
+        runtime=runtime,
+        source=source,
+        spec=spec,
+        receipt_path=receipt_path,
+    )
+
+    assert first["status"] == "accepted"
+    assert second["status"] == "accepted"
+    assert second["files"]["config"]["size_bytes"] > 0
+    assert second["files"]["checkpoint"]["size_bytes"] > 0
+    assert receipt_path.is_file()
+
+
+def test_aura_lama_checkpoint_rejects_archive_without_config(tmp_path: Path) -> None:
+    runner = _load_runner()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    archive_path = runtime / "big-lama.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("big-lama/models/best.ckpt", b"checkpoint-bytes")
+    archive_sha256 = "sha256:" + hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+    receipt = runner._materialize_lama_checkpoint(
+        runtime=runtime,
+        source=runtime / "AuraFusion360_official",
+        spec={
+            "lama": {
+                "checkpoint_archive": "big-lama.zip",
+                "checkpoint_sha256": archive_sha256,
+            }
+        },
+    )
+
+    assert receipt["status"] == "blocked"
+    assert "aurafusion360_interiorgs_lama_checkpoint_members_missing" in receipt["blockers"]

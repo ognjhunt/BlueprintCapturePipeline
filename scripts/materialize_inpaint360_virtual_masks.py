@@ -86,6 +86,17 @@ def materialize_virtual_masks(
             raise ValueError("inpaint360_virtual_predicted_mask_shape_mismatch")
         binary = np.where(labels == target_instance_id, 255, 0).astype(np.uint8)
         foreground_pixels = int(np.count_nonzero(binary))
+        if foreground_pixels:
+            rows, columns = np.where(binary > 0)
+            xmin, xmax = int(columns.min()), int(columns.max())
+            ymin, ymax = int(rows.min()), int(rows.max())
+            foreground_bbox_xyxy = [xmin, ymin, xmax, ymax]
+            foreground_bbox_width = xmax - xmin + 1
+            foreground_bbox_height = ymax - ymin + 1
+        else:
+            foreground_bbox_xyxy = None
+            foreground_bbox_width = 0
+            foreground_bbox_height = 0
         output_path = output / source_path.name
         Image.fromarray(binary, mode="L").save(output_path, format="PNG", optimize=False)
         source_records.append(
@@ -101,6 +112,9 @@ def materialize_virtual_masks(
                 "size_bytes": output_path.stat().st_size,
                 "sha256": _sha256(output_path),
                 "foreground_pixels": foreground_pixels,
+                "foreground_bbox_xyxy": foreground_bbox_xyxy,
+                "foreground_bbox_width": foreground_bbox_width,
+                "foreground_bbox_height": foreground_bbox_height,
             }
         )
 

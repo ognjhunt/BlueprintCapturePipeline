@@ -94,6 +94,58 @@ def _runtime_environments(
     return aura_env, lama_env
 
 
+def _materialize_lama_checkpoint(
+    *, runtime: Path, source: Path, spec: dict[str, Any], receipt_path: Path | None = None
+) -> dict[str, Any]:
+    checkpoint_spec = spec["lama"]
+    archive_path = runtime / checkpoint_spec["checkpoint_archive"]
+    blockers: list[str] = []
+    if (
+        not archive_path.is_file()
+        or _sha256(archive_path) != checkpoint_spec["checkpoint_sha256"]
+    ):
+        blockers.append("aurafusion360_interiorgs_lama_checkpoint_archive_changed")
+    lama_source = source / "LaMa"
+    required = {
+        "config": lama_source / "big-lama/config.yaml",
+        "checkpoint": lama_source / "big-lama/models/best.ckpt",
+    }
+    if not blockers:
+        root = lama_source.resolve()
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+            if not {"big-lama/config.yaml", "big-lama/models/best.ckpt"}.issubset(names):
+                blockers.append("aurafusion360_interiorgs_lama_checkpoint_members_missing")
+            for member in archive.infolist():
+                target = (lama_source / member.filename).resolve()
+                if target != root and root not in target.parents:
+                    blockers.append("aurafusion360_interiorgs_lama_checkpoint_path_traversal")
+                    break
+            if not blockers:
+                archive.extractall(lama_source)
+    files: dict[str, dict[str, Any] | None] = {}
+    for name, path in required.items():
+        files[name] = (
+            {"size_bytes": path.stat().st_size, "sha256": _sha256(path)}
+            if path.is_file() and path.stat().st_size > 0
+            else None
+        )
+        if files[name] is None:
+            blockers.append(f"aurafusion360_interiorgs_lama_{name}_missing")
+    receipt = {
+        "schema_version": "adp_aura_lama_checkpoint_materialization.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "archive_sha256": _sha256(archive_path) if archive_path.is_file() else None,
+        "archive_identity_source": "pinned_bundle_execution_spec",
+        "files": files,
+        "blockers": sorted(set(blockers)),
+    }
+    if receipt_path is not None:
+        _write(receipt_path, receipt)
+    return receipt
+
+
 def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -117,10 +169,10 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
         destination=lama_source,
         records=spec["lama"]["source_files"],
     )
-    with zipfile.ZipFile(runtime / spec["lama"]["checkpoint_archive"]) as archive:
-        archive.extractall(lama_source)
-    checkpoint = lama_source / "big-lama/models/best.ckpt"
-    if not checkpoint.is_file():
+    checkpoint_materialization = _materialize_lama_checkpoint(
+        runtime=runtime, source=source, spec=spec
+    )
+    if checkpoint_materialization["status"] != "accepted":
         raise ValueError("aurafusion360_interiorgs_lama_checkpoint_extract_failed")
 
     shared._extract_runtime_dependency(runtime, spec)
@@ -183,6 +235,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec = _read(runtime / "execution_spec.json")
     if args.prepare_only:
         return _prepare(runtime, source, spec)
+
+    checkpoint_materialization = _materialize_lama_checkpoint(
+        runtime=runtime,
+        source=source,
+        spec=spec,
+        receipt_path=output / "lama-checkpoint-materialization.json",
+    )
+    if checkpoint_materialization["status"] != "accepted":
+        raise ValueError("aurafusion360_interiorgs_lama_checkpoint_materialization_failed")
 
     dependencies = runtime / "runtime_dependencies"
     if not dependencies.is_dir():
@@ -267,6 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "source_identity_before": source_before,
         "source_identity_after": source_after,
         "source_modified": not source_after["matches"],
+        "lama_checkpoint_materialization": checkpoint_materialization,
         "workflow": workflow,
         "reference_generation_executed": "reference_lama" in completed,
         "training_executed": "train" in completed,

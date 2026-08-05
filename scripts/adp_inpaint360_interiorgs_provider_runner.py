@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute one exact InteriorGS edit with unchanged Inpaint360GS source."""
+"""Execute one exact InteriorGS edit with a digest-bound Inpaint360GS adapter."""
 
 from __future__ import annotations
 
@@ -192,6 +192,128 @@ def _freeze_supplemental_fusion_view(*, handoff: dict[str, Any], output: Path) -
         "blockers": blockers,
     }
     _write_json(output / "supplemental_fusion_view_selection.json", receipt)
+    return receipt
+
+
+def _freeze_nonempty_virtual_views(
+    *, handoff: dict[str, Any], output: Path
+) -> dict[str, Any]:
+    selected: list[dict[str, Any]] = []
+    candidate_count = 0
+    empty_view_count = 0
+    bbox_ineligible_view_count = 0
+    for row in handoff.get("output_masks") or []:
+        relative = str(row.get("relative_path") or "")
+        view_id = Path(relative).stem
+        foreground_pixels = row.get("foreground_pixels")
+        bbox_width = row.get("foreground_bbox_width")
+        bbox_height = row.get("foreground_bbox_height")
+        if len(view_id) != 5 or not view_id.isdigit() or not isinstance(foreground_pixels, int):
+            continue
+        candidate_count += 1
+        if foreground_pixels == 0:
+            empty_view_count += 1
+        elif not (
+            isinstance(bbox_width, int)
+            and bbox_width >= 2
+            and isinstance(bbox_height, int)
+            and bbox_height >= 2
+        ):
+            bbox_ineligible_view_count += 1
+        if (
+            foreground_pixels > 0
+            and isinstance(bbox_width, int)
+            and bbox_width >= 2
+            and isinstance(bbox_height, int)
+            and bbox_height >= 2
+        ):
+            selected.append(
+                {
+                    "view_id": view_id,
+                    "foreground_pixels": foreground_pixels,
+                    "foreground_bbox_width": bbox_width,
+                    "foreground_bbox_height": bbox_height,
+                    "mask_sha256": row.get("sha256"),
+                }
+            )
+    selected.sort(key=lambda row: str(row["view_id"]))
+    blockers = [] if selected else ["inpaint360_nonempty_virtual_views_missing"]
+    receipt = {
+        "schema_version": "inpaint360_nonempty_virtual_view_selection.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "selection_timing": "before_lama_color_depth_inpainting",
+        "selection_basis": "pre_inpainting_binary_target_mask_nonempty_bbox_at_least_2x2",
+        "candidate_count": candidate_count,
+        "selected_count": len(selected),
+        "selected_views": selected,
+        "empty_view_count": empty_view_count,
+        "bbox_ineligible_view_count": bbox_ineligible_view_count,
+        "excluded_view_count": candidate_count - len(selected),
+        "mask_pixels_or_images_modified": False,
+        "blockers": blockers,
+    }
+    _write_json(output / "nonempty_virtual_view_selection.json", receipt)
+    return receipt
+
+
+def _materialize_nonempty_virtual_view_adapter(
+    *, source: Path, runtime: Path, selection: dict[str, Any], output: Path
+) -> dict[str, Any]:
+    source_script = source / "edit_object_inpaint.py"
+    adapted_script = runtime / "adapted_edit_object_inpaint.py"
+    retained_script = output / "adapter_overlays/edit_object_inpaint.nonempty_views.py"
+    blockers: list[str] = []
+    selected_ids = [
+        str(row.get("view_id") or "") for row in selection.get("selected_views") or []
+    ]
+    if selection.get("status") != "accepted" or not selected_ids:
+        blockers.append("inpaint360_nonempty_virtual_view_selection_not_accepted")
+    if not source_script.is_file():
+        blockers.append("inpaint360_publisher_inpaint_script_missing")
+        source_text = ""
+    else:
+        source_text = source_script.read_text(encoding="utf-8")
+    anchor = "        virtual_pose_list.append(view_tmp)\n\n    # 2. inpaint selected object"
+    if source_text.count(anchor) != 1:
+        blockers.append("inpaint360_nonempty_virtual_view_adapter_anchor_changed")
+    if not blockers:
+        selected_literal = json.dumps(selected_ids, separators=(",", ":"))
+        replacement = (
+            "        virtual_pose_list.append(view_tmp)\n\n"
+            f"    blueprint_nonempty_view_ids = set({selected_literal})\n"
+            "    virtual_pose_list = [\n"
+            "        view_tmp for view_tmp in virtual_pose_list\n"
+            "        if view_tmp.image_name in blueprint_nonempty_view_ids\n"
+            "    ]\n"
+            f"    if len(virtual_pose_list) != {len(selected_ids)}:\n"
+            "        raise ValueError(\"inpaint360_nonempty_virtual_view_binding_changed\")\n\n"
+            "    # 2. inpaint selected object"
+        )
+        adapted_text = source_text.replace(anchor, replacement)
+        adapted_script.parent.mkdir(parents=True, exist_ok=True)
+        adapted_script.write_text(adapted_text, encoding="utf-8")
+        retained_script.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(adapted_script, retained_script)
+    receipt = {
+        "schema_version": "inpaint360_nonempty_virtual_view_adapter.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "publisher_source_relative_path": "edit_object_inpaint.py",
+        "publisher_source_sha256": _sha256(source_script) if source_script.is_file() else None,
+        "adapted_script_sha256": _sha256(adapted_script) if adapted_script.is_file() else None,
+        "retained_script_relative_path": (
+            retained_script.relative_to(output).as_posix() if retained_script.is_file() else None
+        ),
+        "selected_view_ids": selected_ids,
+        "selection_receipt": "nonempty_virtual_view_selection.json",
+        "behavioral_change": "exclude_virtual_views_with_empty_frozen_target_masks_from_finetune_sampling",
+        "publisher_source_files_modified": False,
+        "mask_pixels_or_images_modified": False,
+        "unchanged_source_execution_claimed": False,
+        "blockers": blockers,
+    }
+    _write_json(output / "nonempty_virtual_view_adapter.json", receipt)
     return receipt
 
 
@@ -779,14 +901,63 @@ def main() -> int:
         "status": "not_executed",
         "blockers": ["inpaint360_supplemental_fusion_view_materialization_not_executed"],
     }
+    nonempty_view_selection: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_nonempty_virtual_view_selection_not_executed"],
+    }
+    nonempty_view_adapter: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_nonempty_virtual_view_adapter_not_executed"],
+    }
     if resolution_accepted and binding_accepted:
         for stage, command, cwd, env in commands:
+            if stage == "inpaint_3d":
+                nonempty_view_adapter = _materialize_nonempty_virtual_view_adapter(
+                    source=source,
+                    runtime=runtime,
+                    selection=nonempty_view_selection,
+                    output=output,
+                )
+                adapter_accepted = nonempty_view_adapter["status"] == "accepted"
+                workflow.append(
+                    {
+                        "stage": "nonempty_virtual_view_adapter",
+                        "operation": "materialize_digest_bound_released_source_input_filter",
+                        "cwd": str(runtime),
+                        "returncode": 0 if adapter_accepted else 48,
+                        "timed_out": False,
+                        "receipt": "nonempty_virtual_view_adapter.json",
+                    }
+                )
+                if not adapter_accepted:
+                    break
+                command = list(command)
+                command[1] = str(runtime / "adapted_edit_object_inpaint.py")
             observed = _run(command, cwd=cwd, env=env, log_path=output / f"{stage}.log")
             observed["stage"] = stage
             workflow.append(observed)
             if observed["returncode"] != 0:
                 break
             if stage == "virtual_masks":
+                nonempty_view_selection = _freeze_nonempty_virtual_views(
+                    handoff=_read_json(output / "virtual_mask_handoff.json"),
+                    output=output,
+                )
+                nonempty_selection_accepted = (
+                    nonempty_view_selection["status"] == "accepted"
+                )
+                workflow.append(
+                    {
+                        "stage": "nonempty_virtual_view_selection",
+                        "operation": "freeze_pre_inpainting_positive_mask_view_set",
+                        "cwd": str(model),
+                        "returncode": 0 if nonempty_selection_accepted else 49,
+                        "timed_out": False,
+                        "receipt": "nonempty_virtual_view_selection.json",
+                    }
+                )
+                if not nonempty_selection_accepted:
+                    break
                 supplemental_selection = _freeze_supplemental_fusion_view(
                     handoff=_read_json(output / "virtual_mask_handoff.json"),
                     output=output,
@@ -852,10 +1023,13 @@ def main() -> int:
     blockers: list[str] = []
     required = ["method_resolution_contract", "pre_registered_mask_binding"]
     for stage, _, _, _ in commands:
+        if stage == "inpaint_3d":
+            required.append("nonempty_virtual_view_adapter")
         required.append(stage)
         if stage == "baseline_render":
             required.append("baseline_depth_inventory")
         if stage == "virtual_masks":
+            required.append("nonempty_virtual_view_selection")
             required.append("supplemental_fusion_view_selection")
         if stage == "ply_fusion":
             required.append("supplemental_fusion_view_materialization")
@@ -906,6 +1080,8 @@ def main() -> int:
         "baseline_depth_inventory_validation": depth_inventory,
         "supplemental_fusion_view_selection": supplemental_selection,
         "supplemental_fusion_view_materialization": supplemental_materialization,
+        "nonempty_virtual_view_selection": nonempty_view_selection,
+        "nonempty_virtual_view_adapter": nonempty_view_adapter,
         "method_resolution_execution": resolution_accepted,
         "mask_association_executed": False,
         "mask_association_mode": MASK_ASSOCIATION_MODE,
@@ -916,6 +1092,8 @@ def main() -> int:
         "lama_color_executed": "lama_color" in completed,
         "lama_depth_executed": "lama_depth" in completed,
         "inpaint_3d_executed": "inpaint_3d" in completed and final_ply.is_file(),
+        "execution_source_class": "released_source_with_digest_bound_blueprint_input_validity_adapter",
+        "unchanged_source_execution_claimed": False,
         "final_point_cloud": _artifact(final_ply, output),
         "final_review_video": _artifact(final_video, output),
         "final_review_frames": review_frames,
