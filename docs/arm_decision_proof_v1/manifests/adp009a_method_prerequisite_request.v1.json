@@ -213,6 +213,18 @@
           "expected_license_id": "Apache-2.0"
         },
         {
+          "artifact_id": "aurafusion360_marigold_agdd_v1_0",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "prs-eth/marigold-v1-0",
+          "revision": "f4fc453d7d217cbe30ddcad3eb311d1ad9a11c4c",
+          "path_prefix": "",
+          "expected_file_count": 24,
+          "expected_total_size_bytes": 15482514887,
+          "expected_snapshot_digest": "sha256:d8c2d2dfdc297008d7f4314593b8dcd381fa6c120ce9780e93f1a9c15c206e74",
+          "expected_license_id": "Apache-2.0"
+        },
+        {
           "artifact_id": "aurafusion360_sd2_inpainting_exact_checkpoint",
           "category": "checkpoint",
           "repo_type": "model",

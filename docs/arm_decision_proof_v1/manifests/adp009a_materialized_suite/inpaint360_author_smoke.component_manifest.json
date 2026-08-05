@@ -9,7 +9,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-inpaint360_author_smoke",
-  "manifest_digest": "sha256:820fa95d11564a7a30396356fb9d9785d910e6e1e90e4fdde6e40e85ac842570",
+  "manifest_digest": "sha256:08cbf7d2c1cdc43bae23823c37b742c975538950074d98483751bebaa0eab88e",
   "materialized_artifacts": [
     {
       "external_relative_path": "Inpaint360GS/LICENSE.txt",
@@ -159,11 +159,11 @@
       "size_bytes": 18123
     },
     {
-      "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
-      "publisher_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v2.json",
+      "publisher_path": "methods/adp009a_method_prerequisite_receipt.v2.json",
       "role": "method_prerequisite_receipt",
-      "sha256": "sha256:661951f1b96fbc0b6fcd3e10c932f8698bf4c46c1290390d0933d0d756c1ed56",
-      "size_bytes": 17798
+      "sha256": "sha256:a618da9bfc305d48dcf9d758cc11529616ce409bb30bebfec9c9bc55ee6ff6fa",
+      "size_bytes": 18899
     }
   ],
   "observed_evidence": {

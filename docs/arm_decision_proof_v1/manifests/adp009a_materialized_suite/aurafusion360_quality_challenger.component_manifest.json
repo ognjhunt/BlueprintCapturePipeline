@@ -9,7 +9,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-aurafusion360_quality_challenger",
-  "manifest_digest": "sha256:4936a42697753c82afff94230025426f932b8e21cb92b2379ab5f8a8c6498db9",
+  "manifest_digest": "sha256:6acccfc100b8da28e4fce515a34b45688fe6b5fc7ffd900723ab50f4c116c3e9",
   "materialized_artifacts": [
     {
       "external_relative_path": "AuraFusion360_official/LICENSE",
@@ -68,11 +68,11 @@
       "size_bytes": 5244
     },
     {
-      "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
-      "publisher_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v2.json",
+      "publisher_path": "methods/adp009a_method_prerequisite_receipt.v2.json",
       "role": "method_prerequisite_receipt",
-      "sha256": "sha256:661951f1b96fbc0b6fcd3e10c932f8698bf4c46c1290390d0933d0d756c1ed56",
-      "size_bytes": 17798
+      "sha256": "sha256:a618da9bfc305d48dcf9d758cc11529616ce409bb30bebfec9c9bc55ee6ff6fa",
+      "size_bytes": 18899
     }
   ],
   "observed_evidence": {
@@ -160,6 +160,34 @@
           "private": false,
           "repo_type": "model",
           "repository": "prs-eth/marigold-depth-v1-0",
+          "revision": "f4fc453d7d217cbe30ddcad3eb311d1ad9a11c4c",
+          "service": "huggingface",
+          "single_file_identity": null,
+          "snapshot_digest": "sha256:d8c2d2dfdc297008d7f4314593b8dcd381fa6c120ce9780e93f1a9c15c206e74",
+          "total_size_bytes": 15482514887
+        },
+        "rights": {
+          "allowed_use_ceiling": "license_terms",
+          "attribution_required_when_shared": true,
+          "commercial_use_allowed": true,
+          "license_id": "Apache-2.0",
+          "redistribution_allowed_with_conditions": true
+        },
+        "rights_established": true
+      },
+      {
+        "artifact_id": "aurafusion360_marigold_agdd_v1_0",
+        "category": "checkpoint",
+        "materialized": false,
+        "publisher": {
+          "card_license": "apache-2.0",
+          "file_count": 24,
+          "fresh_access_probe_passed": true,
+          "gated": false,
+          "path_prefix": "",
+          "private": false,
+          "repo_type": "model",
+          "repository": "prs-eth/marigold-v1-0",
           "revision": "f4fc453d7d217cbe30ddcad3eb311d1ad9a11c4c",
           "service": "huggingface",
           "single_file_identity": null,
