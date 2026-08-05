@@ -8,7 +8,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-inpaint360_author_smoke",
-  "manifest_digest": "sha256:ba1d81e664cbff7ae1faa44875c002452ed132f43e415bb9337ea7f984325e37",
+  "manifest_digest": "sha256:77d643bf1868e45895f642a8effa3c985cdddb806d1c867b5f1ce6533d87e174",
   "materialized_artifacts": [
     {
       "external_relative_path": "Inpaint360GS/LICENSE.txt",
@@ -161,8 +161,8 @@
       "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
       "publisher_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
       "role": "method_prerequisite_receipt",
-      "sha256": "sha256:143ada3605df4b719a94c2bf47f847e9bcc8180757df85b34f7c3ebe8f076fb9",
-      "size_bytes": 9938
+      "sha256": "sha256:7fee2d6ce04e73e48372b0a64b56c59a42a5617f395c5582d3cb7a169088f495",
+      "size_bytes": 17271
     }
   ],
   "observed_evidence": {
@@ -177,6 +177,10 @@
     "source_tree_clean": true,
     "source_tree_matches_expected": true,
     "submodule_revisions_verified": true
+  },
+  "prerequisite_evidence": {
+    "local_artifact_count": 4,
+    "remote_snapshots": []
   },
   "program_id": "arm-decision-proof-v1",
   "publisher_identity": {

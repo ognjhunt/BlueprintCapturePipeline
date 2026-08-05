@@ -15,9 +15,9 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-inpaint360_author_smoke",
-  "component_manifest_digest": "sha256:ba1d81e664cbff7ae1faa44875c002452ed132f43e415bb9337ea7f984325e37",
+  "component_manifest_digest": "sha256:77d643bf1868e45895f642a8effa3c985cdddb806d1c867b5f1ce6533d87e174",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:9b78616f356aefa9bcdb23f33ba8609ae2c23f07f538cce8cb40d8e81d9cfe59",
+  "receipt_digest": "sha256:f6231cb2dcd7314cf140c4847167acf0b2da26579b96bc3e8b7dd17f6b18ea18",
   "role": "inpaint360_author_smoke",
   "schema_version": "public_scene_component_admission_receipt.v1",
   "status": "blocked"

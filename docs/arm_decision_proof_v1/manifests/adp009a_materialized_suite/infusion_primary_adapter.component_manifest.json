@@ -8,7 +8,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-infusion_primary_adapter",
-  "manifest_digest": "sha256:76bf2490bbd96f631ed00df471a7525766d0c16a13f8504bc5f67a89376881f7",
+  "manifest_digest": "sha256:98cef6acd674f150ee456cf2b375be6dee940838b6caeb8b7c78814da458336d",
   "materialized_artifacts": [
     {
       "external_relative_path": "Infusion/LICENSE",
@@ -37,6 +37,13 @@
       "role": "author_workflow_declaration",
       "sha256": "sha256:7f572185925a056098c70c18070e033a84a2712b33b1955319ae2df46a983eb2",
       "size_bytes": 9043
+    },
+    {
+      "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "publisher_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "role": "method_prerequisite_receipt",
+      "sha256": "sha256:7fee2d6ce04e73e48372b0a64b56c59a42a5617f395c5582d3cb7a169088f495",
+      "size_bytes": 17271
     }
   ],
   "observed_evidence": {
@@ -45,12 +52,41 @@
     "author_workflow_declarations_hashed": true,
     "checkpoint_bytes_verified": false,
     "dependency_declarations_hashed": true,
-    "method_prerequisite_receipt_bound": false,
+    "method_prerequisite_receipt_bound": true,
     "official_remote_head_verified": true,
     "source_checkout_opened": true,
     "source_tree_clean": true,
     "source_tree_matches_expected": true,
     "submodule_revisions_verified": true
+  },
+  "prerequisite_evidence": {
+    "local_artifact_count": 0,
+    "remote_snapshots": [
+      {
+        "artifact_id": "infusion_checkpoint_repository",
+        "category": "checkpoint",
+        "materialized": false,
+        "publisher": {
+          "card_license": null,
+          "file_count": 14,
+          "fresh_access_probe_passed": true,
+          "gated": false,
+          "path_prefix": "",
+          "private": false,
+          "repo_type": "model",
+          "repository": "Johanan0528/Infusion",
+          "revision": "83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2",
+          "service": "huggingface",
+          "snapshot_digest": "sha256:8f35a449964397b3b979ae60da4c4fd612139dda65d6dff90cff026415a1ceb3",
+          "total_size_bytes": 6858056617
+        },
+        "rights": {
+          "allowed_use_ceiling": null,
+          "license_id": null
+        },
+        "rights_established": false
+      }
+    ]
   },
   "program_id": "arm-decision-proof-v1",
   "publisher_identity": {

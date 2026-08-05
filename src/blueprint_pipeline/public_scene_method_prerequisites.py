@@ -47,6 +47,17 @@ _LICENSE_POLICIES: dict[str, dict[str, Any]] = {
         "redistribution_allowed_with_conditions": True,
         "attribution_required_when_shared": True,
     },
+    "OpenRAIL++": {
+        "allowed_use_ceiling": "internal_evaluation_subject_to_openrail_use_restrictions",
+        "commercial_use_allowed": False,
+        "redistribution_allowed_with_conditions": True,
+        "attribution_required_when_shared": True,
+    },
+}
+
+_HF_LICENSE_IDS = {
+    "apache-2.0": "Apache-2.0",
+    "openrail++": "OpenRAIL++",
 }
 
 
@@ -353,6 +364,87 @@ def _artifact(
     return _http_artifact(spec, data_root=data_root, authorities=authorities)
 
 
+def _hf_remote_snapshot(spec: Mapping[str, Any]) -> dict[str, Any]:
+    artifact_id = str(spec.get("artifact_id") or "")
+    repository = str(spec.get("repository") or "")
+    revision = str(spec.get("revision") or "")
+    repo_type = str(spec.get("repo_type") or "")
+    prefix = str(spec.get("path_prefix") or "")
+    info = _hf_repository_info(
+        repo_type=repo_type, repository=repository, revision=revision
+    )
+    files: list[dict[str, Any]] = []
+    for sibling in info.get("siblings") or []:
+        if not isinstance(sibling, Mapping):
+            continue
+        path = str(sibling.get("rfilename") or "")
+        if prefix and not path.startswith(prefix):
+            continue
+        lfs_value = sibling.get("lfs")
+        lfs = lfs_value if isinstance(lfs_value, Mapping) else {}
+        files.append(
+            {
+                "path": path,
+                "size_bytes": int(sibling.get("size") or lfs.get("size") or 0),
+                "lfs_sha256": lfs.get("sha256"),
+                "git_blob_id": sibling.get("blobId"),
+            }
+        )
+    files.sort(key=lambda item: item["path"])
+    if not files:
+        raise PublicSceneMethodPrerequisiteError(
+            f"hf_remote_snapshot_empty:{artifact_id}"
+        )
+    file_count = len(files)
+    total_size = sum(item["size_bytes"] for item in files)
+    snapshot_digest = canonical_digest({"files": files})
+    if file_count != int(spec.get("expected_file_count") or 0):
+        raise PublicSceneMethodPrerequisiteError(
+            f"hf_remote_snapshot_file_count_changed:{artifact_id}"
+        )
+    if total_size != int(spec.get("expected_total_size_bytes") or 0):
+        raise PublicSceneMethodPrerequisiteError(
+            f"hf_remote_snapshot_size_changed:{artifact_id}"
+        )
+    if snapshot_digest != spec.get("expected_snapshot_digest"):
+        raise PublicSceneMethodPrerequisiteError(
+            f"hf_remote_snapshot_digest_changed:{artifact_id}"
+        )
+    raw_license = str((info.get("cardData") or {}).get("license") or "")
+    license_id = _HF_LICENSE_IDS.get(raw_license.lower())
+    expected_license = str(spec.get("expected_license_id") or "")
+    rights_established = bool(
+        expected_license
+        and license_id == expected_license
+        and expected_license in _LICENSE_POLICIES
+    )
+    return {
+        "artifact_id": artifact_id,
+        "category": str(spec.get("category") or "checkpoint"),
+        "materialized": False,
+        "publisher": {
+            "service": "huggingface",
+            "repo_type": repo_type,
+            "repository": repository,
+            "revision": revision,
+            "path_prefix": prefix,
+            "file_count": file_count,
+            "total_size_bytes": total_size,
+            "snapshot_digest": snapshot_digest,
+            "gated": info.get("gated", False),
+            "private": bool(info.get("private")),
+            "card_license": raw_license or None,
+            "fresh_access_probe_passed": True,
+        },
+        "rights": (
+            {"license_id": license_id, **_LICENSE_POLICIES[license_id]}
+            if rights_established and license_id
+            else {"license_id": None, "allowed_use_ceiling": None}
+        ),
+        "rights_established": rights_established,
+    }
+
+
 def materialize_method_prerequisites(
     *, request_path: Path, repo_root: Path, data_root: Path, method_root: Path
 ) -> dict[str, Any]:
@@ -389,15 +481,37 @@ def materialize_method_prerequisites(
             for item in raw_spec.get("artifacts") or []
             if isinstance(item, Mapping)
         ]
-        if len(artifacts) != len(raw_spec.get("artifacts") or []) or not artifacts:
+        if len(artifacts) != len(raw_spec.get("artifacts") or []):
+            raise PublicSceneMethodPrerequisiteError(
+                f"method_prerequisite_artifacts_invalid:{role}"
+            )
+        remote_snapshots = [
+            _hf_remote_snapshot(item)
+            for item in raw_spec.get("remote_snapshots") or []
+            if isinstance(item, Mapping)
+        ]
+        if len(remote_snapshots) != len(raw_spec.get("remote_snapshots") or []):
+            raise PublicSceneMethodPrerequisiteError(
+                f"method_remote_snapshot_invalid:{role}"
+            )
+        if not artifacts and not remote_snapshots:
             raise PublicSceneMethodPrerequisiteError(
                 f"method_prerequisite_artifacts_missing:{role}"
             )
+        checkpoint_evidence = artifacts + [
+            item for item in remote_snapshots if item["category"] == "checkpoint"
+        ]
+        author_data_evidence = [
+            item for item in remote_snapshots if item["category"] == "author_data"
+        ]
         materialized[str(role)] = {
             "rights_authorities": list(authorities.values()),
             "artifacts": artifacts,
-            "checkpoint_rights_established": all(item["rights_established"] for item in artifacts),
-            "author_data_rights_established": False,
+            "remote_snapshots": remote_snapshots,
+            "checkpoint_rights_established": bool(checkpoint_evidence)
+            and all(item["rights_established"] for item in checkpoint_evidence),
+            "author_data_rights_established": bool(author_data_evidence)
+            and all(item["rights_established"] for item in author_data_evidence),
             "unchanged_author_smoke_executed": False,
             "claim_boundary": {
                 "checkpoint_availability_is_not_method_execution": True,

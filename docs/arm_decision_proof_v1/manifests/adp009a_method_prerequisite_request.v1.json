@@ -153,6 +153,90 @@
           "rights_authority_id": "deaot_checkpoint_bsd_3_clause"
         }
       ]
+    },
+    "infusion_primary_adapter": {
+      "rights_authorities": [],
+      "artifacts": [],
+      "remote_snapshots": [
+        {
+          "artifact_id": "infusion_checkpoint_repository",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "Johanan0528/Infusion",
+          "revision": "83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2",
+          "path_prefix": "",
+          "expected_file_count": 14,
+          "expected_total_size_bytes": 6858056617,
+          "expected_snapshot_digest": "sha256:8f35a449964397b3b979ae60da4c4fd612139dda65d6dff90cff026415a1ceb3",
+          "expected_license_id": ""
+        }
+      ]
+    },
+    "aurafusion360_quality_challenger": {
+      "rights_authorities": [],
+      "artifacts": [],
+      "remote_snapshots": [
+        {
+          "artifact_id": "aurafusion360_sunflower_author_scene",
+          "category": "author_data",
+          "repo_type": "dataset",
+          "repository": "kkennethwu/360-USID",
+          "revision": "1c5a7863a284efe60fa33c2e4f0da19e50e55a0f",
+          "path_prefix": "360-USID/sunflower/",
+          "expected_file_count": 636,
+          "expected_total_size_bytes": 44778262,
+          "expected_snapshot_digest": "sha256:e81ad45f416349cc6364edecdb156e7ca48f8d62b25443d5ea3225c4a8af07fd",
+          "expected_license_id": "Apache-2.0"
+        },
+        {
+          "artifact_id": "aurafusion360_sam2_hiera_large",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "facebook/sam2-hiera-large",
+          "revision": "e6a8e8809b8f1bfa2238b6d080f3d05cc76bd251",
+          "path_prefix": "",
+          "expected_file_count": 9,
+          "expected_total_size_bytes": 1795815850,
+          "expected_snapshot_digest": "sha256:e873cf416a96e5656a1f9641325c299399c81b28612362c4ed14375cb82169c6",
+          "expected_license_id": "Apache-2.0"
+        },
+        {
+          "artifact_id": "aurafusion360_marigold_depth_v1_0",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "prs-eth/marigold-depth-v1-0",
+          "revision": "f4fc453d7d217cbe30ddcad3eb311d1ad9a11c4c",
+          "path_prefix": "",
+          "expected_file_count": 24,
+          "expected_total_size_bytes": 15482514887,
+          "expected_snapshot_digest": "sha256:d8c2d2dfdc297008d7f4314593b8dcd381fa6c120ce9780e93f1a9c15c206e74",
+          "expected_license_id": "Apache-2.0"
+        },
+        {
+          "artifact_id": "aurafusion360_sd2_inpainting_exact_checkpoint",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "sd2-community/stable-diffusion-2-inpainting",
+          "revision": "5f74973cbb64c8568780732c17f43eb269d63a0d",
+          "path_prefix": "512-inpainting-ema.ckpt",
+          "expected_file_count": 1,
+          "expected_total_size_bytes": 5214921607,
+          "expected_snapshot_digest": "sha256:38e4618c75290a31e3e42b110ac8174edcc5c9b47fbc5f2bd90e455da814c1e1",
+          "expected_license_id": "OpenRAIL++"
+        },
+        {
+          "artifact_id": "aurafusion360_sunflower_expected_output",
+          "category": "expected_output",
+          "repo_type": "dataset",
+          "repository": "kkennethwu/AuraFusion360_Results",
+          "revision": "9682454f9829c6df013d3d22c55f3a9c53dd783f",
+          "path_prefix": "360-USID/sunflower/",
+          "expected_file_count": 12715,
+          "expected_total_size_bytes": 8463892136,
+          "expected_snapshot_digest": "sha256:b6c92fae7bc42253f7e5ce4afa4f4adc32c7748783e5ec54616d76de638e45cc",
+          "expected_license_id": "Apache-2.0"
+        }
+      ]
     }
   }
 }

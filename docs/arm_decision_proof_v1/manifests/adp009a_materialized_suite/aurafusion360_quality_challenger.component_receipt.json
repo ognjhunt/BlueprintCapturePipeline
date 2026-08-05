@@ -2,7 +2,7 @@
   "adp_item": "ADP-009A",
   "artifact_bytes_opened": true,
   "blockers": [
-    "aurafusion360_unpinned_runtime_weights_or_author_smoke_missing"
+    "aurafusion360_unchanged_author_smoke_missing"
   ],
   "checks": {
     "clean_source_tree": true,
@@ -15,9 +15,9 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-aurafusion360_quality_challenger",
-  "component_manifest_digest": "sha256:273376efdd2fc9373e514d11cf6d0a64729c2ef9b9387b4bff2bedb081e69d8c",
+  "component_manifest_digest": "sha256:317181f4ef82eef064ddf37fd16615a019139000e3035bc6c91862d26237f690",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:75c0cae82e0175b6d8884f4b649e43c374cb273b4ee6778ff3460d88f3c4865b",
+  "receipt_digest": "sha256:aa7e954d935dbd8086500d21a4b3a99680c1bebd5fdb13836aa0db02b958cced",
   "role": "aurafusion360_quality_challenger",
   "schema_version": "public_scene_component_admission_receipt.v1",
   "status": "blocked"

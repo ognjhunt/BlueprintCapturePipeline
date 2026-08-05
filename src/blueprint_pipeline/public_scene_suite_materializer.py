@@ -307,6 +307,7 @@ def _method_component(
     }
     source_files = list(deduplicated_files.values())
     prerequisite = None
+    method_prerequisite: Mapping[str, Any] = {}
     prerequisite_path = spec.get("prerequisite_receipt")
     if prerequisite_path:
         receipt_path = _rooted(data_root, str(prerequisite_path))
@@ -321,9 +322,10 @@ def _method_component(
             raise PublicSceneSuiteMaterializationError(
                 f"method_prerequisite_receipt_digest_mismatch:{role}"
             )
-        method_prerequisite = (prerequisite.get("methods") or {}).get(role)
-        if not isinstance(method_prerequisite, Mapping):
+        observed_method_prerequisite = (prerequisite.get("methods") or {}).get(role)
+        if not isinstance(observed_method_prerequisite, Mapping):
             raise PublicSceneSuiteMaterializationError(f"method_prerequisite_role_missing:{role}")
+        method_prerequisite = observed_method_prerequisite
         for record in method_prerequisite.get("artifacts") or []:
             if not isinstance(record, Mapping):
                 raise PublicSceneSuiteMaterializationError(
@@ -434,6 +436,10 @@ def _method_component(
             "checkpoint_bytes_verified": checkpoint_rights,
             "author_method_executed": False,
             "author_smoke_receipt_bound": False,
+        },
+        "prerequisite_evidence": {
+            "local_artifact_count": len(method_prerequisite.get("artifacts") or []),
+            "remote_snapshots": list(method_prerequisite.get("remote_snapshots") or []),
         },
         "claim_ceiling": CLAIM_CEILING,
         "claim_boundaries": {

@@ -28,7 +28,7 @@
   "deployment_readiness": false,
   "evaluated_on": "2026-08-04",
   "gate_id": "exact_public_scene_suite_index",
-  "index_digest": "sha256:90a03a08f30e09d41294bbb647a074091b915eb59ec45f5ab033a0bcb89ea605",
+  "index_digest": "sha256:58b0f4d107d58cf11d44e8c7f260106bc77117f2f82fd35438dcab4ef4065e93",
   "index_id": "adp009a-public-suite-20260804",
   "metric_geometry_qualified": false,
   "partner_capture_qualified": false,
@@ -36,17 +36,17 @@
   "program_id": "arm-decision-proof-v1",
   "prospective_validation": false,
   "public_scene_software_qualified": false,
-  "receipt_digest": "sha256:f5a43c6f99f64849e2c47a4024554a85930b2e994e9a44ec358cc6230a713491",
+  "receipt_digest": "sha256:e5b2887f73846878546bafcffc5f1d56bea94bd3fec26e80b7631bb0814d46c1",
   "required_role_count": 10,
   "role_bindings": [
     {
-      "component_admission_receipt_digest": "sha256:9b78616f356aefa9bcdb23f33ba8609ae2c23f07f538cce8cb40d8e81d9cfe59",
+      "component_admission_receipt_digest": "sha256:f6231cb2dcd7314cf140c4847167acf0b2da26579b96bc3e8b7dd17f6b18ea18",
       "component_blockers": [
         "inpaint360_author_dataset_license_authority_missing"
       ],
-      "component_manifest_digest": "sha256:ba1d81e664cbff7ae1faa44875c002452ed132f43e415bb9337ea7f984325e37",
+      "component_manifest_digest": "sha256:77d643bf1868e45895f642a8effa3c985cdddb806d1c867b5f1ce6533d87e174",
       "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:0ae7e7c6fd95c5c80ce69431e686a2bca7bd48ba17530ba9bbf6b4c1a933ebdf",
+      "exact_artifact_digest": "sha256:6acc7c1962fc269a910a3af582aaebef1ecb74c01c89592f6fb8e2b1070936e4",
       "exact_revision": {
         "kind": "git_commit",
         "value": "d54c893285c6cb27788e05cce607e7d3cca6388a"
@@ -56,13 +56,13 @@
       "source_project_id": "Inpaint360GS"
     },
     {
-      "component_admission_receipt_digest": "sha256:df5b5d3a5ca82519714cb818bfb5720e70d24704464e0a24516afa418f16df6e",
+      "component_admission_receipt_digest": "sha256:9a769e27450e75d1855d757c87f2fac74c972840368c4f55c1ed32d5dd68ee61",
       "component_blockers": [
-        "infusion_author_masks_and_checkpoint_license_or_smoke_missing"
+        "infusion_checkpoint_license_missing"
       ],
-      "component_manifest_digest": "sha256:76bf2490bbd96f631ed00df471a7525766d0c16a13f8504bc5f67a89376881f7",
+      "component_manifest_digest": "sha256:98cef6acd674f150ee456cf2b375be6dee940838b6caeb8b7c78814da458336d",
       "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:b3014c92c3a6aaf353295a2527d5c2548f086232216e468c67e96d9ac7f63584",
+      "exact_artifact_digest": "sha256:71b9c95da12e7ed3e739b2543bbd0957c8b70bf290fd1a482622866db6a4b8b3",
       "exact_revision": {
         "kind": "git_commit",
         "value": "788da7f40cad4314831a053b7419df277d7814c4"
@@ -72,13 +72,13 @@
       "source_project_id": "InFusion"
     },
     {
-      "component_admission_receipt_digest": "sha256:75c0cae82e0175b6d8884f4b649e43c374cb273b4ee6778ff3460d88f3c4865b",
+      "component_admission_receipt_digest": "sha256:aa7e954d935dbd8086500d21a4b3a99680c1bebd5fdb13836aa0db02b958cced",
       "component_blockers": [
-        "aurafusion360_unpinned_runtime_weights_or_author_smoke_missing"
+        "aurafusion360_unchanged_author_smoke_missing"
       ],
-      "component_manifest_digest": "sha256:273376efdd2fc9373e514d11cf6d0a64729c2ef9b9387b4bff2bedb081e69d8c",
+      "component_manifest_digest": "sha256:317181f4ef82eef064ddf37fd16615a019139000e3035bc6c91862d26237f690",
       "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:6860b249ea3c431d09c61b19d4340f592e7e5a0d7b64b234e0defee9d39dd7d8",
+      "exact_artifact_digest": "sha256:d606df65e02477d0416a7dacd0bf27ba2c53738504141090274ec513dc7cdb94",
       "exact_revision": {
         "kind": "git_commit",
         "value": "f23b26c44ba84608306ba952510533ebf4c7877d"
@@ -196,6 +196,6 @@
   ],
   "schema_version": "public_scene_suite_index_receipt.v1",
   "status": "blocked",
-  "supplied_index_digest": "sha256:90a03a08f30e09d41294bbb647a074091b915eb59ec45f5ab033a0bcb89ea605",
+  "supplied_index_digest": "sha256:58b0f4d107d58cf11d44e8c7f260106bc77117f2f82fd35438dcab4ef4065e93",
   "task_physics_qualified": false
 }

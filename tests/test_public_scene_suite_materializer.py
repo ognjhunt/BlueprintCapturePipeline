@@ -245,6 +245,20 @@ def _add_method_prerequisite_receipt(paths: dict[str, Path]) -> Path:
         "methods": {
             "inpaint360_author_smoke": {
                 "artifacts": [checkpoint_record],
+                "remote_snapshots": [
+                    {
+                        "artifact_id": "author-data",
+                        "category": "author_data",
+                        "materialized": False,
+                        "publisher": {
+                            "repository": "example/author-data",
+                            "revision": "3" * 40,
+                            "snapshot_digest": "sha256:" + "4" * 64,
+                        },
+                        "rights": {"license_id": None, "allowed_use_ceiling": None},
+                        "rights_established": False,
+                    }
+                ],
                 "rights_authorities": [
                     {
                         "authority_id": "cropformer-rights",
@@ -622,6 +636,8 @@ def test_method_prerequisite_binds_checkpoint_without_claiming_execution(
     assert manifest["rights"]["author_data_rights_established"] is False
     assert manifest["observed_evidence"]["checkpoint_bytes_verified"] is True
     assert manifest["observed_evidence"]["author_method_executed"] is False
+    assert manifest["prerequisite_evidence"]["local_artifact_count"] == 1
+    assert manifest["prerequisite_evidence"]["remote_snapshots"][0]["rights_established"] is False
     assert receipt["status"] == "blocked"
     assert receipt["blockers"] == ["author_dataset_rights_missing"]
 

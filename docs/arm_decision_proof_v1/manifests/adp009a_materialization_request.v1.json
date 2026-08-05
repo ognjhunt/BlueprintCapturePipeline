@@ -80,7 +80,8 @@
           "run_inference_inpainting.py"
         ]
       },
-      "smallest_blocker": "infusion_author_masks_and_checkpoint_license_or_smoke_missing"
+      "prerequisite_receipt": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "smallest_blocker": "infusion_checkpoint_license_missing"
     },
     "aurafusion360_quality_challenger": {
       "repository": "https://github.com/kkennethwu/AuraFusion360_official",
@@ -100,7 +101,8 @@
         "requirements.txt",
         ".gitmodules",
         "submodules/diff-surfel-rasterization/LICENSE.md",
-        "submodules/simple-knn/LICENSE.md"
+        "submodules/simple-knn/LICENSE.md",
+        "utils/LeftRefill/check_points/ref_guided_inpainting/ckpts/epoch=7-step=6039.ckpt"
       ],
       "documented_inputs": {
         "README.md": [
@@ -110,7 +112,8 @@
           "python inpaint.py"
         ]
       },
-      "smallest_blocker": "aurafusion360_unpinned_runtime_weights_or_author_smoke_missing"
+      "prerequisite_receipt": "methods/adp009a_method_prerequisite_receipt.v1.json",
+      "smallest_blocker": "aurafusion360_unchanged_author_smoke_missing"
     }
   },
   "simready_control": {

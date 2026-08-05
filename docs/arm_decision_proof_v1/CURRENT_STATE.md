@@ -22,7 +22,7 @@ No capture or reconstruction feature was added.
 
 | Item | Status | Observed evidence |
 |---|---|---|
-| ADP-009A | `partial` | The deterministic [`public_scene_suite_index.v1.json`](manifests/adp009a_materialized_suite/public_scene_suite_index.v1.json) now admits three of ten roles from inspected bytes: InteriorGS scene `840313`, its exact SAGE-3D USDZ/collision companion, and NVIDIA USD Content Agents v0.5.2. Scene `840313` was selected under the preregistered criteria with target `ins160` (`canned_beverage`) mapped to removable collider `/Root/ZHQYGJJVAJYEYPTUKY888888`; candidate `841244` and the subsequent shortlist failures remain retained rather than silently relaxed. The Content Agents run executed Material, Texture, Physics, and Validation Agents against exact source commit `36dbf3f274f8e256637230a05a085853f65cc175`; its [component receipt](manifests/adp009a_materialized_suite/usd_content_agents_candidate.component_receipt.json) recomputes 75 retained artifact identities and binds provider teardown and object-store cleanup. Inpaint360GS author smoke, InFusion, AuraFusion360, controlled-background truth, dynamically qualified exact SimReady replacement, physics positive control, and ScanNet++ remain blocked, so the suite is correctly `blocked`, not complete. |
+| ADP-009A | `partial` | The deterministic [`public_scene_suite_index.v1.json`](manifests/adp009a_materialized_suite/public_scene_suite_index.v1.json) admits three of ten roles from inspected bytes: InteriorGS scene `840313`, its exact SAGE-3D USDZ/collision companion, and NVIDIA USD Content Agents v0.5.2. Scene `840313` was selected under the preregistered criteria with target `ins160` (`canned_beverage`) mapped to removable collider `/Root/ZHQYGJJVAJYEYPTUKY888888`; candidate `841244` and the subsequent shortlist failures remain retained rather than silently relaxed. The Content Agents run executed Material, Texture, Physics, and Validation Agents against exact source commit `36dbf3f274f8e256637230a05a085853f65cc175`; its [component receipt](manifests/adp009a_materialized_suite/usd_content_agents_candidate.component_receipt.json) recomputes 75 retained artifact identities and binds provider teardown and object-store cleanup. Method prerequisite receipt `sha256:93246e28fefb26b37a4b2e6cb0fce44aec47d554166093775117ae7308b0c80f` binds exact source trees, real local checkpoint bytes, publisher snapshots, observed licenses, and AuraFusion360's published sunflower expected-output snapshot: Inpaint360GS checkpoints pass while its author-data license remains unresolved; InFusion's public checkpoint repository has no declared license; AuraFusion360's author scene and pinned runtime dependencies pass their publisher-license checks but its unchanged smoke has not run. The other controlled truth, dynamic SimReady, physics, and ScanNet++ roles also remain blocked, so the suite is correctly `blocked`, not complete. |
 | ADP-009B | `missing` | No unchanged Inpaint360GS author-data smoke, InFusion format/license/frame adapter, or AuraFusion360 representation/checkpoint adapter exists. No exact rights-admitted InteriorGS/SAGE-3D source object has yet been removed from both appearance and collision, completed, replaced, and qualified dynamically in Isaac. NVIDIA USD Content Agents did execute on the deterministic parametric can control: Material assigned a green OpenPBR/MaterialX material, Texture produced albedo/normal/ORM maps and a textured USD, Physics authored a thin-aluminum-can candidate, and Validation passed its static `physics_sane` check. Those are authoring candidates, not inpainting, measured geometry, dynamic simulation, or physical evidence. |
 | ADP-009C | `missing` | No exact ScanNet++ real measured scene or controlled known-background completion has passed the new metric/editing tests. |
 | ADP-009D | `missing` | No deterministic InteriorGS/SAGE-to-ScanNet++ variation matrix or one-command public-data replacement rehearsal exists. ARKitScenes and WildRGB-D were explicitly removed from the required stack. |
@@ -38,6 +38,32 @@ cameras and RGB are therefore synthetic method inputs/self-consistency probes;
 external metric depth remains a validation oracle unless a released method
 explicitly accepts it through a preregistered adapter. No completion run has yet
 demonstrated the required seal-before-clean-background-release firebreak.
+
+The retained survey PNGs are lossless `1024x768` selection evidence, not the
+final edit-quality render contract. A later ADP-009B edit must render the native
+publisher 3DGS from source-calibrated deterministic virtual cameras at the
+highest practical resolution, retain lossless RGB/masks/depth, and render the
+replacement USD through the qualified NVIDIA/Omniverse path. Higher sampling
+cannot reconstruct rooms or surfaces absent from the capture. Depth Anything 3
+is not part of the unchanged controls: Inpaint360GS must keep its native author
+workflow and AuraFusion360 pins Marigold. Any future Depth Anything 3 use must be
+a separately preregistered ablation after a measured failure, and its predicted
+depth remains non-metric supporting evidence.
+
+The method prerequisite and suite replay commands are:
+
+```bash
+python -m blueprint_pipeline.public_scene_method_prerequisites \
+  --request docs/arm_decision_proof_v1/manifests/adp009a_method_prerequisite_request.v1.json \
+  --repo-root "$PWD" --data-root "$ADP009A_DATA_ROOT" \
+  --method-root "$ADP009A_METHOD_ROOT" \
+  --output "$ADP009A_DATA_ROOT/methods/adp009a_method_prerequisite_receipt.v1.json"
+python -m blueprint_pipeline.public_scene_suite_materializer \
+  --request docs/arm_decision_proof_v1/manifests/adp009a_materialization_request.v1.json \
+  --repo-root "$PWD" --data-root "$ADP009A_DATA_ROOT" \
+  --method-root "$ADP009A_METHOD_ROOT" \
+  --output-root docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite
+```
 
 The successful Content Agents execution used a deterministic NVIDIA-compatible
 derivative of the canonical SimReady control: visual purpose was normalized to
