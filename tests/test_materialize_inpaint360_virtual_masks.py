@@ -46,12 +46,12 @@ def test_materializes_exact_binary_masks_and_receipt(tmp_path: Path) -> None:
     assert receipt_path.is_file()
 
 
-def test_rejects_view_without_target(tmp_path: Path) -> None:
+def test_rejects_target_missing_from_all_views(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     _write_mask(source / "00000.png", include_target=False)
 
-    with pytest.raises(ValueError, match="target_missing_from_view"):
+    with pytest.raises(ValueError, match="target_missing_from_all_views"):
         materialize_virtual_masks(
             runtime_root=tmp_path,
             predicted_mask_dir=source,
@@ -60,6 +60,26 @@ def test_rejects_view_without_target(tmp_path: Path) -> None:
             target_instance_id=7,
             expected_count=1,
         )
+
+
+def test_retains_and_records_valid_zero_target_view(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_mask(source / "00000.png")
+    _write_mask(source / "00001.png", include_target=False)
+
+    receipt = materialize_virtual_masks(
+        runtime_root=tmp_path,
+        predicted_mask_dir=source,
+        output_dir=tmp_path / "output",
+        receipt_path=tmp_path / "receipt.json",
+        target_instance_id=7,
+        expected_count=2,
+    )
+
+    assert receipt["target_positive_view_count"] == 1
+    assert receipt["target_absent_view_names"] == ["00001.png"]
+    assert np.count_nonzero(np.asarray(Image.open(tmp_path / "output/00001.png"))) == 0
 
 
 def test_rejects_paths_outside_runtime_root(tmp_path: Path) -> None:
