@@ -23,18 +23,19 @@ def _sha256(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def _require_under(path: Path, root: Path) -> Path:
+def _require_under(path: Path, root: Path, *, blocker: str) -> Path:
     resolved = path.expanduser().resolve()
     try:
         resolved.relative_to(root)
     except ValueError as exc:
-        raise ValueError("inpaint360_virtual_mask_path_outside_runtime_root") from exc
+        raise ValueError(blocker) from exc
     return resolved
 
 
 def materialize_virtual_masks(
     *,
     runtime_root: Path,
+    evidence_root: Path | None = None,
     predicted_mask_dir: Path,
     output_dir: Path,
     receipt_path: Path,
@@ -42,9 +43,22 @@ def materialize_virtual_masks(
     expected_count: int = 30,
 ) -> dict[str, object]:
     root = runtime_root.expanduser().resolve()
-    source = _require_under(predicted_mask_dir, root)
-    output = _require_under(output_dir, root)
-    receipt = _require_under(receipt_path, root)
+    evidence = (evidence_root or runtime_root).expanduser().resolve()
+    source = _require_under(
+        predicted_mask_dir,
+        root,
+        blocker="inpaint360_virtual_mask_path_outside_runtime_root",
+    )
+    output = _require_under(
+        output_dir,
+        root,
+        blocker="inpaint360_virtual_mask_path_outside_runtime_root",
+    )
+    receipt = _require_under(
+        receipt_path,
+        evidence,
+        blocker="inpaint360_virtual_mask_receipt_outside_evidence_root",
+    )
     if not source.is_dir():
         raise ValueError("inpaint360_virtual_predicted_mask_dir_missing")
     if not 1 <= target_instance_id <= 255:
@@ -112,6 +126,7 @@ def materialize_virtual_masks(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-root", type=Path, required=True)
+    parser.add_argument("--evidence-root", type=Path)
     parser.add_argument("--predicted-mask-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
@@ -120,6 +135,7 @@ def main() -> int:
     args = parser.parse_args()
     materialize_virtual_masks(
         runtime_root=args.runtime_root,
+        evidence_root=args.evidence_root,
         predicted_mask_dir=args.predicted_mask_dir,
         output_dir=args.output_dir,
         receipt_path=args.receipt,

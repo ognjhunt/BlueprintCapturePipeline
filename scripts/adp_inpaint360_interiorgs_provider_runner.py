@@ -524,6 +524,8 @@ def main() -> int:
                 str(runtime / "materialize_inpaint360_virtual_masks.py"),
                 "--runtime-root",
                 str(runtime),
+                "--evidence-root",
+                str(output),
                 "--predicted-mask-dir",
                 str(model / "virtual/ours_2000/objects_pred"),
                 "--output-dir",

@@ -17,15 +17,18 @@ def _write_mask(path: Path, *, target_id: int = 7, include_target: bool = True) 
 
 
 def test_materializes_exact_binary_masks_and_receipt(tmp_path: Path) -> None:
-    source = tmp_path / "virtual" / "objects_pred"
+    runtime = tmp_path / "provider_runtime"
+    evidence = tmp_path / "runtime_output"
+    source = runtime / "virtual" / "objects_pred"
     source.mkdir(parents=True)
     for index in range(3):
         _write_mask(source / f"{index:05d}.png")
-    output = tmp_path / "tracking_results" / "images" / "images_masks"
-    receipt_path = tmp_path / "virtual_mask_receipt.json"
+    output = runtime / "tracking_results" / "images" / "images_masks"
+    receipt_path = evidence / "virtual_mask_receipt.json"
 
     receipt = materialize_virtual_masks(
-        runtime_root=tmp_path,
+        runtime_root=runtime,
+        evidence_root=evidence,
         predicted_mask_dir=source,
         output_dir=output,
         receipt_path=receipt_path,
@@ -71,6 +74,25 @@ def test_rejects_paths_outside_runtime_root(tmp_path: Path) -> None:
             predicted_mask_dir=source,
             output_dir=outside,
             receipt_path=tmp_path / "receipt.json",
+            target_instance_id=7,
+            expected_count=1,
+        )
+
+
+def test_rejects_receipt_outside_evidence_root(tmp_path: Path) -> None:
+    runtime = tmp_path / "provider_runtime"
+    evidence = tmp_path / "runtime_output"
+    source = runtime / "source"
+    source.mkdir(parents=True)
+    _write_mask(source / "00000.png")
+
+    with pytest.raises(ValueError, match="receipt_outside_evidence_root"):
+        materialize_virtual_masks(
+            runtime_root=runtime,
+            evidence_root=evidence,
+            predicted_mask_dir=source,
+            output_dir=runtime / "output",
+            receipt_path=tmp_path / "unapproved" / "receipt.json",
             target_instance_id=7,
             expected_count=1,
         )
