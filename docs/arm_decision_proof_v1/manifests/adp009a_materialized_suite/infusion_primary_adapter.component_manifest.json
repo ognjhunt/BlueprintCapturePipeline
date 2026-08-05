@@ -1,6 +1,7 @@
 {
   "adp_item": "ADP-009A",
   "claim_boundaries": {
+    "author_smoke_is_not_interiorgs_inpainting": true,
     "inpainting_result": false,
     "method_source_checkout_is_not_execution": true,
     "metric_geometry_qualified": false,
@@ -8,7 +9,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-infusion_primary_adapter",
-  "manifest_digest": "sha256:98cef6acd674f150ee456cf2b375be6dee940838b6caeb8b7c78814da458336d",
+  "manifest_digest": "sha256:2864a2b0c1251a6e8e5c54d158f2e184d908edd3a58813ac2fbb0e24ca6c2aec",
   "materialized_artifacts": [
     {
       "external_relative_path": "Infusion/LICENSE",
@@ -42,8 +43,8 @@
       "external_relative_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
       "publisher_path": "methods/adp009a_method_prerequisite_receipt.v1.json",
       "role": "method_prerequisite_receipt",
-      "sha256": "sha256:7fee2d6ce04e73e48372b0a64b56c59a42a5617f395c5582d3cb7a169088f495",
-      "size_bytes": 17271
+      "sha256": "sha256:661951f1b96fbc0b6fcd3e10c932f8698bf4c46c1290390d0933d0d756c1ed56",
+      "size_bytes": 17798
     }
   ],
   "observed_evidence": {
@@ -77,6 +78,7 @@
           "repository": "Johanan0528/Infusion",
           "revision": "83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2",
           "service": "huggingface",
+          "single_file_identity": null,
           "snapshot_digest": "sha256:8f35a449964397b3b979ae60da4c4fd612139dda65d6dff90cff026415a1ceb3",
           "total_size_bytes": 6858056617
         },
