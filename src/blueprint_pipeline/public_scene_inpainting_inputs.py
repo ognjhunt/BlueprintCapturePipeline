@@ -26,6 +26,7 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 from .gaussian_splat_decode import (
     SplatData,
     convert_to_standard_ply,
+    find_splat_transform_cli,
     read_standard_3dgs_ply,
     write_standard_3dgs_ply,
 )
@@ -352,15 +353,45 @@ def _record(path: Path, root: Path) -> dict[str, Any]:
     }
 
 
+def _git_identity(repo: Path) -> dict[str, Any]:
+    def run(*args: str) -> str:
+        try:
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            raise PublicSceneInpaintingInputError(["edit_input_repository_identity_unavailable"]) from exc
+
+    dirty = run("status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        raise PublicSceneInpaintingInputError(["edit_input_repository_tracked_files_dirty"])
+    return {
+        "commit": run("rev-parse", "HEAD"),
+        "tree": run("rev-parse", "HEAD^{tree}"),
+        "tracked_files_clean": True,
+    }
+
+
 def materialize_public_scene_inpainting_inputs(
     *, request_path: str | Path, repo_root: str | Path, data_root: str | Path,
-    output_root: str | Path,
+    output_root: str | Path, receipt_output: str | Path | None = None,
 ) -> dict[str, Any]:
     """Materialize and receipt one real render-derived InteriorGS input packet."""
 
     repo = Path(repo_root).expanduser().resolve()
     data = Path(data_root).expanduser().resolve()
     output = _require_under(Path(output_root), (data,), code="edit_input_output_outside_data_root")
+    retained_receipt = (
+        _require_under(
+            Path(receipt_output), (repo,), code="edit_input_receipt_output_outside_repo_root"
+        )
+        if receipt_output is not None
+        else None
+    )
+    repository = _git_identity(repo)
     request_file = _require_under(Path(request_path), (repo,), code="edit_input_request_outside_repo_root")
     request = build_public_scene_inpainting_input_request(
         _read_object(request_file, code="edit_input_request_invalid")
@@ -426,6 +457,12 @@ def materialize_public_scene_inpainting_inputs(
     )
     output.mkdir(parents=True, exist_ok=True)
     standard_ply = output / "scene_standard.ply"
+    decode_cli = find_splat_transform_cli(repo)
+    decode_command = (
+        ["node", str(decode_cli), "-w", "-q", str(resolved["splat"]), str(standard_ply)]
+        if decode_cli is not None
+        else None
+    )
     conversion = convert_to_standard_ply(
         resolved["splat"], standard_ply, repo_root=repo, timeout_seconds=1800
     )
@@ -523,6 +560,7 @@ def materialize_public_scene_inpainting_inputs(
         "schema_version": RECEIPT_SCHEMA,
         "status": "render_derived_input_packet_materialized",
         "program_id": "arm-decision-proof-v1", "adp_item": "ADP-009B",
+        "repository": repository,
         "request_digest": request["request_digest"],
         "scene_component_manifest_digest": manifest["manifest_digest"],
         "scene_component_receipt_digest": component_receipt["receipt_digest"],
@@ -549,7 +587,7 @@ def materialize_public_scene_inpainting_inputs(
         },
         "renderer": renderer,
         "executed_commands": {
-            "decode": conversion.get("command"), "rgb_render": rgb_run["command"],
+            "decode": conversion.get("command") or decode_command, "rgb_render": rgb_run["command"],
             "target_support_render": support_run["command"],
         },
         "method_execution": {
@@ -574,6 +612,9 @@ def materialize_public_scene_inpainting_inputs(
     (output / "adp009b_interiorgs_edit_input_receipt.v1.json").write_text(
         canonical_json(receipt) + "\n", encoding="utf-8"
     )
+    if retained_receipt is not None:
+        retained_receipt.parent.mkdir(parents=True, exist_ok=True)
+        retained_receipt.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
     return receipt
 
 
@@ -583,10 +624,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--receipt-output")
     args = parser.parse_args(argv)
     receipt = materialize_public_scene_inpainting_inputs(
         request_path=args.request, repo_root=args.repo_root, data_root=args.data_root,
         output_root=args.output_root,
+        receipt_output=args.receipt_output,
     )
     print(canonical_json(receipt))
     return 0

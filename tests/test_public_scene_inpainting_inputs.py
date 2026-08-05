@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -151,6 +152,11 @@ def _write_fixture(tmp_path: Path) -> dict[str, Path]:
     (repo / "receipt.json").write_text(json.dumps(receipt))
     request = build_public_scene_inpainting_input_request(_request())
     (repo / "request.json").write_text(json.dumps(request))
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
     return {"repo": repo, "data": data, "source": source, "output": data / "output"}
 
 
@@ -210,6 +216,7 @@ def test_materializer_hashes_real_inputs_and_emits_truthful_packet(
         repo_root=paths["repo"],
         data_root=paths["data"],
         output_root=paths["output"],
+        receipt_output=paths["repo"] / "retained" / "receipt.json",
     )
     assert receipt["status"] == "render_derived_input_packet_materialized"
     assert receipt["scene"]["target_gaussian_count"] == 24
@@ -218,6 +225,10 @@ def test_materializer_hashes_real_inputs_and_emits_truthful_packet(
     assert len(receipt["derived_artifacts"]["masks"]) == 6
     assert receipt["method_execution"]["inpaint360gs_executed"] is False
     assert receipt["proof_boundaries"]["hidden_background_truth_available"] is False
+    assert receipt["repository"]["tracked_files_clean"] is True
+    assert len(receipt["repository"]["commit"]) == 40
+    assert receipt["executed_commands"]["decode"] == ["copy-fixture"]
+    assert json.loads((paths["repo"] / "retained" / "receipt.json").read_text()) == receipt
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
 
 
