@@ -104,6 +104,8 @@ fi
 
 export HF_HOME="${SOURCE_DIR}/.hf_home"
 export HF_HUB_CACHE="${HF_HOME}/hub"
+export HF_HUB_DISABLE_XET=1
+export HF_HUB_DOWNLOAD_TIMEOUT=600
 "${PYTHON}" "${SCRIPT_DIR}/adp_aura_author_smoke_provider_runner.py" --prepare-only
 prepare_rc=$?
 if [ "${prepare_rc}" -ne 0 ]; then

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import zipfile
 from pathlib import Path
@@ -20,6 +21,18 @@ from blueprint_pipeline.vast_provider_adapter import (
     _resolve_launch_mode,
 )
 from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
+
+
+def _load_provider_runner():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/adp_aura_author_smoke_provider_runner.py"
+    )
+    spec = importlib.util.spec_from_file_location("adp_aura_provider_runner", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -276,6 +289,26 @@ def test_bundle_derives_source_and_rights_evidence(
     assert smoke_spec["expected_output"]["bundled_path"] == (
         "published_expected_point_cloud.ply"
     )
+    marigold = next(
+        model
+        for model in smoke_spec["runtime_models"]
+        if model["repository"] == "prs-eth/marigold-depth-v1-0"
+    )
+    assert len(marigold["materialized_files"]) == 12
+    assert marigold["materialized_total_size_bytes"] == 5_161_601_761
+    assert {
+        item["path"] for item in marigold["materialized_files"]
+    }.isdisjoint(
+        {
+            "text_encoder/model.fp16.safetensors",
+            "unet/diffusion_pytorch_model.fp16.safetensors",
+            "vae/diffusion_pytorch_model.fp16.safetensors",
+        }
+    )
+    assert "allow_patterns=" in runner
+    assert "_verify_runtime_model_snapshot(snapshot, model)" in runner
+    assert "HF_HUB_DISABLE_XET=1" in entrypoint
+    assert "HF_HUB_DOWNLOAD_TIMEOUT=600" in entrypoint
     assert [command[1] for command in smoke_spec["author_commands"]] == [
         "train.py",
         "render.py",
@@ -593,6 +626,52 @@ def test_vast_adapter_preflights_dedicated_aura_bundle(
         provider_output_put_url="https://example.test/output.zip?signature=redacted",
     )
     assert preflight["status"] == "passed"
+
+
+def test_provider_runner_accepts_only_exact_runtime_model_files(tmp_path: Path) -> None:
+    runner = _load_provider_runner()
+    snapshot = tmp_path / "snapshot"
+    source = snapshot / "component/model.safetensors"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"exact-publisher-model")
+    model = {
+        "materialized_files": [
+            {
+                "path": "component/model.safetensors",
+                "size_bytes": source.stat().st_size,
+                "sha256": runner._sha256(source),
+            }
+        ],
+        "materialized_total_size_bytes": source.stat().st_size,
+    }
+
+    runner._verify_runtime_model_snapshot(snapshot, model)
+
+    source.write_bytes(b"mutated-publisher-model")
+    with pytest.raises(ValueError, match="aurafusion360_runtime_model_file_changed"):
+        runner._verify_runtime_model_snapshot(snapshot, model)
+
+
+def test_provider_runner_rejects_unbound_runtime_model_file(tmp_path: Path) -> None:
+    runner = _load_provider_runner()
+    snapshot = tmp_path / "snapshot"
+    source = snapshot / "model_index.json"
+    snapshot.mkdir()
+    source.write_bytes(b"{}")
+    model = {
+        "materialized_files": [
+            {
+                "path": source.name,
+                "size_bytes": source.stat().st_size,
+                "sha256": runner._sha256(source),
+            }
+        ],
+        "materialized_total_size_bytes": source.stat().st_size,
+    }
+    (snapshot / "unbound.bin").write_bytes(b"unexpected")
+
+    with pytest.raises(ValueError, match="aurafusion360_runtime_model_file_set_changed"):
+        runner._verify_runtime_model_snapshot(snapshot, model)
 
 
 def _allocator_args(

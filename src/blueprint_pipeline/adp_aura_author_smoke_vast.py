@@ -94,6 +94,68 @@ _EXPECTED_OUTPUT = {
         "sha256:0b493f2f15ea942507faa179e6cc9f5250ff985d6059272dd676bd7a92dde9da"
     ),
 }
+_MARIGOLD_RUNTIME_FILES = [
+    {
+        "path": "model_index.json",
+        "size_bytes": 535,
+        "sha256": "sha256:73dbf767cfd1b4bfd8b731c9e110610d98258d805a6439157cc6549aba2c29f9",
+    },
+    {
+        "path": "scheduler/scheduler_config.json",
+        "size_bytes": 345,
+        "sha256": "sha256:4cd9b9597ca64549df35016ca02bd3450ecbac70ccd8b0465b018be4ba54fe4b",
+    },
+    {
+        "path": "text_encoder/config.json",
+        "size_bytes": 633,
+        "sha256": "sha256:6b34b0bf6cff02e2afe88145740ef5e0316caf7add8307c8ec0b021a7923cc42",
+    },
+    {
+        "path": "text_encoder/model.safetensors",
+        "size_bytes": 1_361_597_016,
+        "sha256": "sha256:1e4aa519f64dc6386f88221a66c106a09fa027b47a20cc0e126687695f2a6669",
+    },
+    {
+        "path": "tokenizer/merges.txt",
+        "size_bytes": 524_619,
+        "sha256": "sha256:9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+    },
+    {
+        "path": "tokenizer/special_tokens_map.json",
+        "size_bytes": 460,
+        "sha256": "sha256:f118ab3a983206e4f32583448de6bd6aae4ee21869135cef1f5848a753cdaab6",
+    },
+    {
+        "path": "tokenizer/tokenizer_config.json",
+        "size_bytes": 824,
+        "sha256": "sha256:87a3154f0990fd992fd59f9d42c39520155b3d77cd543efe3f2bf011726f379d",
+    },
+    {
+        "path": "tokenizer/vocab.json",
+        "size_bytes": 1_059_962,
+        "sha256": "sha256:e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
+    },
+    {
+        "path": "unet/config.json",
+        "size_bytes": 888,
+        "sha256": "sha256:95a39ce997b9d4f1ca9439f8d61d517737841cbc71b687a8b0924667023a7a6f",
+    },
+    {
+        "path": "unet/diffusion_pytorch_model.safetensors",
+        "size_bytes": 3_463_772_592,
+        "sha256": "sha256:3416c9fde3f826a4cc29f1e65f6dc6c82aa01fa9d4efa89c27a35ca85ab96048",
+    },
+    {
+        "path": "vae/config.json",
+        "size_bytes": 611,
+        "sha256": "sha256:d69281aa3f6a0f3c41aaf6778e35464fc6ee8a92e6ac8a8b1eb679f6df6423eb",
+    },
+    {
+        "path": "vae/diffusion_pytorch_model.safetensors",
+        "size_bytes": 334_643_276,
+        "sha256": "sha256:a1d993488569e928462932c8c38a0760b874d166399b14414135bd9c42df5815",
+    },
+]
 _RUNTIME_MODELS = [
     {
         "repository": "facebook/sam2-hiera-large",
@@ -108,6 +170,8 @@ _RUNTIME_MODELS = [
         "snapshot_digest": (
             "sha256:d8c2d2dfdc297008d7f4314593b8dcd381fa6c120ce9780e93f1a9c15c206e74"
         ),
+        "materialized_files": _MARIGOLD_RUNTIME_FILES,
+        "materialized_total_size_bytes": 5_161_601_761,
     },
 ]
 _SD2 = {

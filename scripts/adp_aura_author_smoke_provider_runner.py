@@ -170,6 +170,34 @@ def _extract_runtime_dependency(runtime: Path, spec: dict[str, Any]) -> Path:
     return destination
 
 
+def _verify_runtime_model_snapshot(snapshot: Path, model: dict[str, Any]) -> None:
+    expected_files = model.get("materialized_files")
+    if not expected_files:
+        return
+    expected_paths: set[str] = set()
+    total_size_bytes = 0
+    for item in expected_files:
+        relative = str(item["path"])
+        path = snapshot / relative
+        if (
+            not path.is_file()
+            or path.stat().st_size != int(item["size_bytes"])
+            or _sha256(path) != item["sha256"]
+        ):
+            raise ValueError("aurafusion360_runtime_model_file_changed")
+        expected_paths.add(relative)
+        total_size_bytes += path.stat().st_size
+    actual_paths = {
+        path.relative_to(snapshot).as_posix()
+        for path in snapshot.rglob("*")
+        if path.is_file()
+    }
+    if actual_paths != expected_paths:
+        raise ValueError("aurafusion360_runtime_model_file_set_changed")
+    if total_size_bytes != int(model["materialized_total_size_bytes"]):
+        raise ValueError("aurafusion360_runtime_model_total_size_changed")
+
+
 def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -186,7 +214,20 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
 
     cache = Path(os.environ["HF_HUB_CACHE"])
     for model in spec["runtime_models"]:
-        snapshot_download(repo_id=model["repository"], revision=model["revision"])
+        materialized_files = model.get("materialized_files")
+        snapshot = Path(
+            snapshot_download(
+                repo_id=model["repository"],
+                revision=model["revision"],
+                allow_patterns=(
+                    [str(item["path"]) for item in materialized_files]
+                    if materialized_files
+                    else None
+                ),
+                max_workers=1,
+            )
+        )
+        _verify_runtime_model_snapshot(snapshot, model)
         _pin_hf_ref(cache, model["repository"], model["revision"])
     sd2 = spec["sd2_checkpoint"]
     checkpoint = hf_hub_download(
