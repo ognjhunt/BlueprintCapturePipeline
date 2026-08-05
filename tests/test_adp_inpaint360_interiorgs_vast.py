@@ -516,6 +516,15 @@ def test_camera_rasterizer_preflight_requires_every_frozen_view() -> None:
     assert "inpaint360_camera_rasterizer_view_count_mismatch" in missing["blockers"]
 
 
+def test_provider_runner_enables_distillation_mode_for_camera_probe() -> None:
+    runner_path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/adp_inpaint360_interiorgs_provider_runner.py"
+    )
+    source = runner_path.read_text(encoding="utf-8")
+    assert source.count('"--train_distill"') == 1
+
+
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:
     args = [
         "gpu-canary",

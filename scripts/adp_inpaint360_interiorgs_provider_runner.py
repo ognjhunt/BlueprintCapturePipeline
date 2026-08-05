@@ -380,6 +380,7 @@ def main() -> int:
                 "images",
                 "--object_path",
                 "associated_hqsam",
+                "--train_distill",
                 "--eval",
                 "--resolution",
                 str(METHOD_RESOLUTION_ARGUMENT),

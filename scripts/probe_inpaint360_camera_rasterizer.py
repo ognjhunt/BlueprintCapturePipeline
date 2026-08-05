@@ -44,6 +44,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--receipt", required=True)
     parser.add_argument("--expected-camera-count", type=int, required=True)
     args = parser.parse_args(argv)
+    if not args.train_distill:
+        receipt = {
+            "schema_version": "adp_inpaint360_camera_rasterizer_preflight.v1",
+            "status": "blocked",
+            "expected_camera_count": args.expected_camera_count,
+            "observed_camera_count": 0,
+            "failed_camera_names": [],
+            "views": [],
+            "train_distill_mode": False,
+            "blockers": ["inpaint360_camera_probe_train_distill_mode_missing"],
+            "raw_secret_values_recorded": False,
+        }
+        _write_json(Path(args.receipt), receipt)
+        return 2
     scene_info = json.loads(
         (Path(args.source_path) / args.object_path / "scene.json").read_text(
             encoding="utf-8"
@@ -107,6 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     receipt.update(
         {
             "resolution_argument": int(args.resolution),
+            "train_distill_mode": bool(args.train_distill),
             "source_path": str(Path(args.source_path).resolve()),
             "model_path": str(Path(args.model_path).resolve()),
             "vanilla_3dgs_path": str(Path(args.vanilla_3dgs_path).resolve()),
