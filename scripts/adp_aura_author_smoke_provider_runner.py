@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 SCHEMA_VERSION = "adp_aura_author_smoke_result.v1"
@@ -39,7 +39,13 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _run(command: Sequence[str], *, cwd: Path, log_path: Path) -> dict[str, Any]:
+def _run(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    log_path: Path,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     started = dt.datetime.now(dt.timezone.utc)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -47,6 +53,7 @@ def _run(command: Sequence[str], *, cwd: Path, log_path: Path) -> dict[str, Any]
             completed = subprocess.run(
                 list(command),
                 cwd=cwd,
+                env=dict(env) if env is not None else None,
                 stdout=log_stream,
                 stderr=subprocess.STDOUT,
                 timeout=COMMAND_TIMEOUT_SECONDS,

@@ -999,6 +999,24 @@ def test_wam_provider_output_zip_accepts_wam_runtime_result(tmp_path: Path) -> N
     assert result["runtime_result_status"] == "completed"
 
 
+def test_provider_output_zip_accepts_aura_interiorgs_result(tmp_path: Path) -> None:
+    output_zip = tmp_path / "aura-interiorgs-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "immutable_execution/adp_aura_interiorgs_result.json",
+            json.dumps({"status": "blocked", "blockers": ["reference_lama_failed"]}),
+        )
+
+    result = vpa._inspect_provider_runtime_output_zip(
+        output_zip,
+        expected_video_count=0,
+    )
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_status"] == "blocked"
+    assert result["runtime_result_blockers"] == ["reference_lama_failed"]
+
+
 def test_unitree_unifolm_provider_output_zip_accepts_policy_output(tmp_path: Path) -> None:
     output_zip = tmp_path / "unitree-output.zip"
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -6628,9 +6646,10 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     assert mutation_order.index("offer_search") < mutation_order.index("authorization_consumed")
     assert mutation_order.index("authorization_consumed") < mutation_order.index("provider_create")
     assert wam["pre_provider_mutation_hook_result"]["status"] == "consumed"
-    assert "provider_runtime_bundle_missing" not in _read_json(
-        tmp_path / "wam-live" / "vast_provider_command_result.json"
-    )["blockers"]
+    assert (
+        "provider_runtime_bundle_missing"
+        not in _read_json(tmp_path / "wam-live" / "vast_provider_command_result.json")["blockers"]
+    )
     assert (
         _read_json(tmp_path / "wam-live" / "vast_isaac_smoke_result.json")["status"]
         == "not_required"
