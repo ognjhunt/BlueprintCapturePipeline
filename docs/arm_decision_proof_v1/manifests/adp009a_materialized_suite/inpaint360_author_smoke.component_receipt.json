@@ -2,7 +2,7 @@
   "adp_item": "ADP-009A",
   "artifact_bytes_opened": true,
   "blockers": [
-    "inpaint360_author_data_and_weight_rights_or_smoke_missing"
+    "inpaint360_author_dataset_license_authority_missing"
   ],
   "checks": {
     "clean_source_tree": true,
@@ -15,9 +15,9 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-inpaint360_author_smoke",
-  "component_manifest_digest": "sha256:9a75f0ee9206fb6391b7c71de56f3a5c234693d81ac87b143589f57d62bb3f07",
+  "component_manifest_digest": "sha256:77d643bf1868e45895f642a8effa3c985cdddb806d1c867b5f1ce6533d87e174",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:c877f68f2621fecdfcdbb29f51a98399b436d733cf737be6aa1c3aa958ac74d5",
+  "receipt_digest": "sha256:f6231cb2dcd7314cf140c4847167acf0b2da26579b96bc3e8b7dd17f6b18ea18",
   "role": "inpaint360_author_smoke",
   "schema_version": "public_scene_component_admission_receipt.v1",
   "status": "blocked"

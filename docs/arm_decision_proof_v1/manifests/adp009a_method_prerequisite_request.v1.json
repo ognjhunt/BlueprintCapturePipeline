@@ -1,0 +1,242 @@
+{
+  "schema_version": "public_scene_method_prerequisite_request.v1",
+  "evaluated_on": "2026-08-04",
+  "methods": {
+    "inpaint360_author_smoke": {
+      "rights_authorities": [
+        {
+          "authority_id": "cropformer_model_cc_by_nc_4_0",
+          "local_path": "Entity",
+          "repository": "https://github.com/qqlu/Entity",
+          "revision": "6e7e13ac91ef508088e1b848167c01f19b00b512",
+          "tree": "56c624d125363b2026ee1589c2c66e12d3568e62",
+          "verify_official_remote_head": true,
+          "license_id": "CC-BY-NC-4.0",
+          "evidence_files": [
+            {
+              "path": "LICENSE",
+              "required_text": [
+                "Creative Commons Attribution-NonCommercial 4.0 International Public License"
+              ]
+            },
+            {
+              "path": "Entityv2/README.md",
+              "required_text": [
+                "The code and models are released under the [CC BY-NC 4.0 license]"
+              ]
+            }
+          ]
+        },
+        {
+          "authority_id": "big_lama_apache_2_0",
+          "local_path": "LaMa",
+          "repository": "https://github.com/advimman/lama",
+          "revision": "786f5936b27fb3dacd2b1ad799e4de968ea697e7",
+          "tree": "25f9902ca0c2ec4bf6c31c2b4427f0a4f05f2fd1",
+          "verify_official_remote_head": true,
+          "license_id": "Apache-2.0",
+          "evidence_files": [
+            {
+              "path": "LICENSE",
+              "required_text": [
+                "Apache License",
+                "Version 2.0, January 2004"
+              ]
+            },
+            {
+              "path": "README.md",
+              "required_text": [
+                "https://huggingface.co/smartywu/big-lama/resolve/main/big-lama.zip"
+              ]
+            }
+          ]
+        },
+        {
+          "authority_id": "sam_checkpoint_apache_2_0",
+          "local_path": "Inpaint360GS",
+          "repository": "https://github.com/dfki-av/Inpaint360GS",
+          "revision": "d54c893285c6cb27788e05cce607e7d3cca6388a",
+          "tree": "671626f4825cbf3d7c1ca37cc97a153d45e49b1c",
+          "verify_official_remote_head": true,
+          "license_id": "Apache-2.0",
+          "evidence_files": [
+            {
+              "path": "Segment-and-Track-Anything/sam/LICENSE",
+              "required_text": [
+                "Apache License",
+                "Version 2.0, January 2004"
+              ]
+            },
+            {
+              "path": "Segment-and-Track-Anything/README.md",
+              "required_text": [
+                "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+              ]
+            }
+          ]
+        },
+        {
+          "authority_id": "deaot_checkpoint_bsd_3_clause",
+          "local_path": "Inpaint360GS",
+          "repository": "https://github.com/dfki-av/Inpaint360GS",
+          "revision": "d54c893285c6cb27788e05cce607e7d3cca6388a",
+          "tree": "671626f4825cbf3d7c1ca37cc97a153d45e49b1c",
+          "verify_official_remote_head": true,
+          "license_id": "BSD-3-Clause",
+          "evidence_files": [
+            {
+              "path": "Segment-and-Track-Anything/aot/LICENSE",
+              "required_text": [
+                "BSD 3-Clause License",
+                "Copyright (c) 2020, z-x-yang"
+              ]
+            },
+            {
+              "path": "Segment-and-Track-Anything/README.md",
+              "required_text": [
+                "R50_DeAOTL_PRE_YTB_DAV.pth",
+                "1QoChMkTVxdYZ_eBlZhK2acq9KMQZccPJ"
+              ]
+            }
+          ]
+        }
+      ],
+      "artifacts": [
+        {
+          "artifact_id": "cropformer_hornet_3x_03823a",
+          "local_path": "methods/Inpaint360GS/CropFormer_model/Entity_Segmentation/CropFormer_hornet_3x/CropFormer_hornet_3x_03823a.pth",
+          "expected_size_bytes": 888996425,
+          "expected_sha256": "sha256:71915b7e9dc63fc662b32c59dff513530a06221c3b22f6de7ff4d6ef82df1128",
+          "publisher": {
+            "service": "huggingface",
+            "repo_type": "dataset",
+            "repository": "qqlu1992/Adobe_EntitySeg",
+            "revision": "143d5e7e2880dcf3df2df6570984143c2e9a9b45",
+            "path": "CropFormer_model/Entity_Segmentation/CropFormer_hornet_3x/CropFormer_hornet_3x_03823a.pth"
+          },
+          "rights_authority_id": "cropformer_model_cc_by_nc_4_0"
+        },
+        {
+          "artifact_id": "big_lama_author_linked_archive",
+          "local_path": "methods/Inpaint360GS/LaMa/big-lama.zip",
+          "expected_size_bytes": 381428720,
+          "expected_sha256": "sha256:d7161bba4d68b438f9fa7f09dcb750a223804c300c68d214a5e0be16251fba8d",
+          "publisher": {
+            "service": "google_drive",
+            "file_id": "11RbsVSav3O-fReBsPHBE1nn8kcFIMnKp",
+            "filename": "big-lama.zip"
+          },
+          "rights_authority_id": "big_lama_apache_2_0"
+        },
+        {
+          "artifact_id": "sam_vit_b_01ec64",
+          "local_path": "methods/Inpaint360GS/Segment-and-Track-Anything/ckpt/sam_vit_b_01ec64.pth",
+          "expected_size_bytes": 375042383,
+          "expected_sha256": "sha256:ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912",
+          "publisher": {
+            "service": "http",
+            "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
+            "filename": "sam_vit_b_01ec64.pth"
+          },
+          "rights_authority_id": "sam_checkpoint_apache_2_0"
+        },
+        {
+          "artifact_id": "r50_deaotl_pre_ytb_dav",
+          "local_path": "methods/Inpaint360GS/Segment-and-Track-Anything/ckpt/R50_DeAOTL_PRE_YTB_DAV.pth",
+          "expected_size_bytes": 236513959,
+          "expected_sha256": "sha256:7e8a8d83310739bac02817f6bf48b6bbe2bbd7d5325722f1084088eb3aee1e06",
+          "publisher": {
+            "service": "google_drive",
+            "file_id": "1QoChMkTVxdYZ_eBlZhK2acq9KMQZccPJ",
+            "filename": "R50_DeAOTL_PRE_YTB_DAV.pth"
+          },
+          "rights_authority_id": "deaot_checkpoint_bsd_3_clause"
+        }
+      ]
+    },
+    "infusion_primary_adapter": {
+      "rights_authorities": [],
+      "artifacts": [],
+      "remote_snapshots": [
+        {
+          "artifact_id": "infusion_checkpoint_repository",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "Johanan0528/Infusion",
+          "revision": "83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2",
+          "path_prefix": "",
+          "expected_file_count": 14,
+          "expected_total_size_bytes": 6858056617,
+          "expected_snapshot_digest": "sha256:8f35a449964397b3b979ae60da4c4fd612139dda65d6dff90cff026415a1ceb3",
+          "expected_license_id": ""
+        }
+      ]
+    },
+    "aurafusion360_quality_challenger": {
+      "rights_authorities": [],
+      "artifacts": [],
+      "remote_snapshots": [
+        {
+          "artifact_id": "aurafusion360_sunflower_author_scene",
+          "category": "author_data",
+          "repo_type": "dataset",
+          "repository": "kkennethwu/360-USID",
+          "revision": "1c5a7863a284efe60fa33c2e4f0da19e50e55a0f",
+          "path_prefix": "360-USID/sunflower/",
+          "expected_file_count": 636,
+          "expected_total_size_bytes": 44778262,
+          "expected_snapshot_digest": "sha256:e81ad45f416349cc6364edecdb156e7ca48f8d62b25443d5ea3225c4a8af07fd",
+          "expected_license_id": "Apache-2.0"
+        },
+        {
+          "artifact_id": "aurafusion360_sam2_hiera_large",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "facebook/sam2-hiera-large",
+          "revision": "e6a8e8809b8f1bfa2238b6d080f3d05cc76bd251",
+          "path_prefix": "",
+          "expected_file_count": 9,
+          "expected_total_size_bytes": 1795815850,
+          "expected_snapshot_digest": "sha256:e873cf416a96e5656a1f9641325c299399c81b28612362c4ed14375cb82169c6",
+          "expected_license_id": "Apache-2.0"
+        },
+        {
+          "artifact_id": "aurafusion360_marigold_depth_v1_0",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "prs-eth/marigold-depth-v1-0",
+          "revision": "f4fc453d7d217cbe30ddcad3eb311d1ad9a11c4c",
+          "path_prefix": "",
+          "expected_file_count": 24,
+          "expected_total_size_bytes": 15482514887,
+          "expected_snapshot_digest": "sha256:d8c2d2dfdc297008d7f4314593b8dcd381fa6c120ce9780e93f1a9c15c206e74",
+          "expected_license_id": "Apache-2.0"
+        },
+        {
+          "artifact_id": "aurafusion360_sd2_inpainting_exact_checkpoint",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "sd2-community/stable-diffusion-2-inpainting",
+          "revision": "5f74973cbb64c8568780732c17f43eb269d63a0d",
+          "path_prefix": "512-inpainting-ema.ckpt",
+          "expected_file_count": 1,
+          "expected_total_size_bytes": 5214921607,
+          "expected_snapshot_digest": "sha256:38e4618c75290a31e3e42b110ac8174edcc5c9b47fbc5f2bd90e455da814c1e1",
+          "expected_license_id": "OpenRAIL++"
+        },
+        {
+          "artifact_id": "aurafusion360_sunflower_expected_output",
+          "category": "expected_output",
+          "repo_type": "dataset",
+          "repository": "kkennethwu/AuraFusion360_Results",
+          "revision": "9682454f9829c6df013d3d22c55f3a9c53dd783f",
+          "path_prefix": "360-USID/sunflower/",
+          "expected_file_count": 12715,
+          "expected_total_size_bytes": 8463892136,
+          "expected_snapshot_digest": "sha256:b6c92fae7bc42253f7e5ce4afa4f4adc32c7748783e5ec54616d76de638e45cc",
+          "expected_license_id": "Apache-2.0"
+        }
+      ]
+    }
+  }
+}

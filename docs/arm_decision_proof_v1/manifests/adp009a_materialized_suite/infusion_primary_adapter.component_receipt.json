@@ -2,7 +2,7 @@
   "adp_item": "ADP-009A",
   "artifact_bytes_opened": true,
   "blockers": [
-    "infusion_author_masks_and_checkpoint_license_or_smoke_missing"
+    "infusion_checkpoint_license_missing"
   ],
   "checks": {
     "clean_source_tree": true,
@@ -15,9 +15,9 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-infusion_primary_adapter",
-  "component_manifest_digest": "sha256:144294468169c8d4d73e156a21e7e1d5fcf15cbf28613f0ce87aebd5287b1e4e",
+  "component_manifest_digest": "sha256:98cef6acd674f150ee456cf2b375be6dee940838b6caeb8b7c78814da458336d",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:05d3b792a24e07a3a7d8d984ee9a1b9a1dea3dcec774ab1f2828a940dd674b2e",
+  "receipt_digest": "sha256:9a769e27450e75d1855d757c87f2fac74c972840368c4f55c1ed32d5dd68ee61",
   "role": "infusion_primary_adapter",
   "schema_version": "public_scene_component_admission_receipt.v1",
   "status": "blocked"

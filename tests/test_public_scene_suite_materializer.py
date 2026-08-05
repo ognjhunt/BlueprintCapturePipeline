@@ -22,7 +22,9 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def _box(ins_id: str, label: str, lower: tuple[float, float, float], upper: tuple[float, float, float]) -> dict:
+def _box(
+    ins_id: str, label: str, lower: tuple[float, float, float], upper: tuple[float, float, float]
+) -> dict:
     x0, y0, z0 = lower
     x1, y1, z1 = upper
     return {
@@ -31,8 +33,14 @@ def _box(ins_id: str, label: str, lower: tuple[float, float, float], upper: tupl
         "bounding_box": [
             {"x": x, "y": y, "z": z}
             for x, y, z in (
-                (x0, y0, z0), (x1, y0, z0), (x0, y1, z0), (x1, y1, z0),
-                (x0, y0, z1), (x1, y0, z1), (x0, y1, z1), (x1, y1, z1),
+                (x0, y0, z0),
+                (x1, y0, z0),
+                (x0, y1, z0),
+                (x1, y1, z0),
+                (x0, y0, z1),
+                (x1, y0, z1),
+                (x0, y1, z1),
+                (x1, y1, z1),
             )
         ],
     }
@@ -52,7 +60,14 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     _write_json(scene / "structure.json", {"rooms": []})
     (scene / "3dgs_compressed.ply").write_bytes(b"real-splat-bytes")
     usdz = data / "shortlist" / "SAGE-3D_InteriorGS_usdz" / "InteriorGS_usdz" / "123456.usdz"
-    collision = data / "shortlist" / "SAGE-3D_Collision_Mesh" / "Collision_Mesh" / "123456" / "123456_collision.usd"
+    collision = (
+        data
+        / "shortlist"
+        / "SAGE-3D_Collision_Mesh"
+        / "Collision_Mesh"
+        / "123456"
+        / "123456_collision.usd"
+    )
     usdz.parent.mkdir(parents=True)
     collision.parent.mkdir(parents=True)
     usdz.write_bytes(b"real-usdz-bytes")
@@ -100,15 +115,24 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     def fake_usd(_path: Path, prim_paths: tuple[str, ...]) -> dict:
         prims = {
             TARGET_PRIM: {
-                "type_name": "Mesh", "collision_api": True,
-                "world_aabb_min_m": [0.0, 0.0, 1.0], "world_aabb_max_m": [0.1, 0.1, 1.2],
+                "type_name": "Mesh",
+                "collision_api": True,
+                "world_aabb_min_m": [0.0, 0.0, 1.0],
+                "world_aabb_max_m": [0.1, 0.1, 1.2],
             },
             SUPPORT_PRIM: {
-                "type_name": "Mesh", "collision_api": True,
-                "world_aabb_min_m": [-0.5, -0.5, 0.0], "world_aabb_max_m": [0.5, 0.5, 1.0],
+                "type_name": "Mesh",
+                "collision_api": True,
+                "world_aabb_min_m": [-0.5, -0.5, 0.0],
+                "world_aabb_max_m": [0.5, 0.5, 1.0],
             },
         }
-        return {"up_axis": "Z", "meters_per_unit": 1.0, "unresolved_dependency_count": 0, "prims": {key: prims[key] for key in prim_paths}}
+        return {
+            "up_axis": "Z",
+            "meters_per_unit": 1.0,
+            "unresolved_dependency_count": 0,
+            "prims": {key: prims[key] for key in prim_paths},
+        }
 
     monkeypatch.setattr("blueprint_pipeline.public_scene_suite_materializer._git", fake_git)
     monkeypatch.setattr("blueprint_pipeline.public_scene_suite_materializer._inspect_usd", fake_usd)
@@ -117,25 +141,53 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         "index_id": "test-index",
         "evaluated_on": "2026-08-04",
         "scene": {
-            "publisher_scene_id": "123456", "interiorgs_folder": "0001_123456",
-            "interiorgs_revision": "a" * 40, "sage_usdz_revision": "f" * 40,
+            "publisher_scene_id": "123456",
+            "interiorgs_folder": "0001_123456",
+            "interiorgs_revision": "a" * 40,
+            "sage_usdz_revision": "f" * 40,
             "sage_collision_revision": "9" * 40,
             "splat_path": "shortlist/InteriorGS/0001_123456/3dgs_compressed.ply",
             "labels_path": "shortlist/InteriorGS/0001_123456/labels.json",
             "structure_path": "shortlist/InteriorGS/0001_123456/structure.json",
             "sage_usdz_path": "shortlist/SAGE-3D_InteriorGS_usdz/InteriorGS_usdz/123456.usdz",
             "sage_collision_path": "shortlist/SAGE-3D_Collision_Mesh/Collision_Mesh/123456/123456_collision.usd",
-            "survey_path": "survey.json", "interiorgs_rights_authority_path": "rights.json",
-            "interiorgs_terms_path": "rights/terms.pdf", "target_instance_id": "10",
-            "target_label": "canned_beverage", "target_collision_prim": TARGET_PRIM,
-            "minimum_target_collider_iou": 0.9, "support_instance_id": "20",
-            "support_label": "tv_cabinet", "support_collision_prim": SUPPORT_PRIM,
+            "survey_path": "survey.json",
+            "interiorgs_rights_authority_path": "rights.json",
+            "interiorgs_terms_path": "rights/terms.pdf",
+            "target_instance_id": "10",
+            "target_label": "canned_beverage",
+            "target_collision_prim": TARGET_PRIM,
+            "minimum_target_collider_iou": 0.9,
+            "support_instance_id": "20",
+            "support_label": "tv_cabinet",
+            "support_collision_prim": SUPPORT_PRIM,
             "minimum_support_collider_iou": 0.9,
         },
         "methods": {
-            "inpaint360_author_smoke": {"repository": "https://example/Inpaint360GS", "local_path": "Inpaint360GS", "commit": commits["Inpaint360GS"], "source_license": "Apache-2.0", "source_license_path": "LICENSE", "smallest_blocker": "author_smoke_missing"},
-            "infusion_primary_adapter": {"repository": "https://example/Infusion", "local_path": "Infusion", "commit": commits["Infusion"], "source_license": "MIT", "source_license_path": "LICENSE", "smallest_blocker": "author_smoke_missing"},
-            "aurafusion360_quality_challenger": {"repository": "https://example/Aura", "local_path": "AuraFusion360_official", "commit": commits["AuraFusion360_official"], "source_license": "Apache-2.0", "source_license_path": "LICENSE", "smallest_blocker": "author_smoke_missing"},
+            "inpaint360_author_smoke": {
+                "repository": "https://example/Inpaint360GS",
+                "local_path": "Inpaint360GS",
+                "commit": commits["Inpaint360GS"],
+                "source_license": "Apache-2.0",
+                "source_license_path": "LICENSE",
+                "smallest_blocker": "author_smoke_missing",
+            },
+            "infusion_primary_adapter": {
+                "repository": "https://example/Infusion",
+                "local_path": "Infusion",
+                "commit": commits["Infusion"],
+                "source_license": "MIT",
+                "source_license_path": "LICENSE",
+                "smallest_blocker": "author_smoke_missing",
+            },
+            "aurafusion360_quality_challenger": {
+                "repository": "https://example/Aura",
+                "local_path": "AuraFusion360_official",
+                "commit": commits["AuraFusion360_official"],
+                "source_license": "Apache-2.0",
+                "source_license_path": "LICENSE",
+                "smallest_blocker": "author_smoke_missing",
+            },
         },
         "missing_roles": {
             "controlled_background_truth": "truth_missing",
@@ -147,14 +199,91 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     }
     request_path = repo / "request.json"
     _write_json(request_path, request)
-    return {"repo": repo, "data": data, "methods": methods, "output": output, "request": request_path}
+    return {
+        "repo": repo,
+        "data": data,
+        "methods": methods,
+        "output": output,
+        "request": request_path,
+    }
 
 
 def _run(paths: dict[str, Path]) -> dict:
     return materialize_public_scene_suite(
-        request_path=paths["request"], repo_root=paths["repo"], data_root=paths["data"],
-        method_root=paths["methods"], output_root=paths["output"],
+        request_path=paths["request"],
+        repo_root=paths["repo"],
+        data_root=paths["data"],
+        method_root=paths["methods"],
+        output_root=paths["output"],
     )
+
+
+def _add_method_prerequisite_receipt(paths: dict[str, Path]) -> Path:
+    checkpoint = paths["data"] / "methods" / "cropformer.pth"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_bytes(b"real-cropformer-checkpoint")
+    rights_file = paths["methods"] / "Entity" / "LICENSE"
+    rights_file.parent.mkdir(parents=True, exist_ok=True)
+    rights_file.write_text("CC BY-NC 4.0", encoding="utf-8")
+    checkpoint_record = {
+        "artifact_id": "cropformer",
+        "role": "method_checkpoint",
+        "relative_path": "methods/cropformer.pth",
+        "size_bytes": checkpoint.stat().st_size,
+        "sha256": "sha256:" + hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+        "publisher": {"path": "weights/cropformer.pth"},
+        "rights_authority_id": "cropformer-rights",
+        "rights_established": True,
+    }
+    rights_record = {
+        "relative_path": "Entity/LICENSE",
+        "size_bytes": rights_file.stat().st_size,
+        "sha256": "sha256:" + hashlib.sha256(rights_file.read_bytes()).hexdigest(),
+    }
+    receipt: dict[str, object] = {
+        "schema_version": "public_scene_method_prerequisite_receipt.v1",
+        "methods": {
+            "inpaint360_author_smoke": {
+                "artifacts": [checkpoint_record],
+                "remote_snapshots": [
+                    {
+                        "artifact_id": "author-data",
+                        "category": "author_data",
+                        "materialized": False,
+                        "publisher": {
+                            "repository": "example/author-data",
+                            "revision": "3" * 40,
+                            "snapshot_digest": "sha256:" + "4" * 64,
+                        },
+                        "rights": {"license_id": None, "allowed_use_ceiling": None},
+                        "rights_established": False,
+                    }
+                ],
+                "rights_authorities": [
+                    {
+                        "authority_id": "cropformer-rights",
+                        "established": True,
+                        "evidence_files": [rights_record],
+                    }
+                ],
+                "checkpoint_rights_established": True,
+                "author_data_rights_established": False,
+            }
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path = paths["data"] / "methods" / "prerequisite.json"
+    _write_json(receipt_path, receipt)
+    request = json.loads(paths["request"].read_text())
+    request["methods"]["inpaint360_author_smoke"]["prerequisite_receipt"] = (
+        "methods/prerequisite.json"
+    )
+    request["methods"]["inpaint360_author_smoke"]["smallest_blocker"] = (
+        "author_dataset_rights_missing"
+    )
+    _write_json(paths["request"], request)
+    return checkpoint
 
 
 def _add_statically_validated_simready_control(paths: dict[str, Path]) -> Path:
@@ -242,9 +371,7 @@ def _add_content_agents_preflight(paths: dict[str, Path]) -> Path:
         "applicable": False,
         "executed": False,
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     receipt_path = paths["repo"] / "content-agents-receipt.json"
     _write_json(receipt_path, receipt)
     request = json.loads(paths["request"].read_text())
@@ -322,8 +449,7 @@ def _add_content_agents_execution(paths: dict[str, Path]) -> Path:
                 {
                     "relative_path": ".pipeline_state.json",
                     "size_bytes": state_path.stat().st_size,
-                    "sha256": "sha256:"
-                    + hashlib.sha256(state_path.read_bytes()).hexdigest(),
+                    "sha256": "sha256:" + hashlib.sha256(state_path.read_bytes()).hexdigest(),
                 }
             )
         else:
@@ -339,8 +465,7 @@ def _add_content_agents_execution(paths: dict[str, Path]) -> Path:
                 {
                     "relative_path": "artifacts_manifest.json",
                     "size_bytes": manifest_path.stat().st_size,
-                    "sha256": "sha256:"
-                    + hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                    "sha256": "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
                 }
             )
         agents[name] = {
@@ -459,7 +584,9 @@ def _add_content_agents_execution(paths: dict[str, Path]) -> Path:
     return execution_result_path
 
 
-def test_materializer_derives_two_admissions_and_blocks_source_only_methods(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_materializer_derives_two_admissions_and_blocks_source_only_methods(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     paths = _fixture(tmp_path, monkeypatch)
     result = _run(paths)
     index = json.loads((paths["output"] / "public_scene_suite_index.v1.json").read_text())
@@ -472,16 +599,60 @@ def test_materializer_derives_two_admissions_and_blocks_source_only_methods(tmp_
     assert statuses["inpaint360_author_smoke"] == "blocked"
 
 
-def test_actual_file_mutation_changes_manifest_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_actual_file_mutation_changes_manifest_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     paths = _fixture(tmp_path, monkeypatch)
     _run(paths)
-    before = json.loads((paths["output"] / "interiorgs_appearance_scene.component_manifest.json").read_text())
+    before = json.loads(
+        (paths["output"] / "interiorgs_appearance_scene.component_manifest.json").read_text()
+    )
     splat = paths["data"] / "shortlist/InteriorGS/0001_123456/3dgs_compressed.ply"
     splat.write_bytes(splat.read_bytes() + b"changed")
     _run(paths)
-    after = json.loads((paths["output"] / "interiorgs_appearance_scene.component_manifest.json").read_text())
+    after = json.loads(
+        (paths["output"] / "interiorgs_appearance_scene.component_manifest.json").read_text()
+    )
     assert before["manifest_digest"] != after["manifest_digest"]
-    assert before["materialized_artifacts"][0]["sha256"] != after["materialized_artifacts"][0]["sha256"]
+    assert (
+        before["materialized_artifacts"][0]["sha256"]
+        != after["materialized_artifacts"][0]["sha256"]
+    )
+
+
+def test_method_prerequisite_binds_checkpoint_without_claiming_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_method_prerequisite_receipt(paths)
+    _run(paths)
+    manifest = json.loads(
+        (paths["output"] / "inpaint360_author_smoke.component_manifest.json").read_text()
+    )
+    receipt = json.loads(
+        (paths["output"] / "inpaint360_author_smoke.component_receipt.json").read_text()
+    )
+    assert manifest["rights"]["checkpoint_rights_established"] is True
+    assert manifest["rights"]["author_data_rights_established"] is False
+    assert manifest["observed_evidence"]["checkpoint_bytes_verified"] is True
+    assert manifest["observed_evidence"]["author_method_executed"] is False
+    assert manifest["prerequisite_evidence"]["local_artifact_count"] == 1
+    assert manifest["prerequisite_evidence"]["remote_snapshots"][0]["rights_established"] is False
+    assert receipt["status"] == "blocked"
+    assert receipt["blockers"] == ["author_dataset_rights_missing"]
+
+
+def test_method_prerequisite_rejects_changed_checkpoint_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    checkpoint = _add_method_prerequisite_receipt(paths)
+    checkpoint.write_bytes(b"mutated")
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="method_prerequisite_artifact_bytes_changed:inpaint360_author_smoke",
+    ):
+        _run(paths)
 
 
 def test_statically_validated_simready_control_is_bound_but_not_admitted(
@@ -501,9 +672,7 @@ def test_statically_validated_simready_control_is_bound_but_not_admitted(
     assert manifest["observed_evidence"]["simready_foundation_profile_passed"] is True
     assert manifest["observed_evidence"]["isaac_dynamic_probes_executed"] is False
     assert receipt["status"] == "blocked"
-    assert receipt["blockers"] == [
-        "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
-    ]
+    assert receipt["blockers"] == ["isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"]
 
 
 def test_content_agents_preflight_is_bound_without_promoting_dry_runs(
@@ -589,16 +758,22 @@ def test_simready_control_rejects_changed_usd_bytes(
     asset = _add_statically_validated_simready_control(paths)
     asset.write_bytes(asset.read_bytes() + b"mutation")
 
-    with pytest.raises(PublicSceneSuiteMaterializationError, match="simready_control_usd_bytes_changed"):
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError, match="simready_control_usd_bytes_changed"
+    ):
         _run(paths)
 
 
-def test_caller_asserted_admission_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_caller_asserted_admission_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     paths = _fixture(tmp_path, monkeypatch)
     request = json.loads(paths["request"].read_text())
     request["status"] = "admitted"
     _write_json(paths["request"], request)
-    with pytest.raises(PublicSceneSuiteMaterializationError, match="caller_asserted_admission_forbidden"):
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError, match="caller_asserted_admission_forbidden"
+    ):
         _run(paths)
 
 
@@ -611,7 +786,9 @@ def test_scene_id_mismatch_is_rejected(tmp_path: Path, monkeypatch: pytest.Monke
         _run(paths)
 
 
-def test_path_outside_approved_root_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_path_outside_approved_root_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     paths = _fixture(tmp_path, monkeypatch)
     request = json.loads(paths["request"].read_text())
     request["scene"]["splat_path"] = "../outside.ply"

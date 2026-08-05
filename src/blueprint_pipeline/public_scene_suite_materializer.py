@@ -69,9 +69,7 @@ def _verified_external_artifacts(
     *, records: Any, artifact_root: Path, data_root: Path, agent_name: str
 ) -> list[dict[str, Any]]:
     if not isinstance(records, list) or not records:
-        raise PublicSceneSuiteMaterializationError(
-            f"content_agents_artifacts_missing:{agent_name}"
-        )
+        raise PublicSceneSuiteMaterializationError(f"content_agents_artifacts_missing:{agent_name}")
     verified: list[dict[str, Any]] = []
     for record in records:
         if not isinstance(record, Mapping):
@@ -146,11 +144,21 @@ def _aabb_for_instance(labels_path: Path, instance_id: str) -> tuple[Any, list[f
     return row, [float(value) for value in row.bbox_min], [float(value) for value in row.bbox_max]
 
 
-def _box_iou(a_min: Sequence[float], a_max: Sequence[float], b_min: Sequence[float], b_max: Sequence[float]) -> tuple[float, float]:
+def _box_iou(
+    a_min: Sequence[float], a_max: Sequence[float], b_min: Sequence[float], b_max: Sequence[float]
+) -> tuple[float, float]:
     overlap = [max(0.0, min(a_max[i], b_max[i]) - max(a_min[i], b_min[i])) for i in range(3)]
     intersection = overlap[0] * overlap[1] * overlap[2]
-    a_volume = max(0.0, a_max[0] - a_min[0]) * max(0.0, a_max[1] - a_min[1]) * max(0.0, a_max[2] - a_min[2])
-    b_volume = max(0.0, b_max[0] - b_min[0]) * max(0.0, b_max[1] - b_min[1]) * max(0.0, b_max[2] - b_min[2])
+    a_volume = (
+        max(0.0, a_max[0] - a_min[0])
+        * max(0.0, a_max[1] - a_min[1])
+        * max(0.0, a_max[2] - a_min[2])
+    )
+    b_volume = (
+        max(0.0, b_max[0] - b_min[0])
+        * max(0.0, b_max[1] - b_min[1])
+        * max(0.0, b_max[2] - b_min[2])
+    )
     union = a_volume + b_volume - intersection
     return (intersection / union if union else 0.0, intersection / a_volume if a_volume else 0.0)
 
@@ -218,14 +226,21 @@ def _submodule_revisions(repo: Path) -> dict[str, str]:
         if len(fields) < 2:
             raise PublicSceneSuiteMaterializationError("method_submodule_status_invalid")
         revision = fields[0]
-        if len(revision) != 40 or any(character not in "0123456789abcdef" for character in revision):
+        if len(revision) != 40 or any(
+            character not in "0123456789abcdef" for character in revision
+        ):
             raise PublicSceneSuiteMaterializationError("method_submodule_not_clean_or_materialized")
         observed[fields[1]] = revision
     return dict(sorted(observed.items()))
 
 
 def _method_component(
-    *, role: str, project: str, spec: Mapping[str, Any], method_root: Path
+    *,
+    role: str,
+    project: str,
+    spec: Mapping[str, Any],
+    method_root: Path,
+    data_root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     repo = _rooted(method_root, str(spec["local_path"]))
     head = _git(repo, "rev-parse", "HEAD")
@@ -247,8 +262,7 @@ def _method_component(
             blockers.append("method_official_remote_head_advanced")
 
     expected_submodules = {
-        str(path): str(revision)
-        for path, revision in dict(spec.get("submodules") or {}).items()
+        str(path): str(revision) for path, revision in dict(spec.get("submodules") or {}).items()
     }
     observed_submodules = _submodule_revisions(repo)
     if observed_submodules != dict(sorted(expected_submodules.items())):
@@ -265,7 +279,9 @@ def _method_component(
                 path,
                 root=method_root,
                 publisher_path=path.relative_to(repo).as_posix(),
-                role="source_license" if relative == str(spec["source_license_path"]) else "dependency_declaration",
+                role="source_license"
+                if relative == str(spec["source_license_path"])
+                else "dependency_declaration",
             )
         )
 
@@ -290,13 +306,99 @@ def _method_component(
         (record["external_relative_path"], record["sha256"]): record for record in source_files
     }
     source_files = list(deduplicated_files.values())
+    prerequisite = None
+    method_prerequisite: Mapping[str, Any] = {}
+    prerequisite_path = spec.get("prerequisite_receipt")
+    if prerequisite_path:
+        receipt_path = _rooted(data_root, str(prerequisite_path))
+        prerequisite = _read_json(receipt_path)
+        if prerequisite.get("schema_version") != "public_scene_method_prerequisite_receipt.v1":
+            raise PublicSceneSuiteMaterializationError(
+                f"method_prerequisite_receipt_schema_invalid:{role}"
+            )
+        if canonical_digest(prerequisite, digest_field="receipt_digest") != prerequisite.get(
+            "receipt_digest"
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                f"method_prerequisite_receipt_digest_mismatch:{role}"
+            )
+        observed_method_prerequisite = (prerequisite.get("methods") or {}).get(role)
+        if not isinstance(observed_method_prerequisite, Mapping):
+            raise PublicSceneSuiteMaterializationError(f"method_prerequisite_role_missing:{role}")
+        method_prerequisite = observed_method_prerequisite
+        for record in method_prerequisite.get("artifacts") or []:
+            if not isinstance(record, Mapping):
+                raise PublicSceneSuiteMaterializationError(
+                    f"method_prerequisite_artifact_invalid:{role}"
+                )
+            path = _rooted(data_root, str(record.get("relative_path") or ""))
+            if path.stat().st_size != record.get("size_bytes") or _sha256_file(path) != record.get(
+                "sha256"
+            ):
+                raise PublicSceneSuiteMaterializationError(
+                    f"method_prerequisite_artifact_bytes_changed:{role}"
+                )
+            source_files.append(
+                {
+                    "role": "method_checkpoint",
+                    "publisher_path": str((record.get("publisher") or {}).get("path") or ""),
+                    "external_relative_path": path.relative_to(data_root).as_posix(),
+                    "size_bytes": path.stat().st_size,
+                    "sha256": _sha256_file(path),
+                }
+            )
+        for authority in method_prerequisite.get("rights_authorities") or []:
+            if not isinstance(authority, Mapping) or authority.get("established") is not True:
+                raise PublicSceneSuiteMaterializationError(
+                    f"method_prerequisite_rights_authority_invalid:{role}"
+                )
+            for record in authority.get("evidence_files") or []:
+                if not isinstance(record, Mapping):
+                    raise PublicSceneSuiteMaterializationError(
+                        f"method_prerequisite_rights_evidence_invalid:{role}"
+                    )
+                path = _rooted(method_root, str(record.get("relative_path") or ""))
+                if path.stat().st_size != record.get("size_bytes") or _sha256_file(
+                    path
+                ) != record.get("sha256"):
+                    raise PublicSceneSuiteMaterializationError(
+                        f"method_prerequisite_rights_evidence_changed:{role}"
+                    )
+                source_files.append(
+                    {
+                        "role": "checkpoint_rights_authority",
+                        "publisher_path": str(record.get("relative_path") or ""),
+                        "external_relative_path": path.relative_to(method_root).as_posix(),
+                        "size_bytes": path.stat().st_size,
+                        "sha256": _sha256_file(path),
+                    }
+                )
+        source_files.append(
+            _file_record(
+                receipt_path,
+                root=data_root,
+                publisher_path=receipt_path.relative_to(data_root).as_posix(),
+                role="method_prerequisite_receipt",
+            )
+        )
+
     smoke_path = spec.get("author_smoke_receipt")
     if not smoke_path:
         blockers.append(str(spec["smallest_blocker"]))
     else:
-        receipt_path = _rooted(method_root, str(smoke_path))
-        if not receipt_path.is_file():
+        smoke_receipt_path = _rooted(data_root, str(smoke_path))
+        if not smoke_receipt_path.is_file():
             blockers.append(str(spec["smallest_blocker"]))
+        else:
+            raise PublicSceneSuiteMaterializationError(
+                f"method_author_smoke_receipt_validation_not_implemented:{role}"
+            )
+    checkpoint_rights = bool(
+        prerequisite and prerequisite["methods"][role].get("checkpoint_rights_established") is True
+    )
+    author_data_rights = bool(
+        prerequisite and prerequisite["methods"][role].get("author_data_rights_established") is True
+    )
     manifest = {
         "schema_version": COMPONENT_SCHEMA_VERSION,
         "program_id": PROGRAM_ID,
@@ -315,18 +417,29 @@ def _method_component(
         "rights": {
             "source_license": str(spec["source_license"]),
             "source_license_file_hashed": True,
-            "checkpoint_or_author_data_rights_established": False,
+            "checkpoint_rights_established": checkpoint_rights,
+            "author_data_rights_established": author_data_rights,
+            "checkpoint_or_author_data_rights_established": (
+                checkpoint_rights and author_data_rights
+            ),
         },
         "observed_evidence": {
             "source_checkout_opened": True,
             "source_tree_clean": not dirty,
             "source_tree_matches_expected": not expected_tree or tree == expected_tree,
             "official_remote_head_verified": remote_head == expected if remote_head else False,
-            "submodule_revisions_verified": observed_submodules == dict(sorted(expected_submodules.items())),
+            "submodule_revisions_verified": observed_submodules
+            == dict(sorted(expected_submodules.items())),
             "dependency_declarations_hashed": True,
             "author_workflow_declarations_hashed": bool(documented_inputs),
+            "method_prerequisite_receipt_bound": prerequisite is not None,
+            "checkpoint_bytes_verified": checkpoint_rights,
             "author_method_executed": False,
             "author_smoke_receipt_bound": False,
+        },
+        "prerequisite_evidence": {
+            "local_artifact_count": len(method_prerequisite.get("artifacts") or []),
+            "remote_snapshots": list(method_prerequisite.get("remote_snapshots") or []),
         },
         "claim_ceiling": CLAIM_CEILING,
         "claim_boundaries": {
@@ -337,15 +450,19 @@ def _method_component(
         },
     }
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
-    receipt = _component_receipt(manifest, blockers=blockers, checks={
-        "exact_source_revision": head == expected,
-        "exact_source_tree": not expected_tree or tree == expected_tree,
-        "clean_source_tree": not dirty,
-        "official_remote_head": remote_head == expected if remote_head else False,
-        "submodule_revisions": observed_submodules == dict(sorted(expected_submodules.items())),
-        "source_license_and_dependency_files_hashed": True,
-        "unchanged_author_smoke_executed": False,
-    })
+    receipt = _component_receipt(
+        manifest,
+        blockers=blockers,
+        checks={
+            "exact_source_revision": head == expected,
+            "exact_source_tree": not expected_tree or tree == expected_tree,
+            "clean_source_tree": not dirty,
+            "official_remote_head": remote_head == expected if remote_head else False,
+            "submodule_revisions": observed_submodules == dict(sorted(expected_submodules.items())),
+            "source_license_and_dependency_files_hashed": True,
+            "unchanged_author_smoke_executed": False,
+        },
+    )
     return manifest, receipt
 
 
@@ -397,30 +514,63 @@ def _scene_components(
     sage_usdz_revision = str(scene["sage_usdz_revision"])
     sage_collision_revision = str(scene["sage_collision_revision"])
     artifacts = [
-        _file_record(splat_path, root=data_root, publisher_path=f"{folder}/3dgs_compressed.ply", role="appearance_3dgs"),
-        _file_record(labels_path, root=data_root, publisher_path=f"{folder}/labels.json", role="semantic_metadata"),
-        _file_record(structure_path, root=data_root, publisher_path=f"{folder}/structure.json", role="scene_structure"),
-        _file_record(usdz_path, root=data_root, publisher_path=f"InteriorGS_usdz/{scene_id}.usdz", role="publisher_simulation_representation"),
-        _file_record(collision_path, root=data_root, publisher_path=f"Collision_Mesh/{scene_id}/{scene_id}_collision.usd", role="static_collision_geometry"),
+        _file_record(
+            splat_path,
+            root=data_root,
+            publisher_path=f"{folder}/3dgs_compressed.ply",
+            role="appearance_3dgs",
+        ),
+        _file_record(
+            labels_path,
+            root=data_root,
+            publisher_path=f"{folder}/labels.json",
+            role="semantic_metadata",
+        ),
+        _file_record(
+            structure_path,
+            root=data_root,
+            publisher_path=f"{folder}/structure.json",
+            role="scene_structure",
+        ),
+        _file_record(
+            usdz_path,
+            root=data_root,
+            publisher_path=f"InteriorGS_usdz/{scene_id}.usdz",
+            role="publisher_simulation_representation",
+        ),
+        _file_record(
+            collision_path,
+            root=data_root,
+            publisher_path=f"Collision_Mesh/{scene_id}/{scene_id}_collision.usd",
+            role="static_collision_geometry",
+        ),
     ]
     survey = _read_json(survey_path)
     if survey.get("scene_id") != scene_id:
         raise PublicSceneSuiteMaterializationError("survey_scene_id_mismatch")
     target = survey.get("target_closeup")
-    if not isinstance(target, Mapping) or str(target.get("target_ins_id")) != str(scene["target_instance_id"]):
+    if not isinstance(target, Mapping) or str(target.get("target_ins_id")) != str(
+        scene["target_instance_id"]
+    ):
         raise PublicSceneSuiteMaterializationError("survey_target_identity_mismatch")
     if int(target.get("camera_count", 0)) < 4:
         raise PublicSceneSuiteMaterializationError("target_camera_coverage_insufficient")
 
-    target_row, target_min, target_max = _aabb_for_instance(labels_path, str(scene["target_instance_id"]))
-    support_row, support_min, support_max = _aabb_for_instance(labels_path, str(scene["support_instance_id"]))
+    target_row, target_min, target_max = _aabb_for_instance(
+        labels_path, str(scene["target_instance_id"])
+    )
+    support_row, support_min, support_max = _aabb_for_instance(
+        labels_path, str(scene["support_instance_id"])
+    )
     if target_row.label != str(scene["target_label"]):
         raise PublicSceneSuiteMaterializationError("target_semantic_identity_mismatch")
     if support_row.label != str(scene["support_label"]):
         raise PublicSceneSuiteMaterializationError("support_semantic_identity_mismatch")
 
     usdz = _inspect_usd(usdz_path, ())
-    collision = _inspect_usd(collision_path, (str(scene["target_collision_prim"]), str(scene["support_collision_prim"])))
+    collision = _inspect_usd(
+        collision_path, (str(scene["target_collision_prim"]), str(scene["support_collision_prim"]))
+    )
     for inspected in (usdz, collision):
         if inspected["up_axis"] != "Z":
             raise PublicSceneSuiteMaterializationError("usd_up_axis_not_z")
@@ -433,12 +583,16 @@ def _scene_components(
     if support_prim["type_name"] != "Mesh" or not support_prim["collision_api"]:
         raise PublicSceneSuiteMaterializationError("support_collider_not_independent_mesh")
     target_iou, target_coverage = _box_iou(
-        target_min, target_max,
-        target_prim["world_aabb_min_m"], target_prim["world_aabb_max_m"],
+        target_min,
+        target_max,
+        target_prim["world_aabb_min_m"],
+        target_prim["world_aabb_max_m"],
     )
     support_iou, support_coverage = _box_iou(
-        support_min, support_max,
-        support_prim["world_aabb_min_m"], support_prim["world_aabb_max_m"],
+        support_min,
+        support_max,
+        support_prim["world_aabb_min_m"],
+        support_prim["world_aabb_max_m"],
     )
     if target_iou < float(scene["minimum_target_collider_iou"]):
         raise PublicSceneSuiteMaterializationError("target_collider_identity_below_threshold")
@@ -467,8 +621,18 @@ def _scene_components(
         "source_axes": ["right", "back", "up"],
         "origin": "publisher_scene_origin",
         "normalization_history": "publisher_bytes_preserved_without_blueprint_normalization",
-        "T_source_world": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
-        "T_world_source": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+        "T_source_world": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "T_world_source": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
     }
     target_binding = {
         "interiorgs_instance_id": target_row.id,
@@ -524,7 +688,9 @@ def _scene_components(
         "claim_ceiling": CLAIM_CEILING,
         "claim_boundaries": common_boundaries,
     }
-    interior_manifest["manifest_digest"] = canonical_digest(interior_manifest, digest_field="manifest_digest")
+    interior_manifest["manifest_digest"] = canonical_digest(
+        interior_manifest, digest_field="manifest_digest"
+    )
     sage_manifest: dict[str, Any] = {
         "schema_version": COMPONENT_SCHEMA_VERSION,
         "program_id": PROGRAM_ID,
@@ -554,7 +720,9 @@ def _scene_components(
         "claim_ceiling": CLAIM_CEILING,
         "claim_boundaries": common_boundaries,
     }
-    sage_manifest["manifest_digest"] = canonical_digest(sage_manifest, digest_field="manifest_digest")
+    sage_manifest["manifest_digest"] = canonical_digest(
+        sage_manifest, digest_field="manifest_digest"
+    )
     checks = {
         "exact_scene_id_join": True,
         "materialized_files_hashed": True,
@@ -572,7 +740,9 @@ def _scene_components(
     ]
 
 
-def _blocked_component(role: str, project: str, blocker: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _blocked_component(
+    role: str, project: str, blocker: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
     manifest: dict[str, Any] = {
         "schema_version": COMPONENT_SCHEMA_VERSION,
         "program_id": PROGRAM_ID,
@@ -588,7 +758,9 @@ def _blocked_component(role: str, project: str, blocker: str) -> tuple[dict[str,
         "claim_boundaries": {"qualified": False, "physical_evidence": False},
     }
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
-    return manifest, _component_receipt(manifest, blockers=(blocker,), checks={"required_receipt_present": False})
+    return manifest, _component_receipt(
+        manifest, blockers=(blocker,), checks={"required_receipt_present": False}
+    )
 
 
 def _simready_control_component(
@@ -616,7 +788,9 @@ def _simready_control_component(
     if not isinstance(usd, Mapping):
         raise PublicSceneSuiteMaterializationError("simready_control_usd_record_missing")
     usd_path = _rooted(repo_root, str(usd["relative_path"]))
-    if _sha256_file(usd_path) != usd.get("sha256") or usd_path.stat().st_size != usd.get("size_bytes"):
+    if _sha256_file(usd_path) != usd.get("sha256") or usd_path.stat().st_size != usd.get(
+        "size_bytes"
+    ):
         raise PublicSceneSuiteMaterializationError("simready_control_usd_bytes_changed")
     blocker = str(spec["smallest_blocker"])
     if receipt.get("blockers") != [blocker]:
@@ -697,9 +871,7 @@ def _content_agents_component(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     receipt_path = _rooted(repo_root, str(spec["receipt_path"]))
     receipt = _read_json(receipt_path)
-    if receipt.get("receipt_digest") != canonical_digest(
-        receipt, digest_field="receipt_digest"
-    ):
+    if receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest"):
         raise PublicSceneSuiteMaterializationError(
             "content_agents_preflight_receipt_digest_mismatch"
         )
@@ -708,16 +880,16 @@ def _content_agents_component(
             "content_agents_preflight_receipt_schema_invalid"
         )
     if receipt.get("status") != "prepared_static_validation_passed":
-        raise PublicSceneSuiteMaterializationError(
-            "content_agents_preflight_status_invalid"
-        )
+        raise PublicSceneSuiteMaterializationError("content_agents_preflight_status_invalid")
     agents = receipt.get("agents")
     runtime = receipt.get("runtime")
     source = receipt.get("source")
-    if not isinstance(agents, Mapping) or not isinstance(runtime, Mapping) or not isinstance(source, Mapping):
-        raise PublicSceneSuiteMaterializationError(
-            "content_agents_preflight_evidence_missing"
-        )
+    if (
+        not isinstance(agents, Mapping)
+        or not isinstance(runtime, Mapping)
+        or not isinstance(source, Mapping)
+    ):
+        raise PublicSceneSuiteMaterializationError("content_agents_preflight_evidence_missing")
     for name in ("material", "texture", "physics"):
         agent = agents.get(name)
         if (
@@ -735,25 +907,19 @@ def _content_agents_component(
         or validation.get("dry_run") is not False
         or validation.get("verdict") != "pass"
     ):
-        raise PublicSceneSuiteMaterializationError(
-            "content_agents_validation_execution_missing"
-        )
+        raise PublicSceneSuiteMaterializationError("content_agents_validation_execution_missing")
     joint = agents.get("joint")
     if (
         not isinstance(joint, Mapping)
         or joint.get("applicable") is not False
         or joint.get("executed") is not False
     ):
-        raise PublicSceneSuiteMaterializationError(
-            "content_agents_joint_applicability_invalid"
-        )
+        raise PublicSceneSuiteMaterializationError("content_agents_joint_applicability_invalid")
     if (
         runtime.get("paid_resource_allocated") is not False
         or runtime.get("model_or_remote_renderer_called") is not False
     ):
-        raise PublicSceneSuiteMaterializationError(
-            "content_agents_preflight_runtime_claim_invalid"
-        )
+        raise PublicSceneSuiteMaterializationError("content_agents_preflight_runtime_claim_invalid")
     execution_result_value = spec.get("execution_result_path")
     if execution_result_value is None:
         blocker = str(spec["smallest_blocker"])
@@ -769,22 +935,12 @@ def _content_agents_component(
     else:
         execution_result_path = _rooted(data_root, str(execution_result_value))
         execution_root = execution_result_path.parent
-        allocator_result_path = _rooted(
-            data_root, str(spec["allocator_result_path"])
-        )
-        bundle_receipt_path = _rooted(
-            data_root, str(spec["bundle_receipt_path"])
-        )
+        allocator_result_path = _rooted(data_root, str(spec["allocator_result_path"]))
+        bundle_receipt_path = _rooted(data_root, str(spec["bundle_receipt_path"]))
         bundle_path = _rooted(data_root, str(spec["bundle_path"]))
-        final_validation_path = _rooted(
-            data_root, str(spec["final_validation_path"])
-        )
-        teardown_manifest_path = _rooted(
-            data_root, str(spec["teardown_manifest_path"])
-        )
-        object_cleanup_path = _rooted(
-            data_root, str(spec["object_cleanup_path"])
-        )
+        final_validation_path = _rooted(data_root, str(spec["final_validation_path"]))
+        teardown_manifest_path = _rooted(data_root, str(spec["teardown_manifest_path"]))
+        object_cleanup_path = _rooted(data_root, str(spec["object_cleanup_path"]))
         execution = _read_json(execution_result_path)
         allocator = _read_json(allocator_result_path)
         bundle = _read_json(bundle_receipt_path)
@@ -805,17 +961,13 @@ def _content_agents_component(
             or execution.get("physics_agent_executed") is not True
             or execution.get("validation_agent_executed") is not True
         ):
-            raise PublicSceneSuiteMaterializationError(
-                "content_agents_execution_receipt_invalid"
-            )
+            raise PublicSceneSuiteMaterializationError("content_agents_execution_receipt_invalid")
         if (
             execution.get("source_commit") != source.get("commit")
             or execution.get("source_tree") != source.get("tree")
             or execution.get("source_version") != source.get("version")
         ):
-            raise PublicSceneSuiteMaterializationError(
-                "content_agents_execution_source_mismatch"
-            )
+            raise PublicSceneSuiteMaterializationError("content_agents_execution_source_mismatch")
         if (
             bundle.get("schema_version") != "adp_content_agents_provider_bundle.v1"
             or bundle.get("status") != "ready"
@@ -831,31 +983,25 @@ def _content_agents_component(
             or bundle.get("reference_image_authority")
             != "blueprint_cad_render_not_interiorgs_dataset_bytes"
         ):
-            raise PublicSceneSuiteMaterializationError(
-                "content_agents_execution_bundle_invalid"
-            )
+            raise PublicSceneSuiteMaterializationError("content_agents_execution_bundle_invalid")
         normalization = bundle.get("input_usd_normalization")
         if (
             not isinstance(normalization, Mapping)
-            or normalization.get("normalized_input_usd_sha256")
-            != execution.get("input_usd_sha256")
+            or normalization.get("normalized_input_usd_sha256") != execution.get("input_usd_sha256")
             or normalization.get("default_purpose_bbox_nonempty") is not True
         ):
-            raise PublicSceneSuiteMaterializationError(
-                "content_agents_input_normalization_invalid"
-            )
+            raise PublicSceneSuiteMaterializationError("content_agents_input_normalization_invalid")
         source_input_usd_sha256 = normalization.get("source_input_usd_sha256")
-        normalized_input_usd_sha256 = normalization.get(
-            "normalized_input_usd_sha256"
-        )
+        normalized_input_usd_sha256 = normalization.get("normalized_input_usd_sha256")
         container_image_reference = bundle.get("container_image")
-        if not isinstance(container_image_reference, str) or "@sha256:" not in container_image_reference:
+        if (
+            not isinstance(container_image_reference, str)
+            or "@sha256:" not in container_image_reference
+        ):
             raise PublicSceneSuiteMaterializationError(
                 "content_agents_execution_container_identity_invalid"
             )
-        container_image_digest = "sha256:" + container_image_reference.rsplit(
-            "@sha256:", 1
-        )[1]
+        container_image_digest = "sha256:" + container_image_reference.rsplit("@sha256:", 1)[1]
         container_platform = bundle.get("container_platform")
         if (
             allocator.get("schema_version") != "adp_content_agents_vast_run.v1"
@@ -873,40 +1019,31 @@ def _content_agents_component(
             or allocator.get("hard_cap_usd") > 2.0
             or allocator.get("hard_ttl_seconds") != 7200
         ):
-            raise PublicSceneSuiteMaterializationError(
-                "content_agents_allocator_receipt_invalid"
-            )
+            raise PublicSceneSuiteMaterializationError("content_agents_allocator_receipt_invalid")
         if (
             final_validation.get("schema_version") != "vast_final_validation.v1"
             or final_validation.get("status") != "passed"
             or final_validation.get("blockers") != []
             or final_validation.get("continuing_spend_from_this_run") is not False
-            or final_validation.get("all_vast_instances_destroyed_by_adapter")
-            is not True
+            or final_validation.get("all_vast_instances_destroyed_by_adapter") is not True
             or final_validation.get("raw_secret_values_recorded") is not False
-            or final_validation.get("estimated_cost_usd")
-            != allocator.get("estimated_cost_usd")
+            or final_validation.get("estimated_cost_usd") != allocator.get("estimated_cost_usd")
             or teardown.get("schema_version") != "vast_teardown_manifest.v1"
             or teardown.get("status") != "completed"
             or teardown.get("continuing_spend_from_this_run") is not False
             or teardown.get("runner_gpu_teardown_completed") is not True
             or teardown.get("raw_secret_values_recorded") is not False
-            or object_cleanup.get("schema_version")
-            != "wam_provider_object_store_cleanup.v1"
+            or object_cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
             or object_cleanup.get("status") != "completed"
             or object_cleanup.get("all_objects_absent") is not True
             or object_cleanup.get("blockers") != []
             or object_cleanup.get("raw_secret_values_recorded") is not False
         ):
-            raise PublicSceneSuiteMaterializationError(
-                "content_agents_teardown_or_cleanup_invalid"
-            )
+            raise PublicSceneSuiteMaterializationError("content_agents_teardown_or_cleanup_invalid")
 
         execution_agents = execution.get("agents")
         if not isinstance(execution_agents, Mapping):
-            raise PublicSceneSuiteMaterializationError(
-                "content_agents_execution_agents_missing"
-            )
+            raise PublicSceneSuiteMaterializationError("content_agents_execution_agents_missing")
         execution_artifacts = [
             _file_record(
                 execution_result_path,
@@ -1021,13 +1158,10 @@ def _content_agents_component(
                     raise PublicSceneSuiteMaterializationError(
                         "content_agents_texture_manifest_missing"
                     )
-                texture_manifest = _read_json(
-                    artifact_root / "artifacts_manifest.json"
-                )
+                texture_manifest = _read_json(artifact_root / "artifacts_manifest.json")
                 texture_status = texture_manifest.get("status")
                 if (
-                    texture_manifest.get("schema_version")
-                    != "texture-agent-artifacts.v1"
+                    texture_manifest.get("schema_version") != "texture-agent-artifacts.v1"
                     or not isinstance(texture_status, Mapping)
                     or texture_status.get("state") != "completed"
                     or texture_status.get("failed_step") is not None
@@ -1051,8 +1185,7 @@ def _content_agents_component(
             or not isinstance(validation_run, Mapping)
             or validation_run.get("returncode") != 0
             or validation_run.get("timed_out") is not False
-            or validation_execution.get("result_sha256")
-            != _sha256_file(validation_result_path)
+            or validation_execution.get("result_sha256") != _sha256_file(validation_result_path)
             or validation_result.get("verdict") != "pass"
         ):
             raise PublicSceneSuiteMaterializationError(
@@ -1062,8 +1195,7 @@ def _content_agents_component(
         if (
             not isinstance(joint_execution, Mapping)
             or joint_execution.get("joint_agent_executed") is not False
-            or joint_execution.get("joint_agent_inapplicable_single_rigid_body")
-            is not True
+            or joint_execution.get("joint_agent_inapplicable_single_rigid_body") is not True
         ):
             raise PublicSceneSuiteMaterializationError(
                 "content_agents_joint_execution_applicability_invalid"
@@ -1140,9 +1272,7 @@ def _content_agents_component(
             "physical_evidence": False,
         },
     }
-    manifest["manifest_digest"] = canonical_digest(
-        manifest, digest_field="manifest_digest"
-    )
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     return manifest, _component_receipt(
         manifest,
         blockers=(blocker,),
@@ -1162,7 +1292,9 @@ def _content_agents_component(
 def materialize_public_scene_suite(
     *, request_path: Path, repo_root: Path, data_root: Path, method_root: Path, output_root: Path
 ) -> dict[str, Any]:
-    roots = tuple(path.expanduser().resolve() for path in (repo_root, data_root, method_root, output_root))
+    roots = tuple(
+        path.expanduser().resolve() for path in (repo_root, data_root, method_root, output_root)
+    )
     repo_root, data_root, method_root, output_root = roots
     request_path = _require_under(request_path, (repo_root,))
     _require_under(output_root, (repo_root,))
@@ -1177,7 +1309,13 @@ def materialize_public_scene_suite(
     by_role = {manifest["role"]: (manifest, receipt) for manifest, receipt in pairs}
     for role, spec in request["methods"].items():
         project = REQUIRED_ROLE_PROJECTS[role]
-        by_role[role] = _method_component(role=role, project=project, spec=spec, method_root=method_root)
+        by_role[role] = _method_component(
+            role=role,
+            project=project,
+            spec=spec,
+            method_root=method_root,
+            data_root=data_root,
+        )
     for role, blocker in request["missing_roles"].items():
         by_role[role] = _blocked_component(role, REQUIRED_ROLE_PROJECTS[role], str(blocker))
     simready_control = request.get("simready_control")
@@ -1211,8 +1349,12 @@ def materialize_public_scene_suite(
         manifest, receipt = by_role[role]
         manifest_path = output_root / f"{role}.component_manifest.json"
         receipt_path = output_root / f"{role}.component_receipt.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        receipt_path.write_text(
+            json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         revision = manifest["publisher_identity"].get("revision")
         if isinstance(revision, str) and len(revision) == 40:
             exact_revision = {"kind": "git_commit", "value": revision}
@@ -1220,20 +1362,20 @@ def materialize_public_scene_suite(
             exact_revision = {"kind": "content_digest", "value": manifest["manifest_digest"]}
         artifacts = manifest.get("materialized_artifacts", [])
         artifact_digest = (
-            canonical_digest({"artifacts": artifacts})
-            if artifacts
-            else manifest["manifest_digest"]
+            canonical_digest({"artifacts": artifacts}) if artifacts else manifest["manifest_digest"]
         )
-        components.append({
-            "role": role,
-            "source_project_id": REQUIRED_ROLE_PROJECTS[role],
-            "component_manifest_digest": manifest["manifest_digest"],
-            "component_admission_receipt_digest": receipt["receipt_digest"],
-            "exact_revision": exact_revision,
-            "exact_artifact_digest": artifact_digest,
-            "status": receipt["status"],
-            "blockers": receipt["blockers"],
-        })
+        components.append(
+            {
+                "role": role,
+                "source_project_id": REQUIRED_ROLE_PROJECTS[role],
+                "component_manifest_digest": manifest["manifest_digest"],
+                "component_admission_receipt_digest": receipt["receipt_digest"],
+                "exact_revision": exact_revision,
+                "exact_artifact_digest": artifact_digest,
+                "status": receipt["status"],
+                "blockers": receipt["blockers"],
+            }
+        )
     index: dict[str, Any] = {
         "schema_version": "public_scene_suite_index.v1",
         "program_id": PROGRAM_ID,
