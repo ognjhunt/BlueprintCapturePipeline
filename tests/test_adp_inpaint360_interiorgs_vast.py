@@ -412,3 +412,12 @@ def test_live_runner_dry_run_performs_no_provider_mutation(
     assert result["status"] == "dry_run_ready"
     assert result["provider_mutations_performed"] == 0
     assert result["retry_cap"] == 0
+
+
+def test_fresh_live_job_has_full_budget_without_preexisting_ledger(tmp_path: Path) -> None:
+    assert runtime._remaining_minutes(
+        job=tmp_path / "fresh-job",
+        hard_cap_usd=6.0,
+        hard_ttl_seconds=14_400,
+        max_hourly_rate_usd=1.5,
+    ) == 240
