@@ -63,6 +63,7 @@ _LICENSE_POLICIES: dict[str, dict[str, Any]] = {
 
 _HF_LICENSE_IDS = {
     "apache-2.0": "Apache-2.0",
+    "mit": "MIT",
     "openrail++": "OpenRAIL++",
 }
 

@@ -195,6 +195,7 @@ def provider_runtime_contract_blockers(
                 "source_modified",
                 "hidden_background_truth_available",
                 "visual_candidate_only",
+                "openclip_offline_cache_verified",
             )
         )
         runner_blocker = "provider_runner_missing_adp_aura_interiorgs_runtime_contract"

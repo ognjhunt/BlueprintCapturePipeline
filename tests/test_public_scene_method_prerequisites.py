@@ -338,6 +338,71 @@ def test_remote_snapshot_derives_rights_from_publisher_card(
     assert receipt["methods"]["inpaint360_author_smoke"]["author_data_rights_established"] is True
 
 
+def test_remote_snapshot_derives_mit_rights_from_publisher_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    request = json.loads(paths["request"].read_text())
+    method = request["methods"]["inpaint360_author_smoke"]
+    method["rights_authorities"] = []
+    method["artifacts"] = []
+    files = [
+        {
+            "path": "open_clip_pytorch_model.bin",
+            "size_bytes": 12,
+            "lfs_sha256": "a" * 64,
+            "git_blob_id": "b" * 40,
+        }
+    ]
+    method["remote_snapshots"] = [
+        {
+            "artifact_id": "openclip",
+            "category": "checkpoint",
+            "repo_type": "model",
+            "repository": "laion/openclip",
+            "revision": "3" * 40,
+            "path_prefix": "open_clip_pytorch_model.bin",
+            "expected_file_count": 1,
+            "expected_total_size_bytes": 12,
+            "expected_snapshot_digest": canonical_digest({"files": files}),
+            "expected_single_file_identity": {
+                "path": "open_clip_pytorch_model.bin",
+                "size_bytes": 12,
+                "lfs_sha256": "sha256:" + "a" * 64,
+                "git_blob_id": "b" * 40,
+            },
+            "expected_license_id": "MIT",
+        }
+    ]
+    _write_json(paths["request"], request)
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_method_prerequisites.requests.get",
+        lambda *_args, **_kwargs: _Response(
+            {
+                "sha": "3" * 40,
+                "gated": False,
+                "private": False,
+                "cardData": {"license": "mit"},
+                "siblings": [
+                    {
+                        "rfilename": "open_clip_pytorch_model.bin",
+                        "size": 12,
+                        "blobId": "b" * 40,
+                        "lfs": {"size": 12, "sha256": "a" * 64},
+                    }
+                ],
+            }
+        ),
+    )
+
+    receipt = _run(paths)
+
+    snapshot = receipt["methods"]["inpaint360_author_smoke"]["remote_snapshots"][0]
+    assert snapshot["rights_established"] is True
+    assert snapshot["rights"]["license_id"] == "MIT"
+    assert snapshot["rights"]["commercial_use_allowed"] is True
+
+
 def test_remote_snapshot_rejects_changed_single_file_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

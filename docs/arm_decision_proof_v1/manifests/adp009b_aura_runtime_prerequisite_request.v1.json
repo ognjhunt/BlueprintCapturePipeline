@@ -1,0 +1,28 @@
+{
+  "schema_version": "public_scene_method_prerequisite_request.v1",
+  "evaluated_on": "2026-08-05",
+  "methods": {
+    "aurafusion360_interiorgs_runtime": {
+      "remote_snapshots": [
+        {
+          "artifact_id": "aurafusion360_openclip_vit_h_14",
+          "category": "checkpoint",
+          "repo_type": "model",
+          "repository": "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+          "revision": "1c2b8495b28150b8a4922ee1c8edee224c284c0c",
+          "path_prefix": "open_clip_pytorch_model.bin",
+          "expected_file_count": 1,
+          "expected_total_size_bytes": 3944692325,
+          "expected_snapshot_digest": "sha256:9c94ad4897df15ae307d9c809d3d6a0ee7222350ca34a55da9f77a2b1af63110",
+          "expected_single_file_identity": {
+            "path": "open_clip_pytorch_model.bin",
+            "size_bytes": 3944692325,
+            "lfs_sha256": "sha256:9a78ef8e8c73fd0df621682e7a8e8eb36c6916cb3c16b291a082ecd52ab79cc4",
+            "git_blob_id": "6c854fa8ce7af9137008574025fb83630b3fcf4e"
+          },
+          "expected_license_id": "MIT"
+        }
+      ]
+    }
+  }
+}

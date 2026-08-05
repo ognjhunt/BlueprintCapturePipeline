@@ -78,6 +78,19 @@ _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
+AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST = (
+    "sha256:1b37189c60b55981bbb6f076109e476074aa570f53a1bbdaa66d01f8e052445a"
+)
+OPENCLIP_REPOSITORY = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+OPENCLIP_REVISION = "1c2b8495b28150b8a4922ee1c8edee224c284c0c"
+OPENCLIP_PATH = "open_clip_pytorch_model.bin"
+OPENCLIP_SIZE_BYTES = 3_944_692_325
+OPENCLIP_SHA256 = (
+    "sha256:9a78ef8e8c73fd0df621682e7a8e8eb36c6916cb3c16b291a082ecd52ab79cc4"
+)
+OPENCLIP_SNAPSHOT_DIGEST = (
+    "sha256:9c94ad4897df15ae307d9c809d3d6a0ee7222350ca34a55da9f77a2b1af63110"
+)
 
 
 def _validated_adapter(receipt: Mapping[str, Any], root: Path) -> list[tuple[str, Path]]:
@@ -127,6 +140,58 @@ def _validated_adapter(receipt: Mapping[str, Any], root: Path) -> list[tuple[str
     return rows
 
 
+def _validated_runtime_prerequisite(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    if (
+        receipt.get("receipt_digest") != AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST
+        or canonical_digest(receipt, digest_field="receipt_digest")
+        != AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST
+    ):
+        raise ValueError("adp_aura_interiorgs_runtime_prerequisite_digest_mismatch")
+    method = (receipt.get("methods") or {}).get("aurafusion360_interiorgs_runtime")
+    if not isinstance(method, Mapping) or method.get("checkpoint_rights_established") is not True:
+        raise ValueError("adp_aura_interiorgs_runtime_prerequisite_rights_missing")
+    snapshots = method.get("remote_snapshots") or []
+    if len(snapshots) != 1 or not isinstance(snapshots[0], Mapping):
+        raise ValueError("adp_aura_interiorgs_runtime_prerequisite_snapshot_invalid")
+    snapshot = snapshots[0]
+    publisher = snapshot.get("publisher")
+    rights = snapshot.get("rights")
+    if not isinstance(publisher, Mapping) or not isinstance(rights, Mapping):
+        raise ValueError("adp_aura_interiorgs_openclip_publisher_or_rights_missing")
+    identity = publisher.get("single_file_identity")
+    if (
+        snapshot.get("artifact_id") != "aurafusion360_openclip_vit_h_14"
+        or snapshot.get("rights_established") is not True
+        or rights.get("license_id") != "MIT"
+        or publisher.get("repository") != OPENCLIP_REPOSITORY
+        or publisher.get("revision") != OPENCLIP_REVISION
+        or publisher.get("path_prefix") != OPENCLIP_PATH
+        or publisher.get("snapshot_digest") != OPENCLIP_SNAPSHOT_DIGEST
+        or publisher.get("gated") is not False
+        or publisher.get("private") is not False
+        or not isinstance(identity, Mapping)
+        or identity.get("path") != OPENCLIP_PATH
+        or identity.get("size_bytes") != OPENCLIP_SIZE_BYTES
+        or identity.get("lfs_sha256") != OPENCLIP_SHA256
+    ):
+        raise ValueError("adp_aura_interiorgs_openclip_identity_invalid")
+    return {
+        "repository": OPENCLIP_REPOSITORY,
+        "revision": OPENCLIP_REVISION,
+        "snapshot_digest": OPENCLIP_SNAPSHOT_DIGEST,
+        "materialized_files": [
+            {
+                "path": OPENCLIP_PATH,
+                "size_bytes": OPENCLIP_SIZE_BYTES,
+                "sha256": OPENCLIP_SHA256,
+            }
+        ],
+        "materialized_total_size_bytes": OPENCLIP_SIZE_BYTES,
+        "license": "MIT",
+        "access": "public_ungated",
+    }
+
+
 def build_aura_interiorgs_bundle(
     *,
     repo_root: str | Path,
@@ -135,6 +200,7 @@ def build_aura_interiorgs_bundle(
     wonderworld_root: str | Path,
     lama_root: str | Path,
     prerequisite_receipt_path: str | Path,
+    runtime_prerequisite_receipt_path: str | Path,
     adapter_root: str | Path,
     adapter_receipt_path: str | Path,
     big_lama_path: str | Path,
@@ -149,6 +215,9 @@ def build_aura_interiorgs_bundle(
     packet = Path(adapter_root).expanduser().resolve()
     adapter_file = Path(adapter_receipt_path).expanduser().resolve()
     prerequisite_file = Path(prerequisite_receipt_path).expanduser().resolve()
+    runtime_prerequisite_file = Path(
+        runtime_prerequisite_receipt_path
+    ).expanduser().resolve()
     big_lama = Path(big_lama_path).expanduser().resolve()
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
@@ -195,6 +264,8 @@ def build_aura_interiorgs_bundle(
 
     prerequisite = _read_json(prerequisite_file)
     snapshots = _validate_prerequisite(prerequisite)
+    runtime_prerequisite = _read_json(runtime_prerequisite_file)
+    openclip_runtime_model = _validated_runtime_prerequisite(runtime_prerequisite)
     adapter = _read_json(adapter_file)
     adapter_rows = _validated_adapter(adapter, packet)
     aura_rows = _source_files(aura)
@@ -269,7 +340,7 @@ def build_aura_interiorgs_bundle(
             "receipt_digest": adapter["receipt_digest"],
             "files": adapter_manifest,
         },
-        "runtime_models": _RUNTIME_MODELS,
+        "runtime_models": [*_RUNTIME_MODELS, openclip_runtime_model],
         "sd2_checkpoint": {
             **_SD2,
             "size_bytes": sd2["size_bytes"],
@@ -309,6 +380,9 @@ def build_aura_interiorgs_bundle(
         "blueprint_repository_tracked_state": "clean",
         "adapter_receipt_digest": adapter["receipt_digest"],
         "prerequisite_receipt_digest": prerequisite["receipt_digest"],
+        "runtime_prerequisite_receipt_digest": runtime_prerequisite[
+            "receipt_digest"
+        ],
         "container_image": DEFAULT_IMAGE,
         "expected_output_filename": "adp_aura_interiorgs_result.json",
         "retry_cap": 0,
@@ -563,6 +637,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "wonderworld-root",
         "lama-root",
         "prerequisite-receipt",
+        "runtime-prerequisite-receipt",
         "adapter-root",
         "adapter-receipt",
         "big-lama",
@@ -577,6 +652,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         wonderworld_root=args.wonderworld_root,
         lama_root=args.lama_root,
         prerequisite_receipt_path=args.prerequisite_receipt,
+        runtime_prerequisite_receipt_path=args.runtime_prerequisite_receipt,
         adapter_root=args.adapter_root,
         adapter_receipt_path=args.adapter_receipt,
         big_lama_path=args.big_lama,

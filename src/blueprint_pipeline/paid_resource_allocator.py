@@ -140,6 +140,7 @@ from .adp_aura_author_smoke_vast import (
     run_aura_author_smoke_vast,
 )
 from .adp_aura_interiorgs_vast import (
+    AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST as ADP_AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST,
     PROBE_KIND as ADP_AURA_INTERIORGS_PROBE_KIND,
     run_aura_interiorgs_vast,
 )
@@ -1587,6 +1588,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or (aura_interiorgs and not prepared_bundle.get("adapter_receipt_digest"))
                     or (
                         aura_interiorgs
+                        and prepared_bundle.get("runtime_prerequisite_receipt_digest")
+                        != ADP_AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST
+                    )
+                    or (
+                        aura_interiorgs
                         and prepared_bundle.get("blueprint_commit") != expected_source_commit
                     )
                     or not bundle_path.is_file()
@@ -1633,6 +1639,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "aura_source_commit": ADP_AURA_SOURCE_COMMIT,
                 "aura_source_tree": ADP_AURA_SOURCE_TREE,
                 "prerequisite_receipt_digest": ADP_AURA_PREREQUISITE_RECEIPT_DIGEST,
+                "runtime_prerequisite_receipt_digest": (
+                    ADP_AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST
+                    if aura_interiorgs
+                    else None
+                ),
                 "adapter_receipt_digest": (
                     prepared_bundle.get("adapter_receipt_digest")
                     if prepared_bundle and aura_interiorgs
