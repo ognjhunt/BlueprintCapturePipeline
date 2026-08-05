@@ -34,6 +34,18 @@ SOURCE_REPOSITORY = "https://github.com/dfki-av/Inpaint360GS"
 SOURCE_COMMIT = "d54c893285c6cb27788e05cce607e7d3cca6388a"
 SOURCE_TREE = "671626f4825cbf3d7c1ca37cc97a153d45e49b1c"
 SOURCE_LICENSE_SHA256 = "sha256:41d805773f2aa0b36c2fb69491f64c3079fe3e0671c9848680645fc9e65d5a10"
+LAMA_SOURCE_REPOSITORY = "https://github.com/advimman/lama"
+LAMA_SOURCE_COMMIT = "786f5936b27fb3dacd2b1ad799e4de968ea697e7"
+LAMA_SOURCE_TREE = "25f9902ca0c2ec4bf6c31c2b4427f0a4f05f2fd1"
+LAMA_SOURCE_LICENSE_SHA256 = (
+    "sha256:4ceeeac5a802e86c413c22b16cce8e9a22027b0250c97e6f8ac97c14cf0542c0"
+)
+LAMA_REQUIRED_RUNTIME_FILES = (
+    "saicinpainting/training/data/__init__.py",
+    "saicinpainting/training/data/aug.py",
+    "saicinpainting/training/data/datasets.py",
+    "saicinpainting/training/data/masks.py",
+)
 SCENE_ID = "840313"
 TARGET_INSTANCE_ID = "160"
 TARGET_METHOD_INSTANCE_ID = 1
@@ -207,6 +219,7 @@ def build_inpaint360_interiorgs_bundle(
     *,
     repo_root: str | Path,
     inpaint360_root: str | Path,
+    lama_root: str | Path,
     adapter_root: str | Path,
     adapter_receipt_path: str | Path,
     prerequisite_receipt_path: str | Path,
@@ -218,6 +231,7 @@ def build_inpaint360_interiorgs_bundle(
 
     repo = Path(repo_root).expanduser().resolve()
     source = Path(inpaint360_root).expanduser().resolve()
+    lama_source = Path(lama_root).expanduser().resolve()
     packet = Path(adapter_root).expanduser().resolve()
     adapter_receipt_file = Path(adapter_receipt_path).expanduser().resolve()
     prerequisite_file = Path(prerequisite_receipt_path).expanduser().resolve()
@@ -244,6 +258,20 @@ def build_inpaint360_interiorgs_bundle(
     source_license = source / "LICENSE.txt"
     if not source_license.is_file() or _sha256(source_license) != SOURCE_LICENSE_SHA256:
         raise ValueError("adp_inpaint360_source_license_identity_mismatch")
+    if (
+        _git(lama_source, "rev-parse", "HEAD") != LAMA_SOURCE_COMMIT
+        or _git(lama_source, "rev-parse", "HEAD^{tree}") != LAMA_SOURCE_TREE
+        or _git(lama_source, "status", "--porcelain", "--untracked-files=no")
+    ):
+        raise ValueError("adp_inpaint360_lama_dependency_identity_mismatch")
+    lama_license = lama_source / "LICENSE"
+    if not lama_license.is_file() or _sha256(lama_license) != LAMA_SOURCE_LICENSE_SHA256:
+        raise ValueError("adp_inpaint360_lama_dependency_license_identity_mismatch")
+    lama_rows = [(relative, lama_source / relative) for relative in LAMA_REQUIRED_RUNTIME_FILES]
+    if any(not path.is_file() for _, path in lama_rows):
+        raise ValueError("adp_inpaint360_lama_dependency_runtime_file_missing")
+    if any((source / "LaMa" / relative).exists() for relative, _ in lama_rows):
+        raise ValueError("adp_inpaint360_lama_dependency_would_overwrite_publisher_source")
     prerequisite = _read_json(prerequisite_file)
     big_lama_authority = _validate_prerequisite(prerequisite)
     if (
@@ -256,8 +284,10 @@ def build_inpaint360_interiorgs_bundle(
     adapter_rows = _validate_adapter(adapter_receipt, adapter_root=packet)
     source_rows = _tracked_files(source)
     source_manifest = _file_manifest(source_rows)
+    lama_manifest = _file_manifest(lama_rows)
     adapter_manifest = _file_manifest(adapter_rows)
     _git_archive(source, runtime / "inpaint360gs_source.tar")
+    _deterministic_zip(lama_rows, runtime / "lama_training_data.zip")
     _deterministic_zip(adapter_rows, runtime / "interiorgs_adapter.zip")
     shutil.copy2(big_lama, runtime / "big-lama.zip")
     scripts = repo / "scripts"
@@ -284,6 +314,17 @@ def build_inpaint360_interiorgs_bundle(
             "tree": SOURCE_TREE,
             "files": source_manifest,
         },
+        "nested_dependencies": {
+            "lama": {
+                "repository": LAMA_SOURCE_REPOSITORY,
+                "commit": LAMA_SOURCE_COMMIT,
+                "tree": LAMA_SOURCE_TREE,
+                "license": "Apache-2.0",
+                "license_sha256": LAMA_SOURCE_LICENSE_SHA256,
+                "files": lama_manifest,
+                "materialization": "add_missing_publisher_runtime_modules_without_overwrite",
+            }
+        },
         "blueprint_repository": {
             "commit": blueprint_commit,
             "tree": blueprint_tree,
@@ -308,6 +349,7 @@ def build_inpaint360_interiorgs_bundle(
             "publisher_documented_lama_cuda_toolkit": "10.2",
             "lama_environment_relation": "compatibility_environment_not_exact_publisher_conda_env",
             "source_modifications": [],
+            "source_materialization_additions": list(LAMA_REQUIRED_RUNTIME_FILES),
             "virtual_view_count": 30,
             "expected_input_camera_count": 8,
             "input_resolution": "2048x1536",
@@ -345,6 +387,12 @@ def build_inpaint360_interiorgs_bundle(
         "blueprint_repository_tracked_state": "clean",
         "source_archive_sha256": _sha256(runtime / "inpaint360gs_source.tar"),
         "source_manifest_digest": canonical_digest({"files": source_manifest}),
+        "lama_source_commit": LAMA_SOURCE_COMMIT,
+        "lama_source_tree": LAMA_SOURCE_TREE,
+        "lama_source_license": "Apache-2.0",
+        "lama_source_license_sha256": LAMA_SOURCE_LICENSE_SHA256,
+        "lama_runtime_archive_sha256": _sha256(runtime / "lama_training_data.zip"),
+        "lama_runtime_manifest_digest": canonical_digest({"files": lama_manifest}),
         "adapter_receipt_digest": adapter_receipt["receipt_digest"],
         "prerequisite_receipt_digest": prerequisite["receipt_digest"],
         "adapter_archive_sha256": _sha256(runtime / "interiorgs_adapter.zip"),
@@ -352,7 +400,7 @@ def build_inpaint360_interiorgs_bundle(
         "big_lama_sha256": BIG_LAMA_SHA256,
         "container_image": DEFAULT_IMAGE,
         "runtime_environment_claim": (
-            "exact_main_environment_and_source_unchanged_lama_compatibility_environment"
+            "exact_main_environment_method_source_unchanged_pinned_lama_dependency_materialized"
         ),
         "expected_output_filename": "adp_inpaint360_interiorgs_result.json",
         "retry_cap": 0,
@@ -600,6 +648,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--inpaint360-root", required=True)
+    parser.add_argument("--lama-root", required=True)
     parser.add_argument("--adapter-root", required=True)
     parser.add_argument("--adapter-receipt", required=True)
     parser.add_argument("--prerequisite-receipt", required=True)
@@ -609,6 +658,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     receipt = build_inpaint360_interiorgs_bundle(
         repo_root=args.repo_root,
         inpaint360_root=args.inpaint360_root,
+        lama_root=args.lama_root,
         adapter_root=args.adapter_root,
         adapter_receipt_path=args.adapter_receipt,
         prerequisite_receipt_path=args.prerequisite_receipt,

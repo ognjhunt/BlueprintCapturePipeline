@@ -46,6 +46,24 @@ LAMA_PY="${SOURCE_DIR}/LaMa/.venv/bin/python"
 "${UV_BIN}" pip install --python "${LAMA_PY}" setuptools==57.5.0 wheel==0.37.1 Cython==0.29.37
 "${UV_BIN}" pip install --python "${LAMA_PY}" --no-build-isolation pyyaml==5.4.1
 "${UV_BIN}" pip install --python "${LAMA_PY}" numpy==1.21.6 tqdm==4.67.1 easydict==1.9.0 scikit-image==0.19.3 scikit-learn==1.0.2 scipy==1.7.3 opencv-python-headless==4.5.5.64 joblib==1.1.1 matplotlib==3.5.3 pandas==1.3.5 albumentations==0.5.2 hydra-core==1.1.0 pytorch-lightning==1.2.9 tabulate==0.9.0 kornia==0.5.0 webdataset==0.1.103 packaging==24.2 tensorboard==2.11.2 || { write_missing_result "aurafusion360_interiorgs_lama_dependencies_failed"; exit 2; }
+"${UV_BIN}" pip uninstall --python "${LAMA_PY}" opencv-python || { write_missing_result "aurafusion360_interiorgs_lama_opencv_cleanup_failed"; exit 2; }
+"${UV_BIN}" pip install --python "${LAMA_PY}" --reinstall --no-deps opencv-python-headless==4.5.5.64 || { write_missing_result "aurafusion360_interiorgs_lama_opencv_pin_failed"; exit 2; }
+"${LAMA_PY}" - <<'PY' || { write_missing_result "aurafusion360_interiorgs_lama_opencv_validation_failed"; exit 2; }
+from importlib import metadata
+
+import cv2
+import numpy
+
+assert metadata.version("opencv-python-headless") == "4.5.5.64"
+try:
+    metadata.version("opencv-python")
+except metadata.PackageNotFoundError:
+    pass
+else:
+    raise RuntimeError("conflicting opencv-python distribution remains installed")
+assert cv2.__version__ == "4.5.5"
+assert numpy.__version__ == "1.21.6"
+PY
 "${UV_BIN}" pip freeze --python "${LAMA_PY}" > "${OUTPUT_DIR}/lama-pip-freeze.txt"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 "${AURA_PY}" "${SCRIPT_DIR}/adp_aura_interiorgs_provider_runner.py"

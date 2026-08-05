@@ -40,9 +40,11 @@ rm -rf "${SOURCE_DIR}" "${PACKET_DIR}"
 mkdir -p "${SOURCE_DIR}" "${PACKET_DIR}"
 tar -xf "${SCRIPT_DIR}/inpaint360gs_source.tar" -C "${SOURCE_DIR}"
 source_rc=$?
+python3 -m zipfile -e "${SCRIPT_DIR}/lama_training_data.zip" "${SOURCE_DIR}/LaMa"
+lama_source_rc=$?
 python3 -m zipfile -e "${SCRIPT_DIR}/interiorgs_adapter.zip" "${PACKET_DIR}"
 packet_rc=$?
-if [ "${source_rc}" -ne 0 ] || [ "${packet_rc}" -ne 0 ]; then
+if [ "${source_rc}" -ne 0 ] || [ "${lama_source_rc}" -ne 0 ] || [ "${packet_rc}" -ne 0 ]; then
   write_missing_result "inpaint360_runtime_archive_extract_failed"
   exit 2
 fi
@@ -146,7 +148,8 @@ fi
 # headless release after the complete legacy dependency solve.
 "${UV_BIN}" pip uninstall --python "${LAMA_PY}" opencv-python
 lama_opencv_cleanup_rc=$?
-"${UV_BIN}" pip install --python "${LAMA_PY}" --reinstall opencv-python-headless==4.5.5.64
+"${UV_BIN}" pip install --python "${LAMA_PY}" --reinstall --no-deps \
+  opencv-python-headless==4.5.5.64
 lama_opencv_pin_rc=$?
 if [ "${lama_opencv_cleanup_rc}" -ne 0 ] || [ "${lama_opencv_pin_rc}" -ne 0 ]; then
   write_missing_result "inpaint360_lama_opencv_conflict_resolution_failed"
@@ -156,6 +159,7 @@ fi
 from importlib import metadata
 
 import cv2
+import numpy
 
 assert metadata.version("opencv-python-headless") == "4.5.5.64"
 try:
@@ -165,6 +169,7 @@ except metadata.PackageNotFoundError:
 else:
     raise RuntimeError("conflicting opencv-python distribution remains installed")
 assert cv2.__version__ == "4.5.5"
+assert numpy.__version__ == "1.21.6"
 PY
 lama_opencv_validation_rc=$?
 if [ "${lama_opencv_validation_rc}" -ne 0 ]; then
