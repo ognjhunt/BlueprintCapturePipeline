@@ -163,6 +163,26 @@ def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
     assert set(np.unique(mask)) == {0, 1}
     assert (output / "vanilla_3dgs" / "point_cloud" / "iteration_30000" / "point_cloud.ply").is_file()
     assert (output / "vanilla_3dgs" / "cfg_args").read_text() == "Namespace()\n"
+    removal_config = json.loads(
+        (
+            output / "config/object_removal/blueprint/840313.json"
+        ).read_text()
+    )
+    inpaint_config = json.loads(
+        (
+            output / "config/object_inpaint/blueprint/840313.json"
+        ).read_text()
+    )
+    assert removal_config["select_obj_id"] == [1]
+    assert removal_config["target_id"] == [1]
+    assert removal_config["surrounding_ids"] == []
+    assert inpaint_config["select_obj_id"] == [1]
+    assert inpaint_config["target_id"] == [1]
+    assert inpaint_config["surrounding_ids"] == []
+    assert inpaint_config["images"] == "images_inpaint_unseen_virtual"
+    assert receipt["adapter"]["paired_config_contract"].startswith(
+        "config/object_removal/"
+    )
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
     assert json.loads((paths["repo"] / "retained" / "adapter_receipt.json").read_text()) == receipt
 

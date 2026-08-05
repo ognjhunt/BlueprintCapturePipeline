@@ -305,12 +305,51 @@ def materialize_inpaint360_adapter(
         ) + "\n",
         encoding="utf-8",
     )
-    removal_config = output / "config" / "removal.json"
+    removal_config = (
+        output / "config" / "object_removal" / "blueprint" / "840313.json"
+    )
+    removal_config.parent.mkdir(parents=True, exist_ok=True)
     removal_config.write_text(
-        canonical_json({"removal_thresh": 0.7, "select_obj_id": [1], "target_id": [1]}) + "\n",
+        canonical_json(
+            {
+                "removal_thresh": 0.7,
+                "select_obj_id": [1],
+                "surrounding_ids": [],
+                "target_id": [1],
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
-    artifacts.extend([_record(distill_config, output), _record(removal_config, output)])
+    inpaint_config = (
+        output / "config" / "object_inpaint" / "blueprint" / "840313.json"
+    )
+    inpaint_config.parent.mkdir(parents=True, exist_ok=True)
+    inpaint_config.write_text(
+        canonical_json(
+            {
+                "finetune_iteration": 5000,
+                "images": "images_inpaint_unseen_virtual",
+                "lambda_dssim": 0.8,
+                "lambda_lpips": 0.0005,
+                "object_path": "inpaint_2d_unseen_mask_virtual",
+                "opacity_init": 0.1,
+                "removal_thresh": 0.7,
+                "select_obj_id": [1],
+                "surrounding_ids": [],
+                "target_id": [1],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifacts.extend(
+        [
+            _record(distill_config, output),
+            _record(removal_config, output),
+            _record(inpaint_config, output),
+        ]
+    )
 
     commands = [
         [
@@ -344,6 +383,10 @@ def materialize_inpaint360_adapter(
             "mask_contract": "raw_hqsam_uint8_instance_id_1",
             "vanilla_gaussian_iteration": 30000,
             "target_method_instance_id": 1,
+            "paired_config_contract": (
+                "config/object_removal/blueprint/840313.json_to_"
+                "config/object_inpaint/blueprint/840313.json"
+            ),
             "upstream_cfg_args_materialized": True,
             "staged_artifacts": artifacts,
         },
