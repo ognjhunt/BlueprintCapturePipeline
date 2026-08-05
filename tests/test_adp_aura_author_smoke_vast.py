@@ -229,7 +229,7 @@ def test_bundle_derives_source_and_rights_evidence(
     assert receipt["status"] == "ready"
     assert receipt["retry_cap"] == 0
     assert receipt["depth_anything3_used"] is False
-    assert receipt["smoke_scope"] == "unchanged_author_inpaint_init_stage_only"
+    assert receipt["smoke_scope"] == "unchanged_author_workflow_through_inpaint_init"
     assert receipt["sd2_checkpoint_identity"]["size_bytes"] == 5_214_921_607
     assert receipt["sd2_checkpoint_identity"]["sha256"] == "sha256:" + "a" * 64
     assert receipt["author_data_file_count"] == 1
@@ -247,12 +247,20 @@ def test_bundle_derives_source_and_rights_evidence(
         runner = archive.read(
             "provider_runtime/adp_aura_author_smoke_provider_runner.py"
         ).decode()
+        smoke_spec = json.loads(archive.read("provider_runtime/smoke_spec.json"))
     with zipfile.ZipFile(dependency_archive) as dependency:
         assert set(dependency.namelist()) == set(
             aura.WONDERWORLD_MARIGOLD_RUNTIME_FILES
         )
     assert 'filename=expected["expected_ply_path"]' in runner
     assert 'allow_patterns=[expected["path_prefix"] + "*"]' not in runner
+    assert [command[1] for command in smoke_spec["author_commands"]] == [
+        "train.py",
+        "render.py",
+        "remove.py",
+        "utils/sam2_utils.py",
+        "inpaint.py",
+    ]
     assert 'destination.stat().st_size != sd2["size_bytes"]' in runner
     assert "_extract_author_data(runtime, source, spec)" in runner
     assert "_extract_runtime_dependency(runtime, spec)" in runner

@@ -590,13 +590,18 @@ def build_aura_author_smoke_vast_bundle(
         "expected_output": _EXPECTED_OUTPUT,
         "runtime_models": _RUNTIME_MODELS,
         "sd2_checkpoint": sd2_checkpoint,
-        "author_command": [
-            "python",
-            "inpaint.py",
-            "--config",
-            "configs/360-USID/sunflower/inpaint.config",
+        "author_commands": [
+            ["python", "train.py", "--config", "configs/360-USID/sunflower/train.config"],
+            [
+                "python", "render.py", "-s", "data/360-USID/sunflower", "-m",
+                "output/360-USID/sunflower", "--skip_mesh", "--render_path",
+                "--iteration", "30000",
+            ],
+            ["python", "remove.py", "--config", "configs/360-USID/sunflower/remove.config"],
+            ["python", "utils/sam2_utils.py", "--dataset", "360-USID", "--scene", "sunflower"],
+            ["python", "inpaint.py", "--config", "configs/360-USID/sunflower/inpaint.config"],
         ],
-        "scope": "unchanged_author_inpaint_init_stage_only",
+        "scope": "unchanged_author_workflow_through_inpaint_init",
         "depth_anything3_used": False,
     }
     write_json(runtime / "smoke_spec.json", smoke_spec)
@@ -658,7 +663,7 @@ def build_aura_author_smoke_vast_bundle(
             "provider_runtime/run_adp_aura_author_smoke_provider_runtime.sh"
         ),
         "expected_output_filename": "adp_aura_author_smoke_result.json",
-        "smoke_scope": "unchanged_author_inpaint_init_stage_only",
+        "smoke_scope": "unchanged_author_workflow_through_inpaint_init",
         "full_aurafusion360_workflow_executed": False,
         "depth_anything3_used": False,
         "provider_zero_required_after_return": True,
