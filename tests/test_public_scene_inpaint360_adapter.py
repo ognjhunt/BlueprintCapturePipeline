@@ -90,7 +90,20 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
     receipt = {
         "schema_version": "adp009b_interiorgs_edit_input_receipt.v1",
         "status": "render_derived_input_packet_materialized",
-        "scene": {"publisher_scene_id": "840313", "target_instance_id": "160"},
+        "scene": {
+            "publisher_scene_id": "840313",
+            "target_instance_id": "160",
+            "target_obb_corners_m": [
+                [-0.1, -0.2, -0.3],
+                [0.1, -0.2, -0.3],
+                [0.1, 0.2, -0.3],
+                [-0.1, 0.2, -0.3],
+                [-0.1, -0.2, 0.3],
+                [0.1, -0.2, 0.3],
+                [0.1, 0.2, 0.3],
+                [-0.1, 0.2, 0.3],
+            ],
+        },
         "proof_boundaries": {"inpainting_result": False},
         "derived_artifacts": {
             "cameras": _record(cameras_path, input_root),
@@ -176,12 +189,19 @@ def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
     assert removal_config["select_obj_id"] == [1]
     assert removal_config["target_id"] == [1]
     assert removal_config["surrounding_ids"] == []
+    assert removal_config["target_object_radius"] == pytest.approx(
+        np.sqrt(0.1**2 + 0.2**2 + 0.3**2)
+    )
     assert inpaint_config["select_obj_id"] == [1]
     assert inpaint_config["target_id"] == [1]
     assert inpaint_config["surrounding_ids"] == []
+    assert inpaint_config["target_object_radius"] == removal_config["target_object_radius"]
     assert inpaint_config["images"] == "images_inpaint_unseen_virtual"
     assert receipt["adapter"]["paired_config_contract"].startswith(
         "config/object_removal/"
+    )
+    assert receipt["adapter"]["target_object_radius_derivation"] == (
+        "max_distance_from_metric_obb_center"
     )
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
     assert json.loads((paths["repo"] / "retained" / "adapter_receipt.json").read_text()) == receipt
@@ -199,5 +219,38 @@ def test_adapter_rejects_mutated_frame(tmp_path: Path, monkeypatch: pytest.Monke
         materialize_inpaint360_adapter(
             input_receipt_path=paths["receipt"], input_root=paths["input"],
             repo_root=paths["repo"], data_root=paths["data"], method_root=paths["method"],
+            output_root=paths["data"] / "adapter",
+        )
+
+
+def test_adapter_rejects_missing_metric_target_obb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path)
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpaint360_adapter.INPAINT360_COMMIT",
+        subprocess.run(
+            ["git", "-C", str(paths["method"]), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    )
+    receipt = json.loads(paths["receipt"].read_text())
+    del receipt["scene"]["target_obb_corners_m"]
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    paths["receipt"].write_text(json.dumps(receipt))
+    subprocess.run(["git", "-C", str(paths["repo"]), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(paths["repo"]), "commit", "-qm", "missing obb"],
+        check=True,
+    )
+    with pytest.raises(Inpaint360AdapterError, match="target_metric_obb_missing"):
+        materialize_inpaint360_adapter(
+            input_receipt_path=paths["receipt"],
+            input_root=paths["input"],
+            repo_root=paths["repo"],
+            data_root=paths["data"],
+            method_root=paths["method"],
             output_root=paths["data"] / "adapter",
         )
