@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import shutil
+import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -38,6 +42,7 @@ from .adp_aura_author_smoke_vast import (
 )
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .public_scene_aura_adapter import (
     BIG_LAMA_SHA256,
@@ -46,29 +51,49 @@ from .public_scene_aura_adapter import (
     LAMA_TREE,
     SCHEMA_VERSION as ADAPTER_SCHEMA,
 )
+from .vast_provider_adapter import run_vast_provider_adapter
+from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
+from .wam_provider_object_store import (
+    cleanup_staged_wam_provider_objects,
+    stage_wam_provider_bundle_object_store,
+)
 
 PROBE_KIND = "adp-aurafusion360-interiorgs"
 PROVIDER_BUNDLE_KIND = "adp_aura_interiorgs"
 SCENE_ID = "840313"
 TARGET_INSTANCE_ID = "ins160"
+RESULT_SCHEMA_VERSION = "adp_aura_interiorgs_vast_run.v1"
+DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/aurafusion360-interiorgs"
+MIN_RASTERIZER_COMPUTE_CAP = 890
+PROVIDER_STARTUP_TIMEOUT_SECONDS = 600
+PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS = 600
+AURA_INTERIORGS_GPU_SELECTION_POLICY = {
+    "policy_id": "aura_interiorgs_rtx_4090_observed_control",
+    "allowed_gpu_keywords": ("RTX 4090",),
+    "denied_gpu_keywords": (),
+    "reason": "reuse the RTX 4090 class that completed the unchanged Aura author control",
+}
+_VAST_MUTATION_ENV = (
+    "BLUEPRINT_ALLOW_VAST_API_CALLS",
+    "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
+)
+_VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
 
-def _validated_adapter(
-    receipt: Mapping[str, Any], root: Path
-) -> list[tuple[str, Path]]:
+def _validated_adapter(receipt: Mapping[str, Any], root: Path) -> list[tuple[str, Path]]:
     if (
         receipt.get("schema_version") != ADAPTER_SCHEMA
         or receipt.get("status") != "prepared_unexecuted"
-        or canonical_digest(receipt, digest_field="receipt_digest")
-        != receipt.get("receipt_digest")
+        or canonical_digest(receipt, digest_field="receipt_digest") != receipt.get("receipt_digest")
     ):
         raise ValueError("adp_aura_interiorgs_adapter_receipt_invalid")
     scene = receipt.get("scene") or {}
     source = receipt.get("source") or {}
     execution = receipt.get("execution") or {}
-    if scene.get("publisher_scene_id") != SCENE_ID or scene.get(
-        "target_instance_id"
-    ) != TARGET_INSTANCE_ID:
+    if (
+        scene.get("publisher_scene_id") != SCENE_ID
+        or scene.get("target_instance_id") != TARGET_INSTANCE_ID
+    ):
         raise ValueError("adp_aura_interiorgs_scene_or_target_mismatch")
     if source.get("commit") != SOURCE_COMMIT or source.get("tree") != SOURCE_TREE:
         raise ValueError("adp_aura_interiorgs_source_identity_mismatch")
@@ -137,9 +162,7 @@ def build_aura_interiorgs_bundle(
         or _git(aura, "status", "--porcelain")
     ):
         raise ValueError("adp_aura_interiorgs_source_or_blueprint_dirty")
-    if {
-        path: _git(aura / path, "rev-parse", "HEAD") for path in SUBMODULES
-    } != SUBMODULES:
+    if {path: _git(aura / path, "rev-parse", "HEAD") for path in SUBMODULES} != SUBMODULES:
         raise ValueError("adp_aura_interiorgs_submodule_mismatch")
     if (
         _git(sam2, "rev-parse", "HEAD") != SAM2_SOURCE_COMMIT
@@ -147,20 +170,15 @@ def build_aura_interiorgs_bundle(
         or _git(sam2, "status", "--porcelain")
     ):
         raise ValueError("adp_aura_interiorgs_sam2_identity_mismatch")
-    if not (sam2 / "LICENSE").is_file() or _sha256(
-        sam2 / "LICENSE"
-    ) != SAM2_LICENSE_SHA256:
+    if not (sam2 / "LICENSE").is_file() or _sha256(sam2 / "LICENSE") != SAM2_LICENSE_SHA256:
         raise ValueError("adp_aura_interiorgs_sam2_license_mismatch")
     if (
         _git(wonderworld, "rev-parse", "HEAD") != WONDERWORLD_SOURCE_COMMIT
-        or _git(wonderworld, "rev-parse", "HEAD^{tree}")
-        != WONDERWORLD_SOURCE_TREE
+        or _git(wonderworld, "rev-parse", "HEAD^{tree}") != WONDERWORLD_SOURCE_TREE
         or _git(wonderworld, "status", "--porcelain")
     ):
         raise ValueError("adp_aura_interiorgs_wonderworld_identity_mismatch")
-    if _sha256(
-        wonderworld / "marigold_module/LICENSE.txt"
-    ) != WONDERWORLD_MARIGOLD_LICENSE_SHA256:
+    if _sha256(wonderworld / "marigold_module/LICENSE.txt") != WONDERWORLD_MARIGOLD_LICENSE_SHA256:
         raise ValueError("adp_aura_interiorgs_wonderworld_license_mismatch")
     if (
         _git(lama, "rev-parse", "HEAD") != LAMA_COMMIT
@@ -188,9 +206,7 @@ def build_aura_interiorgs_bundle(
     lama_rows = _tracked_files(lama)
     _deterministic_zip_files(aura_rows, runtime / "aurafusion360_source.zip")
     _deterministic_zip_files(sam2_rows, runtime / "sam2_source.zip")
-    _deterministic_zip_files(
-        wonderworld_rows, runtime / "wonderworld_marigold_runtime.zip"
-    )
+    _deterministic_zip_files(wonderworld_rows, runtime / "wonderworld_marigold_runtime.zip")
     _deterministic_zip_files(lama_rows, runtime / "lama_source.zip")
     _deterministic_zip_files(adapter_rows, runtime / "interiorgs_adapter.zip")
     shutil.copy2(big_lama, runtime / "big-lama.zip")
@@ -203,7 +219,12 @@ def build_aura_interiorgs_bundle(
         "single_file_identity"
     ]
     workflow_names = (
-        "train", "render", "remove", "sam2_masks", "inpaint_init", "sdedit",
+        "train",
+        "render",
+        "remove",
+        "sam2_masks",
+        "inpaint_init",
+        "sdedit",
         "inpaint_finetune",
     )
     workflow = [
@@ -220,30 +241,39 @@ def build_aura_interiorgs_bundle(
         "source_files": source_manifest,
         "submodules": SUBMODULES,
         "sam2_source": {
-            "repository": SAM2_SOURCE_REPOSITORY, "commit": SAM2_SOURCE_COMMIT,
-            "tree": SAM2_SOURCE_TREE, "license_sha256": SAM2_LICENSE_SHA256,
+            "repository": SAM2_SOURCE_REPOSITORY,
+            "commit": SAM2_SOURCE_COMMIT,
+            "tree": SAM2_SOURCE_TREE,
+            "license_sha256": SAM2_LICENSE_SHA256,
             "source_files": sam2_manifest,
         },
         "wonderworld_marigold_runtime": {
             "repository": WONDERWORLD_SOURCE_REPOSITORY,
-            "commit": WONDERWORLD_SOURCE_COMMIT, "tree": WONDERWORLD_SOURCE_TREE,
-            "license": "Apache-2.0", "license_sha256": WONDERWORLD_MARIGOLD_LICENSE_SHA256,
+            "commit": WONDERWORLD_SOURCE_COMMIT,
+            "tree": WONDERWORLD_SOURCE_TREE,
+            "license": "Apache-2.0",
+            "license_sha256": WONDERWORLD_MARIGOLD_LICENSE_SHA256,
             "archive": "wonderworld_marigold_runtime.zip",
             "archive_sha256": _sha256(runtime / "wonderworld_marigold_runtime.zip"),
             "source_files": wonderworld_manifest,
         },
         "lama": {
-            "source_archive": "lama_source.zip", "source_files": lama_manifest,
-            "checkpoint_archive": "big-lama.zip", "checkpoint_sha256": BIG_LAMA_SHA256,
+            "source_archive": "lama_source.zip",
+            "source_files": lama_manifest,
+            "checkpoint_archive": "big-lama.zip",
+            "checkpoint_sha256": BIG_LAMA_SHA256,
         },
         "adapter": {
             "archive": "interiorgs_adapter.zip",
             "archive_sha256": _sha256(runtime / "interiorgs_adapter.zip"),
-            "receipt_digest": adapter["receipt_digest"], "files": adapter_manifest,
+            "receipt_digest": adapter["receipt_digest"],
+            "files": adapter_manifest,
         },
         "runtime_models": _RUNTIME_MODELS,
         "sd2_checkpoint": {
-            **_SD2, "size_bytes": sd2["size_bytes"], "sha256": sd2["lfs_sha256"],
+            **_SD2,
+            "size_bytes": sd2["size_bytes"],
+            "sha256": sd2["lfs_sha256"],
         },
         "workflow": workflow,
         "claim_boundary": {
@@ -276,6 +306,7 @@ def build_aura_interiorgs_bundle(
         "source_tree": SOURCE_TREE,
         "blueprint_commit": _git(repo, "rev-parse", "HEAD"),
         "blueprint_tree": _git(repo, "rev-parse", "HEAD^{tree}"),
+        "blueprint_repository_tracked_state": "clean",
         "adapter_receipt_digest": adapter["receipt_digest"],
         "prerequisite_receipt_digest": prerequisite["receipt_digest"],
         "container_image": DEFAULT_IMAGE,
@@ -297,21 +328,252 @@ def build_aura_interiorgs_bundle(
     return receipt
 
 
+def _remaining_minutes(
+    *, job: Path, hard_cap_usd: float, hard_ttl_seconds: int, max_hourly_rate_usd: float
+) -> int:
+    spent = attempt_estimated_cost(job)
+    elapsed = attempt_runtime_seconds(job)
+    dollars = max(0.0, hard_cap_usd - spent)
+    seconds = max(0, hard_ttl_seconds - elapsed)
+    return max(0, min(seconds // 60, math.floor(dollars / max_hourly_rate_usd * 60)))
+
+
+def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
+    blockers: list[str] = []
+    if not path.is_file():
+        return {
+            "status": "blocked",
+            "execution": {},
+            "result_path": str(destination / "adp_aura_interiorgs_result.json"),
+            "blockers": ["aura_interiorgs_provider_output_zip_missing"],
+        }
+    ensure_dir(destination)
+    root = destination.resolve()
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for member in archive.infolist():
+                target = (destination / member.filename).resolve()
+                if root not in target.parents and target != root:
+                    blockers.append("aura_interiorgs_provider_output_zip_path_traversal")
+            if not blockers:
+                archive.extractall(destination)
+    except (OSError, zipfile.BadZipFile):
+        blockers.append("aura_interiorgs_provider_output_zip_invalid")
+    result_path = destination / "adp_aura_interiorgs_result.json"
+    execution = _read_json(result_path)
+    if not execution:
+        blockers.append("aura_interiorgs_provider_result_missing")
+    return {
+        "status": "completed" if not blockers else "blocked",
+        "result_path": str(result_path),
+        "execution": execution,
+        "blockers": sorted(set(blockers)),
+    }
+
+
+@contextmanager
+def _authority_environment():
+    names = (*_VAST_MUTATION_ENV, _VAST_SINGLE_ATTEMPT_ENV)
+    previous = {name: os.environ.get(name) for name in names}
+    try:
+        for name in _VAST_MUTATION_ENV:
+            os.environ[name] = "1"
+        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = "0"
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def run_aura_interiorgs_vast(
+    *,
+    job_dir: str | Path,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+    prepared_bundle: Mapping[str, Any],
+    max_hourly_rate_usd: float = 1.5,
+    hard_cap_usd: float = 6.0,
+    hard_ttl_seconds: int = 14_400,
+    public_image: str = DEFAULT_IMAGE,
+    machine_avoidlist_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run the frozen Aura InteriorGS challenger once, with no automatic retry."""
+
+    job = Path(job_dir).expanduser().resolve()
+    ensure_dir(job)
+    bundle = dict(prepared_bundle)
+    bundle_path = Path(str(bundle.get("bundle_path") or "")).resolve()
+    if public_image != DEFAULT_IMAGE:
+        raise ValueError("adp_aura_interiorgs_container_image_not_frozen")
+    if (
+        bundle.get("status") != "ready"
+        or not bundle_path.is_file()
+        or _sha256(bundle_path) != bundle.get("bundle_sha256")
+    ):
+        raise ValueError("adp_aura_interiorgs_prepared_bundle_binding_invalid")
+    if not execute:
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "dry_run_ready",
+            "bundle": bundle,
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "blockers": [],
+        }
+        write_json(job / "adp_aura_interiorgs_vast_result.json", result)
+        return result
+    if paid_resource_admission_grant is None:
+        raise ValueError("adp_aura_interiorgs_paid_resource_admission_grant_missing")
+    remaining_minutes = _remaining_minutes(
+        job=job,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+    )
+    if remaining_minutes < 120:
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "blockers": ["adp_aura_interiorgs_budget_below_minimum_live_window"],
+        }
+    staging_dir = job / "object_store_staging"
+    staging = stage_wam_provider_bundle_object_store(
+        job_dir=staging_dir,
+        bundle_path=str(bundle_path),
+        key_prefix=DEFAULT_KEY_PREFIX,
+        expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
+    )
+    if staging.get("status") != "completed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "blockers": staging.get("blockers") or ["aura_interiorgs_object_store_staging_blocked"],
+        }
+    provider_run = job / "vast_provider_run"
+    output_zip = provider_run / "vast_provider_runtime_output.zip"
+    adapter: dict[str, Any] = {}
+    try:
+        with _authority_environment():
+            adapter = run_vast_provider_adapter(
+                job_dir=provider_run,
+                mode="live-startup-probe",
+                allow_vast_api_call=True,
+                allow_instance_launch=True,
+                max_hourly_rate=max_hourly_rate_usd,
+                target_spend_usd=hard_cap_usd,
+                hard_cap_usd=hard_cap_usd,
+                max_live_minutes=remaining_minutes,
+                session_max_live_minutes=hard_ttl_seconds // 60,
+                public_image=public_image,
+                isaac_image=public_image,
+                ngc_image_login_mode="never",
+                provider_bundle=bundle_path,
+                provider_bundle_url=(staging_dir / "provider_bundle_url.txt").read_text().strip(),
+                provider_output_put_url=(staging_dir / "provider_output_put_url.txt")
+                .read_text()
+                .strip(),
+                provider_output_get_url=(staging_dir / "provider_output_get_url.txt")
+                .read_text()
+                .strip(),
+                provider_runtime_output_zip=output_zip,
+                enable_isaac_smoke=False,
+                enable_blueprint_bundle=True,
+                provider_bundle_kind=PROVIDER_BUNDLE_KIND,
+                vast_launch_mode="ssh_direct",
+                allow_cold_isaac_image_pull=False,
+                disk_gb=192,
+                min_gpu_ram_mb=24_000,
+                min_compute_cap=MIN_RASTERIZER_COMPUTE_CAP,
+                poll_interval_seconds=15,
+                startup_timeout_seconds=min(
+                    PROVIDER_STARTUP_TIMEOUT_SECONDS, remaining_minutes * 60
+                ),
+                heartbeat_no_progress_seconds=PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS,
+                session_budget_ledger_path=job / "adp_aura_interiorgs_vast_session_budget.json",
+                verify_staging_urls=True,
+                require_known_supported_isaac_driver=False,
+                preferred_gpu_keywords=("RTX 4090",),
+                prefer_isaac_rt=False,
+                gpu_selection_policy=AURA_INTERIORGS_GPU_SELECTION_POLICY,
+                machine_avoidlist_path=machine_avoidlist_path,
+                instance_label_prefix="blueprint-adp-aura-interiorgs-",
+                forward_hf_token=False,
+                paid_resource_admission_grant=paid_resource_admission_grant,
+            )
+    except (OSError, RuntimeError, ValueError) as exc:
+        adapter = {
+            "status": "blocked",
+            "blockers": [f"adp_aura_interiorgs_vast_adapter_failed:{type(exc).__name__}"],
+            "raw_secret_values_recorded": False,
+        }
+    finally:
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+    extracted = _extract_provider_output(output_zip, job / "immutable_execution")
+    execution = dict(extracted.get("execution") or {})
+    teardown = _read_json(provider_run / "vast_teardown_manifest.json")
+    blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
+    if execution.get("status") != "completed":
+        blockers.extend(execution.get("blockers") or ["aura_interiorgs_edit_not_completed"])
+    if teardown.get("continuing_spend_from_this_run") is not False:
+        blockers.append("aura_interiorgs_vast_provider_zero_not_proven")
+    if cleanup.get("all_objects_absent") is not True:
+        blockers.append("aura_interiorgs_object_store_provider_zero_not_proven")
+    result = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "completed" if not blockers else "blocked",
+        "bundle_sha256": bundle["bundle_sha256"],
+        "execution_result_path": extracted.get("result_path"),
+        "adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
+        "teardown_manifest_path": str(provider_run / "vast_teardown_manifest.json"),
+        "estimated_cost_usd": adapter.get("estimated_cost_usd"),
+        "hard_cap_usd": hard_cap_usd,
+        "hard_ttl_seconds": hard_ttl_seconds,
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
+        "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+        "blockers": sorted(set(str(item) for item in blockers if str(item))),
+        "raw_secret_values_recorded": False,
+    }
+    write_json(job / "adp_aura_interiorgs_vast_result.json", result)
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in (
-        "repo-root", "aura-root", "sam2-root", "wonderworld-root", "lama-root",
-        "prerequisite-receipt", "adapter-root", "adapter-receipt", "big-lama",
+        "repo-root",
+        "aura-root",
+        "sam2-root",
+        "wonderworld-root",
+        "lama-root",
+        "prerequisite-receipt",
+        "adapter-root",
+        "adapter-receipt",
+        "big-lama",
         "job-dir",
     ):
         parser.add_argument(f"--{name}", required=True)
     args = parser.parse_args(argv)
     receipt = build_aura_interiorgs_bundle(
-        repo_root=args.repo_root, aura_root=args.aura_root, sam2_root=args.sam2_root,
-        wonderworld_root=args.wonderworld_root, lama_root=args.lama_root,
+        repo_root=args.repo_root,
+        aura_root=args.aura_root,
+        sam2_root=args.sam2_root,
+        wonderworld_root=args.wonderworld_root,
+        lama_root=args.lama_root,
         prerequisite_receipt_path=args.prerequisite_receipt,
-        adapter_root=args.adapter_root, adapter_receipt_path=args.adapter_receipt,
-        big_lama_path=args.big_lama, job_dir=args.job_dir,
+        adapter_root=args.adapter_root,
+        adapter_receipt_path=args.adapter_receipt,
+        big_lama_path=args.big_lama,
+        job_dir=args.job_dir,
     )
     print(json.dumps({"status": receipt["status"], "bundle_sha256": receipt["bundle_sha256"]}))
     return 0 if receipt["status"] == "ready" else 2

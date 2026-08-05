@@ -139,6 +139,10 @@ from .adp_aura_author_smoke_vast import (
     SOURCE_TREE as ADP_AURA_SOURCE_TREE,
     run_aura_author_smoke_vast,
 )
+from .adp_aura_interiorgs_vast import (
+    PROBE_KIND as ADP_AURA_INTERIORGS_PROBE_KIND,
+    run_aura_interiorgs_vast,
+)
 from .adp_inpaint360_interiorgs_vast import (
     DEFAULT_IMAGE as ADP_INPAINT360_INTERIORGS_IMAGE,
     PREREQUISITE_RECEIPT_DIGEST as ADP_INPAINT360_PREREQUISITE_RECEIPT_DIGEST,
@@ -970,6 +974,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP_CONTENT_AGENTS_PROBE_KIND,
             ADP_AURA_SMOKE_PROBE_KIND,
+            ADP_AURA_INTERIORGS_PROBE_KIND,
             ADP_INPAINT360_INTERIORGS_PROBE_KIND,
         ),
         default="strict-policy-smoke",
@@ -1046,6 +1051,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-content-agents-bundle-receipt")
     gpu.add_argument("--adp-content-agents-config-preflight-receipt")
     gpu.add_argument("--adp-aura-bundle-receipt")
+    gpu.add_argument("--adp-aura-interiorgs-bundle-receipt")
     gpu.add_argument("--adp-inpaint360-bundle-receipt")
     gpu.add_argument(
         "--reconstruction-refresh-preflight",
@@ -1466,11 +1472,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.probe_kind == ADP_AURA_SMOKE_PROBE_KIND:
+        if args.probe_kind in {
+            ADP_AURA_SMOKE_PROBE_KIND,
+            ADP_AURA_INTERIORGS_PROBE_KIND,
+        }:
+            aura_interiorgs = args.probe_kind == ADP_AURA_INTERIORGS_PROBE_KIND
+            aura_receipt_argument = (
+                args.adp_aura_interiorgs_bundle_receipt
+                if aura_interiorgs
+                else args.adp_aura_bundle_receipt
+            )
             missing = [
                 name
-                for name in ("adp_aura_bundle_receipt", "adp_job_dir")
-                if not getattr(args, name, None)
+                for name, value in (
+                    (
+                        "adp_aura_interiorgs_bundle_receipt"
+                        if aura_interiorgs
+                        else "adp_aura_bundle_receipt",
+                        aura_receipt_argument,
+                    ),
+                    ("adp_job_dir", args.adp_job_dir),
+                )
+                if not value
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
@@ -1478,12 +1501,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp_aura_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
                 blockers.append("adp_aura_budget_invalid")
-            if not 5400 <= args.adp_hard_ttl_seconds <= 14_400:
+            minimum_aura_ttl = 7200 if aura_interiorgs else 5400
+            if not minimum_aura_ttl <= args.adp_hard_ttl_seconds <= 14_400:
                 blockers.append("adp_aura_hard_ttl_invalid")
             prepared_bundle: dict[str, Any] | None = None
             receipt_path: Path | None = None
-            if args.adp_aura_bundle_receipt:
-                receipt_path = Path(args.adp_aura_bundle_receipt).expanduser().resolve()
+            if aura_receipt_argument:
+                receipt_path = Path(aura_receipt_argument).expanduser().resolve()
                 if not receipt_path.is_file():
                     blockers.append("adp_aura_bundle_receipt_missing")
                 else:
@@ -1510,6 +1534,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("container_image") != ADP_AURA_SMOKE_IMAGE
                     or prepared_bundle.get("retry_cap") != 0
                     or prepared_bundle.get("blockers") not in ([], None)
+                    or (aura_interiorgs and not prepared_bundle.get("adapter_receipt_digest"))
                     or not bundle_path.is_file()
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
@@ -1542,7 +1567,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
-                "probe_kind": ADP_AURA_SMOKE_PROBE_KIND,
+                "probe_kind": args.probe_kind,
                 "orchestrator_source_commit": control_identity.get(
                     "orchestrator_source_commit"
                 ),
@@ -1553,6 +1578,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "aura_source_commit": ADP_AURA_SOURCE_COMMIT,
                 "aura_source_tree": ADP_AURA_SOURCE_TREE,
                 "prerequisite_receipt_digest": ADP_AURA_PREREQUISITE_RECEIPT_DIGEST,
+                "adapter_receipt_digest": (
+                    prepared_bundle.get("adapter_receipt_digest")
+                    if prepared_bundle and aura_interiorgs
+                    else None
+                ),
                 "container_image": ADP_AURA_SMOKE_IMAGE,
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
@@ -1574,7 +1604,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             paid_admission.update(
                 {
                     "program_id": "arm-decision-proof-v1",
-                    "probe_kind": ADP_AURA_SMOKE_PROBE_KIND,
+                    "probe_kind": args.probe_kind,
                     "control_plane_identity": control_identity,
                     "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                     "hard_cap_usd": args.adp_max_spend_usd,
@@ -1585,7 +1615,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     "publisher_data_and_checkpoint_rights_bound": True,
                     "full_author_workflow_claimed": False,
-                    "aura_inpaint_init_author_smoke_only": True,
+                    "aura_interiorgs_full_native_workflow_authorized": aura_interiorgs,
+                    "aura_inpaint_init_author_smoke_only": not aura_interiorgs,
+                    "rendered_frames_have_no_hidden_background_truth": aura_interiorgs,
+                    "output_claim_ceiling": (
+                        "visual_candidate_only" if aura_interiorgs else "author_smoke_only"
+                    ),
                     "allocation_binding": allocation_binding,
                     "allocation_binding_digest": allocation_binding_digest,
                 }
@@ -1615,7 +1650,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provider_mutations_performed": 0,
                 }
             else:
-                result = run_aura_author_smoke_vast(
+                aura_runner = (
+                    run_aura_interiorgs_vast if aura_interiorgs else run_aura_author_smoke_vast
+                )
+                result = aura_runner(
                     job_dir=args.adp_job_dir,
                     paid_resource_admission_grant=grant,
                     execute=args.execute,

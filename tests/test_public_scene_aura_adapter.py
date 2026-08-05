@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,8 @@ from blueprint_pipeline.public_scene_aura_adapter import (
 from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
 )
+from blueprint_pipeline.adp_aura_interiorgs_vast import run_aura_interiorgs_vast
+from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
 
 
 def _record(path: Path, root: Path) -> dict:
@@ -37,12 +40,16 @@ def _git_repo(path: Path, filename: str) -> tuple[str, str]:
     subprocess.run(["git", "-C", str(path), "add", "."], check=True)
     subprocess.run(["git", "-C", str(path), "commit", "-qm", "fixture"], check=True)
     commit = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD"], check=True,
-        capture_output=True, text=True,
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     tree = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD^{tree}"], check=True,
-        capture_output=True, text=True,
+        ["git", "-C", str(path), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     return commit, tree
 
@@ -62,7 +69,9 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
 
     archive = data / "big-lama.zip"
     archive.write_bytes(b"checkpoint")
-    monkeypatch.setattr("blueprint_pipeline.public_scene_aura_adapter.BIG_LAMA_SIZE", archive.stat().st_size)
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_aura_adapter.BIG_LAMA_SIZE", archive.stat().st_size
+    )
     monkeypatch.setattr(
         "blueprint_pipeline.public_scene_aura_adapter.BIG_LAMA_SHA256",
         "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest(),
@@ -85,8 +94,14 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         input_root / "scene_standard.ply",
     )
     names = [
-        "approach_close", "approach_wide", "cabinet_context", "left_translate",
-        "low_approach", "raised_left", "raised_right", "right_translate",
+        "approach_close",
+        "approach_wide",
+        "cabinet_context",
+        "left_translate",
+        "low_approach",
+        "raised_left",
+        "raised_right",
+        "right_translate",
     ]
     cameras, images, masks = [], [], []
     for index, camera_id in enumerate(names):
@@ -104,8 +119,13 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
                 "camera_id": camera_id,
                 "T_world_camera_opencv": pose.tolist(),
                 "intrinsics": {
-                    "model": "PINHOLE", "fx": 1600.0, "fy": 1600.0,
-                    "cx": 1024.0, "cy": 768.0, "width": 2048, "height": 1536,
+                    "model": "PINHOLE",
+                    "fx": 1600.0,
+                    "fy": 1600.0,
+                    "cx": 1024.0,
+                    "cy": 768.0,
+                    "width": 2048,
+                    "height": 1536,
                 },
             }
         )
@@ -180,9 +200,15 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         encoding="utf-8",
     )
     return {
-        "repo": repo, "data": data, "method": method, "lama": lama,
-        "archive": archive, "input": input_root, "frozen": frozen_path,
-        "prerequisite": prerequisite, "smoke": smoke,
+        "repo": repo,
+        "data": data,
+        "method": method,
+        "lama": lama,
+        "archive": archive,
+        "input": input_root,
+        "frozen": frozen_path,
+        "prerequisite": prerequisite,
+        "smoke": smoke,
     }
 
 
@@ -253,13 +279,77 @@ def test_aura_interiorgs_provider_runtime_has_distinct_fail_closed_contract() ->
     root = Path(__file__).resolve().parents[1]
     entrypoint = (root / "scripts/run_adp_aura_interiorgs_provider_runtime.sh").read_text()
     runner = (root / "scripts/adp_aura_interiorgs_provider_runner.py").read_text()
-    assert provider_runtime_contract_blockers(
+    assert (
+        provider_runtime_contract_blockers(
+            provider_bundle_kind="adp_aura_interiorgs",
+            entrypoint_text=entrypoint,
+            runner_text=runner,
+        )
+        == []
+    )
+    assert (
+        provider_runtime_contract_blockers(
+            provider_bundle_kind="adp_aura_smoke",
+            entrypoint_text=entrypoint,
+            runner_text=runner,
+        )
+        != []
+    )
+
+
+def test_aura_interiorgs_vast_dry_run_binds_bundle_without_provider_mutation(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    bundle.write_bytes(b"immutable-aura-interiorgs-bundle")
+    prepared = {
+        "status": "ready",
+        "bundle_path": str(bundle),
+        "bundle_sha256": "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    }
+    result = run_aura_interiorgs_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=None,
+        execute=False,
+        prepared_bundle=prepared,
+    )
+    assert result["status"] == "dry_run_ready"
+    assert result["provider_mutations_performed"] == 0
+    assert result["retry_cap"] == 0
+
+
+def test_vast_preflight_accepts_distinct_aura_interiorgs_bundle(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    bundle = tmp_path / "bundle.zip"
+    entries = {
+        "provider_runtime/run_adp_aura_interiorgs_provider_runtime.sh": (
+            root / "scripts/run_adp_aura_interiorgs_provider_runtime.sh"
+        ).read_bytes(),
+        "provider_runtime/adp_aura_interiorgs_provider_runner.py": (
+            root / "scripts/adp_aura_interiorgs_provider_runner.py"
+        ).read_bytes(),
+        "provider_runtime/adp_aura_interiorgs_provider_manifest.json": b"{}",
+        "provider_runtime/sam2_source.zip": b"x",
+        "provider_runtime/aurafusion360_source.zip": b"x",
+        "provider_runtime/lama_source.zip": b"x",
+        "provider_runtime/big-lama.zip": b"x",
+        "provider_runtime/interiorgs_adapter.zip": b"x",
+        "provider_runtime/execution_spec.json": b"{}",
+    }
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+    result = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="2026-08-05T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
         provider_bundle_kind="adp_aura_interiorgs",
-        entrypoint_text=entrypoint,
-        runner_text=runner,
-    ) == []
-    assert provider_runtime_contract_blockers(
-        provider_bundle_kind="adp_aura_smoke",
-        entrypoint_text=entrypoint,
-        runner_text=runner,
-    ) != []
+        bundle_path=bundle,
+        provider_bundle_url="https://example.invalid/bundle.zip",
+        provider_output_put_url="https://example.invalid/out.zip",
+    )
+    assert result["status"] == "passed"
+    assert result["blockers"] == []
