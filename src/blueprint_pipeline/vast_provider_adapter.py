@@ -4061,6 +4061,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
         )
         if provider_bundle_kind
         in {
+            "isaac",
             "wam",
             "evaluator",
             "adp_simpler",
