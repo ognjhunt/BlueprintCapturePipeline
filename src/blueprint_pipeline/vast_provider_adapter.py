@@ -274,10 +274,12 @@ def _string(value: Any) -> str:
 def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
     """Return whether a bundle must use the Isaac image/runtime safety path."""
 
-    return provider_bundle_kind in {"isaac", "adp_arena"}
+    return provider_bundle_kind in {"isaac", "adp_simready_isaac", "adp_arena"}
 
 
 def _provider_expected_video_count(provider_bundle_kind: str) -> int:
+    if provider_bundle_kind == "adp_simready_isaac":
+        return 0
     if _is_isaac_provider_bundle(provider_bundle_kind):
         return DEFAULT_VIDEO_SMOKE_CAMERA_COUNT
     if provider_bundle_kind == "wam":
@@ -1967,7 +1969,7 @@ def _blueprint_bundle_preflight(
         "provider_runtime/interiorgs_adapter.zip",
         "provider_runtime/big-lama.zip",
     }
-    if provider_bundle_kind == "isaac":
+    if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
         required_entries = isaac_required_entries
         entrypoint_member = "provider_runtime/run_isaac_realistic_runtime.sh"
         runner_member = "provider_runtime/isaac_realistic_runtime_runner.py"
@@ -2094,7 +2096,7 @@ def _blueprint_bundle_preflight(
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
                     if (
-                        provider_bundle_kind == "isaac"
+                        provider_bundle_kind in {"isaac", "adp_simready_isaac"}
                         and "provider_runtime/isaac_provider_eval_manifest.json" in zip_entries
                     ):
                         try:
@@ -2189,7 +2191,7 @@ def _blueprint_bundle_preflight(
                         runner_text=runner_text,
                     )
                 )
-                if provider_bundle_kind == "isaac":
+                if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
                     relative_paths = _mapping(eval_manifest.get("relative_paths"))
                     prefixed_relative_paths = sorted(
                         key
@@ -3049,7 +3051,7 @@ def _probe_shell_script(
             'elif [ -z "$OUTPUT_PUT_URL" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_put_url_missing; '
             "else "
         )
-        if provider_bundle_kind == "isaac":
+        if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
             script += (
                 common_start
                 + 'rm -rf "$WORK_DIR/isaac_provider_bundle" "$WORK_DIR/isaac_provider_runtime_bundle.zip" "$WORK_DIR/isaac_provider_runtime_output.zip"; '
@@ -4062,6 +4064,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
         if provider_bundle_kind
         in {
             "isaac",
+            "adp_simready_isaac",
             "wam",
             "evaluator",
             "adp_simpler",

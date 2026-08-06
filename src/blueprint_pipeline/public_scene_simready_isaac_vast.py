@@ -250,7 +250,7 @@ def run_simready_isaac_vast(
                 provider_runtime_output_zip=output_zip,
                 enable_isaac_smoke=True,
                 enable_blueprint_bundle=True,
-                provider_bundle_kind="isaac",
+                provider_bundle_kind="adp_simready_isaac",
                 vast_launch_mode="ssh_direct",
                 allow_cold_isaac_image_pull=True,
                 min_cold_isaac_pull_live_minutes=30,

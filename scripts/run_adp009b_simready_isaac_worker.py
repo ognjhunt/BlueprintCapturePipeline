@@ -136,8 +136,14 @@ def _settle_motion(positions: Sequence[Sequence[float]], window: int = 30) -> fl
 
 
 def _wait_for_stage(simulation_app: Any, usd_context: Any) -> None:
+    loading_status = getattr(usd_context, "get_stage_loading_status", None)
+    if not callable(loading_status):
+        for _ in range(5):
+            simulation_app.update()
+        return
     for _ in range(6000):
-        if not usd_context.is_stage_loading():
+        status = loading_status()
+        if isinstance(status, (tuple, list)) and len(status) >= 3 and int(status[2]) == 0:
             return
         simulation_app.update()
     raise RuntimeError("simready_isaac_stage_load_timeout")

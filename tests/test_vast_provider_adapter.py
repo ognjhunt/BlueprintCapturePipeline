@@ -4953,8 +4953,14 @@ def test_vast_adapter_request_logs_container_missing_retry(
 
 def test_adp_simpler_uses_bounded_cold_pull_container_window() -> None:
     assert vpa._container_missing_max_seconds("isaac") == 720
+    assert vpa._container_missing_max_seconds("adp_simready_isaac") == 720
     assert vpa._container_missing_max_seconds("adp_simpler") == 720
     assert vpa._container_missing_max_seconds("unitree_unifolm") == 60
+
+
+def test_exact_simready_isaac_bundle_does_not_require_policy_video() -> None:
+    assert vpa._provider_expected_video_count("isaac") > 0
+    assert vpa._provider_expected_video_count("adp_simready_isaac") == 0
 
 
 def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs(

@@ -339,6 +339,36 @@ def test_native_isaac_worker_rejects_changed_stage_before_runtime(
     )
 
 
+def test_native_isaac_worker_waits_on_isaac6_loading_status() -> None:
+    module_spec = importlib.util.spec_from_file_location(
+        "blueprint_simready_isaac_wait_worker",
+        ROOT / "scripts/run_adp009b_simready_isaac_worker.py",
+    )
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+
+    class Application:
+        updates = 0
+
+        def update(self) -> None:
+            self.updates += 1
+
+    class Context:
+        calls = 0
+
+        def get_stage_loading_status(self):
+            self.calls += 1
+            return (0, 0, 1 if self.calls < 3 else 0)
+
+    application = Application()
+    context = Context()
+    module._wait_for_stage(application, context)
+
+    assert context.calls == 3
+    assert application.updates == 2
+
+
 def test_ovrtx_worker_authors_matrix_camera_and_path_tracing(tmp_path: Path) -> None:
     spec = importlib.util.spec_from_file_location(
         "blueprint_ovrtx_worker", ROOT / "scripts/run_ovrtx_preflight_worker.py"
