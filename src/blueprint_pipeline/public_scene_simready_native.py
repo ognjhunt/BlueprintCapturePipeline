@@ -33,6 +33,7 @@ OVRTX_QUALITY_STEPS = 256
 OVRTX_VERSION = "0.4.0.346409"
 OVSTAGE_VERSION = "0.1.0.346039"
 OVPHYSX_VERSION = "0.4.13"
+ISAAC_SIM_VERSION = "6.0.1"
 
 
 def _sha256(path: Path) -> str:
@@ -201,6 +202,149 @@ over "World"
 '''
 
 
+def _isaac_motion_stage(
+    composition_relative_path: str,
+    placement: list[float],
+    support_collider_path: str,
+    *,
+    linear_velocity: tuple[float, float, float],
+    angular_velocity: tuple[float, float, float],
+    rotation_degrees: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> str:
+    support_prefix = "/World/Environment/"
+    if not support_collider_path.startswith(support_prefix):
+        raise ValueError("simready_native_support_collider_path_unsupported")
+    support_name = support_collider_path.removeprefix(support_prefix)
+    if not support_name or "/" in support_name or '"' in support_name:
+        raise ValueError("simready_native_support_collider_path_unsupported")
+    values = [float(value) for value in placement]
+    return f'''#usda 1.0
+(
+    subLayers = [@{composition_relative_path}@]
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+over "World"
+{{
+    def PhysicsScene "physics_scene"
+    {{
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float physics:gravityMagnitude = 9.81
+    }}
+
+    over "BlueprintReplacement" (
+        prepend apiSchemas = ["PhysxContactReportAPI"]
+    )
+    {{
+        float3 physics:angularVelocity = {angular_velocity}
+        float3 physics:velocity = {linear_velocity}
+        float3 xformOp:rotateXYZ = {rotation_degrees}
+        double3 xformOp:translate = ({values[0]}, {values[1]}, {values[2]})
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+
+        over "colliders"
+        {{
+            over "body_collider"
+            {{
+                uniform token physics:approximation = "convexHull"
+            }}
+        }}
+    }}
+
+    over "Environment"
+    {{
+        over "{support_name}"
+        {{
+            uniform token physics:approximation = "none"
+        }}
+    }}
+}}
+'''
+
+
+def _isaac_gripper_stage(
+    composition_relative_path: str,
+    placement: list[float],
+    support_collider_path: str,
+) -> str:
+    support_prefix = "/World/Environment/"
+    if not support_collider_path.startswith(support_prefix):
+        raise ValueError("simready_native_support_collider_path_unsupported")
+    support_name = support_collider_path.removeprefix(support_prefix)
+    if not support_name or "/" in support_name or '"' in support_name:
+        raise ValueError("simready_native_support_collider_path_unsupported")
+    x, y, z = (float(value) for value in placement)
+    finger_z = z + 0.084713995
+    return f'''#usda 1.0
+(
+    subLayers = [@{composition_relative_path}@]
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+over "World"
+{{
+    def PhysicsScene "physics_scene"
+    {{
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float physics:gravityMagnitude = 9.81
+    }}
+
+    over "BlueprintReplacement" (
+        prepend apiSchemas = ["PhysxContactReportAPI"]
+    )
+    {{
+        double3 xformOp:translate = ({x}, {y}, {z})
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        over "colliders"
+        {{
+            over "body_collider"
+            {{
+                uniform token physics:approximation = "convexHull"
+            }}
+        }}
+    }}
+
+    def Xform "BlueprintProbeGripper"
+    {{
+        def Cube "left_finger" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI", "PhysxContactReportAPI"]
+        )
+        {{
+            bool physics:kinematicEnabled = 1
+            bool physics:rigidBodyEnabled = 1
+            double size = 1
+            double3 xformOp:scale = (0.01, 0.02, 0.07)
+            double3 xformOp:translate = ({x - 0.056}, {y}, {finger_z})
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }}
+        def Cube "right_finger" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI", "PhysxContactReportAPI"]
+        )
+        {{
+            bool physics:kinematicEnabled = 1
+            bool physics:rigidBodyEnabled = 1
+            double size = 1
+            double3 xformOp:scale = (0.01, 0.02, 0.07)
+            double3 xformOp:translate = ({x + 0.056}, {y}, {finger_z})
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }}
+    }}
+
+    over "Environment"
+    {{
+        over "{support_name}"
+        {{
+            uniform token physics:approximation = "none"
+        }}
+    }}
+}}
+'''
+
+
 def _usd_scene_inventory(
     path: Path,
     *,
@@ -224,6 +368,7 @@ def _usd_scene_inventory(
     joints: list[dict[str, Any]] = []
     masses: list[dict[str, Any]] = []
     materials: list[dict[str, Any]] = []
+    extent_points: list[list[float]] = []
     for prim in stage.Traverse():
         prim_path = str(prim.GetPath())
         in_replacement = prim_path == replacement_path or prim_path.startswith(
@@ -261,6 +406,22 @@ def _usd_scene_inventory(
                     "restitution": api.GetRestitutionAttr().Get(),
                 }
             )
+        if in_replacement:
+            extent = prim.GetAttribute("extent").Get()
+            if extent is not None and len(extent) == 2:
+                extent_points.extend(
+                    [[float(value) for value in point] for point in extent]
+                )
+    if extent_points:
+        lower = [min(point[axis] for point in extent_points) for axis in range(3)]
+        upper = [max(point[axis] for point in extent_points) for axis in range(3)]
+        bounds = {
+            "lower_m": lower,
+            "upper_m": upper,
+            "dimensions_m": [upper[axis] - lower[axis] for axis in range(3)],
+        }
+    else:
+        bounds = {}
     inventory = {
         "authority": "blueprint_usd_exchange_2_3_schema_inspection",
         "source_sha256": _sha256(path),
@@ -271,6 +432,7 @@ def _usd_scene_inventory(
         "joints": joints,
         "masses": masses,
         "materials": materials,
+        "local_bounds": bounds,
     }
     if (
         replacement_path not in inventory["rigid_bodies"]
@@ -278,6 +440,7 @@ def _usd_scene_inventory(
         or not any(path.startswith(replacement_path + "/") for path in colliders)
         or not masses
         or not materials
+        or not bounds
     ):
         raise ValueError("simready_native_physics_inventory_incomplete")
     return inventory
@@ -404,6 +567,92 @@ def materialize_native_probe(
     }
     physics_config_path = target / "ovphysx_config.json"
     write_json(physics_config_path, physics_config)
+    isaac_stages = {
+        "drop": drop_stage,
+        "slide": target / "isaac_slide_stage.usda",
+        "tip": target / "isaac_tip_stage.usda",
+        "gripper": target / "isaac_gripper_stage.usda",
+    }
+    isaac_stages["slide"].write_text(
+        _isaac_motion_stage(
+            "scene/collision_and_replacement.usda",
+            placement,
+            support_collider_path,
+            linear_velocity=(0.2, 0.0, 0.0),
+            angular_velocity=(0.0, 0.0, 0.0),
+        ),
+        encoding="utf-8",
+    )
+    isaac_stages["tip"].write_text(
+        _isaac_motion_stage(
+            "scene/collision_and_replacement.usda",
+            placement,
+            support_collider_path,
+            linear_velocity=(0.0, 0.0, 0.0),
+            angular_velocity=(0.0, 20.0, 0.0),
+            rotation_degrees=(0.0, 6.0, 0.0),
+        ),
+        encoding="utf-8",
+    )
+    isaac_stages["gripper"].write_text(
+        _isaac_gripper_stage(
+            "scene/collision_and_replacement.usda",
+            placement,
+            support_collider_path,
+        ),
+        encoding="utf-8",
+    )
+    isaac_probe_spec = {
+        "schema_version": "adp009b_simready_isaac_probe_spec.v1",
+        "status": "frozen_before_execution",
+        "isaac_sim_version": ISAAC_SIM_VERSION,
+        "replacement_prim_path": replacement_path,
+        "source_target_collider_path": "/World/Environment/ZHQYGJJVAJYEYPTUKY888888",
+        "support_collider_path": support_collider_path,
+        "expected_support_z_m": placement[2],
+        "replacement_dimensions_m": usd_scene_inventory["local_bounds"]["dimensions_m"],
+        "replacement_mass_kg": float(usd_scene_inventory["masses"][0]["mass"]),
+        "fixed_step_seconds": 1.0 / 120.0,
+        "stages": {
+            name: {
+                "relative_path": path.relative_to(target).as_posix(),
+                "sha256": _sha256(path),
+            }
+            for name, path in isaac_stages.items()
+        },
+        "acceptance": {
+            "drop": {
+                "minimum_observed_drop_m": 0.025,
+                "minimum_contact_events": 1,
+                "maximum_support_height_error_m": 0.006,
+                "maximum_settle_motion_m": 0.002,
+            },
+            "slide": {
+                "minimum_horizontal_motion_m": 0.002,
+                "maximum_horizontal_motion_m": 0.5,
+                "maximum_support_height_error_m": 0.008,
+            },
+            "tip": {
+                "minimum_perturbation_degrees": 5.0,
+                "maximum_center_drop_m": 0.20,
+                "maximum_support_height_error_m": 0.02,
+            },
+            "gripper": {
+                "approach_clearance_m": 0.015,
+                "closed_finger_gap_m": 0.060,
+                "minimum_finger_contact_events": 1,
+                "minimum_lift_m": 0.015,
+                "release_required": True,
+            },
+        },
+        "claim_boundaries": {
+            "frozen_packet_is_not_execution": True,
+            "bounded_two_finger_proxy_is_not_robot_task_success": True,
+            "isaac_result_is_not_physical_truth": True,
+        },
+    }
+    isaac_probe_spec_path = target / "isaac_probe_spec.json"
+    write_json(isaac_probe_spec_path, isaac_probe_spec)
     manifest = {
         "schema_version": "adp009b_simready_native_probe.v1",
         "status": "ready",
@@ -432,10 +681,18 @@ def materialize_native_probe(
             "drop_height_m": 0.05,
             "expected_support_z_m": placement[2],
         },
+        "isaac": {
+            "version": ISAAC_SIM_VERSION,
+            "probe_spec_sha256": _sha256(isaac_probe_spec_path),
+            "stage_count": len(isaac_stages),
+            "probe_names": sorted(isaac_stages),
+            "status": "frozen_not_executed",
+        },
         "claim_boundaries": {
             "ovrtx_object_only_render_not_3dgs_scene_render": True,
             "local_composite_required_after_provider_return": True,
             "ovphysx_probe_not_isaac_or_physical_truth": True,
+            "isaac_probe_packet_is_not_isaac_execution": True,
         },
     }
     write_json(target / "adp009b_simready_native_probe_manifest.json", manifest)
