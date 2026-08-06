@@ -26,7 +26,7 @@ completion.
 | InFusion primary adapter | `infusion_checkpoint_license_missing` | Publisher license for `Johanan0528/Infusion` revision `83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2`; author masks remain a later missing input. |
 | Controlled-background truth | `controlled_background_truth_case_missing` | One rights-cleared, metric known-background edit case and receipt. |
 | Exact SimReady object | `isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing` | Dynamic Isaac contact, drop, slide, tip, and gripper probes on the exact static-validated USD. |
-| Physics positive control | `physics_positive_control_receipt_missing` | A digest-bound positive-control execution receipt. |
+| Physics positive control | `physics_positive_control_underlying_execution_receipts_missing` | The retained 2026-08-02 development summary binds successful PhysX drop/contact and RTX-startup results by digest, but the underlying runtime, execution, teardown, and provider-zero receipt bytes were not found in the audited evidence roots. Recover those exact files or rerun the frozen positive control through the canonical paid-resource lifecycle. |
 | ScanNet++ real transfer | `scannetpp_account_application_approval_and_terms_authority_required` | The fresh publisher-source [access outcome](manifests/adp009c_scannetpp_access_outcome.v1.json) binds the current dataset page and Terms of Use as actual bytes. An authorized requester must create or use an account, submit an application, obtain approval, and accept the current noncommercial terms with authority to bind any applicable for-profit employer; only then may one exact scene be selected, downloaded, and admitted. |
 
 ## Bound but not executed

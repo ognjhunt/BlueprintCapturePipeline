@@ -135,7 +135,7 @@
   },
   "missing_roles": {
     "controlled_background_truth": "controlled_background_truth_case_missing",
-    "physics_positive_control": "physics_positive_control_receipt_missing",
+    "physics_positive_control": "physics_positive_control_underlying_execution_receipts_missing",
     "scannetpp_real_transfer": "scannetpp_account_application_approval_and_terms_authority_required"
   }
 }

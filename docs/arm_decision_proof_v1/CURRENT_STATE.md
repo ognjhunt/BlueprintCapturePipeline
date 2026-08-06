@@ -33,10 +33,18 @@ artifact under explicit repository, data, and method roots; it recomputes their
 sizes, SHA-256 values, canonical digests, roles, source-project identities,
 statuses, and cross-bindings before matrix completion is possible. The current
 blocked `4/10` replay opened and verified the referenced bytes and emitted index
-receipt `sha256:862c5120408188898ca76d5d928696e343a07a76accf4e0701458d8db1e12806`.
+receipt `sha256:30e2dbadd6cdb900c8ee8d983034b4d7dee363ff7a1b2faea805d1d539ccf76d`.
 It also repairs the exact-SimReady component identity to the contract-required
 `Blueprint-controlled` value; the component remains blocked on its dynamic Isaac
 probes.
+
+The checked 2026-08-02 Isaac development summary records successful deterministic
+PhysX sphere/box drop-contact cases and RTX pixel production, but its underlying
+runtime, execution, teardown, and provider-zero receipt bytes were not found in
+the current repository or retained validation-data roots. It remains historical
+development evidence; the suite's physics-positive-control role fails closed on
+`physics_positive_control_underlying_execution_receipts_missing` until those exact
+bytes are recovered or the frozen control is rerun.
 
 Candidate `0787_841244` remains a retained, rejected warm start rather than the
 selected scene. Direct inspection could not establish a suitable target whose

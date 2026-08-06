@@ -26,7 +26,7 @@
   "deployment_readiness": false,
   "evaluated_on": "2026-08-05",
   "gate_id": "exact_public_scene_suite_index",
-  "index_digest": "sha256:e2e97cbcc6c5213807c4dd598ae0ae7c26b9a53b5ba194143da2849e8110c900",
+  "index_digest": "sha256:4db9839a71567ea9b46a663d4580e74bcb983c1871659e1301cea14207cd3eb4",
   "index_id": "adp009a-public-suite-20260804",
   "metric_geometry_qualified": false,
   "partner_capture_qualified": false,
@@ -34,7 +34,7 @@
   "program_id": "arm-decision-proof-v1",
   "prospective_validation": false,
   "public_scene_software_qualified": false,
-  "receipt_digest": "sha256:a7bc775278fce5aec48fcd73fa01c2f319b03892bd5a80488133d8244095feb3",
+  "receipt_digest": "sha256:30e2dbadd6cdb900c8ee8d983034b4d7dee363ff7a1b2faea805d1d539ccf76d",
   "required_role_count": 10,
   "role_bindings": [
     {
@@ -158,9 +158,9 @@
       "source_project_id": "NVIDIA-Omniverse/usd-content-agents"
     },
     {
-      "component_admission_receipt_digest": "sha256:94202cd5fe0b5bc38f4dfd774adde0dac15abae5e2c7b66d6b4911434a1cb7b4",
+      "component_admission_receipt_digest": "sha256:975ac224b0cdbc3bb319be5f311c5fcea281f65fc42ecdc5d95e38b6940874af",
       "component_blockers": [
-        "physics_positive_control_receipt_missing"
+        "physics_positive_control_underlying_execution_receipts_missing"
       ],
       "component_manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
       "declared_status": "blocked",
@@ -192,6 +192,6 @@
   ],
   "schema_version": "public_scene_suite_index_receipt.v1",
   "status": "blocked",
-  "supplied_index_digest": "sha256:e2e97cbcc6c5213807c4dd598ae0ae7c26b9a53b5ba194143da2849e8110c900",
+  "supplied_index_digest": "sha256:4db9839a71567ea9b46a663d4580e74bcb983c1871659e1301cea14207cd3eb4",
   "task_physics_qualified": false
 }
