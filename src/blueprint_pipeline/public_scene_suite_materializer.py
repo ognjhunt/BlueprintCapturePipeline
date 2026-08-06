@@ -1053,7 +1053,7 @@ def _simready_control_component(
         "adp_item": ADP_ITEM,
         "component_id": str(receipt["control_id"]),
         "role": "exact_simready_object",
-        "source_project_id": "SimReady",
+        "source_project_id": REQUIRED_ROLE_PROJECTS["exact_simready_object"],
         "publisher_identity": {
             "cad_skill_repository": source_skill["repository"],
             "cad_skill_revision": source_skill["commit"],
@@ -1597,9 +1597,7 @@ def materialize_public_scene_suite(
         else:
             exact_revision = {"kind": "content_digest", "value": manifest["manifest_digest"]}
         artifacts = manifest.get("materialized_artifacts", [])
-        artifact_digest = (
-            canonical_digest({"artifacts": artifacts}) if artifacts else manifest["manifest_digest"]
-        )
+        artifact_digest = canonical_digest({"artifacts": artifacts})
         components.append(
             {
                 "role": role,
@@ -1636,7 +1634,12 @@ def materialize_public_scene_suite(
     }
     index["index_digest"] = canonical_digest(index, digest_field="index_digest")
     evaluated_on = dt.date.fromisoformat(str(request["evaluated_on"]))
-    index_receipt = build_public_scene_suite_index_receipt(index, evaluated_on=evaluated_on)
+    index_receipt = build_public_scene_suite_index_receipt(
+        index,
+        evaluated_on=evaluated_on,
+        component_root=output_root,
+        artifact_roots=(repo_root, data_root, method_root),
+    )
     (output_root / "public_scene_suite_index.v1.json").write_text(
         json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

@@ -993,6 +993,16 @@ def test_statically_validated_simready_control_is_bound_but_not_admitted(
     receipt = json.loads(
         (paths["output"] / "exact_simready_object.component_receipt.json").read_text()
     )
+    index = json.loads(
+        (paths["output"] / "public_scene_suite_index.v1.json").read_text()
+    )
+    index_row = next(
+        row for row in index["components"] if row["role"] == "exact_simready_object"
+    )
+    assert manifest["source_project_id"] == "Blueprint-controlled"
+    assert index_row["source_project_id"] == manifest["source_project_id"]
+    assert index_row["component_manifest_digest"] == manifest["manifest_digest"]
+    assert index_row["component_admission_receipt_digest"] == receipt["receipt_digest"]
     assert manifest["observed_evidence"]["simready_foundation_profile_passed"] is True
     assert manifest["observed_evidence"]["isaac_dynamic_probes_executed"] is False
     assert receipt["status"] == "blocked"

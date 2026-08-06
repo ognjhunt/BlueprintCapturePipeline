@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 
@@ -155,17 +156,80 @@ def _receipt(value: dict) -> dict:
     return build_public_scene_suite_index_receipt(value, evaluated_on=EVALUATED_ON)
 
 
+def _write_file_backing(tmp_path: Path, value: dict) -> tuple[Path, Path]:
+    components = tmp_path / "components"
+    artifacts = tmp_path / "artifacts"
+    components.mkdir()
+    artifacts.mkdir()
+    for row in value["components"]:
+        role = row["role"]
+        artifact = artifacts / f"{role}.bin"
+        artifact.write_bytes(f"observed-{role}".encode())
+        artifact_record = {
+            "external_relative_path": artifact.name,
+            "publisher_path": artifact.name,
+            "role": "test_evidence",
+            "size_bytes": artifact.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        }
+        manifest = {
+            "schema_version": "public_scene_suite_manifest.v1",
+            "program_id": "arm-decision-proof-v1",
+            "adp_item": "ADP-009A",
+            "component_id": f"test-{role}",
+            "role": role,
+            "source_project_id": row["source_project_id"],
+            "publisher_identity": {},
+            "materialized_artifacts": [artifact_record],
+            "manifest_digest": "",
+        }
+        manifest["manifest_digest"] = canonical_digest(
+            manifest, digest_field="manifest_digest"
+        )
+        receipt = {
+            "schema_version": "public_scene_suite_admission_receipt.v1",
+            "program_id": "arm-decision-proof-v1",
+            "adp_item": "ADP-009A",
+            "component_id": manifest["component_id"],
+            "role": role,
+            "component_manifest_digest": manifest["manifest_digest"],
+            "status": row["status"],
+            "blockers": row["blockers"],
+            "receipt_digest": "",
+        }
+        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+        (components / f"{role}.component_manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        (components / f"{role}.component_receipt.json").write_text(
+            json.dumps(receipt), encoding="utf-8"
+        )
+        row["component_manifest_digest"] = manifest["manifest_digest"]
+        row["component_admission_receipt_digest"] = receipt["receipt_digest"]
+        row["exact_artifact_digest"] = canonical_digest(
+            {"artifacts": [artifact_record]}
+        )
+    _redigest(value)
+    return components, artifacts
+
+
 def _component_for_role(value: dict, role: str) -> dict:
     return next(row for row in value["components"] if row["role"] == role)
 
 
-def test_exact_admitted_matrix_is_schema_valid_and_complete() -> None:
+def test_exact_admitted_matrix_is_schema_valid_and_complete(tmp_path: Path) -> None:
     value = _index()
+    components, artifacts = _write_file_backing(tmp_path, value)
     schema = _schema()
     jsonschema.Draft202012Validator.check_schema(schema)
     jsonschema.Draft202012Validator(schema).validate(value)
 
-    receipt = _receipt(value)
+    receipt = build_public_scene_suite_index_receipt(
+        value,
+        evaluated_on=EVALUATED_ON,
+        component_root=components,
+        artifact_roots=(artifacts,),
+    )
 
     assert receipt["status"] == "matrix_complete"
     assert receipt["blockers"] == []
@@ -178,8 +242,8 @@ def test_exact_admitted_matrix_is_schema_valid_and_complete() -> None:
         REQUIRED_ROLE_PROJECTS
     )
     assert receipt["claim_ceiling"] == "development_only"
-    assert receipt["artifact_bytes_opened"] is False
-    assert receipt["artifact_bytes_verified"] is False
+    assert receipt["artifact_bytes_opened"] is True
+    assert receipt["artifact_bytes_verified"] is True
     assert receipt["public_scene_software_qualified"] is False
     assert receipt["metric_geometry_qualified"] is False
     assert receipt["task_physics_qualified"] is False
@@ -188,10 +252,70 @@ def test_exact_admitted_matrix_is_schema_valid_and_complete() -> None:
     assert receipt["physical_evidence_created"] is False
     assert receipt["deployment_readiness"] is False
     assert receipt["customer_value"] is False
-    assert receipt == _receipt(value)
+    assert receipt == build_public_scene_suite_index_receipt(
+        value,
+        evaluated_on=EVALUATED_ON,
+        component_root=components,
+        artifact_roots=(artifacts,),
+    )
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
     )
+
+
+def test_json_only_matrix_cannot_claim_complete() -> None:
+    receipt = _receipt(_index())
+
+    assert receipt["status"] == "blocked"
+    assert receipt["adp009_matrix_complete"] is False
+    assert "component_files:not_verified" in receipt["blockers"]
+
+
+def test_file_backed_matrix_rejects_changed_artifact(tmp_path: Path) -> None:
+    value = _index()
+    components, artifacts = _write_file_backing(tmp_path, value)
+    (artifacts / "exact_simready_object.bin").write_bytes(b"changed")
+
+    receipt = build_public_scene_suite_index_receipt(
+        value,
+        evaluated_on=EVALUATED_ON,
+        component_root=components,
+        artifact_roots=(artifacts,),
+    )
+
+    assert receipt["status"] == "blocked"
+    assert any(
+        blocker.startswith(
+            "component_files:exact_simready_object:artifact_0:bytes_missing_or_changed"
+        )
+        for blocker in receipt["blockers"]
+    )
+
+
+def test_file_backed_matrix_rejects_manifest_source_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    value = _index()
+    components, artifacts = _write_file_backing(tmp_path, value)
+    manifest_path = components / "exact_simready_object.component_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["source_project_id"] = "SimReady"
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    receipt = build_public_scene_suite_index_receipt(
+        value,
+        evaluated_on=EVALUATED_ON,
+        component_root=components,
+        artifact_roots=(artifacts,),
+    )
+
+    assert receipt["status"] == "blocked"
+    assert "component_files:exact_simready_object:source_project_id_mismatch" in receipt[
+        "blockers"
+    ]
 
 
 def test_blocked_component_is_schema_valid_but_matrix_is_incomplete() -> None:

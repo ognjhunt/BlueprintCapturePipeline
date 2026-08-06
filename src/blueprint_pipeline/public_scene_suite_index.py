@@ -15,8 +15,10 @@ deployment evidence.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
@@ -301,8 +303,111 @@ def _validate_index(value: Mapping[str, Any]) -> list[str]:
     return sorted(set(blockers))
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _load_object(path: Path, blocker: str, blockers: list[str]) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        blockers.append(blocker)
+        return {}
+    if not isinstance(value, dict):
+        blockers.append(blocker)
+        return {}
+    return value
+
+
+def _verify_component_files(
+    *,
+    components: Sequence[Mapping[str, Any]],
+    component_root: Path,
+    artifact_roots: Sequence[Path],
+) -> tuple[list[str], int]:
+    blockers: list[str] = []
+    artifact_count = 0
+    rows = {_string(row.get("role")): dict(row) for row in components}
+    for role, expected_project in REQUIRED_ROLE_PROJECTS.items():
+        row = rows.get(role) or {}
+        manifest_path = component_root / f"{role}.component_manifest.json"
+        receipt_path = component_root / f"{role}.component_receipt.json"
+        manifest = _load_object(
+            manifest_path, f"component_files:{role}:manifest_missing_or_invalid", blockers
+        )
+        receipt = _load_object(
+            receipt_path, f"component_files:{role}:receipt_missing_or_invalid", blockers
+        )
+        if not manifest or not receipt:
+            continue
+        manifest_digest = canonical_digest(manifest, digest_field="manifest_digest")
+        receipt_digest = canonical_digest(receipt, digest_field="receipt_digest")
+        if manifest.get("manifest_digest") != manifest_digest:
+            blockers.append(f"component_files:{role}:manifest_digest_mismatch")
+        if receipt.get("receipt_digest") != receipt_digest:
+            blockers.append(f"component_files:{role}:receipt_digest_mismatch")
+        if (
+            manifest.get("role") != role
+            or receipt.get("role") != role
+            or manifest.get("component_id") != receipt.get("component_id")
+        ):
+            blockers.append(f"component_files:{role}:component_identity_mismatch")
+        if manifest.get("source_project_id") != expected_project:
+            blockers.append(f"component_files:{role}:source_project_id_mismatch")
+        if (
+            row.get("source_project_id") != manifest.get("source_project_id")
+            or row.get("component_manifest_digest") != manifest.get("manifest_digest")
+            or receipt.get("component_manifest_digest") != manifest.get("manifest_digest")
+            or row.get("component_admission_receipt_digest") != receipt.get("receipt_digest")
+            or row.get("status") != receipt.get("status")
+            or row.get("blockers") != receipt.get("blockers")
+        ):
+            blockers.append(f"component_files:{role}:index_binding_mismatch")
+        artifacts = manifest.get("materialized_artifacts")
+        if not isinstance(artifacts, list):
+            blockers.append(f"component_files:{role}:artifacts_invalid")
+            continue
+        if receipt.get("status") == "admitted" and not artifacts:
+            blockers.append(f"component_files:{role}:admitted_artifacts_missing")
+        expected_artifact_digest = canonical_digest({"artifacts": artifacts})
+        if row.get("exact_artifact_digest") != expected_artifact_digest:
+            blockers.append(f"component_files:{role}:artifact_digest_mismatch")
+        for artifact_index, artifact in enumerate(artifacts):
+            artifact_count += 1
+            if not isinstance(artifact, Mapping):
+                blockers.append(
+                    f"component_files:{role}:artifact_{artifact_index}:invalid"
+                )
+                continue
+            relative = _string(artifact.get("external_relative_path"))
+            candidates: list[Path] = []
+            for root in artifact_roots:
+                candidate = (root / relative).resolve()
+                if relative and (candidate == root or root in candidate.parents) and candidate.is_file():
+                    candidates.append(candidate)
+            matching = [
+                path
+                for path in candidates
+                if path.stat().st_size == artifact.get("size_bytes")
+                and _sha256(path) == artifact.get("sha256")
+            ]
+            if len(matching) != 1:
+                blockers.append(
+                    f"component_files:{role}:artifact_{artifact_index}:bytes_missing_or_changed"
+                )
+    return sorted(set(blockers)), artifact_count
+
+
 def build_public_scene_suite_index_receipt(
-    value: Mapping[str, Any], *, evaluated_on: dt.date | str
+    value: Mapping[str, Any],
+    *,
+    evaluated_on: dt.date | str,
+    component_root: str | Path | None = None,
+    artifact_roots: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """Return a deterministic exact-suite index receipt.
 
@@ -363,6 +468,27 @@ def build_public_scene_suite_index_receipt(
             }
         )
 
+    file_backed = component_root is not None and bool(artifact_roots)
+    artifact_count = 0
+    if file_backed:
+        resolved_component_root = Path(component_root).expanduser().resolve()
+        resolved_artifact_roots = tuple(
+            Path(root).expanduser().resolve() for root in artifact_roots
+        )
+        if not resolved_component_root.is_dir() or any(
+            not root.is_dir() for root in resolved_artifact_roots
+        ):
+            blockers.append("component_files:allowlisted_root_missing")
+        else:
+            file_blockers, artifact_count = _verify_component_files(
+                components=components,
+                component_root=resolved_component_root,
+                artifact_roots=resolved_artifact_roots,
+            )
+            blockers.extend(file_blockers)
+    else:
+        blockers.append("component_files:not_verified")
+    blockers = sorted(set(blockers))
     matrix_complete = not blockers
     receipt: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
@@ -391,8 +517,10 @@ def build_public_scene_suite_index_receipt(
         "role_bindings": role_bindings,
         "adp009_matrix_complete": matrix_complete,
         "claim_ceiling": CLAIM_CEILING,
-        "artifact_bytes_opened": False,
-        "artifact_bytes_verified": False,
+        "artifact_bytes_opened": file_backed and artifact_count > 0,
+        "artifact_bytes_verified": file_backed and artifact_count > 0 and not any(
+            blocker.startswith("component_files:") for blocker in blockers
+        ),
         "public_scene_software_qualified": False,
         "metric_geometry_qualified": False,
         "task_physics_qualified": False,
