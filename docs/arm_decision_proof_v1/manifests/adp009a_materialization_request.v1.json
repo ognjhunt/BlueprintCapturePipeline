@@ -133,9 +133,14 @@
     "teardown_manifest_path": "simready/content_agents/vast_match_v2_run_001/job_live/vast_provider_run/vast_teardown_manifest.json",
     "object_cleanup_path": "simready/content_agents/vast_match_v2_run_001/job_live/object_store_staging/wam_provider_object_store_cleanup.json"
   },
+  "physics_positive_control": {
+    "runtime_result_path": "physics_positive_control/isaac_physx_attempt17_20260802/provider_runtime_result.json",
+    "execution_result_path": "physics_positive_control/isaac_physx_attempt17_20260802/measurement_isaac_vast_execution.json",
+    "teardown_receipt_path": "physics_positive_control/isaac_physx_attempt17_20260802/teardown_receipt.json",
+    "provider_zero_path": "physics_positive_control/isaac_physx_attempt17_20260802/provider_zero_verification.json"
+  },
   "missing_roles": {
     "controlled_background_truth": "controlled_background_truth_case_missing",
-    "physics_positive_control": "physics_positive_control_underlying_execution_receipts_missing",
     "scannetpp_real_transfer": "scannetpp_account_application_approval_and_terms_authority_required"
   }
 }

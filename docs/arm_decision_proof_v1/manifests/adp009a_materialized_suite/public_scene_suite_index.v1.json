@@ -129,19 +129,17 @@
       "status": "admitted"
     },
     {
-      "blockers": [
-        "physics_positive_control_underlying_execution_receipts_missing"
-      ],
-      "component_admission_receipt_digest": "sha256:975ac224b0cdbc3bb319be5f311c5fcea281f65fc42ecdc5d95e38b6940874af",
-      "component_manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
-      "exact_artifact_digest": "sha256:bf551427bb93b2762e29fc326bedde7a8e2cac4e25b3126cea8fc66f46d2e55b",
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:0e0e216d50aa18e5d1a79b71ac0cf5458b2228f181591a58e858011637cdf4dc",
+      "component_manifest_digest": "sha256:1ce66bcdfe86cdf747b0f02eff5c681106bad0103096cbb744a2dc57b6e7b089",
+      "exact_artifact_digest": "sha256:200be922103cd03634ab9b850fa46c0b84576114aa8f2e0061075415b02cd666",
       "exact_revision": {
-        "kind": "content_digest",
-        "value": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e"
+        "kind": "git_commit",
+        "value": "5ac9fedb5476fd6b0fbea4332d5133514637240c"
       },
       "role": "physics_positive_control",
       "source_project_id": "Blueprint-controlled",
-      "status": "blocked"
+      "status": "admitted"
     },
     {
       "blockers": [
@@ -159,7 +157,7 @@
       "status": "blocked"
     }
   ],
-  "index_digest": "sha256:77d18d7dedd99ccb9a70e8c9ac6ce6a4bd4233729b77006f5b469f8116d22b1d",
+  "index_digest": "sha256:572dc8b01ce7acdb5d13cc9f672c59809aa9cbd128285fe65ad8d866dc2e452d",
   "index_id": "adp009a-public-suite-20260804",
   "program_id": "arm-decision-proof-v1",
   "schema_version": "public_scene_suite_index.v1"

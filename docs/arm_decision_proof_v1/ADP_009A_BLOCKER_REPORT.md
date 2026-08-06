@@ -1,6 +1,6 @@
 # ADP-009A Blocker Report
 
-Observed state on 2026-08-05: the deterministic ten-role suite admits `4/10`
+Observed state on 2026-08-06: the deterministic ten-role suite admits `5/10`
 roles and remains `blocked`. This is useful current-state evidence, not ADP-009A
 completion.
 
@@ -17,6 +17,10 @@ completion.
   modification, one 820,832-vertex produced point cloud, eight retained
   full-resolution comparison frame pairs, `$0.788692` estimated cost, zero
   retries, provider teardown, and object-store cleanup.
+- `physics_positive_control`: recovered exact native Isaac Sim 6.0.1 runtime,
+  execution, teardown, and provider-zero receipts bind two deterministic rigid
+  drop/contact cases plus RTX pixels; this remains a synthetic development
+  control and does not qualify the exact replacement or public scene.
 
 ## Smallest blockers
 
@@ -26,7 +30,6 @@ completion.
 | InFusion primary adapter | `infusion_checkpoint_license_missing` | Publisher license for `Johanan0528/Infusion` revision `83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2`; author masks remain a later missing input. |
 | Controlled-background truth | `controlled_background_truth_case_missing` | One rights-cleared, metric known-background edit case and receipt. |
 | Exact SimReady object | `isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing` | Dynamic Isaac contact, drop, slide, tip, and gripper probes on the exact static-validated USD. |
-| Physics positive control | `physics_positive_control_underlying_execution_receipts_missing` | The retained 2026-08-02 development summary binds successful PhysX drop/contact and RTX-startup results by digest, but the underlying runtime, execution, teardown, and provider-zero receipt bytes were not found in the audited evidence roots. Recover those exact files or rerun the frozen positive control through the canonical paid-resource lifecycle. |
 | ScanNet++ real transfer | `scannetpp_account_application_approval_and_terms_authority_required` | The fresh publisher-source [access outcome](manifests/adp009c_scannetpp_access_outcome.v1.json) binds the current dataset page and Terms of Use as actual bytes. An authorized requester must create or use an account, submit an application, obtain approval, and accept the current noncommercial terms with authority to bind any applicable for-profit employer; only then may one exact scene be selected, downloaded, and admitted. |
 
 ## Bound but not executed
@@ -63,9 +66,10 @@ evenly spaced views at five-times greater standoff, and enforce an added-Gaussia
 budget. A later static-composition receipt now deactivates the selected source
 collider and references the exact SimReady can at the measured SAGE cabinet
 support height without modifying the publisher support mesh. That composed USD
-remains a static candidate: native OVPhysX contact/settling and native OVRTX
-before/after visual review are still missing. The Content Agents asset remains
-an authoring comparison until those dynamic and visual probes pass.
+has since passed the pinned OVPhysX contact/settling probe and eight native
+OVRTX object-layer before/after views. It remains an authoring candidate until
+the exact composition passes the required native Isaac drop/contact, slide,
+tip, and bounded gripper probes.
 
 The stricter successor `v3_execute_a019b8d18` also completed with zero retries
 and provider/object-store zero. It froze eight evenly spaced views before

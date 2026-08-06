@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .measurement_adapter_execution import (
+    MeasurementAdapterExecutionError,
+    validate_measurement_adapter_execution_bundle,
+)
 from .public_scene_suite_index import (
     REQUIRED_ROLE_PROJECTS,
     build_public_scene_suite_index_receipt,
@@ -1079,6 +1083,236 @@ def _blocked_component(
     )
 
 
+def _physics_positive_control_component(
+    *, spec: Mapping[str, Any], data_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    paths = {
+        name: _rooted(data_root, str(spec[f"{name}_path"]))
+        for name in ("runtime_result", "execution_result", "teardown_receipt", "provider_zero")
+    }
+    values = {name: _read_json(path) for name, path in paths.items()}
+    digest_fields = {
+        "runtime_result": "runtime_result_digest",
+        "execution_result": "execution_result_digest",
+        "teardown_receipt": "teardown_receipt_digest",
+        "provider_zero": "provider_zero_digest",
+    }
+    for name, digest_field in digest_fields.items():
+        value = values[name]
+        if value.get(digest_field) != canonical_digest(value, digest_field=digest_field):
+            raise PublicSceneSuiteMaterializationError(
+                f"physics_positive_control_{name}_digest_mismatch"
+            )
+
+    runtime = values["runtime_result"]
+    execution = values["execution_result"]
+    teardown = values["teardown_receipt"]
+    provider_zero = values["provider_zero"]
+    expected_schemas = {
+        "runtime_result": "measurement_isaac_physx_rtx_vast_runtime_result.v2",
+        "execution_result": "measurement_isaac_physx_vast_execution.v1",
+        "teardown_receipt": "measurement_isaac_physx_vast_teardown.v1",
+        "provider_zero": "measurement_isaac_physx_vast_provider_zero.v1",
+    }
+    if any(values[name].get("schema_version") != schema for name, schema in expected_schemas.items()):
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_receipt_schema_invalid"
+        )
+
+    runtime_digest = runtime["runtime_result_digest"]
+    teardown_digest = teardown["teardown_receipt_digest"]
+    provider_zero_digest = provider_zero["provider_zero_digest"]
+    if (
+        runtime.get("status") != "passed"
+        or runtime.get("blockers") != []
+        or runtime.get("development_only") is not True
+        or runtime.get("synthetic_fixture") is not True
+        or runtime.get("qualification_created") is not False
+        or runtime.get("production_route_eligible") is not False
+        or runtime.get("physical_success_established") is not False
+        or runtime.get("r7_admission") is not False
+        or runtime.get("raw_secret_values_recorded") is not False
+        or execution.get("status") != "completed"
+        or execution.get("blockers") != []
+        or execution.get("runtime_result_digest") != runtime_digest
+        or execution.get("source_commit_sha") != runtime.get("source_commit_sha")
+        or execution.get("worker_image_digest") != runtime.get("runtime_image_digest")
+        or execution.get("teardown_receipt_digest") != teardown_digest
+        or execution.get("provider_zero_digest") != provider_zero_digest
+        or execution.get("provider_zero_verified") is not True
+        or execution.get("provider_mutation_outcome_ambiguous") is not False
+        or execution.get("development_execution_completed") is not True
+        or execution.get("qualification_created") is not False
+        or execution.get("r7_admission_created") is not False
+        or execution.get("physical_success_established") is not False
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_runtime_or_execution_invalid"
+        )
+
+    request_digest = execution.get("request_digest")
+    bound_request_digest = execution.get("bound_request_digest")
+    worker_image_digest = execution.get("worker_image_digest")
+    if (
+        teardown.get("status") != "PASS"
+        or teardown.get("provider") != "vast"
+        or teardown.get("request_digest") != request_digest
+        or teardown.get("bound_request_digest") != bound_request_digest
+        or teardown.get("worker_image_digest") != worker_image_digest
+        or teardown.get("instance_id") != execution.get("instance_id")
+        or teardown.get("provider_zero_verified") is not True
+        or provider_zero.get("status") != "PASS"
+        or provider_zero.get("provider") != "vast"
+        or provider_zero.get("request_digest") != request_digest
+        or provider_zero.get("bound_request_digest") != bound_request_digest
+        or provider_zero.get("api_confirmed") is not True
+        or provider_zero.get("scoped_live_resource_count") != 0
+        or provider_zero.get("global_live_resource_count") != 0
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_teardown_or_provider_zero_invalid"
+        )
+
+    bundles = runtime.get("execution_bundles")
+    if not isinstance(bundles, list) or len(bundles) != 2:
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_execution_bundles_invalid"
+        )
+    case_summaries: list[dict[str, Any]] = []
+    for raw_bundle in bundles:
+        try:
+            bundle = validate_measurement_adapter_execution_bundle(raw_bundle)
+        except MeasurementAdapterExecutionError as exc:
+            raise PublicSceneSuiteMaterializationError(
+                "physics_positive_control_execution_bundle_invalid"
+            ) from exc
+        receipt = bundle["receipt"]
+        observations = receipt.get("runtime_observations", {})
+        operating_point = bundle["request"]["case_manifest"].get("operating_point", {})
+        penetration = observations.get("penetration_m")
+        threshold = operating_point.get("penetration_unsafe_threshold_m")
+        if (
+            receipt.get("status") != "completed"
+            or receipt.get("exit_code") != 0
+            or receipt.get("failure_codes") != []
+            or observations.get("engine_version") != "6.0.1"
+            or observations.get("deterministic_replay_match") is not True
+            or not isinstance(observations.get("contact_report_event_count"), int)
+            or observations.get("contact_report_event_count", 0) <= 0
+            or not isinstance(penetration, (int, float))
+            or not isinstance(threshold, (int, float))
+            or penetration > threshold
+            or bundle.get("qualification_created") is not False
+            or bundle.get("production_route_created") is not False
+            or bundle.get("catalog_mutated") is not False
+            or bundle.get("physical_success_established") is not False
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "physics_positive_control_execution_observation_invalid"
+            )
+        case_summaries.append(
+            {
+                "case_id": bundle["request"]["case_manifest"]["case_id"],
+                "contact_report_event_count": observations["contact_report_event_count"],
+                "deterministic_replay_match": True,
+                "penetration_m": penetration,
+                "penetration_threshold_m": threshold,
+            }
+        )
+
+    rtx = runtime.get("rtx_openusd_runtime_preflight")
+    if not isinstance(rtx, Mapping):
+        raise PublicSceneSuiteMaterializationError("physics_positive_control_rtx_missing")
+    rtx_checks = rtx.get("checks")
+    by_name = {
+        str(row.get("name")): row
+        for row in rtx_checks
+        if isinstance(rtx_checks, list) and isinstance(row, Mapping) and row.get("name")
+    }
+    frame = by_name.get("rtx_smoke_frame_render", {})
+    boundary = rtx.get("proof_boundary", {})
+    if (
+        rtx.get("preflight_result_digest")
+        != canonical_digest(rtx, digest_field="preflight_result_digest")
+        or rtx.get("status") != "passed"
+        or rtx.get("blockers") != []
+        or rtx.get("secret_values_in_artifact") is not False
+        or frame.get("status") != "passed"
+        or frame.get("renderer") != "RayTracedLighting"
+        or not isinstance(frame.get("pixel_count"), int)
+        or frame.get("pixel_count", 0) <= 0
+        or not isinstance(boundary, Mapping)
+        or boundary.get("rtx_pixels_rendered") is not True
+        or boundary.get("public_claim_upgrade_allowed") is not False
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_rtx_observation_invalid"
+        )
+
+    artifacts = [
+        _file_record(
+            paths[name],
+            root=data_root,
+            publisher_path=paths[name].relative_to(data_root).as_posix(),
+            role=f"physics_positive_control_{name}",
+        )
+        for name in ("runtime_result", "execution_result", "teardown_receipt", "provider_zero")
+    ]
+    manifest: dict[str, Any] = {
+        "schema_version": COMPONENT_SCHEMA_VERSION,
+        "program_id": PROGRAM_ID,
+        "adp_item": ADP_ITEM,
+        "component_id": "adp009a-isaac-physx-positive-control-attempt17",
+        "role": "physics_positive_control",
+        "source_project_id": REQUIRED_ROLE_PROJECTS["physics_positive_control"],
+        "publisher_identity": {
+            "repository": "BlueprintCapturePipeline",
+            "revision": runtime["source_commit_sha"],
+            "runtime_image_digest": runtime["runtime_image_digest"],
+        },
+        "materialized_artifacts": artifacts,
+        "rights": {
+            "established": True,
+            "source": "Blueprint-controlled synthetic fixture and execution receipts",
+            "allowed_use_ceiling": "internal_development_only",
+            "redistribution_allowed": False,
+        },
+        "observed_evidence": {
+            "native_isaac_sim_version": "6.0.1",
+            "execution_case_count": len(case_summaries),
+            "case_summaries": case_summaries,
+            "rtx_pixels_rendered": True,
+            "runtime_result_digest": runtime_digest,
+            "execution_result_digest": execution["execution_result_digest"],
+            "teardown_receipt_digest": teardown_digest,
+            "provider_zero_digest": provider_zero_digest,
+            "provider_zero_verified": True,
+            "cost_usd": execution.get("cost_usd"),
+        },
+        "claim_ceiling": CLAIM_CEILING,
+        "claim_boundaries": {
+            "synthetic_positive_control_only": True,
+            "exact_public_scene_qualified": False,
+            "exact_simready_object_qualified": False,
+            "physical_evidence": False,
+            "production_route_created": False,
+        },
+    }
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    return manifest, _component_receipt(
+        manifest,
+        blockers=(),
+        checks={
+            "actual_receipt_bytes_hashed": True,
+            "canonical_receipt_digests_verified": True,
+            "nested_execution_bundles_verified": True,
+            "native_contact_and_deterministic_replay_observed": True,
+            "rtx_pixels_observed": True,
+            "teardown_and_provider_zero_verified": True,
+        },
+    )
+
+
 def _simready_control_component(
     *, spec: Mapping[str, Any], request: Mapping[str, Any], repo_root: Path
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1660,6 +1894,20 @@ def materialize_public_scene_suite(
         by_role["usd_content_agents_candidate"] = _content_agents_component(
             spec=content_agents,
             repo_root=repo_root,
+            data_root=data_root,
+        )
+    physics_positive_control = request.get("physics_positive_control")
+    if physics_positive_control is not None:
+        if not isinstance(physics_positive_control, Mapping):
+            raise PublicSceneSuiteMaterializationError(
+                "physics_positive_control_spec_invalid"
+            )
+        if "physics_positive_control" in request["missing_roles"]:
+            raise PublicSceneSuiteMaterializationError(
+                "physics_positive_control_role_duplicated"
+            )
+        by_role["physics_positive_control"] = _physics_positive_control_component(
+            spec=physics_positive_control,
             data_root=data_root,
         )
     if set(by_role) != set(REQUIRED_ROLE_PROJECTS):

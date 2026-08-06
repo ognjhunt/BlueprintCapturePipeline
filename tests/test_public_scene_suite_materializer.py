@@ -284,6 +284,163 @@ def _run(paths: dict[str, Path]) -> dict:
     )
 
 
+def _add_physics_positive_control(
+    paths: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    evidence_root = paths["data"] / "physics_positive_control" / "attempt17"
+    evidence_root.mkdir(parents=True)
+    image = "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:" + "a" * 64
+    source_commit = "b" * 40
+    request_digest = "sha256:" + "c" * 64
+    bound_request_digest = "sha256:" + "d" * 64
+    instance_id = "46627972"
+    bundles = []
+    for name, penetration, events in (
+        ("sphere", 0.0, 301),
+        ("box", 0.029, 399),
+    ):
+        bundles.append(
+            {
+                "request": {
+                    "case_manifest": {
+                        "case_id": f"rigid-{name}-drop-development",
+                        "operating_point": {"penetration_unsafe_threshold_m": 0.03},
+                    }
+                },
+                "receipt": {
+                    "status": "completed",
+                    "exit_code": 0,
+                    "failure_codes": [],
+                    "runtime_observations": {
+                        "engine_version": "6.0.1",
+                        "deterministic_replay_match": True,
+                        "contact_report_event_count": events,
+                        "penetration_m": penetration,
+                    },
+                },
+                "qualification_created": False,
+                "production_route_created": False,
+                "catalog_mutated": False,
+                "physical_success_established": False,
+            }
+        )
+    rtx = {
+        "schema_version": "isaac_worker_runtime_preflight.v1",
+        "status": "passed",
+        "blockers": [],
+        "secret_values_in_artifact": False,
+        "checks": [
+            {
+                "name": "rtx_smoke_frame_render",
+                "status": "passed",
+                "renderer": "RayTracedLighting",
+                "pixel_count": 4096,
+            }
+        ],
+        "proof_boundary": {
+            "rtx_pixels_rendered": True,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+    rtx["preflight_result_digest"] = canonical_digest(
+        rtx, digest_field="preflight_result_digest"
+    )
+    runtime = {
+        "schema_version": "measurement_isaac_physx_rtx_vast_runtime_result.v2",
+        "status": "passed",
+        "blockers": [],
+        "development_only": True,
+        "synthetic_fixture": True,
+        "qualification_created": False,
+        "production_route_eligible": False,
+        "physical_success_established": False,
+        "r7_admission": False,
+        "raw_secret_values_recorded": False,
+        "source_commit_sha": source_commit,
+        "runtime_image_digest": image,
+        "execution_bundles": bundles,
+        "rtx_openusd_runtime_preflight": rtx,
+    }
+    runtime["runtime_result_digest"] = canonical_digest(
+        runtime, digest_field="runtime_result_digest"
+    )
+    teardown = {
+        "schema_version": "measurement_isaac_physx_vast_teardown.v1",
+        "status": "PASS",
+        "provider": "vast",
+        "request_digest": request_digest,
+        "bound_request_digest": bound_request_digest,
+        "worker_image_digest": image,
+        "instance_id": instance_id,
+        "provider_zero_verified": True,
+    }
+    teardown["teardown_receipt_digest"] = canonical_digest(
+        teardown, digest_field="teardown_receipt_digest"
+    )
+    provider_zero = {
+        "schema_version": "measurement_isaac_physx_vast_provider_zero.v1",
+        "status": "PASS",
+        "provider": "vast",
+        "request_digest": request_digest,
+        "bound_request_digest": bound_request_digest,
+        "api_confirmed": True,
+        "scoped_live_resource_count": 0,
+        "global_live_resource_count": 0,
+    }
+    provider_zero["provider_zero_digest"] = canonical_digest(
+        provider_zero, digest_field="provider_zero_digest"
+    )
+    execution = {
+        "schema_version": "measurement_isaac_physx_vast_execution.v1",
+        "status": "completed",
+        "blockers": [],
+        "request_digest": request_digest,
+        "bound_request_digest": bound_request_digest,
+        "source_commit_sha": source_commit,
+        "worker_image_digest": image,
+        "instance_id": instance_id,
+        "runtime_result_digest": runtime["runtime_result_digest"],
+        "teardown_receipt_digest": teardown["teardown_receipt_digest"],
+        "provider_zero_digest": provider_zero["provider_zero_digest"],
+        "provider_zero_verified": True,
+        "provider_mutation_outcome_ambiguous": False,
+        "development_execution_completed": True,
+        "qualification_created": False,
+        "r7_admission_created": False,
+        "physical_success_established": False,
+        "cost_usd": 0.067,
+    }
+    execution["execution_result_digest"] = canonical_digest(
+        execution, digest_field="execution_result_digest"
+    )
+    files = {
+        "runtime_result": evidence_root / "provider_runtime_result.json",
+        "execution_result": evidence_root / "measurement_isaac_vast_execution.json",
+        "teardown_receipt": evidence_root / "teardown_receipt.json",
+        "provider_zero": evidence_root / "provider_zero_verification.json",
+    }
+    for name, value in (
+        ("runtime_result", runtime),
+        ("execution_result", execution),
+        ("teardown_receipt", teardown),
+        ("provider_zero", provider_zero),
+    ):
+        _write_json(files[name], value)
+    request = json.loads(paths["request"].read_text())
+    del request["missing_roles"]["physics_positive_control"]
+    request["physics_positive_control"] = {
+        f"{name}_path": files[name].relative_to(paths["data"]).as_posix()
+        for name in files
+    }
+    _write_json(paths["request"], request)
+    monkeypatch.setattr(
+        materializer,
+        "validate_measurement_adapter_execution_bundle",
+        lambda value: value,
+    )
+    return files
+
+
 def _add_method_prerequisite_receipt(paths: dict[str, Path]) -> Path:
     checkpoint = paths["data"] / "methods" / "cropformer.pth"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -1146,6 +1303,69 @@ def test_content_agents_full_execution_rejects_changed_output_bytes(
     with pytest.raises(
         PublicSceneSuiteMaterializationError,
         match="content_agents_artifact_(size|digest)_mismatch",
+    ):
+        _run(paths)
+
+
+def test_physics_positive_control_is_admitted_from_exact_execution_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_physics_positive_control(paths, monkeypatch)
+
+    result = _run(paths)
+
+    manifest = json.loads(
+        (paths["output"] / "physics_positive_control.component_manifest.json").read_text()
+    )
+    receipt = json.loads(
+        (paths["output"] / "physics_positive_control.component_receipt.json").read_text()
+    )
+    assert result["admitted_role_count"] == 3
+    assert receipt["status"] == "admitted"
+    assert receipt["blockers"] == []
+    assert manifest["observed_evidence"]["execution_case_count"] == 2
+    assert manifest["observed_evidence"]["provider_zero_verified"] is True
+    assert manifest["claim_boundaries"]["exact_simready_object_qualified"] is False
+
+
+def test_physics_positive_control_rejects_changed_runtime_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    files = _add_physics_positive_control(paths, monkeypatch)
+    runtime = json.loads(files["runtime_result"].read_text())
+    runtime["status"] = "caller_claimed_pass"
+    _write_json(files["runtime_result"], runtime)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="physics_positive_control_runtime_result_digest_mismatch",
+    ):
+        _run(paths)
+
+
+def test_physics_positive_control_rejects_cross_run_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    files = _add_physics_positive_control(paths, monkeypatch)
+    teardown = json.loads(files["teardown_receipt"].read_text())
+    teardown["instance_id"] = "different-instance"
+    teardown["teardown_receipt_digest"] = canonical_digest(
+        teardown, digest_field="teardown_receipt_digest"
+    )
+    _write_json(files["teardown_receipt"], teardown)
+    execution = json.loads(files["execution_result"].read_text())
+    execution["teardown_receipt_digest"] = teardown["teardown_receipt_digest"]
+    execution["execution_result_digest"] = canonical_digest(
+        execution, digest_field="execution_result_digest"
+    )
+    _write_json(files["execution_result"], execution)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="physics_positive_control_teardown_or_provider_zero_invalid",
     ):
         _run(paths)
 

@@ -1,5 +1,5 @@
 {
-  "admitted_role_count": 4,
+  "admitted_role_count": 5,
   "adp009_matrix_complete": false,
   "adp_item": "ADP-009",
   "artifact_bytes_opened": true,
@@ -9,7 +9,6 @@
     "exact_simready_object",
     "infusion_primary_adapter",
     "inpaint360_author_smoke",
-    "physics_positive_control",
     "scannetpp_real_transfer"
   ],
   "blockers": [
@@ -17,7 +16,6 @@
     "components[1].status:blocked",
     "components[5].status:blocked",
     "components[6].status:blocked",
-    "components[8].status:blocked",
     "components[9].status:blocked"
   ],
   "claim_ceiling": "development_only",
@@ -26,7 +24,7 @@
   "deployment_readiness": false,
   "evaluated_on": "2026-08-05",
   "gate_id": "exact_public_scene_suite_index",
-  "index_digest": "sha256:77d18d7dedd99ccb9a70e8c9ac6ce6a4bd4233729b77006f5b469f8116d22b1d",
+  "index_digest": "sha256:572dc8b01ce7acdb5d13cc9f672c59809aa9cbd128285fe65ad8d866dc2e452d",
   "index_id": "adp009a-public-suite-20260804",
   "metric_geometry_qualified": false,
   "partner_capture_qualified": false,
@@ -34,7 +32,7 @@
   "program_id": "arm-decision-proof-v1",
   "prospective_validation": false,
   "public_scene_software_qualified": false,
-  "receipt_digest": "sha256:c5cfff4ac654ad93746409acd6c054007042a92c0b205ec5fdcae58b9f88161b",
+  "receipt_digest": "sha256:ee89fe5989d997e52a5ba88a6da3f01c82708ae4ef2492e87d6013d0e61d4b7e",
   "required_role_count": 10,
   "role_bindings": [
     {
@@ -158,16 +156,14 @@
       "source_project_id": "NVIDIA-Omniverse/usd-content-agents"
     },
     {
-      "component_admission_receipt_digest": "sha256:975ac224b0cdbc3bb319be5f311c5fcea281f65fc42ecdc5d95e38b6940874af",
-      "component_blockers": [
-        "physics_positive_control_underlying_execution_receipts_missing"
-      ],
-      "component_manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
-      "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:bf551427bb93b2762e29fc326bedde7a8e2cac4e25b3126cea8fc66f46d2e55b",
+      "component_admission_receipt_digest": "sha256:0e0e216d50aa18e5d1a79b71ac0cf5458b2228f181591a58e858011637cdf4dc",
+      "component_blockers": [],
+      "component_manifest_digest": "sha256:1ce66bcdfe86cdf747b0f02eff5c681106bad0103096cbb744a2dc57b6e7b089",
+      "declared_status": "admitted",
+      "exact_artifact_digest": "sha256:200be922103cd03634ab9b850fa46c0b84576114aa8f2e0061075415b02cd666",
       "exact_revision": {
-        "kind": "content_digest",
-        "value": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e"
+        "kind": "git_commit",
+        "value": "5ac9fedb5476fd6b0fbea4332d5133514637240c"
       },
       "expected_project_id": "Blueprint-controlled",
       "role": "physics_positive_control",
@@ -192,6 +188,6 @@
   ],
   "schema_version": "public_scene_suite_index_receipt.v1",
   "status": "blocked",
-  "supplied_index_digest": "sha256:77d18d7dedd99ccb9a70e8c9ac6ce6a4bd4233729b77006f5b469f8116d22b1d",
+  "supplied_index_digest": "sha256:572dc8b01ce7acdb5d13cc9f672c59809aa9cbd128285fe65ad8d866dc2e452d",
   "task_physics_qualified": false
 }
