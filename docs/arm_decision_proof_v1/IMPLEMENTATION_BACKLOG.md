@@ -221,11 +221,14 @@ Observed 2026-08-06: the matched InteriorGS/SAGE-3D `840313` roles, the bounded
 NVIDIA USD Content Agents authoring comparison, AuraFusion360's unchanged
 author-data smoke, and the Blueprint-controlled native Isaac/PhysX positive
 control are admitted. The exact project-owner-approved match-v2 SimReady can is
-also admitted after its static profile and four native Isaac probes passed. The
-ten-role index remains blocked at six admitted roles
-because the Inpaint360GS author smoke, InFusion primary adapter,
-controlled-background truth, and ScanNet++ transfer are still missing. The Aura author
-smoke is not an InteriorGS result, and the Content Agents execution is not an
+also admitted after its static profile and four native Isaac probes passed. A
+four-view Blueprint-authored known-background Big-LaMa case is admitted after a
+seal-before-truth-release execution passed all six preregistered RGB/depth checks
+and the materializer recomputed its scores from actual output bytes. The ten-role
+index remains blocked at seven admitted roles because the Inpaint360GS author
+smoke, InFusion primary adapter, and ScanNet++ transfer are still missing. The
+Aura author smoke is not an InteriorGS result, the controlled case is not
+InteriorGS hidden-background truth, and the Content Agents execution is not an
 inpainting-method smoke.
 
 Acceptance: missing/expired rights, mismatched scene IDs, changed digests,

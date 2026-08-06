@@ -26,6 +26,20 @@ from .public_scene_suite_index import (
     REQUIRED_ROLE_PROJECTS,
     build_public_scene_suite_index_receipt,
 )
+from .public_scene_controlled_background import (
+    CASE_SCHEMA_VERSION as CONTROLLED_CASE_SCHEMA_VERSION,
+    DOCKER_IMAGE as CONTROLLED_DOCKER_IMAGE,
+    DOCKER_IMAGE_ID as CONTROLLED_DOCKER_IMAGE_ID,
+    EXECUTION_SCHEMA_VERSION as CONTROLLED_EXECUTION_SCHEMA_VERSION,
+    LAMA_CHECKPOINT_SHA256,
+    LAMA_COMMIT,
+    LAMA_REPOSITORY,
+    LAMA_SOURCE_SHA256,
+    SCORE_SCHEMA_VERSION as CONTROLLED_SCORE_SCHEMA_VERSION,
+    THRESHOLDS as CONTROLLED_THRESHOLDS,
+    ControlledBackgroundError,
+    score_case as recompute_controlled_background_score,
+)
 from .scene_placement.interiorgs_index import load_interiorgs_labels
 
 
@@ -1083,6 +1097,282 @@ def _blocked_component(
     )
 
 
+def _controlled_background_records(
+    *, records: Any, case_root: Path, data_root: Path, expected_count: int, label: str
+) -> list[dict[str, Any]]:
+    if not isinstance(records, list) or len(records) != expected_count:
+        raise PublicSceneSuiteMaterializationError(
+            f"controlled_background_{label}_inventory_invalid"
+        )
+    verified: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise PublicSceneSuiteMaterializationError(
+                f"controlled_background_{label}_record_invalid"
+            )
+        relative = str(record.get("relative_path") or "")
+        path = _rooted(case_root, relative)
+        if (
+            not path.is_file()
+            or path.stat().st_size != record.get("size_bytes")
+            or _sha256_file(path) != record.get("sha256")
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                f"controlled_background_{label}_bytes_changed:{relative}"
+            )
+        verified.append(
+            _file_record(
+                path,
+                root=data_root,
+                publisher_path=path.relative_to(data_root).as_posix(),
+                role=f"controlled_background_{record.get('role')}",
+            )
+        )
+    return verified
+
+
+def _controlled_background_component(
+    *, spec: Mapping[str, Any], repo_root: Path, data_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    paths = {
+        "case": _rooted(data_root, str(spec["case_receipt_path"])),
+        "execution": _rooted(data_root, str(spec["execution_receipt_path"])),
+        "score": _rooted(data_root, str(spec["score_receipt_path"])),
+        "source_archive": _rooted(data_root, str(spec["source_archive_path"])),
+        "checkpoint_archive": _rooted(data_root, str(spec["checkpoint_archive_path"])),
+        "dockerfile": _rooted(repo_root, str(spec["dockerfile_path"])),
+    }
+    case = _read_json(paths["case"])
+    execution = _read_json(paths["execution"])
+    score = _read_json(paths["score"])
+    for name, value, field in (
+        ("case", case, "receipt_digest"),
+        ("execution", execution, "completion_digest"),
+        ("score", score, "receipt_digest"),
+    ):
+        if value.get(field) != canonical_digest(value, digest_field=field):
+            raise PublicSceneSuiteMaterializationError(
+                f"controlled_background_{name}_digest_mismatch"
+            )
+
+    method = case.get("method")
+    authoring = case.get("authoring")
+    firebreak = case.get("firebreak")
+    if (
+        case.get("schema_version") != CONTROLLED_CASE_SCHEMA_VERSION
+        or case.get("status") != "prepared_truth_withheld"
+        or case.get("method_outcomes_observed") is not False
+        or not isinstance(authoring, Mapping)
+        or authoring.get("rights") != "Blueprint-controlled"
+        or authoring.get("camera_count") != 4
+        or authoring.get("resolution") != [768, 512]
+        or not isinstance(method, Mapping)
+        or method.get("repository") != LAMA_REPOSITORY
+        or method.get("commit") != LAMA_COMMIT
+        or method.get("source_archive_sha256") != LAMA_SOURCE_SHA256
+        or method.get("checkpoint_archive_sha256") != LAMA_CHECKPOINT_SHA256
+        or method.get("license") != "Apache-2.0"
+        or method.get("same_color_and_depth_completion_path") is not True
+        or case.get("thresholds") != CONTROLLED_THRESHOLDS
+        or not isinstance(firebreak, Mapping)
+        or firebreak.get("truth_must_not_be_mounted_during_completion") is not True
+        or firebreak.get("truth_release_requires_sealed_completion_digest") is not True
+        or firebreak.get("thresholds_frozen_before_execution") is not True
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_case_preregistration_invalid"
+        )
+
+    container = execution.get("container")
+    if (
+        execution.get("schema_version") != CONTROLLED_EXECUTION_SCHEMA_VERSION
+        or execution.get("status") != "completion_sealed_truth_unreleased"
+        or execution.get("case_receipt_digest") != case.get("receipt_digest")
+        or execution.get("method") != method
+        or execution.get("truth_opened_for_scoring") is not False
+        or not isinstance(container, Mapping)
+        or container.get("image") != CONTROLLED_DOCKER_IMAGE
+        or container.get("image_id") != CONTROLLED_DOCKER_IMAGE_ID
+        or container.get("network") != "none"
+        or container.get("root_filesystem_read_only") is not True
+        or container.get("withheld_truth_mounted") is not False
+        or any("withheld_truth" in str(path) for path in container.get("mounted_paths") or [])
+        or len(execution.get("commands") or []) != 2
+        or len(execution.get("logs") or []) != 2
+        or not isinstance(execution.get("environment"), Mapping)
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_execution_firebreak_invalid"
+        )
+
+    if (
+        score.get("schema_version") != CONTROLLED_SCORE_SCHEMA_VERSION
+        or score.get("status") != "scored_factual_recovery"
+        or score.get("case_receipt_digest") != case.get("receipt_digest")
+        or score.get("completion_digest") != execution.get("completion_digest")
+        or score.get("truth_released_after_completion_seal") is not True
+        or score.get("thresholds_frozen_before_execution") is not True
+        or score.get("thresholds") != CONTROLLED_THRESHOLDS
+        or score.get("quality_passed") is not True
+        or not isinstance(score.get("checks"), Mapping)
+        or not score["checks"]
+        or not all(value is True for value in score["checks"].values())
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_score_claim_invalid"
+        )
+
+    if _sha256_file(paths["source_archive"]) != LAMA_SOURCE_SHA256:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_source_archive_digest_mismatch"
+        )
+    if _sha256_file(paths["checkpoint_archive"]) != LAMA_CHECKPOINT_SHA256:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_checkpoint_archive_digest_mismatch"
+        )
+    case_root = paths["case"].parent
+    if paths["execution"].parent.parent.parent != case_root:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_execution_not_in_case_root"
+        )
+    try:
+        recomputed = recompute_controlled_background_score(
+            case_root=case_root,
+            execution_receipt_path=paths["execution"],
+            output_path=None,
+        )
+    except ControlledBackgroundError as exc:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_actual_output_verification_failed"
+        ) from exc
+    if recomputed != score:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_score_not_derived_from_actual_outputs"
+        )
+
+    artifacts = [
+        _file_record(
+            paths[name],
+            root=data_root,
+            publisher_path=paths[name].relative_to(data_root).as_posix(),
+            role=f"controlled_background_{name}",
+        )
+        for name in ("case", "execution", "score", "source_archive", "checkpoint_archive")
+    ]
+    artifacts.append(
+        _file_record(
+            paths["dockerfile"],
+            root=repo_root,
+            publisher_path=paths["dockerfile"].relative_to(repo_root).as_posix(),
+            role="controlled_background_dockerfile",
+        )
+    )
+    artifacts.extend(
+        _controlled_background_records(
+            records=case.get("runtime_inputs"),
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=16,
+            label="runtime_inputs",
+        )
+    )
+    artifacts.extend(
+        _controlled_background_records(
+            records=case.get("withheld_truth"),
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=8,
+            label="withheld_truth",
+        )
+    )
+    artifacts.extend(
+        _controlled_background_records(
+            records=execution.get("outputs"),
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=8,
+            label="outputs",
+        )
+    )
+    artifacts.extend(
+        _controlled_background_records(
+            records=execution.get("logs"),
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=2,
+            label="logs",
+        )
+    )
+    environment = execution["environment"]
+    artifacts.extend(
+        _controlled_background_records(
+            records=[environment],
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=1,
+            label="environment",
+        )
+    )
+
+    manifest: dict[str, Any] = {
+        "schema_version": COMPONENT_SCHEMA_VERSION,
+        "program_id": PROGRAM_ID,
+        "adp_item": ADP_ITEM,
+        "component_id": "adp009a-controlled-background-lama-plane-v1",
+        "role": "controlled_background_truth",
+        "source_project_id": REQUIRED_ROLE_PROJECTS["controlled_background_truth"],
+        "publisher_identity": {
+            "repository": LAMA_REPOSITORY,
+            "revision": LAMA_COMMIT,
+            "runtime_image": CONTROLLED_DOCKER_IMAGE,
+            "runtime_image_id": CONTROLLED_DOCKER_IMAGE_ID,
+        },
+        "materialized_artifacts": artifacts,
+        "rights": {
+            "established": True,
+            "scene_and_truth": "Blueprint-controlled deterministic authored case",
+            "method_source_and_checkpoint_license": "Apache-2.0",
+            "allowed_use_ceiling": "internal_development_and_public_receipt_metadata",
+            "raw_method_archive_redistribution": False,
+        },
+        "observed_evidence": {
+            "case_receipt_digest": case["receipt_digest"],
+            "completion_digest": execution["completion_digest"],
+            "score_receipt_digest": score["receipt_digest"],
+            "camera_count": authoring["camera_count"],
+            "resolution": authoring["resolution"],
+            "completion_outputs_reopened_and_rescored": True,
+            "truth_withheld_until_completion_sealed": True,
+            "aggregate_metrics": score["aggregate"],
+            "frozen_thresholds": score["thresholds"],
+            "quality_checks": score["checks"],
+        },
+        "claim_ceiling": CLAIM_CEILING,
+        "claim_boundaries": {
+            "known_blueprint_authored_background_only": True,
+            "interiorgs_hidden_background_truth": False,
+            "real_scene_measurement": False,
+            "method_generalization": False,
+            "physical_evidence": False,
+        },
+    }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    return manifest, _component_receipt(
+        manifest,
+        blockers=(),
+        checks={
+            "actual_source_checkpoint_and_execution_bytes_hashed": True,
+            "canonical_receipt_digests_verified": True,
+            "completion_sealed_before_truth_release": True,
+            "outputs_reopened_and_scores_recomputed": True,
+            "preregistered_rgb_and_depth_thresholds_passed": True,
+            "rights_authority_bound": True,
+        },
+    )
+
+
 def _physics_positive_control_component(
     *, spec: Mapping[str, Any], data_root: Path
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -2117,6 +2407,21 @@ def materialize_public_scene_suite(
             raise PublicSceneSuiteMaterializationError("content_agents_role_duplicated")
         by_role["usd_content_agents_candidate"] = _content_agents_component(
             spec=content_agents,
+            repo_root=repo_root,
+            data_root=data_root,
+        )
+    controlled_background = request.get("controlled_background")
+    if controlled_background is not None:
+        if not isinstance(controlled_background, Mapping):
+            raise PublicSceneSuiteMaterializationError(
+                "controlled_background_spec_invalid"
+            )
+        if "controlled_background_truth" in request["missing_roles"]:
+            raise PublicSceneSuiteMaterializationError(
+                "controlled_background_role_duplicated"
+            )
+        by_role["controlled_background_truth"] = _controlled_background_component(
+            spec=controlled_background,
             repo_root=repo_root,
             data_root=data_root,
         )

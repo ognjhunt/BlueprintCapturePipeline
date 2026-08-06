@@ -86,19 +86,17 @@
       "status": "admitted"
     },
     {
-      "blockers": [
-        "controlled_background_truth_case_missing"
-      ],
-      "component_admission_receipt_digest": "sha256:58a0d75a13ba5bd0afc77cd070fbc70c60f516e41f4b0256549f8cde431fca32",
-      "component_manifest_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
-      "exact_artifact_digest": "sha256:bf551427bb93b2762e29fc326bedde7a8e2cac4e25b3126cea8fc66f46d2e55b",
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:88b0ebc59ee029eb4daafc32e9598f7a68d4c82aa619412cf89d46fab406f6ea",
+      "component_manifest_digest": "sha256:5000b7ea24a5245f1111cd0111f3424478ed704b09ce53f299e5e7a48754ade6",
+      "exact_artifact_digest": "sha256:e6a74984230d3e8c631217259fbcd19ae523b87b59cfd43df9ec7bfe70fa5fc8",
       "exact_revision": {
-        "kind": "content_digest",
-        "value": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844"
+        "kind": "git_commit",
+        "value": "786f5936b27fb3dacd2b1ad799e4de968ea697e7"
       },
       "role": "controlled_background_truth",
       "source_project_id": "Blueprint-controlled",
-      "status": "blocked"
+      "status": "admitted"
     },
     {
       "blockers": [],
@@ -155,7 +153,7 @@
       "status": "blocked"
     }
   ],
-  "index_digest": "sha256:46df47cf8cc30928e2f4acd834a9679a6f2da748286844fd1cfb8e71759ec670",
+  "index_digest": "sha256:49d18414a02bd40e300909fc54f6814a877bcc8edfc0af594d7158af24d5549b",
   "index_id": "adp009a-public-suite-20260804",
   "program_id": "arm-decision-proof-v1",
   "schema_version": "public_scene_suite_index.v1"

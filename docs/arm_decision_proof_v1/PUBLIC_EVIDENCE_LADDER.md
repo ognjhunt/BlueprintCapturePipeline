@@ -8,15 +8,16 @@ Observed completion artifact: one digest-bound public-scene qualification matrix
 with exact inputs, rights, code revisions, transformations, metrics, failures,
 claim ceilings, and replay commands.
 
-Observed tranche state (2026-08-05): the deterministic ten-role index admits
-the matched InteriorGS/SAGE-3D `840313` pair, the bounded NVIDIA USD Content
-Agents v0.5.2 authoring comparison, and AuraFusion360's unchanged author-data
-smoke. Six roles remain explicitly blocked, so ADP-009A is partial. Aura's
-publisher workflow completed with unmodified source and retained its produced
-point cloud and same-camera comparison frames; that author control is not an
-InteriorGS result. Material, Texture, Physics, and static Validation Agents
-executed on the parametric replacement control; this does not constitute scene
-inpainting, dynamic Isaac qualification, metric truth, or physical evidence.
+Observed tranche state (2026-08-06): the deterministic ten-role index admits
+seven roles: the matched InteriorGS/SAGE-3D `840313` pair, bounded NVIDIA USD
+Content Agents v0.5.2, AuraFusion360's unchanged author smoke, the exact
+SimReady replacement, the native Isaac/PhysX positive control, and the seal-
+before-truth-release controlled-background case. Three roles remain blocked, so
+ADP-009A is partial: Inpaint360GS author smoke, InFusion primary adapter, and
+ScanNet++ real transfer. Aura's author control is not an InteriorGS result; the
+controlled case proves only factual recovery against Blueprint-authored known
+truth; and Content Agents execution is not scene inpainting, metric truth,
+Franka-policy evaluation, or physical evidence.
 
 ## Decision
 

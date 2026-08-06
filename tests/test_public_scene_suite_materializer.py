@@ -4,8 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
+from blueprint_pipeline import public_scene_controlled_background as controlled
 from blueprint_pipeline import public_scene_suite_materializer as materializer
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_suite_materializer import (
@@ -282,6 +285,113 @@ def _run(paths: dict[str, Path]) -> dict:
         method_root=paths["methods"],
         output_root=paths["output"],
     )
+
+
+def _add_controlled_background(
+    paths: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    source = paths["data"] / "controlled/source.zip"
+    checkpoint = paths["data"] / "controlled/checkpoint.zip"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"exact-lama-source")
+    checkpoint.write_bytes(b"exact-lama-checkpoint")
+    source_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    checkpoint_digest = "sha256:" + hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    image_id = "sha256:" + "9" * 64
+    for module in (controlled, materializer):
+        monkeypatch.setattr(module, "LAMA_SOURCE_SHA256", source_digest)
+        monkeypatch.setattr(module, "LAMA_CHECKPOINT_SHA256", checkpoint_digest)
+        monkeypatch.setattr(module, "CONTROLLED_DOCKER_IMAGE_ID", image_id, raising=False)
+    monkeypatch.setattr(controlled, "DOCKER_IMAGE_ID", image_id)
+
+    case_root = paths["data"] / "controlled/case"
+    case = controlled.prepare_case(case_root)
+    attempt_root = case_root / "attempts/attempt_001"
+    output_root = attempt_root / "outputs"
+    outputs = []
+    for modality in ("rgb", "depth"):
+        (output_root / modality).mkdir(parents=True)
+        for index in range(controlled.VIEW_COUNT):
+            camera_id = f"view_{index:02d}"
+            output = output_root / modality / f"{camera_id}_mask.png"
+            if modality == "rgb":
+                pixels = np.asarray(
+                    Image.open(case_root / f"withheld_truth/rgb/{camera_id}.png")
+                )
+            else:
+                encoded = controlled._encode_depth(controlled._clean_depth_m(index))
+                pixels = np.repeat(encoded[..., None], 3, axis=2)
+            Image.fromarray(pixels).save(output)
+            outputs.append(controlled._record(output, case_root, f"completed_{modality}"))
+    logs = []
+    for modality in ("rgb", "depth"):
+        log = attempt_root / f"lama_{modality}.log"
+        log.write_text("exit 0\n", encoding="utf-8")
+        logs.append(
+            {
+                "modality": modality,
+                "started_at": "2026-08-06T00:00:00Z",
+                "finished_at": "2026-08-06T00:00:01Z",
+                "exit_status": 0,
+                **controlled._record(log, case_root, f"lama_{modality}_log"),
+            }
+        )
+    freeze = attempt_root / "pip-freeze.txt"
+    freeze.write_text("torch==2.0.1\n", encoding="utf-8")
+    execution = {
+        "schema_version": controlled.EXECUTION_SCHEMA_VERSION,
+        "program_id": "arm-decision-proof-v1",
+        "adp_item": "ADP-009C",
+        "status": "completion_sealed_truth_unreleased",
+        "attempt_id": "attempt_001",
+        "case_receipt_digest": case["receipt_digest"],
+        "method": case["method"],
+        "container": {
+            "image": controlled.DOCKER_IMAGE,
+            "image_id": image_id,
+            "network": "none",
+            "root_filesystem_read_only": True,
+            "withheld_truth_mounted": False,
+            "mounted_paths": ["source", "model", "runtime_inputs", "outputs"],
+        },
+        "commands": [["docker", "rgb"], ["docker", "depth"]],
+        "logs": logs,
+        "outputs": outputs,
+        "environment": controlled._record(freeze, case_root, "pip_freeze"),
+        "truth_opened_for_scoring": False,
+        "completion_digest": "",
+    }
+    execution["completion_digest"] = canonical_digest(
+        execution, digest_field="completion_digest"
+    )
+    execution_path = attempt_root / "controlled_background_execution_receipt.json"
+    _write_json(execution_path, execution)
+    score_path = case_root / "controlled_background_score_receipt.json"
+    controlled.score_case(
+        case_root=case_root,
+        execution_receipt_path=execution_path,
+        output_path=score_path,
+    )
+    dockerfile = paths["repo"] / "scripts/containers/controlled.Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("FROM python:3.11\n", encoding="utf-8")
+    request = json.loads(paths["request"].read_text())
+    del request["missing_roles"]["controlled_background_truth"]
+    request["controlled_background"] = {
+        "case_receipt_path": case_root.relative_to(paths["data"]).as_posix()
+        + "/controlled_background_case_receipt.json",
+        "execution_receipt_path": execution_path.relative_to(paths["data"]).as_posix(),
+        "score_receipt_path": score_path.relative_to(paths["data"]).as_posix(),
+        "source_archive_path": source.relative_to(paths["data"]).as_posix(),
+        "checkpoint_archive_path": checkpoint.relative_to(paths["data"]).as_posix(),
+        "dockerfile_path": dockerfile.relative_to(paths["repo"]).as_posix(),
+    }
+    _write_json(paths["request"], request)
+    return {
+        "execution": execution_path,
+        "score": score_path,
+        "output": output_root / "rgb/view_00_mask.png",
+    }
 
 
 def _add_physics_positive_control(
@@ -1647,6 +1757,66 @@ def test_simready_control_rejects_changed_usd_bytes(
 
     with pytest.raises(
         PublicSceneSuiteMaterializationError, match="simready_control_usd_bytes_changed"
+    ):
+        _run(paths)
+
+
+def test_controlled_background_is_admitted_from_recomputed_actual_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_controlled_background(paths, monkeypatch)
+
+    result = _run(paths)
+
+    assert result["admitted_role_count"] == 3
+    manifest = json.loads(
+        (paths["output"] / "controlled_background_truth.component_manifest.json").read_text()
+    )
+    receipt = json.loads(
+        (paths["output"] / "controlled_background_truth.component_receipt.json").read_text()
+    )
+    assert receipt["status"] == "admitted"
+    assert manifest["observed_evidence"]["completion_outputs_reopened_and_rescored"] is True
+    assert manifest["observed_evidence"]["quality_checks"] == {
+        "depth_p95": True,
+        "depth_plane": True,
+        "depth_rmse": True,
+        "rgb_boundary": True,
+        "rgb_mask_psnr": True,
+        "rgb_mask_ssim": True,
+    }
+
+
+def test_controlled_background_rejects_changed_output_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    files = _add_controlled_background(paths, monkeypatch)
+    files["output"].write_bytes(files["output"].read_bytes() + b"mutation")
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="controlled_background_actual_output_verification_failed",
+    ):
+        _run(paths)
+
+
+def test_controlled_background_rejects_truth_mounted_during_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    files = _add_controlled_background(paths, monkeypatch)
+    execution = json.loads(files["execution"].read_text())
+    execution["container"]["withheld_truth_mounted"] = True
+    execution["completion_digest"] = canonical_digest(
+        execution, digest_field="completion_digest"
+    )
+    _write_json(files["execution"], execution)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="controlled_background_execution_firebreak_invalid",
     ):
         _run(paths)
 

@@ -1,22 +1,354 @@
 {
   "adp_item": "ADP-009A",
   "claim_boundaries": {
+    "interiorgs_hidden_background_truth": false,
+    "known_blueprint_authored_background_only": true,
+    "method_generalization": false,
     "physical_evidence": false,
-    "qualified": false
+    "real_scene_measurement": false
   },
   "claim_ceiling": "development_only",
-  "component_id": "adp009a-controlled_background_truth",
-  "manifest_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
-  "materialized_artifacts": [],
+  "component_id": "adp009a-controlled-background-lama-plane-v1",
+  "manifest_digest": "sha256:5000b7ea24a5245f1111cd0111f3424478ed704b09ce53f299e5e7a48754ade6",
+  "materialized_artifacts": [
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/controlled_background_case_receipt.json",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/controlled_background_case_receipt.json",
+      "role": "controlled_background_case",
+      "sha256": "sha256:0039b17f3030d2d7cfc32c3fb7abb3cb740da63d22038768e8f8c404fce9e01b",
+      "size_bytes": 6995
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/controlled_background_execution_receipt.json",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/controlled_background_execution_receipt.json",
+      "role": "controlled_background_execution",
+      "sha256": "sha256:f9384102a0cfaf7a50c2259da2685fa22e982f563d01fbb6ed5808c13e9381c6",
+      "size_bytes": 6805
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/controlled_background_score_receipt.json",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/controlled_background_score_receipt.json",
+      "role": "controlled_background_score",
+      "sha256": "sha256:ea0b537ce41dfefbac6fb8d356df807ee5ecf72538076f23f7ee255ecd853401",
+      "size_bytes": 3123
+    },
+    {
+      "external_relative_path": "aura_interiorgs/bundle_v13_openclip_975006ca/provider_runtime/lama_source.zip",
+      "publisher_path": "aura_interiorgs/bundle_v13_openclip_975006ca/provider_runtime/lama_source.zip",
+      "role": "controlled_background_source_archive",
+      "sha256": "sha256:9d7b65057ee3adecd70567d13f85d4a6972eece08671e38360cfd9f3a5a4263b",
+      "size_bytes": 5732916
+    },
+    {
+      "external_relative_path": "methods/Inpaint360GS/LaMa/big-lama.zip",
+      "publisher_path": "methods/Inpaint360GS/LaMa/big-lama.zip",
+      "role": "controlled_background_checkpoint_archive",
+      "sha256": "sha256:d7161bba4d68b438f9fa7f09dcb750a223804c300c68d214a5e0be16251fba8d",
+      "size_bytes": 381428720
+    },
+    {
+      "external_relative_path": "scripts/containers/adp009_controlled_lama_cpu.Dockerfile",
+      "publisher_path": "scripts/containers/adp009_controlled_lama_cpu.Dockerfile",
+      "role": "controlled_background_dockerfile",
+      "sha256": "sha256:6f869e301e5ece38ba65b38c3b0f054c4f5a83b18b39d6d88a673925b5bcc573",
+      "size_bytes": 722
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_00.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_00.png",
+      "role": "controlled_background_runtime_rgb",
+      "sha256": "sha256:c3127ef228542470ebc66e72fbc1953ea5a371f9b59c63ce40348e1ee160db72",
+      "size_bytes": 77000
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_00_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_00_mask.png",
+      "role": "controlled_background_runtime_rgb_mask",
+      "sha256": "sha256:c0be701b1dfd87792b7d4fec5f124cb7c542b272d1eb6f5f42fb014aff4bb6ec",
+      "size_bytes": 1035
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_00.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_00.png",
+      "role": "controlled_background_runtime_depth",
+      "sha256": "sha256:4cf22c354f86533630ee9b7bdc9bbd95bfa565523a40b9ff54b49225c1fd268b",
+      "size_bytes": 9770
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_00_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_00_mask.png",
+      "role": "controlled_background_runtime_depth_mask",
+      "sha256": "sha256:c0be701b1dfd87792b7d4fec5f124cb7c542b272d1eb6f5f42fb014aff4bb6ec",
+      "size_bytes": 1035
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_01.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_01.png",
+      "role": "controlled_background_runtime_rgb",
+      "sha256": "sha256:0de30964429423de9923d59b386bca37a85ca424e24d5b77d36f23c140d4c16a",
+      "size_bytes": 74539
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_01_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_01_mask.png",
+      "role": "controlled_background_runtime_rgb_mask",
+      "sha256": "sha256:58d7e21e0279e1407c0e3eaa8f2311b16426cc9a944a30d6bd7d325932110d5c",
+      "size_bytes": 1035
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_01.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_01.png",
+      "role": "controlled_background_runtime_depth",
+      "sha256": "sha256:519e70e43fbd1f2242e628fd872bcdf4dd20be2df968aeb648fa3947b331a17a",
+      "size_bytes": 9765
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_01_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_01_mask.png",
+      "role": "controlled_background_runtime_depth_mask",
+      "sha256": "sha256:58d7e21e0279e1407c0e3eaa8f2311b16426cc9a944a30d6bd7d325932110d5c",
+      "size_bytes": 1035
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_02.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_02.png",
+      "role": "controlled_background_runtime_rgb",
+      "sha256": "sha256:a699882a4ff4feedca2cee0ff8a1a351c8667d18c570964b57d7767d700b8400",
+      "size_bytes": 77663
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_02_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_02_mask.png",
+      "role": "controlled_background_runtime_rgb_mask",
+      "sha256": "sha256:04ed569121fe7dff8f2e97ce4099a1471f74019c662e75814f5084596da54b8e",
+      "size_bytes": 1040
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_02.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_02.png",
+      "role": "controlled_background_runtime_depth",
+      "sha256": "sha256:b83714aa86f68061075ddbe79655d3ea25abfbf093c3cf64f1b76ef34d6678db",
+      "size_bytes": 9753
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_02_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_02_mask.png",
+      "role": "controlled_background_runtime_depth_mask",
+      "sha256": "sha256:04ed569121fe7dff8f2e97ce4099a1471f74019c662e75814f5084596da54b8e",
+      "size_bytes": 1040
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_03.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_03.png",
+      "role": "controlled_background_runtime_rgb",
+      "sha256": "sha256:24487819b3b60286e3990a9a6e6c2a4b32440a271f7d6dd5a7b0c333e810909d",
+      "size_bytes": 75362
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_03_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/rgb/view_03_mask.png",
+      "role": "controlled_background_runtime_rgb_mask",
+      "sha256": "sha256:5e0bf2ce98346a157ddb768ecdc566a5f7e4a01aa68872758aec816f4ffdd4d1",
+      "size_bytes": 1005
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_03.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_03.png",
+      "role": "controlled_background_runtime_depth",
+      "sha256": "sha256:e05170eb67aeb52830442033670320318ad42c2d3935a4f775df5fafc554a6c4",
+      "size_bytes": 9682
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_03_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/runtime_inputs/depth/view_03_mask.png",
+      "role": "controlled_background_runtime_depth_mask",
+      "sha256": "sha256:5e0bf2ce98346a157ddb768ecdc566a5f7e4a01aa68872758aec816f4ffdd4d1",
+      "size_bytes": 1005
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/rgb/view_00.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/rgb/view_00.png",
+      "role": "controlled_background_truth_rgb",
+      "sha256": "sha256:39701d2069bd44df5fdbc24b01d2836295fd34afd6d0635e2f2067473c08eac5",
+      "size_bytes": 78598
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/depth/view_00.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/depth/view_00.png",
+      "role": "controlled_background_truth_depth_mm",
+      "sha256": "sha256:553138ea9828f055b77c6f6301c71a92260eedcaadfe22cf4e215ab96e44c5af",
+      "size_bytes": 8096
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/rgb/view_01.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/rgb/view_01.png",
+      "role": "controlled_background_truth_rgb",
+      "sha256": "sha256:90b67e0b4aeecea95b5878663b1f15138aa281368cf3b712149c5f30ecd56e09",
+      "size_bytes": 76138
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/depth/view_01.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/depth/view_01.png",
+      "role": "controlled_background_truth_depth_mm",
+      "sha256": "sha256:9bed40129eee027175a8fa60cd843f6a672be55aa238a681a53c5767a8a25d8f",
+      "size_bytes": 8145
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/rgb/view_02.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/rgb/view_02.png",
+      "role": "controlled_background_truth_rgb",
+      "sha256": "sha256:84cdeff32bb3025ef6a63c783469e0111d93b760d81c7dabf1f484bc8494c68a",
+      "size_bytes": 78810
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/depth/view_02.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/depth/view_02.png",
+      "role": "controlled_background_truth_depth_mm",
+      "sha256": "sha256:97f0d62d83c4eaf5e78be5c23b706b632923e6995bec17cd116b60f517b08e31",
+      "size_bytes": 8105
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/rgb/view_03.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/rgb/view_03.png",
+      "role": "controlled_background_truth_rgb",
+      "sha256": "sha256:123e9f618b151f797b8406efebaf990289459a79a2f18755c341309f2a5f4246",
+      "size_bytes": 77035
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/depth/view_03.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/withheld_truth/depth/view_03.png",
+      "role": "controlled_background_truth_depth_mm",
+      "sha256": "sha256:19141d907705e3b5028d6851b4ae01a66c4e37c36fe358f5211a1944591648f7",
+      "size_bytes": 8127
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/rgb/view_00_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/rgb/view_00_mask.png",
+      "role": "controlled_background_completed_rgb",
+      "sha256": "sha256:edc7b1013540f64af9dd12ef3d382ba7bd4ec7dfe1f06a3887b13df031df2898",
+      "size_bytes": 147365
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/rgb/view_01_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/rgb/view_01_mask.png",
+      "role": "controlled_background_completed_rgb",
+      "sha256": "sha256:0c2c571e68975209cf6e39cc7744308d94a6b8f7f15dbb4707e686c7eaf38b22",
+      "size_bytes": 137287
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/rgb/view_02_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/rgb/view_02_mask.png",
+      "role": "controlled_background_completed_rgb",
+      "sha256": "sha256:a4bbb15c2b5d83848526b379c16ba00bda17bfb95fed900e52e6c0b703aff2f9",
+      "size_bytes": 139313
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/rgb/view_03_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/rgb/view_03_mask.png",
+      "role": "controlled_background_completed_rgb",
+      "sha256": "sha256:acce27c8a6e4a66b0cd7e80ab6aa80fd665b55538897b6dc5585ef50c5b6bd26",
+      "size_bytes": 138515
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/depth/view_00_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/depth/view_00_mask.png",
+      "role": "controlled_background_completed_depth",
+      "sha256": "sha256:c91156cecd42f0a0f2ab6be191152f069fd35a1d16e0ebcfc2d4bf08e3dde7db",
+      "size_bytes": 22896
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/depth/view_01_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/depth/view_01_mask.png",
+      "role": "controlled_background_completed_depth",
+      "sha256": "sha256:aaa14a97231fb836a180b4a4ab19cfc3fb529a2cdfb5e69f503106465ebe0a2c",
+      "size_bytes": 21831
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/depth/view_02_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/depth/view_02_mask.png",
+      "role": "controlled_background_completed_depth",
+      "sha256": "sha256:7e8e0e99f610ce6b729cc60c71b0df1ad360cc4352f6f84059ae807446fd4742",
+      "size_bytes": 21442
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/depth/view_03_mask.png",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/outputs/depth/view_03_mask.png",
+      "role": "controlled_background_completed_depth",
+      "sha256": "sha256:61befa319614469f2d058c03e03bb3b63455b2483194845ccdf73bf4efb8964c",
+      "size_bytes": 20901
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/lama_rgb.log",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/lama_rgb.log",
+      "role": "controlled_background_lama_rgb_log",
+      "sha256": "sha256:016740d77cea2e0df1d2638924b61e68d84e1c0e234c751ff0b49577e4179623",
+      "size_bytes": 57324
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/lama_depth.log",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/lama_depth.log",
+      "role": "controlled_background_lama_depth_log",
+      "sha256": "sha256:91d3eb90364a6db9569e6b8cf07b769fcc49c72e2961ae233210f0b126606a90",
+      "size_bytes": 57324
+    },
+    {
+      "external_relative_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/pip-freeze.txt",
+      "publisher_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/pip-freeze.txt",
+      "role": "controlled_background_pip_freeze",
+      "sha256": "sha256:de2d543e38275b4a1fc46089e95fffbab137ca45242880e3ad1fc3f87e83bafc",
+      "size_bytes": 1397
+    }
+  ],
   "observed_evidence": {
-    "required_receipt_present": false
+    "aggregate_metrics": {
+      "max_depth_mask_p95_abs_m": 0.009390855208039284,
+      "mean_depth_mask_rmse_m": 0.006581217749044299,
+      "mean_depth_plane_rmse_m": 0.006452605416185328,
+      "mean_rgb_inner_boundary_mae_255": 1.4763675034046173,
+      "mean_rgb_mask_psnr_db": 37.120492944214654,
+      "mean_rgb_mask_ssim": 0.9838936695445116,
+      "view_count": 4
+    },
+    "camera_count": 4,
+    "case_receipt_digest": "sha256:32fe9e59cccdc9619212a0e90e4155a04e5d41cd8e4b332603ccf9a569788342",
+    "completion_digest": "sha256:f46e63fb5613e2c181851261463c82f945b575d43da7714cf29fbf9f31f62e08",
+    "completion_outputs_reopened_and_rescored": true,
+    "frozen_thresholds": {
+      "depth_mask_p95_abs_m_max": 0.06,
+      "depth_mask_rmse_m_max": 0.035,
+      "depth_plane_rmse_m_max": 0.025,
+      "rgb_inner_boundary_mae_255_max": 20.0,
+      "rgb_mask_psnr_db_min": 22.0,
+      "rgb_mask_ssim_min": 0.8
+    },
+    "quality_checks": {
+      "depth_p95": true,
+      "depth_plane": true,
+      "depth_rmse": true,
+      "rgb_boundary": true,
+      "rgb_mask_psnr": true,
+      "rgb_mask_ssim": true
+    },
+    "resolution": [
+      768,
+      512
+    ],
+    "score_receipt_digest": "sha256:a0b2f0a585ca390e57644dbe4c7ab15cf69823ddac321a6f73c9249350e1469e",
+    "truth_withheld_until_completion_sealed": true
   },
   "program_id": "arm-decision-proof-v1",
   "publisher_identity": {
-    "revision": "not_materialized"
+    "repository": "https://github.com/advimman/lama",
+    "revision": "786f5936b27fb3dacd2b1ad799e4de968ea697e7",
+    "runtime_image": "blueprint/adp009-controlled-lama:cpu-v1",
+    "runtime_image_id": "sha256:8f794c9812e2dafba0a608132e26cd7a3a2f628dcf77c1879e6191cf64552934"
   },
   "rights": {
-    "established": false
+    "allowed_use_ceiling": "internal_development_and_public_receipt_metadata",
+    "established": true,
+    "method_source_and_checkpoint_license": "Apache-2.0",
+    "raw_method_archive_redistribution": false,
+    "scene_and_truth": "Blueprint-controlled deterministic authored case"
   },
   "role": "controlled_background_truth",
   "schema_version": "public_scene_component_manifest.v1",

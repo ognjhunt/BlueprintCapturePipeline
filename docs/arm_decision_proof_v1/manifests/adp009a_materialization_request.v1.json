@@ -146,8 +146,15 @@
     "teardown_receipt_path": "physics_positive_control/isaac_physx_attempt17_20260802/teardown_receipt.json",
     "provider_zero_path": "physics_positive_control/isaac_physx_attempt17_20260802/provider_zero_verification.json"
   },
+  "controlled_background": {
+    "case_receipt_path": "controlled_background/blueprint_authored_plane_v2/controlled_background_case_receipt.json",
+    "execution_receipt_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/controlled_background_execution_receipt.json",
+    "score_receipt_path": "controlled_background/blueprint_authored_plane_v2/controlled_background_score_receipt.json",
+    "source_archive_path": "aura_interiorgs/bundle_v13_openclip_975006ca/provider_runtime/lama_source.zip",
+    "checkpoint_archive_path": "methods/Inpaint360GS/LaMa/big-lama.zip",
+    "dockerfile_path": "scripts/containers/adp009_controlled_lama_cpu.Dockerfile"
+  },
   "missing_roles": {
-    "controlled_background_truth": "controlled_background_truth_case_missing",
     "scannetpp_real_transfer": "scannetpp_account_application_approval_and_terms_authority_required"
   }
 }
