@@ -21,6 +21,13 @@ EXPECTED_ASSETS = {
     "approved_can.usda": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "sage_collision.usd": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
 }
+APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
+APPROVED_CAN_ADAPTER_SHA256 = (
+    "sha256:5db5bc33b72983065bd47e30db0c5945ab3cba8fb3caeb6290bf07edc7337adc"
+)
+APPROVED_CAN_SOURCE_COLLIDER_PRIM = "/canned_beverage/colliders/body_collider"
+APPROVED_CAN_LIVE_COLLIDER_PRIM = "/World/envs/env_0/approved_can/colliders/body_collider"
+PHYSX_FALLBACK_MARKER = "falling back to convexHull approximation"
 ARENA_REVISION = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
 ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ROBOT_BASE_POSITION_M = (3.4681748, -2.9100837, 0.2766791)
@@ -51,16 +58,76 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _jsonable(value: Any) -> Any:
+def _to_torch(value: Any) -> Any:
+    """Convert simulator-native arrays at the adapter boundary before indexing."""
+
     if hasattr(value, "detach"):
-        value = value.detach().cpu()
-    if hasattr(value, "tolist"):
-        return value.tolist()
+        return value
+    value_module = type(value).__module__
+    if value_module == "warp" or value_module.startswith("warp."):
+        import warp as wp
+
+        return wp.to_torch(value)
+    raise TypeError(f"unsupported_sim_array:{value_module}.{type(value).__name__}")
+
+
+def _jsonable(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
+    value_module = type(value).__module__
+    if value_module == "warp" or value_module.startswith("warp."):
+        value = _to_torch(value)
+    if hasattr(value, "detach"):
+        value = value.detach().cpu()
+    if hasattr(value, "tolist"):
+        return value.tolist()
     return value
+
+
+def _phase(name: str, status: str = "started") -> None:
+    print(f"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d_native:{name}:{status}", flush=True)
+
+
+def _fail_on_physx_collision_fallback(messages: list[str]) -> None:
+    if messages:
+        raise RuntimeError(
+            "physx_collision_fallback_detected:" + " | ".join(messages)
+        )
+
+
+def _inspect_physx_sdf_collider(stage: Any, prim_path: str) -> dict[str, Any]:
+    from pxr import UsdPhysics
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise RuntimeError(f"physx_sdf_collider_prim_missing:{prim_path}")
+    applied_schemas = [str(value) for value in prim.GetAppliedSchemas()]
+    if "PhysxSDFMeshCollisionAPI" not in applied_schemas:
+        raise RuntimeError(f"physx_sdf_schema_missing:{prim_path}")
+    mesh_api = UsdPhysics.MeshCollisionAPI(prim)
+    approximation = mesh_api.GetApproximationAttr().Get() if mesh_api else None
+    if str(approximation) != "sdf":
+        raise RuntimeError(f"physx_sdf_approximation_invalid:{prim_path}:{approximation}")
+    settings = {
+        "sdf_margin": prim.GetAttribute("physxSDFMeshCollision:sdfMargin").Get(),
+        "sdf_narrow_band_thickness": prim.GetAttribute(
+            "physxSDFMeshCollision:sdfNarrowBandThickness"
+        ).Get(),
+        "sdf_resolution": prim.GetAttribute("physxSDFMeshCollision:sdfResolution").Get(),
+        "sdf_subgrid_resolution": prim.GetAttribute(
+            "physxSDFMeshCollision:sdfSubgridResolution"
+        ).Get(),
+    }
+    if any(value is None for value in settings.values()):
+        raise RuntimeError(f"physx_sdf_cooking_settings_missing:{prim_path}")
+    return {
+        "prim_path": prim_path,
+        "applied_schemas": applied_schemas,
+        "approximation": str(approximation),
+        **settings,
+    }
 
 
 def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_time: float) -> dict[str, Any]:
@@ -72,12 +139,12 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
     missing = sorted(required - set(camera_output))
     if missing:
         raise RuntimeError(f"camera_outputs_missing:{name}:{','.join(missing)}")
-    rgb = camera_output["rgb"][0].detach().cpu().numpy()
+    rgb = _to_torch(camera_output["rgb"])[0].detach().cpu().numpy()
     if rgb.shape[-1] == 4:
         rgb = rgb[..., :3]
     rgb = np.asarray(rgb, dtype=np.uint8)
-    depth = camera_output["distance_to_camera"][0].detach().cpu().numpy().astype(np.float32)
-    semantic = camera_output["semantic_segmentation"][0].detach().cpu().numpy()
+    depth = _to_torch(camera_output["distance_to_camera"])[0].detach().cpu().numpy().astype(np.float32)
+    semantic = _to_torch(camera_output["semantic_segmentation"])[0].detach().cpu().numpy()
     if semantic.ndim == 3 and semantic.shape[-1] == 1:
         semantic = semantic[..., 0]
     semantic = semantic.astype(np.int32)
@@ -94,9 +161,9 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
     Image.fromarray(rgb, mode="RGB").save(rgb_path, format="PNG", compress_level=9)
     np.save(depth_path, depth, allow_pickle=False)
     np.save(semantic_path, semantic, allow_pickle=False)
-    intrinsic = camera.data.intrinsic_matrices[0]
-    pos_w = camera.data.pos_w[0]
-    quat_w_opengl = camera.data.quat_w_opengl[0]
+    intrinsic = _to_torch(camera.data.intrinsic_matrices)[0]
+    pos_w = _to_torch(camera.data.pos_w)[0]
+    quat_w_opengl = _to_torch(camera.data.quat_w_opengl)[0]
     return {
         "camera_id": name,
         "frame_index": frame_index,
@@ -173,7 +240,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     approved_can = Object(
         name="approved_can",
         object_type=ObjectType.RIGID,
-        usd_path=str(runtime / "assets" / "approved_can.usda"),
+        usd_path=str(runtime / "assets" / APPROVED_CAN_ADAPTER_FILENAME),
         initial_pose=Pose(position_xyz=CAN_START_POSITION_M),
         spawn_cfg_addon={
             "semantic_tags": [("class", "approved_can")],
@@ -197,7 +264,8 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         from isaaclab_physx.physics import PhysxCfg
 
         cfg.sim.dt = 1.0 / 120.0
-        cfg.sim.render_interval = 1
+        cfg.seed = 20260806
+        cfg.sim.render_interval = 8
         cfg.decimation = 8
         cfg.episode_length_s = 5.0
         cfg.sim.physics = PhysxCfg(
@@ -236,22 +304,66 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         if not path.is_file() or _sha256(path) != digest:
             raise RuntimeError(f"sealed_asset_binding_invalid:{name}")
 
-    env, cfg, torch = _build_environment(runtime, args)
+    adapter_path = runtime / "assets" / APPROVED_CAN_ADAPTER_FILENAME
+    if not adapter_path.is_file() or _sha256(adapter_path) != APPROVED_CAN_ADAPTER_SHA256:
+        raise RuntimeError("sealed_asset_binding_invalid:approved_can_physx_sdf_adapter.usda")
+    from pxr import Usd
+
+    adapter_stage = Usd.Stage.Open(str(adapter_path))
+    if adapter_stage is None:
+        raise RuntimeError("approved_can_physx_sdf_adapter_unreadable")
+    static_collider = _inspect_physx_sdf_collider(
+        adapter_stage, APPROVED_CAN_SOURCE_COLLIDER_PRIM
+    )
+    _phase("static_collider_validation", "completed")
+
+    import omni.log
+
+    fallback_messages: list[str] = []
+
+    def on_log(
+        channel, level, module, filename, func, line_no, message, pid, tid, timestamp
+    ):
+        del channel, level, module, filename, func, line_no, pid, tid, timestamp
+        if PHYSX_FALLBACK_MARKER in message:
+            fallback_messages.append(str(message))
+
+    log = omni.log.get_log()
+    consumer = log.add_message_consumer(on_log)
+    env = None
     try:
+        _phase("environment_build")
+        env, cfg, torch = _build_environment(runtime, args)
+        log.flush()
+        _phase("environment_build", "completed")
+        _fail_on_physx_collision_fallback(fallback_messages)
+        import omni.usd
+
+        live_stage = omni.usd.get_context().get_stage()
+        live_collider = _inspect_physx_sdf_collider(
+            live_stage, APPROVED_CAN_LIVE_COLLIDER_PRIM
+        )
+        _phase("live_collider_validation", "completed")
         reset_rows: list[dict[str, Any]] = []
         for index in range(2):
+            _phase(f"reset_{index}")
             observation, info = env.reset(seed=20260806)
             robot = env.unwrapped.scene["robot"]
             approved_can = env.unwrapped.scene["approved_can"]
             reset_rows.append(
                 {
                     "index": index,
-                    "joint_pos": _jsonable(robot.data.joint_pos[0]),
-                    "can_root_pose_world": _jsonable(approved_can.data.root_pose_w[0]),
+                    "joint_pos": _jsonable(_to_torch(robot.data.joint_pos)[0]),
+                    "can_root_pose_world": _jsonable(
+                        _to_torch(approved_can.data.root_pose_w)[0]
+                    ),
                     "observation_keys": sorted(str(key) for key in observation),
                     "info_keys": sorted(str(key) for key in (info or {})),
                 }
             )
+            log.flush()
+            _fail_on_physx_collision_fallback(fallback_messages)
+            _phase(f"reset_{index}", "completed")
         joint_a = torch.tensor(reset_rows[0]["joint_pos"])
         joint_b = torch.tensor(reset_rows[1]["joint_pos"])
         if not torch.equal(joint_a, joint_b):
@@ -262,6 +374,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             device=env.unwrapped.device,
         )
         observation, reward, terminated, truncated, info = env.step(action)
+        log.flush()
+        _fail_on_physx_collision_fallback(fallback_messages)
         zero_action_row = {
             "action_dim": env.unwrapped.action_manager.total_action_dim,
             "reward": _jsonable(reward),
@@ -269,18 +383,22 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "truncated": _jsonable(truncated),
             "observation_keys": sorted(str(key) for key in observation),
             "robot_joint_pos_after_step": _jsonable(
-                env.unwrapped.scene["robot"].data.joint_pos[0]
+                _to_torch(env.unwrapped.scene["robot"].data.joint_pos)[0]
             ),
             "approved_can_pose_after_step": _jsonable(
-                env.unwrapped.scene["approved_can"].data.root_pose_w[0]
+                _to_torch(env.unwrapped.scene["approved_can"].data.root_pose_w)[0]
             ),
         }
         env.reset(seed=20260806)
         robot = env.unwrapped.scene["robot"]
         hold_action = torch.zeros_like(action)
-        hold_action[:, :7] = robot.data.joint_pos[:, :7]
-        for _ in range(40):
+        hold_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
+        for warmup_index in range(40):
             observation, reward, terminated, truncated, info = env.step(hold_action)
+            if (warmup_index + 1) % 10 == 0:
+                log.flush()
+                _fail_on_physx_collision_fallback(fallback_messages)
+                _phase(f"camera_warmup_{warmup_index + 1}", "completed")
         camera_rows = []
         for camera_name in ("external_camera", "wrist_camera"):
             camera_rows.append(
@@ -294,7 +412,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             )
         robot = env.unwrapped.scene["robot"]
         approved_can = env.unwrapped.scene["approved_can"]
-        can_pose = approved_can.data.root_pose_w[0]
+        can_pose = _to_torch(approved_can.data.root_pose_w)[0]
         if not torch.isfinite(can_pose).all():
             raise RuntimeError("approved_can_state_nonfinite")
         if float(can_pose[2].item()) < CAN_START_POSITION_M[2] - 0.05:
@@ -312,12 +430,17 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "decimation": cfg.decimation,
                 "solver": "TGS",
                 "enhanced_determinism": True,
+                "static_collider_validation": static_collider,
+                "live_collider_validation": live_collider,
+                "fallback_messages": fallback_messages,
             },
             "reset_rows": reset_rows,
             "zero_action_step": {
                 **zero_action_row,
             },
-            "post_warmup_robot_joint_pos": _jsonable(robot.data.joint_pos[0]),
+            "post_warmup_robot_joint_pos": _jsonable(
+                _to_torch(robot.data.joint_pos)[0]
+            ),
             "post_warmup_approved_can_root_pose_world": _jsonable(can_pose),
             "camera_frames": camera_rows,
             "camera_warmup_frames": 40,
@@ -328,7 +451,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "blockers": [],
         }
     finally:
-        env.close()
+        log.remove_message_consumer(consumer)
+        if env is not None:
+            env.close()
 
 
 def main(argv: list[str] | None = None) -> int:

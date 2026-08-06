@@ -10,6 +10,7 @@ import pytest
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import adp009d_isaac_runtime as isaac_runtime
 from blueprint_pipeline.adp009d_native_microcheck_bundle import (
+    APPROVED_CAN_ADAPTER_FILENAME,
     DEFAULT_IMAGE,
     PROBE_KIND,
     TARGET_COLLIDER_PRIM,
@@ -30,7 +31,24 @@ def _digest(path: Path) -> str:
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     approved = tmp_path / "approved.usda"
-    approved.write_text("#usda 1.0\ndef Xform \"Can\" {}\n", encoding="utf-8")
+    approved.write_text(
+        '''#usda 1.0
+(defaultPrim = "canned_beverage")
+def Xform "canned_beverage"
+{
+    def Scope "colliders"
+    {
+        def Mesh "body_collider" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "sdf"
+        }
+    }
+}
+''',
+        encoding="utf-8",
+    )
     sage = tmp_path / "sage.usda"
     target_name = TARGET_COLLIDER_PRIM.rsplit("/", 1)[-1]
     sage.write_text(
@@ -79,6 +97,22 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     )
     assert source_stage.GetPrimAtPath(TARGET_COLLIDER_PRIM).IsActive()
     assert not overlay_stage.GetPrimAtPath(TARGET_COLLIDER_PRIM).IsActive()
+    adapter_path = (
+        Path(first["bundle_path"]).parent
+        / "provider_runtime/assets"
+        / APPROVED_CAN_ADAPTER_FILENAME
+    )
+    adapter_stage = Usd.Stage.Open(str(adapter_path))
+    assert _digest(adapter_path) == isaac_runtime.APPROVED_CAN_ADAPTER_SHA256
+    can_collider = adapter_stage.GetPrimAtPath(
+        "/canned_beverage/colliders/body_collider"
+    )
+    api_schemas = can_collider.GetMetadata("apiSchemas")
+    assert "PhysxSDFMeshCollisionAPI" in list(api_schemas.GetAddedOrExplicitItems())
+    assert can_collider.GetAttribute("physics:approximation").Get() == "sdf"
+    assert can_collider.GetAttribute(
+        "physxSDFMeshCollision:sdfResolution"
+    ).Get() == 256
     with zipfile.ZipFile(first["bundle_path"]) as archive:
         names = set(archive.namelist())
         overlay = archive.read("provider_runtime/assets/sage_collision_overlay.usda").decode()
@@ -87,6 +121,7 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     assert "active = false" in overlay
     assert "adp009d_native_microcheck.json" in entrypoint
     assert "provider_runtime/assets/approved_can.usda" in names
+    assert f"provider_runtime/assets/{APPROVED_CAN_ADAPTER_FILENAME}" in names
     assert "provider_runtime/assets/sage_collision.usd" in names
 
 
@@ -145,6 +180,41 @@ def test_runtime_binds_official_droid_franka_and_sealed_anchor() -> None:
         -3.3100837,
         0.5264650138348479,
     )
+
+
+def test_runtime_converts_warp_arrays_before_indexing() -> None:
+    wp = pytest.importorskip("warp")
+    torch = pytest.importorskip("torch")
+    value = wp.array([[1.0, 2.0]], dtype=wp.float32, device="cpu")
+
+    converted = isaac_runtime._to_torch(value)
+
+    assert isinstance(converted, torch.Tensor)
+    assert converted.tolist() == [[1.0, 2.0]]
+
+
+def test_runtime_fails_closed_on_missing_sdf_schema(tmp_path: Path) -> None:
+    Usd = pytest.importorskip("pxr.Usd")
+    stage = Usd.Stage.CreateInMemory()
+    prim = stage.DefinePrim("/Can/collider", "Mesh")
+    prim.ApplyAPI("PhysicsCollisionAPI")
+    prim.ApplyAPI("PhysicsMeshCollisionAPI")
+    prim.CreateAttribute("physics:approximation", pytest.importorskip("pxr.Sdf").ValueTypeNames.Token).Set(
+        "sdf"
+    )
+
+    with pytest.raises(RuntimeError, match="physx_sdf_schema_missing"):
+        isaac_runtime._inspect_physx_sdf_collider(stage, "/Can/collider")
+
+
+def test_runtime_rejects_any_physx_collision_fallback() -> None:
+    message = (
+        "PhysicsUSD: Parse collision - triangle mesh collision cannot be a part "
+        "of a dynamic body, falling back to convexHull approximation: /World/Can"
+    )
+
+    with pytest.raises(RuntimeError, match="physx_collision_fallback_detected"):
+        isaac_runtime._fail_on_physx_collision_fallback([message])
 
 
 def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:

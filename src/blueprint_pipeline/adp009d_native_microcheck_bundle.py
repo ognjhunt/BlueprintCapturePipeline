@@ -27,6 +27,9 @@ ASSET_BINDINGS = {
     "approved_can.usda": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "sage_collision.usd": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
 }
+APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
+APPROVED_CAN_DEFAULT_PRIM = "canned_beverage"
+APPROVED_CAN_COLLIDER_PATH = "colliders/body_collider"
 TARGET_COLLIDER_PRIM = "/Root/ZHQYGJJVAJYEYPTUKY888888"
 ENTRYPOINT = """#!/usr/bin/env bash
 set +e
@@ -91,6 +94,41 @@ def Xform "Root" (
 '''
 
 
+def _approved_can_physx_sdf_adapter_text() -> str:
+    """Compose the sealed can with the PhysX schema required to consume its SDF token."""
+
+    collider_parts = APPROVED_CAN_COLLIDER_PATH.split("/")
+    if len(collider_parts) != 2:
+        raise ValueError("adp009d_approved_can_collider_path_invalid")
+    scope_name, collider_name = collider_parts
+    return f'''#usda 1.0
+(
+    defaultPrim = "{APPROVED_CAN_DEFAULT_PRIM}"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "{APPROVED_CAN_DEFAULT_PRIM}" (
+    prepend references = @approved_can.usda@</{APPROVED_CAN_DEFAULT_PRIM}>
+)
+{{
+    over "{scope_name}"
+    {{
+        over "{collider_name}" (
+            prepend apiSchemas = ["PhysxSDFMeshCollisionAPI"]
+        )
+        {{
+            uniform token physics:approximation = "sdf"
+            float physxSDFMeshCollision:sdfMargin = 0.01
+            float physxSDFMeshCollision:sdfNarrowBandThickness = 0.01
+            int physxSDFMeshCollision:sdfResolution = 256
+            int physxSDFMeshCollision:sdfSubgridResolution = 6
+        }}
+    }}
+}}
+'''
+
+
 def _copy_bound_asset(source: Path, destination: Path, expected_digest: str) -> dict[str, Any]:
     if not source.is_file():
         raise ValueError(f"adp009d_bound_asset_missing:{destination.name}")
@@ -143,6 +181,23 @@ def build_native_microcheck_bundle(
             "composition_only": True,
             "sealed_source_mutated": False,
             "deactivated_source_prim": TARGET_COLLIDER_PRIM,
+        }
+    )
+    can_adapter_path = assets / APPROVED_CAN_ADAPTER_FILENAME
+    can_adapter_path.write_text(_approved_can_physx_sdf_adapter_text(), encoding="utf-8")
+    asset_rows.append(
+        {
+            "filename": can_adapter_path.name,
+            "sha256": _sha256(can_adapter_path),
+            "size_bytes": can_adapter_path.stat().st_size,
+            "composition_only": True,
+            "sealed_source_mutated": False,
+            "source_asset": "approved_can.usda",
+            "collider_prim": (
+                f"/{APPROVED_CAN_DEFAULT_PRIM}/{APPROVED_CAN_COLLIDER_PATH}"
+            ),
+            "required_applied_schema": "PhysxSDFMeshCollisionAPI",
+            "required_approximation": "sdf",
         }
     )
 
@@ -208,6 +263,7 @@ def build_native_microcheck_bundle(
 
 
 __all__ = [
+    "APPROVED_CAN_ADAPTER_FILENAME",
     "DEFAULT_IMAGE",
     "PROBE_KIND",
     "build_native_microcheck_bundle",

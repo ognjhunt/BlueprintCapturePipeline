@@ -475,7 +475,8 @@
       "actually_followed": true,
       "decisions": [
         "Bind Franka and Robotiq actuator limits and camera contracts in the embodiment layer.",
-        "Validate observation shape, device, timing, calibration, camera memory, and exact lossless retention before policy admission."
+        "Validate observation shape, device, timing, calibration, camera memory, and exact lossless retention before policy admission.",
+        "Convert simulator-native Warp arrays explicitly at the policy and receipt adapter boundary before indexing or Torch operations."
       ],
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
@@ -488,7 +489,9 @@
       "actually_followed": true,
       "decisions": [
         "Select PhysX for the ADP-009D task and centralize its settings in one validated configuration.",
-        "Treat backend selection as a manifest-bound decision, not scattered runtime conditionals."
+        "Treat backend selection as a manifest-bound decision, not scattered runtime conditionals.",
+        "Keep the sealed can bytes immutable while applying the required PhysxSDFMeshCollisionAPI and explicit SDF cooking settings through a deterministic digest-bound composition layer.",
+        "Validate both the composed and live spawned collider, subscribe to native Kit logs, and fail closed on any automatic collision-approximation fallback before an episode is admissible."
       ],
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
@@ -638,5 +641,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:617831c18f3f5d9a4920dc9b05f8b304caeebd3951d8eca725b7db320c2bdf35"
+  "audit_digest": "sha256:e30cd7ab94eb44ee220d6e6e6ff25dde4ac695bd3fd3413a61aaa79e481df2d4"
 }
