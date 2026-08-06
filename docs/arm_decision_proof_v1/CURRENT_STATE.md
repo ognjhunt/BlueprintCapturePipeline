@@ -93,9 +93,15 @@ gripper contact/lift/release with `0.0300313830` m observed lift. It confirmed
 one replacement, the source target collider inactive, and the publisher support
 collider active. The zero-retry run cost `$0.159906`, destroyed instance
 `46976013`, removed both staged objects, and a fresh provider inventory returned
-zero active Vast instances. This admits the exact-SimReady component; it is
-still simulation evidence rather than physical truth, and the hybrid
-appearance-plus-collision review remains a separate ADP-009B gate.
+zero active Vast instances. This admits the exact-SimReady component. The
+[hybrid replacement seal](manifests/adp009b_hybrid_replacement_seal_receipt.v1.json)
+now fail-closed joins that admitted component and exact runtime digest to the
+same Aura execution, project-owner visual decision, static replacement layer,
+scene `840313`, target `160`, inactive source collider, and preserved support
+collider. This completes the bounded internal hybrid replacement control, not
+ADP-009B: the composite is not a native render of the 3DGS background, Aura has
+no hidden-background truth, InFusion remains blocked, and all simulation
+evidence remains distinct from physical truth.
 
 Suite replay now fails closed on file identity as well as JSON shape. The
 materializer opens the ten component manifests and receipts plus every referenced
