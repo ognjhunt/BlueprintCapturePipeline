@@ -70,6 +70,117 @@ def _reference_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+def _write_receipt(path: Path, payload: dict) -> dict:
+    payload = dict(payload)
+    payload["receipt_digest"] = canonical_digest(payload, digest_field="receipt_digest")
+    write_json(path, payload)
+    return payload
+
+
+def _match_v2_evidence(tmp_path: Path) -> tuple[Path, Path, Path]:
+    repo = tmp_path / "repo"
+    evidence = tmp_path / "evidence"
+    usd = repo / "docs/arm_decision_proof_v1/assets/match-v2.usda"
+    snapshot = evidence / "simready/cad_match_v2/snapshot.png"
+    usd.parent.mkdir(parents=True)
+    snapshot.parent.mkdir(parents=True)
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+    snapshot.write_bytes(b"\x89PNG\r\n\x1a\nmatch-v2")
+    control = _write_receipt(
+        repo / content_agents.MATCH_V2_RECEIPT_RELATIVE_PATH,
+        {
+            "control_id": "adp009a-840313-canned-beverage-multiview-match-v2",
+            "status": "prepared_for_independent_validation",
+            "checks": {
+                "cad_inspection_passed": True,
+                "target_dimensions_derived_not_caller_asserted": True,
+            },
+            "visual_match_evidence": {"projected_scale_and_pose_gate_passed": True},
+            "usd": {
+                "relative_path": usd.relative_to(repo).as_posix(),
+                "sha256": "sha256:" + hashlib.sha256(usd.read_bytes()).hexdigest(),
+            },
+            "cad_evidence": {
+                "snapshot": {
+                    "relative_path": snapshot.relative_to(evidence).as_posix(),
+                    "sha256": "sha256:"
+                    + hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                }
+            },
+        },
+    )
+    replacement = _write_receipt(
+        repo / content_agents.MATCH_V2_REPLACEMENT_RECEIPT_RELATIVE_PATH,
+        {
+            "status": "composed_static_candidate",
+            "bindings": {"simready_control_receipt_digest": control["receipt_digest"]},
+        },
+    )
+    _write_receipt(
+        repo / content_agents.MATCH_V2_HUMAN_REVIEW_RELATIVE_PATH,
+        {
+            "status": "human_accepted_for_native_validation",
+            "technical_admission": False,
+            "artifact_chain": {
+                "replacement_receipt_digest": replacement["receipt_digest"]
+            },
+        },
+    )
+    return repo, evidence, snapshot
+
+
+def test_match_v2_variant_binds_approved_receipt_chain(tmp_path: Path) -> None:
+    repo, evidence, snapshot = _match_v2_evidence(tmp_path)
+
+    resolved = content_agents._resolve_input_variant(
+        repo=repo,
+        evidence_root=evidence,
+        reference_source=snapshot,
+        variant="match_v2",
+    )
+
+    assert resolved["variant"] == "match_v2"
+    assert resolved["control_receipt_digest"].startswith("sha256:")
+    assert resolved["replacement_receipt_digest"].startswith("sha256:")
+    assert resolved["human_review_receipt_digest"].startswith("sha256:")
+    assert "interiorgs_dataset_bytes" in resolved["reference_image_authority"]
+
+
+def test_match_v2_variant_rejects_changed_approved_snapshot(tmp_path: Path) -> None:
+    repo, evidence, snapshot = _match_v2_evidence(tmp_path)
+    snapshot.write_bytes(snapshot.read_bytes() + b"changed")
+
+    with pytest.raises(ValueError, match="source_identity_mismatch"):
+        content_agents._resolve_input_variant(
+            repo=repo,
+            evidence_root=evidence,
+            reference_source=snapshot,
+            variant="match_v2",
+        )
+
+
+def test_match_v2_configs_remove_unproven_aluminum_assertion(tmp_path: Path) -> None:
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    sources = {
+        "material_agent.yaml": assets / "adp009a_content_agents_material.vast.yaml",
+        "texture_agent.yaml": assets / "adp009a_content_agents_texture.vast.yaml",
+        "physics_agent.yaml": assets / "adp009a_content_agents_physics.vast.yaml",
+    }
+    destination = tmp_path / "configs"
+    destination.mkdir()
+
+    hashes = content_agents._materialize_remote_configs(
+        config_sources=sources, destination=destination, variant="match_v2"
+    )
+
+    material = (destination / "material_agent.yaml").read_text(encoding="utf-8")
+    texture = (destination / "texture_agent.yaml").read_text(encoding="utf-8")
+    assert set(hashes) == set(sources)
+    assert "Do not assume aluminum" in material
+    assert "bright green aluminum" not in texture
+    assert "pale mint green" in texture
+
+
 def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

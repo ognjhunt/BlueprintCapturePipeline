@@ -19,6 +19,7 @@ import yaml
 from pxr import Usd, UsdGeom
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .vast_provider_adapter import run_vast_provider_adapter
@@ -40,6 +41,18 @@ DEFAULT_IMAGE = (
 )
 REFERENCE_IMAGE_SHA256 = (
     "sha256:80954198df572d782e095d8670e0d4e8ceea530c8fe53c8476a487d1aebe137f"
+)
+MATCH_V2_RECEIPT_RELATIVE_PATH = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "adp009a_840313_canned_beverage_match_v2_receipt.v1.json"
+)
+MATCH_V2_REPLACEMENT_RECEIPT_RELATIVE_PATH = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "adp009b_simready_replacement_match_v2_receipt.v1.json"
+)
+MATCH_V2_HUMAN_REVIEW_RELATIVE_PATH = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "adp009b_simready_match_v2_human_review_receipt.v1.json"
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/content-agents"
 _VAST_MUTATION_ENV = (
@@ -65,6 +78,129 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
     value = json.loads(path.read_text(encoding="utf-8"))
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _under(path: Path, root: Path, *, error: str) -> Path:
+    resolved = path.expanduser().resolve()
+    root = root.expanduser().resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(error)
+    return resolved
+
+
+def _verified_canonical_receipt(path: Path, *, error: str) -> dict[str, Any]:
+    receipt = _read_json(path)
+    supplied = receipt.get("receipt_digest")
+    if not receipt or supplied != canonical_digest(receipt, digest_field="receipt_digest"):
+        raise ValueError(error)
+    return receipt
+
+
+def _resolve_input_variant(
+    *,
+    repo: Path,
+    evidence_root: Path | None,
+    reference_source: Path,
+    variant: str,
+) -> dict[str, Any]:
+    assets = repo / "docs" / "arm_decision_proof_v1" / "assets"
+    if variant == "control_v1":
+        if _sha256(reference_source) != REFERENCE_IMAGE_SHA256:
+            raise ValueError("adp_content_agents_reference_image_identity_mismatch")
+        return {
+            "usd_source": assets / "adp009a_840313_canned_beverage_control.usda",
+            "config_prefix": "adp009a_content_agents_",
+            "reference_image_sha256": REFERENCE_IMAGE_SHA256,
+            "reference_image_authority": "blueprint_cad_render_not_interiorgs_dataset_bytes",
+            "variant": variant,
+        }
+    if variant != "match_v2":
+        raise ValueError("adp_content_agents_input_variant_invalid")
+    if evidence_root is None:
+        raise ValueError("adp_content_agents_match_v2_evidence_root_missing")
+    evidence = evidence_root.expanduser().resolve()
+    control_path = _under(
+        repo / MATCH_V2_RECEIPT_RELATIVE_PATH,
+        repo,
+        error="adp_content_agents_match_v2_control_receipt_outside_repo",
+    )
+    control = _verified_canonical_receipt(
+        control_path, error="adp_content_agents_match_v2_control_receipt_invalid"
+    )
+    checks = control.get("checks") or {}
+    if (
+        control.get("control_id")
+        != "adp009a-840313-canned-beverage-multiview-match-v2"
+        or control.get("status") != "prepared_for_independent_validation"
+        or checks.get("cad_inspection_passed") is not True
+        or checks.get("target_dimensions_derived_not_caller_asserted") is not True
+        or (control.get("visual_match_evidence") or {}).get(
+            "projected_scale_and_pose_gate_passed"
+        )
+        is not True
+    ):
+        raise ValueError("adp_content_agents_match_v2_control_receipt_not_eligible")
+    usd = control.get("usd") or {}
+    usd_source = _under(
+        repo / str(usd.get("relative_path") or ""),
+        repo,
+        error="adp_content_agents_match_v2_usd_outside_repo",
+    )
+    snapshot = (control.get("cad_evidence") or {}).get("snapshot") or {}
+    expected_reference = _under(
+        evidence / str(snapshot.get("relative_path") or ""),
+        evidence,
+        error="adp_content_agents_match_v2_reference_outside_evidence",
+    )
+    if (
+        not usd_source.is_file()
+        or _sha256(usd_source) != usd.get("sha256")
+        or not expected_reference.is_file()
+        or reference_source != expected_reference
+        or _sha256(reference_source) != snapshot.get("sha256")
+    ):
+        raise ValueError("adp_content_agents_match_v2_source_identity_mismatch")
+    replacement = _verified_canonical_receipt(
+        _under(
+            repo / MATCH_V2_REPLACEMENT_RECEIPT_RELATIVE_PATH,
+            repo,
+            error="adp_content_agents_match_v2_replacement_receipt_outside_repo",
+        ),
+        error="adp_content_agents_match_v2_replacement_receipt_invalid",
+    )
+    human_review = _verified_canonical_receipt(
+        _under(
+            repo / MATCH_V2_HUMAN_REVIEW_RELATIVE_PATH,
+            repo,
+            error="adp_content_agents_match_v2_human_review_outside_repo",
+        ),
+        error="adp_content_agents_match_v2_human_review_invalid",
+    )
+    if (
+        replacement.get("status") != "composed_static_candidate"
+        or (replacement.get("bindings") or {}).get("simready_control_receipt_digest")
+        != control.get("receipt_digest")
+        or human_review.get("status") != "human_accepted_for_native_validation"
+        or human_review.get("technical_admission") is not False
+        or (human_review.get("artifact_chain") or {}).get(
+            "replacement_receipt_digest"
+        )
+        != replacement.get("receipt_digest")
+    ):
+        raise ValueError("adp_content_agents_match_v2_approval_chain_invalid")
+    return {
+        "usd_source": usd_source,
+        "config_prefix": "adp009a_content_agents_match_v2_",
+        "reference_image_sha256": snapshot["sha256"],
+        "reference_image_authority": (
+            "blueprint_cad_snapshot_bound_to_human_approved_match_v2_not_"
+            "interiorgs_dataset_bytes"
+        ),
+        "variant": variant,
+        "control_receipt_digest": control["receipt_digest"],
+        "replacement_receipt_digest": replacement["receipt_digest"],
+        "human_review_receipt_digest": human_review["receipt_digest"],
+    }
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -186,6 +322,50 @@ def _validate_remote_configs(
         raise ValueError("adp_content_agents_remote_config_contract_invalid")
 
 
+def _materialize_remote_configs(
+    *,
+    config_sources: Mapping[str, Path],
+    destination: Path,
+    variant: str,
+) -> dict[str, str]:
+    """Copy v1 configs or deterministically derive the approved v2 challenger."""
+
+    config_hashes: dict[str, str] = {}
+    for name, path in config_sources.items():
+        target = destination / name
+        if variant == "control_v1":
+            shutil.copy2(path, target)
+        else:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+            project = payload["project"]
+            project["name"] = project["name"] + "_match_v2"
+            project["session_id"] = project["session_id"] + "_match_v2"
+            project["description"] = project["description"].replace(
+                "CAD-derived can control", "human-approved multiview-matched v2 can"
+            ).replace(
+                "outputs remain authored priors",
+                "human-approved v2 input; outputs remain authored priors",
+            )
+            if name == "material_agent.yaml":
+                payload["steps"]["build_dataset_prepare_dataset"]["prompts"][
+                    "vlm_user"
+                ] = (
+                    "Classify the rendered pale-mint beverage container appearance. "
+                    "Do not assume aluminum, glass, plastic, or transparency from "
+                    "shape or prompt alone."
+                )
+            elif name == "texture_agent.yaml":
+                payload["material_textures"]["green_can"]["prompt"] = (
+                    "pale mint green clean non-branded beverage container surface, "
+                    "subtle vertical shading, no text or logo"
+                )
+            target.write_text(
+                yaml.safe_dump(payload, sort_keys=False, width=100), encoding="utf-8"
+            )
+        config_hashes[name] = _sha256(target)
+    return config_hashes
+
+
 def _deterministic_zip(source_root: Path, destination: Path) -> None:
     with zipfile.ZipFile(destination, "w") as archive:
         for path in sorted(source_root.rglob("*")):
@@ -211,6 +391,8 @@ def build_content_agents_vast_bundle(
     content_agents_root: str | Path,
     reference_image_path: str | Path,
     job_dir: str | Path,
+    input_variant: str = "control_v1",
+    evidence_root: str | Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Build one immutable bundle without licensed InteriorGS or SAGE bytes."""
@@ -218,6 +400,7 @@ def build_content_agents_vast_bundle(
     repo = Path(repo_root).expanduser().resolve()
     source = Path(content_agents_root).expanduser().resolve()
     reference_source = Path(reference_image_path).expanduser().resolve()
+    evidence = Path(evidence_root) if evidence_root is not None else None
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
         raise ValueError("adp_content_agents_bundle_job_dir_not_empty")
@@ -229,12 +412,14 @@ def build_content_agents_vast_bundle(
     dirty = bool(_git(source, "status", "--porcelain"))
     if head != SOURCE_COMMIT or tree != SOURCE_TREE or dirty:
         raise ValueError("adp_content_agents_source_identity_mismatch")
-    if (
-        not reference_source.is_file()
-        or _sha256(reference_source) != REFERENCE_IMAGE_SHA256
-        or reference_source.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n"
-    ):
+    if not reference_source.is_file() or reference_source.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("adp_content_agents_reference_image_identity_mismatch")
+    variant = _resolve_input_variant(
+        repo=repo,
+        evidence_root=evidence,
+        reference_source=reference_source,
+        variant=input_variant,
+    )
 
     source_zip = runtime / "content_agents_source.zip"
     subprocess.run(
@@ -256,12 +441,19 @@ def build_content_agents_vast_bundle(
         "texture_agent.yaml": assets / "adp009a_content_agents_texture.vast.yaml",
         "physics_agent.yaml": assets / "adp009a_content_agents_physics.vast.yaml",
     }
-    _validate_remote_configs(source=source, config_sources=config_sources)
-    for name, path in config_sources.items():
-        shutil.copy2(path, runtime / "configs" / name)
-    usd_source = assets / "adp009a_840313_canned_beverage_control.usda"
+    config_hashes = _materialize_remote_configs(
+        config_sources=config_sources,
+        destination=runtime / "configs",
+        variant=str(variant["variant"]),
+    )
+    runtime_configs = {
+        name: runtime / "configs" / name for name in config_sources
+    }
+    _validate_remote_configs(source=source, config_sources=runtime_configs)
+    usd_source = Path(variant["usd_source"])
+    runtime_usd_name = "adp009a_840313_canned_beverage_control.usda"
     input_normalization = _materialize_content_agents_input(
-        usd_source, runtime / "input" / usd_source.name
+        usd_source, runtime / "input" / runtime_usd_name
     )
     reference_name = "adp009a_840313_canned_beverage_control_reference.png"
     shutil.copy2(reference_source, runtime / "input" / reference_name)
@@ -287,10 +479,17 @@ def build_content_agents_vast_bundle(
         "source_archive_sha256": _sha256(source_zip),
         "input_usd_sha256": input_normalization["normalized_input_usd_sha256"],
         "input_usd_normalization": input_normalization,
-        "reference_image_sha256": _sha256(reference_source),
-        "reference_image_authority": "blueprint_cad_render_not_interiorgs_dataset_bytes",
+        "input_variant": variant["variant"],
+        "input_variant_bindings": {
+            key: value
+            for key, value in variant.items()
+            if key.endswith("_receipt_digest")
+        },
+        "reference_image_sha256": variant["reference_image_sha256"],
+        "reference_image_authority": variant["reference_image_authority"],
         "runtime_entrypoint": "provider_runtime/run_adp_content_agents_provider_runtime.sh",
         "remote_config_contract_validated": True,
+        "remote_config_sha256": config_hashes,
         "expected_output_filename": "adp_content_agents_vast_result.json",
         "material_agent_planned": True,
         "texture_agent_planned": True,
@@ -569,12 +768,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--content-agents-root", required=True)
     parser.add_argument("--reference-image", required=True)
     parser.add_argument("--job-dir", required=True)
+    parser.add_argument(
+        "--input-variant", choices=("control_v1", "match_v2"), default="control_v1"
+    )
+    parser.add_argument("--evidence-root")
     args = parser.parse_args(argv)
     receipt = build_content_agents_vast_bundle(
         repo_root=args.repo_root,
         content_agents_root=args.content_agents_root,
         reference_image_path=args.reference_image,
         job_dir=args.job_dir,
+        input_variant=args.input_variant,
+        evidence_root=args.evidence_root,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))
     return 0 if receipt.get("status") == "ready" else 2
