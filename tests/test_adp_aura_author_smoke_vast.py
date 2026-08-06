@@ -829,6 +829,8 @@ def _allocator_args(
         str(tmp_path / "adapter.json"),
         "--pod-name",
         "adp-aura-smoke",
+        "--expected-source-commit",
+        "a" * 40,
         "--adp-aura-bundle-receipt",
         str(bundle_receipt),
         "--adp-job-dir",
