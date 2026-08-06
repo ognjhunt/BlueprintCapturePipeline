@@ -217,6 +217,14 @@ def test_runtime_rejects_any_physx_collision_fallback() -> None:
         isaac_runtime._fail_on_physx_collision_fallback([message])
 
 
+def test_runtime_does_not_import_unneeded_arena_asset_registry() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+
+    assert "isaaclab_arena.assets.object_library" not in source
+    assert "class SpawnerObject(Object):" in source
+    assert "object_type=ObjectType.SPAWNER" in source
+
+
 def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
     source = Path(isaac_runtime.__file__).with_name("adp009d_native_microcheck_worker.py")
     text = source.read_text(encoding="utf-8")

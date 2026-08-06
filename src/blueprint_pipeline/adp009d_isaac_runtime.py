@@ -196,13 +196,23 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     import isaaclab.sim as sim_utils
     from isaaclab_arena.assets.object import Object
     from isaaclab_arena.assets.object_base import ObjectType
-    from isaaclab_arena.assets.object_library import DomeLight
     from isaaclab_arena.embodiments.droid.droid import DroidAbsoluteJointPositionEmbodiment
     from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
     from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
     from isaaclab_arena.scene.scene import Scene
     from isaaclab_arena.tasks.no_task import NoTask
     from isaaclab_arena.utils.pose import Pose
+
+    class SpawnerObject(Object):
+        """Use Arena's composition seam without importing its full asset registry."""
+
+        def __init__(self, *, name: str, prim_path: str, spawner_cfg: Any):
+            self.spawner_cfg = spawner_cfg
+            super().__init__(
+                name=name,
+                prim_path=prim_path,
+                object_type=ObjectType.SPAWNER,
+            )
 
     yaw_half = ROBOT_BASE_YAW_RAD / 2
     robot_pose = Pose(
@@ -252,7 +262,9 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             ),
         },
     )
-    light = DomeLight(
+    light = SpawnerObject(
+        name="light",
+        prim_path="/World/Light",
         spawner_cfg=sim_utils.DomeLightCfg(
             color=(0.75, 0.75, 0.75),
             intensity=1500.0,
