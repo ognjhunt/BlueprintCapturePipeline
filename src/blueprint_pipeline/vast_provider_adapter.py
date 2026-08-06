@@ -2889,7 +2889,12 @@ def _probe_shell_script(
     curl_download_protocol = (
         "--http1.1 "
         if provider_bundle_kind
-        in {"adp_aura_smoke", "adp_aura_interiorgs", "adp_inpaint360_interiorgs"}
+        in {
+            "adp_aura_smoke",
+            "adp_aura_interiorgs",
+            "adp_inpaint360_interiorgs",
+            "adp_simready_isaac",
+        }
         else ""
     )
     script = (

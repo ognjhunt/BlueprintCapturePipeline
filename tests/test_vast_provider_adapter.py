@@ -4963,6 +4963,17 @@ def test_exact_simready_isaac_bundle_does_not_require_policy_video() -> None:
     assert vpa._provider_expected_video_count("adp_simready_isaac") == 0
 
 
+def test_exact_simready_isaac_bundle_forces_http1_download() -> None:
+    script = vpa._probe_shell_script(
+        "https://example.invalid/heartbeat",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="adp_simready_isaac",
+    )
+
+    assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
+
+
 def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
