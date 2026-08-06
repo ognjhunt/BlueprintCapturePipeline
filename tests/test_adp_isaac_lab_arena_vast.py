@@ -14,6 +14,7 @@ from blueprint_pipeline.adp_founder_sim_protocol import (
 from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     DEFAULT_IMAGE,
     PROBE_KIND,
+    _candidate_policy_query_blocker,
     _next_attempt_root,
     _remaining_session_live_minutes,
     build_arena_native_control_bundle,
@@ -40,6 +41,25 @@ def _approval_path(tmp_path: Path) -> Path:
     path = tmp_path / "approval.json"
     write_json(path, receipt)
     return path
+
+
+def test_policy_query_blocker_does_not_invent_query_when_receipt_is_missing() -> None:
+    assert (
+        _candidate_policy_query_blocker({}, blocker_prefix="adp009d")
+        == "adp009d_candidate_policy_query_status_missing"
+    )
+    assert (
+        _candidate_policy_query_blocker(
+            {"candidate_policy_queried": True}, blocker_prefix="adp009d"
+        )
+        == "adp009d_candidate_policy_queried"
+    )
+    assert (
+        _candidate_policy_query_blocker(
+            {"candidate_policy_queried": False}, blocker_prefix="adp009d"
+        )
+        is None
+    )
 
 
 def test_bundle_is_deterministic_approved_and_native_control_only(tmp_path: Path) -> None:

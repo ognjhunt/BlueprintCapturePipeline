@@ -4014,8 +4014,16 @@ def _request_logs_and_fetch(
         container_or_daemon_error_only = container_missing or (
             "Error response from daemon" in attempt_text
         )
+        # Once a worker has emitted structured phase markers, only a new phase marker
+        # is scientific progress.  Benign container noise (for example, sshd session
+        # lines produced by a read-only diagnostic) must not keep a paid run alive.
+        structured_phase_tracking_active = bool(
+            runtime_phase_count or previous_runtime_phase_count
+        )
         progress_observed = bool(attempt_text.strip()) and (
-            runtime_phase_progress or (output_changed and not container_or_daemon_error_only)
+            runtime_phase_progress
+            if structured_phase_tracking_active
+            else (output_changed and not container_or_daemon_error_only)
         )
         if progress_observed:
             last_progress_monotonic = time.monotonic()
@@ -4038,6 +4046,7 @@ def _request_logs_and_fetch(
                 "output_changed": output_changed,
                 "runtime_phase_marker_count": runtime_phase_count,
                 "runtime_phase_progress_observed": runtime_phase_progress,
+                "structured_phase_tracking_active": structured_phase_tracking_active,
                 "progress_observed": progress_observed,
                 "no_progress_elapsed_seconds": round(no_progress_elapsed_seconds, 6),
                 "no_progress_timeout_reached": no_progress_timeout_reached,

@@ -253,6 +253,19 @@ def _extract_provider_output(
     }
 
 
+def _candidate_policy_query_blocker(
+    execution: Mapping[str, Any], *, blocker_prefix: str
+) -> str | None:
+    """Distinguish an observed policy query from a missing pre-policy receipt."""
+
+    queried = execution.get("candidate_policy_queried")
+    if queried is False:
+        return None
+    if queried is True:
+        return f"{blocker_prefix}_candidate_policy_queried"
+    return f"{blocker_prefix}_candidate_policy_query_status_missing"
+
+
 def run_arena_native_control_vast(
     *,
     approval_path: str | Path,
@@ -418,8 +431,11 @@ def run_arena_native_control_vast(
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
     if execution.get("status") != "completed":
         blockers.extend(execution.get("blockers") or [f"{blocker_prefix}_runtime_not_completed"])
-    if execution.get("candidate_policy_queried") is not False:
-        blockers.append(f"{blocker_prefix}_candidate_policy_queried")
+    policy_query_blocker = _candidate_policy_query_blocker(
+        execution, blocker_prefix=blocker_prefix
+    )
+    if policy_query_blocker:
+        blockers.append(policy_query_blocker)
     if teardown.get("continuing_spend_from_this_run") is not False:
         blockers.append(f"{blocker_prefix}_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:

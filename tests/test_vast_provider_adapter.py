@@ -1295,6 +1295,57 @@ def test_request_logs_dud_container_flicker_is_not_progress(
     assert all(a["progress_observed"] is False for a in result["log_poll_attempts"])
 
 
+def test_request_logs_ignores_unstructured_noise_after_worker_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read-only SSH diagnostics and other stdout noise cannot extend paid work."""
+
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    noise = iter(
+        [
+            "BLUEPRINT_WAM_RUNTIME_PHASE:worker:environment_build:started\n",
+            "BLUEPRINT_WAM_RUNTIME_PHASE:worker:environment_build:started\n"
+            "Accepted publickey for root\n",
+            "BLUEPRINT_WAM_RUNTIME_PHASE:worker:environment_build:started\n"
+            "Disconnected from user root\n",
+        ]
+        * 20
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(noise))
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        no_progress_seconds=4,
+    )
+
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert result["no_progress_timeout_reached"] is True
+    attempts = result["log_poll_attempts"]
+    assert attempts[0]["progress_observed"] is True
+    assert all(item["structured_phase_tracking_active"] is True for item in attempts)
+    assert all(item["progress_observed"] is False for item in attempts[1:])
+
+
 def test_vast_adapter_dry_run_writes_required_artifacts(tmp_path: Path) -> None:
     result = run_vast_provider_adapter(job_dir=tmp_path, mode="dry-run")
 
