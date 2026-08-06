@@ -23,6 +23,14 @@ media-complete canary per candidate, then the preregistered matrix if and only
 if all execution gates pass. Produce visual results that the project owner can
 inspect directly in chat.
 
+This is not only a one-off rollout. Materialize the task as a small,
+replayable Isaac Lab evaluation harness with one immutable canonical condition
+and preregistered diagnostic scenario families for placement, illumination,
+camera/sensor perturbations, bounded physics variation, and exact SimReady
+object cousins. Keep the canonical sealed scene as the anchor; variations may
+measure robustness but may not retroactively redefine the admitted public
+scene or the primary task.
+
 This is ADP backlog item
 `ADP-009D_public_scene_franka_policy_rehearsal`. It advances the day-28 public
 gate. Its completion artifact is a digest-bound two-candidate simulator-only
@@ -62,7 +70,113 @@ Read these completely before changing code or allocating compute:
 22. `src/blueprint_pipeline/franka_droid_control_preflight.py`
 23. `src/blueprint_pipeline/adp_isaac_lab_arena_materialization.py`
 24. `src/blueprint_pipeline/adp_isaac_lab_arena_vast.py`
-25. `src/blueprint_pipeline/paid_resource_allocator.py`
+25. `src/blueprint_pipeline/scenario_variation_instantiator.py`
+26. `src/blueprint_pipeline/evaluation_run_contract.py`
+27. `src/blueprint_pipeline/evaluation_run_execution.py`
+28. `src/blueprint_pipeline/isaac_review_media.py`
+29. `src/blueprint_pipeline/episode_visual_evidence.py`
+30. `src/blueprint_pipeline/paid_resource_allocator.py`
+
+### Mandatory fresh Isaac Lab and Omniverse agent-skill audit
+
+Before designing or changing the Isaac Lab environment, use web search and the
+official repositories to recheck the latest supported workflows. Agent-skill
+instructions are versioned implementation inputs, not timeless advice. Record
+the repository, exact commit/tree, skill path, skill status/version, license,
+retrieval timestamp, and every directly used reference or example.
+
+The 2026-08-06 starting observations are:
+
+- official Isaac Lab `develop` commit
+  `3ea6f7bbf6c7d515aa1f8e8c54bfdfffda2d4857` contains repository-owned
+  skills under `skills/` with native `.agents/skills` aliases;
+- official NVIDIA verified-skills catalog commit
+  `276b9bcce5d1b224769f9b10ad26975c15e0dd4c` contains the current
+  Omniverse/Physical-AI workflow skills;
+- official `NVIDIA-Omniverse/ovrtx` commit
+  `4b9a5fe6f8becf6c5ff031e167cd4201054a96ce` contains renderer skills for
+  its current API; and
+- official `NVIDIA-Omniverse/PhysX` commit
+  `7845321d31fa3619917ebe127ab5e08e73de0bdb` was observed with ovPhysX
+  source/tests but no materialized `ovphysx/skills/` directory. Recheck this
+  rather than inventing or trusting a catalog link to files that are absent at
+  the selected source revision.
+
+At minimum, read each applicable `SKILL.md` completely before acting and follow
+its directly linked maintained references/examples:
+
+Isaac Lab:
+
+- `isaaclab-building-environments`;
+- `isaaclab-planning-manipulation-tasks`;
+- `isaaclab-randomizing-with-events`;
+- `isaaclab-using-sensors-actuators`;
+- `isaaclab-selecting-backends`; and
+- `isaaclab-using-presets` only if a real renderer/backend/domain selector is
+  needed. Do not add presets to a one-backend task merely for abstraction.
+
+Omniverse/OVRTX, when that renderer path is actually selected:
+
+- `loading-usd`;
+- `renderer-creation`;
+- `render-settings`;
+- `camera-outputs-rt2`;
+- `reading-render-output`;
+- `stepping-and-rendering`;
+- `warmup`; and
+- `semantic-labels`.
+
+NVIDIA verified Physical-AI skills, only when their stage is in scope:
+
+- `omniverse-cad-to-simready` for newly generated cousin assets, not to
+  re-author the sealed approved match-v2 can;
+- `omniverse-usd-performance-tuning` only after measured stage/render
+  bottlenecks and a baseline profile exist; and
+- `omniverse-realtime-viewer` only if a viewer/streaming deliverable is needed,
+  not as a substitute for lossless policy-input capture.
+
+If installing a mirrored NVIDIA skill, independently verify its detached OMS
+signature, skill card, evaluation dataset, benchmark report, and declared
+license against the catalog trust anchor before execution. Prefer the official
+product repository as the behavioral source of truth when the catalog says it
+is a mirror. Do not copy an old global skill over a newer repository-owned
+skill or trust an unsigned third-party skill merely because it has stars.
+
+Apply the currently observed guidance explicitly:
+
+- default new tasks to manager-based environments and start from the closest
+  maintained source example;
+- validate in order: import, small environment instantiate, reset, random or
+  scripted step, shapes/devices/timing, then any larger rollout;
+- express domain variation through typed EventManager terms and choose
+  `prestartup`, `startup`, `reset`, or `interval` based on when the property can
+  safely change;
+- validate scene physics and reset reachability before interpreting policy or
+  reward behavior;
+- start camera-based evaluation at a small environment count and measure
+  renderer memory before vectorizing;
+- keep PhysX-specific behavior in public schema configs and task-local terms,
+  not scattered runtime conditionals;
+- if OVRTX and ovPhysX share a process, initialize/import OVRTX first;
+- in OVRTX attached mode, honor ovstage ordinals and write-floor publication
+  before stepping the renderer;
+- request only required AOVs. For metric compositing prefer
+  `DistanceToCameraSD` or `DistanceToImagePlaneSD` in metres and record their
+  geometry; do not confuse unitless `DepthSD` with metric depth;
+- write RTX settings on the RenderProduct, then reset/re-warm when settings
+  invalidate accumulation;
+- for real-time path tracing, treat renderer warmup and texture streaming as a
+  measured gate (the current skill recommends 40 warmup frames as a starting
+  default); for reference PathTracing, bind the samples-per-pixel and capture
+  behavior instead of assuming repeated warmup; and
+- author semantic/instance labels in a composed override layer so the sealed
+  source assets remain unchanged.
+
+Emit `adp009d_agent_skill_audit.v1` binding the exact skill sources and the
+specific instructions that affected architecture, commands, or validation.
+If a skill has materially changed since these observations, use the newer
+official version, retain a diff/decision receipt, and update the harness plan
+before mutation.
 
 Begin from protected `main`. Verify that `main` contains decision ID
 `ADP-009-public-scene-transition-2026-08-06`. If it does not, stop with the
@@ -215,6 +329,162 @@ horizon, cameras, reset state, tolerances, collision rules, and success grader.
 The primary success metric is deterministic simulator state, never a policy,
 VLM, Cosmos, or human aesthetic judgment.
 
+### 3A. Build the bounded Isaac Lab evaluation harness
+
+Use Isaac Lab as the simulator/task substrate and evaluate Isaac Lab Arena as
+the smallest upstream evaluation layer before writing new infrastructure. The
+official `release/0.2.1` branch was observed on 2026-08-06 at commit
+`8b4a3a47fc53de23e8205089d71109a2e2348acd`; independently verify the exact
+official commit, tree, license, Isaac Lab/Isaac Sim compatibility, and nested
+dependencies before pinning it. Arena is alpha software, so pin exact bytes
+and do not depend on a floating `main` branch.
+
+Prefer Arena's native composition and evaluation contracts when they fit:
+
+- one Scene for the sealed Aura/SAGE construction;
+- one Embodiment for the exact DROID Franka plus Robotiq 2F-85;
+- one Task for the frozen pick-lift-translate-place objective;
+- `PolicyBase`-compatible thin adapters for the two frozen candidates and the
+  independent controls;
+- task-owned metrics and deterministic termination;
+- a sequential batch-evaluation jobs file for scenario/policy cells; and
+- Isaac Lab observation, action, event, termination, and recorder managers.
+
+Use a manager-based Isaac Lab environment unless a measured incompatibility
+requires a direct environment. The manager-based path is preferred here
+because variations must remain typed and independently testable:
+
+- `ObservationManager` owns the exact policy and grader observations;
+- `ActionManager` owns the DROID-to-Franka command contract;
+- `EventManager` applies preregistered reset-time variations;
+- `TerminationManager` owns success, invalidity, and timeouts; and
+- `RecorderManager` exports episode data and media hooks.
+
+If Arena cannot host the hybrid Gaussian observation path or exact robot
+embodiment, retain the incompatibility receipt and implement the smallest
+Blueprint adapter around `ManagerBasedRLEnv`. Keep the same external scenario,
+episode, metric, and replay contracts; do not fork a second general benchmark
+framework.
+
+The harness must materialize evidence-derived, canonical artifacts such as:
+
+- `adp009d_agent_skill_audit.v1`;
+- `adp009d_franka_eval_harness_manifest.v1`;
+- `adp009d_scenario_suite.v1`;
+- `adp009d_scenario_instance.v1` per fully resolved condition/seed;
+- `adp009d_episode_receipt.v1` per attempted episode; and
+- `adp009d_eval_summary.v1` with stratified paired results.
+
+Names may reuse an existing broader Blueprint schema when that schema already
+proves the same fields. Do not add parallel schemas merely for naming. Every
+scenario instance must derive its resolved values and digest from the frozen
+suite, source assets, seed, and simulator configuration; caller-asserted IDs or
+hand-authored success JSON are insufficient.
+
+### 3B. Preregister the scenario and cousin suite
+
+Do not run a Cartesian-product stress campaign. Freeze a compact,
+decision-relevant design before any learned-policy task outcome. It must
+contain these tiers:
+
+1. **Canonical anchor** — the exact approved Aura/SAGE scene, exact match-v2
+   can, sealed start pose, nominal lighting/cameras/physics, and selected
+   destination. This is the primary public-scene condition and must never be
+   replaced by an averaged randomized condition.
+2. **Placement and approach** — bounded start and destination offsets expressed
+   in the measured support-plane basis, plus bounded can yaw and robot reset
+   perturbations. Derive ranges from collision clearance, camera visibility,
+   and reachable-workspace measurements. Include nominal, interior, and
+   near-boundary values without moving the can off the admitted support or
+   creating an impossible start state.
+3. **Illumination and appearance** — preregistered low/nominal/high intensity,
+   bounded direction and color-temperature changes, and exposure settings.
+   Lighting changes affect rendered observations only; never alter task truth
+   or physics. Retain the exact resolved light rigs and rendered preflights.
+4. **Camera and sensor robustness** — bounded wrist/external camera extrinsic
+   and intrinsic perturbations, exposure/noise, and optional bounded latency.
+   Include exact nominal calibration. Perturbations must be explicitly applied
+   to both rendering and policy metadata where appropriate; never lie to a
+   policy about calibration unless the scenario is specifically labeled as a
+   calibration-error test.
+5. **Physics robustness** — bounded, physically plausible can mass, friction,
+   restitution, centre-of-mass, and support-contact variations around the
+   native validated values. Never randomize unmeasured values without recording
+   the source or rationale and the allowed claim ceiling.
+6. **Object cousins** — the approved match-v2 can plus at least two separately
+   packaged and validated SimReady can-family cousins when their exact assets,
+   rights, and physics can be admitted before protocol freeze. Prefer one
+   visual/material cousin that preserves geometry and collision, and one
+   bounded geometric cousin that preserves the cylindrical parallel-jaw grasp
+   affordance while varying height/diameter within preregistered limits. Each
+   cousin needs its own USD package digest, visual mesh, collider, units, mass,
+   inertia, material/texture provenance, validation result, and grasp-clearance
+   proof. A color swap is a visual cousin, not geometric generalization. A
+   generated or approximate cousin is simulator stimulus, never metric truth.
+7. **Composed held-out cases** — a small preregistered set combining two or
+   more individually admitted variations to test interaction effects. Freeze
+   these before learned outcomes; do not search for attractive successes or
+   adversarial failures after the fact.
+
+Optional distractors, partial occlusions, or additional clutter may be added
+only from exact rights-admitted SimReady assets with collision-safe placements.
+Their absence must not block the required placement/lighting/camera/physics/
+cousin suite. Do not delete or move unrelated SAGE geometry to manufacture a
+scenario.
+
+For every variation parameter record:
+
+- parameter ID, unit, nominal value, allowed set/range, sampling rule and seed;
+- source of the bound: publisher metadata, Blueprint measurement, approved
+  engineering tolerance, or explicitly synthetic diagnostic choice;
+- assets and USD prims affected;
+- whether it changes appearance, observation metadata, dynamics, task geometry,
+  or only reset state;
+- validity constraints and rejection behavior; and
+- whether it belongs to the scored qualification set or an unscored diagnostic
+  set.
+
+Use paired scenario instances: both learned policies receive identical resolved
+assets, initial states, variations, seeds, horizons, and grading. Freeze a
+development/qualification split before outcomes. Development cases may debug
+adapters and controls; qualification cases remain untouched until the two
+candidate canaries are valid. A failed or invalid qualification episode stays
+in the denominator according to the frozen invalidity rules.
+
+Choose episode counts using a recorded power/precision and cost analysis, not
+an arbitrary giant sweep. At minimum the design must separately estimate the
+canonical success rate, per-family success degradation, and the paired policy
+difference. Use one-factor conditions plus the small held-out composition set;
+do not average all conditions into one number that hides a concentrated failure
+mode.
+
+### 3C. Metrics and eval semantics
+
+The independent simulator-state grader must emit at least:
+
+- binary task success and valid/invalid/timeout state;
+- grasp acquired and retained;
+- maximum lift height and time to lift;
+- transported distance and time to destination;
+- final centre error, final tilt, settle duration, and release state;
+- robot/environment and object/environment collision counts and impulses;
+- joint-limit, action-clipping, controller-stall, drop, and support-edge events;
+- completion time, path length, action smoothness, and policy inference latency;
+- exact scenario family, parameter values, cousin identity, and paired seed; and
+- media completeness and deterministic replay result.
+
+Report canonical and stratified results for every policy and control. Include
+paired confidence intervals, scenario-family deltas from canonical, worst-case
+and low-quantile performance, invalid/media-incomplete rate, and explicit
+failure-mode counts. Sensitivity analysis may identify which frozen factors are
+associated with success, but it is secondary analysis and may not rewrite the
+primary metric or scenario weights after outcomes.
+
+The result may support a simulator-only select, eliminate, or abstain decision
+between the two frozen candidates. It may not establish that the winner will
+rank the same on the fresh site or physical robot. Object-cousin performance
+establishes only robustness over the exact admitted cousin set.
+
 ### 4. Run independent controls
 
 Before any learned model:
@@ -224,6 +494,13 @@ Before any learned model:
 - camera, action, reset, contact, and media parity must pass; and
 - repeated resets must reproduce the preregistered start/destination within
   tolerance.
+
+Run both controls first on the canonical anchor, then across every resolved
+scenario/cousin cell. The zero-action control must not acquire false successes;
+the scripted/replay control must establish that each scored scenario is
+physically solvable and that its grader remains valid. A scenario where the
+positive control cannot complete is blocked or diagnostic-only; it may not be
+quietly counted as evidence that a learned policy is weak.
 
 Retain the exact lossless observation frames, terminal frame, state/contact
 trace, action trace, independent grader result, and review video for both
@@ -338,13 +615,15 @@ authorizes mutation of the frozen protocol or an unbounded retry.
 
 Execute in this order:
 
-1. native zero/stationary negative control;
-2. native scripted/replay positive control;
-3. one media-complete canary for candidate A;
-4. one media-complete canary for candidate B;
-5. inspect only execution validity, not comparative success, at the canary
+1. native zero/stationary negative control on the canonical condition;
+2. native scripted/replay positive control on the canonical condition;
+3. both controls across the frozen scored scenario/cousin suite;
+4. one media-complete canonical canary for candidate A;
+5. one media-complete canonical canary for candidate B;
+6. inspect only execution validity, not comparative success, at the canary
    gate; and
-6. if both are valid, execute the frozen, powered paired matrix exactly once.
+7. if both are valid, execute the frozen, powered paired scenario matrix
+   exactly once using identical resolved cells and seeds.
 
 If a canary fails, retain it and emit the smallest technical blocker. Do not
 switch models based on task performance after outcomes exist.
@@ -384,8 +663,11 @@ At handoff, display directly in chat:
 3. the preregistered destination and scripted positive-control terminal frame;
 4. for each policy, external and wrist start, grasp/lift, and terminal frames;
 5. per-policy review videos or compact montages; and
-6. a clear table of attempts, valid episodes, successes, timeouts, collisions,
-   object lift/place errors, and the bounded select/eliminate/abstain result.
+6. a scenario contact sheet showing placement, lighting, camera, physics, and
+   object-cousin conditions; and
+7. a clear table of canonical and per-family attempts, valid episodes,
+   successes, timeouts, collisions, object lift/place errors, degradation from
+   canonical, and the bounded select/eliminate/abstain result.
 
 Do not call a source clone, checkpoint download, import, author-data smoke,
 scripted control, camera composite, prepared job, or failed rollout a learned
@@ -398,6 +680,12 @@ Reuse existing production seams. Add only what is missing for:
 - exact sealed-scene materialization with Franka;
 - depth-correct, pose-synchronized hybrid policy observations;
 - deterministic empty-destination selection and task freeze;
+- a pinned Isaac Lab/Arena evaluation environment with typed scenario
+  materialization, batch execution, metrics, and recording;
+- a digest-bound audit proving the applicable official Isaac Lab, OVRTX, and
+  NVIDIA Physical-AI agent skills were freshly inspected and followed;
+- evidence-derived placement, lighting, camera/sensor, physics, and cousin
+  variations plus a small held-out composition set;
 - DROID embodiment/action parity in the sealed scene;
 - new protocol/approval/schedule receipts;
 - candidate execution and media collection; and
@@ -413,6 +701,15 @@ Focused tests must cover:
 - rejection of 2D-only or stale-camera policy observations;
 - rejection of stock-gripper substitution and DROID state/action mismatch;
 - destination selection before outcomes and collision/clearance mutation tests;
+- deterministic scenario resolution from suite digest plus seed;
+- rejection of floating, stale, unsigned, license-incompatible, or absent
+  agent-skill inputs and unsupported API assumptions;
+- rejection of out-of-bounds placement, invalid lighting/camera metadata,
+  nonphysical dynamics, unadmitted cousin assets, and post-outcome variations;
+- canonical-condition preservation and identical paired cells for both policies;
+- positive-control solvability and negative-control false-success rejection for
+  every scored scenario;
+- per-family metrics, denominator integrity, and failure-mode stratification;
 - exactly two candidates and no post-outcome candidate switching;
 - independent deterministic success grading;
 - lossless policy-input media and review video for every completed episode;
@@ -432,14 +729,24 @@ The goal is complete only when the run leaves:
 - the exact historical public-scene evidence unchanged;
 - a reproduced sealed Aura/SAGE/match-v2 scene identity;
 - one native DROID Franka placement and frozen basic task;
+- one pinned, replayable Isaac Lab evaluation harness whose canonical condition
+  is the exact sealed scene;
+- one retained fresh official agent-skill audit binding the exact Isaac Lab,
+  Omniverse renderer, and optional cousin-authoring workflows used;
+- one preregistered, digest-bound scenario suite covering placement,
+  illumination, camera/sensor, bounded physics, at least two admitted object
+  cousins, and a small held-out composition set;
 - a proven depth-correct hybrid policy observation path;
-- passing native negative and scripted/replay positive controls;
+- passing native negative and scripted/replay positive controls on the
+  canonical anchor and every scored scenario/cousin cell;
 - exactly two frozen, source/checkpoint/rights/adapter-admitted learned-policy
   candidates and a newly approved protocol digest;
 - one valid media-complete canary for each candidate;
-- the frozen preregistered matrix executed once, or a precise retained blocker
-  reached after the canaries;
+- the frozen preregistered paired scenario matrix executed once, or a precise
+  retained blocker reached after the canaries;
 - an independent simulator-state decision or honest abstention;
+- canonical, per-scenario-family, cousin, sensitivity, worst-case, and paired
+  policy metrics without post-outcome weighting changes;
 - visible before/after and per-policy evidence surfaced in chat;
 - a deterministic replay command and concise blocker report;
 - protected-main PR publication with required checks and remote/local main tree
