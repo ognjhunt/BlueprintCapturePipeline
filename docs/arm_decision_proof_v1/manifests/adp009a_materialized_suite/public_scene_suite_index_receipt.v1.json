@@ -2,8 +2,8 @@
   "admitted_role_count": 4,
   "adp009_matrix_complete": false,
   "adp_item": "ADP-009",
-  "artifact_bytes_opened": false,
-  "artifact_bytes_verified": false,
+  "artifact_bytes_opened": true,
+  "artifact_bytes_verified": true,
   "blocked_roles": [
     "controlled_background_truth",
     "exact_simready_object",
@@ -26,7 +26,7 @@
   "deployment_readiness": false,
   "evaluated_on": "2026-08-05",
   "gate_id": "exact_public_scene_suite_index",
-  "index_digest": "sha256:4372ad5bb688014aa7a4daa31366169de08bb4e2e3e2e1e7eb50f6503317023a",
+  "index_digest": "sha256:6c5b03aead43e8719880a49e2498c83aacf25627656a61a9359814095e14dcb4",
   "index_id": "adp009a-public-suite-20260804",
   "metric_geometry_qualified": false,
   "partner_capture_qualified": false,
@@ -34,7 +34,7 @@
   "program_id": "arm-decision-proof-v1",
   "prospective_validation": false,
   "public_scene_software_qualified": false,
-  "receipt_digest": "sha256:dd08d5a877d9702adc33e7d427bd0be594820c74a97f4005fe564a8a281bf6ef",
+  "receipt_digest": "sha256:862c5120408188898ca76d5d928696e343a07a76accf4e0701458d8db1e12806",
   "required_role_count": 10,
   "role_bindings": [
     {
@@ -118,7 +118,7 @@
       ],
       "component_manifest_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
       "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
+      "exact_artifact_digest": "sha256:bf551427bb93b2762e29fc326bedde7a8e2cac4e25b3126cea8fc66f46d2e55b",
       "exact_revision": {
         "kind": "content_digest",
         "value": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844"
@@ -128,11 +128,11 @@
       "source_project_id": "Blueprint-controlled"
     },
     {
-      "component_admission_receipt_digest": "sha256:14cc5895e2d2df4ea36103dba8ef921f353b1a0563152e787bd10cc81ddae120",
+      "component_admission_receipt_digest": "sha256:826d2792c7d8aa6d13956a5900e769e503d020b7e7aad0cee85f3b411666ea9e",
       "component_blockers": [
         "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
       ],
-      "component_manifest_digest": "sha256:f95832848f2c8fe82607f9fb0b942e5997dc3a3940b48b5c6a84107f60cf817e",
+      "component_manifest_digest": "sha256:a516ed8faec21b3d5fe5d823a09baa620c297970c5f65b165815b46cc6dfb1d3",
       "declared_status": "blocked",
       "exact_artifact_digest": "sha256:102cc9c6d1098ce364b3b7f3aebd2630f770f6185fd28b130c37d954db1a8b45",
       "exact_revision": {
@@ -164,7 +164,7 @@
       ],
       "component_manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
       "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
+      "exact_artifact_digest": "sha256:bf551427bb93b2762e29fc326bedde7a8e2cac4e25b3126cea8fc66f46d2e55b",
       "exact_revision": {
         "kind": "content_digest",
         "value": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e"
@@ -180,7 +180,7 @@
       ],
       "component_manifest_digest": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626",
       "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626",
+      "exact_artifact_digest": "sha256:bf551427bb93b2762e29fc326bedde7a8e2cac4e25b3126cea8fc66f46d2e55b",
       "exact_revision": {
         "kind": "content_digest",
         "value": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626"
@@ -192,6 +192,6 @@
   ],
   "schema_version": "public_scene_suite_index_receipt.v1",
   "status": "blocked",
-  "supplied_index_digest": "sha256:4372ad5bb688014aa7a4daa31366169de08bb4e2e3e2e1e7eb50f6503317023a",
+  "supplied_index_digest": "sha256:6c5b03aead43e8719880a49e2498c83aacf25627656a61a9359814095e14dcb4",
   "task_physics_qualified": false
 }

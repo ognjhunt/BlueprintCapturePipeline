@@ -12,9 +12,9 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-840313-canned-beverage-cad-control",
-  "component_manifest_digest": "sha256:f95832848f2c8fe82607f9fb0b942e5997dc3a3940b48b5c6a84107f60cf817e",
+  "component_manifest_digest": "sha256:a516ed8faec21b3d5fe5d823a09baa620c297970c5f65b165815b46cc6dfb1d3",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:14cc5895e2d2df4ea36103dba8ef921f353b1a0563152e787bd10cc81ddae120",
+  "receipt_digest": "sha256:826d2792c7d8aa6d13956a5900e769e503d020b7e7aad0cee85f3b411666ea9e",
   "role": "exact_simready_object",
   "schema_version": "public_scene_component_admission_receipt.v1",
   "status": "blocked"

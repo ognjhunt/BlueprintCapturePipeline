@@ -357,7 +357,7 @@ identities, not admission receipts:
 | Role | Project | Audited commit | Blocking admission finding |
 | --- | --- | --- | --- |
 | Reproducibility control | Inpaint360GS | `d54c893285c6cb27788e05cce607e7d3cca6388a` | own training/distillation path; nested dependency licenses |
-| Primary interface adapter | InFusion | `788da7f40cad4314831a053b7419df277d7814c4` | checkpoint license, Graphdeco terms, SH0-only author compositor |
+| Primary interface adapter | InFusion | `788da7f40cad4314831a053b7419df277d7814c4` | checkpoint license, Graphdeco terms, prepared SH-preserving compositor still unexecuted |
 | Multiview challenger | AuraFusion360 | `f23b26c44ba84608306ba952510533ebf4c7877d` | custom PLY/checkpoint adapter and nested dependency licenses |
 
 A paper, project page, pseudocode, announced code release, or arXiv revision does

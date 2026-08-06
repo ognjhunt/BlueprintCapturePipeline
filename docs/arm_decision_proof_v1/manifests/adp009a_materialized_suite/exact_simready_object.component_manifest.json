@@ -9,7 +9,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-840313-canned-beverage-cad-control",
-  "manifest_digest": "sha256:f95832848f2c8fe82607f9fb0b942e5997dc3a3940b48b5c6a84107f60cf817e",
+  "manifest_digest": "sha256:a516ed8faec21b3d5fe5d823a09baa620c297970c5f65b165815b46cc6dfb1d3",
   "materialized_artifacts": [
     {
       "external_relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda",
@@ -54,5 +54,5 @@
     "publisher_scene_id": "840313"
   },
   "schema_version": "public_scene_component_manifest.v1",
-  "source_project_id": "SimReady"
+  "source_project_id": "Blueprint-controlled"
 }

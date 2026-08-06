@@ -27,6 +27,17 @@ No capture or reconstruction feature was added.
 | ADP-009C | `missing` | No exact ScanNet++ real measured scene or controlled known-background completion has passed the new metric/editing tests. |
 | ADP-009D | `missing` | No deterministic InteriorGS/SAGE-to-ScanNet++ variation matrix or one-command public-data replacement rehearsal exists. ARKitScenes and WildRGB-D were explicitly removed from the required stack. |
 
+Suite replay now fails closed on file identity as well as JSON shape. The
+materializer opens the ten component manifests and receipts plus every referenced
+artifact under explicit repository, data, and method roots; it recomputes their
+sizes, SHA-256 values, canonical digests, roles, source-project identities,
+statuses, and cross-bindings before matrix completion is possible. The current
+blocked `4/10` replay opened and verified the referenced bytes and emitted index
+receipt `sha256:862c5120408188898ca76d5d928696e343a07a76accf4e0701458d8db1e12806`.
+It also repairs the exact-SimReady component identity to the contract-required
+`Blueprint-controlled` value; the component remains blocked on its dynamic Isaac
+probes.
+
 Candidate `0787_841244` remains a retained, rejected warm start rather than the
 selected scene. Direct inspection could not establish a suitable target whose
 InteriorGS instance identity mapped to a separately removable SAGE collider

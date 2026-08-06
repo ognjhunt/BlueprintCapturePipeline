@@ -47,23 +47,22 @@ sunflower input data, SAM2, Marigold, Stable Diffusion 2 inpainting, and a pinne
 additionally binds the successful unchanged execution, exact runtime,
 stdout/stderr, output bytes, same-camera comparisons, and provider cleanup.
 
-Inpaint360GS experimental run `live_v22_execute_attempt2` did execute on the
-InteriorGS packet through distillation, baseline render, object removal, virtual
-views, deterministic mask selection, Big-LaMa color/depth, PLY fusion, and the
-start of final 3D optimization. The 30-minute total request-log deadline—not the
-silence watchdog—destroyed the still-active RTX 4090 while torchvision was lazily
-retrieving its 528 MiB VGG16 dependency. The retained poll receipt records
-`break_reason=max_wait_deadline_reached` and `no_progress_timeout_reached=false`.
-No final result or provider output ZIP returned, so
-this is failed execution evidence rather than an inpainting result. The next
-packet materializes the exact 553,433,881-byte VGG16 file with SHA-256
-`397923af8e79cdbb6a7127f12361acd7a2f83e06b05044ddf496e83de57a5bf0`
-before method execution, emits minute liveness plus stage markers, and gives
-the execution the approved four-hour TTL while retaining a separate 30-minute
-silence watchdog. No
-selected source collider has been removed and no replacement USD has been
-inserted into scene `840313`. The Content Agents asset remains a static authoring
-candidate until the dynamic Isaac probes pass.
+Inpaint360GS experimental run `live_v22_execute_attempt2` failed at the former
+30-minute total request-log deadline. Its corrected successor
+`live_v28_target_execute` materialized the exact 553,433,881-byte VGG16 file,
+completed the released-source-with-adapters workflow and all 5,000 final
+optimization steps on RTX 4090, and returned a 774,355-vertex point cloud with
+SHA-256 `e7fcae266988ffee1f203e89c2e5d6d4cdc987b504ae4233ea03355a6d34690c`.
+That is executed failure evidence, not admitted inpainting: all 30 target masks
+covered 24.1--30.6% of their virtual frames, 234,461 vertices were added beyond
+the post-removal count, and an independent eight-camera locality measurement
+found obvious translucent sheets and radial streaks with 13.994182% of
+outside-mask pixels changing by more than `20/255`. Future packets reject masks
+above 10% of the frame or four times the largest source mask, use at most eight
+evenly spaced views at five-times greater standoff, and enforce an added-Gaussian
+budget. No selected source collider has been removed and no replacement USD has
+been inserted into scene `840313`. The Content Agents asset remains a static
+authoring candidate until the dynamic Isaac probes pass.
 
 Aura attempts `live_v1` through `live_v5` are retained outside git under the
 rights-safe validation tree. All used zero retries and executed no author
