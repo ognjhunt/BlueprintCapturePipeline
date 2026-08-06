@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 25934,
-      "sha256": "sha256:86dfc316b6e931507dba843df3686443aedb536501842b8265edff0ac62122f7"
+      "size_bytes": 30685,
+      "sha256": "sha256:c61f43310f3f59773c7043aa5eb1c01306e3335343dc1a956a667db74d28277a"
     },
     {
       "role": "approved_can",
@@ -417,6 +417,21 @@
         "solver_position_iteration_count": 8,
         "solver_velocity_iteration_count": 2,
         "max_depenetration_velocity_m_s": 5.0
+      },
+      "sealed_sage_static_collision": {
+        "source_sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+        "source_mesh_count": 165,
+        "source_point_count": 509268,
+        "source_face_count": 993678,
+        "source_rigid_body_count": 0,
+        "source_convex_decomposition_count": 164,
+        "runtime_active_triangle_mesh_count": 164,
+        "runtime_approximation": "none",
+        "runtime_approximation_semantics": "static_triangle_mesh",
+        "source_target_collider_active": false,
+        "support_collider_active": true,
+        "geometry_mutation_allowed": false,
+        "required_blocker_on_mismatch": "sage_runtime_collision_profile_mismatch"
       }
     },
     "runtime_override_policy": "resolved scenario parameters only; no scattered conditionals"
@@ -508,5 +523,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:878c3a05bf0f1317eb1a3308e1465ba63f15730a6695ad284d7cc3030b1597d9"
+  "harness_digest": "sha256:0ebd243a178fc85279fa0603848cab449c8683ce8b42a9d80121df509e5a34bb"
 }

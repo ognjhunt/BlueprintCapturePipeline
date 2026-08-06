@@ -5,7 +5,7 @@
   "audit_status": "official_source_audit_complete_implementation_bound",
   "audit_window": {
     "started_at": "2026-08-06T18:20:39Z",
-    "completed_at": "2026-08-06T18:45:59Z",
+    "completed_at": "2026-08-06T22:56:07Z",
     "retrieval_methods": [
       "GitHub REST branch commit and recursive tree APIs",
       "GitHub immutable blob content at exact revisions",
@@ -613,11 +613,22 @@
         "Take a measured baseline before applying any USD performance mutation.",
         "The first exact-v2 SDF run passed static schema validation but exceeded the intended 30-minute no-progress boundary during collision cooking before live-collider or reset proof.",
         "After that baseline, remove only the unrelated Arena asset-registry import through its public SPAWNER seam; do not mutate the sealed can or exact registered SAGE collision bytes.",
+        "The measured SAGE baseline contains 165 static collision meshes, 509268 points, and 993678 faces; 164 meshes author convexDecomposition despite no SAGE prim carrying PhysicsRigidBodyAPI.",
+        "Follow Isaac Lab's official static-collider guidance by composing a deterministic runtime override that uses the exact SAGE triangle meshes for every active static environment collider while leaving the sealed SAGE bytes unchanged.",
+        "Fail closed unless the composed layer preserves the exact topology counts and transforms, disables only the sealed source target, preserves the support collider, contains no SAGE rigid body, and resolves every active SAGE mesh to the triangle-mesh approximation token none.",
+        "Do not decimate, merge, deduplicate, crop, or otherwise change SAGE geometry for this fix; measure native build, reset, step, and camera timing before any further optimization.",
         "Preserve scientific identity and digest bindings across any later optimization."
       ],
+      "applied_references": [
+        "https://github.com/NVIDIA/skills/blob/276b9bcce5d1b224769f9b10ad26975c15e0dd4c/skills/omniverse-usd-performance-tuning/SKILL.md",
+        "https://isaac-sim.github.io/IsaacLab/v2.1.1/source/how-to/simulation_performance.html#collision-geometries",
+        "https://isaac-sim.github.io/IsaacLab/develop/source/api/lab_physx/isaaclab_physx.sim.schemas.html#isaaclab_physx.sim.schemas.PhysxTriangleMeshPropertiesCfg"
+      ],
       "implementation_evidence": [
+        "src/blueprint_pipeline/adp009d_native_microcheck_bundle.py",
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
-        "src/blueprint_pipeline/vast_provider_adapter.py"
+        "src/blueprint_pipeline/vast_provider_adapter.py",
+        "tests/test_adp009d_native_microcheck_bundle.py"
       ]
     },
     {
@@ -653,5 +664,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:b9401305ec5c05f10b06f3f645efabefcff6c6a3d812af018c2e7bf5570d54aa"
+  "audit_digest": "sha256:c033c606e62e2011faff550293848ca6c1764ee4fc0cae54dab4a2431140f37f"
 }

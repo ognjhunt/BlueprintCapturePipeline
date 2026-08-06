@@ -33,7 +33,7 @@ SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 
 REQUIRED_ASSET_DIGESTS = {
-    "agent_skill_audit": "sha256:86dfc316b6e931507dba843df3686443aedb536501842b8265edff0ac62122f7",
+    "agent_skill_audit": "sha256:c61f43310f3f59773c7043aa5eb1c01306e3335343dc1a956a667db74d28277a",
     "approved_can": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "aura_appearance": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
     "hybrid_seal_receipt": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b",
@@ -337,6 +337,24 @@ def validate_harness_manifest(
         errors.append("harness_physx_configuration_not_centralized")
     if physics.get("backend") != "physx":
         errors.append("harness_physics_backend_invalid")
+    sage_override = _mapping(_mapping(physics.get("entity_overrides")).get("sealed_sage_static_collision"))
+    required_sage_override = {
+        "source_sha256": REQUIRED_ASSET_DIGESTS["sage_collision"],
+        "source_mesh_count": 165,
+        "source_point_count": 509268,
+        "source_face_count": 993678,
+        "source_rigid_body_count": 0,
+        "source_convex_decomposition_count": 164,
+        "runtime_active_triangle_mesh_count": 164,
+        "runtime_approximation": "none",
+        "runtime_approximation_semantics": "static_triangle_mesh",
+        "source_target_collider_active": False,
+        "support_collider_active": True,
+        "geometry_mutation_allowed": False,
+        "required_blocker_on_mismatch": "sage_runtime_collision_profile_mismatch",
+    }
+    if sage_override != required_sage_override:
+        errors.append("harness_sage_static_triangle_override_invalid")
 
     renderer = _mapping(manifest.get("observation_renderer"))
     if renderer.get("composition") != "live_depth_correct_aura_dynamic_geometry":

@@ -27,6 +27,17 @@ APPROVED_CAN_ADAPTER_SHA256 = (
 )
 APPROVED_CAN_SOURCE_COLLIDER_PRIM = "/canned_beverage/colliders/body_collider"
 APPROVED_CAN_LIVE_COLLIDER_PRIM = "/World/envs/env_0/approved_can/colliders/body_collider"
+SAGE_SOURCE_ROOT_PRIM = "/Root"
+SAGE_LIVE_ROOT_PRIM = "/World/envs/env_0/sage_collision"
+SAGE_TARGET_COLLIDER_NAME = "ZHQYGJJVAJYEYPTUKY888888"
+SAGE_SUPPORT_COLLIDER_NAME = "_LTFTHJVAZ3VMPTUJU888888"
+SAGE_RUNTIME_PROFILE = {
+    "active_mesh_count": 164,
+    "active_point_count": 508_744,
+    "active_face_count": 992_650,
+    "rigid_body_count": 0,
+    "triangle_mesh_count": 164,
+}
 PHYSX_FALLBACK_MARKER = "falling back to convexHull approximation"
 ARENA_REVISION = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
 ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
@@ -127,6 +138,77 @@ def _inspect_physx_sdf_collider(stage: Any, prim_path: str) -> dict[str, Any]:
         "applied_schemas": applied_schemas,
         "approximation": str(approximation),
         **settings,
+    }
+
+
+def _inspect_sage_static_triangle_colliders(
+    stage: Any,
+    root_prim_path: str,
+    *,
+    expected_profile: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Require the composed SAGE runtime layer to remain exact static triangles."""
+
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    root = stage.GetPrimAtPath(root_prim_path)
+    if not root.IsValid() or not root.IsActive():
+        raise RuntimeError(f"sage_runtime_root_missing:{root_prim_path}")
+    target_path = f"{root_prim_path}/{SAGE_TARGET_COLLIDER_NAME}"
+    support_path = f"{root_prim_path}/{SAGE_SUPPORT_COLLIDER_NAME}"
+    target = stage.GetPrimAtPath(target_path)
+    support = stage.GetPrimAtPath(support_path)
+    if not target.IsValid() or target.IsActive():
+        raise RuntimeError(f"sage_source_target_collider_not_disabled:{target_path}")
+    if not support.IsValid() or not support.IsActive() or not support.IsA(UsdGeom.Mesh):
+        raise RuntimeError(f"sage_support_collider_missing:{support_path}")
+
+    point_count = 0
+    face_count = 0
+    mesh_paths: list[str] = []
+    rigid_body_paths: list[str] = []
+    non_triangle_paths: list[str] = []
+    for prim in Usd.PrimRange(root):
+        schemas = {str(value) for value in prim.GetAppliedSchemas()}
+        if "PhysicsRigidBodyAPI" in schemas:
+            rigid_body_paths.append(str(prim.GetPath()))
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        path = str(prim.GetPath())
+        if "PhysicsCollisionAPI" not in schemas or "PhysicsMeshCollisionAPI" not in schemas:
+            raise RuntimeError(f"sage_runtime_collision_schema_missing:{path}")
+        approximation = str(UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get())
+        if approximation != "none":
+            non_triangle_paths.append(f"{path}:{approximation}")
+        mesh = UsdGeom.Mesh(prim)
+        mesh_paths.append(path)
+        point_count += len(mesh.GetPointsAttr().Get() or [])
+        face_count += len(mesh.GetFaceVertexCountsAttr().Get() or [])
+
+    if rigid_body_paths:
+        raise RuntimeError("sage_runtime_static_collision_has_rigid_body:" + ",".join(rigid_body_paths))
+    if non_triangle_paths:
+        raise RuntimeError("sage_runtime_triangle_mesh_override_missing:" + ",".join(non_triangle_paths))
+    observed = {
+        "active_mesh_count": len(mesh_paths),
+        "active_point_count": point_count,
+        "active_face_count": face_count,
+        "rigid_body_count": len(rigid_body_paths),
+        "triangle_mesh_count": len(mesh_paths) - len(non_triangle_paths),
+    }
+    required_profile = expected_profile or SAGE_RUNTIME_PROFILE
+    if observed != required_profile:
+        raise RuntimeError(f"sage_runtime_collision_profile_mismatch:{observed}")
+    return {
+        **observed,
+        "root_prim": root_prim_path,
+        "target_collider_prim": target_path,
+        "target_collider_active": False,
+        "support_collider_prim": support_path,
+        "support_collider_active": True,
+        "approximation": "none",
+        "approximation_semantics": "static_triangle_mesh",
+        "sealed_source_mutated": False,
     }
 
 
@@ -327,6 +409,13 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     static_collider = _inspect_physx_sdf_collider(
         adapter_stage, APPROVED_CAN_SOURCE_COLLIDER_PRIM
     )
+    sage_overlay_path = runtime / "assets" / "sage_collision_overlay.usda"
+    sage_overlay_stage = Usd.Stage.Open(str(sage_overlay_path))
+    if sage_overlay_stage is None:
+        raise RuntimeError("sage_collision_overlay_unreadable")
+    static_sage_collision = _inspect_sage_static_triangle_colliders(
+        sage_overlay_stage, SAGE_SOURCE_ROOT_PRIM
+    )
     _phase("static_collider_validation", "completed")
 
     import omni.log
@@ -354,6 +443,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         live_stage = omni.usd.get_context().get_stage()
         live_collider = _inspect_physx_sdf_collider(
             live_stage, APPROVED_CAN_LIVE_COLLIDER_PRIM
+        )
+        live_sage_collision = _inspect_sage_static_triangle_colliders(
+            live_stage, SAGE_LIVE_ROOT_PRIM
         )
         _phase("live_collider_validation", "completed")
         reset_rows: list[dict[str, Any]] = []
@@ -444,6 +536,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "enhanced_determinism": True,
                 "static_collider_validation": static_collider,
                 "live_collider_validation": live_collider,
+                "static_sage_collision_validation": static_sage_collision,
+                "live_sage_collision_validation": live_sage_collision,
                 "fallback_messages": fallback_messages,
             },
             "reset_rows": reset_rows,

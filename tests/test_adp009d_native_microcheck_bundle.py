@@ -13,7 +13,9 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     APPROVED_CAN_ADAPTER_FILENAME,
     DEFAULT_IMAGE,
     PROBE_KIND,
+    SUPPORT_COLLIDER_PRIM,
     TARGET_COLLIDER_PRIM,
+    _inspect_sage_collision_source,
     build_native_microcheck_bundle,
 )
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
@@ -49,13 +51,33 @@ def Xform "canned_beverage"
 ''',
         encoding="utf-8",
     )
-    sage = tmp_path / "sage.usda"
+    sage = tmp_path / "sage_collision.usd"
     target_name = TARGET_COLLIDER_PRIM.rsplit("/", 1)[-1]
+    support_name = SUPPORT_COLLIDER_PRIM.rsplit("/", 1)[-1]
     sage.write_text(
         (
-            '#usda 1.0\n(defaultPrim = "Root")\n\n'
+            '#usda 1.0\n(\n    defaultPrim = "Root"\n    metersPerUnit = 1\n'
+            '    upAxis = "Z"\n)\n\n'
             'def Xform "Root"\n{\n'
-            f'    def Xform "{target_name}"\n    {{\n    }}\n'
+            f'''    def Mesh "{target_name}" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+    )
+    {{
+        uniform token physics:approximation = "convexDecomposition"
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+    }}
+    def Mesh "{support_name}" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+    )
+    {{
+        uniform token physics:approximation = "convexDecomposition"
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+    }}
+'''
             '}\n'
         ),
         encoding="utf-8",
@@ -97,6 +119,13 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     )
     assert source_stage.GetPrimAtPath(TARGET_COLLIDER_PRIM).IsActive()
     assert not overlay_stage.GetPrimAtPath(TARGET_COLLIDER_PRIM).IsActive()
+    assert overlay_stage.GetPrimAtPath(SUPPORT_COLLIDER_PRIM).IsActive()
+    assert (
+        overlay_stage.GetPrimAtPath(SUPPORT_COLLIDER_PRIM)
+        .GetAttribute("physics:approximation")
+        .Get()
+        == "none"
+    )
     adapter_path = (
         Path(first["bundle_path"]).parent
         / "provider_runtime/assets"
@@ -119,6 +148,7 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
         entrypoint = archive.read("provider_runtime/run_adp_arena_provider_runtime.sh").decode()
     assert TARGET_COLLIDER_PRIM.rsplit("/", 1)[-1] in overlay
     assert "active = false" in overlay
+    assert 'uniform token physics:approximation = "none"' in overlay
     assert "adp009d_native_microcheck.json" in entrypoint
     assert "provider_runtime/assets/approved_can.usda" in names
     assert f"provider_runtime/assets/{APPROVED_CAN_ADAPTER_FILENAME}" in names
@@ -165,6 +195,46 @@ def test_bundle_rejects_unbound_asset_bytes(tmp_path: Path) -> None:
             implementation_commit="c" * 40,
             expected_asset_bindings=bindings,
         )
+
+
+def test_sage_source_audit_rejects_any_rigid_environment_mesh(tmp_path: Path) -> None:
+    _approved, sage, _harness, _bindings = _inputs(tmp_path)
+    text = sage.read_text(encoding="utf-8").replace(
+        'prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]',
+        'prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI"]',
+        1,
+    )
+    sage.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="adp009d_sage_static_collision_has_rigid_body"):
+        _inspect_sage_collision_source(sage, enforce_sealed_profile=False)
+
+
+def test_runtime_requires_composed_static_triangle_meshes(tmp_path: Path) -> None:
+    _approved, sage, _harness, _bindings = _inputs(tmp_path)
+    profile = _inspect_sage_collision_source(sage, enforce_sealed_profile=False)
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import _overlay_text
+
+    overlay = tmp_path / "overlay.usda"
+    overlay.write_text(_overlay_text(profile), encoding="utf-8")
+    Usd = pytest.importorskip("pxr.Usd")
+    stage = Usd.Stage.Open(str(overlay))
+
+    observed = isaac_runtime._inspect_sage_static_triangle_colliders(
+        stage,
+        "/Root",
+        expected_profile={
+            "active_mesh_count": 1,
+            "active_point_count": 3,
+            "active_face_count": 1,
+            "rigid_body_count": 0,
+            "triangle_mesh_count": 1,
+        },
+    )
+
+    assert observed["target_collider_active"] is False
+    assert observed["support_collider_active"] is True
+    assert observed["approximation"] == "none"
 
 
 def test_runtime_binds_official_droid_franka_and_sealed_anchor() -> None:

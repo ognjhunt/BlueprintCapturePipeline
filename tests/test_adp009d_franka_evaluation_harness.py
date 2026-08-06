@@ -13,6 +13,7 @@ from blueprint_pipeline.adp009d_franka_evaluation_harness import (
     materialize_scenario_suite,
     validate_cousin_manifest,
     validate_cousin_static_validation_receipt,
+    validate_harness_manifest,
     validate_scenario_suite,
 )
 from blueprint_pipeline.common import write_json
@@ -54,6 +55,44 @@ def test_reusable_harness_resolves_through_existing_evaluation_run_seams() -> No
             adapter_version="1",
         )
         assert descriptor is not None
+
+
+def test_checked_in_harness_binds_static_sage_triangle_override() -> None:
+    harness = _load("adp009d_franka_eval_harness_manifest.v1.json")
+
+    validated = validate_harness_manifest(
+        harness,
+        repo_root=REPO_ROOT,
+        evidence_root=REPO_ROOT,
+        verify_files=False,
+    )
+
+    sage = validated["physics"]["entity_overrides"]["sealed_sage_static_collision"]
+    assert sage["source_mesh_count"] == 165
+    assert sage["source_convex_decomposition_count"] == 164
+    assert sage["source_rigid_body_count"] == 0
+    assert sage["runtime_active_triangle_mesh_count"] == 164
+    assert sage["runtime_approximation"] == "none"
+    assert sage["geometry_mutation_allowed"] is False
+
+
+def test_harness_rejects_sage_geometry_or_approximation_mutation() -> None:
+    harness = _load("adp009d_franka_eval_harness_manifest.v1.json")
+    sage = harness["physics"]["entity_overrides"]["sealed_sage_static_collision"]
+    sage["source_face_count"] -= 1
+    sage["runtime_approximation"] = "convexHull"
+    harness["harness_digest"] = canonical_digest(harness, digest_field="harness_digest")
+
+    with pytest.raises(
+        Adp009dHarnessError,
+        match="harness_sage_static_triangle_override_invalid",
+    ):
+        validate_harness_manifest(
+            harness,
+            repo_root=REPO_ROOT,
+            evidence_root=REPO_ROOT,
+            verify_files=False,
+        )
 
 
 def _load(name: str) -> dict:

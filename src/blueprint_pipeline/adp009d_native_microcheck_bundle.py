@@ -31,6 +31,17 @@ APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
 APPROVED_CAN_DEFAULT_PRIM = "canned_beverage"
 APPROVED_CAN_COLLIDER_PATH = "colliders/body_collider"
 TARGET_COLLIDER_PRIM = "/Root/ZHQYGJJVAJYEYPTUKY888888"
+SUPPORT_COLLIDER_PRIM = "/Root/_LTFTHJVAZ3VMPTUJU888888"
+SEALED_SAGE_PROFILE = {
+    "prim_count": 166,
+    "mesh_count": 165,
+    "point_count": 509_268,
+    "face_count": 993_678,
+    "collision_mesh_count": 165,
+    "rigid_body_count": 0,
+    "convex_decomposition_count": 164,
+    "triangle_mesh_count": 1,
+}
 ENTRYPOINT = """#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -72,8 +83,111 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _overlay_text() -> str:
-    target_name = TARGET_COLLIDER_PRIM.rsplit("/", 1)[-1]
+def _inspect_sage_collision_source(
+    source_path: Path,
+    *,
+    enforce_sealed_profile: bool,
+) -> dict[str, Any]:
+    """Inspect the materialized SAGE bytes before authoring a runtime override."""
+
+    try:
+        from pxr import Usd, UsdGeom, UsdPhysics
+    except ImportError as exc:  # pragma: no cover - guarded by bundle preflight
+        raise ValueError("adp009d_sage_usd_runtime_missing") from exc
+
+    stage = Usd.Stage.Open(str(source_path), load=Usd.Stage.LoadNone)
+    if stage is None:
+        raise ValueError("adp009d_sage_collision_unreadable")
+    if str(stage.GetDefaultPrim().GetPath()) != "/Root":
+        raise ValueError("adp009d_sage_default_prim_invalid")
+    if UsdGeom.GetStageMetersPerUnit(stage) != 1.0:
+        raise ValueError("adp009d_sage_units_invalid")
+    if UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z:
+        raise ValueError("adp009d_sage_up_axis_invalid")
+
+    mesh_paths: list[str] = []
+    approximation_counts: dict[str, int] = {}
+    prim_count = 0
+    point_count = 0
+    face_count = 0
+    collision_mesh_count = 0
+    rigid_body_paths: list[str] = []
+    for prim in stage.Traverse():
+        prim_count += 1
+        schemas = {str(value) for value in prim.GetAppliedSchemas()}
+        if "PhysicsRigidBodyAPI" in schemas:
+            rigid_body_paths.append(str(prim.GetPath()))
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        path = str(prim.GetPath())
+        mesh_paths.append(path)
+        mesh = UsdGeom.Mesh(prim)
+        point_count += len(mesh.GetPointsAttr().Get() or [])
+        face_count += len(mesh.GetFaceVertexCountsAttr().Get() or [])
+        if "PhysicsCollisionAPI" not in schemas or "PhysicsMeshCollisionAPI" not in schemas:
+            raise ValueError(f"adp009d_sage_mesh_collision_schema_missing:{path}")
+        collision_mesh_count += 1
+        approximation = str(UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get())
+        approximation_counts[approximation] = approximation_counts.get(approximation, 0) + 1
+
+    if rigid_body_paths:
+        raise ValueError("adp009d_sage_static_collision_has_rigid_body:" + ",".join(rigid_body_paths))
+    for required_path, blocker in (
+        (TARGET_COLLIDER_PRIM, "adp009d_sage_target_collider_missing"),
+        (SUPPORT_COLLIDER_PRIM, "adp009d_sage_support_collider_missing"),
+    ):
+        prim = stage.GetPrimAtPath(required_path)
+        if not prim.IsValid() or not prim.IsActive() or required_path not in mesh_paths:
+            raise ValueError(blocker)
+
+    observed = {
+        "prim_count": prim_count,
+        "mesh_count": len(mesh_paths),
+        "point_count": point_count,
+        "face_count": face_count,
+        "collision_mesh_count": collision_mesh_count,
+        "rigid_body_count": len(rigid_body_paths),
+        "convex_decomposition_count": approximation_counts.get("convexDecomposition", 0),
+        "triangle_mesh_count": approximation_counts.get("none", 0),
+    }
+    if enforce_sealed_profile and observed != SEALED_SAGE_PROFILE:
+        raise ValueError("adp009d_sealed_sage_collision_profile_mismatch")
+    unsupported = sorted(set(approximation_counts) - {"convexDecomposition", "none"})
+    if unsupported:
+        raise ValueError("adp009d_sage_collision_approximation_unsupported:" + ",".join(unsupported))
+    return {
+        **observed,
+        "source_approximation_counts": approximation_counts,
+        "mesh_prim_paths": sorted(mesh_paths),
+        "target_collider_prim": TARGET_COLLIDER_PRIM,
+        "support_collider_prim": SUPPORT_COLLIDER_PRIM,
+        "runtime_approximation": "none",
+        "runtime_approximation_semantics": "static_triangle_mesh",
+        "sealed_source_mutated": False,
+    }
+
+
+def _overlay_text(sage_profile: Mapping[str, Any]) -> str:
+    mesh_paths = [str(value) for value in sage_profile.get("mesh_prim_paths", [])]
+    if not mesh_paths or TARGET_COLLIDER_PRIM not in mesh_paths:
+        raise ValueError("adp009d_sage_overlay_mesh_inventory_invalid")
+    overrides = []
+    for prim_path in mesh_paths:
+        if not prim_path.startswith("/Root/") or prim_path.count("/") != 2:
+            raise ValueError(f"adp009d_sage_overlay_prim_path_invalid:{prim_path}")
+        prim_name = prim_path.rsplit("/", 1)[-1]
+        if prim_path == TARGET_COLLIDER_PRIM:
+            overrides.append(f'''    over "{prim_name}" (
+        active = false
+    )
+    {{
+    }}''')
+        else:
+            overrides.append(f'''    over "{prim_name}"
+    {{
+        uniform token physics:approximation = "none"
+    }}''')
+    override_text = "\n".join(overrides)
     return f'''#usda 1.0
 (
     defaultPrim = "Root"
@@ -85,11 +199,7 @@ def Xform "Root" (
     prepend references = @sage_collision.usd@</Root>
 )
 {{
-    over "{target_name}" (
-        active = false
-    )
-    {{
-    }}
+{override_text}
 }}
 '''
 
@@ -171,8 +281,12 @@ def build_native_microcheck_bundle(
     asset_rows = [
         _copy_bound_asset(sources[name], assets / name, bindings[name]) for name in sorted(bindings)
     ]
+    sage_profile = _inspect_sage_collision_source(
+        sources["sage_collision.usd"],
+        enforce_sealed_profile=(bindings["sage_collision.usd"] == ASSET_BINDINGS["sage_collision.usd"]),
+    )
     overlay_path = assets / "sage_collision_overlay.usda"
-    overlay_path.write_text(_overlay_text(), encoding="utf-8")
+    overlay_path.write_text(_overlay_text(sage_profile), encoding="utf-8")
     asset_rows.append(
         {
             "filename": overlay_path.name,
@@ -181,6 +295,11 @@ def build_native_microcheck_bundle(
             "composition_only": True,
             "sealed_source_mutated": False,
             "deactivated_source_prim": TARGET_COLLIDER_PRIM,
+            "preserved_support_prim": SUPPORT_COLLIDER_PRIM,
+            "static_triangle_mesh_override_count": sage_profile["mesh_count"] - 1,
+            "source_collision_profile": {
+                key: value for key, value in sage_profile.items() if key != "mesh_prim_paths"
+            },
         }
     )
     can_adapter_path = assets / APPROVED_CAN_ADAPTER_FILENAME
