@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from pxr import Usd
+from pxr import Sdf, Usd
 
 from blueprint_pipeline.public_scene_simready_native import (
     EXPECTED_CAMERA_IDS,
@@ -188,6 +188,7 @@ def test_native_probe_derives_exact_camera_and_drop_inputs(tmp_path: Path) -> No
     physics_config = json.loads(
         (tmp_path / "probe/ovphysx_config.json").read_text()
     )
+    assert physics_config["device"] == "gpu"
     inventory = physics_config["usd_scene_inventory"]
     assert inventory["rigid_bodies"] == ["/World/BlueprintReplacement"]
     assert inventory["support_collider_path"] in inventory["colliders"]
@@ -242,6 +243,8 @@ def test_ovrtx_worker_authors_matrix_camera_and_path_tracing(tmp_path: Path) -> 
     assert 'token omni:rtx:rendermode = "PathTracing"' in layer
     assert 'def RenderVar "Normal"' in layer
     assert "OmniRtxSettingsPtAdvancedAPI_1" in layer
+    parsed = Sdf.Layer.CreateAnonymous("blueprint-ovrtx-test.usda")
+    assert parsed.ImportFromString(layer) is True
 
 
 def test_ovphysx_worker_uses_digest_bound_external_usd_inventory(tmp_path: Path) -> None:

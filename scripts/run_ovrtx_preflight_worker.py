@@ -102,7 +102,11 @@ def _camera_layer(scene: Path, config: dict[str, Any]) -> str:
     ordered = [AOV_BY_KIND[kind] for kind in AOV_BY_KIND]
     ordered_vars_usda = ", ".join(f"<{name}>" for name in ordered)
     vars_usda = "\n".join(
-        f'''        def RenderVar "{name}" {{ string sourceName = "{name}" }}''' for name in ordered
+        f'''        def RenderVar "{name}"
+        {{
+            string sourceName = "{name}"
+        }}'''
+        for name in ordered
     )
     return f'''#usda 1.0
 (

@@ -342,7 +342,7 @@ def materialize_native_probe(
             }
         )
     physics_config = {
-        "device": "cuda:0",
+        "device": "gpu",
         "rigid_body_patterns": ["/World/BlueprintReplacement"],
         "penetration_sensor_patterns": ["/World/BlueprintReplacement"],
         "penetration_filter_patterns": [
