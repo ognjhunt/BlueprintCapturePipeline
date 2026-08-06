@@ -65,7 +65,10 @@ def test_audit_separates_followed_guidance_from_pending_and_inapplicable() -> No
     assert audit["runtime_compatibility_decision"]["ovrtx_selected"] is False
     assert guidance["nvidia-omniverse-usd-performance-tuning"][
         "application_status"
-    ] == "gated_until_measured"
+    ] == "followed_in_implementation"
+    assert guidance["nvidia-omniverse-usd-performance-tuning"][
+        "actually_followed"
+    ] is True
 
 
 def test_audit_rejects_revision_rewrite_even_when_caller_resigns() -> None:

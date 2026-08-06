@@ -437,10 +437,13 @@
       "decisions": [
         "Use ManagerBasedRLEnvCfg and manager terms as the default harness architecture.",
         "Separate scene, embodiment, task, observations, actions, events, terminations, and evaluation concerns.",
-        "Prove configuration, reset, step, and one-action reachability before policy work."
+        "Prove configuration, reset, step, and one-action reachability before policy work.",
+        "Once structured paid-runtime phases exist, require a new structured phase to extend the no-progress watchdog; arbitrary SSH, telemetry, or stdout noise is not progress.",
+        "Use Arena's public Object SPAWNER composition seam for the required light instead of importing the unrelated full asset registry."
       ],
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
+        "src/blueprint_pipeline/vast_provider_adapter.py",
         "docs/arm_decision_proof_v1/manifests/adp009d_franka_eval_harness_manifest.v1.json"
       ]
     },
@@ -491,11 +494,14 @@
         "Select PhysX for the ADP-009D task and centralize its settings in one validated configuration.",
         "Treat backend selection as a manifest-bound decision, not scattered runtime conditionals.",
         "Keep the sealed can bytes immutable while applying the required PhysxSDFMeshCollisionAPI and explicit SDF cooking settings through a deterministic digest-bound composition layer.",
-        "Validate both the composed and live spawned collider, subscribe to native Kit logs, and fail closed on any automatic collision-approximation fallback before an episode is admissible."
+        "Validate both the composed and live spawned collider, subscribe to native Kit logs, and fail closed on any automatic collision-approximation fallback before an episode is admissible.",
+        "Treat a static SDF-schema pass followed by collision-cooking timeout as infrastructure evidence only; it does not prove live collider, reset, or contact behavior.",
+        "Label the historical convex-hull native probe as approximation-only and prohibit it from substituting for exact-v2 SDF admission."
       ],
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
-        "src/blueprint_pipeline/adp009d_native_microcheck_bundle.py"
+        "src/blueprint_pipeline/adp009d_native_microcheck_bundle.py",
+        "src/blueprint_pipeline/public_scene_simready_native.py"
       ]
     },
     {
@@ -600,13 +606,18 @@
     },
     {
       "guidance_id": "nvidia-omniverse-usd-performance-tuning",
-      "application_status": "gated_until_measured",
-      "actually_followed": false,
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
       "decisions": [
         "Take a measured baseline before applying any USD performance mutation.",
+        "The first exact-v2 SDF run passed static schema validation but exceeded the intended 30-minute no-progress boundary during collision cooking before live-collider or reset proof.",
+        "After that baseline, remove only the unrelated Arena asset-registry import through its public SPAWNER seam; do not mutate the sealed can or exact registered SAGE collision bytes.",
         "Preserve scientific identity and digest bindings across any later optimization."
       ],
-      "implementation_evidence": []
+      "implementation_evidence": [
+        "src/blueprint_pipeline/adp009d_isaac_runtime.py",
+        "src/blueprint_pipeline/vast_provider_adapter.py"
+      ]
     },
     {
       "guidance_id": "nvidia-omniverse-realtime-viewer",
@@ -641,5 +652,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:e30cd7ab94eb44ee220d6e6e6ff25dde4ac695bd3fd3413a61aaa79e481df2d4"
+  "audit_digest": "sha256:1c4b4fd511b11c1062769286d42d60fc089b8a842e86aaa941d7589db816bb3b"
 }
