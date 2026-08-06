@@ -4001,6 +4001,13 @@ def _request_logs_and_fetch(
             except Exception as exc:  # pragma: no cover - live network dependent.
                 fetch_error = f"{type(exc).__name__}: {str(exc)[:300]}"
         output_text = attempt_text
+        # Persist each redacted snapshot immediately.  If the allocator is interrupted
+        # or the outer TTL fires during a later poll, the last scientific worker phases
+        # must survive teardown instead of disappearing with the provider instance.
+        ensure_dir(output_log_path.parent)
+        output_log_path.write_text(
+            _redact_text(output_text, secret_values), encoding="utf-8"
+        )
         marker_found = any(marker and marker in attempt_text for marker in success_markers)
         container_missing = "No such container" in attempt_text
         runtime_phase_count = attempt_text.count("BLUEPRINT_WAM_RUNTIME_PHASE:")

@@ -1346,6 +1346,50 @@ def test_request_logs_ignores_unstructured_noise_after_worker_phase(
     assert all(item["progress_observed"] is False for item in attempts[1:])
 
 
+def test_request_logs_persists_last_redacted_snapshot_before_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    snapshots = iter(
+        [
+            "BLUEPRINT_WAM_RUNTIME_PHASE:worker:static_sdf:completed\nsecret\n",
+            KeyboardInterrupt(),
+        ]
+    )
+
+    def fetch(*_args, **_kwargs):
+        value = next(snapshots)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(vpa, "_fetch_text", fetch)
+    output = tmp_path / "onstart.log"
+
+    with pytest.raises(KeyboardInterrupt):
+        vpa._request_logs_and_fetch(
+            instance_id=123,
+            api_key="secret",
+            output_log_path=output,
+            secret_values=["secret"],
+            wait_seconds=0,
+            retry_interval_seconds=1,
+            max_wait_seconds=999,
+            success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+            no_progress_seconds=999,
+        )
+
+    assert output.read_text(encoding="utf-8") == (
+        "BLUEPRINT_WAM_RUNTIME_PHASE:worker:static_sdf:completed\nREDACTED_SECRET\n"
+    )
+
+
 def test_vast_adapter_dry_run_writes_required_artifacts(tmp_path: Path) -> None:
     result = run_vast_provider_adapter(job_dir=tmp_path, mode="dry-run")
 
