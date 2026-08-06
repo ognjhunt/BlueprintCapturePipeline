@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -22,7 +23,13 @@ MASK_ASSOCIATION_MODE = "pre_registered_single_target_resolution_divisor_2"
 COMMAND_TIMEOUT_SECONDS = 10_800
 MIN_VIRTUAL_MASK_FILL_RATIO = 0.2
 MIN_VIRTUAL_MASK_REFERENCE_RATIO = 0.1
+MAX_VIRTUAL_MASK_FRAME_RATIO = 0.1
+MAX_VIRTUAL_MASK_SOURCE_RATIO = 4.0
 MIN_QUALIFYING_VIRTUAL_VIEW_COUNT = 3
+MAX_QUALIFYING_VIRTUAL_VIEW_COUNT = 8
+TARGET_CENTERED_STANDOFF_MULTIPLIER = 5.0
+MAX_ADDED_GAUSSIAN_REMOVAL_MULTIPLIER = 20
+MAX_ADDED_GAUSSIAN_BASELINE_RATIO = 0.05
 
 
 def _sha256(path: Path) -> str:
@@ -196,14 +203,33 @@ def _freeze_nonempty_virtual_views(
     bbox_ineligible_view_count = 0
     low_fill_ratio_view_count = 0
     low_reference_coverage_view_count = 0
+    high_frame_coverage_view_count = 0
+    high_source_coverage_view_count = 0
     source_counts = [
         int(value)
         for value in (mask_binding.get("associated_target_pixel_counts") or {}).values()
         if isinstance(value, int) and value > 0
     ]
     reference_min_pixels = min(source_counts) if source_counts else 0
+    reference_max_pixels = max(source_counts) if source_counts else 0
     minimum_foreground_pixels = max(
         1, round(reference_min_pixels * MIN_VIRTUAL_MASK_REFERENCE_RATIO)
+    )
+    maximum_foreground_pixels_from_source = max(
+        1, round(reference_max_pixels * MAX_VIRTUAL_MASK_SOURCE_RATIO)
+    )
+    image_width = handoff.get("image_width")
+    image_height = handoff.get("image_height")
+    image_area = (
+        int(image_width) * int(image_height)
+        if isinstance(image_width, int)
+        and image_width > 0
+        and isinstance(image_height, int)
+        and image_height > 0
+        else 0
+    )
+    maximum_foreground_pixels_from_frame = (
+        math.floor(image_area * MAX_VIRTUAL_MASK_FRAME_RATIO) if image_area else 0
     )
     for row in handoff.get("output_masks") or []:
         relative = str(row.get("relative_path") or "")
@@ -243,10 +269,20 @@ def _freeze_nonempty_virtual_views(
             low_fill_ratio_view_count += 1
         if bbox_eligible and foreground_pixels < minimum_foreground_pixels:
             low_reference_coverage_view_count += 1
+        if bbox_eligible and (
+            not maximum_foreground_pixels_from_frame
+            or foreground_pixels > maximum_foreground_pixels_from_frame
+        ):
+            high_frame_coverage_view_count += 1
+        if bbox_eligible and foreground_pixels > maximum_foreground_pixels_from_source:
+            high_source_coverage_view_count += 1
         if (
             bbox_eligible
             and fill_ratio >= MIN_VIRTUAL_MASK_FILL_RATIO
             and foreground_pixels >= minimum_foreground_pixels
+            and maximum_foreground_pixels_from_frame > 0
+            and foreground_pixels <= maximum_foreground_pixels_from_frame
+            and foreground_pixels <= maximum_foreground_pixels_from_source
         ):
             selected.append(
                 {
@@ -259,6 +295,13 @@ def _freeze_nonempty_virtual_views(
                 }
             )
     selected.sort(key=lambda row: str(row["view_id"]))
+    eligible_count_before_cap = len(selected)
+    if len(selected) > MAX_QUALIFYING_VIRTUAL_VIEW_COUNT:
+        indexes = [
+            round(index * (len(selected) - 1) / (MAX_QUALIFYING_VIRTUAL_VIEW_COUNT - 1))
+            for index in range(MAX_QUALIFYING_VIRTUAL_VIEW_COUNT)
+        ]
+        selected = [selected[index] for index in indexes]
     blockers: list[str] = []
     if len(selected) < MIN_QUALIFYING_VIRTUAL_VIEW_COUNT:
         blockers.append("inpaint360_target_visible_virtual_view_support_inadequate")
@@ -275,11 +318,24 @@ def _freeze_nonempty_virtual_views(
         "bbox_ineligible_view_count": bbox_ineligible_view_count,
         "low_fill_ratio_view_count": low_fill_ratio_view_count,
         "low_reference_coverage_view_count": low_reference_coverage_view_count,
+        "high_frame_coverage_view_count": high_frame_coverage_view_count,
+        "high_source_coverage_view_count": high_source_coverage_view_count,
         "minimum_qualifying_view_count": MIN_QUALIFYING_VIRTUAL_VIEW_COUNT,
+        "maximum_qualifying_view_count": MAX_QUALIFYING_VIRTUAL_VIEW_COUNT,
+        "eligible_count_before_cap": eligible_count_before_cap,
         "minimum_bbox_fill_ratio": MIN_VIRTUAL_MASK_FILL_RATIO,
         "minimum_foreground_pixels": minimum_foreground_pixels,
         "minimum_foreground_pixels_derivation": "10_percent_of_smallest_frozen_source_mask_at_method_resolution",
         "source_reference_min_foreground_pixels": reference_min_pixels,
+        "source_reference_max_foreground_pixels": reference_max_pixels,
+        "maximum_foreground_pixels_from_source": maximum_foreground_pixels_from_source,
+        "maximum_foreground_pixels_from_source_derivation": (
+            "4_times_largest_frozen_source_mask_at_method_resolution"
+        ),
+        "image_width": image_width,
+        "image_height": image_height,
+        "maximum_frame_fraction": MAX_VIRTUAL_MASK_FRAME_RATIO,
+        "maximum_foreground_pixels_from_frame": maximum_foreground_pixels_from_frame,
         "excluded_view_count": candidate_count - len(selected),
         "mask_pixels_or_images_modified": False,
         "blockers": blockers,
@@ -548,6 +604,8 @@ def _materialize_target_centered_virtual_view_adapter(
             (
                 "    if is_circle:\n"
                 "        r = np.max(sc) * circle_radius\n"
+                "        if explicit_center_world is not None:\n"
+                f"            r = r * {TARGET_CENTERED_STANDOFF_MULTIPLIER}\n"
                 "        def get_positions(theta):\n"
                 "            if explicit_center_world is not None:\n"
                 "                z_positions = center[2] + (r * target_elevation_ratio * "
@@ -596,6 +654,7 @@ def _materialize_target_centered_virtual_view_adapter(
         ),
         "target_center_m": center,
         "target_elevation_ratio": 0.2,
+        "target_centered_standoff_multiplier": TARGET_CENTERED_STANDOFF_MULTIPLIER,
         "virtual_view_count": spec.get("runtime", {}).get("virtual_view_count"),
         "virtual_mask_source_kind": "blueprint_exact_obb_projected_virtual_masks",
         "camera_contract": "exact_obb_centered_circle_with_two_vertical_oscillations",
@@ -605,6 +664,47 @@ def _materialize_target_centered_virtual_view_adapter(
         "blockers": blockers,
     }
     _write_json(output / "target_centered_virtual_view_adapter.json", receipt)
+    return receipt
+
+
+def _validate_added_gaussian_budget(*, model: Path, output: Path) -> dict[str, Any]:
+    baseline = model / "point_cloud/iteration_2000/point_cloud.ply"
+    removal = model / "point_cloud_object_removal/iteration_2000/point_cloud.ply"
+    final = model / "point_cloud_object_inpaint_virtual/iteration_5000/point_cloud.ply"
+    baseline_count = _ply_vertex_count(baseline)
+    removal_count = _ply_vertex_count(removal)
+    final_count = _ply_vertex_count(final)
+    blockers: list[str] = []
+    if None in (baseline_count, removal_count, final_count):
+        blockers.append("inpaint360_gaussian_budget_point_cloud_missing")
+        removed_count = None
+        added_count = None
+        maximum_added_count = None
+    else:
+        removed_count = max(0, int(baseline_count) - int(removal_count))
+        added_count = max(0, int(final_count) - int(removal_count))
+        maximum_added_count = max(
+            removed_count * MAX_ADDED_GAUSSIAN_REMOVAL_MULTIPLIER,
+            math.ceil(int(baseline_count) * MAX_ADDED_GAUSSIAN_BASELINE_RATIO),
+        )
+        if added_count > maximum_added_count:
+            blockers.append("inpaint360_added_gaussian_budget_exceeded")
+    receipt = {
+        "schema_version": "inpaint360_added_gaussian_budget_validation.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "baseline_vertex_count": baseline_count,
+        "post_removal_vertex_count": removal_count,
+        "final_vertex_count": final_count,
+        "removed_vertex_count": removed_count,
+        "added_vertex_count": added_count,
+        "maximum_added_vertex_count": maximum_added_count,
+        "maximum_added_vertex_count_derivation": (
+            "max_20_times_removed_count_or_5_percent_of_baseline"
+        ),
+        "blockers": blockers,
+    }
+    _write_json(output / "added_gaussian_budget_validation.json", receipt)
     return receipt
 
 
@@ -1468,6 +1568,9 @@ def main() -> int:
     final_ply = model / "point_cloud_object_inpaint_virtual/iteration_5000/point_cloud.ply"
     final_video = model / "video/ours__object_inpaint_virtual/iteration_5000/final_video.mp4"
     final_render_dir = final_video.parent
+    gaussian_budget_validation = _validate_added_gaussian_budget(
+        model=model, output=output
+    )
     source_after = _source_identity(source, spec)
     dependency_after = _nested_dependency_identity(source, spec)
     blockers: list[str] = []
@@ -1503,6 +1606,8 @@ def main() -> int:
         blockers.append("inpaint360_adapter_input_changed_before_execution")
     if not final_ply.is_file() or final_ply.stat().st_size == 0:
         blockers.append("inpaint360_final_point_cloud_missing")
+    if gaussian_budget_validation.get("status") != "accepted":
+        blockers.extend(gaussian_budget_validation.get("blockers") or [])
     review_frames = _retain_review_frames(final_render_dir, output)
     if "inpaint_3d" in completed and len(review_frames) != 8:
         blockers.append("inpaint360_review_frames_missing")
@@ -1545,6 +1650,7 @@ def main() -> int:
         "obb_removal_adapter": obb_removal_adapter,
         "target_centered_virtual_view_adapter": target_centered_view_adapter,
         "lama_depth_numerical_validation": lama_depth_validation,
+        "added_gaussian_budget_validation": gaussian_budget_validation,
         "method_resolution_execution": resolution_accepted,
         "mask_association_executed": False,
         "mask_association_mode": MASK_ASSOCIATION_MODE,

@@ -711,6 +711,8 @@ def test_nonempty_virtual_views_are_frozen_before_inpainting_and_filter_adapter_
 ) -> None:
     runner = _load_provider_runner()
     handoff = {
+        "image_width": 100,
+        "image_height": 100,
         "output_masks": [
             {
                 "relative_path": "masks/00000.png",
@@ -744,7 +746,7 @@ def test_nonempty_virtual_views_are_frozen_before_inpainting_and_filter_adapter_
     }
     selection = runner._freeze_nonempty_virtual_views(
         handoff=handoff,
-        mask_binding={"associated_target_pixel_counts": {"view.png": 100}},
+        mask_binding={"associated_target_pixel_counts": {"view.png": 200}},
         output=tmp_path / "evidence",
     )
     source = tmp_path / "source"
@@ -796,6 +798,8 @@ def test_nonempty_virtual_view_adapter_rejects_empty_selection_and_source_drift(
     runner = _load_provider_runner()
     blocked_selection = runner._freeze_nonempty_virtual_views(
         handoff={
+            "image_width": 100,
+            "image_height": 100,
             "output_masks": [
                 {
                     "relative_path": "00000.png",
@@ -954,6 +958,7 @@ def test_target_centered_virtual_view_adapter_binds_exact_obb_without_source_mut
 
     assert receipt["status"] == "accepted"
     assert receipt["target_center_m"] == [0.5, 0.5, 0.5]
+    assert receipt["target_centered_standoff_multiplier"] == 5.0
     assert receipt["publisher_source_files_modified"] is False
     assert virtual_source.read_bytes() == before_virtual
     assert pose_source.read_bytes() == before_pose
@@ -963,6 +968,7 @@ def test_target_centered_virtual_view_adapter_binds_exact_obb_without_source_mut
     assert "explicit_center_world=np.asarray([0.5,0.5,0.5]" in adapted_virtual
     assert "target_elevation_ratio=0.2" in adapted_virtual
     assert "explicit_center_world is not None" in adapted_pose
+    assert "r = r * 5.0" in adapted_pose
     compile(adapted_virtual, "adapted_virtual_pose.py", "exec")
     compile(adapted_pose, "adapted_pose_utils.py", "exec")
 
@@ -973,6 +979,8 @@ def test_virtual_view_quality_gate_rejects_fragmented_and_low_coverage_masks(
     runner = _load_provider_runner()
     selection = runner._freeze_nonempty_virtual_views(
         handoff={
+            "image_width": 100,
+            "image_height": 100,
             "output_masks": [
                 {
                     "relative_path": "masks/00000.png",
@@ -1002,6 +1010,67 @@ def test_virtual_view_quality_gate_rejects_fragmented_and_low_coverage_masks(
     assert selection["blockers"] == [
         "inpaint360_target_visible_virtual_view_support_inadequate"
     ]
+
+
+def test_virtual_view_quality_gate_rejects_v2_oversized_target_masks(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    selection = runner._freeze_nonempty_virtual_views(
+        handoff={
+            "image_width": 1024,
+            "image_height": 768,
+            "output_masks": [
+                {
+                    "relative_path": f"masks/{index:05d}.png",
+                    "foreground_pixels": pixels,
+                    "foreground_bbox_width": 696,
+                    "foreground_bbox_height": 725,
+                    "sha256": str(index),
+                }
+                for index, pixels in enumerate((189_388, 218_547, 240_629))
+            ],
+        },
+        mask_binding={
+            "associated_target_pixel_counts": {
+                "approach_wide.png": 4_916,
+                "low_approach.png": 19_896,
+            }
+        },
+        output=tmp_path,
+    )
+
+    assert selection["status"] == "blocked"
+    assert selection["selected_count"] == 0
+    assert selection["high_frame_coverage_view_count"] == 3
+    assert selection["high_source_coverage_view_count"] == 3
+    assert selection["maximum_foreground_pixels_from_frame"] == 78_643
+    assert selection["maximum_foreground_pixels_from_source"] == 79_584
+
+
+def test_added_gaussian_budget_rejects_v2_scale_insertion(tmp_path: Path) -> None:
+    runner = _load_provider_runner()
+    model = tmp_path / "model"
+    paths = {
+        "point_cloud/iteration_2000/point_cloud.ply": 540_712,
+        "point_cloud_object_removal/iteration_2000/point_cloud.ply": 539_894,
+        "point_cloud_object_inpaint_virtual/iteration_5000/point_cloud.ply": 775_800,
+    }
+    for relative, count in paths.items():
+        path = model / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"ply\nformat ascii 1.0\nelement vertex {count}\nend_header\n",
+            encoding="ascii",
+        )
+
+    receipt = runner._validate_added_gaussian_budget(model=model, output=tmp_path)
+
+    assert receipt["status"] == "blocked"
+    assert receipt["removed_vertex_count"] == 818
+    assert receipt["added_vertex_count"] == 235_906
+    assert receipt["maximum_added_vertex_count"] == 27_036
+    assert receipt["blockers"] == ["inpaint360_added_gaussian_budget_exceeded"]
 
 
 def test_lama_depth_numerical_validation_rejects_non_finite_refinement(
