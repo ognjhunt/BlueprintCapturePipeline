@@ -382,7 +382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         destination = output / "artifacts/final_frames" / frame.name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(frame, destination)
-        retained_frames.append({"path": destination.relative_to(output).as_posix(), "size_bytes": destination.stat().st_size, "sha256": _sha256(destination)})
+        retained_frames.append({"relative_path": destination.relative_to(output).as_posix(), "size_bytes": destination.stat().st_size, "sha256": _sha256(destination)})
     result = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),

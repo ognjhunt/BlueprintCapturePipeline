@@ -71,7 +71,11 @@ def _file_record(path: Path, root: Path) -> dict[str, Any]:
 def _verify_record(
     record: Mapping[str, Any], *, root: Path, code: str
 ) -> tuple[Path, dict[str, Any]]:
-    relative = str(record.get("relative_path") or "")
+    canonical_relative = str(record.get("relative_path") or "")
+    legacy_relative = str(record.get("path") or "")
+    if canonical_relative and legacy_relative:
+        raise AuraExecutionReceiptError([code])
+    relative = canonical_relative or legacy_relative
     path = (root / relative).resolve()
     if not relative or (path != root and root not in path.parents):
         raise AuraExecutionReceiptError([code])

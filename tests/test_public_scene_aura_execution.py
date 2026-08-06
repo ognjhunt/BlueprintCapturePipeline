@@ -167,6 +167,40 @@ def test_aura_execution_receipt_hashes_observed_files_without_self_admission(
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
 
 
+def test_aura_execution_receipt_accepts_legacy_v1_frame_path_field(
+    tmp_path: Path,
+) -> None:
+    paths = _fixture(tmp_path)
+    runtime = json.loads(paths["runtime"].read_text())
+    for record in runtime["final_frames"]:
+        record["path"] = record.pop("relative_path")
+    _write(paths["runtime"], runtime)
+
+    receipt = _materialize(paths)
+
+    assert len(receipt["execution"]["final_frames"]) == 2
+    assert all(
+        "relative_path" in record
+        for record in receipt["execution"]["final_frames"]
+    )
+
+
+def test_aura_execution_receipt_rejects_ambiguous_frame_path_fields(
+    tmp_path: Path,
+) -> None:
+    paths = _fixture(tmp_path)
+    runtime = json.loads(paths["runtime"].read_text())
+    runtime["final_frames"][0]["path"] = runtime["final_frames"][0][
+        "relative_path"
+    ]
+    _write(paths["runtime"], runtime)
+
+    with pytest.raises(
+        AuraExecutionReceiptError, match="aurafusion360_final_frame_changed"
+    ):
+        _materialize(paths)
+
+
 def test_aura_execution_receipt_rejects_changed_final_point_cloud(tmp_path: Path) -> None:
     paths = _fixture(tmp_path)
     paths["ply"].write_bytes(paths["ply"].read_bytes() + b"changed")
