@@ -400,6 +400,7 @@ def materialize_parametric_simready_control(
     if abs(size[0] - size[1]) > 0.005:
         raise PublicSceneSimReadyControlError("target_not_cylindrical_within_tolerance")
     world_center = [(lower[index] + upper[index]) / 2.0 for index in range(3)]
+    nominal_base_placement = [world_center[0], world_center[1], lower[2]]
     diameter = (size[0] + size[1]) / 2.0
     radius = diameter / 2.0
     height = size[2]
@@ -572,7 +573,10 @@ def materialize_parametric_simready_control(
             "diameter_m": diameter,
             "height_m": height,
             "local_origin": "center_of_base_datum",
-            "world_placement_m": world_center,
+            "obb_center_m": world_center,
+            "nominal_base_placement_m": nominal_base_placement,
+            "world_placement_m": nominal_base_placement,
+            "world_placement_datum": "center_of_base_datum",
             "world_placement_authored_into_asset": False,
             "source": "publisher_semantic_obb_plus_materialized_cad",
             "measurement_authoritative": False,

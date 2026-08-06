@@ -60,9 +60,12 @@ found obvious translucent sheets and radial streaks with 13.994182% of
 outside-mask pixels changing by more than `20/255`. Future packets reject masks
 above 10% of the frame or four times the largest source mask, use at most eight
 evenly spaced views at five-times greater standoff, and enforce an added-Gaussian
-budget. No selected source collider has been removed and no replacement USD has
-been inserted into scene `840313`. The Content Agents asset remains a static
-authoring candidate until the dynamic Isaac probes pass.
+budget. A later static-composition receipt now deactivates the selected source
+collider and references the exact SimReady can at the measured SAGE cabinet
+support height without modifying the publisher support mesh. That composed USD
+remains a static candidate: native OVPhysX contact/settling and native OVRTX
+before/after visual review are still missing. The Content Agents asset remains
+an authoring comparison until those dynamic and visual probes pass.
 
 The stricter successor `v3_execute_a019b8d18` also completed with zero retries
 and provider/object-store zero. It froze eight evenly spaced views before

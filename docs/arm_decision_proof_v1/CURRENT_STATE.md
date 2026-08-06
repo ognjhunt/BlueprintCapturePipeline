@@ -48,6 +48,21 @@ faint prismatic residue at the former can location and a white edge fringe in on
 oblique view. Aura therefore remains a substantially improved visual candidate,
 not admitted successful completion.
 
+The exact SimReady can is now statically composed with the matching SAGE
+collision proxy in a separate digest-bound USD layer. The deterministic
+[replacement receipt](manifests/adp009b_simready_replacement_receipt.v1.json)
+opens and hashes the actual collision USD, Aura PLY, and exact SimReady asset;
+deactivates only target collider `/Root/ZHQYGJJVAJYEYPTUKY888888`; and preserves
+the TV-cabinet support collider. Direct mesh inspection found four overlapping
+horizontal support triangles at `z=0.5264650138348479` m with `0` m height span,
+`0` degrees maximum tilt, and `0.785568074625` square meters of combined triangle
+area. No mesh smoothing or generated support geometry was needed. Because the
+SimReady asset uses a base-centered local datum, its placement is
+`[3.4681748, -3.3100837, 0.5264650138348479]` m, a measured `+1.499910722` mm
+support correction from the publisher OBB bottom. This is a static composition
+candidate, not dynamic-contact or visual-placement proof; native OVPhysX
+drop/contact/settling and native OVRTX before/after review remain required.
+
 Suite replay now fails closed on file identity as well as JSON shape. The
 materializer opens the ten component manifests and receipts plus every referenced
 artifact under explicit repository, data, and method roots; it recomputes their
@@ -117,6 +132,11 @@ python -m blueprint_pipeline.public_scene_suite_materializer \
   --repo-root "$PWD" --data-root "$ADP009A_DATA_ROOT" \
   --method-root "$ADP009A_METHOD_ROOT" \
   --output-root docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite
+python -m blueprint_pipeline.public_scene_simready_replacement \
+  --request docs/arm_decision_proof_v1/manifests/adp009b_simready_replacement_request.v1.json \
+  --repo-root "$PWD" --evidence-root "$ADP009A_DATA_ROOT" \
+  --output-usda "$ADP009A_DATA_ROOT/simready/replacement_840313/collision_and_replacement.usda" \
+  --output-receipt docs/arm_decision_proof_v1/manifests/adp009b_simready_replacement_receipt.v1.json
 python -m blueprint_pipeline.public_scene_inpainting_inputs \
   --request docs/arm_decision_proof_v1/manifests/adp009b_interiorgs_edit_input_request.v1.json \
   --repo-root "$PWD" --data-root "$ADP009A_DATA_ROOT" \

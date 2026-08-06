@@ -26,7 +26,7 @@
   "deployment_readiness": false,
   "evaluated_on": "2026-08-05",
   "gate_id": "exact_public_scene_suite_index",
-  "index_digest": "sha256:4db9839a71567ea9b46a663d4580e74bcb983c1871659e1301cea14207cd3eb4",
+  "index_digest": "sha256:20cfefc9586a546a5a53a83a663d4b1a0a2190370ee932bd4bb0997e89cc3b9f",
   "index_id": "adp009a-public-suite-20260804",
   "metric_geometry_qualified": false,
   "partner_capture_qualified": false,
@@ -34,7 +34,7 @@
   "program_id": "arm-decision-proof-v1",
   "prospective_validation": false,
   "public_scene_software_qualified": false,
-  "receipt_digest": "sha256:30e2dbadd6cdb900c8ee8d983034b4d7dee363ff7a1b2faea805d1d539ccf76d",
+  "receipt_digest": "sha256:4c71036c2a3797037e15208f1bcf00c4058b045d18b1e53979c5428bed1dbe0a",
   "required_role_count": 10,
   "role_bindings": [
     {
@@ -128,13 +128,13 @@
       "source_project_id": "Blueprint-controlled"
     },
     {
-      "component_admission_receipt_digest": "sha256:826d2792c7d8aa6d13956a5900e769e503d020b7e7aad0cee85f3b411666ea9e",
+      "component_admission_receipt_digest": "sha256:5c4b8183057f25b34c548ce77bac85a2eec944fb0acce6b0ef69c9683256ae43",
       "component_blockers": [
         "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
       ],
-      "component_manifest_digest": "sha256:a516ed8faec21b3d5fe5d823a09baa620c297970c5f65b165815b46cc6dfb1d3",
+      "component_manifest_digest": "sha256:2bc857eda13d4d3be52550e21a40a270cc04e408c56024ec4ae090beb6938a0b",
       "declared_status": "blocked",
-      "exact_artifact_digest": "sha256:102cc9c6d1098ce364b3b7f3aebd2630f770f6185fd28b130c37d954db1a8b45",
+      "exact_artifact_digest": "sha256:f7c4c82398230065ac9cc830afdc74a3be7e48e5104438a2c2567ddea986d9c4",
       "exact_revision": {
         "kind": "git_commit",
         "value": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3"
@@ -192,6 +192,6 @@
   ],
   "schema_version": "public_scene_suite_index_receipt.v1",
   "status": "blocked",
-  "supplied_index_digest": "sha256:4db9839a71567ea9b46a663d4580e74bcb983c1871659e1301cea14207cd3eb4",
+  "supplied_index_digest": "sha256:20cfefc9586a546a5a53a83a663d4b1a0a2190370ee932bd4bb0997e89cc3b9f",
   "task_physics_qualified": false
 }

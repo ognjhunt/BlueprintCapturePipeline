@@ -9,7 +9,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-840313-canned-beverage-cad-control",
-  "manifest_digest": "sha256:a516ed8faec21b3d5fe5d823a09baa620c297970c5f65b165815b46cc6dfb1d3",
+  "manifest_digest": "sha256:2bc857eda13d4d3be52550e21a40a270cc04e408c56024ec4ae090beb6938a0b",
   "materialized_artifacts": [
     {
       "external_relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda",
@@ -22,8 +22,8 @@
       "external_relative_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
       "publisher_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
       "role": "materialization_and_static_validation_receipt",
-      "sha256": "sha256:771c48f8f408826ee5c33564b344e5d0da04de0d7ec95a45b436872c7b5a5aff",
-      "size_bytes": 9407
+      "sha256": "sha256:26930d45c3b8c601347bbad8e6c8e87aad7f7e4be27854bc0aece9079ce34f7e",
+      "size_bytes": 9673
     }
   ],
   "observed_evidence": {

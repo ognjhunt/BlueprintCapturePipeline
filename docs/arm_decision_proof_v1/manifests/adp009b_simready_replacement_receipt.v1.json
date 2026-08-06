@@ -1,0 +1,115 @@
+{
+  "adp_item": "ADP-009B",
+  "bindings": {
+    "aura_execution_receipt_digest": "sha256:2476eae9ba019ba000ddd4064dd1c51960e089ea370f4051955a2999d09e22da",
+    "aura_final_point_cloud": {
+      "relative_path": "aura_interiorgs/live_v12_openclip_execute/immutable_execution/artifacts/aurafusion360_840313_ins160_final.ply",
+      "sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
+      "size_bytes": 106309429
+    },
+    "edit_input_receipt_digest": "sha256:a25e43f695e6eea3dff0c18ad1ee5001bcb7162600bade996d7e08b7c01d5d8b",
+    "exact_simready_asset": {
+      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda",
+      "sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
+      "size_bytes": 200375
+    },
+    "sage_collision_usd": {
+      "relative_path": "shortlist/SAGE-3D_Collision_Mesh/Collision_Mesh/840313/840313_collision.usd",
+      "sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+      "size_bytes": 42418216
+    },
+    "sage_component_manifest_digest": "sha256:f5666090b84e93b955726a9e7bfe4af4bb9cb17fdb2334e8d11bbd654eb5ffd3",
+    "simready_control_receipt_digest": "sha256:f33bcf84771e5175c0bb20651a1fb0c454b594a16e5347d5000b8fde0ce704fd"
+  },
+  "blockers": [
+    "native_ovphysx_drop_contact_settle_missing",
+    "native_ovrtx_composite_visual_review_missing"
+  ],
+  "claim_ceiling": "internal_noncommercial_static_composition_candidate_only",
+  "composition": {
+    "appearance_3dgs_composed_into_usd": false,
+    "appearance_3dgs_separate_sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
+    "relative_path": "simready/replacement_840313/collision_and_replacement.usda",
+    "replacement_asset_copy": {
+      "relative_path": "simready/replacement_840313/assets/adp009a_840313_canned_beverage_control.usda",
+      "sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
+      "size_bytes": 200375
+    },
+    "replacement_collision_api_present": true,
+    "replacement_rigid_body_active": true,
+    "sage_geometry_modified": false,
+    "sha256": "sha256:5dd1972ef4db416d4b18f677bccac9aaca0479cfa5b2bb24abe3eb23a1af4708",
+    "size_bytes": 1139,
+    "source_target_collider_active": false,
+    "support_collider_active": true,
+    "unresolved_dependency_count": 0
+  },
+  "dynamic_contact_proven": false,
+  "nvidia_agent_routing": {
+    "geometry_smoothing_required": false,
+    "next_dynamic_gate": "native_ovphysx_drop_contact_settle",
+    "next_static_gates": [
+      "omni_asset_validate",
+      "omni_asset_validate_geometry",
+      "omni_asset_validate_physics",
+      "simready_validate"
+    ],
+    "next_visual_gate": "native_ovrtx_rgb_depth_normal_multiview_review",
+    "reason": "observed support triangles pass frozen flatness and tilt gates"
+  },
+  "physical_evidence": false,
+  "placement": {
+    "authority": "publisher_obb_xy_plus_measured_sage_support_mesh_z",
+    "local_origin": "center_of_base_datum",
+    "nominal_obb_base_placement_m": [
+      3.4681748,
+      -3.3100837000000003,
+      0.5249651031127929
+    ],
+    "obb_center_m": [
+      3.4681748,
+      -3.3100837000000003,
+      0.6096790999999999
+    ],
+    "orientation_xyzw": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "support_aligned_base_placement_m": [
+      3.4681748,
+      -3.3100837000000003,
+      0.5264650138348479
+    ],
+    "support_alignment_correction_m": 0.00149991072205502
+  },
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:245285185196da900b3dca0a7d58768badd47bbc0d71d58eb28700785c820f2c",
+  "scene": {
+    "publisher_scene_id": "840313",
+    "source_target_collision_prim_path": "/Root/ZHQYGJJVAJYEYPTUKY888888",
+    "support_collision_prim_path": "/Root/_LTFTHJVAZ3VMPTUJU888888",
+    "target_instance_id": "160",
+    "target_semantic_label": "canned_beverage"
+  },
+  "schema_version": "adp009b_simready_replacement_receipt.v1",
+  "status": "composed_static_candidate",
+  "successful_inpainting_admitted": false,
+  "support_surface_measurement": {
+    "geometry_modified": false,
+    "height_max_m": 0.5264650138348479,
+    "height_min_m": 0.5264650138348479,
+    "height_span_m": 0.0,
+    "maximum_allowed_tilt_degrees": 5.0,
+    "maximum_flatness_error_m": 0.002,
+    "maximum_tilt_degrees": 0.0,
+    "measured_support_height_m": 0.5264650138348479,
+    "measurement_source": "materialized_sage_collision_mesh_vertices_and_faces",
+    "minimum_overlapping_area_m2": 0.003,
+    "overlapping_triangle_area_m2": 0.785568074625,
+    "probe_margin_m": 0.01,
+    "support_prim_path": "/Root/_LTFTHJVAZ3VMPTUJU888888",
+    "triangle_count": 4
+  }
+}

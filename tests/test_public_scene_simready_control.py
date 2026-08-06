@@ -128,6 +128,10 @@ def test_materializer_derives_mesh_usd_and_prepared_receipt(tmp_path: Path) -> N
     assert receipt["status"] == "prepared_for_independent_validation"
     assert receipt["cad_evidence"]["mesh"]["watertight"] is True
     assert receipt["checks"]["simready_foundation_profile_passed"] is False
+    assert receipt["geometry"]["obb_center_m"] == pytest.approx([0.0, 0.0, HEIGHT_M / 2.0])
+    assert receipt["geometry"]["nominal_base_placement_m"] == pytest.approx([0.0, 0.0, 0.0])
+    assert receipt["geometry"]["world_placement_m"] == pytest.approx([0.0, 0.0, 0.0])
+    assert receipt["geometry"]["world_placement_datum"] == "center_of_base_datum"
     assert receipt["usd"]["sha256"].startswith("sha256:")
     authored = output_usda.read_text(encoding="utf-8")
     assert 'def Mesh "body"' in authored
