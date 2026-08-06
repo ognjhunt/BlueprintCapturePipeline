@@ -191,6 +191,18 @@ def test_native_probe_derives_exact_camera_and_drop_inputs(tmp_path: Path) -> No
     assert manifest["isaac"]["version"] == ISAAC_SIM_VERSION
     assert manifest["isaac"]["probe_names"] == ["drop", "gripper", "slide", "tip"]
     assert manifest["isaac"]["status"] == "frozen_not_executed"
+    assert manifest["isaac"]["collider_approximation"] == "convexHull"
+    assert (
+        manifest["isaac"]["claim_ceiling"]
+        == "native_isaac_convex_hull_approximation_only"
+    )
+    assert manifest["isaac"]["exact_v2_sdf_collider_behavior_proven"] is False
+    assert (
+        manifest["claim_boundaries"][
+            "legacy_probe_may_not_substitute_for_adp009d_sdf_admission"
+        ]
+        is True
+    )
     config = json.loads(
         (tmp_path / "probe/ovrtx_configs/approach_wide.json").read_text()
     )
@@ -232,6 +244,18 @@ def test_native_probe_derives_exact_camera_and_drop_inputs(tmp_path: Path) -> No
         [0.06, 0.06, 0.16]
     )
     assert isaac_spec["replacement_mass_kg"] == pytest.approx(0.33)
+    assert isaac_spec["collider_contract"] == {
+        "runtime_authored_approximation": "convexHull",
+        "source_asset_sdf_consumption_proven": False,
+        "exact_source_collider_behavior_proven": False,
+        "claim_ceiling": "native_isaac_convex_hull_approximation_only",
+    }
+    assert (
+        isaac_spec["claim_boundaries"][
+            "may_not_be_used_as_adp009d_exact_collider_evidence"
+        ]
+        is True
+    )
     for stage_name in ("drop", "slide", "tip", "gripper"):
         stage_record = isaac_spec["stages"][stage_name]
         stage_path = tmp_path / "probe" / stage_record["relative_path"]

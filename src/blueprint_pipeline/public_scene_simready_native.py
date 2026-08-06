@@ -36,6 +36,8 @@ OVPHYSX_VERSION = "0.4.13"
 ISAAC_SIM_VERSION = "6.0.1"
 ISAAC_PROBE_PROTOCOL_REVISION = "slide_stimulus_v2"
 ISAAC_SLIDE_INITIAL_VELOCITY_MPS = 0.3
+ISAAC_COLLIDER_APPROXIMATION = "convexHull"
+ISAAC_COLLIDER_CLAIM_CEILING = "native_isaac_convex_hull_approximation_only"
 
 
 def _sha256(path: Path) -> str:
@@ -188,7 +190,7 @@ over "World"
         {{
             over "body_collider"
             {{
-                uniform token physics:approximation = "convexHull"
+                uniform token physics:approximation = "{ISAAC_COLLIDER_APPROXIMATION}"
             }}
         }}
     }}
@@ -250,7 +252,7 @@ over "World"
         {{
             over "body_collider"
             {{
-                uniform token physics:approximation = "convexHull"
+                uniform token physics:approximation = "{ISAAC_COLLIDER_APPROXIMATION}"
             }}
         }}
     }}
@@ -305,7 +307,7 @@ over "World"
         {{
             over "body_collider"
             {{
-                uniform token physics:approximation = "convexHull"
+                uniform token physics:approximation = "{ISAAC_COLLIDER_APPROXIMATION}"
             }}
         }}
     }}
@@ -615,6 +617,12 @@ def materialize_native_probe(
         "expected_support_z_m": placement[2],
         "replacement_dimensions_m": usd_scene_inventory["local_bounds"]["dimensions_m"],
         "replacement_mass_kg": float(usd_scene_inventory["masses"][0]["mass"]),
+        "collider_contract": {
+            "runtime_authored_approximation": ISAAC_COLLIDER_APPROXIMATION,
+            "source_asset_sdf_consumption_proven": False,
+            "exact_source_collider_behavior_proven": False,
+            "claim_ceiling": ISAAC_COLLIDER_CLAIM_CEILING,
+        },
         "fixed_step_seconds": 1.0 / 120.0,
         "stimuli": {
             "drop": {"initial_linear_velocity_mps": [0.0, 0.0, 0.0]},
@@ -664,6 +672,9 @@ def materialize_native_probe(
             "frozen_packet_is_not_execution": True,
             "bounded_two_finger_proxy_is_not_robot_task_success": True,
             "isaac_result_is_not_physical_truth": True,
+            "generated_probe_uses_convex_hull_approximation": True,
+            "exact_v2_sdf_collider_behavior_proven": False,
+            "may_not_be_used_as_adp009d_exact_collider_evidence": True,
         },
     }
     isaac_probe_spec_path = target / "isaac_probe_spec.json"
@@ -703,12 +714,17 @@ def materialize_native_probe(
             "stage_count": len(isaac_stages),
             "probe_names": sorted(isaac_stages),
             "status": "frozen_not_executed",
+            "collider_approximation": ISAAC_COLLIDER_APPROXIMATION,
+            "claim_ceiling": ISAAC_COLLIDER_CLAIM_CEILING,
+            "exact_v2_sdf_collider_behavior_proven": False,
         },
         "claim_boundaries": {
             "ovrtx_object_only_render_not_3dgs_scene_render": True,
             "local_composite_required_after_provider_return": True,
             "ovphysx_probe_not_isaac_or_physical_truth": True,
             "isaac_probe_packet_is_not_isaac_execution": True,
+            "legacy_isaac_probe_uses_convex_hull_approximation": True,
+            "legacy_probe_may_not_substitute_for_adp009d_sdf_admission": True,
         },
     }
     write_json(target / "adp009b_simready_native_probe_manifest.json", manifest)
