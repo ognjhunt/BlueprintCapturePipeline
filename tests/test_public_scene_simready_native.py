@@ -443,9 +443,9 @@ def test_native_isaac_worker_rejects_authored_stimulus_mismatch() -> None:
     }
     assert module._validate_authored_linear_velocity(
         probe_name="slide",
-        authored=[0.3, 0.0, 0.0],
+        authored=[0.30000001192092896, 0.0, 0.0],
         spec=spec,
-    ) == [0.3, 0.0, 0.0]
+    ) == [0.30000001192092896, 0.0, 0.0]
     with pytest.raises(ValueError, match="authored_stimulus_mismatch"):
         module._validate_authored_linear_velocity(
             probe_name="slide",

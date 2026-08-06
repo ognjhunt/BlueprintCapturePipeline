@@ -300,7 +300,12 @@ def _validate_authored_linear_velocity(
     if any(
         not math.isfinite(value) for value in [*observed, *numeric_expected]
     ) or any(
-        abs(observed[index] - numeric_expected[index]) > 1.0e-9
+        not math.isclose(
+            observed[index],
+            numeric_expected[index],
+            rel_tol=0.0,
+            abs_tol=1.0e-6,
+        )
         for index in range(3)
     ):
         raise ValueError("simready_isaac_authored_stimulus_mismatch")
