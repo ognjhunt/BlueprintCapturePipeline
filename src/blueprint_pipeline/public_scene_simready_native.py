@@ -30,6 +30,8 @@ EXPECTED_CAMERA_IDS = (
 )
 HORIZONTAL_APERTURE_MM = 20.955
 OVRTX_QUALITY_STEPS = 256
+OVRTX_VERSION = "0.4.0.346409"
+OVSTAGE_VERSION = "0.1.0.346039"
 OVPHYSX_VERSION = "0.4.13"
 
 
@@ -171,6 +173,88 @@ over "World"
 '''
 
 
+def _usd_scene_inventory(
+    path: Path,
+    *,
+    replacement_path: str,
+    support_collider_path: str,
+) -> dict[str, Any]:
+    """Derive the small physics inventory outside the isolated OVPhysX runtime.
+
+    OVPhysX owns native ingest and dynamics.  The separately pinned
+    ``usd-exchange`` environment owns OpenUSD schema inspection so the two USD
+    implementations are never imported into the same process.
+    """
+
+    from pxr import Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(path))
+    if stage is None:
+        raise ValueError("simready_native_drop_stage_unopenable")
+    rigid: list[str] = []
+    colliders: list[str] = []
+    joints: list[dict[str, Any]] = []
+    masses: list[dict[str, Any]] = []
+    materials: list[dict[str, Any]] = []
+    for prim in stage.Traverse():
+        prim_path = str(prim.GetPath())
+        in_replacement = prim_path == replacement_path or prim_path.startswith(
+            replacement_path + "/"
+        )
+        is_support = prim_path == support_collider_path
+        if in_replacement and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            rigid.append(prim_path)
+        if (in_replacement or is_support) and prim.HasAPI(UsdPhysics.CollisionAPI):
+            colliders.append(prim_path)
+        if in_replacement and prim.IsA(UsdPhysics.Joint):
+            joints.append(
+                {
+                    "path": prim_path,
+                    "lower": prim.GetAttribute("physics:lowerLimit").Get(),
+                    "upper": prim.GetAttribute("physics:upperLimit").Get(),
+                }
+            )
+        if in_replacement and prim.HasAPI(UsdPhysics.MassAPI):
+            api = UsdPhysics.MassAPI(prim)
+            masses.append(
+                {
+                    "path": prim_path,
+                    "mass": api.GetMassAttr().Get(),
+                    "density": api.GetDensityAttr().Get(),
+                }
+            )
+        if in_replacement and prim.HasAPI(UsdPhysics.MaterialAPI):
+            api = UsdPhysics.MaterialAPI(prim)
+            materials.append(
+                {
+                    "path": prim_path,
+                    "static_friction": api.GetStaticFrictionAttr().Get(),
+                    "dynamic_friction": api.GetDynamicFrictionAttr().Get(),
+                    "restitution": api.GetRestitutionAttr().Get(),
+                }
+            )
+    inventory = {
+        "authority": "blueprint_usd_exchange_2_3_schema_inspection",
+        "source_sha256": _sha256(path),
+        "replacement_path": replacement_path,
+        "support_collider_path": support_collider_path,
+        "rigid_bodies": sorted(rigid),
+        "colliders": sorted(colliders),
+        "joints": joints,
+        "masses": masses,
+        "materials": materials,
+    }
+    if (
+        replacement_path not in inventory["rigid_bodies"]
+        or support_collider_path not in inventory["colliders"]
+        or not any(path.startswith(replacement_path + "/") for path in colliders)
+        or not masses
+        or not materials
+    ):
+        raise ValueError("simready_native_physics_inventory_incomplete")
+    return inventory
+
+
 def materialize_native_probe(
     *,
     evidence_root: str | Path,
@@ -230,6 +314,20 @@ def materialize_native_probe(
     drop_stage.write_text(
         _drop_stage("scene/collision_and_replacement.usda", placement), encoding="utf-8"
     )
+    replacement_path = str(
+        composition.get("composed_replacement_prim_path")
+        or "/World/BlueprintReplacement"
+    )
+    support_collider_path = str(
+        composition.get("composed_support_collision_prim_path") or ""
+    )
+    if not support_collider_path.startswith("/"):
+        raise ValueError("simready_native_support_collider_path_missing")
+    usd_scene_inventory = _usd_scene_inventory(
+        drop_stage,
+        replacement_path=replacement_path,
+        support_collider_path=support_collider_path,
+    )
     configs_dir = target / "ovrtx_configs"
     ensure_dir(configs_dir)
     config_rows: list[dict[str, Any]] = []
@@ -259,6 +357,7 @@ def materialize_native_probe(
         "expected_joint_min_count": 0,
         "mass_bounds_kg": [0.1, 1.0],
         "friction_bounds": [0.0, 1.0],
+        "usd_scene_inventory": usd_scene_inventory,
         "drop_contact_settle": {
             "expected_support_z_m": placement[2],
             "initial_drop_height_m": 0.05,
@@ -282,6 +381,10 @@ def materialize_native_probe(
         "render_stage_sha256": _sha256(render_stage),
         "drop_stage_sha256": _sha256(drop_stage),
         "ovrtx": {
+            "version": OVRTX_VERSION,
+            "ovstage_version": OVSTAGE_VERSION,
+            "license": "NVIDIA proprietary SDK license",
+            "ovstage_license": "NVIDIA proprietary SDK license",
             "render_mode": "PathTracing",
             "quality_steps": OVRTX_QUALITY_STEPS,
             "modalities": ["rgb", "depth", "normal"],
@@ -290,6 +393,7 @@ def materialize_native_probe(
         },
         "ovphysx": {
             "version": OVPHYSX_VERSION,
+            "license": "BSD source plus NVIDIA binary terms",
             "config_sha256": _sha256(physics_config_path),
             "drop_height_m": 0.05,
             "expected_support_z_m": placement[2],
@@ -307,6 +411,8 @@ def materialize_native_probe(
 __all__ = [
     "EXPECTED_CAMERA_IDS",
     "OVRTX_QUALITY_STEPS",
+    "OVRTX_VERSION",
+    "OVSTAGE_VERSION",
     "materialize_native_probe",
     "opencv_camera_to_usd_row_matrix",
 ]

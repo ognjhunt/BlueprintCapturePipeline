@@ -23,6 +23,14 @@ def _sha256_json(value: Any) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -49,52 +57,26 @@ def _gpu_diagnostic() -> dict[str, Any]:
         return {"query_error": type(exc).__name__}
 
 
-def _scene_inventory(path: Path, config: dict[str, Any]) -> dict[str, Any]:
-    from pxr import Usd, UsdPhysics
+def _scene_inventory(config: dict[str, Any], input_path: Path) -> dict[str, Any]:
+    """Read the digest-bound inventory derived by the OpenUSD environment.
 
-    stage = Usd.Stage.Open(str(path))
-    if not stage:
-        raise RuntimeError(f"OpenUSD could not open {path}")
-    rigid: list[str] = []
-    colliders: list[str] = []
-    joints: list[dict[str, Any]] = []
-    masses: list[dict[str, Any]] = []
-    materials: list[dict[str, Any]] = []
-    for prim in stage.Traverse():
-        prim_path = str(prim.GetPath())
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-            rigid.append(prim_path)
-        if prim.HasAPI(UsdPhysics.CollisionAPI):
-            colliders.append(prim_path)
-        if prim.IsA(UsdPhysics.Joint):
-            lower = prim.GetAttribute("physics:lowerLimit").Get()
-            upper = prim.GetAttribute("physics:upperLimit").Get()
-            joints.append({"path": prim_path, "lower": lower, "upper": upper})
-        if prim.HasAPI(UsdPhysics.MassAPI):
-            api = UsdPhysics.MassAPI(prim)
-            masses.append(
-                {
-                    "path": prim_path,
-                    "mass": api.GetMassAttr().Get(),
-                    "density": api.GetDensityAttr().Get(),
-                }
-            )
-        if prim.HasAPI(UsdPhysics.MaterialAPI):
-            api = UsdPhysics.MaterialAPI(prim)
-            materials.append(
-                {
-                    "path": prim_path,
-                    "static_friction": api.GetStaticFrictionAttr().Get(),
-                    "dynamic_friction": api.GetDynamicFrictionAttr().Get(),
-                    "restitution": api.GetRestitutionAttr().Get(),
-                }
-            )
+    ``ovphysx`` and ``usd-exchange`` each ship USD libraries. Importing both in
+    one process is unsupported, so native dynamics ingests the USD through
+    ``PhysX.add_usd`` while schema inspection is bound into the frozen config.
+    """
+
+    inventory = config.get("usd_scene_inventory")
+    if not isinstance(inventory, dict):
+        raise ValueError("usd_scene_inventory is required")
+    required_lists = ("rigid_bodies", "colliders", "joints", "masses", "materials")
+    if any(not isinstance(inventory.get(name), list) for name in required_lists):
+        raise ValueError("usd_scene_inventory is malformed")
+    if not str(inventory.get("source_sha256") or "").startswith("sha256:"):
+        raise ValueError("usd_scene_inventory source digest is missing")
+    if inventory["source_sha256"] != _sha256_file(input_path):
+        raise ValueError("usd_scene_inventory source digest changed")
     return {
-        "rigid_bodies": rigid,
-        "colliders": colliders,
-        "joints": joints,
-        "masses": masses,
-        "materials": materials,
+        **inventory,
         "expected_joint_min_count": int(config.get("expected_joint_min_count", 0)),
     }
 
@@ -112,7 +94,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 
     started = time.monotonic()
     config = json.loads(args.config.read_text(encoding="utf-8"))
-    inventory = _scene_inventory(args.input, config)
+    inventory = _scene_inventory(config, args.input)
     checks: list[dict[str, Any]] = [
         _check("usd_scene_load", True, inventory=inventory),
     ]

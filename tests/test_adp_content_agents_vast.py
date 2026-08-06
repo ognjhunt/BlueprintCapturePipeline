@@ -310,6 +310,21 @@ def test_vast_adapter_uses_gpu_rendering_and_bounded_bundle_path(tmp_path: Path)
     assert "apt-get install" in script
 
 
+def test_provider_runtime_pins_native_dependency_closure_before_agent_execution() -> None:
+    runtime = (ROOT / "scripts/run_adp_content_agents_provider_runtime.sh").read_text()
+    runner = (ROOT / "scripts/adp_content_agents_provider_runner.py").read_text()
+
+    assert 'NATIVE_OVRTX_ENV="${SOURCE_DIR}/.ovrtx_native_venv"' in runtime
+    assert '"ovrtx==0.4.0.346409"' in runtime
+    assert '"ovstage==0.1.0.346039"' in runtime
+    assert "content_agents_native_ovrtx_dependency_closure_failed" in runtime
+    assert 'content_agents_source/.ovrtx_native_venv/bin/python' in runner
+    assert runner.index("native, native_blockers = _native_probes(") < runner.index(
+        'for name in ("material", "texture", "physics"):'
+    )
+    assert "skipped_after_native_probe_failure" in runner
+
+
 def test_provider_output_inspector_recognizes_content_agents_result(tmp_path: Path) -> None:
     output = tmp_path / "output.zip"
     with zipfile.ZipFile(output, "w") as archive:

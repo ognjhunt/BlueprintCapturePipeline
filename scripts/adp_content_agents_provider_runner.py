@@ -138,7 +138,7 @@ def _native_probes(
         if manifest_path.is_file()
         else {}
     )
-    ovrtx_python = runtime_root / "content_agents_source/.ovrtx_venv/bin/python"
+    ovrtx_python = runtime_root / "content_agents_source/.ovrtx_native_venv/bin/python"
     ovphysx_python = runtime_root / "content_agents_source/.ovphysx_venv/bin/python"
     render_stage = native / "render_stage.usda"
     drop_stage = native / "drop_stage.usda"
@@ -164,7 +164,7 @@ def _native_probes(
                 "--mode",
                 "cold" if index == 0 else "warm",
                 "--source-revision",
-                "ovrtx-0.4.0.346409",
+                "ovrtx-0.4.0.346409+ovstage-0.1.0.346039",
                 "--modality",
                 "rgb",
                 "--modality",
@@ -303,6 +303,9 @@ def main() -> int:
         env=env,
         timeout=60,
     )
+    native, native_blockers = _native_probes(
+        runtime_root=runtime_root, output_root=output_root, env=env
+    )
     configs = runtime_root / "configs"
     agent_specs = {
         "material": ("material-agent", configs / "material_agent.yaml", configs / ".material"),
@@ -310,8 +313,17 @@ def main() -> int:
         "physics": ("physics-agent", configs / "physics_agent.yaml", configs / ".physics"),
     }
     agents: dict[str, Any] = {}
-    blockers: list[str] = []
+    blockers: list[str] = list(native_blockers)
     for name in ("material", "texture", "physics"):
+        if native_blockers:
+            agents[name] = {
+                f"{name}_agent_attempted": False,
+                f"{name}_agent_executed": False,
+                "reason": "skipped_after_native_probe_failure",
+                "produced_artifacts": [],
+                "retry_count": 0,
+            }
+            continue
         executable, config, work = agent_specs[name]
         command = [str(bin_dir / executable), "run", str(config)]
         if name in {"material", "physics"}:
@@ -338,8 +350,12 @@ def main() -> int:
         "validation_agent_attempted": False,
         "validation_agent_executed": False,
     }
-    physics_output = _physics_output(agent_specs["physics"][2])
-    if physics_output is None:
+    physics_output = (
+        _physics_output(agent_specs["physics"][2]) if not native_blockers else None
+    )
+    if native_blockers:
+        validation["reason"] = "skipped_after_native_probe_failure"
+    elif physics_output is None:
         blockers.append("physics_agent_output_missing_for_validation")
     else:
         try:
@@ -398,11 +414,6 @@ def main() -> int:
         "joint_agent_executed": False,
         "reason": "selected target has one rigid body and zero articulated joints",
     }
-    native, native_blockers = _native_probes(
-        runtime_root=runtime_root, output_root=output_root, env=env
-    )
-    blockers.extend(native_blockers)
-
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),

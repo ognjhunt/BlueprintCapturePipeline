@@ -98,6 +98,34 @@ if [ "${ovrtx_probe_rc}" -ne 0 ]; then
 fi
 
 if [ -d "${SCRIPT_DIR}/native" ]; then
+  NATIVE_OVRTX_ENV="${SOURCE_DIR}/.ovrtx_native_venv"
+  "${UV_BIN}" venv "${NATIVE_OVRTX_ENV}" --python "${SOURCE_DIR}/.venv/bin/python"
+  native_ovrtx_venv_rc=$?
+  if [ "${native_ovrtx_venv_rc}" -ne 0 ]; then
+    write_missing_result "content_agents_native_ovrtx_venv_failed"
+    exit "${native_ovrtx_venv_rc}"
+  fi
+  "${UV_BIN}" pip install \
+    --python "${NATIVE_OVRTX_ENV}/bin/python" \
+    --extra-index-url https://pypi.nvidia.com \
+    "ovrtx==0.4.0.346409" \
+    "ovstage==0.1.0.346039" \
+    "numpy>=1.26,<3" \
+    "Pillow>=10,<13" \
+    "nvidia-ml-py>=12,<14"
+  native_ovrtx_rc=$?
+  if [ "${native_ovrtx_rc}" -ne 0 ]; then
+    write_missing_result "content_agents_native_ovrtx_provision_failed"
+    exit "${native_ovrtx_rc}"
+  fi
+  "${NATIVE_OVRTX_ENV}/bin/python" -c \
+    'import ovrtx, ovstage; assert ovrtx.__version__ == "0.4.0.346409"'
+  native_ovrtx_probe_rc=$?
+  if [ "${native_ovrtx_probe_rc}" -ne 0 ]; then
+    write_missing_result "content_agents_native_ovrtx_dependency_closure_failed"
+    exit "${native_ovrtx_probe_rc}"
+  fi
+
   OVPX_ENV="${SOURCE_DIR}/.ovphysx_venv"
   "${UV_BIN}" venv "${OVPX_ENV}" --python "${SOURCE_DIR}/.venv/bin/python"
   ovphysx_venv_rc=$?

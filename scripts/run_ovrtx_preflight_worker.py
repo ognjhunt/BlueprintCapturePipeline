@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Headless ovrtx 0.4 preflight worker for an isolated Linux/RTX environment.
+"""Headless OVRTX 0.4 + OVStage preflight worker for Linux/RTX.
 
 The core pipeline launches this script as a subprocess. It deliberately has no
 Blueprint imports so prerelease NVIDIA dependencies remain outside the core
