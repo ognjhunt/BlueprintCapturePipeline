@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 ROOT = Path(__file__).resolve().parents[1]
 PROGRAM_ROOT = ROOT / "docs" / "arm_decision_proof_v1"
 CONTRACT_PATH = PROGRAM_ROOT / "north_star_contract.json"
-SCHEMA_PATH = ROOT / "docs" / "schemas" / "arm_decision_proof_north_star.v2.schema.json"
+SCHEMA_PATH = ROOT / "docs" / "schemas" / "arm_decision_proof_north_star.v3.schema.json"
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -33,8 +33,15 @@ def test_north_star_contract_preserves_proof_and_compatibility_boundaries() -> N
     assert contract["execution_strategy"] == {
         "mode": "public_evidence_ladder_then_fresh_site_proof",
         "completed_precursor": "ADP-008_simpler_decision_harness",
-        "active_item": "ADP-009_public_scene_qualification",
-        "public_scene_qualification": "dominant_until_digest_bound_matrix_complete",
+        "active_item": "ADP-009D_public_scene_franka_policy_rehearsal",
+        "public_scene_qualification": (
+            "bounded_construction_rehearsal_accepted_with_three_typed_abstentions_"
+            "and_historical_7_of_10_index"
+        ),
+        "pre_capture_sim_rehearsal": (
+            "required_on_the_sealed_AuraFusion360_SAGE_SimReady_scene_before_"
+            "fresh_site_capture"
+        ),
         "fresh_site_capture": (
             "mandatory_final_construction_input_after_public_qualification_and_protocol_freeze"
         ),
@@ -45,6 +52,17 @@ def test_north_star_contract_preserves_proof_and_compatibility_boundaries() -> N
         "current": 0,
         "target": 1,
     }
+    transition = contract["public_scene_transition_decision"]
+    assert transition["selected_public_scene_editing_path"] == (
+        "AuraFusion360_exact_released_source_on_InteriorGS_840313"
+    )
+    assert transition["historical_suite_status"] == (
+        "blocked_7_of_10_with_no_relabeling_or_receipt_mutation"
+    )
+    assert len(transition["nonblocking_abstentions"]) == 2
+    assert transition["real_metrology_transfer"].startswith(
+        "fresh_rights_cleared_Raw_V3_2_capture_replaces_ScanNetPP"
+    )
     assert contract["development_substrates"]["claim_ceiling"] == "development_only"
     assert contract["development_substrates"]["historical_public_decision_reference"] == (
         "SIMPLER"
@@ -65,20 +83,21 @@ def test_public_evidence_ladder_requires_new_datasets_editing_and_fresh_capture(
     ladder = {row["id"]: row for row in contract["public_evidence_ladder"]}
 
     assert [row["order"] for row in contract["public_evidence_ladder"]] == list(range(10))
-    assert ladder["released_inpainting_author_smokes"]["substrate"] == (
-        "exact_Inpaint360GS_InFusion_and_AuraFusion360_revisions_with_author_inputs"
+    assert ladder["released_inpainting_author_smokes"]["status"] == (
+        "accepted_with_nonblocking_Inpaint360GS_and_InFusion_typed_abstentions"
     )
     assert ladder["real_metrology_transfer"]["substrate"] == (
-        "one_admitted_ScanNet++_scene"
+        "one_fresh_rights_cleared_Raw_V3_2_workcell_capture_with_object_present_"
+        "and_clean_background_observations"
     )
     assert ladder["real_metrology_transfer"]["status"] == (
-        "required_after_access_and_terms_acceptance"
+        "superseded_by_mandatory_fresh_site_capture"
     )
     assert ladder["synthetic_hybrid_scene_control"]["substrate"] == (
         "matched_InteriorGS_and_SAGE-3D_scene"
     )
     assert ladder["synthetic_hybrid_scene_control"]["status"] == (
-        "required_after_explicit_rights"
+        "observed_accepted_bounded_control"
     )
     assert ladder["controlled_known_background_recovery"]["status"] == "required"
     assert ladder["fresh_site_acquisition_and_prospective_proof"]["status"] == (
@@ -89,15 +108,17 @@ def test_public_evidence_ladder_requires_new_datasets_editing_and_fresh_capture(
     )
 
     edit = contract["scene_edit_contract"]
-    assert edit["released_reproducibility_control"].startswith(
-        "Inpaint360GS_exact_revision"
-    )
+    assert "nonblocking_typed_abstention" in edit["released_reproducibility_control"]
     assert edit["primary_released_interface_adapter"].startswith(
-        "InFusion_exact_revision"
+        "AuraFusion360_exact_released_source"
     )
     assert edit["released_360_quality_challenger"].startswith(
-        "AuraFusion360_exact_revision"
+        "AuraFusion360_historical_quality_challenger_promoted"
     )
+    assert edit["nonblocking_released_method_abstentions"] == [
+        "Inpaint360GS_author_smoke_license_authority_missing",
+        "InFusion_checkpoint_license_missing",
+    ]
     assert "virtual_cameras" in edit["render_derived_observation_rule"]
     assert "splat_rendered_depth_or_disparity_inputs" in edit[
         "render_derived_observation_rule"
@@ -112,7 +133,7 @@ def test_public_evidence_ladder_requires_new_datasets_editing_and_fresh_capture(
         "inpaint360gs_interface_rule"
     ]
     assert "supplemental_world_aligned_Gaussians" in edit["render_derived_edit_identity"]
-    assert "preserve_spherical_harmonic_degree" in edit[
+    assert "never_call_the_result_an_in_place_edit" in edit[
         "primary_adapter_required_patch"
     ]
     assert "TRACE" in edit["paper_only_exclusions"]
@@ -166,20 +187,30 @@ def test_public_scene_day_gates_bind_the_complete_editing_rehearsal() -> None:
     }
 
     assert set(gates) == {7, 14, 21, 28}
-    assert "suite index" in gates[7]["required_outcome"]
-    assert "NVIDIA Content Agents" in gates[7]["required_outcome"]
-    assert "InFusion world-frame supplemental-PLY adapter" in gates[14][
+    assert "historical ten-role suite" in gates[7]["required_outcome"]
+    assert "blocked at seven admitted roles" in gates[7]["required_outcome"]
+    assert "selected AuraFusion360 execution" in gates[14]["required_outcome"]
+    assert "NVIDIA Content Agents" in gates[14]["required_outcome"]
+    assert "matching source collider is inactive" in gates[14]["required_outcome"]
+    assert "without claiming metric hidden-background truth" in gates[14][
         "required_outcome"
     ]
-    assert "AuraFusion360 multiview challenger" in gates[14]["required_outcome"]
-    assert "without claiming measurement-authoritative local surface geometry" in gates[
-        14
-    ]["required_outcome"]
-    assert "appearance and matching collision" in gates[14]["required_outcome"]
-    assert "controlled clean-background truth" in gates[21]["required_outcome"]
-    assert "ScanNet++ real measured transfer" in gates[21]["required_outcome"]
-    assert "exact replacement receipts" in gates[28]["required_outcome"]
-    assert "two-candidate Task Evaluation Run" in gates[28]["required_outcome"]
+    assert "controlled clean-background case" in gates[21]["required_outcome"]
+    assert "ScanNet++ transfer remains a historical typed abstention" in gates[21][
+        "required_outcome"
+    ]
+    assert "basic Franka pick-place Task Evaluation rehearsal" in gates[28][
+        "required_outcome"
+    ]
+    assert "exactly two frozen runnable policy candidates" in gates[28][
+        "required_outcome"
+    ]
+    assert "Cosmos DROID action policy may be one candidate" in gates[28][
+        "required_outcome"
+    ]
+    assert "world model remains a separately labeled auxiliary evaluator" in gates[28][
+        "required_outcome"
+    ]
 
 
 def test_canonical_active_documents_point_to_the_same_program() -> None:
@@ -216,3 +247,31 @@ def test_master_goal_carries_scope_and_authority_guards() -> None:
     )
     for phrase in required_phrases:
         assert phrase in prompt
+
+
+def test_active_franka_goal_binds_exact_scene_and_policy_boundaries() -> None:
+    prompt = (
+        PROGRAM_ROOT / "ADP_009D_FRANKA_PUBLIC_SCENE_SIM_GOAL_PROMPT.md"
+    ).read_text(encoding="utf-8")
+
+    required_phrases = (
+        "cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
+        "b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+        "61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+        "sealed_aura_hybrid_policy_observation_renderer_missing",
+        "DROID Franka Panda plus Robotiq 2F-85",
+        "Freeze exactly two learned-policy candidates",
+        "pi05_droid_jointpos_polaris",
+        "GR00T-N1.7-DROID",
+        "GR00T-N1.6-DROID",
+        "Cosmos may replace one candidate only",
+        "primary success metric is deterministic simulator state",
+        "Every allocation requires an immutable input bundle",
+        "display directly in chat",
+        "Do not begin the fresh-site capture",
+    )
+    for phrase in required_phrases:
+        assert phrase in prompt
+
+    assert "Never put π0.5, two GR00T versions, and" in prompt
+    assert "The historical ten-role index remains `7/10`" in prompt

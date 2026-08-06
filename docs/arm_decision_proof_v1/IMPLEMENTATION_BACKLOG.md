@@ -41,12 +41,14 @@ ADP-001 focus lock
 
 Partner discovery and protocol conversations may run in parallel as a small
 human lane, but engineering does not wait for partner capture. ADP-008 is
-observed complete. Until ADP-009 passes, nearly all implementation effort stays
-on exact public-scene admission, metric-frame preservation, 3DGS
-removal/inpainting, SimReady USD replacement, hybrid-scene qualification,
-variation, abstention, and full simulator-side rehearsal. Fresh capture feature
-work stays at zero; use only the existing Raw V3.2 capture path unless a measured
-ADP-009 or partner blocker identifies the smallest missing measurement.
+observed complete. The 2026-08-06
+[public-scene transition decision](ADP_009_PUBLIC_SCENE_TRANSITION_DECISION.md)
+accepts the bounded Aura/SAGE/SimReady construction rehearsal while preserving
+the historical ten-role index at `7/10`. The active engineering item is the
+ADP-009D Franka policy rehearsal on that exact sealed scene. Fresh capture
+feature work stays at zero; after the rehearsal, use only the existing Raw V3.2
+capture path unless a measured partner blocker identifies the smallest missing
+measurement.
 
 ADP-002 through ADP-009 must converge into ADP-040 through ADP-080 rather than
 becoming a separate fixture product.
@@ -194,12 +196,12 @@ Record exact, rights-reviewed scenes and revisions for:
 - one matched InteriorGS PLY/metadata, SAGE-3D USDZ, and SAGE collision scene,
   with exact rights admission; an authored positive control is separate and can
   never substitute for this pair;
-- one exact targeted ScanNet++ real measured scene after gated access/terms
-  acceptance; an access/rights blocker leaves ADP-009C incomplete;
+- one retained ScanNet++ access/rights outcome as historical evidence; fresh Raw
+  V3.2 capture now supplies the mandatory real metric transfer;
 - one exact Inpaint360GS code/weights/dependency graph and unchanged author-data
   reproducibility smoke;
-- one exact InFusion revision as the primary Blueprint interface-adapter
-  candidate and one exact AuraFusion360 revision as the 360-quality challenger;
+- one exact InFusion revision retained as a nonblocking typed abstention and one
+  exact AuraFusion360 revision selected as the ADP-v1 public-scene editing path;
 - 3DGIC, GPGS, and GOR-IS only as separately preregistered conditional research
   ablations, subject to official-code, dependency, and rights admission;
 - one exact SimReady USD replacement object;
@@ -226,8 +228,9 @@ four-view Blueprint-authored known-background Big-LaMa case is admitted after a
 seal-before-truth-release execution passed all six preregistered RGB/depth checks
 and the materializer recomputed its scores from actual output bytes. The ten-role
 index remains blocked at seven admitted roles because the Inpaint360GS author
-smoke, InFusion primary adapter, and ScanNet++ transfer are still missing. The
-Aura author smoke is not an InteriorGS result, the controlled case is not
+smoke, InFusion primary adapter, and ScanNet++ transfer are still missing. They
+remain historical nonblocking typed abstentions under the approved transition;
+the Aura author smoke is not an InteriorGS result, the controlled case is not
 InteriorGS hidden-background truth, and the Content Agents execution is not an
 inpainting-method smoke.
 
@@ -235,11 +238,10 @@ Acceptance: missing/expired rights, mismatched scene IDs, changed digests,
 unknown frames, calibration/test-trajectory overlap, DA3-as-scale-authority, paper-only
 code, or claim elevation fails closed with the smallest blocker.
 
-Day-7 gate: exact mandatory inputs and one physics-authored positive control are
-admitted. An InteriorGS or matching SAGE rights blocker stops the required gate.
-An authored scene may still run as a labeled positive control, but it cannot
-substitute for the exact public pair. A runnable-code gap likewise stops the
-phase rather than authorizing an unlabeled substitute.
+Day-7 transition outcome: the exact InteriorGS/SAGE pair, selected Aura path,
+controlled background, exact SimReady replacement, Content Agents comparison,
+and native physics control are retained. The historical index remains `7/10`;
+the three typed abstentions are not admissions and do not mutate its status.
 
 ### ADP-009B — Synthetic removal, inpainting, and replacement
 
@@ -256,12 +258,10 @@ On one exact rights-admitted InteriorGS/SAGE-3D scene:
    the substitution is preregistered; never describe SAGE collision depth as a
    measurement-authoritative surface; withhold all clean-background truth until
    the completion digest is sealed;
-6. run the pinned Inpaint360GS revision only on its unchanged author data as a
-   reproducibility control; run the exact InFusion method-native
-   incomplete-splat-depth/c2w/intrinsics to supplemental-Ply to
-   original-Ply-composition workflow through a verified format/license/frame
-   adapter; run AuraFusion360 through its separate
-   representation/checkpoint adapter as the 360-quality challenger;
+6. use the exact observed AuraFusion360 representation/checkpoint adapter as
+   the selected ADP-v1 path; retain the unchanged Inpaint360GS author-data and
+   InFusion supplemental-Ply paths as nonblocking typed abstentions until their
+   publisher rights blockers change;
 7. insert one digest-bound SimReady USD with distinct visual/collision meshes,
    dimensions, pose, mass, center of mass, inertia, friction, and restitution;
 8. load and probe the composed scene in Isaac Sim;
@@ -281,21 +281,23 @@ claims actually demonstrated by the format and frame adapter. AuraFusion360
 starts from its own trained/checkpoint representation and cannot claim to edit
 the publisher PLY in place without a separately tested adapter.
 
-Day-14 gate: the exact synthetic replacement case is independently replayable.
+Day-14 gate: the exact synthetic replacement case is independently replayable
+and accepted for the bounded public-scene construction claim.
 
-### ADP-009C — Real capture transfer, metrology, and factual-background benchmark
+### ADP-009C — Factual-background benchmark and fresh-capture metrology handoff
 
-After exact ScanNet++ access and rights are admitted, train or import one exact scene without
-discarding the official laser-aligned metric camera model. Preserve its DSLR
-images, iPhone RGB-D where useful, laser geometry, native units, and transforms.
-Measure from laser mesh or observed depth, never Gaussian extent. Run the same
-frozen selection/removal/inpainting/replacement checks without silently tuning
-the method or thresholds to the real scene.
+Retain the exact ScanNet++ access outcome, but do not wait for or accept its
+terms as part of the critical path. The mandatory real transfer occurs on the
+fresh rights-cleared Raw V3.2 workcell capture. Preserve calibrated RGB,
+intrinsics, poses, gravity/up, LiDAR/depth or mesh, native units, transforms,
+object-present observations, clean-background observations, and preregistered
+physical measurements. Measure from observed depth/mesh or surveyed controls,
+never Gaussian extent.
 
 Separately run a known-background firebreak: withhold true RGB/depth for an
 observed region, seal the completion result, then release and score factual
-recovery. Ordinary hidden ScanNet++ regions can earn only visual-plausibility
-evidence when no object-free observation exists.
+recovery. Ordinary hidden regions can earn only visual-plausibility evidence
+when no object-free observation exists.
 
 Acceptance: the receipt reports frozen test-trajectory
 RGB/depth/surface/boundary metrics, view-subset uncertainty, edit locality, and
@@ -304,12 +306,18 @@ remain proposal/cross-check aids.
 
 ### ADP-009D — Deterministic variation, abstention, and full rehearsal
 
-Use the admitted InteriorGS/SAGE control and the rights-admitted ScanNet++
-transfer plus deterministic mutations. Test scale/unit errors, handedness/up
-swaps, pose drift, missing/noisy depth, view coverage, mask errors, object
-size/pose, collider offsets, mass/inertia, friction/restitution, appearance, and
-lighting. Use one-factor diagnosis, pairwise coverage, and task-model
-interactions with fixed seeds.
+Use the exact sealed AuraFusion360 InteriorGS `840313` appearance result,
+matching SAGE collision scene, approved match-v2 SimReady can, and a registered
+Franka with parallel-jaw gripper. Define one basic bounded pick-and-place task.
+After zero-spend source/checkpoint/rights/runtime preflight, freeze exactly two
+runnable learned-policy candidates. GR00T versions may compete during preflight,
+but only one GR00T version enters the matrix. Cosmos remains a separately
+labeled world-model/evaluation aid rather than a policy candidate unless an
+exact action-producing contract is proved.
+
+Test the frozen task across deterministic start-pose, camera, lighting, object
+pose, friction, and mass variations that stay inside the already qualified
+scene envelope. Preserve one-factor diagnosis and fixed seeds.
 
 Acceptance:
 
@@ -317,17 +325,18 @@ Acceptance:
   abstention naming the smallest missing measurement;
 - `x0.1`, `x10`, centimeter/meter, scene-ID mismatch, missing clean background,
   and tampered-digest faults never pass silently;
-- one command reproduces the admitted scene matrix, editing and replacement
-  receipts, hybrid Isaac qualification, complete simulator-side two-candidate
-  Task Evaluation Run, lossless policy-input media, evidence matrix, claim
-  ceilings, and replay;
+- one command verifies the historical `7/10` index without promoting it,
+  reproduces the sealed editing/replacement/hybrid identities, and runs the
+  complete simulator-side two-candidate Franka Task Evaluation Run with
+  lossless policy-input media, deterministic non-policy success traces,
+  evidence matrix, claim ceilings, replay, and provider teardown;
 - variation results are labeled construction robustness, not multi-site or
   general policy-ranking evidence.
 
-Day-21 gate: the exact real measured transfer, known-background scoring, and the
-variation matrix are complete. A ScanNet++ access/rights blocker stops this gate;
-it is not a passing abstention. Day-28 gate: the full public-data rehearsal is
-reproducible.
+Day-21 transition outcome: Aura locality, known-background scoring, exact
+replacement, and typed abstentions are retained. Day-28 gate: the Franka
+two-candidate public-data rehearsal is reproducible. Real metric transfer then
+occurs through the fresh Raw V3.2 capture in ADP-021.
 
 ## Partner Proof: Day 7 From Partner-Phase Start
 

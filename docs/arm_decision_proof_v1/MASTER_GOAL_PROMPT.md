@@ -1,5 +1,14 @@
 # Master Goal: ADP-009 Public Scene Editing And Replacement Qualification
 
+> **Superseded for new runs on 2026-08-06.** This file remains historical
+> evidence for the original ten-role program and must not be used to relabel the
+> immutable `7/10` suite. The approved
+> [transition decision](ADP_009_PUBLIC_SCENE_TRANSITION_DECISION.md) selects
+> AuraFusion360, makes Inpaint360GS/InFusion nonblocking abstentions, transfers
+> real metrology to fresh Raw V3.2 capture, and makes
+> [`ADP_009D_FRANKA_PUBLIC_SCENE_SIM_GOAL_PROMPT.md`](ADP_009D_FRANKA_PUBLIC_SCENE_SIM_GOAL_PROMPT.md)
+> the active next-session prompt.
+
 Use this prompt for a bounded autonomous run. Arm Decision Proof v1 remains the
 sole active Blueprint program. ADP-008 is immutable and observed complete. The
 active terminal is **ADP-009**.
