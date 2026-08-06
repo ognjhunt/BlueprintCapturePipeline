@@ -5,7 +5,7 @@
   "audit_status": "official_source_audit_complete_implementation_bound",
   "audit_window": {
     "started_at": "2026-08-06T18:20:39Z",
-    "completed_at": "2026-08-06T22:56:07Z",
+    "completed_at": "2026-08-06T23:35:00Z",
     "retrieval_methods": [
       "GitHub REST branch commit and recursive tree APIs",
       "GitHub immutable blob content at exact revisions",
@@ -616,13 +616,18 @@
         "The measured SAGE baseline contains 165 static collision meshes, 509268 points, and 993678 faces; 164 meshes author convexDecomposition despite no SAGE prim carrying PhysicsRigidBodyAPI.",
         "Follow Isaac Lab's official static-collider guidance by composing a deterministic runtime override that uses the exact SAGE triangle meshes for every active static environment collider while leaving the sealed SAGE bytes unchanged.",
         "Fail closed unless the composed layer preserves the exact topology counts and transforms, disables only the sealed source target, preserves the support collider, contains no SAGE rigid body, and resolves every active SAGE mesh to the triangle-mesh approximation token none.",
+        "The first static-triangle measurement removed convex-decomposition fallback but remained inside environment build after more than ten minutes and emitted PhysX's explicit TriangleMesh triangles-are-too-big stability warning; this is invalid infrastructure evidence, not a successful startup.",
+        "Reject PhysX triangle-size stability warnings in the reusable runtime even if reset or stepping later becomes reachable.",
+        "Use only an immutable, digest-bound cooked USD or local-mesh-cache derivative tied to the exact source digest, Isaac Sim image, PhysX version, and runtime settings to avoid repeated cooking; a cache hit must still pass exact live topology and no-warning validation.",
         "Do not decimate, merge, deduplicate, crop, or otherwise change SAGE geometry for this fix; measure native build, reset, step, and camera timing before any further optimization.",
         "Preserve scientific identity and digest bindings across any later optimization."
       ],
       "applied_references": [
         "https://github.com/NVIDIA/skills/blob/276b9bcce5d1b224769f9b10ad26975c15e0dd4c/skills/omniverse-usd-performance-tuning/SKILL.md",
         "https://isaac-sim.github.io/IsaacLab/v2.1.1/source/how-to/simulation_performance.html#collision-geometries",
-        "https://isaac-sim.github.io/IsaacLab/develop/source/api/lab_physx/isaaclab_physx.sim.schemas.html#isaaclab_physx.sim.schemas.PhysxTriangleMeshPropertiesCfg"
+        "https://isaac-sim.github.io/IsaacLab/develop/source/api/lab_physx/isaaclab_physx.sim.schemas.html#isaaclab_physx.sim.schemas.PhysxTriangleMeshPropertiesCfg",
+        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
+        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.0/dev_guide/simulation_control/simulation_control.html"
       ],
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_native_microcheck_bundle.py",
@@ -664,5 +669,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:c033c606e62e2011faff550293848ca6c1764ee4fc0cae54dab4a2431140f37f"
+  "audit_digest": "sha256:3771a1835a5d9a809a2fa8367422a4fc06000abe7ddf7261135657bfa14a605c"
 }

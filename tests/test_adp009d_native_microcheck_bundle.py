@@ -287,6 +287,18 @@ def test_runtime_rejects_any_physx_collision_fallback() -> None:
         isaac_runtime._fail_on_physx_collision_fallback([message])
 
 
+def test_runtime_rejects_physx_triangle_stability_warning() -> None:
+    message = (
+        "PhysX warning: TriangleMesh: triangles are too big, reduce their size "
+        "to increase simulation stability!"
+    )
+
+    with pytest.raises(
+        RuntimeError, match="physx_collision_stability_warning_detected"
+    ):
+        isaac_runtime._fail_on_physx_collision_stability([message])
+
+
 def test_runtime_does_not_import_unneeded_arena_asset_registry() -> None:
     source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
 

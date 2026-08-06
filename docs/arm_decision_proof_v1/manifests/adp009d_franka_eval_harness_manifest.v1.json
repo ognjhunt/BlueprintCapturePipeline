@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 30685,
-      "sha256": "sha256:c61f43310f3f59773c7043aa5eb1c01306e3335343dc1a956a667db74d28277a"
+      "size_bytes": 31681,
+      "sha256": "sha256:90d4de2bb3752f8e706affe9c892e0a986ef3967e5155080f650470b08e1cf09"
     },
     {
       "role": "approved_can",
@@ -431,7 +431,18 @@
         "source_target_collider_active": false,
         "support_collider_active": true,
         "geometry_mutation_allowed": false,
-        "required_blocker_on_mismatch": "sage_runtime_collision_profile_mismatch"
+        "required_blocker_on_mismatch": "sage_runtime_collision_profile_mismatch",
+        "physx_triangle_stability_warning_allowed": false,
+        "required_blocker_on_triangle_stability_warning": "physx_collision_stability_warning_detected",
+        "cold_cooking_is_startup_evidence_only": true,
+        "warm_start_cache_requirements": [
+          "exact sealed SAGE source digest",
+          "exact composed overlay digest",
+          "exact Isaac Sim image digest",
+          "exact PhysX version and settings",
+          "exact live topology revalidation",
+          "no PhysX collision fallback or triangle-size stability warning"
+        ]
       }
     },
     "runtime_override_policy": "resolved scenario parameters only; no scattered conditionals"
@@ -523,5 +534,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:0ebd243a178fc85279fa0603848cab449c8683ce8b42a9d80121df509e5a34bb"
+  "harness_digest": "sha256:3145fdce24216d338977a13e05032a0c4381b1cd00950633e55dbad5097bdef9"
 }

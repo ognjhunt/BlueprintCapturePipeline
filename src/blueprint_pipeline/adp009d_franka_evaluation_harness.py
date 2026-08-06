@@ -33,7 +33,7 @@ SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 
 REQUIRED_ASSET_DIGESTS = {
-    "agent_skill_audit": "sha256:c61f43310f3f59773c7043aa5eb1c01306e3335343dc1a956a667db74d28277a",
+    "agent_skill_audit": "sha256:90d4de2bb3752f8e706affe9c892e0a986ef3967e5155080f650470b08e1cf09",
     "approved_can": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "aura_appearance": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
     "hybrid_seal_receipt": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b",
@@ -352,6 +352,19 @@ def validate_harness_manifest(
         "support_collider_active": True,
         "geometry_mutation_allowed": False,
         "required_blocker_on_mismatch": "sage_runtime_collision_profile_mismatch",
+        "physx_triangle_stability_warning_allowed": False,
+        "required_blocker_on_triangle_stability_warning": (
+            "physx_collision_stability_warning_detected"
+        ),
+        "cold_cooking_is_startup_evidence_only": True,
+        "warm_start_cache_requirements": [
+            "exact sealed SAGE source digest",
+            "exact composed overlay digest",
+            "exact Isaac Sim image digest",
+            "exact PhysX version and settings",
+            "exact live topology revalidation",
+            "no PhysX collision fallback or triangle-size stability warning",
+        ],
     }
     if sage_override != required_sage_override:
         errors.append("harness_sage_static_triangle_override_invalid")

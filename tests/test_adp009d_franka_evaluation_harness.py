@@ -74,6 +74,8 @@ def test_checked_in_harness_binds_static_sage_triangle_override() -> None:
     assert sage["runtime_active_triangle_mesh_count"] == 164
     assert sage["runtime_approximation"] == "none"
     assert sage["geometry_mutation_allowed"] is False
+    assert sage["physx_triangle_stability_warning_allowed"] is False
+    assert sage["cold_cooking_is_startup_evidence_only"] is True
 
 
 def test_harness_rejects_sage_geometry_or_approximation_mutation() -> None:

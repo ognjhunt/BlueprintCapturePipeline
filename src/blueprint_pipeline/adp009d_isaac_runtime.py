@@ -39,6 +39,7 @@ SAGE_RUNTIME_PROFILE = {
     "triangle_mesh_count": 164,
 }
 PHYSX_FALLBACK_MARKER = "falling back to convexHull approximation"
+PHYSX_TRIANGLE_STABILITY_MARKER = "TriangleMesh: triangles are too big"
 ARENA_REVISION = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
 ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ROBOT_BASE_POSITION_M = (3.4681748, -2.9100837, 0.2766791)
@@ -105,6 +106,13 @@ def _fail_on_physx_collision_fallback(messages: list[str]) -> None:
     if messages:
         raise RuntimeError(
             "physx_collision_fallback_detected:" + " | ".join(messages)
+        )
+
+
+def _fail_on_physx_collision_stability(messages: list[str]) -> None:
+    if messages:
+        raise RuntimeError(
+            "physx_collision_stability_warning_detected:" + " | ".join(messages)
         )
 
 
@@ -421,6 +429,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     import omni.log
 
     fallback_messages: list[str] = []
+    stability_messages: list[str] = []
 
     def on_log(
         channel, level, module, filename, func, line_no, message, pid, tid, timestamp
@@ -428,6 +437,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         del channel, level, module, filename, func, line_no, pid, tid, timestamp
         if PHYSX_FALLBACK_MARKER in message:
             fallback_messages.append(str(message))
+        if PHYSX_TRIANGLE_STABILITY_MARKER in message:
+            stability_messages.append(str(message))
 
     log = omni.log.get_log()
     consumer = log.add_message_consumer(on_log)
@@ -438,6 +449,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         log.flush()
         _phase("environment_build", "completed")
         _fail_on_physx_collision_fallback(fallback_messages)
+        _fail_on_physx_collision_stability(stability_messages)
         import omni.usd
 
         live_stage = omni.usd.get_context().get_stage()
@@ -467,6 +479,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             )
             log.flush()
             _fail_on_physx_collision_fallback(fallback_messages)
+            _fail_on_physx_collision_stability(stability_messages)
             _phase(f"reset_{index}", "completed")
         joint_a = torch.tensor(reset_rows[0]["joint_pos"])
         joint_b = torch.tensor(reset_rows[1]["joint_pos"])
@@ -480,6 +493,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         observation, reward, terminated, truncated, info = env.step(action)
         log.flush()
         _fail_on_physx_collision_fallback(fallback_messages)
+        _fail_on_physx_collision_stability(stability_messages)
         zero_action_row = {
             "action_dim": env.unwrapped.action_manager.total_action_dim,
             "reward": _jsonable(reward),
@@ -502,6 +516,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             if (warmup_index + 1) % 10 == 0:
                 log.flush()
                 _fail_on_physx_collision_fallback(fallback_messages)
+                _fail_on_physx_collision_stability(stability_messages)
                 _phase(f"camera_warmup_{warmup_index + 1}", "completed")
         camera_rows = []
         for camera_name in ("external_camera", "wrist_camera"):
@@ -539,6 +554,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "static_sage_collision_validation": static_sage_collision,
                 "live_sage_collision_validation": live_sage_collision,
                 "fallback_messages": fallback_messages,
+                "stability_messages": stability_messages,
             },
             "reset_rows": reset_rows,
             "zero_action_step": {
