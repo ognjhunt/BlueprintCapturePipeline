@@ -439,6 +439,7 @@
         "Separate scene, embodiment, task, observations, actions, events, terminations, and evaluation concerns.",
         "Prove configuration, reset, step, and one-action reachability before policy work.",
         "Once structured paid-runtime phases exist, require a new structured phase to extend the no-progress watchdog; arbitrary SSH, telemetry, or stdout noise is not progress.",
+        "Persist every redacted provider-log snapshot so interruption or TTL teardown retains the last completed scientific phase.",
         "Use Arena's public Object SPAWNER composition seam for the required light instead of importing the unrelated full asset registry."
       ],
       "implementation_evidence": [
@@ -652,5 +653,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:1c4b4fd511b11c1062769286d42d60fc089b8a842e86aaa941d7589db816bb3b"
+  "audit_digest": "sha256:b9401305ec5c05f10b06f3f645efabefcff6c6a3d812af018c2e7bf5570d54aa"
 }
