@@ -36,6 +36,18 @@ AURA_WONDERWORLD_SOURCE_TREE = "c9882769e0d8a6823055f76d66b9586fa8433003"
 AURA_WONDERWORLD_MARIGOLD_LICENSE_SHA256 = (
     "sha256:0cec06e0e55fbc3dc5cee4fca9b607f66cb8f4e4dbcf3b3c013594dd156732e9"
 )
+CONTENT_AGENTS_MATCH_V2_CONTROL_RECEIPT = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "adp009a_840313_canned_beverage_match_v2_receipt.v1.json"
+)
+CONTENT_AGENTS_MATCH_V2_REPLACEMENT_RECEIPT = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "adp009b_simready_replacement_match_v2_receipt.v1.json"
+)
+CONTENT_AGENTS_MATCH_V2_HUMAN_REVIEW_RECEIPT = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "adp009b_simready_match_v2_human_review_receipt.v1.json"
+)
 
 
 class PublicSceneSuiteMaterializationError(ValueError):
@@ -124,6 +136,74 @@ def _reject_secret_like_execution_text(root: Path) -> None:
             raise PublicSceneSuiteMaterializationError(
                 f"content_agents_secret_like_value_retained:{path.name}"
             )
+
+
+def _content_agents_input_variant_binding(
+    *, bundle: Mapping[str, Any], repo_root: Path
+) -> dict[str, Any]:
+    variant = str(bundle.get("input_variant") or "control_v1")
+    authority = bundle.get("reference_image_authority")
+    if variant == "control_v1":
+        if authority != "blueprint_cad_render_not_interiorgs_dataset_bytes":
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_reference_image_authority_invalid"
+            )
+        return {"input_variant": variant, "approved_v2_receipt_chain_verified": False}
+    if variant != "match_v2":
+        raise PublicSceneSuiteMaterializationError("content_agents_input_variant_invalid")
+    if authority != (
+        "blueprint_cad_snapshot_bound_to_human_approved_match_v2_not_"
+        "interiorgs_dataset_bytes"
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "content_agents_match_v2_reference_authority_invalid"
+        )
+    paths = {
+        "control_receipt_digest": CONTENT_AGENTS_MATCH_V2_CONTROL_RECEIPT,
+        "replacement_receipt_digest": CONTENT_AGENTS_MATCH_V2_REPLACEMENT_RECEIPT,
+        "human_review_receipt_digest": CONTENT_AGENTS_MATCH_V2_HUMAN_REVIEW_RECEIPT,
+    }
+    receipts: dict[str, dict[str, Any]] = {}
+    expected: dict[str, str] = {}
+    for key, relative in paths.items():
+        receipt = _read_json(_rooted(repo_root, relative))
+        digest = receipt.get("receipt_digest")
+        if digest != canonical_digest(receipt, digest_field="receipt_digest"):
+            raise PublicSceneSuiteMaterializationError(
+                f"content_agents_match_v2_{key}_invalid"
+            )
+        receipts[key] = receipt
+        expected[key] = str(digest)
+    bindings = bundle.get("input_variant_bindings")
+    control = receipts["control_receipt_digest"]
+    replacement = receipts["replacement_receipt_digest"]
+    human = receipts["human_review_receipt_digest"]
+    normalization = bundle.get("input_usd_normalization")
+    if (
+        not isinstance(bindings, Mapping)
+        or dict(bindings) != expected
+        or control.get("control_id")
+        != "adp009a-840313-canned-beverage-multiview-match-v2"
+        or control.get("status") != "prepared_for_independent_validation"
+        or replacement.get("status") != "composed_static_candidate"
+        or (replacement.get("bindings") or {}).get("simready_control_receipt_digest")
+        != control.get("receipt_digest")
+        or human.get("status") != "human_accepted_for_native_validation"
+        or human.get("technical_admission") is not False
+        or (human.get("artifact_chain") or {}).get("replacement_receipt_digest")
+        != replacement.get("receipt_digest")
+        or not isinstance(normalization, Mapping)
+        or normalization.get("source_input_usd_sha256")
+        != (control.get("usd") or {}).get("sha256")
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "content_agents_match_v2_receipt_chain_invalid"
+        )
+    return {
+        "input_variant": variant,
+        "approved_v2_receipt_chain_verified": True,
+        **expected,
+    }
 
 
 def _require_under(path: Path, roots: Sequence[Path]) -> Path:
@@ -1168,6 +1248,10 @@ def _content_agents_component(
         container_image_digest = runtime.get("image_digest")
         container_platform = runtime.get("platform")
         container_image_reference = runtime.get("image_reference")
+        input_variant_binding = {
+            "input_variant": "unexecuted",
+            "approved_v2_receipt_chain_verified": False,
+        }
     else:
         execution_result_path = _rooted(data_root, str(execution_result_value))
         execution_root = execution_result_path.parent
@@ -1216,10 +1300,11 @@ def _content_agents_component(
             or bundle.get("bundle_sha256") != _sha256_file(bundle_path)
             or bundle.get("bundle_size_bytes") != bundle_path.stat().st_size
             or bundle.get("input_usd_sha256") != execution.get("input_usd_sha256")
-            or bundle.get("reference_image_authority")
-            != "blueprint_cad_render_not_interiorgs_dataset_bytes"
         ):
             raise PublicSceneSuiteMaterializationError("content_agents_execution_bundle_invalid")
+        input_variant_binding = _content_agents_input_variant_binding(
+            bundle=bundle, repo_root=repo_root
+        )
         normalization = bundle.get("input_usd_normalization")
         if (
             not isinstance(normalization, Mapping)
@@ -1498,6 +1583,7 @@ def _content_agents_component(
             "staged_objects_absent": execution_observed,
             "source_input_usd_sha256": source_input_usd_sha256,
             "normalized_input_usd_sha256": normalized_input_usd_sha256,
+            "input_variant_binding": input_variant_binding,
         },
         "claim_ceiling": CLAIM_CEILING,
         "claim_boundaries": {

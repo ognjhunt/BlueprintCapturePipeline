@@ -16,6 +16,71 @@ from blueprint_pipeline.public_scene_suite_materializer import (
 
 TARGET_PRIM = "/Root/target"
 SUPPORT_PRIM = "/Root/support"
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_content_agents_match_v2_binding_verifies_exact_approval_chain() -> None:
+    control = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_CONTROL_RECEIPT).read_text()
+    )
+    replacement = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_REPLACEMENT_RECEIPT).read_text()
+    )
+    human = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_HUMAN_REVIEW_RECEIPT).read_text()
+    )
+    bundle = {
+        "input_variant": "match_v2",
+        "reference_image_authority": (
+            "blueprint_cad_snapshot_bound_to_human_approved_match_v2_not_"
+            "interiorgs_dataset_bytes"
+        ),
+        "input_variant_bindings": {
+            "control_receipt_digest": control["receipt_digest"],
+            "replacement_receipt_digest": replacement["receipt_digest"],
+            "human_review_receipt_digest": human["receipt_digest"],
+        },
+        "input_usd_normalization": {
+            "source_input_usd_sha256": control["usd"]["sha256"]
+        },
+    }
+
+    binding = materializer._content_agents_input_variant_binding(
+        bundle=bundle, repo_root=ROOT
+    )
+
+    assert binding["input_variant"] == "match_v2"
+    assert binding["approved_v2_receipt_chain_verified"] is True
+
+
+def test_content_agents_match_v2_binding_rejects_changed_human_receipt_digest() -> None:
+    control = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_CONTROL_RECEIPT).read_text()
+    )
+    replacement = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_REPLACEMENT_RECEIPT).read_text()
+    )
+    bundle = {
+        "input_variant": "match_v2",
+        "reference_image_authority": (
+            "blueprint_cad_snapshot_bound_to_human_approved_match_v2_not_"
+            "interiorgs_dataset_bytes"
+        ),
+        "input_variant_bindings": {
+            "control_receipt_digest": control["receipt_digest"],
+            "replacement_receipt_digest": replacement["receipt_digest"],
+            "human_review_receipt_digest": "sha256:" + "0" * 64,
+        },
+        "input_usd_normalization": {
+            "source_input_usd_sha256": control["usd"]["sha256"]
+        },
+    }
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="match_v2_receipt_chain_invalid",
+    ):
+        materializer._content_agents_input_variant_binding(bundle=bundle, repo_root=ROOT)
 
 
 def _write_json(path: Path, value: object) -> None:

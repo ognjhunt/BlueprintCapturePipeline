@@ -117,9 +117,9 @@
     },
     {
       "blockers": [],
-      "component_admission_receipt_digest": "sha256:ec32d52a92e501aaac821ba7862929c560dbb5d6bc46a86e08af9799fa99e98b",
-      "component_manifest_digest": "sha256:9c9e71c17aa2ed61737c58f132ca121d678008dd6693e21def12b98ab22b4798",
-      "exact_artifact_digest": "sha256:b1f0eeacc9646b6c8cf4241fa998573ad498a7f3a92e8749245a1f97d6bf13a5",
+      "component_admission_receipt_digest": "sha256:6f05cf0cb4b613626c517a3e043eadb89550965591d95e312a95b9f7099d6df8",
+      "component_manifest_digest": "sha256:5dad484c55d7b88d581a765a0d48ca23b41ad2829da08b1b615bf8beff99516a",
+      "exact_artifact_digest": "sha256:269d26af491e7cf65d263809b88bb874d79297e29bc0df5644e7d737c0e23f43",
       "exact_revision": {
         "kind": "git_commit",
         "value": "36dbf3f274f8e256637230a05a085853f65cc175"
@@ -159,7 +159,7 @@
       "status": "blocked"
     }
   ],
-  "index_digest": "sha256:20cfefc9586a546a5a53a83a663d4b1a0a2190370ee932bd4bb0997e89cc3b9f",
+  "index_digest": "sha256:77d18d7dedd99ccb9a70e8c9ac6ce6a4bd4233729b77006f5b469f8116d22b1d",
   "index_id": "adp009a-public-suite-20260804",
   "program_id": "arm-decision-proof-v1",
   "schema_version": "public_scene_suite_index.v1"

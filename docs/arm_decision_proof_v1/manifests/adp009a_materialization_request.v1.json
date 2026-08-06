@@ -125,13 +125,13 @@
   },
   "content_agents": {
     "receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_usd_content_agents_preflight_receipt.v1.json",
-    "execution_result_path": "simready/content_agents/vast_run_004/immutable_execution/adp_content_agents_vast_result.json",
-    "allocator_result_path": "simready/content_agents/vast_run_004/allocator_result.live.json",
-    "bundle_receipt_path": "simready/content_agents/vast_candidate_006/adp_content_agents_bundle_receipt.json",
-    "bundle_path": "simready/content_agents/vast_candidate_006/adp_content_agents_provider_runtime_bundle.zip",
-    "final_validation_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_final_validation.json",
-    "teardown_manifest_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_teardown_manifest.json",
-    "object_cleanup_path": "simready/content_agents/vast_run_004/object_store_staging/wam_provider_object_store_cleanup.json"
+    "execution_result_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/adp_content_agents_vast_result.json",
+    "allocator_result_path": "simready/content_agents/vast_match_v2_run_001/job_live/adp_content_agents_vast_result.json",
+    "bundle_receipt_path": "simready/content_agents/vast_match_v2_bundle_001/adp_content_agents_bundle_receipt.json",
+    "bundle_path": "simready/content_agents/vast_match_v2_bundle_001/adp_content_agents_provider_runtime_bundle.zip",
+    "final_validation_path": "simready/content_agents/vast_match_v2_run_001/job_live/vast_provider_run/vast_final_validation.json",
+    "teardown_manifest_path": "simready/content_agents/vast_match_v2_run_001/job_live/vast_provider_run/vast_teardown_manifest.json",
+    "object_cleanup_path": "simready/content_agents/vast_match_v2_run_001/job_live/object_store_staging/wam_provider_object_store_cleanup.json"
   },
   "missing_roles": {
     "controlled_background_truth": "controlled_background_truth_case_missing",
