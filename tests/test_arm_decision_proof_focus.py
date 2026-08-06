@@ -63,6 +63,23 @@ def test_north_star_contract_preserves_proof_and_compatibility_boundaries() -> N
     assert transition["real_metrology_transfer"].startswith(
         "fresh_rights_cleared_Raw_V3_2_capture_replaces_ScanNetPP"
     )
+    simulation_eval = contract["simulation_evaluation_contract"]
+    assert simulation_eval["applies_to"] == (
+        "every_new_ADP_simulator_policy_run_claimed_as_an_evaluation"
+    )
+    assert simulation_eval["scenario_families"] == [
+        "placement_and_approach",
+        "illumination",
+        "camera_and_sensor",
+        "bounded_physics",
+        "admitted_object_cousins",
+        "held_out_composed_cases",
+    ]
+    assert simulation_eval["candidate_pairing"].startswith(
+        "exactly_two_frozen_candidates_receive_identical"
+    )
+    assert "every_scored_cell" in simulation_eval["controls"]
+    assert simulation_eval["smoke_boundary"].endswith("not_an_evaluation")
     assert contract["development_substrates"]["claim_ceiling"] == "development_only"
     assert contract["development_substrates"]["historical_public_decision_reference"] == (
         "SIMPLER"
@@ -284,3 +301,22 @@ def test_active_franka_goal_binds_exact_scene_and_policy_boundaries() -> None:
 
     assert "Never put π0.5, two GR00T versions, and" in prompt
     assert "The historical ten-role index remains `7/10`" in prompt
+
+
+def test_agent_guide_and_transition_make_scenario_harness_durable() -> None:
+    guide = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    transition = (
+        PROGRAM_ROOT / "ADP_009_PUBLIC_SCENE_TRANSITION_DECISION.md"
+    ).read_text(encoding="utf-8")
+
+    for text in (guide, transition):
+        assert "immutable canonical anchor" in text
+        assert "placement/approach" in text
+        assert "camera/sensor" in text
+        assert "object cousins" in text
+        assert "identical resolved" in text
+        assert "every scored cell" in text
+        assert (
+            "not an evaluation" in text
+            or "not be called an evaluation" in text
+        )

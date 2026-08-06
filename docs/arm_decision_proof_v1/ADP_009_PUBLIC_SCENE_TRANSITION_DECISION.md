@@ -99,3 +99,21 @@ executed action, simulator state, contacts, deterministic non-policy success
 trace, stdout/stderr, runtime identity, hashes, review video, and provider
 teardown proof. This rehearsal remains `development_only` and cannot qualify
 the later fresh-site or physical claim.
+
+## Durable simulator-evaluation harness rule
+
+The ADP-009D implementation is a reusable evaluation-harness capability, not a
+scene-specific script. Every future ADP simulator policy run described as an
+**evaluation** must retain one immutable canonical anchor and instantiate a
+preregistered, typed, seed-resolved suite covering placement/approach,
+illumination, camera/sensor, bounded physics, admitted object cousins, and
+held-out composed cases. Both frozen candidates receive identical resolved
+cells and seeds. The zero-action negative and deterministic scripted positive
+controls run on every scored cell, and reporting includes canonical and
+per-family success, degradation, task-state failures, contacts, exact policy
+media, and replay evidence.
+
+A single rollout, simulator startup, nominal-only task, or ad hoc perturbation
+may remain a smoke or canary, but it is not an evaluation. Cousins are separate,
+digest-bound USD/task variants and may not overwrite the sealed can, silently
+change the task family, or be treated as evidence about the later partner site.

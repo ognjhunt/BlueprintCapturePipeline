@@ -17,6 +17,7 @@
     "showcase_label",
     "execution_strategy",
     "public_scene_transition_decision",
+    "simulation_evaluation_contract",
     "scope",
     "representation_contract",
     "scene_edit_contract",
@@ -102,6 +103,43 @@
         "bounded_rehearsal_status": {"const": "accepted_for_public_scene_construction_and_pre_capture_simulation_only"},
         "next_gate": {"const": "Franka_basic_pick_place_with_exactly_two_frozen_policy_candidates_on_the_sealed_AuraFusion360_SAGE_SimReady_scene"},
         "claim_ceiling": {"const": "development_only_not_hidden_background_truth_not_real_metrology_not_policy_validity_not_physical_evidence"}
+      }
+    },
+    "simulation_evaluation_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "applies_to",
+        "canonical_anchor",
+        "scenario_families",
+        "candidate_pairing",
+        "controls",
+        "reporting",
+        "smoke_boundary",
+        "cousin_boundary"
+      ],
+      "properties": {
+        "applies_to": {"const": "every_new_ADP_simulator_policy_run_claimed_as_an_evaluation"},
+        "canonical_anchor": {"const": "one_immutable_nominal_condition_retained_in_every_suite"},
+        "scenario_families": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "placement_and_approach"},
+            {"const": "illumination"},
+            {"const": "camera_and_sensor"},
+            {"const": "bounded_physics"},
+            {"const": "admitted_object_cousins"},
+            {"const": "held_out_composed_cases"}
+          ],
+          "items": false,
+          "minItems": 6,
+          "maxItems": 6
+        },
+        "candidate_pairing": {"const": "exactly_two_frozen_candidates_receive_identical_resolved_cells_and_seeds"},
+        "controls": {"const": "zero_action_negative_and_deterministic_scripted_positive_run_on_every_scored_cell"},
+        "reporting": {"const": "canonical_and_per_family_success_degradation_task_state_failures_contacts_paired_deltas_digest_bound_policy_media_and_replay"},
+        "smoke_boundary": {"const": "startup_nominal_only_single_rollout_or_ad_hoc_perturbation_is_a_smoke_or_canary_not_an_evaluation"},
+        "cousin_boundary": {"const": "cousins_are_separate_digest_bound_admitted_variants_and_never_overwrite_the_sealed_object_change_the_task_family_or_prove_partner_site_validity"}
       }
     },
     "scope": {

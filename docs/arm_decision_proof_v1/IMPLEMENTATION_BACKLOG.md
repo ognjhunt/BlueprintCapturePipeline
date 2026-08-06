@@ -317,7 +317,13 @@ exact action-producing contract is proved.
 
 Test the frozen task across deterministic start-pose, camera, lighting, object
 pose, friction, and mass variations that stay inside the already qualified
-scene envelope. Preserve one-factor diagnosis and fixed seeds.
+scene envelope. Preserve one immutable canonical anchor, one-factor diagnosis,
+fixed seeds, admitted visual/material and geometric object cousins, and
+held-out composed cases. Implement this as the reusable ADP simulator
+evaluation harness used by future runs, not as a scene-specific script. Both
+frozen candidates must receive identical resolved cells and seeds, and the
+zero-action negative plus deterministic scripted positive controls must run on
+every scored cell. A nominal-only rollout remains a smoke/canary, not an eval.
 
 Acceptance:
 
@@ -331,7 +337,10 @@ Acceptance:
   lossless policy-input media, deterministic non-policy success traces,
   evidence matrix, claim ceilings, replay, and provider teardown;
 - variation results are labeled construction robustness, not multi-site or
-  general policy-ranking evidence.
+  general policy-ranking evidence;
+- the summary reports canonical and per-family success, degradation, contacts,
+  task-state failures, paired candidate deltas, digest-bound policy media, and
+  replay identities.
 
 Day-21 transition outcome: Aura locality, known-background scoring, exact
 replacement, and typed abstentions are retained. Day-28 gate: the Franka

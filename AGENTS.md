@@ -183,6 +183,18 @@ dependent step as blocked instead of guessing.
 - Compatibility work must preserve prior proof boundaries. In particular,
   generated-video or simulator execution never becomes physical truth, and a
   candidate policy or provider never grades itself.
+- Every newly executed ADP simulator policy **evaluation** must use the reusable
+  scenario harness rather than a one-off rollout: preserve one immutable canonical anchor;
+  preregister typed, seed-resolved placement/approach, illumination,
+  camera/sensor, bounded-physics, admitted object cousins, and
+  held-out-composition families; give both frozen candidates identical resolved
+  cells and seeds; and run the zero-action negative plus deterministic scripted
+  positive controls over every scored cell. Report canonical and per-family
+  task metrics, degradation, failures, contacts, and digest-bound media. A
+  simulator startup, single nominal rollout, or ad hoc perturbation remains a
+  smoke/canary and must not be called an evaluation. Object cousins may vary
+  admitted appearance, material, or geometry, but may not silently replace the
+  sealed task object or expand the task family.
 - Every newly executed policy-evaluation episode must retain the exact lossless
   observation frames shown to the policy, a digest-bound frame manifest, and a
   derived human-review video. Completed episodes without all three are invalid;
