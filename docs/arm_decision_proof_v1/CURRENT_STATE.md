@@ -77,8 +77,14 @@ The digest-bound native visual review receipt is retained outside Git at
 `sha256:7b95577d254d9a1c4764f361362e7cd903b30e19c7c666f9d89e1b77a6357f51`.
 It derives eight before/after pairs from the actual returned OVRTX arrays and
 sealed Aura frames. These are native object-layer renders composited over Aura,
-not native OVRTX renders of the 3DGS background. The exact unchanged match-v2
-USD subsequently passed the official SimReady Foundation
+not native OVRTX renders of the 3DGS background. The project owner's explicit
+decision to continue with this Aura result is now bound by the
+[human-review receipt](manifests/adp009b_aura_human_review_receipt.v1.json) to
+the Aura execution, the eight-camera locality measurement, and all 32 retained
+review images. That receipt accepts a visual candidate for the bounded internal
+hybrid replacement control; it does not manufacture hidden-background truth,
+technical inpainting admission, or physical evidence. The exact unchanged
+match-v2 USD subsequently passed the official SimReady Foundation
 `Prop-Robotics-Physx 2.0.0` profile from an isolated byte-identical validation
 input. Canonical Vast run `run_011` then loaded the exact SAGE collision layer
 and match-v2 replacement in Isaac Sim 6.0.1 and passed four frozen 360-step
