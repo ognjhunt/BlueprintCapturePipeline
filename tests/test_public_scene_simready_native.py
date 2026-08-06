@@ -177,6 +177,8 @@ def test_native_probe_derives_exact_camera_and_drop_inputs(tmp_path: Path) -> No
     assert manifest["ovrtx"]["quality_steps"] == OVRTX_QUALITY_STEPS
     assert manifest["ovrtx"]["version"] == OVRTX_VERSION
     assert manifest["ovrtx"]["ovstage_version"] == OVSTAGE_VERSION
+    assert manifest["ovrtx"]["modalities"] == ["rgb", "depth"]
+    assert manifest["ovrtx"]["optional_modalities_not_required"] == ["normal"]
     assert manifest["ovphysx"]["drop_height_m"] == 0.05
     config = json.loads(
         (tmp_path / "probe/ovrtx_configs/approach_wide.json").read_text()
@@ -196,10 +198,27 @@ def test_native_probe_derives_exact_camera_and_drop_inputs(tmp_path: Path) -> No
     assert inventory["materials"][0]["static_friction"] == pytest.approx(0.5)
     drop = Usd.Stage.Open(str(tmp_path / "probe/drop_stage.usda"))
     assert drop is not None
-    translate = drop.GetPrimAtPath("/World/BlueprintReplacement").GetAttribute(
-        "xformOp:translate"
-    ).Get()
+    replacement = drop.GetPrimAtPath("/World/BlueprintReplacement")
+    applied_api_schemas = replacement.GetMetadata("apiSchemas")
+    assert "PhysxContactReportAPI" in list(applied_api_schemas.explicitItems)
+    translate = replacement.GetAttribute("xformOp:translate").Get()
     assert tuple(translate) == pytest.approx((3.4681748, -3.3100837, 0.5764650138))
+    assert (
+        drop.GetPrimAtPath("/World/BlueprintReplacement/colliders/body_collider")
+        .GetAttribute("physics:approximation")
+        .Get()
+        == "convexHull"
+    )
+
+    runner_source = (ROOT / "scripts/adp_content_agents_provider_runner.py").read_text()
+    native_render_command = runner_source[
+        runner_source.index('str(render_worker),') : runner_source.index(
+            'log_path=output_root / "native_ovrtx"', runner_source.index('str(render_worker),')
+        )
+    ]
+    assert '"rgb"' in native_render_command
+    assert '"depth"' in native_render_command
+    assert '"normal"' not in native_render_command
 
 
 def test_native_probe_rejects_changed_collision_bytes(tmp_path: Path) -> None:

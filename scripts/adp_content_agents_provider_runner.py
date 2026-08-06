@@ -169,8 +169,6 @@ def _native_probes(
                 "rgb",
                 "--modality",
                 "depth",
-                "--modality",
-                "normal",
             ],
             log_path=output_root / "native_ovrtx" / f"{camera_id}.log",
             env=env,

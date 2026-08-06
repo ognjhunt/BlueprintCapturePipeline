@@ -164,10 +164,20 @@ over "World"
         float physics:gravityMagnitude = 9.81
     }}
 
-    over "BlueprintReplacement"
+    over "BlueprintReplacement" (
+        prepend apiSchemas = ["PhysxContactReportAPI"]
+    )
     {{
         double3 xformOp:translate = ({drop[0]}, {drop[1]}, {drop[2]})
         uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        over "colliders"
+        {{
+            over "body_collider"
+            {{
+                uniform token physics:approximation = "convexHull"
+            }}
+        }}
     }}
 }}
 '''
@@ -387,7 +397,8 @@ def materialize_native_probe(
             "ovstage_license": "NVIDIA proprietary SDK license",
             "render_mode": "PathTracing",
             "quality_steps": OVRTX_QUALITY_STEPS,
-            "modalities": ["rgb", "depth", "normal"],
+            "modalities": ["rgb", "depth"],
+            "optional_modalities_not_required": ["normal"],
             "camera_count": len(config_rows),
             "camera_configs": config_rows,
         },
