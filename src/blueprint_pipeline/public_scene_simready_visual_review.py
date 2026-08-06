@@ -21,6 +21,7 @@ from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "adp009b_simready_visual_review_receipt.v1"
+NATIVE_SCHEMA_VERSION = "adp009b_simready_native_visual_review_receipt.v1"
 
 
 class SimReadyVisualReviewError(ValueError):
@@ -166,6 +167,256 @@ def _composite(background: np.ndarray, foreground: np.ndarray, alpha: np.ndarray
     return np.clip(output, 0, 255).astype(np.uint8)
 
 
+def _native_composite(
+    background: np.ndarray, foreground_rgb: np.ndarray, depth: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Composite an exact-camera OVRTX object layer without inventing scene light.
+
+    The native render stage has no room background, so positive finite depth is
+    the authoritative object silhouette. A sub-pixel Gaussian only antialiases
+    that silhouette; it does not expand it or add a synthetic contact shadow.
+    """
+
+    finite = np.isfinite(depth)
+    mask = np.where(finite & (depth > 0.0), 255, 0).astype(np.uint8)
+    if not np.count_nonzero(mask):
+        raise SimReadyVisualReviewError("native_ovrtx_object_layer_empty")
+    alpha = cv2.GaussianBlur(mask, (0, 0), 0.55).astype(np.float32) / 255.0
+    foreground_bgr = foreground_rgb[:, :, :3][:, :, ::-1].astype(np.float32)
+    output = foreground_bgr * alpha[:, :, None] + background.astype(np.float32) * (
+        1.0 - alpha[:, :, None]
+    )
+    return np.clip(output, 0, 255).astype(np.uint8), mask
+
+
+def _passed_checks(report: Mapping[str, Any], *, error: str) -> None:
+    checks = report.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise SimReadyVisualReviewError(error)
+    if any(
+        not isinstance(check, Mapping) or check.get("status") != "passed"
+        for check in checks
+    ):
+        raise SimReadyVisualReviewError(error)
+
+
+def _verify_recorded_file(path: Path, record: Mapping[str, Any], *, error: str) -> None:
+    if (
+        not path.is_file()
+        or path.stat().st_size != record.get("size_bytes")
+        or _sha256(path) != record.get("sha256")
+    ):
+        raise SimReadyVisualReviewError(error)
+
+
+def materialize_native_visual_review(
+    *,
+    provider_result_path: str | Path,
+    exact_camera_manifest_path: str | Path,
+    frame_root: str | Path,
+    evidence_root: str | Path,
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Bind returned OVRTX AOVs and OVPhysX dynamics to sealed Aura frames.
+
+    This is deliberately an object-layer composite. It proves that the native
+    object render, exact camera, placement, and native physics evidence agree;
+    it does not claim that OVRTX rendered the InteriorGS/Aura background.
+    """
+
+    evidence = Path(evidence_root).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if output != evidence and evidence not in output.parents:
+        raise SimReadyVisualReviewError("visual_review_output_outside_evidence_root")
+    provider_path = Path(provider_result_path).expanduser().resolve()
+    exact_path = Path(exact_camera_manifest_path).expanduser().resolve()
+    frames = Path(frame_root).expanduser().resolve()
+    for path, error in (
+        (provider_path, "provider_result_outside_evidence_root"),
+        (exact_path, "exact_camera_manifest_outside_evidence_root"),
+        (frames, "frame_root_outside_evidence_root"),
+    ):
+        if path != evidence and evidence not in path.parents:
+            raise SimReadyVisualReviewError(error)
+    provider = _read(provider_path, error="provider_result_invalid")
+    exact = _read(exact_path, error="exact_camera_manifest_invalid")
+    if (
+        provider.get("status") != "completed"
+        or provider.get("blockers") != []
+        or provider.get("native_ovrtx_exact_camera_executed") is not True
+        or provider.get("native_ovphysx_drop_contact_settle_executed") is not True
+    ):
+        raise SimReadyVisualReviewError("native_provider_execution_not_complete")
+    for flag in (
+        "material_agent_executed",
+        "texture_agent_executed",
+        "physics_agent_executed",
+        "validation_agent_executed",
+    ):
+        if provider.get(flag) is not True:
+            raise SimReadyVisualReviewError(f"{flag}_missing")
+    native = provider.get("native_probes")
+    ovrtx = native.get("ovrtx") if isinstance(native, Mapping) else None
+    ovphysx = native.get("ovphysx") if isinstance(native, Mapping) else None
+    renders = ovrtx.get("renders") if isinstance(ovrtx, Mapping) else None
+    exact_renders = exact.get("renders")
+    if not isinstance(renders, list) or not isinstance(exact_renders, list):
+        raise SimReadyVisualReviewError("native_camera_evidence_missing")
+    if ovrtx.get("camera_count") != ovrtx.get("expected_camera_count"):
+        raise SimReadyVisualReviewError("native_camera_count_incomplete")
+    render_by_id = {
+        str(row.get("camera_id")): row for row in renders if isinstance(row, Mapping)
+    }
+    exact_by_id = {
+        str(row.get("camera_id")): row
+        for row in exact_renders
+        if isinstance(row, Mapping)
+    }
+    if not render_by_id or set(render_by_id) != set(exact_by_id):
+        raise SimReadyVisualReviewError("native_exact_camera_identity_mismatch")
+
+    native_root = provider_path.parent / "native_ovrtx"
+    output.mkdir(parents=True, exist_ok=True)
+    artifacts: list[dict[str, Any]] = []
+    for camera_id in sorted(render_by_id):
+        row = render_by_id[camera_id]
+        exact_row = exact_by_id[camera_id]
+        if row.get("executed") is not True:
+            raise SimReadyVisualReviewError(f"native_camera_not_executed:{camera_id}")
+        camera_root = native_root / camera_id
+        records = {
+            str(record.get("relative_path")): record
+            for record in row.get("outputs", [])
+            if isinstance(record, Mapping)
+        }
+        required = {"rgb.npy", "depth.npy", "ovrtx_result.json"}
+        if not required.issubset(records):
+            raise SimReadyVisualReviewError(f"native_camera_outputs_missing:{camera_id}")
+        for name in required:
+            _verify_recorded_file(
+                camera_root / name,
+                records[name],
+                error=f"native_camera_output_digest_mismatch:{camera_id}:{name}",
+            )
+        report_path = camera_root / "ovrtx_result.json"
+        if _sha256(report_path) != row.get("report_sha256"):
+            raise SimReadyVisualReviewError(f"native_camera_report_identity_mismatch:{camera_id}")
+        report = _read(report_path, error=f"native_camera_report_invalid:{camera_id}")
+        _passed_checks(report, error=f"native_camera_check_failed:{camera_id}")
+        try:
+            rgb = np.load(camera_root / "rgb.npy", allow_pickle=False)
+            depth = np.load(camera_root / "depth.npy", allow_pickle=False)
+        except (OSError, ValueError) as exc:
+            raise SimReadyVisualReviewError(
+                f"native_camera_array_invalid:{camera_id}"
+            ) from exc
+        width = int(exact_row.get("width") or 0)
+        height = int(exact_row.get("height") or 0)
+        if (
+            rgb.shape != (height, width, 4)
+            or rgb.dtype != np.uint8
+            or depth.shape != (height, width, 1)
+            or depth.dtype != np.float32
+        ):
+            raise SimReadyVisualReviewError(f"native_camera_array_shape_invalid:{camera_id}")
+        source = frames / Path(str(exact_row.get("relative_path") or "")).name
+        if not source.is_file() or _sha256(source) != exact_row.get("digest"):
+            raise SimReadyVisualReviewError(f"sealed_frame_digest_mismatch:{camera_id}")
+        background = cv2.imread(str(source), cv2.IMREAD_COLOR)
+        if background is None or background.shape[:2] != (height, width):
+            raise SimReadyVisualReviewError(f"sealed_frame_resolution_mismatch:{camera_id}")
+        after, mask = _native_composite(background, rgb, depth[:, :, 0])
+        before_path = output / f"{camera_id}.before.png"
+        after_path = output / f"{camera_id}.after.png"
+        pair_path = output / f"{camera_id}.before_after.png"
+        mask_path = output / f"{camera_id}.native_depth_mask.png"
+        cv2.imwrite(str(before_path), background)
+        cv2.imwrite(str(after_path), after)
+        cv2.imwrite(str(pair_path), np.concatenate([background, after], axis=1))
+        cv2.imwrite(str(mask_path), mask)
+        ys, xs = np.nonzero(mask)
+        pad_x = max(80, int((xs.max() - xs.min()) * 1.8))
+        pad_y = max(80, int((ys.max() - ys.min()) * 1.2))
+        x0, x1 = max(0, xs.min() - pad_x), min(width, xs.max() + pad_x)
+        y0, y1 = max(0, ys.min() - pad_y), min(height, ys.max() + pad_y)
+        crop_path = output / f"{camera_id}.contact_crop.before_after.png"
+        cv2.imwrite(
+            str(crop_path),
+            np.concatenate([background[y0:y1, x0:x1], after[y0:y1, x0:x1]], axis=1),
+        )
+        artifacts.append(
+            {
+                "camera_id": camera_id,
+                "source_frame_sha256": exact_row["digest"],
+                "visible_pixel_count": int(np.count_nonzero(mask)),
+                "native_inputs": {
+                    name: records[name] for name in sorted(required)
+                },
+                "before": _record(before_path, output),
+                "after": _record(after_path, output),
+                "before_after": _record(pair_path, output),
+                "contact_crop_before_after": _record(crop_path, output),
+                "native_depth_mask": _record(mask_path, output),
+            }
+        )
+
+    if not isinstance(ovphysx, Mapping):
+        raise SimReadyVisualReviewError("native_ovphysx_evidence_missing")
+    physics_root = provider_path.parent / "native_ovphysx"
+    physics_records = {
+        str(record.get("relative_path")): record
+        for record in ovphysx.get("outputs", [])
+        if isinstance(record, Mapping)
+    }
+    physics_record = physics_records.get("ovphysx_result.json")
+    physics_path = physics_root / "ovphysx_result.json"
+    if not isinstance(physics_record, Mapping):
+        raise SimReadyVisualReviewError("native_ovphysx_report_missing")
+    _verify_recorded_file(
+        physics_path, physics_record, error="native_ovphysx_report_digest_mismatch"
+    )
+    if _sha256(physics_path) != ovphysx.get("report_sha256"):
+        raise SimReadyVisualReviewError("native_ovphysx_report_identity_mismatch")
+    physics = _read(physics_path, error="native_ovphysx_report_invalid")
+    _passed_checks(physics, error="native_ovphysx_check_failed")
+
+    receipt: dict[str, Any] = {
+        "schema_version": NATIVE_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "rendered_native_visual_review_candidate",
+        "provider_result": _record(provider_path, evidence),
+        "exact_camera_manifest_digest": exact.get("sealed_camera_render_manifest_digest"),
+        "renderer": "nvidia_ovrtx_0.4.0_exact_camera_object_layer",
+        "renderer_is_native_ovrtx": True,
+        "background_rendered_by_native_ovrtx": False,
+        "background_renderer": exact.get("rendered_by"),
+        "composition": "native_ovrtx_rgb_and_depth_over_sealed_aura_exact_camera_frame",
+        "synthetic_contact_shadow_added": False,
+        "native_ovphysx_drop_contact_settle_proven": True,
+        "native_ovphysx_report": _record(physics_path, evidence),
+        "nvidia_content_agents_executed": [
+            "Material Agent",
+            "Texture Agent",
+            "Physics Agent",
+            "Validation Agent",
+        ],
+        "artifacts": artifacts,
+        "human_visual_acceptance": "pending",
+        "technical_admission": False,
+        "blockers": [
+            "native_visual_human_acceptance_pending",
+            "isaac_hybrid_scene_qualification_missing",
+        ],
+        "claim_ceiling": "native_object_render_and_ovphysx_candidate_not_full_scene_or_physical_truth",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path = output / "adp009b_simready_native_visual_review_receipt.v1.json"
+    receipt_path.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return receipt
+
+
 def materialize_visual_review(
     *,
     replacement_receipt_path: str | Path,
@@ -293,21 +544,36 @@ def materialize_visual_review(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--replacement-receipt", type=Path, required=True)
+    parser.add_argument("--replacement-receipt", type=Path)
     parser.add_argument("--exact-camera-manifest", type=Path, required=True)
-    parser.add_argument("--cameras", type=Path, required=True)
+    parser.add_argument("--cameras", type=Path)
     parser.add_argument("--frame-root", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--native-provider-result", type=Path)
     args = parser.parse_args()
-    materialize_visual_review(
-        replacement_receipt_path=args.replacement_receipt,
-        exact_camera_manifest_path=args.exact_camera_manifest,
-        cameras_path=args.cameras,
-        frame_root=args.frame_root,
-        evidence_root=args.evidence_root,
-        output_root=args.output_root,
-    )
+    if args.native_provider_result:
+        materialize_native_visual_review(
+            provider_result_path=args.native_provider_result,
+            exact_camera_manifest_path=args.exact_camera_manifest,
+            frame_root=args.frame_root,
+            evidence_root=args.evidence_root,
+            output_root=args.output_root,
+        )
+    else:
+        if args.replacement_receipt is None or args.cameras is None:
+            parser.error(
+                "--replacement-receipt and --cameras are required without "
+                "--native-provider-result"
+            )
+        materialize_visual_review(
+            replacement_receipt_path=args.replacement_receipt,
+            exact_camera_manifest_path=args.exact_camera_manifest,
+            cameras_path=args.cameras,
+            frame_root=args.frame_root,
+            evidence_root=args.evidence_root,
+            output_root=args.output_root,
+        )
 
 
 if __name__ == "__main__":
