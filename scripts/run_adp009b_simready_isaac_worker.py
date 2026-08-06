@@ -84,15 +84,40 @@ def _import_simulation_app() -> Any:
     raise RuntimeError("simready_isaac_simulation_app_unavailable")
 
 
-def _live_transform(omni_physx: Any, prim_path: str) -> dict[str, list[float]]:
-    state = omni_physx.get_physx_interface().get_rigidbody_transformation(prim_path)
-    if not hasattr(state, "get") or state.get("ret_val") is not True:
-        raise RuntimeError("simready_isaac_live_rigid_transform_unavailable")
-    position = state.get("position")
-    rotation = state.get("rotation")
+def _live_transform(rigid_prim: Any) -> dict[str, list[float]]:
+    """Read one body through Isaac 6's current RigidPrim tensor contract.
+
+    Isaac Sim 6.0.1's public ``RigidPrim.get_world_poses`` API returns Warp
+    arrays and documents quaternion order as ``wxyz``.  Keep the receipt's
+    long-standing ``xyzw`` representation explicit at this boundary.
+    """
+
+    positions, orientations = rigid_prim.get_world_poses(indices=[0])
+
+    def _rows(value: Any) -> Any:
+        numpy_method = getattr(value, "numpy", None)
+        rows = numpy_method() if callable(numpy_method) else value
+        tolist_method = getattr(rows, "tolist", None)
+        return tolist_method() if callable(tolist_method) else rows
+
+    position_rows = _rows(positions)
+    orientation_rows = _rows(orientations)
+    try:
+        position = [float(position_rows[0][index]) for index in range(3)]
+        rotation_wxyz = [float(orientation_rows[0][index]) for index in range(4)]
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("simready_isaac_live_rigid_transform_unavailable") from exc
+    values = position + rotation_wxyz
+    if not all(math.isfinite(value) for value in values):
+        raise RuntimeError("simready_isaac_live_rigid_transform_nonfinite")
     return {
-        "position": [float(position[index]) for index in range(3)],
-        "rotation_xyzw": [float(rotation[index]) for index in range(4)],
+        "position": position,
+        "rotation_xyzw": [
+            rotation_wxyz[1],
+            rotation_wxyz[2],
+            rotation_wxyz[3],
+            rotation_wxyz[0],
+        ],
     }
 
 
@@ -213,6 +238,7 @@ def _run_probe(
     import omni.physx as omni_physx  # type: ignore
     import omni.usd  # type: ignore
     from isaacsim.core.api import SimulationContext  # type: ignore
+    from isaacsim.core.experimental.prims import RigidPrim  # type: ignore
     from pxr import PhysicsSchemaTools  # type: ignore
 
     clear_instance = getattr(SimulationContext, "clear_instance", None)
@@ -226,6 +252,8 @@ def _run_probe(
     if stage is None:
         raise RuntimeError("simready_isaac_stage_unavailable")
     inventory = _inventory(stage, spec)
+    replacement_path = str(spec["replacement_prim_path"])
+    replacement_body = RigidPrim(replacement_path, resolve_paths=False)
     timestep = float(spec["fixed_step_seconds"])
     context = SimulationContext(
         physics_dt=timestep,
@@ -244,8 +272,7 @@ def _run_probe(
             method(argument)
     context.initialize_physics()
     context.play()
-    replacement_path = str(spec["replacement_prim_path"])
-    initial = _live_transform(omni_physx, replacement_path)
+    initial = _live_transform(replacement_body)
     positions: list[list[float]] = []
     contact_events = 0
     finger_contact_events = 0
@@ -283,7 +310,7 @@ def _run_probe(
             context.step(render=False)
         except TypeError:
             context.step()
-        transform = _live_transform(omni_physx, replacement_path)
+        transform = _live_transform(replacement_body)
         positions.append(transform["position"])
         contact_events += _contact_count(
             omni_physx,
@@ -296,8 +323,8 @@ def _run_probe(
                 PhysicsSchemaTools,
                 (left_path, right_path),
             )
+    final = _live_transform(replacement_body)
     context.stop()
-    final = _live_transform(omni_physx, replacement_path)
     result = {
         "probe": probe_name,
         "stage_sha256": _sha256(stage_path),

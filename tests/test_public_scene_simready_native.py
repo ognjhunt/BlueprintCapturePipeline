@@ -369,6 +369,50 @@ def test_native_isaac_worker_waits_on_isaac6_loading_status() -> None:
     assert application.updates == 2
 
 
+def test_native_isaac_worker_reads_isaac6_rigid_prim_warp_arrays() -> None:
+    module_spec = importlib.util.spec_from_file_location(
+        "blueprint_simready_isaac_pose_worker",
+        ROOT / "scripts/run_adp009b_simready_isaac_worker.py",
+    )
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+
+    class WarpArray:
+        def __init__(self, rows: list[list[float]]) -> None:
+            self._rows = rows
+
+        def numpy(self):
+            return self._rows
+
+    class RigidPrim:
+        def get_world_poses(self, *, indices):
+            assert indices == [0]
+            return (
+                WarpArray([[1.0, 2.0, 3.0]]),
+                WarpArray([[0.5, 0.1, 0.2, 0.3]]),
+            )
+
+    assert module._live_transform(RigidPrim()) == {
+        "position": [1.0, 2.0, 3.0],
+        "rotation_xyzw": [0.1, 0.2, 0.3, 0.5],
+    }
+
+    class NonfiniteRigidPrim:
+        def get_world_poses(self, *, indices):
+            assert indices == [0]
+            return (
+                WarpArray([[1.0, 2.0, float("nan")]]),
+                WarpArray([[1.0, 0.0, 0.0, 0.0]]),
+            )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simready_isaac_live_rigid_transform_nonfinite",
+    ):
+        module._live_transform(NonfiniteRigidPrim())
+
+
 def test_ovrtx_worker_authors_matrix_camera_and_path_tracing(tmp_path: Path) -> None:
     spec = importlib.util.spec_from_file_location(
         "blueprint_ovrtx_worker", ROOT / "scripts/run_ovrtx_preflight_worker.py"
