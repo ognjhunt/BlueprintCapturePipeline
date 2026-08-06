@@ -145,9 +145,9 @@
     },
     {
       "blockers": [
-        "scannetpp_scene_access_and_admission_missing"
+        "scannetpp_account_application_approval_and_terms_authority_required"
       ],
-      "component_admission_receipt_digest": "sha256:0648d90dd69f4057e3970be5bf66fa607a1eb26e93df3c2ff64bfc124371192d",
+      "component_admission_receipt_digest": "sha256:cec06d5a0ef24af367a155371c1cfffa3e5ac05b485a86f5a7178cea91787948",
       "component_manifest_digest": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626",
       "exact_artifact_digest": "sha256:bf551427bb93b2762e29fc326bedde7a8e2cac4e25b3126cea8fc66f46d2e55b",
       "exact_revision": {
@@ -159,7 +159,7 @@
       "status": "blocked"
     }
   ],
-  "index_digest": "sha256:6c5b03aead43e8719880a49e2498c83aacf25627656a61a9359814095e14dcb4",
+  "index_digest": "sha256:e2e97cbcc6c5213807c4dd598ae0ae7c26b9a53b5ba194143da2849e8110c900",
   "index_id": "adp009a-public-suite-20260804",
   "program_id": "arm-decision-proof-v1",
   "schema_version": "public_scene_suite_index.v1"
