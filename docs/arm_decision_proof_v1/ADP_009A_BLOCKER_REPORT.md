@@ -78,6 +78,19 @@ the target support, so it remains an executed quality rejection rather than a
 successful inpainting result. Another paid Inpaint360GS retry is not warranted
 without a new, preregistered causal hypothesis.
 
+Aura InteriorGS run `live_v12_openclip_execute` completed its released-source
+workflow through all 10,000 final steps with zero retries and returned an actual
+415,265-vertex native 2DGS point cloud. The retained execution receipt is
+`sha256:2476eae9ba019ba000ddd4064dd1c51960e089ea370f4051955a2999d09e22da`;
+cost was `$1.742443`, and provider/object-store zero passed. Its eight native
+`2048x1536` frozen-camera renders preserve the rest of the scene far better than
+Inpaint360GS (outside-mask PSNR `39.30477`, windowed SSIM `0.99231201`, LPIPS
+`0.01379092`, and `0.266055%` of pixels over `20/255`). The can is removed with
+no catastrophic spikes or sheets, but a faint prismatic target-site residue and
+one oblique cabinet-edge fringe remain visible. The smallest blocker is still
+`aurafusion360_interiorgs_quality_admission_missing`; this is an executed visual
+candidate, not admitted successful inpainting or replacement.
+
 Aura attempts `live_v1` through `live_v5` are retained outside git under the
 rights-safe validation tree. All used zero retries and executed no author
 inpainting command. They isolated, in order, Torch-missing isolated native

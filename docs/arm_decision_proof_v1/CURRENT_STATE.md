@@ -27,6 +27,27 @@ No capture or reconstruction feature was added.
 | ADP-009C | `blocked` | No exact ScanNet++ real measured scene or controlled known-background completion has passed the new metric/editing tests. A fresh publisher-source [access outcome](manifests/adp009c_scannetpp_access_outcome.v1.json) opened and hashed the current dataset page and Terms of Use, confirmed that an account, approved application, personalized token, noncommercial-use agreement, and—when applicable—authority to bind a for-profit employer are required, and retained blocker `scannetpp_account_application_approval_and_terms_authority_required`. Blueprint did not create an account, accept terms, or download scene bytes. |
 | ADP-009D | `missing` | No deterministic InteriorGS/SAGE-to-ScanNet++ variation matrix or one-command public-data replacement rehearsal exists. ARKitScenes and WildRGB-D were explicitly removed from the required stack. |
 
+AuraFusion360 InteriorGS run `live_v12_openclip_execute` completed the exact
+released source workflow through 10,000 inpaint-finetune steps with zero retries.
+It retained a native 2D-Gaussian-surfels PLY with 415,265 vertices,
+106,309,429 bytes, and SHA-256
+`cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd`,
+plus eight native `2048x1536` renders at the frozen cameras. Estimated cost was
+`$1.742443`; teardown and staged-object cleanup prove no continuing spend. The
+[execution receipt](manifests/adp009b_aurafusion360_execution_receipt.v1.json)
+is `executed_candidate`, not self-admitted. A deterministic native-2DGS render
+manifest opens and rehashes the eight PNGs and derives their camera IDs from the
+adapter inventory because the independent Spark verifier requires a third 3DGS
+scale that Aura's native 2DGS PLY intentionally lacks. The resulting outside-mask
+measurement (`sha256:eb3fb61eb5fe7da98728b3280bf832b49be0ff0684257b761d55599a88a5a4a4`)
+is materially better than both Inpaint360GS runs: mean PSNR `39.30477`, windowed
+SSIM `0.99231201`, LPIPS `0.01379092`, and `0.266055%` of outside-mask pixels
+changing by more than `20/255`. Visual review of all eight before/mask/after
+triplets finds no Inpaint360-style spikes or translucent sheets, but does find a
+faint prismatic residue at the former can location and a white edge fringe in one
+oblique view. Aura therefore remains a substantially improved visual candidate,
+not admitted successful completion.
+
 Suite replay now fails closed on file identity as well as JSON shape. The
 materializer opens the ten component manifests and receipts plus every referenced
 artifact under explicit repository, data, and method roots; it recomputes their
@@ -117,6 +138,25 @@ python -m blueprint_pipeline.public_scene_infusion_adapter \
   --lama-source-root "$ADP009A_METHOD_ROOT/Inpaint360GS" \
   --output-root "$ADP009A_DATA_ROOT/inpainting_inputs/840313_ins160_infusion_adapter_v1" \
   --receipt-output docs/arm_decision_proof_v1/manifests/adp009b_infusion_adapter_receipt.v1.json
+python -m blueprint_pipeline.public_scene_aura_execution \
+  --adapter-receipt docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_adapter_receipt.v1.json \
+  --runtime-result "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/adp_aura_interiorgs_result.json" \
+  --run-result "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/adp_aura_interiorgs_vast_result.json" \
+  --evidence-root "$ADP009A_DATA_ROOT" --repo-root "$PWD" \
+  --receipt-output docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_execution_receipt.v1.json
+python -m blueprint_pipeline.public_scene_aura_native_render \
+  --adapter-receipt docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_adapter_receipt.v1.json \
+  --execution-receipt docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_execution_receipt.v1.json \
+  --evidence-root "$ADP009A_DATA_ROOT" \
+  --output "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/aura_native_exact_camera_manifest.v1.json"
+python -m blueprint_pipeline.public_scene_inpainting_locality \
+  --before-dir "$ADP009A_DATA_ROOT/inpainting_inputs/840313_ins160_v1/images" \
+  --mask-dir "$ADP009A_DATA_ROOT/inpainting_inputs/840313_ins160_v1/masks" \
+  --after-render-manifest "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/aura_native_exact_camera_manifest.v1.json" \
+  --output "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/aura_native_locality_measurement.v1.json" \
+  --approved-root "$ADP009A_DATA_ROOT" --dilation-pixels 16 \
+  --lpips-checkpoint-digest sha256:df73285e35b22355a2df87cdb6b70b343713b667eddbda73e1977e0c860835c0 \
+  --lpips-backbone-digest sha256:7be5be791159472b1fbf3c69796f7cb30dca7ad8466c2df70058c37116cdee02
 python -m blueprint_pipeline.public_scene_inpaint360_author_archive \
   --source-root "$ADP009A_METHOD_ROOT/Inpaint360GS" \
   --output docs/arm_decision_proof_v1/manifests/adp009a_inpaint360_author_archive_probe.v1.json
