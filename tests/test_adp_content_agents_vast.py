@@ -317,6 +317,9 @@ def test_provider_runtime_pins_native_dependency_closure_before_agent_execution(
     assert 'NATIVE_OVRTX_ENV="${SOURCE_DIR}/.ovrtx_native_venv"' in runtime
     assert '"ovrtx==0.4.0.346409"' in runtime
     assert '"ovstage==0.1.0.346039"' in runtime
+    assert 'm.version("ovrtx") == "0.4.0.346409"' in runtime
+    assert 'm.version("ovstage") == "0.1.0.346039"' in runtime
+    assert "ovrtx.__version__" not in runtime
     assert "content_agents_native_ovrtx_dependency_closure_failed" in runtime
     assert 'content_agents_source/.ovrtx_native_venv/bin/python' in runner
     assert runner.index("native, native_blockers = _native_probes(") < runner.index(

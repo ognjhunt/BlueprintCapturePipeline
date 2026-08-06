@@ -119,7 +119,7 @@ if [ -d "${SCRIPT_DIR}/native" ]; then
     exit "${native_ovrtx_rc}"
   fi
   "${NATIVE_OVRTX_ENV}/bin/python" -c \
-    'import ovrtx, ovstage; assert ovrtx.__version__ == "0.4.0.346409"'
+    'import importlib.metadata as m; import ovrtx, ovstage; assert m.version("ovrtx") == "0.4.0.346409" and m.version("ovstage") == "0.1.0.346039"'
   native_ovrtx_probe_rc=$?
   if [ "${native_ovrtx_probe_rc}" -ne 0 ]; then
     write_missing_result "content_agents_native_ovrtx_dependency_closure_failed"
