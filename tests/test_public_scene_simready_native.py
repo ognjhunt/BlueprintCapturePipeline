@@ -209,6 +209,12 @@ def test_native_probe_derives_exact_camera_and_drop_inputs(tmp_path: Path) -> No
         .Get()
         == "convexHull"
     )
+    assert (
+        drop.GetPrimAtPath(inventory["support_collider_path"])
+        .GetAttribute("physics:approximation")
+        .Get()
+        == "none"
+    )
 
     runner_source = (ROOT / "scripts/adp_content_agents_provider_runner.py").read_text()
     native_render_command = runner_source[

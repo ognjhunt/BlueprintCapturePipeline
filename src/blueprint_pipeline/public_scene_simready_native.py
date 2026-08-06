@@ -146,7 +146,17 @@ def Xform "World"
 '''
 
 
-def _drop_stage(composition_relative_path: str, placement: list[float]) -> str:
+def _drop_stage(
+    composition_relative_path: str,
+    placement: list[float],
+    support_collider_path: str,
+) -> str:
+    support_prefix = "/World/Environment/"
+    if not support_collider_path.startswith(support_prefix):
+        raise ValueError("simready_native_support_collider_path_unsupported")
+    support_name = support_collider_path.removeprefix(support_prefix)
+    if not support_name or "/" in support_name or '"' in support_name:
+        raise ValueError("simready_native_support_collider_path_unsupported")
     drop = [float(placement[0]), float(placement[1]), float(placement[2]) + 0.05]
     return f'''#usda 1.0
 (
@@ -177,6 +187,14 @@ over "World"
             {{
                 uniform token physics:approximation = "convexHull"
             }}
+        }}
+    }}
+
+    over "Environment"
+    {{
+        over "{support_name}"
+        {{
+            uniform token physics:approximation = "none"
         }}
     }}
 }}
@@ -320,10 +338,6 @@ def materialize_native_probe(
     render_stage.write_text(
         _render_stage(f"scene/assets/{asset_source.name}", placement), encoding="utf-8"
     )
-    drop_stage = target / "drop_stage.usda"
-    drop_stage.write_text(
-        _drop_stage("scene/collision_and_replacement.usda", placement), encoding="utf-8"
-    )
     replacement_path = str(
         composition.get("composed_replacement_prim_path")
         or "/World/BlueprintReplacement"
@@ -333,6 +347,15 @@ def materialize_native_probe(
     )
     if not support_collider_path.startswith("/"):
         raise ValueError("simready_native_support_collider_path_missing")
+    drop_stage = target / "drop_stage.usda"
+    drop_stage.write_text(
+        _drop_stage(
+            "scene/collision_and_replacement.usda",
+            placement,
+            support_collider_path,
+        ),
+        encoding="utf-8",
+    )
     usd_scene_inventory = _usd_scene_inventory(
         drop_stage,
         replacement_path=replacement_path,
