@@ -430,7 +430,9 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
     return path
 
 
-def _allocator_bundle(tmp_path: Path, *, content: bytes = b"config") -> tuple[Path, dict]:
+def _allocator_bundle(
+    tmp_path: Path, *, content: bytes = b"config", native_probe: bool = False
+) -> tuple[Path, dict]:
     bundle = tmp_path / "bundle.zip"
     with zipfile.ZipFile(bundle, "w") as archive:
         for member in bundle_preflight.CONFIG_MEMBERS.values():
@@ -445,6 +447,10 @@ def _allocator_bundle(tmp_path: Path, *, content: bytes = b"config") -> tuple[Pa
         "bundle_path": str(bundle),
         "bundle_sha256": "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest(),
     }
+    if native_probe:
+        receipt_value["native_probe"] = {
+            "sage_collision_sha256": "sha256:" + "c" * 64
+        }
     receipt = tmp_path / "receipt.json"
     write_json(receipt, receipt_value)
     return receipt, receipt_value
@@ -521,6 +527,32 @@ def test_canonical_allocator_issues_grant_only_for_execute(
     assert admission["private_or_licensed_dataset_bytes_uploaded"] is False
     assert admission["hard_cap_usd"] == 2.0
     assert admission["allocation_binding"]["config_preflight_receipt_sha256"]
+
+
+def test_canonical_allocator_discloses_public_sage_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt, receipt_value = _allocator_bundle(tmp_path, native_probe=True)
+    preflight = _passing_config_preflight(tmp_path, receipt_value)
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_content_agents_vast",
+        lambda **_kwargs: {"status": "dry_run_ready"},
+    )
+
+    assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=False)) == 0
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["private_or_licensed_dataset_bytes_uploaded"] is True
+    assert admission["private_or_gated_dataset_bytes_uploaded"] is False
+    assert admission["public_licensed_sage_collision_bytes_uploaded"] is True
+    assert admission["public_licensed_dataset_identity"]["license"] == "CC-BY-NC-4.0"
+    assert admission["input_is_blueprint_owned_parametric_control"] is False
+    assert admission["input_contains_blueprint_owned_parametric_control"] is True
 
 
 def test_canonical_allocator_rejects_mutated_bundle(

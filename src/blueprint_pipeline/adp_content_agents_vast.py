@@ -397,7 +397,12 @@ def build_content_agents_vast_bundle(
     evidence_root: str | Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build one immutable bundle without licensed InteriorGS or SAGE bytes."""
+    """Build one immutable bundle with explicit public-dataset byte accounting.
+
+    The v1 control carries no dataset bytes. The approved v2 native probe carries
+    the exact public CC-BY-NC SAGE collision companion, but never gated
+    InteriorGS source bytes or Aura/InteriorGS appearance frames.
+    """
 
     repo = Path(repo_root).expanduser().resolve()
     source = Path(content_agents_root).expanduser().resolve()
@@ -515,6 +520,16 @@ def build_content_agents_vast_bundle(
         "native_ovrtx_exact_camera_probe_planned": native_probe is not None,
         "native_ovphysx_drop_contact_settle_planned": native_probe is not None,
         "native_probe": native_probe,
+        "gated_interiorgs_source_bytes_included": False,
+        "public_sage_collision_bytes_included": native_probe is not None,
+        "public_sage_collision_license": (
+            "CC-BY-NC-4.0" if native_probe is not None else None
+        ),
+        "allowed_use_ceiling": (
+            "internal_noncommercial_validation"
+            if native_probe is not None
+            else "blueprint_owned_control"
+        ),
         "joint_agent_inapplicable_single_rigid_body": True,
         "local_bundle_ready_for_remote_staging": not blockers,
         "provider_zero_required_after_return": True,

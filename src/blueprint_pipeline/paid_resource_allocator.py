@@ -1866,6 +1866,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             paid_admission = build_paid_lane_admission(
                 resource_class="vast_provider_adapter", blockers=sorted(set(blockers))
             )
+            public_sage_collision_uploaded = bool(
+                prepared_bundle
+                and (prepared_bundle.get("native_probe") or {}).get(
+                    "sage_collision_sha256"
+                )
+            )
             paid_admission.update(
                 {
                     "program_id": "arm-decision-proof-v1",
@@ -1878,8 +1884,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "authority": (
                         "user_authorized_all_in_scope_goal_resources_including_gpu_usage"
                     ),
-                    "private_or_licensed_dataset_bytes_uploaded": False,
-                    "input_is_blueprint_owned_parametric_control": True,
+                    "private_or_licensed_dataset_bytes_uploaded": (
+                        public_sage_collision_uploaded
+                    ),
+                    "private_or_gated_dataset_bytes_uploaded": False,
+                    "public_licensed_sage_collision_bytes_uploaded": (
+                        public_sage_collision_uploaded
+                    ),
+                    "public_licensed_dataset_identity": (
+                        {
+                            "repository": "spatialverse/SAGE-3D_Collision_Mesh",
+                            "license": "CC-BY-NC-4.0",
+                            "use_ceiling": "internal_noncommercial_validation",
+                            "raw_bytes_redistributed": False,
+                        }
+                        if public_sage_collision_uploaded
+                        else None
+                    ),
+                    "input_is_blueprint_owned_parametric_control": not (
+                        public_sage_collision_uploaded
+                    ),
+                    "input_contains_blueprint_owned_parametric_control": True,
                     "allocation_binding": allocation_binding,
                     "allocation_binding_digest": allocation_binding_digest,
                 }
