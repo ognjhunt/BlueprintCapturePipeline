@@ -9,9 +9,9 @@
     },
     "edit_input_receipt_digest": "sha256:a25e43f695e6eea3dff0c18ad1ee5001bcb7162600bade996d7e08b7c01d5d8b",
     "exact_simready_asset": {
-      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda",
-      "sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
-      "size_bytes": 200375
+      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
+      "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+      "size_bytes": 20705128
     },
     "sage_collision_usd": {
       "relative_path": "shortlist/SAGE-3D_Collision_Mesh/Collision_Mesh/840313/840313_collision.usd",
@@ -19,7 +19,7 @@
       "size_bytes": 42418216
     },
     "sage_component_manifest_digest": "sha256:f5666090b84e93b955726a9e7bfe4af4bb9cb17fdb2334e8d11bbd654eb5ffd3",
-    "simready_control_receipt_digest": "sha256:f33bcf84771e5175c0bb20651a1fb0c454b594a16e5347d5000b8fde0ce704fd"
+    "simready_control_receipt_digest": "sha256:08de885af7b1b3e808c96ab8b6b1b5b4ed128c35801d51d328335310cf2de076"
   },
   "blockers": [
     "native_ovphysx_drop_contact_settle_missing",
@@ -33,22 +33,22 @@
     "composed_support_collision_prim_path": "/World/Environment/_LTFTHJVAZ3VMPTUJU888888",
     "composed_target_collision_prim_path": "/World/Environment/ZHQYGJJVAJYEYPTUKY888888",
     "default_prim_path": "/World",
-    "relative_path": "simready/replacement_840313/collision_and_replacement.usda",
+    "relative_path": "simready/replacement_840313_match_v2/collision_and_replacement.usda",
     "replacement_asset_copy": {
-      "relative_path": "simready/replacement_840313/assets/adp009a_840313_canned_beverage_control.usda",
-      "sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
-      "size_bytes": 200375
+      "relative_path": "simready/replacement_840313_match_v2/assets/adp009a_840313_canned_beverage_match_v2.usda",
+      "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+      "size_bytes": 20705128
     },
     "replacement_collision_api_present": true,
     "replacement_rigid_body_active": true,
     "sage_collision_copy": {
-      "relative_path": "simready/replacement_840313/assets/840313_collision.usd",
+      "relative_path": "simready/replacement_840313_match_v2/assets/840313_collision.usd",
       "sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
       "size_bytes": 42418216
     },
     "sage_source_bytes_modified": false,
-    "sha256": "sha256:b945a9c9200c226787c4d4fbc1feac428c1ab92d91106530f9c93ad9de70faa5",
-    "size_bytes": 1565,
+    "sha256": "sha256:c4f19dd3f058c5f9182b390322f1dcbe71dbfb45fcc607365f3ee8b4c9d47dba",
+    "size_bytes": 1566,
     "source_target_collider_active": false,
     "support_collider_active": true,
     "unresolved_dependency_count": 0
@@ -94,7 +94,7 @@
     "support_alignment_correction_m": 0.00149991072205502
   },
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:707b04b3d6b4710e21e66cc398b6514036ea0632166e6f92fef52e215d2959b9",
+  "receipt_digest": "sha256:6f173cadd7b4a0ea0e19a975ded93fc367de950c11a450988e5289015d5e35f2",
   "scene": {
     "publisher_scene_id": "840313",
     "source_target_collision_prim_path": "/Root/ZHQYGJJVAJYEYPTUKY888888",

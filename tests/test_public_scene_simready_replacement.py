@@ -198,7 +198,14 @@ def test_materializer_measures_support_and_composes_replacement(tmp_path: Path) 
         0.002, abs=1e-7
     )
     assert receipt["composition"]["source_target_collider_active"] is False
-    assert receipt["composition"]["sage_geometry_modified"] is False
+    assert receipt["composition"]["sage_source_bytes_modified"] is False
+    assert receipt["composition"]["default_prim_path"] == "/World"
+    assert receipt["composition"]["composed_target_collision_prim_path"] == (
+        "/World/Environment/Target"
+    )
+    assert Path(receipt["composition"]["sage_collision_copy"]["relative_path"]).name == (
+        paths["collision"].name
+    )
     assert receipt["nvidia_agent_routing"]["geometry_smoothing_required"] is False
 
 

@@ -6,7 +6,9 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
+import statistics
 import subprocess
 from typing import Any, Mapping, Sequence
 
@@ -75,6 +77,81 @@ def _file_evidence(path: Path, *, root: Path) -> dict[str, Any]:
         "relative_path": path.relative_to(root).as_posix(),
         "size_bytes": path.stat().st_size,
         "sha256": _sha256_file(path),
+    }
+
+
+def _lab_to_srgb(lab: Sequence[float]) -> list[float]:
+    lightness, channel_a, channel_b = (float(value) for value in lab)
+    fy = (lightness + 16.0) / 116.0
+    fx = channel_a / 500.0 + fy
+    fz = fy - channel_b / 200.0
+
+    def inverse(value: float) -> float:
+        return value**3 if value**3 > 0.008856 else (value - 16.0 / 116.0) / 7.787
+
+    x, y, z = 0.95047 * inverse(fx), inverse(fy), 1.08883 * inverse(fz)
+    linear = (
+        3.2404542 * x - 1.5371385 * y - 0.4985314 * z,
+        -0.969266 * x + 1.8760108 * y + 0.041556 * z,
+        0.0556434 * x - 0.2040259 * y + 1.0572252 * z,
+    )
+
+    def encode(value: float) -> float:
+        value = max(0.0, min(1.0, value))
+        encoded = 12.92 * value if value <= 0.0031308 else 1.055 * value ** (1 / 2.4) - 0.055
+        return max(0.0, min(1.0, encoded))
+
+    return [encode(value) for value in linear]
+
+
+def _visual_match_evidence(
+    request: Mapping[str, Any], *, evidence_root: Path
+) -> dict[str, Any] | None:
+    value = request.get("visual_match_evidence")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise PublicSceneSimReadyControlError("visual_match_evidence_invalid")
+    path = _required_file(
+        evidence_root / str(value.get("relative_path")),
+        evidence_root,
+        name="visual_match_evidence",
+    )
+    receipt = _read_json(path)
+    supplied = receipt.get("receipt_digest")
+    if supplied != canonical_digest(receipt, digest_field="receipt_digest"):
+        raise PublicSceneSimReadyControlError("visual_match_evidence_digest_invalid")
+    if supplied != value.get("receipt_digest"):
+        raise PublicSceneSimReadyControlError("visual_match_evidence_identity_mismatch")
+    aggregate = receipt.get("aggregate")
+    rows = receipt.get("camera_results")
+    if (
+        receipt.get("status") not in {"diagnosed_mismatch", "diagnosed_match_candidate"}
+        or not isinstance(aggregate, Mapping)
+        or aggregate.get("projected_scale_and_pose_gate_passed") is not True
+        or not isinstance(rows, list)
+        or len(rows) < 3
+    ):
+        raise PublicSceneSimReadyControlError("visual_match_evidence_not_usable")
+    labs: list[list[float]] = []
+    for row in rows:
+        appearance = row.get("appearance") if isinstance(row, Mapping) else None
+        lab = appearance.get("reference_median_lab") if isinstance(appearance, Mapping) else None
+        if not isinstance(lab, list) or len(lab) != 3 or not all(
+            isinstance(item, (int, float)) and math.isfinite(float(item)) for item in lab
+        ):
+            raise PublicSceneSimReadyControlError("visual_match_reference_lab_missing")
+        labs.append([float(item) for item in lab])
+    median_lab = [statistics.median(row[index] for row in labs) for index in range(3)]
+    return {
+        "receipt": _file_evidence(path, root=evidence_root),
+        "receipt_digest": supplied,
+        "camera_count": len(labs),
+        "projected_scale_and_pose_gate_passed": True,
+        "reference_median_lab": median_lab,
+        "derived_srgb_diffuse_color": _lab_to_srgb(median_lab),
+        "derivation": "median_of_camera_reference_median_lab_then_cie_lab_d65_to_srgb",
+        "authority": "synthetic_interiorgs_multiview_appearance_diagnostic_not_physical_material_truth",
     }
 
 
@@ -419,6 +496,12 @@ def materialize_parametric_simready_control(
     diffuse = [_unit_interval(value, "diffuse_color") for value in visual_material.get("diffuse_color", [])]
     if len(diffuse) != 3:
         raise PublicSceneSimReadyControlError("diffuse_color_rgb_required")
+    visual_match = _visual_match_evidence(request, evidence_root=evidence_root)
+    if visual_match is not None and any(
+        abs(diffuse[index] - visual_match["derived_srgb_diffuse_color"][index]) > 0.02
+        for index in range(3)
+    ):
+        raise PublicSceneSimReadyControlError("diffuse_color_not_derived_from_visual_match")
     roughness = _unit_interval(visual_material.get("roughness"), "roughness")
     metallic = _unit_interval(visual_material.get("metallic"), "metallic")
 
@@ -588,6 +671,7 @@ def materialize_parametric_simready_control(
             "metallic": metallic,
             "authority": visual_material["authority"],
         },
+        "visual_match_evidence": visual_match,
         "grasp_selection": grasp_evidence,
         "physics": {
             "mass_kg": mass,

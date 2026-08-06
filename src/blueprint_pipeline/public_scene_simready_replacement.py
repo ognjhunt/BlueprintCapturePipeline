@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 from typing import Any, Mapping, Sequence
 
+from .common import utc_now_iso
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -354,17 +355,29 @@ def materialize_simready_replacement(
 
     output_usda.parent.mkdir(parents=True, exist_ok=True)
     copied_asset = output_usda.parent / "assets" / asset_path.name
+    copied_collision = output_usda.parent / "assets" / collision_path.name
     copied_asset.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(asset_path, copied_asset)
+    shutil.copy2(collision_path, copied_collision)
     if _sha256(copied_asset) != _sha256(asset_path):
         raise PublicSceneSimReadyReplacementError("simready_asset_copy_digest_mismatch")
+    if _sha256(copied_collision) != _sha256(collision_path):
+        raise PublicSceneSimReadyReplacementError("sage_collision_copy_digest_mismatch")
 
     stage = Usd.Stage.CreateNew(str(output_usda))
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-    stage.GetRootLayer().subLayerPaths.append(_relative_asset(output_usda, collision_path))
-    stage.OverridePrim(target_path).SetActive(False)
-    replacement = UsdGeom.Xform.Define(stage, "/BlueprintReplacement")
+    world = UsdGeom.Xform.Define(stage, "/World")
+    world.GetPrim().SetMetadata("kind", "assembly")
+    stage.SetDefaultPrim(world.GetPrim())
+    environment = UsdGeom.Xform.Define(stage, "/World/Environment")
+    environment.GetPrim().GetReferences().AddReference(
+        _relative_asset(output_usda, copied_collision), "/Root"
+    )
+    composed_target_path = f"/World/Environment{target_path.removeprefix('/Root')}"
+    composed_support_path = f"/World/Environment{support_path.removeprefix('/Root')}"
+    stage.OverridePrim(composed_target_path).SetActive(False)
+    replacement = UsdGeom.Xform.Define(stage, "/World/BlueprintReplacement")
     replacement.GetPrim().GetReferences().AddReference(
         _relative_asset(output_usda, copied_asset), "/canned_beverage"
     )
@@ -373,23 +386,29 @@ def materialize_simready_replacement(
     replacement.GetPrim().SetCustomDataByKey("blueprint:source_instance_id", target_instance)
     replacement.GetPrim().SetCustomDataByKey("blueprint:aura_final_ply_sha256", _sha256(final_ply))
     stage.GetRootLayer().customLayerData = {
+        "SimReady_Metadata": {
+            "asset_name": "InteriorGS_840313_SimReady_replacement",
+            "asset_type": "scene_assembly",
+            "source_file": output_usda.name,
+            "usd_date_generated": utc_now_iso()[:10],
+        },
         "blueprint:appearance_layer_separate": True,
-        "blueprint:sage_geometry_modified": False,
-        "blueprint:target_collider_deactivated": target_path,
-        "blueprint:support_collider_preserved": support_path,
+        "blueprint:sage_source_bytes_modified": False,
+        "blueprint:target_collider_deactivated": target_path.lstrip("/"),
+        "blueprint:support_collider_preserved": support_path.lstrip("/"),
     }
     stage.GetRootLayer().Save()
 
     reopened = Usd.Stage.Open(str(output_usda))
     if reopened is None:
         raise PublicSceneSimReadyReplacementError("replacement_usd_readback_failed")
-    if reopened.GetPrimAtPath(target_path).IsActive():
+    if reopened.GetPrimAtPath(composed_target_path).IsActive():
         raise PublicSceneSimReadyReplacementError("source_target_collider_still_active")
-    if not reopened.GetPrimAtPath(support_path).IsActive():
+    if not reopened.GetPrimAtPath(composed_support_path).IsActive():
         raise PublicSceneSimReadyReplacementError("support_collider_not_preserved")
-    replacement_prim = reopened.GetPrimAtPath("/BlueprintReplacement")
+    replacement_prim = reopened.GetPrimAtPath("/World/BlueprintReplacement")
     replacement_collider = reopened.GetPrimAtPath(
-        "/BlueprintReplacement/colliders/body_collider"
+        "/World/BlueprintReplacement/colliders/body_collider"
     )
     if not replacement_prim.HasAPI(UsdPhysics.RigidBodyAPI) or not replacement_collider.HasAPI(
         UsdPhysics.CollisionAPI
@@ -442,6 +461,11 @@ def materialize_simready_replacement(
         "composition": {
             **_file_record(output_usda, root=evidence_root),
             "replacement_asset_copy": _file_record(copied_asset, root=evidence_root),
+            "sage_collision_copy": _file_record(copied_collision, root=evidence_root),
+            "default_prim_path": "/World",
+            "composed_target_collision_prim_path": composed_target_path,
+            "composed_support_collision_prim_path": composed_support_path,
+            "composed_replacement_prim_path": "/World/BlueprintReplacement",
             "appearance_3dgs_composed_into_usd": False,
             "appearance_3dgs_separate_sha256": _sha256(final_ply),
             "source_target_collider_active": False,
@@ -449,7 +473,7 @@ def materialize_simready_replacement(
             "replacement_rigid_body_active": True,
             "replacement_collision_api_present": True,
             "unresolved_dependency_count": 0,
-            "sage_geometry_modified": False,
+            "sage_source_bytes_modified": False,
         },
         "nvidia_agent_routing": {
             "geometry_smoothing_required": False,

@@ -1,0 +1,61 @@
+{
+  "schema_version": "adp009a_parametric_simready_request.v1",
+  "control_id": "adp009a-840313-canned-beverage-multiview-match-v2",
+  "scene_component_manifest_path": "docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite/interiorgs_appearance_scene.component_manifest.json",
+  "cad_evidence": {
+    "generator_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.py",
+    "step_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.step",
+    "stl_relative_path": "simready/cad_match_v2/adp009a_840313_canned_beverage_match_v2.stl",
+    "inspection_relative_path": "simready/cad_match_v2/adp009a_840313_canned_beverage_match_v2.inspection.json",
+    "snapshot_relative_path": "simready/cad_match_v2/adp009a_840313_canned_beverage_match_v2_20260806T041914Z.png",
+    "scene_target_contact_sheet_relative_path": "selection_inspection/840313/target_160_contact_sheet.png",
+    "length_unit": "millimeter",
+    "mesh_linear_deflection_mm": 0.05,
+    "mesh_angular_deflection_rad": 0.05,
+    "source_skill": {
+      "repository": "https://github.com/earthtojake/text-to-cad",
+      "commit": "4fd71ea75fbb8a80b0d7c76862e0fd73c52a8989",
+      "tree": "a5bf8c8eb14561557f44064c59c254d031665c65",
+      "license": "MIT",
+      "skill_path": "skills/cad/SKILL.md"
+    }
+  },
+  "visual_match_evidence": {
+    "relative_path": "simready/replacement_840313/match_review_v1/adp009b_simready_replacement_match_review.v1.json",
+    "receipt_digest": "sha256:760a34dae27df9c10bcf676998e4d1655a732814a81461630578e2aa08efe381"
+  },
+  "grasp_selection": {
+    "points_local_m": [
+      [-0.031094726218814, 0.0, 0.084713996887207],
+      [0.031094726218814, 0.0, 0.084713996887207]
+    ],
+    "rationale": "Preserve the v1 diameter-through-body grasp at mid-height; the v2 visual refinement does not change the frozen extent or grasp datum.",
+    "coordinate_note": "The STEP and generated USD both use a base-centered local origin, +Z height, and meters after CAD conversion."
+  },
+  "visual_material": {
+    "strategy": "eight_view_target_support_median_lab_derived_srgb_candidate",
+    "diffuse_color": [0.4772844785, 0.8366053502, 0.6508972712],
+    "roughness": 0.32,
+    "metallic": 0.10,
+    "authority": "Retained InteriorGS multi-view target appearance diagnostic; not measured physical material or verified transparency"
+  },
+  "mass_kg": 0.355,
+  "static_friction": 0.50,
+  "dynamic_friction": 0.40,
+  "restitution": 0.10,
+  "physics_value_authority": "frozen_authoring_priors_not_measurements",
+  "requested_static_profile": "Prop-Robotics-Physx",
+  "requested_simready_foundation_revision": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
+  "simready_foundation_validation": {
+    "repository": "https://github.com/NVIDIA/simready-foundation",
+    "commit": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
+    "tree": "3794fa2eeb96e3e48c3f4874f638f6ab5a9636d5",
+    "license": "Apache-2.0",
+    "validator_version": "simready-validate 2026.6.4",
+    "profile": "Prop-Robotics-Physx",
+    "profile_version": "2.0.0",
+    "result_relative_path": "simready/840313_canned_beverage_match_v2.validation.bound.json",
+    "log_relative_path": "simready/840313_canned_beverage_match_v2.validation.bound.log"
+  },
+  "usd_date_generated": "2026-08-05"
+}

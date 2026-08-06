@@ -187,3 +187,52 @@ def test_materializer_rejects_cad_evidence_outside_root(tmp_path: Path) -> None:
             output_usda=repo_root / "output.usda",
             output_receipt=repo_root / "receipt.json",
         )
+
+
+def test_materializer_binds_multiview_derived_colour_and_rejects_caller_substitution(
+    tmp_path: Path,
+) -> None:
+    repo_root, evidence_root, request_path = _fixture(tmp_path)
+    match_path = evidence_root / "match" / "receipt.json"
+    match: dict[str, object] = {
+        "status": "diagnosed_mismatch",
+        "aggregate": {"projected_scale_and_pose_gate_passed": True},
+        "camera_results": [
+            {"appearance": {"reference_median_lab": [78.8235, -38.0, 15.0]}}
+            for _ in range(3)
+        ],
+    }
+    match["receipt_digest"] = canonical_digest(match, digest_field="receipt_digest")
+    _write_json(match_path, match)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["visual_match_evidence"] = {
+        "relative_path": "match/receipt.json",
+        "receipt_digest": match["receipt_digest"],
+    }
+    request["visual_material"]["diffuse_color"] = [0.4773, 0.8366, 0.6509]
+    _write_json(request_path, request)
+
+    receipt = materialize_parametric_simready_control(
+        request_path=request_path,
+        repo_root=repo_root,
+        evidence_root=evidence_root,
+        output_usda=repo_root / "output.usda",
+        output_receipt=repo_root / "receipt.json",
+    )
+    assert receipt["visual_match_evidence"]["camera_count"] == 3
+    assert receipt["visual_match_evidence"]["derived_srgb_diffuse_color"] == pytest.approx(
+        [0.4773, 0.8366, 0.6509], abs=0.0002
+    )
+
+    request["visual_material"]["diffuse_color"] = [0.08, 0.70, 0.30]
+    _write_json(request_path, request)
+    with pytest.raises(
+        PublicSceneSimReadyControlError, match="diffuse_color_not_derived_from_visual_match"
+    ):
+        materialize_parametric_simready_control(
+            request_path=request_path,
+            repo_root=repo_root,
+            evidence_root=evidence_root,
+            output_usda=repo_root / "wrong.usda",
+            output_receipt=repo_root / "wrong.json",
+        )
