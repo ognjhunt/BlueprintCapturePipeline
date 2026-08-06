@@ -11,6 +11,8 @@ from pxr import Gf, Sdf, Usd, UsdGeom
 
 from blueprint_pipeline.public_scene_simready_native import (
     EXPECTED_CAMERA_IDS,
+    ISAAC_PROBE_PROTOCOL_REVISION,
+    ISAAC_SLIDE_INITIAL_VELOCITY_MPS,
     OVRTX_QUALITY_STEPS,
     OVRTX_VERSION,
     OVSTAGE_VERSION,
@@ -239,7 +241,7 @@ def test_native_probe_derives_exact_camera_and_drop_inputs(tmp_path: Path) -> No
     slide = Usd.Stage.Open(str(tmp_path / "probe/isaac_slide_stage.usda"))
     assert slide.GetPrimAtPath("/World/BlueprintReplacement").GetAttribute(
         "physics:velocity"
-    ).Get() == pytest.approx((0.2, 0.0, 0.0))
+    ).Get() == pytest.approx((ISAAC_SLIDE_INITIAL_VELOCITY_MPS, 0.0, 0.0))
     tip = Usd.Stage.Open(str(tmp_path / "probe/isaac_tip_stage.usda"))
     assert tip.GetPrimAtPath("/World/BlueprintReplacement").GetAttribute(
         "xformOp:rotateXYZ"
@@ -305,6 +307,18 @@ def test_native_isaac_bundle_is_self_contained_and_deterministic(
         "provider_runtime/native/isaac_probe_spec.json",
         "provider_runtime/native/isaac_gripper_stage.usda",
     }.issubset(entries)
+    probe_spec = json.loads((probe_root / "isaac_probe_spec.json").read_text())
+    assert probe_spec["protocol_revision"] == ISAAC_PROBE_PROTOCOL_REVISION
+    assert probe_spec["acceptance"]["slide"]["minimum_horizontal_motion_m"] == 0.002
+    assert probe_spec["stimuli"]["slide"]["initial_linear_velocity_mps"] == [
+        ISAAC_SLIDE_INITIAL_VELOCITY_MPS,
+        0.0,
+        0.0,
+    ]
+    assert (
+        f"float3 physics:velocity = ({ISAAC_SLIDE_INITIAL_VELOCITY_MPS}, 0.0, 0.0)"
+        in (probe_root / "isaac_slide_stage.usda").read_text()
+    )
 
 
 def test_native_isaac_worker_rejects_changed_stage_before_runtime(
@@ -411,6 +425,33 @@ def test_native_isaac_worker_reads_isaac6_rigid_prim_warp_arrays() -> None:
         match="simready_isaac_live_rigid_transform_nonfinite",
     ):
         module._live_transform(NonfiniteRigidPrim())
+
+
+def test_native_isaac_worker_rejects_authored_stimulus_mismatch() -> None:
+    module_spec = importlib.util.spec_from_file_location(
+        "blueprint_simready_isaac_stimulus_worker",
+        ROOT / "scripts/run_adp009b_simready_isaac_worker.py",
+    )
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+
+    spec = {
+        "stimuli": {
+            "slide": {"initial_linear_velocity_mps": [0.3, 0.0, 0.0]}
+        }
+    }
+    assert module._validate_authored_linear_velocity(
+        probe_name="slide",
+        authored=[0.3, 0.0, 0.0],
+        spec=spec,
+    ) == [0.3, 0.0, 0.0]
+    with pytest.raises(ValueError, match="authored_stimulus_mismatch"):
+        module._validate_authored_linear_velocity(
+            probe_name="slide",
+            authored=[0.2, 0.0, 0.0],
+            spec=spec,
+        )
 
 
 def test_native_isaac_worker_restores_frozen_state_after_play_step() -> None:

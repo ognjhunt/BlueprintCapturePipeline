@@ -23,6 +23,7 @@ from typing import Any, Mapping, Sequence
 
 RESULT_SCHEMA_VERSION = "adp009b_simready_isaac_result.v1"
 ISAAC_SIM_VERSION = "6.0.1"
+ISAAC_PROBE_PROTOCOL_REVISION = "slide_stimulus_v2"
 
 
 def _canonical_digest(value: Mapping[str, Any], *, field: str) -> str:
@@ -279,6 +280,33 @@ def _set_kinematic_translation(stage: Any, path: str, xyz: Sequence[float]) -> N
     attribute.Set(Gf.Vec3d(*[float(value) for value in xyz]))
 
 
+def _validate_authored_linear_velocity(
+    *,
+    probe_name: str,
+    authored: Sequence[float],
+    spec: Mapping[str, Any],
+) -> list[float]:
+    stimuli = spec.get("stimuli")
+    record = stimuli.get(probe_name) if isinstance(stimuli, Mapping) else None
+    expected = (
+        record.get("initial_linear_velocity_mps")
+        if isinstance(record, Mapping)
+        else None
+    )
+    if not isinstance(expected, list) or len(expected) != 3 or len(authored) != 3:
+        raise ValueError("simready_isaac_probe_stimulus_invalid")
+    observed = [float(value) for value in authored]
+    numeric_expected = [float(value) for value in expected]
+    if any(
+        not math.isfinite(value) for value in [*observed, *numeric_expected]
+    ) or any(
+        abs(observed[index] - numeric_expected[index]) > 1.0e-9
+        for index in range(3)
+    ):
+        raise ValueError("simready_isaac_authored_stimulus_mismatch")
+    return observed
+
+
 def _run_probe(
     *,
     simulation_app: Any,
@@ -308,10 +336,14 @@ def _run_probe(
     authored_velocity_value = stage.GetPrimAtPath(replacement_path).GetAttribute(
         "physics:velocity"
     ).Get()
-    authored_linear_velocity = (
-        [float(authored_velocity_value[index]) for index in range(3)]
-        if authored_velocity_value is not None
-        else [0.0, 0.0, 0.0]
+    authored_linear_velocity = _validate_authored_linear_velocity(
+        probe_name=probe_name,
+        spec=spec,
+        authored=(
+            [float(authored_velocity_value[index]) for index in range(3)]
+            if authored_velocity_value is not None
+            else [0.0, 0.0, 0.0]
+        ),
     )
     replacement_body = RigidPrim(replacement_path, resolve_paths=False)
     timestep = float(spec["fixed_step_seconds"])
@@ -398,6 +430,7 @@ def _run_probe(
         "stage_sha256": _sha256(stage_path),
         "inventory": inventory,
         "initial_transform": initial,
+        "authored_initial_linear_velocity_mps": authored_linear_velocity,
         "final_transform": final,
         "contact_report_event_count": contact_events,
         "finger_contact_report_event_count": finger_contact_events,
@@ -478,6 +511,7 @@ def run(spec_path: Path, output_path: Path) -> dict[str, Any]:
         if (
             spec.get("schema_version") != "adp009b_simready_isaac_probe_spec.v1"
             or spec.get("status") != "frozen_before_execution"
+            or spec.get("protocol_revision") != ISAAC_PROBE_PROTOCOL_REVISION
             or spec.get("isaac_sim_version") != ISAAC_SIM_VERSION
         ):
             raise ValueError("simready_isaac_probe_spec_invalid")

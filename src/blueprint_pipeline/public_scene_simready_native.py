@@ -34,6 +34,8 @@ OVRTX_VERSION = "0.4.0.346409"
 OVSTAGE_VERSION = "0.1.0.346039"
 OVPHYSX_VERSION = "0.4.13"
 ISAAC_SIM_VERSION = "6.0.1"
+ISAAC_PROBE_PROTOCOL_REVISION = "slide_stimulus_v2"
+ISAAC_SLIDE_INITIAL_VELOCITY_MPS = 0.3
 
 
 def _sha256(path: Path) -> str:
@@ -578,7 +580,7 @@ def materialize_native_probe(
             "scene/collision_and_replacement.usda",
             placement,
             support_collider_path,
-            linear_velocity=(0.2, 0.0, 0.0),
+            linear_velocity=(ISAAC_SLIDE_INITIAL_VELOCITY_MPS, 0.0, 0.0),
             angular_velocity=(0.0, 0.0, 0.0),
         ),
         encoding="utf-8",
@@ -605,6 +607,7 @@ def materialize_native_probe(
     isaac_probe_spec = {
         "schema_version": "adp009b_simready_isaac_probe_spec.v1",
         "status": "frozen_before_execution",
+        "protocol_revision": ISAAC_PROBE_PROTOCOL_REVISION,
         "isaac_sim_version": ISAAC_SIM_VERSION,
         "replacement_prim_path": replacement_path,
         "source_target_collider_path": "/World/Environment/ZHQYGJJVAJYEYPTUKY888888",
@@ -613,6 +616,18 @@ def materialize_native_probe(
         "replacement_dimensions_m": usd_scene_inventory["local_bounds"]["dimensions_m"],
         "replacement_mass_kg": float(usd_scene_inventory["masses"][0]["mass"]),
         "fixed_step_seconds": 1.0 / 120.0,
+        "stimuli": {
+            "drop": {"initial_linear_velocity_mps": [0.0, 0.0, 0.0]},
+            "slide": {
+                "initial_linear_velocity_mps": [
+                    ISAAC_SLIDE_INITIAL_VELOCITY_MPS,
+                    0.0,
+                    0.0,
+                ]
+            },
+            "tip": {"initial_linear_velocity_mps": [0.0, 0.0, 0.0]},
+            "gripper": {"initial_linear_velocity_mps": [0.0, 0.0, 0.0]},
+        },
         "stages": {
             name: {
                 "relative_path": path.relative_to(target).as_posix(),
@@ -683,6 +698,7 @@ def materialize_native_probe(
         },
         "isaac": {
             "version": ISAAC_SIM_VERSION,
+            "protocol_revision": ISAAC_PROBE_PROTOCOL_REVISION,
             "probe_spec_sha256": _sha256(isaac_probe_spec_path),
             "stage_count": len(isaac_stages),
             "probe_names": sorted(isaac_stages),
