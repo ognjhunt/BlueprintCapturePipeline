@@ -1,0 +1,312 @@
+"""Derive the bounded native OVRTX/OVPhysX probe for ADP-009B.
+
+This module only materializes immutable inputs. The paid execution remains in
+the canonical Content Agents Vast lane. InteriorGS appearance bytes are not
+included: OVRTX renders the approved replacement alone and the returned AOVs
+are composited over the separately retained Aura frames after provider return.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import shutil
+from typing import Any, Mapping
+
+from .common import ensure_dir, write_json
+
+
+CAMERAS_RELATIVE_PATH = "inpainting_inputs/840313_ins160_v1/cameras.v1.json"
+EXPECTED_CAMERA_IDS = (
+    "approach_wide",
+    "approach_close",
+    "cabinet_context",
+    "left_translate",
+    "low_approach",
+    "raised_left",
+    "raised_right",
+    "right_translate",
+)
+HORIZONTAL_APERTURE_MM = 20.955
+OVRTX_QUALITY_STEPS = 256
+OVPHYSX_VERSION = "0.4.13"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def opencv_camera_to_usd_row_matrix(matrix: list[list[float]]) -> list[list[float]]:
+    """Convert column-vector OpenCV camera-to-world into USD/Gf row storage.
+
+    OpenCV camera axes are +X right, +Y down, +Z forward. A USD camera is +X
+    right, +Y up and looks down -Z. Gf matrices serialize translation in the
+    last row, hence the final transpose.
+    """
+
+    if (
+        not isinstance(matrix, list)
+        or len(matrix) != 4
+        or any(not isinstance(row, list) or len(row) != 4 for row in matrix)
+    ):
+        raise ValueError("simready_native_camera_matrix_not_4x4")
+    numeric = [[float(value) for value in row] for row in matrix]
+    axis = (1.0, -1.0, -1.0, 1.0)
+    usd_column = [
+        [numeric[row][column] * axis[column] for column in range(4)]
+        for row in range(4)
+    ]
+    return [[usd_column[column][row] for column in range(4)] for row in range(4)]
+
+
+def _camera_config(camera: Mapping[str, Any]) -> dict[str, Any]:
+    intrinsics = camera.get("intrinsics") or {}
+    width = int(intrinsics.get("width") or 0)
+    height = int(intrinsics.get("height") or 0)
+    fx = float(intrinsics.get("fx") or 0.0)
+    fy = float(intrinsics.get("fy") or 0.0)
+    cx = float(intrinsics.get("cx") or 0.0)
+    cy = float(intrinsics.get("cy") or 0.0)
+    if width != 2048 or height != 1536 or fx <= 0 or fy <= 0:
+        raise ValueError("simready_native_camera_intrinsics_invalid")
+    if abs(fx - fy) > 1.0e-9:
+        raise ValueError("simready_native_non_square_pixels_unsupported")
+    vertical_aperture = HORIZONTAL_APERTURE_MM * height / width
+    return {
+        "camera_id": str(camera.get("camera_id") or ""),
+        "camera_prim_path": "/BlueprintNative/Camera",
+        "camera_transform_matrix_usd": opencv_camera_to_usd_row_matrix(
+            camera.get("T_world_camera_opencv")
+        ),
+        "width": width,
+        "height": height,
+        "focal_length_mm": fx * HORIZONTAL_APERTURE_MM / width,
+        "horizontal_aperture_mm": HORIZONTAL_APERTURE_MM,
+        "vertical_aperture_mm": vertical_aperture,
+        "horizontal_aperture_offset_mm": (cx - width / 2.0)
+        * HORIZONTAL_APERTURE_MM
+        / width,
+        "vertical_aperture_offset_mm": (height / 2.0 - cy)
+        * vertical_aperture
+        / height,
+        "clipping_range": [0.01, 100.0],
+        "render_mode": "PathTracing",
+        "warmup_frames": 3,
+        "quality_steps": OVRTX_QUALITY_STEPS,
+        "delta_time_seconds": 1.0 / 60.0,
+        "_blueprint_required_checks": [],
+    }
+
+
+def _render_stage(asset_relative_path: str, placement: list[float]) -> str:
+    if len(placement) != 3:
+        raise ValueError("simready_native_placement_invalid")
+    return f'''#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{{
+    def Xform "BlueprintReplacement" (
+        prepend references = @{asset_relative_path}@</canned_beverage>
+    )
+    {{
+        double3 xformOp:translate = ({float(placement[0])}, {float(placement[1])}, {float(placement[2])})
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }}
+
+    def DistantLight "KeyLight"
+    {{
+        float angle = 4
+        float intensity = 3500
+        color3f color = (1, 0.97, 0.93)
+        float3 xformOp:rotateXYZ = (35, 0, -35)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }}
+
+    def DistantLight "FillLight"
+    {{
+        float angle = 8
+        float intensity = 1200
+        color3f color = (0.85, 0.92, 1)
+        float3 xformOp:rotateXYZ = (65, 0, 145)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }}
+}}
+'''
+
+
+def _drop_stage(composition_relative_path: str, placement: list[float]) -> str:
+    drop = [float(placement[0]), float(placement[1]), float(placement[2]) + 0.05]
+    return f'''#usda 1.0
+(
+    subLayers = [@{composition_relative_path}@]
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+over "World"
+{{
+    def PhysicsScene "physics_scene"
+    {{
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float physics:gravityMagnitude = 9.81
+    }}
+
+    over "BlueprintReplacement"
+    {{
+        double3 xformOp:translate = ({drop[0]}, {drop[1]}, {drop[2]})
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }}
+}}
+'''
+
+
+def materialize_native_probe(
+    *,
+    evidence_root: str | Path,
+    destination: str | Path,
+    replacement_receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Copy exact source bytes and derive sealed native probe configs."""
+
+    evidence = Path(evidence_root).expanduser().resolve()
+    target = Path(destination).expanduser().resolve()
+    ensure_dir(target)
+    cameras_source = (evidence / CAMERAS_RELATIVE_PATH).resolve()
+    composition = replacement_receipt.get("composition") or {}
+    composition_source = (evidence / str(composition.get("relative_path") or "")).resolve()
+    asset_copy = composition.get("replacement_asset_copy") or {}
+    asset_source = (evidence / str(asset_copy.get("relative_path") or "")).resolve()
+    collision_copy = composition.get("sage_collision_copy") or {}
+    collision_source = (evidence / str(collision_copy.get("relative_path") or "")).resolve()
+    for path in (cameras_source, composition_source, asset_source, collision_source):
+        if path != evidence and evidence not in path.parents:
+            raise ValueError("simready_native_source_outside_evidence_root")
+        if not path.is_file():
+            raise ValueError("simready_native_source_missing")
+    if (
+        _sha256(composition_source) != composition.get("sha256")
+        or _sha256(asset_source) != asset_copy.get("sha256")
+        or _sha256(collision_source) != collision_copy.get("sha256")
+    ):
+        raise ValueError("simready_native_source_identity_mismatch")
+
+    camera_payload = json.loads(cameras_source.read_text(encoding="utf-8"))
+    if not isinstance(camera_payload, list):
+        raise ValueError("simready_native_camera_manifest_invalid")
+    configs = [_camera_config(camera) for camera in camera_payload]
+    if tuple(sorted(item["camera_id"] for item in configs)) != tuple(
+        sorted(EXPECTED_CAMERA_IDS)
+    ):
+        raise ValueError("simready_native_camera_set_mismatch")
+
+    scene = target / "scene"
+    ensure_dir(scene / "assets")
+    shutil.copy2(composition_source, scene / "collision_and_replacement.usda")
+    shutil.copy2(asset_source, scene / "assets" / asset_source.name)
+    shutil.copy2(collision_source, scene / "assets" / collision_source.name)
+    shutil.copy2(cameras_source, target / "cameras.v1.json")
+    placement = [
+        float(value)
+        for value in (replacement_receipt.get("placement") or {}).get(
+            "support_aligned_base_placement_m", []
+        )
+    ]
+    render_stage = target / "render_stage.usda"
+    render_stage.write_text(
+        _render_stage(f"scene/assets/{asset_source.name}", placement), encoding="utf-8"
+    )
+    drop_stage = target / "drop_stage.usda"
+    drop_stage.write_text(
+        _drop_stage("scene/collision_and_replacement.usda", placement), encoding="utf-8"
+    )
+    configs_dir = target / "ovrtx_configs"
+    ensure_dir(configs_dir)
+    config_rows: list[dict[str, Any]] = []
+    for config in configs:
+        path = configs_dir / f"{config['camera_id']}.json"
+        write_json(path, config)
+        config_rows.append(
+            {
+                "camera_id": config["camera_id"],
+                "relative_path": path.relative_to(target).as_posix(),
+                "sha256": _sha256(path),
+            }
+        )
+    physics_config = {
+        "device": "cuda:0",
+        "rigid_body_patterns": ["/World/BlueprintReplacement"],
+        "penetration_sensor_patterns": ["/World/BlueprintReplacement"],
+        "penetration_filter_patterns": [
+            "/World/Environment/_LTFTHJVAZ3VMPTUJU888888"
+        ],
+        "filters_per_sensor": 1,
+        "fixed_step_seconds": 1.0 / 120.0,
+        "steps": 360,
+        "snapshot_steps": [0, 120, 240, 330, 359],
+        "maximum_initial_contact_force": 1.0e-3,
+        "contact_force_threshold": 1.0e-3,
+        "expected_joint_min_count": 0,
+        "mass_bounds_kg": [0.1, 1.0],
+        "friction_bounds": [0.0, 1.0],
+        "drop_contact_settle": {
+            "expected_support_z_m": placement[2],
+            "initial_drop_height_m": 0.05,
+            "minimum_observed_drop_m": 0.025,
+            "support_height_tolerance_m": 0.006,
+            "settle_window_steps": 30,
+            "maximum_settle_motion_m": 0.002,
+            "maximum_rotation_from_initial_degrees": 5.0,
+            "minimum_contact_steps": 1,
+        },
+    }
+    physics_config_path = target / "ovphysx_config.json"
+    write_json(physics_config_path, physics_config)
+    manifest = {
+        "schema_version": "adp009b_simready_native_probe.v1",
+        "status": "ready",
+        "camera_manifest_sha256": _sha256(cameras_source),
+        "composition_sha256": _sha256(composition_source),
+        "replacement_asset_sha256": _sha256(asset_source),
+        "sage_collision_sha256": _sha256(collision_source),
+        "render_stage_sha256": _sha256(render_stage),
+        "drop_stage_sha256": _sha256(drop_stage),
+        "ovrtx": {
+            "render_mode": "PathTracing",
+            "quality_steps": OVRTX_QUALITY_STEPS,
+            "modalities": ["rgb", "depth", "normal"],
+            "camera_count": len(config_rows),
+            "camera_configs": config_rows,
+        },
+        "ovphysx": {
+            "version": OVPHYSX_VERSION,
+            "config_sha256": _sha256(physics_config_path),
+            "drop_height_m": 0.05,
+            "expected_support_z_m": placement[2],
+        },
+        "claim_boundaries": {
+            "ovrtx_object_only_render_not_3dgs_scene_render": True,
+            "local_composite_required_after_provider_return": True,
+            "ovphysx_probe_not_isaac_or_physical_truth": True,
+        },
+    }
+    write_json(target / "adp009b_simready_native_probe_manifest.json", manifest)
+    return manifest
+
+
+__all__ = [
+    "EXPECTED_CAMERA_IDS",
+    "OVRTX_QUALITY_STEPS",
+    "materialize_native_probe",
+    "opencv_camera_to_usd_row_matrix",
+]

@@ -21,6 +21,7 @@ from pxr import Usd, UsdGeom
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .public_scene_simready_native import materialize_native_probe
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
@@ -200,6 +201,7 @@ def _resolve_input_variant(
         "control_receipt_digest": control["receipt_digest"],
         "replacement_receipt_digest": replacement["receipt_digest"],
         "human_review_receipt_digest": human_review["receipt_digest"],
+        "replacement_receipt": replacement,
     }
 
 
@@ -435,6 +437,21 @@ def build_content_agents_vast_bundle(
         scripts / "adp_content_agents_provider_runner.py",
         runtime / "adp_content_agents_provider_runner.py",
     )
+    native_probe: dict[str, Any] | None = None
+    if variant["variant"] == "match_v2":
+        native_probe = materialize_native_probe(
+            evidence_root=evidence,
+            destination=runtime / "native",
+            replacement_receipt=variant["replacement_receipt"],
+        )
+        shutil.copy2(
+            scripts / "run_ovrtx_preflight_worker.py",
+            runtime / "native" / "run_ovrtx_preflight_worker.py",
+        )
+        shutil.copy2(
+            scripts / "run_ovphysx_preflight_worker.py",
+            runtime / "native" / "run_ovphysx_preflight_worker.py",
+        )
     assets = repo / "docs" / "arm_decision_proof_v1" / "assets"
     config_sources = {
         "material_agent.yaml": assets / "adp009a_content_agents_material.vast.yaml",
@@ -495,6 +512,9 @@ def build_content_agents_vast_bundle(
         "texture_agent_planned": True,
         "physics_agent_planned": True,
         "validation_agent_planned": True,
+        "native_ovrtx_exact_camera_probe_planned": native_probe is not None,
+        "native_ovphysx_drop_contact_settle_planned": native_probe is not None,
+        "native_probe": native_probe,
         "joint_agent_inapplicable_single_rigid_body": True,
         "local_bundle_ready_for_remote_staging": not blockers,
         "provider_zero_required_after_return": True,

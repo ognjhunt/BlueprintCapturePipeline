@@ -121,6 +121,158 @@ def _validation_stage(source_usd: Path, destination: Path) -> None:
     stage.GetRootLayer().Save()
 
 
+def _native_probes(
+    *, runtime_root: Path, output_root: Path, env: dict[str, str]
+) -> tuple[dict[str, Any], list[str]]:
+    native = runtime_root / "native"
+    if not native.is_dir():
+        return {
+            "planned": False,
+            "ovrtx_exact_camera_executed": False,
+            "ovphysx_drop_contact_settle_executed": False,
+        }, []
+    blockers: list[str] = []
+    manifest_path = native / "adp009b_simready_native_probe_manifest.json"
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest_path.is_file()
+        else {}
+    )
+    ovrtx_python = runtime_root / "content_agents_source/.ovrtx_venv/bin/python"
+    ovphysx_python = runtime_root / "content_agents_source/.ovphysx_venv/bin/python"
+    render_stage = native / "render_stage.usda"
+    drop_stage = native / "drop_stage.usda"
+    render_worker = native / "run_ovrtx_preflight_worker.py"
+    physics_worker = native / "run_ovphysx_preflight_worker.py"
+    render_rows: list[dict[str, Any]] = []
+    for index, config in enumerate(sorted((native / "ovrtx_configs").glob("*.json"))):
+        camera_id = config.stem
+        camera_output = output_root / "native_ovrtx" / camera_id
+        report_path = camera_output / "ovrtx_result.json"
+        execution = _run(
+            [
+                str(ovrtx_python),
+                str(render_worker),
+                "--input",
+                str(render_stage),
+                "--output",
+                str(report_path),
+                "--output-dir",
+                str(camera_output),
+                "--config",
+                str(config),
+                "--mode",
+                "cold" if index == 0 else "warm",
+                "--source-revision",
+                "ovrtx-0.4.0.346409",
+                "--modality",
+                "rgb",
+                "--modality",
+                "depth",
+                "--modality",
+                "normal",
+            ],
+            log_path=output_root / "native_ovrtx" / f"{camera_id}.log",
+            env=env,
+            timeout=1800,
+        )
+        report = (
+            json.loads(report_path.read_text(encoding="utf-8"))
+            if report_path.is_file()
+            else {}
+        )
+        success = execution["returncode"] == 0 and all(
+            item.get("status") == "passed" for item in report.get("checks") or []
+        )
+        if not success:
+            blockers.append(f"native_ovrtx_exact_camera_failed:{camera_id}")
+        render_rows.append(
+            {
+                "camera_id": camera_id,
+                "executed": success,
+                "execution": execution,
+                "report_sha256": _sha256(report_path) if report_path.is_file() else None,
+                "outputs": _files(camera_output),
+            }
+        )
+    expected_camera_count = int((manifest.get("ovrtx") or {}).get("camera_count") or 0)
+    render_complete = (
+        expected_camera_count > 0
+        and len(render_rows) == expected_camera_count
+        and all(row["executed"] for row in render_rows)
+    )
+    if not render_complete:
+        blockers.append("native_ovrtx_exact_camera_set_incomplete")
+
+    physics_output = output_root / "native_ovphysx"
+    physics_report = physics_output / "ovphysx_result.json"
+    physics_execution = _run(
+        [
+            str(ovphysx_python),
+            str(physics_worker),
+            "--input",
+            str(drop_stage),
+            "--output",
+            str(physics_report),
+            "--output-dir",
+            str(physics_output),
+            "--config",
+            str(native / "ovphysx_config.json"),
+            "--mode",
+            "cold",
+            "--source-revision",
+            "ovphysx-0.4.13",
+        ],
+        log_path=output_root / "native_ovphysx.log",
+        env=env,
+        timeout=900,
+    )
+    physics_payload = (
+        json.loads(physics_report.read_text(encoding="utf-8"))
+        if physics_report.is_file()
+        else {}
+    )
+    required_dynamic_checks = {
+        "drop_height_observed",
+        "support_contact_observed",
+        "settled_on_expected_support",
+        "upright_after_settle",
+    }
+    passed_dynamic_checks = {
+        str(item.get("name"))
+        for item in physics_payload.get("checks") or []
+        if item.get("status") == "passed"
+    }
+    physics_complete = (
+        physics_execution["returncode"] == 0
+        and required_dynamic_checks <= passed_dynamic_checks
+    )
+    if not physics_complete:
+        blockers.append("native_ovphysx_drop_contact_settle_failed")
+    return (
+        {
+            "planned": True,
+            "input_manifest_sha256": _sha256(manifest_path),
+            "ovrtx_exact_camera_executed": render_complete,
+            "ovrtx": {
+                "camera_count": len(render_rows),
+                "expected_camera_count": expected_camera_count,
+                "renders": render_rows,
+            },
+            "ovphysx_drop_contact_settle_executed": physics_complete,
+            "ovphysx": {
+                "execution": physics_execution,
+                "report_sha256": (
+                    _sha256(physics_report) if physics_report.is_file() else None
+                ),
+                "passed_dynamic_checks": sorted(passed_dynamic_checks),
+                "outputs": _files(physics_output),
+            },
+        },
+        blockers,
+    )
+
+
 def main() -> int:
     runtime_root = Path(__file__).resolve().parent
     output_root = Path(
@@ -246,6 +398,10 @@ def main() -> int:
         "joint_agent_executed": False,
         "reason": "selected target has one rigid body and zero articulated joints",
     }
+    native, native_blockers = _native_probes(
+        runtime_root=runtime_root, output_root=output_root, env=env
+    )
+    blockers.extend(native_blockers)
 
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -264,6 +420,13 @@ def main() -> int:
         "physics_agent_executed": agents["physics"]["physics_agent_executed"],
         "validation_agent_executed": validation["validation_agent_executed"],
         "joint_agent_inapplicable_single_rigid_body": True,
+        "native_probes": native,
+        "native_ovrtx_exact_camera_executed": native[
+            "ovrtx_exact_camera_executed"
+        ],
+        "native_ovphysx_drop_contact_settle_executed": native[
+            "ovphysx_drop_contact_settle_executed"
+        ],
         "model_backend_call_authorized": True,
         "paid_gpu_execution": True,
         "retry_cap": 0,
@@ -271,6 +434,8 @@ def main() -> int:
         "claim_boundaries": {
             "agent_outputs_are_authored_candidates_not_measurements": True,
             "static_validation_is_not_dynamic_simulation": True,
+            "ovrtx_object_only_render_requires_local_aura_composite": True,
+            "ovphysx_probe_is_not_isaac_or_physical_truth": True,
             "inpainting_result": False,
             "physical_evidence": False,
         },
