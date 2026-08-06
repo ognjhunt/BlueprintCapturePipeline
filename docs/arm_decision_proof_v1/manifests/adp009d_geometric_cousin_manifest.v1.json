@@ -1,0 +1,103 @@
+{
+  "schema_version": "adp009d_cousin_manifest.v1",
+  "program_id": "arm-decision-proof-v1",
+  "cousin_id": "adp009d_geometric_cousin",
+  "cousin_type": "geometric",
+  "canonical_anchor": false,
+  "base_asset_sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+  "usd_sha256": "sha256:dd135df0c4deedfc9076668426de0ea9900b387361104f5bd2ea292b7abac655",
+  "base_asset": {
+    "root": "repo",
+    "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
+    "size_bytes": 20705128,
+    "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec"
+  },
+  "overlay_asset": {
+    "root": "repo",
+    "relative_path": "docs/arm_decision_proof_v1/assets/adp009d_840313_geometric_cousin.usda",
+    "size_bytes": 1411,
+    "sha256": "sha256:dd135df0c4deedfc9076668426de0ea9900b387361104f5bd2ea292b7abac655"
+  },
+  "dimensions_m": {
+    "diameter": 0.0590799794,
+    "height": 0.1795936694,
+    "scale_xyz": [
+      0.95,
+      0.95,
+      1.06
+    ],
+    "source": "bounded Blueprint-authored transform of approved match-v2 visual and collider geometry"
+  },
+  "materialization": {
+    "method": "usd_flatten_and_bake_v1",
+    "expected_self_contained_usd": {
+      "filename": "adp009d_geometric_cousin.usda",
+      "size_bytes": 20698853,
+      "sha256": "sha256:5d6e3e94fd607ef1e0edbcdf031a7434142f8c9e1276530c5f9d749fe3900297"
+    },
+    "sealed_base_mutated": false,
+    "root_scale_baked_into_geometry": true,
+    "root_transform_identity_required": true
+  },
+  "physics": {
+    "mass_kg": 0.33961075,
+    "center_of_mass_m": [
+      0.0,
+      0.0,
+      0.0897968347
+    ],
+    "diagonal_inertia_kg_m2": [
+      0.0009869009079561714,
+      0.0009869009079561714,
+      0.00014817403461626875
+    ],
+    "static_friction": 0.5,
+    "dynamic_friction": 0.4,
+    "restitution": 0.1,
+    "source": "base frozen authoring priors scaled at constant density; synthetic, not measured"
+  },
+  "collider": {
+    "prim_path": "/canned_beverage/colliders/body_collider",
+    "kind": "bounded nonuniform scale of approved match-v2 collider",
+    "geometry_changed": true,
+    "contact_material_prim": "/canned_beverage/materials/contact"
+  },
+  "material_provenance": {
+    "kind": "unchanged approved match-v2 material",
+    "shader_prim": "/canned_beverage/materials/green_can_shader",
+    "base_material_changed": false
+  },
+  "rights": {
+    "overlay_author": "Blueprint",
+    "overlay_rights": "Blueprint-authored configuration",
+    "base_asset_boundary": "Base match-v2 source provenance and noncommercial public-scene limits remain controlling",
+    "redistribution_allowed": false
+  },
+  "static_validation": {
+    "status": "external_observed_receipt_required",
+    "profile": "Prop-Robotics-Physx",
+    "profile_version": "2.0.0",
+    "validator_source_commit": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
+    "first_attempt_blocker": "non_unit_root_scale_rejected_then_baked_into_geometry",
+    "geometry_or_physics_failure_observed": false
+  },
+  "grasp_clearance": {
+    "status": "static_bounded_geometry_only",
+    "diameter_through_body_m": 0.0590799794,
+    "robotiq_opening_contract": "must admit exact gripper joint and pad separation in native probe",
+    "native_robotiq_contact_probe": "pending"
+  },
+  "admission_status": "static_candidate",
+  "blockers": [
+    "static_validation_receipt_binding_required",
+    "native_ovphysx_drop_contact_settle_missing",
+    "scripted_positive_control_missing"
+  ],
+  "claim_ceiling": [
+    "development_only",
+    "simulator_stimulus_only",
+    "bounded_geometric_cousin_only",
+    "no_metric_truth_or_physical_generalization_claim"
+  ],
+  "cousin_digest": "sha256:b7f59913f957d7b95918787c5713a3b9ff46fac8f172f482de676777286198ce"
+}

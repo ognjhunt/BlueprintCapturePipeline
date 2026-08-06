@@ -1,0 +1,642 @@
+{
+  "schema_version": "adp009d_agent_skill_audit.v1",
+  "program_id": "arm-decision-proof-v1",
+  "milestone": "ADP-009D_public_scene_franka_policy_rehearsal",
+  "audit_status": "official_source_audit_complete_implementation_bound",
+  "audit_window": {
+    "started_at": "2026-08-06T18:20:39Z",
+    "completed_at": "2026-08-06T18:45:59Z",
+    "retrieval_methods": [
+      "GitHub REST branch commit and recursive tree APIs",
+      "GitHub immutable blob content at exact revisions",
+      "primary NVIDIA Isaac Sim and Omniverse documentation"
+    ]
+  },
+  "implementation_base": {
+    "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
+    "commit": "2dc6d76f7bce9f92c2f2745895079a5d6c6acb69",
+    "tree": "89d9ca6ed83f4b6bf6425f1ca4398416af7f53d6",
+    "pull_request": "https://github.com/ognjhunt/BlueprintCapturePipeline/pull/374",
+    "provisional_until_pr_374_merge": true,
+    "binding_rule": "Re-read and re-diff every ADP-009D binding file if PR 374 changes before merge."
+  },
+  "repositories": [
+    {
+      "source_id": "isaac_sim_omniverse",
+      "repository_url": "https://github.com/isaac-sim/IsaacSim",
+      "ref": "refs/heads/main",
+      "revision": "987015050efebfd0cd5d3736ae47fffe5adee308",
+      "tree": "7530065964b0bfbb3e6c102ffa20456870079d7e",
+      "ref_verified_at_retrieval": true,
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "submodules": [],
+      "path_identities": [
+        {
+          "path": "LICENSE",
+          "blob": "6c0a478c97f5994906059642e0a8c3bdc879bf5f"
+        },
+        {
+          "path": "README.md",
+          "blob": "867ed624570ef488479223bd92daacc3aaa4e356"
+        },
+        {
+          "path": "VERSION",
+          "blob": "5bffac65fbe8aa6d33840f5181425c12a71bf1fa"
+        }
+      ],
+      "version_compatibility": {
+        "repository_version": "6.0.1-rc.74",
+        "latest_documented_pip_release": "6.0.1.0",
+        "python": "3.12",
+        "released_6_0_0_kit": "110.1.1",
+        "runtime_decision": "Use the Arena release Dockerfile's Isaac Sim 6.0.0-dev2 image at immutable manifest digest sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9; do not substitute a rolling main image."
+      },
+      "license": {
+        "source_code": "Apache-2.0",
+        "runtime_components": "NVIDIA Omniverse and Isaac Sim additional software terms",
+        "redistribution_boundary": "Internal R&D outputs may be retained; redistribution of Omniverse Kit or NVIDIA assets requires separate terms review."
+      },
+      "official_source_urls": [
+        "https://github.com/isaac-sim/IsaacSim/tree/987015050efebfd0cd5d3736ae47fffe5adee308",
+        "https://docs.isaacsim.omniverse.nvidia.com/latest/installation/install_python.html",
+        "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/requirements.html",
+        "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/common/license-faq.html",
+        "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/overview/release_notes.html",
+        "https://docs.omniverse.nvidia.com/composer/latest/feature_rendering.html"
+      ]
+    },
+    {
+      "source_id": "isaac_lab",
+      "repository_url": "https://github.com/isaac-sim/IsaacLab",
+      "ref": "refs/heads/develop",
+      "revision": "3ea6f7bbf6c7d515aa1f8e8c54bfdfffda2d4857",
+      "tree": "e188a36c7538ed84e7e0918f143f82890cbe98cb",
+      "ref_verified_at_retrieval": true,
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "submodules": [],
+      "path_identities": [
+        {
+          "path": "LICENSE",
+          "blob": "dee9ba551f428dd44471e7ee461528374233ad3c"
+        },
+        {
+          "path": "README.md",
+          "blob": "89fdec5f15060925fcf14c9fb05a2d4e0fc576de"
+        },
+        {
+          "path": "VERSION",
+          "blob": "4a36342fcab700951adb18ae7adc930997f6c3f4"
+        },
+        {
+          "path": ".agents/skills/isaaclab-building-environments",
+          "blob": "9c86809f4be3b810776d84e7bfa9b1449cb81cbe",
+          "target_path": "skills/user/create-environments/SKILL.md"
+        },
+        {
+          "path": "skills/user/create-environments/SKILL.md",
+          "blob": "f9b6c7c9b16831ec0a2260c75c02c9198f70cc10"
+        },
+        {
+          "path": ".agents/skills/isaaclab-planning-manipulation-tasks",
+          "blob": "b13818198cf1fac5d91ce14d3a4430786eb1b60a",
+          "target_path": "skills/user/plan-manipulation-tasks/SKILL.md"
+        },
+        {
+          "path": "skills/user/plan-manipulation-tasks/SKILL.md",
+          "blob": "7af45a6449447ea499dbe588525c1ec04c57c186"
+        },
+        {
+          "path": ".agents/skills/isaaclab-randomizing-with-events",
+          "blob": "cfaab189258429582bc8e1358299c5ffd51614dd",
+          "target_path": "skills/user/domain-randomization-events/SKILL.md"
+        },
+        {
+          "path": "skills/user/domain-randomization-events/SKILL.md",
+          "blob": "2c2054ffda6e7c27adc59c781ebe739b21132f16"
+        },
+        {
+          "path": ".agents/skills/isaaclab-using-sensors-actuators",
+          "blob": "1f21fba7f2b25c639416b597670851b3ce86400e",
+          "target_path": "skills/user/use-sensors-actuators/SKILL.md"
+        },
+        {
+          "path": "skills/user/use-sensors-actuators/SKILL.md",
+          "blob": "de4254487ce02d8446d497d99f3f7cff0c03725a"
+        },
+        {
+          "path": ".agents/skills/isaaclab-selecting-backends",
+          "blob": "65ac937bafe709025ccaedd20ee583ed74f441bf",
+          "target_path": "skills/user/select-backends/SKILL.md"
+        },
+        {
+          "path": "skills/user/select-backends/SKILL.md",
+          "blob": "d87e8e7f8926fb610351e2f6e86f941cdd2cb3dd"
+        },
+        {
+          "path": ".agents/skills/isaaclab-using-presets",
+          "blob": "6abea13ebf0c50ef88ef6c2c0e09368777edd7dc",
+          "target_path": "skills/user/use-presets/SKILL.md"
+        },
+        {
+          "path": "skills/user/use-presets/SKILL.md",
+          "blob": "91f3a8e81c55733f92938581d945ca883c7b6f9d"
+        }
+      ],
+      "version_compatibility": {
+        "version": "3.0.0",
+        "python": "3.12",
+        "intended_isaac_sim_family": "6.0.x",
+        "develop_warning": "The audited README says this develop revision is not compatible with Isaac Sim GitHub develop and directs users to Isaac Lab f0234a82e432e2a0b0f0a26ca3c5b59e527ddaaa or earlier, or v3.0.0-beta.",
+        "runtime_decision": "Treat this revision's skills as current guidance only; do not admit it as the ADP-009D runtime."
+      },
+      "license": {
+        "framework": "BSD-3-Clause",
+        "mimic_component": "Apache-2.0",
+        "isaac_sim_dependency": "NVIDIA proprietary runtime terms"
+      },
+      "official_source_urls": [
+        "https://github.com/isaac-sim/IsaacLab/tree/3ea6f7bbf6c7d515aa1f8e8c54bfdfffda2d4857",
+        "https://isaac-sim.github.io/IsaacLab/main/source/tutorials/03_envs/create_manager_base_env.html"
+      ]
+    },
+    {
+      "source_id": "isaac_lab_arena",
+      "repository_url": "https://github.com/isaac-sim/IsaacLab-Arena",
+      "ref": "refs/heads/release/0.2.1",
+      "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+      "tree": "03f31f3dd56c56d00f24dbfb09711ec0ab345de8",
+      "ref_verified_at_retrieval": true,
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "submodules": [
+        {
+          "path": "submodules/IsaacLab",
+          "repository_url": "https://github.com/isaac-sim/IsaacLab",
+          "revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+          "tree": "454115265327a80acabd07cbd36e10071fc0c065"
+        },
+        {
+          "path": "submodules/Isaac-GR00T",
+          "repository_url": "https://github.com/NVIDIA/Isaac-GR00T",
+          "revision": "e29d8fc50b0e4745120ae3fb72447986fe638aa6",
+          "tree": "4157b38edab2c64c5f38dd34919e91393ae3dc7e"
+        }
+      ],
+      "path_identities": [
+        {
+          "path": "LICENSE.md",
+          "blob": "34af41dda37a8afab85c3a1f73350cdf7f8dbe47"
+        },
+        {
+          "path": "README.md",
+          "blob": "3a94334fe6f62c852dd2d1bb377b42099ab1cbd5"
+        },
+        {
+          "path": "setup.py",
+          "blob": "034e0dba871cd8b764029969aeda20905abc62e8"
+        },
+        {
+          "path": "isaaclab_arena/scene/scene.py",
+          "blob": "60591e17b6b8c344220e3b6cddafb472904cf577"
+        },
+        {
+          "path": "isaaclab_arena/embodiments/embodiment_base.py",
+          "blob": "664b6ba493ff5fdabb708f68c0196b41b84e1c0a"
+        },
+        {
+          "path": "isaaclab_arena/tasks/task_base.py",
+          "blob": "f1f007556ec8938bc7432f077046c6e414ef80f0"
+        },
+        {
+          "path": "isaaclab_arena/policy/policy_base.py",
+          "blob": "bf594ea562fd02ce8d58a174228ba629a746b71e"
+        },
+        {
+          "path": "isaaclab_arena/metrics/metric_base.py",
+          "blob": "99d734d0dfe0b23ee0623c16ed397743cb1d336e"
+        },
+        {
+          "path": "isaaclab_arena/evaluation/policy_runner.py",
+          "blob": "84b0c965ae28b206a08c1e6bcca1aad106aa6723"
+        },
+        {
+          "path": "docs/pages/quickstart/first_experiments/exploring_variations.rst",
+          "blob": "4e6de190490c9979f82310dd852286a532ee4216"
+        }
+      ],
+      "version_compatibility": {
+        "release_line": "0.2.x",
+        "claim_status": "alpha; incomplete, unstable APIs, not for production",
+        "nested_isaac_lab": "3.0.0 at e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+        "isaac_sim": "6.0.0 family",
+        "readme_python": ">=3.12",
+        "setup_metadata_inconsistency": "setup.py declares package version 1.0.0 and Python >=3.10; the audit uses the README/release compatibility table conservatively.",
+        "runtime_decision": "Pin the repository and both submodules exactly; use Arena only as a thin compositional layer beneath Blueprint evaluation contracts."
+      },
+      "license": {
+        "framework": "Apache-2.0",
+        "isaac_sim_dependency": "NVIDIA proprietary runtime terms"
+      },
+      "official_source_urls": [
+        "https://github.com/isaac-sim/IsaacLab-Arena/tree/8b4a3a47fc53de23e8205089d71109a2e2348acd",
+        "https://isaac-sim.github.io/IsaacLab-Arena/release/0.2.1/index.html",
+        "https://isaac-sim.github.io/IsaacLab-Arena/release/0.2.1/pages/concepts/policy/concept_evaluation_types.html",
+        "https://isaac-sim.github.io/IsaacLab-Arena/release/0.2.1/pages/quickstart/first_experiments/exploring_variations.html"
+      ]
+    },
+    {
+      "source_id": "nvidia_skills",
+      "repository_url": "https://github.com/NVIDIA/skills",
+      "ref": "refs/heads/main",
+      "revision": "276b9bcce5d1b224769f9b10ad26975c15e0dd4c",
+      "tree": "a5b880ee64f834287821d9997d5694ca1b5e2ef2",
+      "ref_verified_at_retrieval": true,
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "submodules": [],
+      "path_identities": [
+        {
+          "path": "LICENSE-APACHE",
+          "blob": "001a3281169d6ade30cd1a44544029254ba490a8"
+        },
+        {
+          "path": "LICENSE-CC-BY-4.0",
+          "blob": "b0de5b1eb94213e92ad03b131684bae483db2bd9"
+        },
+        {
+          "path": "README.md",
+          "blob": "0bf1e0bdd27151d1b3c5e72d1ae39af9537d7645"
+        },
+        {
+          "path": "skills/omniverse-cad-to-simready/SKILL.md",
+          "blob": "f8269c99a39f3e23be3ebb4133a80c581b6d163d"
+        },
+        {
+          "path": "skills/omniverse-usd-performance-tuning/SKILL.md",
+          "blob": "3b857c72b8f85051397e55fe9dc2ee1121717f82"
+        },
+        {
+          "path": "skills/omniverse-realtime-viewer/SKILL.md",
+          "blob": "3aabd8e04ac51bd3e2e69e618c768aa735b8ef42"
+        }
+      ],
+      "version_compatibility": {
+        "skill_versioning": "Path and blob identity at the audited repository revision; individual skills do not define the ADP runtime stack.",
+        "runtime_decision": "Apply each skill only at its explicit gate and retain its license and evidence boundary."
+      },
+      "license": {
+        "skill_documentation": "CC-BY-4.0",
+        "code_samples": "Apache-2.0"
+      },
+      "official_source_urls": [
+        "https://github.com/NVIDIA/skills/tree/276b9bcce5d1b224769f9b10ad26975c15e0dd4c"
+      ]
+    },
+    {
+      "source_id": "ovrtx",
+      "repository_url": "https://github.com/NVIDIA-Omniverse/ovrtx",
+      "ref": "refs/heads/main",
+      "revision": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+      "tree": "9bde58c9194250f226d4d24b37924fca62c9ac22",
+      "ref_verified_at_retrieval": true,
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "submodules": [],
+      "path_identities": [
+        {
+          "path": "LICENSE",
+          "blob": "452c1181a6338a79215235e32d7a0e24ce392a40"
+        },
+        {
+          "path": "README.md",
+          "blob": "a667eba283ac03ab40ebb7fbe106d4a79a38cec3"
+        },
+        {
+          "path": "pyproject.toml",
+          "blob": "267cf113068264cf17b08d0145dd62e5816a497e"
+        },
+        {
+          "path": "skills/loading-usd/SKILL.md",
+          "blob": "a258518c4f153f181794c837b0cdc07641e597a3"
+        },
+        {
+          "path": "skills/renderer-creation/SKILL.md",
+          "blob": "bc70098b430dd449b38139b0514903a7528358c7"
+        },
+        {
+          "path": "skills/render-settings/SKILL.md",
+          "blob": "9e325b384840c46ca92cc12e1187b810d7f30418"
+        },
+        {
+          "path": "skills/camera-outputs-rt2/SKILL.md",
+          "blob": "2bc381f2b9f5f54641661daf54b33a40cb343a4a"
+        },
+        {
+          "path": "skills/reading-render-output/SKILL.md",
+          "blob": "ab71c2b0c051d20a2636be1dd0052b5004160f5e"
+        },
+        {
+          "path": "skills/stepping-and-rendering/SKILL.md",
+          "blob": "3153700b00c6185aa3a3448f92475fd34bd478d1"
+        },
+        {
+          "path": "skills/warmup/SKILL.md",
+          "blob": "28bcd2c84f5ec644280ae9fd591f4a83536609e0"
+        },
+        {
+          "path": "skills/semantic-labels/SKILL.md",
+          "blob": "3938cb3a4e969df6439d8c2d8ab7fd02947640e5"
+        },
+        {
+          "path": "skills/render-product-device-pinning/SKILL.md",
+          "blob": "3a006941a5de4030f626b16ad25218c31a3d442d"
+        },
+        {
+          "path": "skills/cuda-interop/SKILL.md",
+          "blob": "e1b9c107d2b9c9f915fb24b9d0892792701d3d98"
+        }
+      ],
+      "version_compatibility": {
+        "version": "0.4.0",
+        "python": ">=3.10,<3.14",
+        "cuda": "12",
+        "ovstage": ">=0.1.0.343775",
+        "development_status": "alpha",
+        "runtime_decision": "If admitted for live policy observations, initialize OVRTX before ovphysx and prove the selected ovstage/ovphysx/OVRTX wheel set in an immutable micro-check before evaluation."
+      },
+      "license": {
+        "package": "LicenseRef-NvidiaProprietary",
+        "redistribution_boundary": "Do not redistribute OVRTX binaries without separate terms review."
+      },
+      "official_source_urls": [
+        "https://github.com/NVIDIA-Omniverse/ovrtx/tree/4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+        "https://nvidia-omniverse.github.io/ovrtx/latest/"
+      ]
+    },
+    {
+      "source_id": "physx",
+      "repository_url": "https://github.com/NVIDIA-Omniverse/PhysX",
+      "ref": "refs/heads/main",
+      "revision": "7845321d31fa3619917ebe127ab5e08e73de0bdb",
+      "tree": "c2e1ed19bb3e2648af75bf68437e91f8e0faaca0",
+      "ref_verified_at_retrieval": true,
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "submodules": [],
+      "path_identities": [
+        {
+          "path": "LICENSE.md",
+          "blob": "2388f6f9a26a42277e0dd0bf4b7b55af5aee29e5"
+        },
+        {
+          "path": "physx/version.txt",
+          "blob": "eb3719817fdd587604e2e6a669874e4a844773a5"
+        },
+        {
+          "path": "ovphysx/LICENSE.txt",
+          "blob": "b2baa8d1de5b8dc204d49c77262298eaf8a0b157"
+        },
+        {
+          "path": "ovphysx/VERSION",
+          "blob": "416bfb0a2212b445e84333c4f3ce8cb4aba564cf"
+        },
+        {
+          "path": "ovphysx/python/pyproject.toml",
+          "blob": "2bb375445ac7707944a7d74bb33ac7c3d2d46ecd"
+        }
+      ],
+      "skill_path_audit": {
+        "recursive_tree": "c2e1ed19bb3e2648af75bf68437e91f8e0faaca0",
+        "query": "SKILL.md files and paths rooted at skills or ovphysx skills",
+        "skill_tree_match_count": 0,
+        "ovphysx_skill_path": null,
+        "decision": "do_not_invent_ovphysx_skill_path",
+        "note": "The package-data stanza mentions SKILLS.md and skills/**/*, but those paths are absent from the inspected revision."
+      },
+      "version_compatibility": {
+        "physx": "5.6.1.51c1f783",
+        "ovphysx": "0.5.9",
+        "python": ">=3.10",
+        "ovstage": "==0.1.0.346039",
+        "development_status": "alpha",
+        "runtime_decision": "Centralize and validate PhysX configuration; prove an exact OVRTX/ovphysx/ovstage co-resident wheel combination before using it for policy inputs."
+      },
+      "license": {
+        "physx_source": "BSD-3-Clause",
+        "ovphysx_package": "LicenseRef-NVIDIA-Omniverse",
+        "prebuilt_binaries": "NVIDIA proprietary terms"
+      },
+      "official_source_urls": [
+        "https://github.com/NVIDIA-Omniverse/PhysX/tree/7845321d31fa3619917ebe127ab5e08e73de0bdb",
+        "https://nvidia-omniverse.github.io/PhysX/physx/5.6.1/",
+        "https://nvidia-omniverse.github.io/PhysX/ovphysx/latest/"
+      ]
+    }
+  ],
+  "guidance_application": [
+    {
+      "guidance_id": "isaaclab-building-environments",
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
+      "decisions": [
+        "Use ManagerBasedRLEnvCfg and manager terms as the default harness architecture.",
+        "Separate scene, embodiment, task, observations, actions, events, terminations, and evaluation concerns.",
+        "Prove configuration, reset, step, and one-action reachability before policy work."
+      ],
+      "implementation_evidence": [
+        "src/blueprint_pipeline/adp009d_isaac_runtime.py",
+        "docs/arm_decision_proof_v1/manifests/adp009d_franka_eval_harness_manifest.v1.json"
+      ]
+    },
+    {
+      "guidance_id": "isaaclab-planning-manipulation-tasks",
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
+      "decisions": [
+        "Encode approach, grasp, lift, translate, place, and settle as explicit task phases.",
+        "Compute success and terminal failures from deterministic simulator state rather than visual or policy judgment."
+      ],
+      "implementation_evidence": [
+        "src/blueprint_pipeline/adp009d_franka_evaluation_harness.py"
+      ]
+    },
+    {
+      "guidance_id": "isaaclab-randomizing-with-events",
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
+      "decisions": [
+        "Use explicit EventManager prestartup, startup, reset, and interval modes.",
+        "Resolve every scored factor and seed before execution and reject invalid combinations fail-closed."
+      ],
+      "implementation_evidence": [
+        "src/blueprint_pipeline/adp009d_franka_evaluation_harness.py",
+        "src/blueprint_pipeline/adp009d_isaac_runtime.py"
+      ]
+    },
+    {
+      "guidance_id": "isaaclab-using-sensors-actuators",
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
+      "decisions": [
+        "Bind Franka and Robotiq actuator limits and camera contracts in the embodiment layer.",
+        "Validate observation shape, device, timing, calibration, camera memory, and exact lossless retention before policy admission."
+      ],
+      "implementation_evidence": [
+        "src/blueprint_pipeline/adp009d_isaac_runtime.py",
+        "src/blueprint_pipeline/episode_visual_evidence.py"
+      ]
+    },
+    {
+      "guidance_id": "isaaclab-selecting-backends",
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
+      "decisions": [
+        "Select PhysX for the ADP-009D task and centralize its settings in one validated configuration.",
+        "Treat backend selection as a manifest-bound decision, not scattered runtime conditionals."
+      ],
+      "implementation_evidence": [
+        "src/blueprint_pipeline/adp009d_isaac_runtime.py",
+        "src/blueprint_pipeline/adp009d_native_microcheck_bundle.py"
+      ]
+    },
+    {
+      "guidance_id": "isaaclab-using-presets",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "Do not add PresetCfg aliases until two genuine supported backend or configuration variants exist.",
+        "The initial ADP-009D runtime has one exact PhysX configuration."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "ovrtx-loading-usd",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "OVRTX is not the selected initial observation backend; Isaac Lab Camera over Isaac Sim RTX supplies dynamic RGB, metric depth, and semantics.",
+        "Retain this audited OVRTX guidance as a fallback gate only; never mutate sealed appearance or collision sources."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "ovrtx-renderer-creation",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "The selected initial runtime does not initialize OVRTX or ovphysx.",
+        "If OVRTX later replaces the integrated camera path, initialize OVRTX before ovphysx and bind RenderProduct ordinals exactly."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "ovrtx-render-settings",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "No OVRTX RenderProduct exists in the selected initial runtime.",
+        "If OVRTX is later admitted, apply settings to each RenderProduct, bind path-tracing samples, then reset and warm up."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "ovrtx-camera-outputs-rt2",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "The selected Isaac camera path requests rgb, distance_to_camera in meters, and semantic_segmentation.",
+        "If OVRTX is later admitted, require DistanceToCameraSD or DistanceToImagePlaneSD and reject unitless DepthSD."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "ovrtx-reading-render-output",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "No OVRTX attached-mode buffer is read in the selected initial runtime.",
+        "If OVRTX is later admitted, respect write floors and ordinals and handle DLPack ownership, map/unmap, device, synchronization, and lifetime explicitly."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "ovrtx-stepping-and-rendering",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "The selected runtime steps Isaac Lab and Isaac Sim RTX together and retains explicit camera timestamps.",
+        "If OVRTX is later admitted, apply its stepping contract; simulator startup, reset, or one frame remains insufficient."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "ovrtx-warmup",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "RTPT is not used by the selected initial renderer; its 40-frame documented default therefore does not apply.",
+        "If OVRTX RTPT is later admitted, start at 40 frames and record every measured change and re-warmup."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "ovrtx-semantic-labels",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "The selected Isaac camera path authors runtime semantic tags and uses a composed collider override layer.",
+        "If OVRTX is later admitted, use its semantic override guidance and never write labels into sealed source USD."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "nvidia-omniverse-cad-to-simready",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "Use CAD-to-SimReady only for a newly admitted cousin with explicit source, rights, runtime, and evidence.",
+        "Never mutate or replace the sealed approved can through a Content Agent."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "nvidia-omniverse-usd-performance-tuning",
+      "application_status": "gated_until_measured",
+      "actually_followed": false,
+      "decisions": [
+        "Take a measured baseline before applying any USD performance mutation.",
+        "Preserve scientific identity and digest bindings across any later optimization."
+      ],
+      "implementation_evidence": []
+    },
+    {
+      "guidance_id": "nvidia-omniverse-realtime-viewer",
+      "application_status": "not_applicable",
+      "actually_followed": false,
+      "decisions": [
+        "Do not build an interactive realtime viewer because it is not an explicit deliverable.",
+        "A viewer may never replace lossless external and wrist policy-input media."
+      ],
+      "implementation_evidence": []
+    }
+  ],
+  "runtime_compatibility_decision": {
+    "isaac_sim_version_family": "6.0.x",
+    "isaac_sim_container": "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9",
+    "isaac_lab_arena_commit": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+    "isaac_lab_runtime_commit": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+    "isaac_lab_runtime_tree": "454115265327a80acabd07cbd36e10071fc0c065",
+    "isaac_groot_submodule_commit": "e29d8fc50b0e4745120ae3fb72447986fe638aa6",
+    "latest_isaac_lab_develop_runtime_admitted": false,
+    "latest_isaac_lab_develop_use": "official skill guidance only",
+    "arena_claim_ceiling": "alpha_internal_rehearsal_only",
+    "ovrtx_candidate": "0.4.0 at 4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+    "ovphysx_candidate": "0.5.9 at 7845321d31fa3619917ebe127ab5e08e73de0bdb",
+    "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX",
+    "ovrtx_selected": false,
+    "co_resident_runtime_status": "OVRTX and ovphysx not selected; exact Isaac reset-step-camera microcheck must pass before policy admission"
+  },
+  "claim_ceiling": [
+    "The audit proves exact official-source observations and binding implementation decisions at the recorded retrieval time.",
+    "It does not prove that OVRTX, ovphysx, Isaac Sim, Isaac Lab, Arena, the robot asset, or either learned policy executes together.",
+    "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
+    "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
+  ],
+  "audit_digest": "sha256:617831c18f3f5d9a4920dc9b05f8b304caeebd3951d8eca725b7db320c2bdf35"
+}

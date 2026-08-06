@@ -156,6 +156,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         "scene_bundle", "simpler_public_scene", "1", ("public_scene", "sapien")
     ),
     EvaluationRunAdapterDescriptor(
+        "scene_bundle",
+        "sealed_aura_sage_simready_scene",
+        "1",
+        ("openusd", "sealed_3dgs", "registered_collision", "digest_bound"),
+    ),
+    EvaluationRunAdapterDescriptor(
         "robot_adapter", "isaac_unitree_g1", "1", ("unitree_g1", "isaac_sim")
     ),
     EvaluationRunAdapterDescriptor(
@@ -166,6 +172,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
     ),
     EvaluationRunAdapterDescriptor(
         "robot_adapter", "simpler_google_robot", "1", ("google_robot", "sapien")
+    ),
+    EvaluationRunAdapterDescriptor(
+        "robot_adapter",
+        "isaac_lab_franka_robotiq",
+        "1",
+        ("franka_panda", "robotiq_2f_85", "manager_based", "droid"),
     ),
     EvaluationRunAdapterDescriptor(
         "task_scenario_pack", "manifest_task_scenario_pack", "1", ("manifest",)
@@ -187,6 +199,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         "simpler_condition_matrix",
         "1",
         ("deterministic", "condition_ids"),
+    ),
+    EvaluationRunAdapterDescriptor(
+        "task_scenario_pack",
+        "adp009d_deterministic_scenario_pack",
+        "1",
+        ("deterministic", "paired_seeds", "controls", "bounded_variations"),
     ),
     EvaluationRunAdapterDescriptor(
         "policy_adapter", "isaac_g1_deterministic_controller", "1", ("in_process",)
@@ -216,6 +234,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         ("exactly_two", "frozen_checkpoints"),
     ),
     EvaluationRunAdapterDescriptor(
+        "policy_adapter",
+        "adp009d_frozen_droid_policy",
+        "1",
+        ("observation_action_only", "no_grading", "frozen_checkpoint"),
+    ),
+    EvaluationRunAdapterDescriptor(
         "runtime_provider_profile",
         "isaac_provider_runtime",
         "1",
@@ -234,6 +258,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         ("immutable_external_input", "replay"),
     ),
     EvaluationRunAdapterDescriptor(
+        "runtime_provider_profile",
+        "adp009d_isaac_lab_arena_runtime",
+        "1",
+        ("isaac_sim", "isaac_lab", "arena_alpha", "live_hybrid_renderer"),
+    ),
+    EvaluationRunAdapterDescriptor(
         "proof_contract",
         "declared_evidence_proof_contract",
         "1",
@@ -244,6 +274,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         "robot_eval_proof_contract",
         "1",
         ("claim_ceiling", "runtime_closure"),
+    ),
+    EvaluationRunAdapterDescriptor(
+        "proof_contract",
+        "adp009d_simulator_state_proof",
+        "1",
+        ("deterministic_state", "exact_policy_media", "paired_controls"),
     ),
 )
 

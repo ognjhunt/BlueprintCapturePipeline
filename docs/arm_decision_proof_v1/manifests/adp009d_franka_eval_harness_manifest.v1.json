@@ -1,0 +1,512 @@
+{
+  "schema_version": "adp009d_franka_eval_harness_manifest.v1",
+  "program_id": "arm-decision-proof-v1",
+  "harness_id": "blueprint-isaac-lab-franka-task-evaluation-v1",
+  "status": "pre_runtime_contract",
+  "reusable_harness": true,
+  "workflow": "isaac_lab_manager_based",
+  "implementation_base_commit": "2dc6d76f7bce9f92c2f2745895079a5d6c6acb69",
+  "layers": {
+    "scene": {
+      "owns": [
+        "sealed Aura 3DGS appearance",
+        "registered SAGE collision",
+        "support surface",
+        "lighting",
+        "cameras",
+        "dynamic-object composition"
+      ],
+      "mutates_sealed_sources": false
+    },
+    "embodiment": {
+      "owns": [
+        "Franka Panda",
+        "Robotiq 2F-85",
+        "actuators",
+        "joint limits",
+        "wrist camera",
+        "reset state"
+      ]
+    },
+    "task": {
+      "owns": [
+        "pick",
+        "lift",
+        "translate",
+        "place",
+        "settle",
+        "deterministic state metrics",
+        "terminal classification"
+      ]
+    },
+    "policy_adapter": {
+      "owns": [
+        "observation conversion",
+        "action conversion",
+        "safety clamping"
+      ],
+      "owns_grading": false
+    },
+    "evaluation": {
+      "owns": [
+        "scenario materialization",
+        "controls",
+        "paired candidates",
+        "receipts",
+        "media",
+        "analysis",
+        "teardown"
+      ],
+      "orchestration": "blueprint_evaluation_run_contract"
+    }
+  },
+  "asset_bindings": [
+    {
+      "role": "agent_skill_audit",
+      "root": "repo",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
+      "size_bytes": 25934,
+      "sha256": "sha256:86dfc316b6e931507dba843df3686443aedb536501842b8265edff0ac62122f7"
+    },
+    {
+      "role": "approved_can",
+      "root": "repo",
+      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
+      "size_bytes": 20705128,
+      "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec"
+    },
+    {
+      "role": "aura_appearance",
+      "root": "evidence",
+      "relative_path": "aura_interiorgs/live_v12_openclip_execute/immutable_execution/artifacts/aurafusion360_840313_ins160_final.ply",
+      "size_bytes": 106309429,
+      "sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd"
+    },
+    {
+      "role": "hybrid_seal_receipt",
+      "root": "repo",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/adp009b_hybrid_replacement_seal_receipt.v1.json",
+      "size_bytes": 2626,
+      "sha256": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b"
+    },
+    {
+      "role": "original_interiorgs",
+      "root": "evidence",
+      "relative_path": "shortlist/InteriorGS/0442_840313/3dgs_compressed.ply",
+      "size_bytes": 33137360,
+      "sha256": "sha256:57c71edcb450f2323a5b8ad290b5672b437fc73b9283a7485804ce607da12254"
+    },
+    {
+      "role": "sage_collision",
+      "root": "evidence",
+      "relative_path": "shortlist/SAGE-3D_Collision_Mesh/Collision_Mesh/840313/840313_collision.usd",
+      "size_bytes": 42418216,
+      "sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41"
+    },
+    {
+      "role": "sage_usdz",
+      "root": "evidence",
+      "relative_path": "shortlist/SAGE-3D_InteriorGS_usdz/InteriorGS_usdz/840313.usdz",
+      "size_bytes": 81806718,
+      "sha256": "sha256:bcdc8d36ed88c1a5c4e7cd333479e24c67cde64ed3b3ea135f37028f70d1ebb8"
+    }
+  ],
+  "scene": {
+    "publisher_scene_id": "840313",
+    "sealed_scene_receipt_digest": "sha256:b259532be614098a3830aa9945770a96371968f9c68e8087eb21a2ca00e3c3e3",
+    "appearance_layer": "aura_appearance",
+    "collision_layer": "sage_collision",
+    "source_target_collider_prim": "/Root/ZHQYGJJVAJYEYPTUKY888888",
+    "source_target_collider_active": false,
+    "support_collider_prim": "/Root/_LTFTHJVAZ3VMPTUJU888888",
+    "support_collider_active": true,
+    "approved_object_layer": "approved_can",
+    "semantic_override_layer_policy": "compose_overlay_never_mutate_sealed_source",
+    "appearance_is_physics": false,
+    "collision_is_appearance": false
+  },
+  "embodiment": {
+    "robot": "Franka Panda",
+    "gripper": "Robotiq 2F-85",
+    "droid_compatibility_target": true,
+    "isaac_lab_asset_config": {
+      "symbol": "FRANKA_ROBOTIQ_GRIPPER_CFG",
+      "source_repository": "https://github.com/isaac-sim/IsaacLab",
+      "source_commit": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+      "source_tree": "454115265327a80acabd07cbd36e10071fc0c065",
+      "source_path": "source/isaaclab_assets/isaaclab_assets/robots/franka.py",
+      "source_blob": "f03d21760f903b09438cdccb75d11434abd5a2aa",
+      "usd_path": "{ISAAC_NUCLEUS_DIR}/Robots/FrankaRobotics/FrankaPanda/franka.usd",
+      "gripper_variant": "Robotiq_2F_85"
+    },
+    "arena_droid_runtime_asset": {
+      "embodiment_id": "droid_abs_joint_pos",
+      "source_repository": "https://github.com/isaac-sim/IsaacLab-Arena",
+      "source_commit": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+      "source_path": "isaaclab_arena/embodiments/droid/droid.py",
+      "asset_description": "official Arena DROID Franka arm plus Robotiq 2F-85 gripper",
+      "selection_reason": "exact DROID action, joint, gripper, and camera embodiment contract"
+    },
+    "command_body": "panda_hand",
+    "arm_joint_expression": "panda_joint[1-7]",
+    "gripper_drive_joint": "finger_joint",
+    "passive_gripper_joint_expressions": [
+      ".*_inner_finger_joint",
+      ".*_inner_finger_knuckle_joint",
+      "right_outer_knuckle_joint",
+      ".*_outer_.*_joint"
+    ],
+    "reset_joint_positions_rad": {
+      "panda_joint1": 0.0,
+      "panda_joint2": -0.569,
+      "panda_joint3": 0.0,
+      "panda_joint4": -2.81,
+      "panda_joint5": 0.0,
+      "panda_joint6": 3.037,
+      "panda_joint7": 0.741,
+      "finger_joint": 0.0
+    },
+    "robot_base_pose_status": "sealed_sage_analytic_candidate_requires_native_collision_reachability_probe",
+    "robot_base_pose_candidate": {
+      "position_m": [
+        3.4681748,
+        -2.9100837,
+        0.2766791
+      ],
+      "yaw_radians": -1.570796326795,
+      "placement_proposal_digest": "sha256:c1935686c0971880e254f3ae0e75a87c0ed6d20c124e0fa02086ae201d838c33",
+      "placement_packet_sha256": "sha256:e71368265ccf4aa9f4de048afced5d7535c05ed9baa4e2384837ad722b0289b4",
+      "placement_packet_size_bytes": 13596,
+      "placement_packet_evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/placement_v1/placement/adp009d_sage_franka_placement_packet.v1.json",
+      "analytic_shoulder_to_target_distance_m": 0.4,
+      "analytic_reach_candidate": true,
+      "collision_triangle_overlap_count": 0,
+      "base_support_samples_passed": 5,
+      "base_support_samples_required": 5,
+      "learned_outcomes_observed_before_selection": false
+    },
+    "wrist_camera_mount_status": "requires_robotiq_variant_native_calibration_probe"
+  },
+  "canonical_condition": {
+    "immutable": true,
+    "object_id": "approved_can",
+    "object_start_position_m": [
+      3.4681748,
+      -3.3100837,
+      0.5264650138348479
+    ],
+    "target_position_m": [
+      3.3081748,
+      -3.3100837,
+      0.5264650138348479
+    ],
+    "target_selection": {
+      "method": "SAGE support top triangles plus collision-prim AABB exclusion",
+      "translation_m": 0.16,
+      "non_support_overlap_count": 0,
+      "measurement_authority": "materialized SAGE collision bytes",
+      "native_contact_validation_status": "pending"
+    },
+    "support_bounds": {
+      "x_min_m": 3.2342791209657826,
+      "x_max_m": 5.211279156885851,
+      "y_min_m": -3.5689620890003915,
+      "y_max_m": -3.166961774558606,
+      "height_m": 0.5264650138348479,
+      "edge_margin_m": 0.01,
+      "measurement_method": "four horizontal support triangles selected from sealed SAGE collision bytes"
+    },
+    "parameters": {
+      "object_start_x_m": 3.4681748,
+      "object_start_y_m": -3.3100837,
+      "object_start_z_m": 0.5264650138348479,
+      "object_yaw_degrees": 0.0,
+      "target_x_m": 3.3081748,
+      "target_y_m": -3.3100837,
+      "target_z_m": 0.5264650138348479,
+      "robot_base_x_m": 3.4681748,
+      "robot_base_y_m": -2.9100837,
+      "robot_base_yaw_degrees": -90.0,
+      "light_intensity_scale": 1.0,
+      "light_direction_yaw_degrees": 0.0,
+      "light_color_temperature_kelvin": 5000.0,
+      "external_camera_extrinsic_dx_m": 0.0,
+      "external_camera_extrinsic_dy_m": 0.0,
+      "external_camera_extrinsic_dz_m": 0.0,
+      "external_camera_focal_scale": 1.0,
+      "wrist_camera_extrinsic_dx_m": 0.0,
+      "wrist_camera_extrinsic_dy_m": 0.0,
+      "wrist_camera_extrinsic_dz_m": 0.0,
+      "camera_exposure_scale": 1.0,
+      "camera_noise_std": 0.0,
+      "camera_blur_sigma": 0.0,
+      "camera_latency_frames": 0,
+      "object_mass_kg": 0.355,
+      "object_static_friction": 0.5,
+      "object_dynamic_friction": 0.4,
+      "object_restitution": 0.1,
+      "object_contact_offset_m": 0.005,
+      "object_rest_offset_m": 0.0,
+      "object_radius_m": 0.031094726014345042,
+      "object_height_m": 0.1694279937744141
+    },
+    "camera_calibration_status": "requires_native_renderer_probe_before_protocol_freeze",
+    "lighting_status": "requires_native_renderer_probe_before_protocol_freeze",
+    "robot_base_status": "analytic_candidate_frozen_requires_native_reachability_probe_before_protocol_freeze"
+  },
+  "task": {
+    "task_id": "pick_lift_translate_place_settle_same_support",
+    "phases": [
+      "approach",
+      "grasp",
+      "lift",
+      "translate",
+      "place",
+      "release",
+      "settle"
+    ],
+    "success_thresholds": {
+      "minimum_lift_m": 0.08,
+      "minimum_translation_m": 0.15,
+      "maximum_center_error_m": 0.05,
+      "maximum_tilt_degrees": 15.0,
+      "minimum_settle_duration_s": 1.0,
+      "maximum_settled_linear_speed_m_s": 0.02,
+      "maximum_settled_angular_speed_rad_s": 0.15,
+      "same_support_surface_required": true,
+      "grasp_required": true
+    },
+    "grader_authority": "deterministic_simulator_state",
+    "policy_may_grade_itself": false,
+    "terminal_precedence": [
+      "camera_failure",
+      "invalid_observation",
+      "policy_runtime_failure",
+      "joint_limit_violation",
+      "collision_violation",
+      "drop",
+      "support_loss",
+      "success",
+      "timeout"
+    ],
+    "terminal_definitions": {
+      "success": {
+        "condition": "grasp established, lift >=0.08 m, transport >=0.15 m, released on preregistered target on the same support, settled >=1.0 s, center error <=0.05 m, tilt <=15 degrees"
+      },
+      "timeout": {
+        "condition": "episode horizon expires before another terminal"
+      },
+      "drop": {
+        "condition": "after grasp, object loses gripper support and falls below the support height minus 0.03 m or contacts a forbidden lower surface"
+      },
+      "support_loss": {
+        "condition": "terminal object center or contact footprint leaves the admitted support polygon outside the frozen edge margin"
+      },
+      "collision_violation": {
+        "condition": "robot or object contacts a forbidden environment prim or exceeds the frozen impulse limit"
+      },
+      "joint_limit_violation": {
+        "condition": "any joint exceeds its hard position, velocity, effort, or torque limit after tolerance"
+      },
+      "camera_failure": {
+        "condition": "a required external or wrist frame, calibration, timestamp, metric depth, or segmentation output is missing or stale"
+      },
+      "invalid_observation": {
+        "condition": "policy observation has the wrong schema, shape, device, timing, calibration, finite-value status, or retained-frame digest"
+      },
+      "policy_runtime_failure": {
+        "condition": "policy process errors, misses the frozen deadline, returns an invalid action, or violates its admitted runtime contract"
+      }
+    }
+  },
+  "managers": {
+    "ObservationManager": {
+      "owns": [
+        "external RGB",
+        "wrist RGB",
+        "metric depth",
+        "segmentation",
+        "camera calibration",
+        "proprioception",
+        "grader state"
+      ]
+    },
+    "ActionManager": {
+      "owns": [
+        "DROID action conversion",
+        "Franka command limits",
+        "Robotiq gripper semantics",
+        "clipping trace"
+      ]
+    },
+    "EventManager": {
+      "terms": [
+        {
+          "term_id": "validate_static_asset_and_backend_bindings",
+          "mode": "prestartup"
+        },
+        {
+          "term_id": "configure_scene_renderer_semantics_and_physx",
+          "mode": "startup"
+        },
+        {
+          "term_id": "apply_resolved_scenario_and_reset_state",
+          "mode": "reset"
+        },
+        {
+          "term_id": "capture_timestamped_observations_and_runtime_health",
+          "mode": "interval"
+        }
+      ]
+    },
+    "TerminationManager": {
+      "terminal_ids": [
+        "success",
+        "timeout",
+        "drop",
+        "support_loss",
+        "collision_violation",
+        "joint_limit_violation",
+        "camera_failure",
+        "invalid_observation",
+        "policy_runtime_failure"
+      ]
+    },
+    "RecorderManager": {
+      "required_outputs": [
+        "episode receipt",
+        "state trace",
+        "contact trace",
+        "action trace",
+        "external lossless frames",
+        "wrist lossless frames",
+        "frame manifests",
+        "review videos",
+        "replay identity"
+      ]
+    }
+  },
+  "physics": {
+    "backend": "physx",
+    "centralized": true,
+    "configuration_id": "adp009d_physx_l40s_v1",
+    "settings": {
+      "physics_dt_seconds": 0.008333333333333333,
+      "control_decimation": 8,
+      "control_frequency_hz": 15.0,
+      "solver": "TGS",
+      "use_gpu_pipeline": true,
+      "enable_enhanced_determinism": true,
+      "solver_position_iteration_count": 8,
+      "solver_velocity_iteration_count": 2,
+      "gpu_max_rigid_contact_count": 8388608,
+      "gpu_max_rigid_patch_count": 32768,
+      "contact_offset_m": 0.005,
+      "rest_offset_m": 0.0,
+      "max_depenetration_velocity_m_s": 5.0,
+      "retry_cap": 0
+    },
+    "entity_overrides": {
+      "official_arena_droid_robot": {
+        "solver_position_iteration_count": 64,
+        "solver_velocity_iteration_count": 0,
+        "max_depenetration_velocity_m_s": 5.0,
+        "source": "Isaac Lab Arena droid.py at the pinned release revision"
+      },
+      "approved_can_and_cousins": {
+        "solver_position_iteration_count": 8,
+        "solver_velocity_iteration_count": 2,
+        "max_depenetration_velocity_m_s": 5.0
+      }
+    },
+    "runtime_override_policy": "resolved scenario parameters only; no scattered conditionals"
+  },
+  "observation_renderer": {
+    "backend_candidate": "Isaac Lab Camera over Isaac Sim RTX",
+    "backend_status": "must_pass_live_microcheck",
+    "composition": "live_depth_correct_aura_dynamic_geometry",
+    "aura_camera_pose_source": "same live Isaac camera calibration and timestamp",
+    "dynamic_geometry": [
+      "Franka Panda",
+      "Robotiq 2F-85",
+      "approved can or admitted cousin",
+      "other dynamic geometry"
+    ],
+    "metric_depth_aov": "distance_to_camera",
+    "unitless_depth_sd_allowed": false,
+    "required_aovs": [
+      "rgb",
+      "distance_to_camera",
+      "semantic_segmentation"
+    ],
+    "lossless_policy_cameras": [
+      "external",
+      "wrist"
+    ],
+    "camera_calibration_retained_per_frame": true,
+    "timestamp_retained_per_frame": true,
+    "ovrtx_used_by_selected_path": false,
+    "ovrtx_selection_status": "audited_fallback_not_selected_unless_integrated_camera_path_measures_incompatible",
+    "selected_path_reason": "same-process Isaac Lab Camera tensors share the manager-based environment camera pose, physics timestamp, and CUDA device",
+    "semantic_override_layer": true,
+    "dlpack_ownership_map_unmap_device_sync_explicit": true,
+    "reset_and_warmup_after_camera_or_setting_change": true,
+    "forbidden_fallbacks": [
+      "plain_sage_mesh_appearance",
+      "old_2d_overlay",
+      "browser_render",
+      "unrelated_frames"
+    ],
+    "missing_blocker": "sealed_aura_hybrid_policy_observation_renderer_missing"
+  },
+  "validation_sequence": [
+    "import_and_configuration",
+    "one_environment",
+    "reset",
+    "physics_step",
+    "one_zero_or_random_action",
+    "observation_shape_device_timing",
+    "camera_outputs_and_memory",
+    "scripted_control",
+    "larger_evaluation_execution"
+  ],
+  "runtime_pins": {
+    "isaac_sim_family": "6.0.x",
+    "isaac_lab_arena": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+    "isaac_lab": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+    "isaac_groot_submodule": "e29d8fc50b0e4745120ae3fb72447986fe638aa6",
+    "ovrtx": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+    "physx": "7845321d31fa3619917ebe127ab5e08e73de0bdb",
+    "arena_claim_ceiling": "alpha_internal_rehearsal_only"
+  },
+  "evaluation_admission": {
+    "full_evaluation": false,
+    "startup_is_not_evaluation": true,
+    "reset_is_not_evaluation": true,
+    "single_nominal_rollout_is_not_evaluation": true,
+    "prepared_job_is_not_evaluation": true,
+    "caller_asserted_success_accepted": false,
+    "required_before_policy": [
+      "physics reachability",
+      "reproducible reset",
+      "live renderer calibration depth segmentation composition",
+      "zero-action canonical rejection",
+      "scripted canonical success",
+      "controls on every scored cell"
+    ]
+  },
+  "blockers": [
+    "sealed_aura_hybrid_policy_observation_renderer_missing",
+    "franka_robotiq_native_reset_contact_reachability_missing",
+    "robot_base_and_camera_calibration_native_probe_missing",
+    "cousin_native_control_validation_missing"
+  ],
+  "claim_ceiling": [
+    "development_only",
+    "simulator_only",
+    "public_scene_specific",
+    "no_policy_result_yet",
+    "no_physical_transfer_claim"
+  ],
+  "harness_digest": "sha256:878c3a05bf0f1317eb1a3308e1465ba63f15730a6695ad284d7cc3030b1597d9"
+}

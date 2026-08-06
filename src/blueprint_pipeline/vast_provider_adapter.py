@@ -274,7 +274,12 @@ def _string(value: Any) -> str:
 def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
     """Return whether a bundle must use the Isaac image/runtime safety path."""
 
-    return provider_bundle_kind in {"isaac", "adp_simready_isaac", "adp_arena"}
+    return provider_bundle_kind in {
+        "isaac",
+        "adp_simready_isaac",
+        "adp_arena",
+        "adp009d_isaac",
+    }
 
 
 def _provider_expected_video_count(provider_bundle_kind: str) -> int:
@@ -1929,6 +1934,16 @@ def _blueprint_bundle_preflight(
         "provider_runtime/founder_sim_approval_receipt.json",
         "provider_runtime/arena_worker_request.json",
     }
+    adp009d_isaac_required_entries = {
+        "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "provider_runtime/adp_arena_provider_runner.py",
+        "provider_runtime/adp_arena_provider_manifest.json",
+        "provider_runtime/adp009d_isaac_runtime.py",
+        "provider_runtime/adp009d_franka_eval_harness_manifest.v1.json",
+        "provider_runtime/assets/approved_can.usda",
+        "provider_runtime/assets/sage_collision.usd",
+        "provider_runtime/assets/sage_collision_overlay.usda",
+    }
     adp_content_agents_required_entries = {
         "provider_runtime/run_adp_content_agents_provider_runtime.sh",
         "provider_runtime/adp_content_agents_provider_runner.py",
@@ -1981,6 +1996,11 @@ def _blueprint_bundle_preflight(
         readiness_name = "adp_simpler_provider_manifest.json"
     elif provider_bundle_kind == "adp_arena":
         required_entries = adp_arena_required_entries
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_arena_provider_runner.py"
+        readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "adp009d_isaac":
+        required_entries = adp009d_isaac_required_entries
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
@@ -2045,6 +2065,7 @@ def _blueprint_bundle_preflight(
             "unitree_groot_n17_sonic",
             "adp_simpler",
             "adp_arena",
+            "adp009d_isaac",
             "adp_content_agents",
             "adp_aura_smoke",
             "adp_aura_interiorgs",
@@ -2586,6 +2607,7 @@ def _resolve_launch_mode(
             "unitree_unifolm",
             "adp_simpler",
             "adp_arena",
+            "adp009d_isaac",
             "adp_content_agents",
             "adp_aura_smoke",
             "adp_aura_interiorgs",
@@ -2635,7 +2657,7 @@ def _probe_env(
         "BLUEPRINT_VAST_PROBE": "true",
         "BLUEPRINT_VAST_PROBE_JOB_DIR_BASENAME": job_dir.name,
     }
-    if enable_isaac_smoke or provider_bundle_kind == "adp_arena":
+    if enable_isaac_smoke or provider_bundle_kind in {"adp_arena", "adp009d_isaac"}:
         env.update(
             {
                 "ACCEPT_EULA": "Y",
@@ -3160,7 +3182,7 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
                 "fi; fi; fi; fi; "
             )
-        elif provider_bundle_kind == "adp_arena":
+        elif provider_bundle_kind in {"adp_arena", "adp009d_isaac"}:
             script += (
                 common_start + "RUNTIME_PY=/isaac-sim/python.sh; "
                 'if [ ! -x "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; '
@@ -4074,6 +4096,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "evaluator",
             "adp_simpler",
             "adp_arena",
+            "adp009d_isaac",
             "adp_content_agents",
             "adp_aura_smoke",
             "adp_aura_interiorgs",
@@ -4738,6 +4761,7 @@ def run_vast_provider_adapter(
             "unitree_groot_n17_sonic",
             "adp_simpler",
             "adp_arena",
+            "adp009d_isaac",
         }
         and _string(provider_bundle_url)
         and inline_bundle_transport.get("inline_provider_bundle_transport_used") is True

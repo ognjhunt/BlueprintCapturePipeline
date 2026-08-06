@@ -7,8 +7,11 @@ import pytest
 
 from blueprint_pipeline.adp_prospective_design import validate_episode_evidence_contract
 from blueprint_pipeline.episode_visual_evidence import (
+    finalize_multicamera_visual_evidence,
     finalize_visual_evidence,
+    persist_multicamera_observation,
     persist_observation_frame,
+    validate_multicamera_frame_manifest,
 )
 
 
@@ -81,4 +84,171 @@ def test_media_seal_retains_lossless_inputs_terminal_manifest_and_review_video(
             episode_id=episode_id,
             frame_index=0,
             kind="policy-input",
+        )
+
+
+def _calibration(width: int = 64, height: int = 32) -> dict:
+    return {
+        "camera_model": "pinhole",
+        "intrinsic_matrix": [
+            [48.0, 0.0, width / 2],
+            [0.0, 48.0, height / 2],
+            [0.0, 0.0, 1.0],
+        ],
+        "world_from_camera": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "resolution": [width, height],
+        "near_m": 0.01,
+        "far_m": 20.0,
+        "distortion": [0.0, 0.0, 0.0, 0.0, 0.0],
+    }
+
+
+def _multicamera_observation(
+    tmp_path,
+    *,
+    episode_id: str,
+    index: int,
+    kind: str,
+) -> dict:
+    images = {
+        "external": np.full((32, 64, 3), 10 + index, dtype=np.uint8),
+        "wrist": np.full((32, 64, 3), 20 + index, dtype=np.uint8),
+    }
+    return persist_multicamera_observation(
+        images,
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        observation_index=index,
+        kind=kind,
+        timestamp_ns=100 + index,
+        simulation_time_s=index / 15.0,
+        calibrations={camera_id: _calibration() for camera_id in images},
+        source_devices={camera_id: "cuda:0" for camera_id in images},
+        synchronizations={
+            camera_id: {
+                "host_bytes_ready": True,
+                "method": "explicit_cuda_event_then_copy",
+                "dlpack_ownership": "producer_retained_until_copy_complete",
+            }
+            for camera_id in images
+        },
+    )
+
+
+def test_multicamera_media_retains_exact_views_calibration_and_timestamps(
+    tmp_path,
+) -> None:
+    episode_id = "episode-multicamera-1"
+    observations = [
+        _multicamera_observation(
+            tmp_path, episode_id=episode_id, index=index, kind="policy-input"
+        )
+        for index in range(2)
+    ]
+    terminal = _multicamera_observation(
+        tmp_path,
+        episode_id=episode_id,
+        index=2,
+        kind="terminal-observation",
+    )
+
+    visual, artifacts = finalize_multicamera_visual_evidence(
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        identity={
+            "policy_id": "pi05_droid",
+            "scenario_instance_digest": "sha256:" + "1" * 64,
+        },
+        policy_input_observations=observations,
+        terminal_observation=terminal,
+        frames_per_second=15.0,
+    )
+    manifest_artifact = next(
+        row
+        for row in artifacts
+        if row["role"] == "multicamera_observation_frame_manifest"
+    )
+    manifest = json.loads(
+        (tmp_path / manifest_artifact["relative_path"]).read_text(encoding="utf-8")
+    )
+
+    validate_multicamera_frame_manifest(
+        manifest, output_dir=tmp_path, verify_files=True
+    )
+    assert visual["required_camera_ids"] == ["external", "wrist"]
+    assert visual["policy_input_observation_count"] == 2
+    assert visual["policy_input_frame_count"] == 4
+    assert set(visual["videos"]) == {"external", "wrist"}
+    assert all(
+        row["calibration_digest"].startswith("sha256:")
+        for row in artifacts
+        if row["role"] == "policy_input_camera_frame"
+    )
+    assert [
+        row["timestamp_ns"] for row in manifest["policy_input_observations"]
+    ] == [100, 101]
+
+
+def test_multicamera_media_rejects_unsynchronized_or_changed_frame(tmp_path) -> None:
+    with pytest.raises(ValueError, match="host_bytes_not_synchronized"):
+        persist_multicamera_observation(
+            {"external": np.zeros((32, 64, 3), dtype=np.uint8)},
+            output_dir=tmp_path,
+            episode_id="bad-sync",
+            observation_index=0,
+            kind="policy-input",
+            timestamp_ns=1,
+            simulation_time_s=0.0,
+            calibrations={"external": _calibration()},
+            source_devices={"external": "cuda:0"},
+            synchronizations={"external": {"host_bytes_ready": False}},
+        )
+
+    episode_id = "episode-multicamera-tamper"
+    policy_input = _multicamera_observation(
+        tmp_path, episode_id=episode_id, index=0, kind="policy-input"
+    )
+    terminal = _multicamera_observation(
+        tmp_path,
+        episode_id=episode_id,
+        index=1,
+        kind="terminal-observation",
+    )
+    _, artifacts = finalize_multicamera_visual_evidence(
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        identity={"policy_id": "groot_n17_droid"},
+        policy_input_observations=[policy_input],
+        terminal_observation=terminal,
+    )
+    manifest_artifact = next(
+        row
+        for row in artifacts
+        if row["role"] == "multicamera_observation_frame_manifest"
+    )
+    manifest = json.loads(
+        (tmp_path / manifest_artifact["relative_path"]).read_text(encoding="utf-8")
+    )
+    external_path = (
+        tmp_path
+        / manifest["policy_input_observations"][0]["views"]["external"][
+            "relative_path"
+        ]
+    )
+    from PIL import Image
+
+    changed = np.full((32, 64, 3), 99, dtype=np.uint8)
+    Image.fromarray(changed, mode="RGB").save(external_path, format="PNG")
+
+    with pytest.raises(
+        ValueError,
+        match="multicamera_frame_manifest_(png|raw)_digest_mismatch",
+    ):
+        validate_multicamera_frame_manifest(
+            manifest, output_dir=tmp_path, verify_files=True
         )

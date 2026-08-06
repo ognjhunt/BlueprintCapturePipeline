@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import copy
+
+import numpy as np
+import pytest
+
+from blueprint_pipeline.adp009d_live_hybrid_observation import (
+    HYBRID_RUNTIME_RECEIPT_SCHEMA_VERSION,
+    LiveHybridObservationError,
+    compose_live_hybrid_observation,
+    validate_live_hybrid_runtime_receipt,
+)
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+
+def _calibration() -> dict:
+    return {
+        "camera_model": "pinhole",
+        "intrinsic_matrix": [
+            [40.0, 0.0, 1.0],
+            [0.0, 40.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ],
+        "world_from_camera": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "resolution": [2, 2],
+    }
+
+
+def _arrays() -> dict:
+    return {
+        "aura_rgb": np.full((2, 2, 3), 10, dtype=np.uint8),
+        "aura_depth_m": np.full((2, 2), 1.0, dtype=np.float32),
+        "dynamic_rgb": np.full((2, 2, 3), 100, dtype=np.uint8),
+        "dynamic_depth_m": np.array([[0.5, 1.5], [2.0, 2.0]], dtype=np.float32),
+        "dynamic_segmentation": np.array([[7, 7], [0, 0]], dtype=np.int32),
+        "dynamic_alpha": np.array([[1.0, 1.0], [0.0, 0.0]], dtype=np.float32),
+    }
+
+
+def test_metric_depth_composition_preserves_front_and_static_occlusion() -> None:
+    composed, receipt = compose_live_hybrid_observation(
+        **_arrays(),
+        aura_calibration=_calibration(),
+        isaac_calibration=_calibration(),
+        timestamp_ns=123,
+        simulation_time_s=1.25,
+        dynamic_depth_aov="DistanceToCameraSD",
+        semantic_labels={7: "robot"},
+        semantic_override_layer_digest="sha256:" + "a" * 64,
+    )
+
+    assert composed[0, 0].tolist() == [100, 100, 100]
+    assert composed[0, 1].tolist() == [10, 10, 10]
+    assert receipt["dynamic_front_pixel_count"] == 1
+    assert receipt["dynamic_occluded_pixel_count"] == 1
+    assert receipt["visual_judgment_used_for_success"] is False
+    assert receipt["live_execution_proven_by_this_function"] is False
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def test_composition_rejects_unitless_depth_or_mismatched_camera() -> None:
+    changed = _calibration()
+    changed["world_from_camera"][0][3] = 0.01
+
+    with pytest.raises(
+        LiveHybridObservationError,
+        match="hybrid_camera_calibration_mismatch.*hybrid_metric_dynamic_depth_aov_required",
+    ):
+        compose_live_hybrid_observation(
+            **_arrays(),
+            aura_calibration=_calibration(),
+            isaac_calibration=changed,
+            timestamp_ns=123,
+            simulation_time_s=1.25,
+            dynamic_depth_aov="DepthSD",
+            semantic_labels={7: "robot"},
+            semantic_override_layer_digest="sha256:" + "a" * 64,
+        )
+
+
+def test_composition_rejects_visible_semantic_pixel_without_metric_depth() -> None:
+    arrays = _arrays()
+    arrays["dynamic_depth_m"][0, 0] = np.nan
+
+    with pytest.raises(
+        LiveHybridObservationError, match="hybrid_dynamic_metric_depth_missing"
+    ):
+        compose_live_hybrid_observation(
+            **arrays,
+            aura_calibration=_calibration(),
+            isaac_calibration=_calibration(),
+            timestamp_ns=123,
+            simulation_time_s=1.25,
+            dynamic_depth_aov="DistanceToImagePlaneSD",
+            semantic_labels={7: "robot"},
+            semantic_override_layer_digest="sha256:" + "a" * 64,
+        )
+
+
+def _runtime_receipt() -> dict:
+    value = {
+        "schema_version": HYBRID_RUNTIME_RECEIPT_SCHEMA_VERSION,
+        "status": "executed_live_renderer_microcheck",
+        "backend": "OVRTX",
+        "initialization_order": ["OVRTX", "OvPhysX"],
+        "render_settings_target": "RenderProduct",
+        "metric_depth_aov": "DistanceToCameraSD",
+        "unitless_depth_sd_used": False,
+        "attached_mode_ordinals_respected": True,
+        "write_floors_respected": True,
+        "semantic_source_usd_mutated": False,
+        "semantic_override_layer_composed": True,
+        "camera_or_settings_change_reset": True,
+        "dlpack_ownership_explicit": True,
+        "map_unmap_balanced": True,
+        "device_synchronization_explicit": True,
+        "rtpt_warmup_frames": 40,
+        "rtpt_warmup_change_reason": None,
+        "path_tracing_used": False,
+        "path_tracing_samples_per_pixel": None,
+        "camera_ids": ["external", "wrist"],
+        "observed_frame_count": 4,
+        "frame_receipt_digests": ["sha256:" + "b" * 64],
+        "policy_frames_retained_losslessly": True,
+        "camera_motion_occlusion_probe_passed": True,
+        "static_occlusion_probe_passed": True,
+        "moving_occlusion_probe_passed": True,
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    return value
+
+
+def test_live_runtime_receipt_requires_executed_ovrtx_evidence() -> None:
+    receipt = _runtime_receipt()
+    assert validate_live_hybrid_runtime_receipt(receipt) == receipt
+
+    mutated = copy.deepcopy(receipt)
+    mutated["status"] = "prepared"
+    mutated["semantic_source_usd_mutated"] = True
+    mutated["rtpt_warmup_frames"] = 12
+    mutated["receipt_digest"] = canonical_digest(
+        mutated, digest_field="receipt_digest"
+    )
+    with pytest.raises(
+        LiveHybridObservationError,
+        match=(
+            "hybrid_runtime_rtpt_warmup_below_documented_default.*"
+            "hybrid_runtime_sealed_source_mutated.*"
+            "sealed_aura_hybrid_policy_observation_renderer_missing"
+        ),
+    ):
+        validate_live_hybrid_runtime_receipt(mutated)

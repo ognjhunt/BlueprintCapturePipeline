@@ -17,6 +17,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "unitree_groot_n17_sonic",
     "adp_simpler",
     "adp_arena",
+    "adp009d_isaac",
     "adp_content_agents",
     "adp_aura_smoke",
     "adp_aura_interiorgs",
@@ -143,6 +144,22 @@ def provider_runtime_contract_blockers(
             and "provider_zero_required_after_return" in runner_text
         )
         runner_blocker = "provider_runner_missing_adp_arena_runtime_contract"
+    elif provider_bundle_kind == "adp009d_isaac":
+        entrypoint_valid = (
+            "adp009d_worker_failed_without_runtime_result" in entrypoint_text
+            and "adp009d_native_microcheck.json" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp009d_native_microcheck.json",
+                "ARENA_REVISION",
+                "ISAAC_LAB_REVISION",
+                "provider_zero_required_after_return",
+                "candidate_policy_queried",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp009d_isaac_runtime_contract"
     elif provider_bundle_kind == "adp_content_agents":
         entrypoint_valid = (
             "adp_content_agents_runner_failed_without_runtime_result" in entrypoint_text

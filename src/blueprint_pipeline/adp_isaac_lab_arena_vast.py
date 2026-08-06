@@ -214,10 +214,19 @@ def build_arena_native_control_bundle(
     return receipt
 
 
-def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
+def _extract_provider_output(
+    path: Path,
+    destination: Path,
+    *,
+    result_name: str = "adp_arena_native_canary.json",
+    blocker_prefix: str = "adp_arena",
+) -> dict[str, Any]:
     blockers: list[str] = []
     if not path.is_file():
-        return {"status": "blocked", "blockers": ["adp_arena_provider_output_zip_missing"]}
+        return {
+            "status": "blocked",
+            "blockers": [f"{blocker_prefix}_provider_output_zip_missing"],
+        }
     if destination.exists():
         shutil.rmtree(destination)
     ensure_dir(destination)
@@ -227,15 +236,15 @@ def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
             for member in archive.infolist():
                 target = (destination / member.filename).resolve()
                 if root not in target.parents and target != root:
-                    blockers.append("adp_arena_provider_output_zip_path_traversal")
+                    blockers.append(f"{blocker_prefix}_provider_output_zip_path_traversal")
             if not blockers:
                 archive.extractall(destination)
     except (OSError, zipfile.BadZipFile):
-        blockers.append("adp_arena_provider_output_zip_invalid")
-    result_path = destination / "adp_arena_native_canary.json"
+        blockers.append(f"{blocker_prefix}_provider_output_zip_invalid")
+    result_path = destination / result_name
     execution = _read_json(result_path)
     if not execution:
-        blockers.append("adp_arena_native_canary_result_missing")
+        blockers.append(f"{blocker_prefix}_runtime_result_missing")
     return {
         "status": "completed" if not blockers else "blocked",
         "result_path": str(result_path),
@@ -255,6 +264,20 @@ def run_arena_native_control_vast(
     max_hourly_rate_usd: float = 1.00,
     hard_cap_usd: float = 4.00,
     hard_ttl_seconds: int = 14_400,
+    expected_output_filename: str = "adp_arena_native_canary.json",
+    container_image: str = DEFAULT_IMAGE,
+    provider_bundle_kind: str = "adp_arena",
+    result_schema_version: str = RESULT_SCHEMA_VERSION,
+    object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
+    instance_label_prefix: str = "blueprint-adp-arena-",
+    blocker_prefix: str = "adp_arena",
+    min_gpu_ram_mb: int = 24_000,
+    preferred_gpu_keywords: tuple[str, ...] = (
+        "RTX 4090",
+        "RTX A6000",
+        "RTX A5000",
+        "RTX 3090",
+    ),
 ) -> dict[str, Any]:
     """Run one zero-retry Arena native-control acquisition on Vast."""
 
@@ -277,7 +300,7 @@ def run_arena_native_control_vast(
         raise ValueError("adp_arena_prepared_bundle_binding_invalid")
     if not execute:
         result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
+            "schema_version": result_schema_version,
             "generated_at": generated,
             "status": "dry_run_ready",
             "bundle": bundle,
@@ -300,7 +323,7 @@ def run_arena_native_control_vast(
     )
     if remaining_live_minutes < 30:
         result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
+            "schema_version": result_schema_version,
             "generated_at": generated,
             "status": "blocked",
             "attempt_number": attempt_number,
@@ -315,13 +338,13 @@ def run_arena_native_control_vast(
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
         bundle_path=str(bundle_path),
-        key_prefix=os.getenv("BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", DEFAULT_KEY_PREFIX),
+        key_prefix=os.getenv("BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", object_store_key_prefix),
         expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
         generated_at=generated,
     )
     if staging.get("status") != "completed":
         result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
+            "schema_version": result_schema_version,
             "generated_at": generated,
             "status": "blocked",
             "attempt_number": attempt_number,
@@ -353,8 +376,8 @@ def run_arena_native_control_vast(
                 hard_cap_usd=hard_cap_usd,
                 max_live_minutes=remaining_live_minutes,
                 session_max_live_minutes=hard_ttl_seconds // 60,
-                public_image=DEFAULT_IMAGE,
-                isaac_image=DEFAULT_IMAGE,
+                public_image=container_image,
+                isaac_image=container_image,
                 ngc_image_login_mode="always",
                 provider_bundle=str(bundle_path),
                 provider_bundle_url=bundle_url,
@@ -363,41 +386,46 @@ def run_arena_native_control_vast(
                 provider_runtime_output_zip=output_zip,
                 enable_isaac_smoke=True,
                 enable_blueprint_bundle=True,
-                provider_bundle_kind="adp_arena",
+                provider_bundle_kind=provider_bundle_kind,
                 vast_launch_mode="ssh_direct",
                 allow_cold_isaac_image_pull=True,
                 min_cold_isaac_pull_live_minutes=30,
                 disk_gb=200,
-                min_gpu_ram_mb=24_000,
+                min_gpu_ram_mb=min_gpu_ram_mb,
                 poll_interval_seconds=15,
                 startup_timeout_seconds=remaining_live_minutes * 60,
                 heartbeat_no_progress_seconds=1800,
                 session_budget_ledger_path=job / "adp_arena_vast_session_budget.json",
                 verify_staging_urls=True,
                 require_known_supported_isaac_driver=True,
-                preferred_gpu_keywords=("RTX 4090", "RTX A6000", "RTX A5000", "RTX 3090"),
+                preferred_gpu_keywords=preferred_gpu_keywords,
                 prefer_isaac_rt=True,
                 machine_avoidlist_path=local_avoidlist,
-                instance_label_prefix="blueprint-adp-arena-",
+                instance_label_prefix=instance_label_prefix,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
-    extracted = _extract_provider_output(output_zip, attempt_root / "immutable_execution")
+    extracted = _extract_provider_output(
+        output_zip,
+        attempt_root / "immutable_execution",
+        result_name=expected_output_filename,
+        blocker_prefix=blocker_prefix,
+    )
     execution = dict(extracted.get("execution") or {})
     teardown = _read_json(provider_run / "vast_teardown_manifest.json")
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
     if execution.get("status") != "completed":
-        blockers.extend(execution.get("blockers") or ["adp_arena_native_control_not_completed"])
+        blockers.extend(execution.get("blockers") or [f"{blocker_prefix}_runtime_not_completed"])
     if execution.get("candidate_policy_queried") is not False:
-        blockers.append("adp_arena_native_control_candidate_policy_queried")
+        blockers.append(f"{blocker_prefix}_candidate_policy_queried")
     if teardown.get("continuing_spend_from_this_run") is not False:
-        blockers.append("adp_arena_vast_provider_zero_not_proven")
+        blockers.append(f"{blocker_prefix}_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
-        blockers.append("adp_arena_object_store_provider_zero_not_proven")
+        blockers.append(f"{blocker_prefix}_object_store_provider_zero_not_proven")
     result = {
-        "schema_version": RESULT_SCHEMA_VERSION,
+        "schema_version": result_schema_version,
         "generated_at": generated,
         "status": "completed" if not blockers else "blocked",
         "attempt_number": attempt_number,
