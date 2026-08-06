@@ -64,6 +64,20 @@ budget. No selected source collider has been removed and no replacement USD has
 been inserted into scene `840313`. The Content Agents asset remains a static
 authoring candidate until the dynamic Isaac probes pass.
 
+The stricter successor `v3_execute_a019b8d18` also completed with zero retries
+and provider/object-store zero. It froze eight evenly spaced views before
+inpainting from 30 qualifying candidates, reduced each `1024x768` virtual mask
+to 6,974--9,118 pixels, and accepted 16,320 added vertices against a 27,036
+budget. The retained 556,993-vertex point cloud is 173,783,737 bytes with
+SHA-256 `07cf0b4257b2d2b0ddf2f38b4160a2040afe1d563ec198d0234b2fb93e4c6953`.
+An independent exact-Metal replay at the same eight `2048x1536` cameras improved
+outside-mask locality to mean PSNR `23.120988`, windowed SSIM `0.96934142`,
+LPIPS `0.06955915`, and `7.287259%` of pixels changing by more than `20/255`.
+The output still contains obvious black spikes and translucent streaks around
+the target support, so it remains an executed quality rejection rather than a
+successful inpainting result. Another paid Inpaint360GS retry is not warranted
+without a new, preregistered causal hypothesis.
+
 Aura attempts `live_v1` through `live_v5` are retained outside git under the
 rights-safe validation tree. All used zero retries and executed no author
 inpainting command. They isolated, in order, Torch-missing isolated native
