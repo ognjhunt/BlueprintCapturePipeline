@@ -101,19 +101,17 @@
       "status": "blocked"
     },
     {
-      "blockers": [
-        "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
-      ],
-      "component_admission_receipt_digest": "sha256:5c4b8183057f25b34c548ce77bac85a2eec944fb0acce6b0ef69c9683256ae43",
-      "component_manifest_digest": "sha256:2bc857eda13d4d3be52550e21a40a270cc04e408c56024ec4ae090beb6938a0b",
-      "exact_artifact_digest": "sha256:f7c4c82398230065ac9cc830afdc74a3be7e48e5104438a2c2567ddea986d9c4",
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:4639ad329883b177f346c9a6f88e7063e8fef34c500427ab2caa048c992e1559",
+      "component_manifest_digest": "sha256:1268909468948cb0d30d071636d69dfcae0b4eb986e78d460a4f71ce87fa3880",
+      "exact_artifact_digest": "sha256:f997f76c3396dedf5a9ef1e92e121565fc6dd263156a1311af0c273bda732660",
       "exact_revision": {
         "kind": "git_commit",
         "value": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3"
       },
       "role": "exact_simready_object",
       "source_project_id": "Blueprint-controlled",
-      "status": "blocked"
+      "status": "admitted"
     },
     {
       "blockers": [],
@@ -157,7 +155,7 @@
       "status": "blocked"
     }
   ],
-  "index_digest": "sha256:572dc8b01ce7acdb5d13cc9f672c59809aa9cbd128285fe65ad8d866dc2e452d",
+  "index_digest": "sha256:46df47cf8cc30928e2f4acd834a9679a6f2da748286844fd1cfb8e71759ec670",
   "index_id": "adp009a-public-suite-20260804",
   "program_id": "arm-decision-proof-v1",
   "schema_version": "public_scene_suite_index.v1"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 from PIL import Image
 import pytest
@@ -137,6 +138,87 @@ def test_materializer_derives_mesh_usd_and_prepared_receipt(tmp_path: Path) -> N
     assert 'def Mesh "body"' in authored
     assert 'physics:approximation = "sdf"' in authored
     assert 'def BasisCurves "grasp_identifier_01"' in authored
+
+
+def test_materializer_validates_byte_identical_asset_in_isolated_folder(
+    tmp_path: Path,
+) -> None:
+    repo_root, evidence_root, request_path = _fixture(tmp_path)
+    foundation = tmp_path / "simready-foundation"
+    foundation.mkdir()
+    (foundation / "LICENSE.txt").write_text("Apache-2.0\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(foundation)], check=True)
+    subprocess.run(
+        ["git", "-C", str(foundation), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(foundation), "config", "user.name", "Test"], check=True
+    )
+    subprocess.run(["git", "-C", str(foundation), "add", "LICENSE.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(foundation), "commit", "-q", "-m", "fixture"], check=True
+    )
+    commit = subprocess.check_output(
+        ["git", "-C", str(foundation), "rev-parse", "HEAD"], text=True
+    ).strip()
+    tree = subprocess.check_output(
+        ["git", "-C", str(foundation), "rev-parse", "HEAD^{tree}"], text=True
+    ).strip()
+
+    validator = tmp_path / "simready-validate"
+    validator.write_text(
+        """#!/usr/bin/env python3
+import json
+import pathlib
+import sys
+if '--show-version' in sys.argv:
+    print('simready-validate fixture')
+    raise SystemExit(0)
+output = pathlib.Path(sys.argv[sys.argv.index('--output') + 1])
+asset = sys.argv[-1]
+output.write_text(json.dumps({asset: {
+    'profile_id': 'Prop-Robotics-Physx',
+    'profile_version': '2.0.0',
+    'features_summary': {'FET000_CORE': {'passed': True}},
+}}))
+""",
+        encoding="utf-8",
+    )
+    validator.chmod(0o755)
+    request = json.loads(request_path.read_text())
+    request["simready_foundation_validation"] = {
+        "repository": "https://example/simready-foundation",
+        "commit": commit,
+        "tree": tree,
+        "license": "Apache-2.0",
+        "validator_version": "simready-validate fixture",
+        "profile": "Prop-Robotics-Physx",
+        "profile_version": "2.0.0",
+        "isolated_input_relative_path": "validation/input/control.usda",
+        "result_relative_path": "validation/result.json",
+        "log_relative_path": "validation/result.log",
+    }
+    _write_json(request_path, request)
+    output_usda = repo_root / "assets" / "control.usda"
+    (repo_root / "assets" / "unrelated.usda").write_text("#usda 1.0\n", encoding="utf-8")
+
+    receipt = materialize_parametric_simready_control(
+        request_path=request_path,
+        repo_root=repo_root,
+        evidence_root=evidence_root,
+        output_usda=output_usda,
+        output_receipt=repo_root / "receipt.json",
+        simready_validator=validator,
+        simready_foundation_root=foundation,
+    )
+
+    validation = receipt["simready_foundation_validation"]
+    assert receipt["status"] == "statically_validated"
+    assert validation["validated_asset"]["sha256"] == receipt["usd"]["sha256"]
+    assert validation["command"][-1] == str(
+        evidence_root / "validation" / "input" / "control.usda"
+    )
 
 
 def test_materializer_rejects_caller_asserted_qualification(tmp_path: Path) -> None:

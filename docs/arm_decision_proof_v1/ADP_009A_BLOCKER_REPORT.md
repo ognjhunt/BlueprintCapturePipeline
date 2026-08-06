@@ -1,6 +1,6 @@
 # ADP-009A Blocker Report
 
-Observed state on 2026-08-06: the deterministic ten-role suite admits `5/10`
+Observed state on 2026-08-06: the deterministic ten-role suite admits `6/10`
 roles and remains `blocked`. This is useful current-state evidence, not ADP-009A
 completion.
 
@@ -21,6 +21,12 @@ completion.
   execution, teardown, and provider-zero receipts bind two deterministic rigid
   drop/contact cases plus RTX pixels; this remains a synthetic development
   control and does not qualify the exact replacement or public scene.
+- `exact_simready_object`: the exact project-owner-approved match-v2 USD passed
+  SimReady Foundation `Prop-Robotics-Physx 2.0.0` and four native Isaac Sim
+  6.0.1 drop/contact, slide, tip, and gripper probes against the matching SAGE
+  cabinet support. The zero-retry run retained digest-bound traces, teardown,
+  object cleanup, and provider-zero evidence; it remains simulation evidence,
+  not physical truth.
 
 ## Smallest blockers
 
@@ -29,7 +35,6 @@ completion.
 | Inpaint360GS author smoke | `inpaint360_author_dataset_license_authority_missing` | Publisher statement or other durable authority covering the exact author-data archive; user permission cannot grant the publisher's copyright. Exact default-scene input/output ranges are already bound, so no bulk archive download is needed after authority exists. |
 | InFusion primary adapter | `infusion_checkpoint_license_missing` | Publisher license for `Johanan0528/Infusion` revision `83c7eb648bb8e01ae27d4dfbc12638ca564bfcf2`; author masks remain a later missing input. |
 | Controlled-background truth | `controlled_background_truth_case_missing` | One rights-cleared, metric known-background edit case and receipt. |
-| Exact SimReady object | `isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing` | Dynamic Isaac contact, drop, slide, tip, and gripper probes on the exact static-validated USD. |
 | ScanNet++ real transfer | `scannetpp_account_application_approval_and_terms_authority_required` | The fresh publisher-source [access outcome](manifests/adp009c_scannetpp_access_outcome.v1.json) binds the current dataset page and Terms of Use as actual bytes. An authorized requester must create or use an account, submit an application, obtain approval, and accept the current noncommercial terms with authority to bind any applicable for-profit employer; only then may one exact scene be selected, downloaded, and admitted. |
 
 ## Bound but not executed
@@ -66,10 +71,11 @@ evenly spaced views at five-times greater standoff, and enforce an added-Gaussia
 budget. A later static-composition receipt now deactivates the selected source
 collider and references the exact SimReady can at the measured SAGE cabinet
 support height without modifying the publisher support mesh. That composed USD
-has since passed the pinned OVPhysX contact/settling probe and eight native
-OVRTX object-layer before/after views. It remains an authoring candidate until
-the exact composition passes the required native Isaac drop/contact, slide,
-tip, and bounded gripper probes.
+has since passed the pinned OVPhysX contact/settling probe, eight native OVRTX
+object-layer before/after views, the official SimReady Foundation static
+profile, and the required native Isaac drop/contact, slide, tip, and bounded
+gripper probes. The exact object role is admitted; composing and reviewing it
+over the accepted Aura appearance remains separate ADP-009B work.
 
 The stricter successor `v3_execute_a019b8d18` also completed with zero retries
 and provider/object-store zero. It froze eight evenly spaced views before

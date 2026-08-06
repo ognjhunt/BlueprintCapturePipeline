@@ -54,6 +54,7 @@
     "validator_version": "simready-validate 2026.6.4",
     "profile": "Prop-Robotics-Physx",
     "profile_version": "2.0.0",
+    "isolated_input_relative_path": "simready/validation_inputs/840313_canned_beverage_match_v2/adp009a_840313_canned_beverage_match_v2.usda",
     "result_relative_path": "simready/840313_canned_beverage_match_v2.validation.bound.json",
     "log_relative_path": "simready/840313_canned_beverage_match_v2.validation.bound.log"
   },

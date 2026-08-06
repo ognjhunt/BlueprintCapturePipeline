@@ -810,6 +810,198 @@ def _add_statically_validated_simready_control(paths: dict[str, Path]) -> Path:
     return asset
 
 
+def _add_completed_simready_dynamic_evidence(paths: dict[str, Path]) -> dict[str, Path]:
+    _add_statically_validated_simready_control(paths)
+    root = paths["data"] / "simready" / "run"
+    bundle_path = root / "bundle.zip"
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    bundle_path.write_bytes(b"immutable-provider-bundle")
+    probe_spec_sha = "sha256:" + "1" * 64
+    bundle_sha = "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+    bundle_receipt: dict[str, object] = {
+        "schema_version": "adp009b_simready_isaac_provider_bundle.v1",
+        "status": "ready",
+        "source_commit_sha": "a" * 40,
+        "container_image": "isaac@sha256:" + "2" * 64,
+        "probe_spec_sha256": probe_spec_sha,
+        "provider_zero_required_after_return": True,
+        "local_bundle_ready_for_remote_staging": True,
+        "blockers": [],
+        "bundle_path": str(bundle_path),
+        "bundle_size_bytes": bundle_path.stat().st_size,
+        "bundle_sha256": bundle_sha,
+        "receipt_digest": "",
+    }
+    bundle_receipt["receipt_digest"] = canonical_digest(
+        bundle_receipt, digest_field="receipt_digest"
+    )
+    bundle_receipt_path = root / "bundle-receipt.json"
+    _write_json(bundle_receipt_path, bundle_receipt)
+
+    inventory = {
+        "replacement_count": 1,
+        "replacement_path": "/World/BlueprintReplacement",
+        "source_target_collider_active": False,
+    }
+    probe_rows = [
+        {
+            "probe": "drop",
+            "passed": True,
+            "step_count": 360,
+            "checks": {
+                "contact": True,
+                "minimum_drop": True,
+                "settled": True,
+                "support_height": True,
+            },
+            "inventory": inventory,
+            "contact_report_event_count": 10,
+            "stage_sha256": "sha256:" + "3" * 64,
+            "trace_digest": "sha256:" + "4" * 64,
+        },
+        {
+            "probe": "slide",
+            "passed": True,
+            "step_count": 360,
+            "checks": {
+                "bounded_motion": True,
+                "minimum_motion": True,
+                "support_height": True,
+            },
+            "inventory": inventory,
+            "contact_report_event_count": 11,
+            "horizontal_motion_m": 0.004,
+            "stage_sha256": "sha256:" + "5" * 64,
+            "trace_digest": "sha256:" + "6" * 64,
+        },
+        {
+            "probe": "tip",
+            "passed": True,
+            "step_count": 360,
+            "checks": {
+                "center_drop_bounded": True,
+                "perturbation_authored": True,
+                "support_height": True,
+            },
+            "inventory": inventory,
+            "contact_report_event_count": 12,
+            "stage_sha256": "sha256:" + "7" * 64,
+            "trace_digest": "sha256:" + "8" * 64,
+        },
+        {
+            "probe": "gripper",
+            "passed": True,
+            "step_count": 360,
+            "checks": {"finger_contact": True, "lift": True, "release": True},
+            "inventory": inventory,
+            "contact_report_event_count": 13,
+            "finger_contact_report_event_count": 7,
+            "observed_lift_m": 0.03,
+            "stage_sha256": "sha256:" + "9" * 64,
+            "trace_digest": "sha256:" + "a" * 64,
+        },
+    ]
+    runtime: dict[str, object] = {
+        "schema_version": "adp009b_simready_isaac_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "native_isaac_executed": True,
+        "observed_isaac_sim_version": "6.0.1",
+        "probe_spec_sha256": probe_spec_sha,
+        "replacement_count": 1,
+        "source_target_collider_active": False,
+        "provider_zero_required_after_return": True,
+        "physical_success_established": False,
+        "robot_task_success_established": False,
+        "probe_results": probe_rows,
+        "result_digest": "",
+    }
+    runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
+    runtime_path = root / "runtime-result.json"
+    _write_json(runtime_path, runtime)
+
+    run: dict[str, object] = {
+        "schema_version": "adp009b_simready_isaac_vast_run.v1",
+        "status": "completed",
+        "blockers": [],
+        "bundle_sha256": bundle_sha,
+        "probe_spec_sha256": probe_spec_sha,
+        "native_result_path": str(runtime_path),
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "raw_secret_values_recorded": False,
+        "estimated_cost_usd": 0.1,
+        "result_digest": "",
+    }
+    run["result_digest"] = canonical_digest(run, digest_field="result_digest")
+    run_path = root / "run-result.json"
+    _write_json(run_path, run)
+
+    instance_id = 42
+    final_path = root / "final-validation.json"
+    _write_json(
+        final_path,
+        {
+            "schema_version": "vast_final_validation.v1",
+            "status": "passed",
+            "blockers": [],
+            "vast_instance_ids": [instance_id],
+            "all_vast_instances_destroyed_by_adapter": True,
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    teardown_path = root / "teardown.json"
+    _write_json(
+        teardown_path,
+        {
+            "schema_version": "vast_teardown_manifest.v1",
+            "status": "completed",
+            "vast_instance_ids": [instance_id],
+            "runner_gpu_teardown_completed": True,
+            "continuing_spend_from_this_run": False,
+            "teardown_actions_performed": [
+                {
+                    "instance_id": instance_id,
+                    "action": "destroy_instance",
+                    "status": "completed",
+                }
+            ],
+        },
+    )
+    cleanup_path = root / "cleanup.json"
+    _write_json(
+        cleanup_path,
+        {
+            "schema_version": "wam_provider_object_store_cleanup.v1",
+            "status": "completed",
+            "all_objects_absent": True,
+            "signed_url_files_removed": True,
+            "exact_object_count": 1,
+            "objects": [{"absence": {"absence_confirmed": True}}],
+            "blockers": [],
+        },
+    )
+    evidence_paths = {
+        "dynamic_run_result": run_path,
+        "dynamic_runtime_result": runtime_path,
+        "dynamic_bundle_receipt": bundle_receipt_path,
+        "dynamic_bundle": bundle_path,
+        "dynamic_final_validation": final_path,
+        "dynamic_teardown_manifest": teardown_path,
+        "dynamic_object_cleanup": cleanup_path,
+    }
+    request = json.loads(paths["request"].read_text())
+    request["simready_control"].update(
+        {
+            f"{name}_path": path.relative_to(paths["data"]).as_posix()
+            for name, path in evidence_paths.items()
+        }
+    )
+    _write_json(paths["request"], request)
+    return evidence_paths
+
+
 def _add_content_agents_preflight(paths: dict[str, Path]) -> Path:
     receipt: dict[str, object] = {
         "schema_version": "adp009a_usd_content_agents_preflight_receipt.v1",
@@ -1229,6 +1421,82 @@ def test_statically_validated_simready_control_is_bound_but_not_admitted(
     assert manifest["observed_evidence"]["isaac_dynamic_probes_executed"] is False
     assert receipt["status"] == "blocked"
     assert receipt["blockers"] == ["isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"]
+
+
+def test_completed_simready_dynamic_evidence_admits_exact_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_completed_simready_dynamic_evidence(paths)
+
+    _run(paths)
+
+    manifest = json.loads(
+        (paths["output"] / "exact_simready_object.component_manifest.json").read_text()
+    )
+    receipt = json.loads(
+        (paths["output"] / "exact_simready_object.component_receipt.json").read_text()
+    )
+    assert manifest["observed_evidence"]["isaac_dynamic_probes_executed"] is True
+    assert manifest["observed_evidence"]["isaac_dynamic_probes_passed"] is True
+    assert [row["probe"] for row in manifest["observed_evidence"]["probe_summaries"]] == [
+        "drop",
+        "slide",
+        "tip",
+        "gripper",
+    ]
+    assert receipt["status"] == "admitted"
+    assert receipt["blockers"] == []
+    assert receipt["checks"]["teardown_and_object_cleanup_verified"] is True
+
+
+def test_simready_dynamic_evidence_rejects_rewritten_failed_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    evidence = _add_completed_simready_dynamic_evidence(paths)
+    runtime_path = evidence["dynamic_runtime_result"]
+    runtime = json.loads(runtime_path.read_text())
+    runtime["probe_results"][1]["passed"] = False
+    runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
+    _write_json(runtime_path, runtime)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="simready_control_dynamic_probe_invalid:slide",
+    ):
+        _run(paths)
+
+
+def test_simready_dynamic_evidence_rejects_changed_bundle_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    evidence = _add_completed_simready_dynamic_evidence(paths)
+    evidence["dynamic_bundle"].write_bytes(b"changed-provider-bundle")
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="simready_control_dynamic_bundle_invalid",
+    ):
+        _run(paths)
+
+
+def test_simready_dynamic_evidence_rejects_incomplete_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    evidence = _add_completed_simready_dynamic_evidence(paths)
+    teardown_path = evidence["dynamic_teardown_manifest"]
+    teardown = json.loads(teardown_path.read_text())
+    teardown["continuing_spend_from_this_run"] = True
+    _write_json(teardown_path, teardown)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="simready_control_dynamic_teardown_or_cleanup_invalid",
+    ):
+        _run(paths)
 
 
 def test_content_agents_preflight_is_bound_without_promoting_dry_runs(

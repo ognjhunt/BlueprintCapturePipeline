@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import shutil
 import statistics
 import subprocess
 from typing import Any, Mapping, Sequence
@@ -213,6 +214,30 @@ def _run_foundation_validation(
     pending_path = result_path.with_name(f".{result_path.name}.pending")
     pending_path.unlink(missing_ok=True)
 
+    validation_asset_path = asset_path
+    isolated_relative = value.get("isolated_input_relative_path")
+    if isolated_relative is not None:
+        validation_asset_path = _require_under(
+            evidence_root / str(isolated_relative), evidence_root
+        )
+        validation_asset_path.parent.mkdir(parents=True, exist_ok=True)
+        other_usd_files = [
+            path
+            for path in validation_asset_path.parent.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in {".usd", ".usda", ".usdc", ".usdz"}
+            and path != validation_asset_path
+        ]
+        if other_usd_files:
+            raise PublicSceneSimReadyControlError(
+                "simready_validation_isolated_input_not_isolated"
+            )
+        shutil.copyfile(asset_path, validation_asset_path)
+        if _sha256_file(validation_asset_path) != _sha256_file(asset_path):
+            raise PublicSceneSimReadyControlError(
+                "simready_validation_isolated_input_digest_mismatch"
+            )
+
     profile = str(value.get("profile") or "")
     profile_version = str(value.get("profile_version") or "")
     specs_root = foundation_root / "nv_core" / "sr_specs" / "docs"
@@ -231,7 +256,7 @@ def _run_foundation_validation(
         "--output",
         str(pending_path),
         "-v",
-        str(asset_path),
+        str(validation_asset_path),
     ]
     started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     completed = subprocess.run(
@@ -248,7 +273,7 @@ def _run_foundation_validation(
         raise PublicSceneSimReadyControlError("simready_foundation_validation_execution_failed")
 
     payload = _read_json(pending_path)
-    asset_result = payload.get(str(asset_path))
+    asset_result = payload.get(str(validation_asset_path))
     if not isinstance(asset_result, Mapping):
         raise PublicSceneSimReadyControlError("simready_validation_asset_identity_mismatch")
     if asset_result.get("profile_id") != profile or asset_result.get("profile_version") != profile_version:
@@ -283,6 +308,9 @@ def _run_foundation_validation(
         "finished_at": finished_at,
         "exit_status": completed.returncode,
         "asset_sha256": _sha256_file(asset_path),
+        "validated_asset": _file_evidence(validation_asset_path, root=evidence_root)
+        if validation_asset_path != asset_path
+        else None,
         "result": _file_evidence(result_path, root=evidence_root),
         "log": _file_evidence(log_path, root=evidence_root),
         "features": {str(name): dict(feature) for name, feature in features.items()},

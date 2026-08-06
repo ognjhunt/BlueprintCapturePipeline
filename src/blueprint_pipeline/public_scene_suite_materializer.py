@@ -1313,8 +1313,223 @@ def _physics_positive_control_component(
     )
 
 
+def _simready_dynamic_evidence(
+    *, spec: Mapping[str, Any], data_root: Path
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    dynamic_keys = (
+        "dynamic_run_result_path",
+        "dynamic_runtime_result_path",
+        "dynamic_bundle_receipt_path",
+        "dynamic_bundle_path",
+        "dynamic_final_validation_path",
+        "dynamic_teardown_manifest_path",
+        "dynamic_object_cleanup_path",
+    )
+    configured = [key in spec for key in dynamic_keys]
+    if not any(configured):
+        return None
+    if not all(configured):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_evidence_paths_incomplete"
+        )
+
+    paths = {
+        key.removesuffix("_path"): _rooted(data_root, str(spec[key]))
+        for key in dynamic_keys
+    }
+    run = _read_json(paths["dynamic_run_result"])
+    runtime = _read_json(paths["dynamic_runtime_result"])
+    bundle_receipt = _read_json(paths["dynamic_bundle_receipt"])
+    final_validation = _read_json(paths["dynamic_final_validation"])
+    teardown = _read_json(paths["dynamic_teardown_manifest"])
+    cleanup = _read_json(paths["dynamic_object_cleanup"])
+
+    if (
+        run.get("result_digest")
+        != canonical_digest(run, digest_field="result_digest")
+        or runtime.get("result_digest")
+        != canonical_digest(runtime, digest_field="result_digest")
+        or bundle_receipt.get("receipt_digest")
+        != canonical_digest(bundle_receipt, digest_field="receipt_digest")
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_receipt_digest_mismatch"
+        )
+
+    bundle_path = paths["dynamic_bundle"]
+    bundle_sha = bundle_receipt.get("bundle_sha256")
+    probe_spec_sha = bundle_receipt.get("probe_spec_sha256")
+    if (
+        bundle_receipt.get("schema_version")
+        != "adp009b_simready_isaac_provider_bundle.v1"
+        or bundle_receipt.get("status") != "ready"
+        or bundle_receipt.get("blockers") != []
+        or bundle_receipt.get("provider_zero_required_after_return") is not True
+        or bundle_receipt.get("local_bundle_ready_for_remote_staging") is not True
+        or bundle_receipt.get("bundle_path") != str(bundle_path)
+        or bundle_path.stat().st_size != bundle_receipt.get("bundle_size_bytes")
+        or _sha256_file(bundle_path) != bundle_sha
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_bundle_invalid"
+        )
+
+    if (
+        run.get("schema_version") != "adp009b_simready_isaac_vast_run.v1"
+        or run.get("status") != "completed"
+        or run.get("blockers") != []
+        or run.get("bundle_sha256") != bundle_sha
+        or run.get("probe_spec_sha256") != probe_spec_sha
+        or run.get("native_result_path") != str(paths["dynamic_runtime_result"])
+        or run.get("retry_cap") != 0
+        or run.get("continuing_spend_from_this_run") is not False
+        or run.get("all_staged_objects_absent") is not True
+        or run.get("raw_secret_values_recorded") is not False
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_run_invalid"
+        )
+
+    probes = runtime.get("probe_results")
+    by_probe = (
+        {row.get("probe"): row for row in probes if isinstance(row, Mapping)}
+        if isinstance(probes, list)
+        else {}
+    )
+    required_checks = {
+        "drop": ("contact", "minimum_drop", "settled", "support_height"),
+        "slide": ("bounded_motion", "minimum_motion", "support_height"),
+        "tip": ("center_drop_bounded", "perturbation_authored", "support_height"),
+        "gripper": ("finger_contact", "lift", "release"),
+    }
+    if (
+        runtime.get("schema_version") != "adp009b_simready_isaac_result.v1"
+        or runtime.get("status") != "completed"
+        or runtime.get("blockers") != []
+        or runtime.get("native_isaac_executed") is not True
+        or runtime.get("observed_isaac_sim_version") != "6.0.1"
+        or runtime.get("probe_spec_sha256") != probe_spec_sha
+        or runtime.get("replacement_count") != 1
+        or runtime.get("source_target_collider_active") is not False
+        or runtime.get("provider_zero_required_after_return") is not True
+        or runtime.get("physical_success_established") is not False
+        or runtime.get("robot_task_success_established") is not False
+        or not isinstance(probes, list)
+        or len(probes) != 4
+        or set(by_probe) != set(required_checks)
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_runtime_invalid"
+        )
+    for probe_name, check_names in required_checks.items():
+        probe = by_probe[probe_name]
+        inventory = probe.get("inventory") or {}
+        checks = probe.get("checks") or {}
+        if (
+            probe.get("passed") is not True
+            or probe.get("step_count") != 360
+            or inventory.get("replacement_count") != 1
+            or inventory.get("source_target_collider_active") is not False
+            or not str(inventory.get("replacement_path") or "").endswith(
+                "/BlueprintReplacement"
+            )
+            or not all(checks.get(name) is True for name in check_names)
+            or not str(probe.get("stage_sha256") or "").startswith("sha256:")
+            or not str(probe.get("trace_digest") or "").startswith("sha256:")
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                f"simready_control_dynamic_probe_invalid:{probe_name}"
+            )
+    if (
+        int(by_probe["drop"].get("contact_report_event_count") or 0) <= 0
+        or int(by_probe["slide"].get("contact_report_event_count") or 0) <= 0
+        or float(by_probe["slide"].get("horizontal_motion_m") or 0.0) <= 0.002
+        or int(by_probe["tip"].get("contact_report_event_count") or 0) <= 0
+        or int(by_probe["gripper"].get("finger_contact_report_event_count") or 0) <= 0
+        or float(by_probe["gripper"].get("observed_lift_m") or 0.0) <= 0.0
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_probe_measurement_invalid"
+        )
+
+    instance_ids = list(final_validation.get("vast_instance_ids") or [])
+    teardown_actions = teardown.get("teardown_actions_performed") or []
+    if (
+        final_validation.get("schema_version") != "vast_final_validation.v1"
+        or final_validation.get("status") != "passed"
+        or final_validation.get("blockers") != []
+        or len(instance_ids) != 1
+        or final_validation.get("all_vast_instances_destroyed_by_adapter") is not True
+        or final_validation.get("continuing_spend_from_this_run") is not False
+        or teardown.get("schema_version") != "vast_teardown_manifest.v1"
+        or teardown.get("status") != "completed"
+        or teardown.get("vast_instance_ids") != instance_ids
+        or teardown.get("runner_gpu_teardown_completed") is not True
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or len(teardown_actions) != 1
+        or teardown_actions[0].get("instance_id") != instance_ids[0]
+        or teardown_actions[0].get("action") != "destroy_instance"
+        or teardown_actions[0].get("status") != "completed"
+        or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("status") != "completed"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or cleanup.get("blockers") != []
+        or cleanup.get("exact_object_count") != len(cleanup.get("objects") or [])
+        or not cleanup.get("objects")
+        or not all(
+            (row.get("absence") or {}).get("absence_confirmed") is True
+            for row in cleanup["objects"]
+        )
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_teardown_or_cleanup_invalid"
+        )
+
+    artifacts = [
+        _file_record(
+            path,
+            root=data_root,
+            publisher_path=path.relative_to(data_root).as_posix(),
+            role=f"simready_{name}",
+        )
+        for name, path in paths.items()
+    ]
+    return artifacts, {
+        "isaac_dynamic_probes_executed": True,
+        "isaac_dynamic_probes_passed": True,
+        "native_isaac_sim_version": runtime["observed_isaac_sim_version"],
+        "probe_spec_sha256": probe_spec_sha,
+        "runtime_result_digest": runtime["result_digest"],
+        "provider_instance_ids": instance_ids,
+        "provider_zero_verified": True,
+        "object_store_zero_verified": True,
+        "estimated_cost_usd": run.get("estimated_cost_usd"),
+        "probe_summaries": [
+            {
+                "probe": name,
+                "passed": True,
+                "contact_report_event_count": by_probe[name].get(
+                    "contact_report_event_count"
+                ),
+                "finger_contact_report_event_count": by_probe[name].get(
+                    "finger_contact_report_event_count"
+                ),
+                "horizontal_motion_m": by_probe[name].get("horizontal_motion_m"),
+                "observed_lift_m": by_probe[name].get("observed_lift_m"),
+                "trace_digest": by_probe[name]["trace_digest"],
+            }
+            for name in required_checks
+        ],
+    }
+
+
 def _simready_control_component(
-    *, spec: Mapping[str, Any], request: Mapping[str, Any], repo_root: Path
+    *,
+    spec: Mapping[str, Any],
+    request: Mapping[str, Any],
+    repo_root: Path,
+    data_root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     receipt_path = _rooted(repo_root, str(spec["receipt_path"]))
     receipt = _read_json(receipt_path)
@@ -1360,6 +1575,13 @@ def _simready_control_component(
             role="materialization_and_static_validation_receipt",
         ),
     ]
+    dynamic = _simready_dynamic_evidence(spec=spec, data_root=data_root)
+    dynamic_observed: dict[str, Any] = {"isaac_dynamic_probes_executed": False}
+    admitted = dynamic is not None
+    if dynamic is not None:
+        dynamic_artifacts, dynamic_observed = dynamic
+        artifacts.extend(dynamic_artifacts)
+
     source_skill = receipt["cad_evidence"]["source_skill"]
     manifest: dict[str, Any] = {
         "schema_version": COMPONENT_SCHEMA_VERSION,
@@ -1392,7 +1614,7 @@ def _simready_control_component(
             "simready_foundation_profile": validation["profile"],
             "simready_foundation_profile_version": validation["profile_version"],
             "simready_foundation_profile_passed": True,
-            "isaac_dynamic_probes_executed": False,
+            **dynamic_observed,
         },
         "claim_ceiling": CLAIM_CEILING,
         "claim_boundaries": {
@@ -1406,12 +1628,13 @@ def _simready_control_component(
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     return manifest, _component_receipt(
         manifest,
-        blockers=(blocker,),
+        blockers=() if admitted else (blocker,),
         checks={
             "cad_materialization_receipt_digest_verified": True,
             "usd_bytes_verified": True,
             "simready_foundation_profile_passed": True,
-            "isaac_dynamic_probes_passed": False,
+            "isaac_dynamic_probes_passed": admitted,
+            "teardown_and_object_cleanup_verified": admitted,
         },
     )
 
@@ -1884,6 +2107,7 @@ def materialize_public_scene_suite(
             spec=simready_control,
             request=request,
             repo_root=repo_root,
+            data_root=data_root,
         )
     content_agents = request.get("content_agents")
     if content_agents is not None:

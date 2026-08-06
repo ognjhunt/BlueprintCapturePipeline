@@ -1,21 +1,20 @@
 {
   "adp_item": "ADP-009A",
   "artifact_bytes_opened": true,
-  "blockers": [
-    "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
-  ],
+  "blockers": [],
   "checks": {
     "cad_materialization_receipt_digest_verified": true,
-    "isaac_dynamic_probes_passed": false,
+    "isaac_dynamic_probes_passed": true,
     "simready_foundation_profile_passed": true,
+    "teardown_and_object_cleanup_verified": true,
     "usd_bytes_verified": true
   },
   "claim_ceiling": "development_only",
-  "component_id": "adp009a-840313-canned-beverage-cad-control",
-  "component_manifest_digest": "sha256:2bc857eda13d4d3be52550e21a40a270cc04e408c56024ec4ae090beb6938a0b",
+  "component_id": "adp009a-840313-canned-beverage-multiview-match-v2",
+  "component_manifest_digest": "sha256:1268909468948cb0d30d071636d69dfcae0b4eb986e78d460a4f71ce87fa3880",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:5c4b8183057f25b34c548ce77bac85a2eec944fb0acce6b0ef69c9683256ae43",
+  "receipt_digest": "sha256:4639ad329883b177f346c9a6f88e7063e8fef34c500427ab2caa048c992e1559",
   "role": "exact_simready_object",
   "schema_version": "public_scene_component_admission_receipt.v1",
-  "status": "blocked"
+  "status": "admitted"
 }

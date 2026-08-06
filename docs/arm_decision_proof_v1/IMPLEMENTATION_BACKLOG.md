@@ -217,13 +217,14 @@ Deliverables:
   roles, allowed use, exact revisions, hashes, sizes, and claim ceilings;
 - released-code smoke receipts; paper-only methods remain inadmissible.
 
-Observed 2026-08-05: the matched InteriorGS/SAGE-3D `840313` roles, the bounded
+Observed 2026-08-06: the matched InteriorGS/SAGE-3D `840313` roles, the bounded
 NVIDIA USD Content Agents authoring comparison, AuraFusion360's unchanged
 author-data smoke, and the Blueprint-controlled native Isaac/PhysX positive
-control are admitted. The ten-role index remains blocked at five admitted roles
+control are admitted. The exact project-owner-approved match-v2 SimReady can is
+also admitted after its static profile and four native Isaac probes passed. The
+ten-role index remains blocked at six admitted roles
 because the Inpaint360GS author smoke, InFusion primary adapter,
-controlled-background truth, dynamic exact-SimReady qualification, and ScanNet++
-transfer are still missing. The Aura author
+controlled-background truth, and ScanNet++ transfer are still missing. The Aura author
 smoke is not an InteriorGS result, and the Content Agents execution is not an
 inpainting-method smoke.
 

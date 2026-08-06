@@ -120,7 +120,14 @@
     }
   },
   "simready_control": {
-    "receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
+    "receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_match_v2_static_validation_receipt.v1.json",
+    "dynamic_run_result_path": "simready/isaac_qualification/run_011/adp009b_simready_isaac_vast_result.json",
+    "dynamic_runtime_result_path": "simready/isaac_qualification/run_011/attempts/attempt_001/immutable_execution/isaac_runtime_result.json",
+    "dynamic_bundle_receipt_path": "simready/isaac_qualification/run_011/bundle/adp009b_simready_isaac_bundle_receipt.json",
+    "dynamic_bundle_path": "simready/isaac_qualification/run_011/bundle/isaac_provider_runtime_bundle.zip",
+    "dynamic_final_validation_path": "simready/isaac_qualification/run_011/attempts/attempt_001/vast_provider_run/vast_final_validation.json",
+    "dynamic_teardown_manifest_path": "simready/isaac_qualification/run_011/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+    "dynamic_object_cleanup_path": "simready/isaac_qualification/run_011/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json",
     "smallest_blocker": "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
   },
   "content_agents": {
