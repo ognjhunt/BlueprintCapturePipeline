@@ -121,6 +121,57 @@ def _live_transform(rigid_prim: Any) -> dict[str, list[float]]:
     }
 
 
+def _authored_transform(stage: Any, prim_path: str) -> dict[str, list[float]]:
+    from pxr import Usd, UsdGeom  # type: ignore
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise RuntimeError("simready_isaac_authored_rigid_transform_unavailable")
+    transform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()
+    )
+    transform.Orthonormalize()
+    translation = transform.ExtractTranslation()
+    quaternion = transform.ExtractRotationQuat()
+    imaginary = quaternion.GetImaginary()
+    values = [
+        *[float(translation[index]) for index in range(3)],
+        float(quaternion.GetReal()),
+        *[float(imaginary[index]) for index in range(3)],
+    ]
+    if not all(math.isfinite(value) for value in values):
+        raise RuntimeError("simready_isaac_authored_rigid_transform_nonfinite")
+    return {
+        "position": values[:3],
+        "rotation_xyzw": [values[4], values[5], values[6], values[3]],
+    }
+
+
+def _restore_authored_rigid_state(
+    rigid_prim: Any,
+    authored_transform: Mapping[str, Sequence[float]],
+    authored_linear_velocity: Sequence[float],
+) -> None:
+    rotation_xyzw = authored_transform["rotation_xyzw"]
+    rigid_prim.set_world_poses(
+        positions=[[float(value) for value in authored_transform["position"]]],
+        orientations=[
+            [
+                float(rotation_xyzw[3]),
+                float(rotation_xyzw[0]),
+                float(rotation_xyzw[1]),
+                float(rotation_xyzw[2]),
+            ]
+        ],
+        indices=[0],
+    )
+    rigid_prim.set_velocities(
+        linear_velocities=[[float(value) for value in authored_linear_velocity]],
+        angular_velocities=[[0.0, 0.0, 0.0]],
+        indices=[0],
+    )
+
+
 def _contact_count(
     omni_physx: Any,
     physics_schema_tools: Any,
@@ -253,6 +304,15 @@ def _run_probe(
         raise RuntimeError("simready_isaac_stage_unavailable")
     inventory = _inventory(stage, spec)
     replacement_path = str(spec["replacement_prim_path"])
+    authored_initial = _authored_transform(stage, replacement_path)
+    authored_velocity_value = stage.GetPrimAtPath(replacement_path).GetAttribute(
+        "physics:velocity"
+    ).Get()
+    authored_linear_velocity = (
+        [float(authored_velocity_value[index]) for index in range(3)]
+        if authored_velocity_value is not None
+        else [0.0, 0.0, 0.0]
+    )
     replacement_body = RigidPrim(replacement_path, resolve_paths=False)
     timestep = float(spec["fixed_step_seconds"])
     context = SimulationContext(
@@ -272,6 +332,14 @@ def _run_probe(
             method(argument)
     context.initialize_physics()
     context.play()
+    # ``SimulationContext.play`` performs one internal step to propagate
+    # handles. Restore the frozen authored pose/velocity so that step is not
+    # silently counted before the measured 360-step window.
+    _restore_authored_rigid_state(
+        replacement_body,
+        authored_initial,
+        authored_linear_velocity,
+    )
     initial = _live_transform(replacement_body)
     positions: list[list[float]] = []
     contact_events = 0

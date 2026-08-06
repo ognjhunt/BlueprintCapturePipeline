@@ -7,7 +7,7 @@ from pathlib import Path
 import zipfile
 
 import pytest
-from pxr import Sdf, Usd
+from pxr import Gf, Sdf, Usd, UsdGeom
 
 from blueprint_pipeline.public_scene_simready_native import (
     EXPECTED_CAMERA_IDS,
@@ -411,6 +411,55 @@ def test_native_isaac_worker_reads_isaac6_rigid_prim_warp_arrays() -> None:
         match="simready_isaac_live_rigid_transform_nonfinite",
     ):
         module._live_transform(NonfiniteRigidPrim())
+
+
+def test_native_isaac_worker_restores_frozen_state_after_play_step() -> None:
+    module_spec = importlib.util.spec_from_file_location(
+        "blueprint_simready_isaac_reset_worker",
+        ROOT / "scripts/run_adp009b_simready_isaac_worker.py",
+    )
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+
+    stage = Usd.Stage.CreateInMemory()
+    authored = UsdGeom.Xform.Define(stage, "/World/Replacement")
+    authored.AddTranslateOp().Set(Gf.Vec3d(1.0, 2.0, 3.0))
+    assert module._authored_transform(stage, "/World/Replacement") == {
+        "position": [1.0, 2.0, 3.0],
+        "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+    }
+
+    class RigidPrim:
+        pose = None
+        velocity = None
+
+        def set_world_poses(self, **kwargs):
+            self.pose = kwargs
+
+        def set_velocities(self, **kwargs):
+            self.velocity = kwargs
+
+    rigid = RigidPrim()
+    module._restore_authored_rigid_state(
+        rigid,
+        {
+            "position": [1.0, 2.0, 3.0],
+            "rotation_xyzw": [0.1, 0.2, 0.3, 0.5],
+        },
+        [0.2, 0.0, 0.0],
+    )
+
+    assert rigid.pose == {
+        "positions": [[1.0, 2.0, 3.0]],
+        "orientations": [[0.5, 0.1, 0.2, 0.3]],
+        "indices": [0],
+    }
+    assert rigid.velocity == {
+        "linear_velocities": [[0.2, 0.0, 0.0]],
+        "angular_velocities": [[0.0, 0.0, 0.0]],
+        "indices": [0],
+    }
 
 
 def test_ovrtx_worker_authors_matrix_camera_and_path_tracing(tmp_path: Path) -> None:
