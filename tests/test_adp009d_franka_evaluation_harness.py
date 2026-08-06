@@ -76,6 +76,9 @@ def test_checked_in_harness_binds_static_sage_triangle_override() -> None:
     assert sage["geometry_mutation_allowed"] is False
     assert sage["physx_triangle_stability_warning_allowed"] is False
     assert sage["cold_cooking_is_startup_evidence_only"] is True
+    assert validated["runtime_timing_receipt"]["fields_seconds"][0] == (
+        "environment_build"
+    )
 
 
 def test_harness_rejects_sage_geometry_or_approximation_mutation() -> None:

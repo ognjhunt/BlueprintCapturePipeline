@@ -496,6 +496,19 @@
     "scripted_control",
     "larger_evaluation_execution"
   ],
+  "runtime_timing_receipt": {
+    "required": true,
+    "fields_seconds": [
+      "environment_build",
+      "reset_0",
+      "reset_1",
+      "zero_action_step",
+      "camera_warmup_40_frames",
+      "camera_retention"
+    ],
+    "warm_start_claim_requires_measured_result": true,
+    "cold_install_time_reported_separately": true
+  },
   "runtime_pins": {
     "isaac_sim_family": "6.0.x",
     "isaac_lab_arena": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
@@ -534,5 +547,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:3145fdce24216d338977a13e05032a0c4381b1cd00950633e55dbad5097bdef9"
+  "harness_digest": "sha256:97ebd8d7ff72e9c52d5bf20b68d30d7111d5147cc21849b96f4388cdbc90c005"
 }

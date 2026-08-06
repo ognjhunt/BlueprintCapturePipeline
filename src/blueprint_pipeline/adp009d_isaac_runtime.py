@@ -443,9 +443,14 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     log = omni.log.get_log()
     consumer = log.add_message_consumer(on_log)
     env = None
+    timings_seconds: dict[str, float] = {}
     try:
         _phase("environment_build")
+        phase_started = time.monotonic()
         env, cfg, torch = _build_environment(runtime, args)
+        timings_seconds["environment_build"] = round(
+            time.monotonic() - phase_started, 6
+        )
         log.flush()
         _phase("environment_build", "completed")
         _fail_on_physx_collision_fallback(fallback_messages)
@@ -463,7 +468,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         reset_rows: list[dict[str, Any]] = []
         for index in range(2):
             _phase(f"reset_{index}")
+            phase_started = time.monotonic()
             observation, info = env.reset(seed=20260806)
+            timings_seconds[f"reset_{index}"] = round(
+                time.monotonic() - phase_started, 6
+            )
             robot = env.unwrapped.scene["robot"]
             approved_can = env.unwrapped.scene["approved_can"]
             reset_rows.append(
@@ -490,7 +499,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             (1, env.unwrapped.action_manager.total_action_dim),
             device=env.unwrapped.device,
         )
+        phase_started = time.monotonic()
         observation, reward, terminated, truncated, info = env.step(action)
+        timings_seconds["zero_action_step"] = round(
+            time.monotonic() - phase_started, 6
+        )
         log.flush()
         _fail_on_physx_collision_fallback(fallback_messages)
         _fail_on_physx_collision_stability(stability_messages)
@@ -511,6 +524,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         robot = env.unwrapped.scene["robot"]
         hold_action = torch.zeros_like(action)
         hold_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
+        phase_started = time.monotonic()
         for warmup_index in range(40):
             observation, reward, terminated, truncated, info = env.step(hold_action)
             if (warmup_index + 1) % 10 == 0:
@@ -518,6 +532,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 _fail_on_physx_collision_fallback(fallback_messages)
                 _fail_on_physx_collision_stability(stability_messages)
                 _phase(f"camera_warmup_{warmup_index + 1}", "completed")
+        timings_seconds["camera_warmup_40_frames"] = round(
+            time.monotonic() - phase_started, 6
+        )
+        phase_started = time.monotonic()
         camera_rows = []
         for camera_name in ("external_camera", "wrist_camera"):
             camera_rows.append(
@@ -529,6 +547,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     sim_time=float(env.unwrapped.episode_length_buf[0].item() * cfg.sim.dt * cfg.decimation),
                 )
             )
+        timings_seconds["camera_retention"] = round(
+            time.monotonic() - phase_started, 6
+        )
         robot = env.unwrapped.scene["robot"]
         approved_can = env.unwrapped.scene["approved_can"]
         can_pose = _to_torch(approved_can.data.root_pose_w)[0]
@@ -566,6 +587,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "post_warmup_approved_can_root_pose_world": _jsonable(can_pose),
             "camera_frames": camera_rows,
             "camera_warmup_frames": 40,
+            "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": True,
             "sealed_source_mutated": False,
             "candidate_policy_queried": False,

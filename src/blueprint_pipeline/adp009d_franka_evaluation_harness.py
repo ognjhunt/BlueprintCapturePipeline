@@ -390,6 +390,22 @@ def validate_harness_manifest(
     }:
         errors.append("harness_renderer_fallback_set_invalid")
 
+    timing_receipt = _mapping(manifest.get("runtime_timing_receipt"))
+    if timing_receipt != {
+        "required": True,
+        "fields_seconds": [
+            "environment_build",
+            "reset_0",
+            "reset_1",
+            "zero_action_step",
+            "camera_warmup_40_frames",
+            "camera_retention",
+        ],
+        "warm_start_claim_requires_measured_result": True,
+        "cold_install_time_reported_separately": True,
+    }:
+        errors.append("harness_runtime_timing_receipt_invalid")
+
     runtime = _mapping(manifest.get("runtime_pins"))
     if runtime.get("isaac_lab_arena") != "8b4a3a47fc53de23e8205089d71109a2e2348acd":
         errors.append("harness_arena_pin_invalid")
