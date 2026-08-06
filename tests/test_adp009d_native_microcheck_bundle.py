@@ -17,7 +17,11 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
 )
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
-from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
+from blueprint_pipeline.vast_provider_adapter import (
+    _blueprint_bundle_preflight,
+    _inspect_provider_runtime_output_zip,
+    _provider_expected_video_count,
+)
 
 
 def _digest(path: Path) -> str:
@@ -141,6 +145,40 @@ def test_runtime_binds_official_droid_franka_and_sealed_anchor() -> None:
         -3.3100837,
         0.5264650138348479,
     )
+
+
+def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
+    source = Path(isaac_runtime.__file__).with_name("adp009d_native_microcheck_worker.py")
+    text = source.read_text(encoding="utf-8")
+
+    assert "url.https://github.com/.insteadOf=git@github.com:" in text
+    assert '"submodules/IsaacLab"' in text
+
+
+def test_native_output_is_result_bearing_without_legacy_mp4_requirement(tmp_path: Path) -> None:
+    output_zip = tmp_path / "provider-output.zip"
+    with zipfile.ZipFile(output_zip, "w") as archive:
+        archive.writestr(
+            "adp009d_native_microcheck.json",
+            json.dumps(
+                {
+                    "schema_version": "adp009d_native_microcheck.v1",
+                    "status": "completed",
+                }
+            ),
+        )
+
+    expected_video_count = _provider_expected_video_count("adp009d_isaac")
+    inspection = _inspect_provider_runtime_output_zip(
+        output_zip,
+        video_extract_dir=tmp_path / "videos",
+        expected_video_count=expected_video_count,
+    )
+
+    assert expected_video_count == 0
+    assert inspection["runtime_result_present"] is True
+    assert inspection["runtime_result_status"] == "completed"
+    assert inspection["mp4_validation"]["blockers"] == []
 
 
 def test_native_transport_prefers_one_48gb_class_gpu(monkeypatch: pytest.MonkeyPatch) -> None:

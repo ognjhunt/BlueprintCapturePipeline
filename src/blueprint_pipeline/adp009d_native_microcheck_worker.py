@@ -93,6 +93,8 @@ def _materialize_source(source: Path, output: Path) -> dict[str, Any]:
         _run(
             [
                 "git",
+                "-c",
+                "url.https://github.com/.insteadOf=git@github.com:",
                 "-C",
                 str(source),
                 "submodule",

@@ -283,7 +283,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
 
 
 def _provider_expected_video_count(provider_bundle_kind: str) -> int:
-    if provider_bundle_kind == "adp_simready_isaac":
+    if provider_bundle_kind in {"adp_simready_isaac", "adp009d_isaac"}:
         return 0
     if _is_isaac_provider_bundle(provider_bundle_kind):
         return DEFAULT_VIDEO_SMOKE_CAMERA_COUNT
