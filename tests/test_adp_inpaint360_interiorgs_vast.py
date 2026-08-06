@@ -1048,6 +1048,44 @@ def test_virtual_view_quality_gate_rejects_v2_oversized_target_masks(
     assert selection["maximum_foreground_pixels_from_source"] == 79_584
 
 
+def test_virtual_view_quality_gate_caps_eligible_views_with_even_angular_sampling(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    selection = runner._freeze_nonempty_virtual_views(
+        handoff={
+            "image_width": 100,
+            "image_height": 100,
+            "output_masks": [
+                {
+                    "relative_path": f"masks/{index:05d}.png",
+                    "foreground_pixels": 100,
+                    "foreground_bbox_width": 10,
+                    "foreground_bbox_height": 10,
+                    "sha256": str(index),
+                }
+                for index in range(12)
+            ],
+        },
+        mask_binding={"associated_target_pixel_counts": {"source.png": 100}},
+        output=tmp_path,
+    )
+
+    assert selection["status"] == "accepted"
+    assert selection["eligible_count_before_cap"] == 12
+    assert selection["selected_count"] == 8
+    assert [row["view_id"] for row in selection["selected_views"]] == [
+        "00000",
+        "00002",
+        "00003",
+        "00005",
+        "00006",
+        "00008",
+        "00009",
+        "00011",
+    ]
+
+
 def test_added_gaussian_budget_rejects_v2_scale_insertion(tmp_path: Path) -> None:
     runner = _load_provider_runner()
     model = tmp_path / "model"
