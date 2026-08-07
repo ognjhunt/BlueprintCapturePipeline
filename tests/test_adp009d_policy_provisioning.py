@@ -171,9 +171,7 @@ def test_the_install_precedes_the_checkpoint_fetch() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert script.index("pip install --no-build-isolation") < script.index(
-        "gcloud storage cp"
-    )
+    assert script.index("pip install -e") < script.index("gcloud storage cp")
 
 
 def test_every_candidate_installs_its_own_pinned_source() -> None:
