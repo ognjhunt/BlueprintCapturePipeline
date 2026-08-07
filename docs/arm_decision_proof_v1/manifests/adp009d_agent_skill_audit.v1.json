@@ -508,6 +508,7 @@
         "The v18 EventManager-writer probe reached the requested pose exactly on both resets, held it within 0.000179053 radians, completed the native camera path, and preserved the v2 SDF can and task-envelope SAGE topology without warnings. It also measured a 0.197880811 meter XY can displacement and about 89.9986 degrees of tilt during nominal hold, so the prior reset pose is contact-invalid and may not be frozen as the canonical anchor.",
         "The v19 official Arena arm-pose probe reduced can XY motion to 0.000011980 meters but tilted the can 6.188034 degrees because Arena's all-joint reset wrote zero into every Robotiq closed-loop joint. Retain the exact official seven-joint arm pose and use the contact-stable open-gripper coordinates measured in v15 as the smallest documented Arena compatibility exception; re-probe before admission.",
         "The v21 measured-open-gripper reprobe still tilted the can 6.254314 degrees with only 0.000121966 meters XY motion, proving the 0.40 meter base standoff remains a near-contact start after reset/action application. Do not relax the gate. Shift the preregistered fixed base 0.10 meters away only after the sealed SAGE analysis confirms 5/5 footprint support, zero triangle overlap, and a 0.50 meter target distance inside the admitted Franka reach envelope; re-probe natively.",
+        "The v22 contact-clear-base reprobe validated that smallest change: with the same official Arena arm pose, measured-open Robotiq state, exact-v2 SDF can, and task-envelope SAGE topology, the can moved 0.000000533 meters XY and 0.000003636 meters vertically and tilted 0.009498 degrees. Admit the 0.50 meter base standoff for reset and physics stepping while retaining wrist-camera and live Aura composition blockers.",
         "Label the historical convex-hull native probe as approximation-only and prohibit it from substituting for exact-v2 SDF admission.",
         "Use the pinned Isaac Lab selective installer for assets, physx, tasks, and teleop only; retain the installer-required isaaclab_newton compatibility package without selecting Newton runtime extras or the Newton backend.",
         "Install Isaac Lab Arena runtime dependencies without its development extra and reject any worker plan that silently expands to all Isaac Lab extensions or RL frameworks."
@@ -717,7 +718,7 @@
         "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
       }
     },
-    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, step, and camera retention passed in v18; v19 isolated the remaining contact defect to Arena's all-zero Robotiq closed-loop reset; OVRTX and ovphysx remain unselected; the measured open-gripper reprobe and live Aura depth composition remain required before policy admission",
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff; OVRTX and ovphysx remain unselected, the wrist camera omits the can, and live Aura depth composition remains required before policy admission",
     "native_microcheck_evidence": {
       "run_id": "native_microcheck_v18_live_event_writer_reset",
       "status": "completed_reset_infrastructure_microcheck_nominal_contact_invalid",
@@ -776,15 +777,44 @@
         "policy_queried": false,
         "smallest_exact_blocker": "canonical_arm_base_standoff_near_contact"
       }
-    ]
+    ],
+    "contact_clear_native_microcheck_evidence": {
+      "run_id": "native_microcheck_v22_contact_clear_base",
+      "status": "completed_contact_clear_reset_step_and_camera_tensor_microcheck",
+      "completed_at": "2026-08-07T07:45:25Z",
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/native_microcheck_v22_contact_clear_base/attempts/attempt_001/immutable_execution/adp009d_native_microcheck.json",
+      "result_sha256": "sha256:1c01933c7fdfb4fc6177ef8db5fe18507db5304ea3777cc67d3852488c62e1c9",
+      "allocator_result_sha256": "sha256:9bcef162b0efe10000e03335a5768fe97648fac92f7c553fe8613368e28b129e",
+      "teardown_manifest_sha256": "sha256:3a997b1a7055628e4f2a97b66d19d7e8b106ab0bb6cdedcd0c832069c282f1b2",
+      "final_validation_sha256": "sha256:52d518f893a5d2d9db2277d4aaf1d50bef34329a83328d31e44f8a82634b8c06",
+      "environment_build_seconds": 28.241277,
+      "reset_count": 2,
+      "post_warmup_arm_maximum_error_rad": 0.000004649162292480469,
+      "post_warmup_can_xy_displacement_m": 5.331201499700045e-7,
+      "post_warmup_can_absolute_z_displacement_m": 0.000003635883331298828,
+      "post_warmup_can_tilt_degrees": 0.009498214903424387,
+      "zero_action_step_completed": true,
+      "camera_warmup_frames": 40,
+      "lossless_camera_count": 2,
+      "external_camera_approved_can_visible": true,
+      "wrist_camera_approved_can_visible": false,
+      "estimated_cost_usd": 0.099545,
+      "provider_zero_observed": true,
+      "policy_queried": false,
+      "scientific_limitations": [
+        "the retained wrist frame did not contain the approved can",
+        "the retained physics-only frames did not contain live Aura appearance",
+        "no scripted positive control or learned policy executed"
+      ]
+    }
   },
   "claim_ceiling": [
     "The audit proves exact official-source observations and binding implementation decisions at the recorded retrieval time.",
-    "The v18 receipt proves only that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, exact reset, step, and two-camera tensor retention together.",
-    "The v19 and v21 receipts show that both the all-zero and measured-open Robotiq resets leave the 0.40 meter base standoff in near contact; the sealed-SAGE-validated 0.50 meter standoff remains unproven until a new native reprobe passes.",
-    "The evidence does not yet prove a collision-free canonical pose, live Aura depth composition, scripted task success, OVRTX or ovphysx execution, or either learned policy.",
+    "The v22 receipt proves that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, exact reset, zero-action step, strict can stability, and two-camera tensor retention together at the sealed-SAGE-validated 0.50 meter base standoff.",
+    "The v19 and v21 receipts show that both the all-zero and measured-open Robotiq resets left the prior 0.40 meter base standoff in near contact; v22 validates only the 0.50 meter reset and physics-step condition, not task solvability.",
+    "The evidence does not yet prove live Aura depth composition, useful wrist-camera framing, scripted task success, OVRTX or ovphysx execution, or either learned policy.",
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:6a08c2a4862025cd331c440fb19c412809486b13dca7ca8ed81b1936d2f7c336"
+  "audit_digest": "sha256:98c776fb66b3ff2fb3d36964db04298924162a7ea0fd50ffd54df71d3931974c"
 }

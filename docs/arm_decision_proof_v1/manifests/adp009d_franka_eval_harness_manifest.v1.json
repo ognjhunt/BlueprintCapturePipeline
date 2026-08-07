@@ -2,7 +2,7 @@
   "schema_version": "adp009d_franka_eval_harness_manifest.v1",
   "program_id": "arm-decision-proof-v1",
   "harness_id": "blueprint-isaac-lab-franka-task-evaluation-v1",
-  "status": "native_reset_microcheck_passed_contact_clear_base_reprobe_and_policy_observation_blocked",
+  "status": "native_contact_clear_reset_step_and_camera_tensor_microcheck_passed_policy_observation_blocked",
   "reusable_harness": true,
   "workflow": "isaac_lab_manager_based",
   "implementation_base_commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 44868,
-      "sha256": "sha256:a7f6f49d3d4b6d08cbebbc9868109feeb29818b9fbcf3baf4e6917e0b27086d7"
+      "size_bytes": 47148,
+      "sha256": "sha256:8dc39c344d90ae18c63f9a12be75efe0fd691bc75914d570a9ac1ddeb67d5842"
     },
     {
       "role": "approved_can",
@@ -182,7 +182,7 @@
       "measured_open_gripper_reprobe_result": "can_tilt_6.254314_degrees_original_standoff_rejected",
       "asset_or_collider_mutated": false
     },
-    "robot_base_pose_status": "sealed_sage_validated_0_50m_contact_clearance_candidate_requires_native_reprobe",
+    "robot_base_pose_status": "native_validated_0_50m_contact_clearance",
     "robot_base_pose_candidate": {
       "position_m": [
         3.4681748,
@@ -211,7 +211,9 @@
         "base_support_samples_passed": 5,
         "base_support_samples_required": 5,
         "learned_outcomes_observed": false,
-        "native_reprobe_required": true
+        "native_reprobe_required": false,
+        "native_reprobe_run_id": "native_microcheck_v22_contact_clear_base",
+        "native_reprobe_result": "passed_0_000000533m_xy_0_000003636m_z_0_009498deg_tilt"
       },
       "learned_outcomes_observed_before_selection": false
     },
@@ -235,7 +237,7 @@
       "translation_m": 0.16,
       "non_support_overlap_count": 0,
       "measurement_authority": "materialized SAGE collision bytes",
-      "native_contact_validation_status": "v21_original_standoff_near_contact_sealed_sage_validated_0_50m_base_reprobe_required"
+      "native_contact_validation_status": "v22_0_50m_base_passed_strict_object_stability_gate"
     },
     "support_bounds": {
       "x_min_m": 3.2342791209657826,
@@ -280,9 +282,9 @@
       "object_radius_m": 0.031094726014345042,
       "object_height_m": 0.1694279937744141
     },
-    "camera_calibration_status": "native_tensors_retained_v21_shifted_base_wrist_calibration_and_policy_frame_quality_reprobe_required",
+    "camera_calibration_status": "native_tensors_retained_v22_external_can_visible_wrist_can_absent_policy_frame_rework_required",
     "lighting_status": "requires_native_renderer_probe_before_protocol_freeze",
-    "robot_base_status": "analytic_candidate_frozen_requires_native_reachability_probe_before_protocol_freeze"
+    "robot_base_status": "native_reset_step_and_contact_stability_validated_policy_task_reachability_unproven"
   },
   "task": {
     "task_id": "pick_lift_translate_place_settle_same_support",
@@ -569,22 +571,28 @@
     "warm_start_claim_requires_measured_result": true,
     "cold_install_time_reported_separately": true,
     "latest_measurement": {
-      "run_id": "native_microcheck_v18_live_event_writer_reset",
-      "result_sha256": "sha256:fe20dfc3201c77c8fb8ec261fb18ded1f805db5736cdc100fdcdcf936cf45976",
-      "status": "completed_reset_infrastructure_microcheck_nominal_contact_invalid",
-      "environment_build": 28.082818,
-      "reset_0": 0.02278,
-      "reset_1": 0.013804,
-      "zero_action_step": 0.212036,
-      "camera_warmup_40_frames": 8.756683,
-      "camera_retention": 0.237757,
-      "estimated_cost_usd": 0.061795,
+      "run_id": "native_microcheck_v22_contact_clear_base",
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/native_microcheck_v22_contact_clear_base/attempts/attempt_001/immutable_execution/adp009d_native_microcheck.json",
+      "result_sha256": "sha256:1c01933c7fdfb4fc6177ef8db5fe18507db5304ea3777cc67d3852488c62e1c9",
+      "allocator_result_sha256": "sha256:9bcef162b0efe10000e03335a5768fe97648fac92f7c553fe8613368e28b129e",
+      "status": "completed_contact_clear_reset_step_and_camera_tensor_microcheck",
+      "environment_build": 28.241277,
+      "reset_0": 0.015874,
+      "reset_1": 0.009909,
+      "zero_action_step": 0.140685,
+      "camera_warmup_40_frames": 7.770616,
+      "camera_retention": 0.332189,
+      "can_xy_displacement_m": 5.331201499700045e-7,
+      "can_absolute_z_displacement_m": 0.000003635883331298828,
+      "can_tilt_degrees": 0.009498214903424387,
+      "post_warmup_arm_maximum_error_rad": 0.000004649162292480469,
+      "estimated_cost_usd": 0.099545,
       "provider_zero_observed": true,
       "policy_queried": false,
       "limitations": [
-        "canonical_nominal_pose_contact_invalid",
         "wrist_camera_approved_can_absent",
-        "sealed_aura_hybrid_policy_observation_renderer_missing"
+        "sealed_aura_hybrid_policy_observation_renderer_missing",
+        "scripted_task_control_not_executed"
       ]
     },
     "latest_blocked_measurement": {
@@ -694,8 +702,8 @@
   },
   "blockers": [
     "sealed_aura_hybrid_policy_observation_renderer_missing",
-    "sealed_sage_validated_0_50m_base_native_reprobe_missing",
-    "canonical_safe_pose_camera_quality_reprobe_missing",
+    "wrist_camera_approved_can_absent",
+    "scripted_task_control_missing",
     "cousin_native_control_validation_missing"
   ],
   "claim_ceiling": [
@@ -705,5 +713,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:e08fc7f46d7323b9fb45face167727eea06a944aad703aa988529cc67f14218a"
+  "harness_digest": "sha256:6b80d4ae561bff3133b0e0b7331254d71ac46a23d6383988584dc34239041b5f"
 }
