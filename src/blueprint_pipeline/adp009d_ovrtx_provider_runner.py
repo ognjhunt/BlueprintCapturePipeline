@@ -111,7 +111,40 @@ def run(*, runtime_dir: Path, output_dir: Path, ovrtx_python: Path) -> dict[str,
             "--modality",
             "depth",
         ]
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=1200)
+        try:
+            completed = subprocess.run(
+                command, capture_output=True, text=True, timeout=1200
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = (
+                exc.stdout.decode("utf-8", "replace")
+                if isinstance(exc.stdout, bytes)
+                else (exc.stdout or "")
+            )
+            stderr = (
+                exc.stderr.decode("utf-8", "replace")
+                if isinstance(exc.stderr, bytes)
+                else (exc.stderr or "")
+            )
+            (camera_output / "worker.stdout.log").write_text(stdout, encoding="utf-8")
+            (camera_output / "worker.stderr.log").write_text(stderr, encoding="utf-8")
+            blockers.append(f"ovrtx_live_camera_timeout:{camera_id}")
+            rows.append(
+                {
+                    "camera_id": camera_id,
+                    "returncode": None,
+                    "timed_out": True,
+                    "timeout_seconds": 1200,
+                    "valid": False,
+                    "report": {},
+                    "artifacts": [
+                        _artifact(path, output_dir)
+                        for path in sorted(camera_output.iterdir())
+                        if path.is_file()
+                    ],
+                }
+            )
+            continue
         (camera_output / "worker.stdout.log").write_text(
             completed.stdout or "", encoding="utf-8"
         )
@@ -151,6 +184,7 @@ def run(*, runtime_dir: Path, output_dir: Path, ovrtx_python: Path) -> dict[str,
             {
                 "camera_id": camera_id,
                 "returncode": completed.returncode,
+                "timed_out": False,
                 "valid": valid,
                 "report": report,
                 "artifacts": artifacts,

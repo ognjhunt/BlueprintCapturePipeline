@@ -285,6 +285,7 @@ def run_arena_native_control_vast(
     instance_label_prefix: str = "blueprint-adp-arena-",
     blocker_prefix: str = "adp_arena",
     min_gpu_ram_mb: int = 24_000,
+    min_compute_cap: int = 0,
     minimum_driver_version: str = "",
     preferred_gpu_keywords: tuple[str, ...] = (
         "RTX 4090",
@@ -406,6 +407,7 @@ def run_arena_native_control_vast(
                 min_cold_isaac_pull_live_minutes=30,
                 disk_gb=200,
                 min_gpu_ram_mb=min_gpu_ram_mb,
+                min_compute_cap=min_compute_cap,
                 poll_interval_seconds=15,
                 startup_timeout_seconds=remaining_live_minutes * 60,
                 heartbeat_no_progress_seconds=1800,

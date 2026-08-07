@@ -124,6 +124,8 @@ def test_ovrtx_bundle_is_deterministic_and_contract_complete(tmp_path: Path) -> 
     assert "run_vulkan_raytracing_preflight.py" in entrypoint
     assert "vulkaninfo --summary" in entrypoint
     assert "xvfb-run" in entrypoint
+    assert "except subprocess.TimeoutExpired" in runner
+    assert "ovrtx_live_camera_timeout" in runner
     compile(vulkan_probe, "run_vulkan_raytracing_preflight.py", "exec")
     assert "VK_KHR_acceleration_structure" in vulkan_probe
     assert "VK_KHR_ray_tracing_pipeline" in vulkan_probe
@@ -222,3 +224,4 @@ def test_ovrtx_vast_binds_documented_minimum_driver(monkeypatch, tmp_path: Path)
 
     assert result["status"] == "dry_run_ready"
     assert observed["minimum_driver_version"] == "580.95.05"
+    assert observed["min_compute_cap"] == 860
