@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import secrets
+import time
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,6 +27,21 @@ from .safe_outbound_http import (
 
 
 SCHEMA_VERSION = "wam_provider_object_store_staging.v1"
+# Transport failures that leave staged objects behind are retried; delete and
+# absence-proof are both idempotent so a retry cannot mask a real failure.
+CLEANUP_TRANSIENT_RETRY_ATTEMPTS = 3
+CLEANUP_TRANSIENT_RETRY_SLEEP_SECONDS = 2.0
+CLEANUP_TRANSIENT_EXCEPTION_NAMES = frozenset(
+    {
+        "SSLError",
+        "ConnectionError",
+        "ConnectTimeoutError",
+        "EndpointConnectionError",
+        "IncompleteReadError",
+        "ReadTimeoutError",
+        "RemoteDisconnected",
+    }
+)
 SIGNED_OUTPUT_ROUND_TRIP_SCHEMA_VERSION = "wam_signed_output_round_trip.v1"
 SIGNED_OUTPUT_SENTINEL_BYTES = 96
 SIGNED_OUTPUT_HTTP_TIMEOUT_SECONDS = 30
@@ -506,33 +522,52 @@ def cleanup_staged_wam_provider_objects(
         blockers.append("object_store_cleanup_credentials_missing")
 
     cleanup_rows: list[dict[str, Any]] = []
+    cleanup_attempts = 0
     if not blockers:
-        try:
-            import boto3  # type: ignore[import-not-found]
-            from botocore.client import Config  # type: ignore[import-not-found]
+        # Deleting an object and proving its absence are both idempotent, so a
+        # transient transport failure is retried rather than left as staged
+        # objects and live signed URLs.  A live run lost cleanup to a one-off
+        # SSLError and had to be swept by hand; anything non-transient still
+        # fails closed on the first attempt.
+        for attempt in range(CLEANUP_TRANSIENT_RETRY_ATTEMPTS):
+            cleanup_attempts = attempt + 1
+            cleanup_rows = []
+            attempt_blockers: list[str] = []
+            try:
+                import boto3  # type: ignore[import-not-found]
+                from botocore.client import Config  # type: ignore[import-not-found]
 
-            kwargs: dict[str, Any] = {
-                "aws_access_key_id": access_key,
-                "aws_secret_access_key": secret_key,
-                "region_name": region_value,
-                "config": Config(signature_version="s3v4"),
-            }
-            if endpoint:
-                kwargs["endpoint_url"] = endpoint
-            client = boto3.client("s3", **kwargs)
-            for key in keys:
-                client.delete_object(Bucket=bucket_value, Key=key)
-                absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
-                cleanup_rows.append(
-                    {
-                        "key_sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
-                        "absence": absence,
-                    }
-                )
-                if absence.get("absence_confirmed") is not True:
-                    blockers.append("staged_object_absence_unverified")
-        except Exception as exc:  # noqa: BLE001 - preserve fail-closed cleanup evidence
-            blockers.append(f"staged_object_cleanup_failed:{type(exc).__name__}")
+                kwargs: dict[str, Any] = {
+                    "aws_access_key_id": access_key,
+                    "aws_secret_access_key": secret_key,
+                    "region_name": region_value,
+                    "config": Config(signature_version="s3v4"),
+                }
+                if endpoint:
+                    kwargs["endpoint_url"] = endpoint
+                client = boto3.client("s3", **kwargs)
+                for key in keys:
+                    client.delete_object(Bucket=bucket_value, Key=key)
+                    absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
+                    cleanup_rows.append(
+                        {
+                            "key_sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
+                            "absence": absence,
+                        }
+                    )
+                    if absence.get("absence_confirmed") is not True:
+                        attempt_blockers.append("staged_object_absence_unverified")
+            except Exception as exc:  # noqa: BLE001 - fail-closed cleanup evidence
+                name = type(exc).__name__
+                attempt_blockers.append(f"staged_object_cleanup_failed:{name}")
+                if (
+                    name in CLEANUP_TRANSIENT_EXCEPTION_NAMES
+                    and attempt + 1 < CLEANUP_TRANSIENT_RETRY_ATTEMPTS
+                ):
+                    time.sleep(CLEANUP_TRANSIENT_RETRY_SLEEP_SECONDS * (attempt + 1))
+                    continue
+            blockers.extend(attempt_blockers)
+            break
 
     signed_url_files = [
         resolved_job_dir / name
@@ -554,6 +589,7 @@ def cleanup_staged_wam_provider_objects(
         else None,
         "exact_object_count": len(keys) if all(keys) else 0,
         "objects": cleanup_rows,
+        "cleanup_attempts": cleanup_attempts,
         "all_objects_absent": bool(cleanup_rows)
         and all(row["absence"].get("absence_confirmed") is True for row in cleanup_rows),
         "signed_url_files_removed": not any(path.exists() for path in signed_url_files),

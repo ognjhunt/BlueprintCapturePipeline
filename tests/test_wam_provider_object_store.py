@@ -697,3 +697,151 @@ def test_cleanup_staged_objects_is_exact_and_absence_proven(tmp_path: Path, monk
     persisted = (job / "wam_provider_object_store_cleanup.json").read_text(encoding="utf-8")
     assert "signed.example" not in persisted
     assert keys[0] not in persisted
+
+
+def test_cleanup_retries_transient_transport_failure_then_proves_absence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A one-off SSLError must not strand staged objects and live signed URLs.
+
+    A live run lost cleanup to exactly this and left two staged objects plus
+    three signed-URL files behind, which had to be swept by hand.  Delete and
+    absence-proof are idempotent, so the transient case is retried.
+    """
+
+    job = tmp_path / "job"
+    job.mkdir()
+    keys = ["blueprint/task/job/bundle.zip", "blueprint/task/job/output.zip"]
+    (job / "wam_provider_object_store_staging_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": object_store.SCHEMA_VERSION,
+                "status": "completed",
+                "object_store": {"key_prefix": "blueprint/task"},
+                "bundle_key": keys[0],
+                "output_key": keys[1],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in object_store.SIGNED_URL_FILENAMES:
+        (job / name).write_text("https://signed.example/?secret\n", encoding="utf-8")
+    access = tmp_path / "access"
+    secret = tmp_path / "secret"
+    access.write_text("access\n", encoding="utf-8")
+    secret.write_text("secret\n", encoding="utf-8")
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class SSLError(RuntimeError):
+        """Mimics botocore's transient transport error by name."""
+
+    class FakeNotFound(RuntimeError):
+        response = {
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+            "Error": {"Code": "NoSuchKey"},
+        }
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+            self.attempts = 0
+
+        def delete_object(self, *, Bucket: str, Key: str):
+            if Key == keys[0]:
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise SSLError("transient tls failure")
+            self.deleted.append(Key)
+            return {"ResponseMetadata": {"HTTPStatusCode": 204}}
+
+        def head_object(self, *, Bucket: str, Key: str):
+            assert Key in self.deleted
+            raise FakeNotFound("absent")
+
+    client = FakeClient()
+    monkeypatch.setattr(object_store, "CLEANUP_TRANSIENT_RETRY_SLEEP_SECONDS", 0.0)
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda _service, **_kwargs: client),
+    )
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig))
+
+    result = object_store.cleanup_staged_wam_provider_objects(
+        job,
+        access_key_id_file=access,
+        secret_access_key_file=secret,
+        bucket="bucket",
+    )
+
+    assert result["status"] == "completed"
+    assert result["all_objects_absent"] is True
+    assert result["signed_url_files_removed"] is True
+    assert result["cleanup_attempts"] == 2
+    assert sorted(client.deleted) == sorted(keys)
+    assert not [name for name in object_store.SIGNED_URL_FILENAMES if (job / name).exists()]
+
+
+def test_cleanup_does_not_retry_a_non_transient_failure(tmp_path: Path, monkeypatch) -> None:
+    """A permission or configuration error must fail closed on the first attempt."""
+
+    job = tmp_path / "job"
+    job.mkdir()
+    keys = ["blueprint/task/job/bundle.zip", "blueprint/task/job/output.zip"]
+    (job / "wam_provider_object_store_staging_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": object_store.SCHEMA_VERSION,
+                "status": "completed",
+                "object_store": {"key_prefix": "blueprint/task"},
+                "bundle_key": keys[0],
+                "output_key": keys[1],
+            }
+        ),
+        encoding="utf-8",
+    )
+    access = tmp_path / "access"
+    secret = tmp_path / "secret"
+    access.write_text("access\n", encoding="utf-8")
+    secret.write_text("secret\n", encoding="utf-8")
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class AccessDenied(RuntimeError):
+        pass
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def delete_object(self, *, Bucket: str, Key: str):
+            self.attempts += 1
+            raise AccessDenied("nope")
+
+    client = FakeClient()
+    monkeypatch.setattr(object_store, "CLEANUP_TRANSIENT_RETRY_SLEEP_SECONDS", 0.0)
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda _service, **_kwargs: client),
+    )
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig))
+
+    result = object_store.cleanup_staged_wam_provider_objects(
+        job,
+        access_key_id_file=access,
+        secret_access_key_file=secret,
+        bucket="bucket",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["cleanup_attempts"] == 1
+    assert client.attempts == 1
+    assert any("AccessDenied" in blocker for blocker in result["blockers"])
