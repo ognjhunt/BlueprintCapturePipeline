@@ -396,6 +396,10 @@ def test_runtime_preflights_exact_arena_environment_import_closure() -> None:
     assert "from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder" in source
     assert '"hydra-core"' in source
     assert '"h5py"' in source
+    assert "from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper" in source
+    assert "from rsl_rl.runners import DistillationRunner, OnPolicyRunner" in source
+    assert "import zmq" in source
+    assert '"traceback": traceback.format_exc()' in source
 
 
 def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
@@ -406,16 +410,22 @@ def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
     assert '"submodules/IsaacLab"' in text
 
 
-def test_worker_uses_smallest_pinned_official_physx_install_profile(tmp_path: Path) -> None:
+def test_worker_uses_smallest_pinned_official_arena_physx_install_closure(tmp_path: Path) -> None:
     from blueprint_pipeline import adp009d_native_microcheck_worker as worker
 
     source = tmp_path / "arena"
     commands = worker._install_commands(source)
     flattened = "\n".join(" ".join(command) for command in commands)
 
-    assert worker.INSTALL_PROFILE_ID == "isaaclab_arena_physx_task_runtime.v1"
-    assert worker.ISAAC_LAB_INSTALL_TARGETS == ("assets", "physx", "tasks", "teleop")
-    assert "isaaclab.sh -i assets,physx,tasks,teleop" in flattened
+    assert worker.INSTALL_PROFILE_ID == "isaaclab_arena_physx_task_runtime.v2"
+    assert worker.ISAAC_LAB_INSTALL_TARGETS == (
+        "assets",
+        "physx",
+        "rl[rsl-rl]",
+        "tasks",
+        "teleop",
+    )
+    assert "isaaclab.sh -i assets,physx,rl[rsl-rl],tasks,teleop" in flattened
     assert worker.H5PY_VERSION == "3.16.0"
     assert worker.H5PY_LINUX_CP312_WHEEL_URL in flattened
     assert f"#sha256={worker.H5PY_LINUX_CP312_WHEEL_SHA256}" in flattened
@@ -423,7 +433,12 @@ def test_worker_uses_smallest_pinned_official_physx_install_profile(tmp_path: Pa
     assert "hydra_core-1.3.5-py3-none-any.whl" in flattened
     assert "omegaconf-2.3.1-py3-none-any.whl" in flattened
     assert "antlr4-python3-runtime-4.9.3.tar.gz" in flattened
+    assert all(url in flattened for url in worker.ARENA_REMOTE_TRANSPORT_URLS)
+    assert "msgpack-1.1.0-cp312-cp312-manylinux" in flattened
+    assert "pyzmq-27.0.1-cp312-abi3-manylinux" in flattened
     assert "import antlr4, h5py, hydra" in flattened
+    assert "from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper" in flattened
+    assert "from rsl_rl.runners import DistillationRunner, OnPolicyRunner" in flattened
     assert f"pip install --editable {source}" in flattened
     assert "isaaclab_arena" in flattened
     assert "isaaclab_newton" in flattened
@@ -439,7 +454,7 @@ def test_worker_rejects_expanded_install_profile() -> None:
 
     with pytest.raises(RuntimeError, match="adp009d_runtime_install_profile_expanded"):
         worker._validate_install_commands(
-            [["/isaac-sim/python.sh", "-m", "pip", "install", "isaaclab_rl"]]
+            [["/isaac-sim/python.sh", "-m", "pip", "install", "isaaclab_mimic"]]
             + worker._install_commands(Path("arena"))
         )
 
@@ -465,6 +480,20 @@ def test_worker_rejects_missing_hydra_runtime_pin() -> None:
         if not any(url in command for url in worker.HYDRA_RUNTIME_URLS)
     ]
     with pytest.raises(RuntimeError, match="adp009d_runtime_hydra_pin_missing"):
+        worker._validate_install_commands(commands)
+
+
+def test_worker_rejects_missing_arena_transport_pin() -> None:
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    commands = [
+        command
+        for command in worker._install_commands(Path("arena"))
+        if not any(url in command for url in worker.ARENA_REMOTE_TRANSPORT_URLS)
+    ]
+    with pytest.raises(
+        RuntimeError, match="adp009d_runtime_arena_transport_pin_missing"
+    ):
         worker._validate_install_commands(commands)
 
 

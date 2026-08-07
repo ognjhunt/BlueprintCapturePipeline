@@ -20,8 +20,17 @@ ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ISAAC_LAB_TREE = "454115265327a80acabd07cbd36e10071fc0c065"
 RESULT_NAME = "adp009d_native_microcheck.json"
 ISAAC_PYTHON = Path("/isaac-sim/python.sh")
-INSTALL_PROFILE_ID = "isaaclab_arena_physx_task_runtime.v1"
-ISAAC_LAB_INSTALL_TARGETS = ("assets", "physx", "tasks", "teleop")
+INSTALL_PROFILE_ID = "isaaclab_arena_physx_task_runtime.v2"
+# Arena's asset decorators execute its policy-package registration closure even
+# for a no-policy environment. That closure imports isaaclab_rl.rsl_rl and
+# rsl_rl, so include the official rsl-rl extra explicitly.
+ISAAC_LAB_INSTALL_TARGETS = (
+    "assets",
+    "physx",
+    "rl[rsl-rl]",
+    "tasks",
+    "teleop",
+)
 H5PY_VERSION = "3.16.0"
 H5PY_LINUX_CP312_WHEEL_SHA256 = (
     "dfc21898ff025f1e8e67e194965a95a8d4754f452f83454538f98f8a3fcb207e"
@@ -46,6 +55,16 @@ HYDRA_RUNTIME_URLS = (
     "hydra_core-1.3.5-py3-none-any.whl"
     "#sha256=a3ff35b4ea6794e4c83d993016f4bde4ac35797ebe7a08f30e83ed9341880331",
 )
+ARENA_REMOTE_TRANSPORT_URLS = (
+    "https://files.pythonhosted.org/packages/f1/54/"
+    "65af8de681fa8255402c80eda2a501ba467921d5a7a028c9c22a2c2eedb5/"
+    "msgpack-1.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    "#sha256=17fb65dd0bec285907f68b15734a993ad3fc94332b5bb21b0435846228de1f39",
+    "https://files.pythonhosted.org/packages/7e/0a/"
+    "2356305c423a975000867de56888b79e44ec2192c690ff93c3109fd78081/"
+    "pyzmq-27.0.1-cp312-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl"
+    "#sha256=f5b6133c8d313bde8bd0d123c169d22525300ff164c2189f849de495e1344577",
+)
 EXPECTED_RUNTIME_DISTRIBUTIONS = (
     "antlr4-python3-runtime",
     "h5py",
@@ -54,9 +73,13 @@ EXPECTED_RUNTIME_DISTRIBUTIONS = (
     "isaaclab_assets",
     "isaaclab_newton",
     "isaaclab_physx",
+    "isaaclab_rl",
     "isaaclab_tasks",
     "isaaclab_teleop",
+    "msgpack",
     "omegaconf",
+    "pyzmq",
+    "rsl-rl-lib",
     "isaaclab_arena",
 )
 
@@ -168,7 +191,9 @@ def _install_commands(source: Path) -> list[list[str]]:
 
     lab = source / "submodules/IsaacLab"
     distribution_probe = (
-        "import antlr4, h5py, hydra, importlib.metadata as m, json, omegaconf; "
+        "import antlr4, h5py, hydra, importlib.metadata as m, json, msgpack, omegaconf, zmq; "
+        "from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper; "
+        "from rsl_rl.runners import DistillationRunner, OnPolicyRunner; "
         f"names={EXPECTED_RUNTIME_DISTRIBUTIONS!r}; "
         "print(json.dumps({name: m.version(name) for name in names}, sort_keys=True))"
     )
@@ -184,6 +209,13 @@ def _install_commands(source: Path) -> list[list[str]]:
             "--no-build-isolation",
             *HYDRA_RUNTIME_URLS,
         ],
+        [
+            str(ISAAC_PYTHON),
+            "-m",
+            "pip",
+            "install",
+            *ARENA_REMOTE_TRANSPORT_URLS,
+        ],
         [str(ISAAC_PYTHON), "-m", "pip", "install", "--editable", str(source)],
         [str(ISAAC_PYTHON), "-c", distribution_probe],
     ]
@@ -197,7 +229,6 @@ def _validate_install_commands(commands: list[list[str]]) -> None:
     forbidden = (
         "[dev]",
         "source/isaaclab*/",
-        "isaaclab_rl",
         "isaaclab_mimic",
         "isaaclab_visualizers",
         "isaaclab_contrib",
@@ -209,6 +240,8 @@ def _validate_install_commands(commands: list[list[str]]) -> None:
         raise RuntimeError("adp009d_runtime_h5py_pin_missing")
     if any(url not in flattened for url in HYDRA_RUNTIME_URLS):
         raise RuntimeError("adp009d_runtime_hydra_pin_missing")
+    if any(url not in flattened for url in ARENA_REMOTE_TRANSPORT_URLS):
+        raise RuntimeError("adp009d_runtime_arena_transport_pin_missing")
     if any(marker in flattened for marker in forbidden):
         raise RuntimeError("adp009d_runtime_install_profile_expanded")
 

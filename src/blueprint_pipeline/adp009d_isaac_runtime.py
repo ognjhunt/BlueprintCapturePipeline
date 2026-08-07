@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -410,7 +411,11 @@ def _preflight_environment_imports() -> dict[str, str]:
     import antlr4  # noqa: F401
     import h5py  # noqa: F401
     import hydra  # noqa: F401
+    import msgpack  # noqa: F401
     import omegaconf  # noqa: F401
+    import zmq  # noqa: F401
+    from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: F401
+    from rsl_rl.runners import DistillationRunner, OnPolicyRunner  # noqa: F401
     from isaaclab_arena.assets.object import Object  # noqa: F401
     from isaaclab_arena.embodiments.droid.droid import (  # noqa: F401
         DroidAbsoluteJointPositionEmbodiment,
@@ -430,7 +435,11 @@ def _preflight_environment_imports() -> dict[str, str]:
             "hydra-core",
             "isaaclab",
             "isaaclab_arena",
+            "isaaclab_rl",
+            "msgpack",
             "omegaconf",
+            "pyzmq",
+            "rsl-rl-lib",
         )
     }
 
@@ -706,6 +715,8 @@ def main(argv: list[str] | None = None) -> int:
             "schema_version": "adp009d_native_microcheck.v1",
             "status": "blocked",
             "blockers": [str(exc)],
+            "exception_type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
             "candidate_policy_queried": False,
             "candidate_outcomes_accessed": False,
         }
