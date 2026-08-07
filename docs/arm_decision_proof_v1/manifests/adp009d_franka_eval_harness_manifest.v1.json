@@ -1,23 +1,249 @@
 {
-  "schema_version": "adp009d_franka_eval_harness_manifest.v1",
-  "program_id": "arm-decision-proof-v1",
+  "asset_bindings": [
+    {
+      "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
+      "role": "agent_skill_audit",
+      "root": "repo",
+      "sha256": "sha256:aa42ad117ce9885f1d741ee897bfefae2f9d3529ec76d4be9bbc5b161bbe33ec",
+      "size_bytes": 65978
+    },
+    {
+      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
+      "role": "approved_can",
+      "root": "repo",
+      "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+      "size_bytes": 20705128
+    },
+    {
+      "relative_path": "aura_interiorgs/live_v12_openclip_execute/immutable_execution/artifacts/aurafusion360_840313_ins160_final.ply",
+      "role": "aura_appearance",
+      "root": "evidence",
+      "sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
+      "size_bytes": 106309429
+    },
+    {
+      "relative_path": "docs/arm_decision_proof_v1/manifests/adp009b_hybrid_replacement_seal_receipt.v1.json",
+      "role": "hybrid_seal_receipt",
+      "root": "repo",
+      "sha256": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b",
+      "size_bytes": 2626
+    },
+    {
+      "relative_path": "shortlist/InteriorGS/0442_840313/3dgs_compressed.ply",
+      "role": "original_interiorgs",
+      "root": "evidence",
+      "sha256": "sha256:57c71edcb450f2323a5b8ad290b5672b437fc73b9283a7485804ce607da12254",
+      "size_bytes": 33137360
+    },
+    {
+      "relative_path": "shortlist/SAGE-3D_Collision_Mesh/Collision_Mesh/840313/840313_collision.usd",
+      "role": "sage_collision",
+      "root": "evidence",
+      "sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+      "size_bytes": 42418216
+    },
+    {
+      "relative_path": "shortlist/SAGE-3D_InteriorGS_usdz/InteriorGS_usdz/840313.usdz",
+      "role": "sage_usdz",
+      "root": "evidence",
+      "sha256": "sha256:bcdc8d36ed88c1a5c4e7cd333479e24c67cde64ed3b3ea135f37028f70d1ebb8",
+      "size_bytes": 81806718
+    }
+  ],
+  "blockers": [
+    "sealed_aura_hybrid_policy_observation_renderer_missing",
+    "wrist_camera_approved_can_absent",
+    "scripted_task_control_missing",
+    "cousin_native_control_validation_missing"
+  ],
+  "canonical_condition": {
+    "camera_calibration_status": "native_tensors_retained_v22_external_can_visible_wrist_can_absent_policy_frame_rework_required",
+    "immutable": true,
+    "lighting_status": "native_aura_exact_camera_conformance_passed_live_hybrid_composition_pending",
+    "object_id": "approved_can",
+    "object_start_position_m": [
+      3.4681748,
+      -3.3100837,
+      0.5264650138348479
+    ],
+    "parameters": {
+      "camera_blur_sigma": 0.0,
+      "camera_exposure_scale": 1.0,
+      "camera_latency_frames": 0,
+      "camera_noise_std": 0.0,
+      "external_camera_extrinsic_dx_m": 0.0,
+      "external_camera_extrinsic_dy_m": 0.0,
+      "external_camera_extrinsic_dz_m": 0.0,
+      "external_camera_focal_scale": 1.0,
+      "light_color_temperature_kelvin": 5000.0,
+      "light_direction_yaw_degrees": 0.0,
+      "light_intensity_scale": 1.0,
+      "object_contact_offset_m": 0.005,
+      "object_dynamic_friction": 0.4,
+      "object_height_m": 0.1694279937744141,
+      "object_mass_kg": 0.355,
+      "object_radius_m": 0.031094726014345042,
+      "object_rest_offset_m": 0.0,
+      "object_restitution": 0.1,
+      "object_start_x_m": 3.4681748,
+      "object_start_y_m": -3.3100837,
+      "object_start_z_m": 0.5264650138348479,
+      "object_static_friction": 0.5,
+      "object_yaw_degrees": 0.0,
+      "robot_base_x_m": 3.4681748,
+      "robot_base_y_m": -2.8100837,
+      "robot_base_yaw_degrees": -90.0,
+      "target_x_m": 3.3081748,
+      "target_y_m": -3.3100837,
+      "target_z_m": 0.5264650138348479,
+      "wrist_camera_extrinsic_dx_m": 0.0,
+      "wrist_camera_extrinsic_dy_m": 0.0,
+      "wrist_camera_extrinsic_dz_m": 0.0
+    },
+    "robot_base_status": "native_reset_step_and_contact_stability_validated_policy_task_reachability_unproven",
+    "support_bounds": {
+      "edge_margin_m": 0.01,
+      "height_m": 0.5264650138348479,
+      "measurement_method": "four horizontal support triangles selected from sealed SAGE collision bytes",
+      "x_max_m": 5.211279156885851,
+      "x_min_m": 3.2342791209657826,
+      "y_max_m": -3.166961774558606,
+      "y_min_m": -3.5689620890003915
+    },
+    "target_position_m": [
+      3.3081748,
+      -3.3100837,
+      0.5264650138348479
+    ],
+    "target_selection": {
+      "measurement_authority": "materialized SAGE collision bytes",
+      "method": "SAGE support top triangles plus collision-prim AABB exclusion",
+      "native_contact_validation_status": "v22_0_50m_base_passed_strict_object_stability_gate",
+      "non_support_overlap_count": 0,
+      "translation_m": 0.16
+    }
+  },
+  "claim_ceiling": [
+    "development_only",
+    "simulator_only",
+    "public_scene_specific",
+    "no_policy_result_yet",
+    "no_physical_transfer_claim"
+  ],
+  "embodiment": {
+    "arena_droid_runtime_asset": {
+      "asset_description": "official Arena DROID Franka arm plus Robotiq 2F-85 gripper",
+      "embodiment_id": "droid_abs_joint_pos",
+      "selection_reason": "exact DROID action, joint, gripper, and camera embodiment contract",
+      "source_commit": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+      "source_path": "isaaclab_arena/embodiments/droid/droid.py",
+      "source_repository": "https://github.com/isaac-sim/IsaacLab-Arena"
+    },
+    "arm_joint_expression": "panda_joint[1-7]",
+    "command_body": "panda_hand",
+    "droid_compatibility_target": true,
+    "gripper": "Robotiq 2F-85",
+    "gripper_drive_joint": "finger_joint",
+    "isaac_lab_asset_config": {
+      "gripper_variant": "Robotiq_2F_85",
+      "source_blob": "f03d21760f903b09438cdccb75d11434abd5a2aa",
+      "source_commit": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+      "source_path": "source/isaaclab_assets/isaaclab_assets/robots/franka.py",
+      "source_repository": "https://github.com/isaac-sim/IsaacLab",
+      "source_tree": "454115265327a80acabd07cbd36e10071fc0c065",
+      "symbol": "FRANKA_ROBOTIQ_GRIPPER_CFG",
+      "usd_path": "{ISAAC_NUCLEUS_DIR}/Robots/FrankaRobotics/FrankaPanda/franka.usd"
+    },
+    "passive_gripper_joint_expressions": [
+      ".*_inner_finger_joint",
+      ".*_inner_finger_knuckle_joint",
+      "right_outer_knuckle_joint",
+      ".*_outer_.*_joint"
+    ],
+    "reset_joint_positions_rad": {
+      "finger_joint": 0.104255385697,
+      "left_inner_finger_joint": -0.080966427922,
+      "left_inner_finger_knuckle_joint": -0.071244180202,
+      "panda_joint1": 0.0,
+      "panda_joint2": -0.628318530718,
+      "panda_joint3": 0.0,
+      "panda_joint4": -2.513274122872,
+      "panda_joint5": 0.0,
+      "panda_joint6": 1.884955592154,
+      "panda_joint7": 0.0,
+      "right_inner_finger_joint": -0.128436118364,
+      "right_inner_finger_knuckle_joint": 0.125143155456,
+      "right_outer_knuckle_joint": 0.104152053595
+    },
+    "reset_pose_exception": {
+      "asset_or_collider_mutated": false,
+      "measured_open_gripper_reprobe_result": "can_tilt_6.254314_degrees_original_standoff_rejected",
+      "measured_open_gripper_reprobe_run_id": "native_microcheck_v21_measured_open_gripper",
+      "official_arena_arm_pose_preserved": true,
+      "open_gripper_source": "exact settled contact-stable live joint coordinates",
+      "open_gripper_source_run_id": "native_microcheck_v15_legacy_cooker",
+      "status": "measured_open_gripper_preserved_but_insufficient_at_original_standoff",
+      "trigger": "Arena release/0.2.1 all-joint reset wrote zero into every Robotiq closed-loop joint and tilted the can 6.188034 degrees",
+      "trigger_run_id": "native_microcheck_v19_official_arena_droid_pose"
+    },
+    "robot": "Franka Panda",
+    "robot_base_pose_candidate": {
+      "analytic_reach_candidate": true,
+      "analytic_shoulder_to_target_distance_m": 0.5,
+      "base_support_samples_passed": 5,
+      "base_support_samples_required": 5,
+      "collision_triangle_overlap_count": 0,
+      "contact_clearance_adjustment": {
+        "base_shift_away_from_object_m": 0.1,
+        "base_support_samples_passed": 5,
+        "base_support_samples_required": 5,
+        "collision_triangle_overlap_count": 0,
+        "collision_vertex_overlap_count": 0,
+        "learned_outcomes_observed": false,
+        "native_reprobe_required": false,
+        "native_reprobe_result": "passed_0_000000533m_xy_0_000003636m_z_0_009498deg_tilt",
+        "native_reprobe_run_id": "native_microcheck_v22_contact_clear_base",
+        "original_base_y_m": -2.9100837,
+        "resolved_base_y_m": -2.8100837,
+        "source": "sealed SAGE collision analysis GLB bound by placement packet",
+        "target_xy_distance_m": 0.5,
+        "trigger_run_id": "native_microcheck_v21_measured_open_gripper"
+      },
+      "learned_outcomes_observed_before_selection": false,
+      "placement_packet_evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/placement_v1/placement/adp009d_sage_franka_placement_packet.v1.json",
+      "placement_packet_sha256": "sha256:e71368265ccf4aa9f4de048afced5d7535c05ed9baa4e2384837ad722b0289b4",
+      "placement_packet_size_bytes": 13596,
+      "placement_proposal_digest": "sha256:c1935686c0971880e254f3ae0e75a87c0ed6d20c124e0fa02086ae201d838c33",
+      "position_m": [
+        3.4681748,
+        -2.8100837,
+        0.2766791
+      ],
+      "yaw_radians": -1.570796326795
+    },
+    "robot_base_pose_status": "native_validated_0_50m_contact_clearance",
+    "wrist_camera_mount_status": "requires_robotiq_variant_native_calibration_probe"
+  },
+  "evaluation_admission": {
+    "caller_asserted_success_accepted": false,
+    "full_evaluation": false,
+    "prepared_job_is_not_evaluation": true,
+    "required_before_policy": [
+      "physics reachability",
+      "reproducible reset",
+      "live renderer calibration depth segmentation composition",
+      "zero-action canonical rejection",
+      "scripted canonical success",
+      "controls on every scored cell"
+    ],
+    "reset_is_not_evaluation": true,
+    "single_nominal_rollout_is_not_evaluation": true,
+    "startup_is_not_evaluation": true
+  },
+  "harness_digest": "sha256:387fb03debf1d0101634dbb86957f95226162723b40a74d07ad2e12283bd350b",
   "harness_id": "blueprint-isaac-lab-franka-task-evaluation-v1",
-  "status": "native_contact_clear_reset_step_and_camera_tensor_microcheck_passed_policy_observation_blocked",
-  "reusable_harness": true,
-  "workflow": "isaac_lab_manager_based",
   "implementation_base_commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
   "layers": {
-    "scene": {
-      "owns": [
-        "sealed Aura 3DGS appearance",
-        "registered SAGE collision",
-        "support surface",
-        "lighting",
-        "cameras",
-        "dynamic-object composition"
-      ],
-      "mutates_sealed_sources": false
-    },
     "embodiment": {
       "owns": [
         "Franka Panda",
@@ -26,6 +252,37 @@
         "joint limits",
         "wrist camera",
         "reset state"
+      ]
+    },
+    "evaluation": {
+      "orchestration": "blueprint_evaluation_run_contract",
+      "owns": [
+        "scenario materialization",
+        "controls",
+        "paired candidates",
+        "receipts",
+        "media",
+        "analysis",
+        "teardown"
+      ]
+    },
+    "policy_adapter": {
+      "owns": [
+        "observation conversion",
+        "action conversion",
+        "safety clamping"
+      ],
+      "owns_grading": false
+    },
+    "scene": {
+      "mutates_sealed_sources": false,
+      "owns": [
+        "sealed Aura 3DGS appearance",
+        "registered SAGE collision",
+        "support surface",
+        "lighting",
+        "cameras",
+        "dynamic-object composition"
       ]
     },
     "task": {
@@ -38,331 +295,9 @@
         "deterministic state metrics",
         "terminal classification"
       ]
-    },
-    "policy_adapter": {
-      "owns": [
-        "observation conversion",
-        "action conversion",
-        "safety clamping"
-      ],
-      "owns_grading": false
-    },
-    "evaluation": {
-      "owns": [
-        "scenario materialization",
-        "controls",
-        "paired candidates",
-        "receipts",
-        "media",
-        "analysis",
-        "teardown"
-      ],
-      "orchestration": "blueprint_evaluation_run_contract"
-    }
-  },
-  "asset_bindings": [
-    {
-      "role": "agent_skill_audit",
-      "root": "repo",
-      "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 61741,
-      "sha256": "sha256:78e704506a6dbdea6e5adceaee7751c92c9c57fd1b8fccabf42741cdea88c017"
-    },
-    {
-      "role": "approved_can",
-      "root": "repo",
-      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
-      "size_bytes": 20705128,
-      "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec"
-    },
-    {
-      "role": "aura_appearance",
-      "root": "evidence",
-      "relative_path": "aura_interiorgs/live_v12_openclip_execute/immutable_execution/artifacts/aurafusion360_840313_ins160_final.ply",
-      "size_bytes": 106309429,
-      "sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd"
-    },
-    {
-      "role": "hybrid_seal_receipt",
-      "root": "repo",
-      "relative_path": "docs/arm_decision_proof_v1/manifests/adp009b_hybrid_replacement_seal_receipt.v1.json",
-      "size_bytes": 2626,
-      "sha256": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b"
-    },
-    {
-      "role": "original_interiorgs",
-      "root": "evidence",
-      "relative_path": "shortlist/InteriorGS/0442_840313/3dgs_compressed.ply",
-      "size_bytes": 33137360,
-      "sha256": "sha256:57c71edcb450f2323a5b8ad290b5672b437fc73b9283a7485804ce607da12254"
-    },
-    {
-      "role": "sage_collision",
-      "root": "evidence",
-      "relative_path": "shortlist/SAGE-3D_Collision_Mesh/Collision_Mesh/840313/840313_collision.usd",
-      "size_bytes": 42418216,
-      "sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41"
-    },
-    {
-      "role": "sage_usdz",
-      "root": "evidence",
-      "relative_path": "shortlist/SAGE-3D_InteriorGS_usdz/InteriorGS_usdz/840313.usdz",
-      "size_bytes": 81806718,
-      "sha256": "sha256:bcdc8d36ed88c1a5c4e7cd333479e24c67cde64ed3b3ea135f37028f70d1ebb8"
-    }
-  ],
-  "scene": {
-    "publisher_scene_id": "840313",
-    "sealed_scene_receipt_digest": "sha256:b259532be614098a3830aa9945770a96371968f9c68e8087eb21a2ca00e3c3e3",
-    "appearance_layer": "aura_appearance",
-    "collision_layer": "sage_collision",
-    "source_target_collider_prim": "/Root/ZHQYGJJVAJYEYPTUKY888888",
-    "source_target_collider_active": false,
-    "support_collider_prim": "/Root/_LTFTHJVAZ3VMPTUJU888888",
-    "support_collider_active": true,
-    "approved_object_layer": "approved_can",
-    "semantic_override_layer_policy": "compose_overlay_never_mutate_sealed_source",
-    "appearance_is_physics": false,
-    "collision_is_appearance": false
-  },
-  "embodiment": {
-    "robot": "Franka Panda",
-    "gripper": "Robotiq 2F-85",
-    "droid_compatibility_target": true,
-    "isaac_lab_asset_config": {
-      "symbol": "FRANKA_ROBOTIQ_GRIPPER_CFG",
-      "source_repository": "https://github.com/isaac-sim/IsaacLab",
-      "source_commit": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
-      "source_tree": "454115265327a80acabd07cbd36e10071fc0c065",
-      "source_path": "source/isaaclab_assets/isaaclab_assets/robots/franka.py",
-      "source_blob": "f03d21760f903b09438cdccb75d11434abd5a2aa",
-      "usd_path": "{ISAAC_NUCLEUS_DIR}/Robots/FrankaRobotics/FrankaPanda/franka.usd",
-      "gripper_variant": "Robotiq_2F_85"
-    },
-    "arena_droid_runtime_asset": {
-      "embodiment_id": "droid_abs_joint_pos",
-      "source_repository": "https://github.com/isaac-sim/IsaacLab-Arena",
-      "source_commit": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
-      "source_path": "isaaclab_arena/embodiments/droid/droid.py",
-      "asset_description": "official Arena DROID Franka arm plus Robotiq 2F-85 gripper",
-      "selection_reason": "exact DROID action, joint, gripper, and camera embodiment contract"
-    },
-    "command_body": "panda_hand",
-    "arm_joint_expression": "panda_joint[1-7]",
-    "gripper_drive_joint": "finger_joint",
-    "passive_gripper_joint_expressions": [
-      ".*_inner_finger_joint",
-      ".*_inner_finger_knuckle_joint",
-      "right_outer_knuckle_joint",
-      ".*_outer_.*_joint"
-    ],
-    "reset_joint_positions_rad": {
-      "panda_joint1": 0.0,
-      "panda_joint2": -0.628318530718,
-      "panda_joint3": 0.0,
-      "panda_joint4": -2.513274122872,
-      "panda_joint5": 0.0,
-      "panda_joint6": 1.884955592154,
-      "panda_joint7": 0.0,
-      "finger_joint": 0.104255385697,
-      "right_outer_knuckle_joint": 0.104152053595,
-      "right_inner_finger_joint": -0.128436118364,
-      "right_inner_finger_knuckle_joint": 0.125143155456,
-      "left_inner_finger_knuckle_joint": -0.071244180202,
-      "left_inner_finger_joint": -0.080966427922
-    },
-    "reset_pose_exception": {
-      "status": "measured_open_gripper_preserved_but_insufficient_at_original_standoff",
-      "official_arena_arm_pose_preserved": true,
-      "trigger_run_id": "native_microcheck_v19_official_arena_droid_pose",
-      "trigger": "Arena release/0.2.1 all-joint reset wrote zero into every Robotiq closed-loop joint and tilted the can 6.188034 degrees",
-      "open_gripper_source_run_id": "native_microcheck_v15_legacy_cooker",
-      "open_gripper_source": "exact settled contact-stable live joint coordinates",
-      "measured_open_gripper_reprobe_run_id": "native_microcheck_v21_measured_open_gripper",
-      "measured_open_gripper_reprobe_result": "can_tilt_6.254314_degrees_original_standoff_rejected",
-      "asset_or_collider_mutated": false
-    },
-    "robot_base_pose_status": "native_validated_0_50m_contact_clearance",
-    "robot_base_pose_candidate": {
-      "position_m": [
-        3.4681748,
-        -2.8100837,
-        0.2766791
-      ],
-      "yaw_radians": -1.570796326795,
-      "placement_proposal_digest": "sha256:c1935686c0971880e254f3ae0e75a87c0ed6d20c124e0fa02086ae201d838c33",
-      "placement_packet_sha256": "sha256:e71368265ccf4aa9f4de048afced5d7535c05ed9baa4e2384837ad722b0289b4",
-      "placement_packet_size_bytes": 13596,
-      "placement_packet_evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/placement_v1/placement/adp009d_sage_franka_placement_packet.v1.json",
-      "analytic_shoulder_to_target_distance_m": 0.5,
-      "analytic_reach_candidate": true,
-      "collision_triangle_overlap_count": 0,
-      "base_support_samples_passed": 5,
-      "base_support_samples_required": 5,
-      "contact_clearance_adjustment": {
-        "source": "sealed SAGE collision analysis GLB bound by placement packet",
-        "trigger_run_id": "native_microcheck_v21_measured_open_gripper",
-        "original_base_y_m": -2.9100837,
-        "resolved_base_y_m": -2.8100837,
-        "base_shift_away_from_object_m": 0.1,
-        "target_xy_distance_m": 0.5,
-        "collision_triangle_overlap_count": 0,
-        "collision_vertex_overlap_count": 0,
-        "base_support_samples_passed": 5,
-        "base_support_samples_required": 5,
-        "learned_outcomes_observed": false,
-        "native_reprobe_required": false,
-        "native_reprobe_run_id": "native_microcheck_v22_contact_clear_base",
-        "native_reprobe_result": "passed_0_000000533m_xy_0_000003636m_z_0_009498deg_tilt"
-      },
-      "learned_outcomes_observed_before_selection": false
-    },
-    "wrist_camera_mount_status": "requires_robotiq_variant_native_calibration_probe"
-  },
-  "canonical_condition": {
-    "immutable": true,
-    "object_id": "approved_can",
-    "object_start_position_m": [
-      3.4681748,
-      -3.3100837,
-      0.5264650138348479
-    ],
-    "target_position_m": [
-      3.3081748,
-      -3.3100837,
-      0.5264650138348479
-    ],
-    "target_selection": {
-      "method": "SAGE support top triangles plus collision-prim AABB exclusion",
-      "translation_m": 0.16,
-      "non_support_overlap_count": 0,
-      "measurement_authority": "materialized SAGE collision bytes",
-      "native_contact_validation_status": "v22_0_50m_base_passed_strict_object_stability_gate"
-    },
-    "support_bounds": {
-      "x_min_m": 3.2342791209657826,
-      "x_max_m": 5.211279156885851,
-      "y_min_m": -3.5689620890003915,
-      "y_max_m": -3.166961774558606,
-      "height_m": 0.5264650138348479,
-      "edge_margin_m": 0.01,
-      "measurement_method": "four horizontal support triangles selected from sealed SAGE collision bytes"
-    },
-    "parameters": {
-      "object_start_x_m": 3.4681748,
-      "object_start_y_m": -3.3100837,
-      "object_start_z_m": 0.5264650138348479,
-      "object_yaw_degrees": 0.0,
-      "target_x_m": 3.3081748,
-      "target_y_m": -3.3100837,
-      "target_z_m": 0.5264650138348479,
-      "robot_base_x_m": 3.4681748,
-      "robot_base_y_m": -2.8100837,
-      "robot_base_yaw_degrees": -90.0,
-      "light_intensity_scale": 1.0,
-      "light_direction_yaw_degrees": 0.0,
-      "light_color_temperature_kelvin": 5000.0,
-      "external_camera_extrinsic_dx_m": 0.0,
-      "external_camera_extrinsic_dy_m": 0.0,
-      "external_camera_extrinsic_dz_m": 0.0,
-      "external_camera_focal_scale": 1.0,
-      "wrist_camera_extrinsic_dx_m": 0.0,
-      "wrist_camera_extrinsic_dy_m": 0.0,
-      "wrist_camera_extrinsic_dz_m": 0.0,
-      "camera_exposure_scale": 1.0,
-      "camera_noise_std": 0.0,
-      "camera_blur_sigma": 0.0,
-      "camera_latency_frames": 0,
-      "object_mass_kg": 0.355,
-      "object_static_friction": 0.5,
-      "object_dynamic_friction": 0.4,
-      "object_restitution": 0.1,
-      "object_contact_offset_m": 0.005,
-      "object_rest_offset_m": 0.0,
-      "object_radius_m": 0.031094726014345042,
-      "object_height_m": 0.1694279937744141
-    },
-    "camera_calibration_status": "native_tensors_retained_v22_external_can_visible_wrist_can_absent_policy_frame_rework_required",
-    "lighting_status": "native_aura_exact_camera_conformance_passed_live_hybrid_composition_pending",
-    "robot_base_status": "native_reset_step_and_contact_stability_validated_policy_task_reachability_unproven"
-  },
-  "task": {
-    "task_id": "pick_lift_translate_place_settle_same_support",
-    "phases": [
-      "approach",
-      "grasp",
-      "lift",
-      "translate",
-      "place",
-      "release",
-      "settle"
-    ],
-    "success_thresholds": {
-      "minimum_lift_m": 0.08,
-      "minimum_translation_m": 0.15,
-      "maximum_center_error_m": 0.05,
-      "maximum_tilt_degrees": 15.0,
-      "minimum_settle_duration_s": 1.0,
-      "maximum_settled_linear_speed_m_s": 0.02,
-      "maximum_settled_angular_speed_rad_s": 0.15,
-      "same_support_surface_required": true,
-      "grasp_required": true
-    },
-    "grader_authority": "deterministic_simulator_state",
-    "policy_may_grade_itself": false,
-    "terminal_precedence": [
-      "camera_failure",
-      "invalid_observation",
-      "policy_runtime_failure",
-      "joint_limit_violation",
-      "collision_violation",
-      "drop",
-      "support_loss",
-      "success",
-      "timeout"
-    ],
-    "terminal_definitions": {
-      "success": {
-        "condition": "grasp established, lift >=0.08 m, transport >=0.15 m, released on preregistered target on the same support, settled >=1.0 s, center error <=0.05 m, tilt <=15 degrees"
-      },
-      "timeout": {
-        "condition": "episode horizon expires before another terminal"
-      },
-      "drop": {
-        "condition": "after grasp, object loses gripper support and falls below the support height minus 0.03 m or contacts a forbidden lower surface"
-      },
-      "support_loss": {
-        "condition": "terminal object center or contact footprint leaves the admitted support polygon outside the frozen edge margin"
-      },
-      "collision_violation": {
-        "condition": "robot or object contacts a forbidden environment prim or exceeds the frozen impulse limit"
-      },
-      "joint_limit_violation": {
-        "condition": "any joint exceeds its hard position, velocity, effort, or torque limit after tolerance"
-      },
-      "camera_failure": {
-        "condition": "a required external or wrist frame, calibration, timestamp, metric depth, or segmentation output is missing or stale"
-      },
-      "invalid_observation": {
-        "condition": "policy observation has the wrong schema, shape, device, timing, calibration, finite-value status, or retained-frame digest"
-      },
-      "policy_runtime_failure": {
-        "condition": "policy process errors, misses the frozen deadline, returns an invalid action, or violates its admitted runtime contract"
-      }
     }
   },
   "managers": {
-    "ObservationManager": {
-      "owns": [
-        "external RGB",
-        "wrist RGB",
-        "metric depth",
-        "segmentation",
-        "camera calibration",
-        "proprioception",
-        "grader state"
-      ]
-    },
     "ActionManager": {
       "owns": [
         "DROID action conversion",
@@ -374,34 +309,32 @@
     "EventManager": {
       "terms": [
         {
-          "term_id": "validate_static_asset_and_backend_bindings",
-          "mode": "prestartup"
+          "mode": "prestartup",
+          "term_id": "validate_static_asset_and_backend_bindings"
         },
         {
-          "term_id": "configure_scene_renderer_semantics_and_physx",
-          "mode": "startup"
+          "mode": "startup",
+          "term_id": "configure_scene_renderer_semantics_and_physx"
         },
         {
-          "term_id": "apply_resolved_scenario_and_reset_state",
-          "mode": "reset"
+          "mode": "reset",
+          "term_id": "apply_resolved_scenario_and_reset_state"
         },
         {
-          "term_id": "capture_timestamped_observations_and_runtime_health",
-          "mode": "interval"
+          "mode": "interval",
+          "term_id": "capture_timestamped_observations_and_runtime_health"
         }
       ]
     },
-    "TerminationManager": {
-      "terminal_ids": [
-        "success",
-        "timeout",
-        "drop",
-        "support_loss",
-        "collision_violation",
-        "joint_limit_violation",
-        "camera_failure",
-        "invalid_observation",
-        "policy_runtime_failure"
+    "ObservationManager": {
+      "owns": [
+        "external RGB",
+        "wrist RGB",
+        "metric depth",
+        "segmentation",
+        "camera calibration",
+        "proprioception",
+        "grader state"
       ]
     },
     "RecorderManager": {
@@ -416,87 +349,133 @@
         "review videos",
         "replay identity"
       ]
+    },
+    "TerminationManager": {
+      "terminal_ids": [
+        "success",
+        "timeout",
+        "drop",
+        "support_loss",
+        "collision_violation",
+        "joint_limit_violation",
+        "camera_failure",
+        "invalid_observation",
+        "policy_runtime_failure"
+      ]
     }
+  },
+  "observation_renderer": {
+    "aura_camera_pose_source": "same live Isaac camera calibration and timestamp",
+    "backend_candidate": "AuraFusion360 official native 2D-surfel rasterizer plus Isaac Lab Camera dynamic layer",
+    "backend_status": "native_isaac_camera_microcheck_passed_ovrtx_exact_asset_rejected_native_aura_exact_camera_conformance_passed_live_hybrid_pending",
+    "camera_calibration_retained_per_frame": true,
+    "composition": "live_depth_correct_aura_dynamic_geometry",
+    "dlpack_ownership_map_unmap_device_sync_explicit": true,
+    "dynamic_geometry": [
+      "Franka Panda",
+      "Robotiq 2F-85",
+      "approved can or admitted cousin",
+      "other dynamic geometry"
+    ],
+    "forbidden_fallbacks": [
+      "plain_sage_mesh_appearance",
+      "old_2d_overlay",
+      "browser_render",
+      "unrelated_frames"
+    ],
+    "lossless_policy_cameras": [
+      "external",
+      "wrist"
+    ],
+    "metric_depth_aov": {
+      "aura": "aurafusion360_expected_camera_depth_m",
+      "dynamic": "distance_to_camera"
+    },
+    "missing_blocker": "sealed_aura_hybrid_policy_observation_renderer_missing",
+    "native_aura_conformance_receipt_digest": "sha256:8e4c34878c7d08d9c137e48263819a760efa3d438163f25642b5c82056d70a6f",
+    "native_aura_conformance_receipt_sha256": "sha256:e4d784d8881d14e04e0df4913cfc610427630b8008bb2f22157ec7562cfef2fc",
+    "native_aura_renderer_status": "executed_exact_camera_conformance_passed",
+    "ovrtx_particlefield": {
+      "learned_scale_components": 2,
+      "live_render_proven": false,
+      "output_sha256": "sha256:3b65027873579d29db998f863243d6613156e1c1b0267887c16c5d43f77053d5",
+      "positive_infinite_opacity_logit_count": 262274,
+      "receipt_digest": "sha256:9449652ef11ff14b1ef1a2340c3b56590361dd6948ccf7359b9b4093d2bd329f",
+      "schema": "ParticleField+ParticleFieldKernelGaussianSurfletAPI",
+      "sealed_source_mutated": false,
+      "source_sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
+      "surfel_count": 415265
+    },
+    "ovrtx_selection_status": "rejected_for_exact_aura_surflet_asset_after_preregistered_black_rgb_and_missing_metric_depth",
+    "ovrtx_used_by_selected_path": false,
+    "required_aovs": [
+      "rgb",
+      "distance_to_camera",
+      "semantic_segmentation"
+    ],
+    "reset_and_warmup_after_camera_or_setting_change": true,
+    "selected_path_reason": "Aura's exact official native rasterizer preserves the sealed 2D-surflet representation and exposes RGB alpha and expected metric camera-space depth from arbitrary centered-pinhole live camera poses; Isaac Lab Camera retains dynamic geometry semantics physics timing and dynamic metric depth",
+    "semantic_override_layer": true,
+    "timestamp_retained_per_frame": true,
+    "unitless_depth_sd_allowed": false
   },
   "physics": {
     "backend": "physx",
     "centralized": true,
     "configuration_id": "adp009d_physx_l40s_v1",
-    "settings": {
-      "physics_dt_seconds": 0.008333333333333333,
-      "control_decimation": 8,
-      "control_frequency_hz": 15.0,
-      "solver": "TGS",
-      "use_gpu_pipeline": true,
-      "enable_enhanced_determinism": true,
-      "solver_position_iteration_count": 8,
-      "solver_velocity_iteration_count": 2,
-      "gpu_max_rigid_contact_count": 8388608,
-      "gpu_max_rigid_patch_count": 32768,
-      "contact_offset_m": 0.005,
-      "rest_offset_m": 0.0,
-      "max_depenetration_velocity_m_s": 5.0,
-      "collision_cooking_profile": "legacy_cooker_after_ujitso_stall.v1",
-      "collision_cooking_backend": "legacy",
-      "ujitso_collision_cooking": false,
-      "collision_cooking_decision": "measured v14 UJITSO environment-construction stall; use NVIDIA's documented legacy-cooker diagnostic without changing collider geometry or parameters",
-      "collision_cooking_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
-      "collision_geometry_or_parameters_changed": false,
-      "retry_cap": 0
-    },
     "entity_overrides": {
+      "approved_can_and_cousins": {
+        "max_depenetration_velocity_m_s": 5.0,
+        "solver_position_iteration_count": 8,
+        "solver_velocity_iteration_count": 2
+      },
       "official_arena_droid_robot": {
+        "max_depenetration_velocity_m_s": 5.0,
         "solver_position_iteration_count": 64,
         "solver_velocity_iteration_count": 0,
-        "max_depenetration_velocity_m_s": 5.0,
         "source": "Isaac Lab Arena droid.py at the pinned release revision"
       },
-      "approved_can_and_cousins": {
-        "solver_position_iteration_count": 8,
-        "solver_velocity_iteration_count": 2,
-        "max_depenetration_velocity_m_s": 5.0
-      },
       "sealed_sage_static_collision": {
-        "source_sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
-        "source_mesh_count": 165,
-        "source_point_count": 509268,
-        "source_face_count": 993678,
-        "source_rigid_body_count": 0,
-        "source_convex_decomposition_count": 164,
-        "runtime_task_roi_min_m": [
-          2.4681748,
-          -4.3100837,
-          -0.1
-        ],
+        "cold_cooking_is_startup_evidence_only": true,
+        "geometry_mutation_allowed": false,
+        "out_of_envelope_source_colliders_active": false,
+        "physx_triangle_stability_warning_allowed": false,
+        "required_blocker_on_mismatch": "sage_runtime_collision_profile_mismatch",
+        "required_blocker_on_triangle_stability_warning": "physx_collision_stability_warning_detected",
+        "runtime_active_triangle_mesh_count": 15,
+        "runtime_approximation": "none",
+        "runtime_approximation_semantics": "static_triangle_mesh",
+        "runtime_candidate_source_mesh_count": 16,
+        "runtime_clipped_source_face_count": 24248,
+        "runtime_clipped_source_surface_area_m2": 26.28230143,
+        "runtime_derivative_claim_ceiling": "preregistered_franka_task_envelope_only",
+        "runtime_derived_face_count": 26828,
+        "runtime_derived_point_count": 80484,
+        "runtime_maximum_edge_m": 0.5,
+        "runtime_selected_source_surface_area_m2": 774.974830891,
+        "runtime_source_face_count": 47359,
+        "runtime_surface_area_relative_error_maximum": 1e-06,
+        "runtime_surface_operation": "aabb_clip_then_coplanar_longest_edge_midpoint_retriangulation",
+        "runtime_surface_preserving_derivative_allowed": true,
         "runtime_task_roi_max_m": [
           4.4681748,
           -1.9100837,
           1.8
         ],
-        "runtime_candidate_source_mesh_count": 16,
-        "runtime_active_triangle_mesh_count": 15,
-        "runtime_source_face_count": 47359,
-        "runtime_clipped_source_face_count": 24248,
-        "runtime_derived_face_count": 26828,
-        "runtime_derived_point_count": 80484,
-        "runtime_selected_source_surface_area_m2": 774.974830891,
-        "runtime_clipped_source_surface_area_m2": 26.28230143,
-        "runtime_maximum_edge_m": 0.5,
-        "runtime_approximation": "none",
-        "runtime_approximation_semantics": "static_triangle_mesh",
-        "runtime_surface_operation": "aabb_clip_then_coplanar_longest_edge_midpoint_retriangulation",
-        "runtime_surface_area_relative_error_maximum": 1e-06,
-        "runtime_derivative_claim_ceiling": "preregistered_franka_task_envelope_only",
+        "runtime_task_roi_min_m": [
+          2.4681748,
+          -4.3100837,
+          -0.1
+        ],
+        "sealed_source_bytes_retained": true,
+        "source_convex_decomposition_count": 164,
+        "source_face_count": 993678,
+        "source_mesh_count": 165,
+        "source_point_count": 509268,
+        "source_rigid_body_count": 0,
+        "source_sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
         "source_target_collider_active": false,
         "support_collider_active": true,
-        "geometry_mutation_allowed": false,
-        "sealed_source_bytes_retained": true,
-        "runtime_surface_preserving_derivative_allowed": true,
-        "out_of_envelope_source_colliders_active": false,
-        "required_blocker_on_mismatch": "sage_runtime_collision_profile_mismatch",
-        "physx_triangle_stability_warning_allowed": false,
-        "required_blocker_on_triangle_stability_warning": "physx_collision_stability_warning_detected",
-        "cold_cooking_is_startup_evidence_only": true,
         "warm_start_cache_requirements": [
           "exact sealed SAGE source digest",
           "exact task collision derivative digest",
@@ -507,62 +486,238 @@
         ]
       }
     },
-    "runtime_override_policy": "resolved scenario parameters only; no scattered conditionals"
+    "runtime_override_policy": "resolved scenario parameters only; no scattered conditionals",
+    "settings": {
+      "collision_cooking_backend": "legacy",
+      "collision_cooking_decision": "measured v14 UJITSO environment-construction stall; use NVIDIA's documented legacy-cooker diagnostic without changing collider geometry or parameters",
+      "collision_cooking_profile": "legacy_cooker_after_ujitso_stall.v1",
+      "collision_cooking_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
+      "collision_geometry_or_parameters_changed": false,
+      "contact_offset_m": 0.005,
+      "control_decimation": 8,
+      "control_frequency_hz": 15.0,
+      "enable_enhanced_determinism": true,
+      "gpu_max_rigid_contact_count": 8388608,
+      "gpu_max_rigid_patch_count": 32768,
+      "max_depenetration_velocity_m_s": 5.0,
+      "physics_dt_seconds": 0.008333333333333333,
+      "rest_offset_m": 0.0,
+      "retry_cap": 0,
+      "solver": "TGS",
+      "solver_position_iteration_count": 8,
+      "solver_velocity_iteration_count": 2,
+      "ujitso_collision_cooking": false,
+      "use_gpu_pipeline": true
+    }
   },
-  "observation_renderer": {
-    "backend_candidate": "AuraFusion360 official native 2D-surfel rasterizer plus Isaac Lab Camera dynamic layer",
-    "backend_status": "native_isaac_camera_microcheck_passed_ovrtx_exact_asset_rejected_native_aura_exact_camera_conformance_passed_live_hybrid_pending",
-    "composition": "live_depth_correct_aura_dynamic_geometry",
-    "aura_camera_pose_source": "same live Isaac camera calibration and timestamp",
-    "dynamic_geometry": [
-      "Franka Panda",
-      "Robotiq 2F-85",
-      "approved can or admitted cousin",
-      "other dynamic geometry"
+  "program_id": "arm-decision-proof-v1",
+  "reusable_harness": true,
+  "runtime_install_profile": {
+    "all_isaac_lab_extensions_installed": false,
+    "arena_development_extras_installed": false,
+    "fail_closed_worker_plan_validation": true,
+    "isaac_lab_selective_targets": [
+      "assets",
+      "ov",
+      "physx",
+      "rl[rsl-rl]",
+      "tasks",
+      "teleop"
     ],
-    "metric_depth_aov": {
-      "aura": "aurafusion360_expected_camera_depth_m",
-      "dynamic": "distance_to_camera"
+    "isaaclab_newton_install_reason": "pinned_installer_required_physx_newton_package_coupling_only",
+    "isaaclab_ov_install_reason": "Arena imports every embodiment at package import time; its Kuka Allegro module imports Isaac Lab multi-backend renderer presets, which require the isaaclab_ov configuration extension.",
+    "newton_backend_selected": false,
+    "newton_runtime_extras_installed": false,
+    "ovrtx_backend_selected": true,
+    "ovrtx_extra_installed": false,
+    "profile_id": "isaaclab_arena_physx_task_runtime.v3",
+    "supplemental_runtime_dependencies": [
+      {
+        "name": "h5py",
+        "reason": "The pinned Isaac Lab core dataset module imports h5py. The selected Arena closure now installs the official RSL-RL extra that declares h5py, but this direct byte pin prevents that otherwise unpinned requirement from drifting across paid runs.",
+        "sha256": "sha256:dfc21898ff025f1e8e67e194965a95a8d4754f452f83454538f98f8a3fcb207e",
+        "source_url": "https://files.pythonhosted.org/packages/9e/e9/1a19e42cd43cc1365e127db6aae85e1c671da1d9a5d746f4d34a50edb577/h5py-3.16.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "version": "3.16.0"
+      },
+      {
+        "name": "hydra-core",
+        "reason": "Isaac Lab Arena environment construction requires Hydra. The selected Arena closure now installs the official RSL-RL extra that declares hydra-core, but this direct byte pin prevents that otherwise unpinned requirement from drifting across paid runs.",
+        "sha256": "sha256:a3ff35b4ea6794e4c83d993016f4bde4ac35797ebe7a08f30e83ed9341880331",
+        "source_url": "https://files.pythonhosted.org/packages/9c/97/f9d463a6f3c7d0955753eca5cbbf35b596ac471dd13fe357211a53fd37be/hydra_core-1.3.5-py3-none-any.whl",
+        "version": "1.3.5"
+      },
+      {
+        "name": "omegaconf",
+        "reason": "Exact transitive runtime dependency of the pinned hydra-core wheel.",
+        "sha256": "sha256:3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0",
+        "source_url": "https://files.pythonhosted.org/packages/a4/0e/152509871bf30df6fc38569f52a2db9b55dd41aae957adae50a053ac7778/omegaconf-2.3.1-py3-none-any.whl",
+        "version": "2.3.1"
+      },
+      {
+        "name": "antlr4-python3-runtime",
+        "reason": "Exact transitive runtime dependency required by hydra-core and OmegaConf.",
+        "sha256": "sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b",
+        "source_url": "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz",
+        "version": "4.9.3"
+      },
+      {
+        "name": "msgpack",
+        "reason": "The pinned Arena remote-policy serializer imports msgpack; version 1.1.0 is the exact version installed by Arena's official Dockerfile.",
+        "sha256": "sha256:17fb65dd0bec285907f68b15734a993ad3fc94332b5bb21b0435846228de1f39",
+        "source_url": "https://files.pythonhosted.org/packages/f1/54/65af8de681fa8255402c80eda2a501ba467921d5a7a028c9c22a2c2eedb5/msgpack-1.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "version": "1.1.0"
+      },
+      {
+        "name": "pyzmq",
+        "reason": "Arena asset registration imports its remote-policy client even in a no-policy environment; version 27.0.1 is the exact version installed by Arena's official Dockerfile but omitted from Arena setup.py runtime dependencies.",
+        "sha256": "sha256:f5b6133c8d313bde8bd0d123c169d22525300ff164c2189f849de495e1344577",
+        "source_url": "https://files.pythonhosted.org/packages/7e/0a/2356305c423a975000867de56888b79e44ec2192c690ff93c3109fd78081/pyzmq-27.0.1-cp312-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "version": "27.0.1"
+      }
+    ],
+    "uses_official_selective_installer": true,
+    "worker_plan_source": "src/blueprint_pipeline/adp009d_native_microcheck_worker.py"
+  },
+  "runtime_pins": {
+    "arena_claim_ceiling": "alpha_internal_rehearsal_only",
+    "isaac_groot_submodule": "e29d8fc50b0e4745120ae3fb72447986fe638aa6",
+    "isaac_lab": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+    "isaac_lab_arena": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+    "isaac_sim_family": "6.0.x",
+    "ovrtx": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+    "physx": "7845321d31fa3619917ebe127ab5e08e73de0bdb"
+  },
+  "runtime_timing_receipt": {
+    "cold_install_time_reported_separately": true,
+    "fields_seconds": [
+      "environment_build",
+      "reset_0",
+      "reset_1",
+      "zero_action_step",
+      "camera_warmup_40_frames",
+      "camera_retention"
+    ],
+    "latest_blocked_measurement": {
+      "allocator_result_sha256": "sha256:cf0b13dccb31747bb84ad7ba8f56542fb09cb6db58a05699b6d98259692ad2f8",
+      "can_absolute_z_displacement_m": 0.003130197525024414,
+      "can_tilt_degrees": 6.254313674694312,
+      "can_xy_displacement_m": 0.00012196619279790968,
+      "estimated_cost_usd": 0.205707,
+      "policy_queried": false,
+      "provider_zero_observed": true,
+      "result_sha256": "sha256:b6a3784dca45bc65de386e40e08451540487024fc4b7a0858b487de01d914c2d",
+      "run_id": "native_microcheck_v21_measured_open_gripper",
+      "smallest_exact_blocker": "canonical_arm_base_standoff_near_contact",
+      "status": "blocked_contact_stability_gate"
     },
-    "unitless_depth_sd_allowed": false,
-    "required_aovs": [
-      "rgb",
-      "distance_to_camera",
-      "semantic_segmentation"
-    ],
-    "lossless_policy_cameras": [
-      "external",
-      "wrist"
-    ],
-    "camera_calibration_retained_per_frame": true,
-    "timestamp_retained_per_frame": true,
-    "ovrtx_used_by_selected_path": false,
-    "ovrtx_selection_status": "rejected_for_exact_aura_surflet_asset_after_preregistered_black_rgb_and_missing_metric_depth",
-    "native_aura_renderer_status": "executed_exact_camera_conformance_passed",
-    "native_aura_conformance_receipt_digest": "sha256:8e4c34878c7d08d9c137e48263819a760efa3d438163f25642b5c82056d70a6f",
-    "native_aura_conformance_receipt_sha256": "sha256:e4d784d8881d14e04e0df4913cfc610427630b8008bb2f22157ec7562cfef2fc",
-    "selected_path_reason": "Aura's exact official native rasterizer preserves the sealed 2D-surflet representation and exposes RGB alpha and expected metric camera-space depth from arbitrary centered-pinhole live camera poses; Isaac Lab Camera retains dynamic geometry semantics physics timing and dynamic metric depth",
-    "ovrtx_particlefield": {
-      "source_sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
-      "output_sha256": "sha256:3b65027873579d29db998f863243d6613156e1c1b0267887c16c5d43f77053d5",
-      "receipt_digest": "sha256:9449652ef11ff14b1ef1a2340c3b56590361dd6948ccf7359b9b4093d2bd329f",
-      "surfel_count": 415265,
-      "learned_scale_components": 2,
-      "positive_infinite_opacity_logit_count": 262274,
-      "schema": "ParticleField+ParticleFieldKernelGaussianSurfletAPI",
-      "sealed_source_mutated": false,
-      "live_render_proven": false
+    "latest_measurement": {
+      "allocator_result_sha256": "sha256:9bcef162b0efe10000e03335a5768fe97648fac92f7c553fe8613368e28b129e",
+      "camera_retention": 0.332189,
+      "camera_warmup_40_frames": 7.770616,
+      "can_absolute_z_displacement_m": 3.635883331298828e-06,
+      "can_tilt_degrees": 0.009498214903424387,
+      "can_xy_displacement_m": 5.331201499700045e-07,
+      "environment_build": 28.241277,
+      "estimated_cost_usd": 0.099545,
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/native_microcheck_v22_contact_clear_base/attempts/attempt_001/immutable_execution/adp009d_native_microcheck.json",
+      "limitations": [
+        "wrist_camera_approved_can_absent",
+        "sealed_aura_hybrid_policy_observation_renderer_missing",
+        "scripted_task_control_not_executed"
+      ],
+      "policy_queried": false,
+      "post_warmup_arm_maximum_error_rad": 4.649162292480469e-06,
+      "provider_zero_observed": true,
+      "reset_0": 0.015874,
+      "reset_1": 0.009909,
+      "result_sha256": "sha256:1c01933c7fdfb4fc6177ef8db5fe18507db5304ea3777cc67d3852488c62e1c9",
+      "run_id": "native_microcheck_v22_contact_clear_base",
+      "status": "completed_contact_clear_reset_step_and_camera_tensor_microcheck",
+      "zero_action_step": 0.140685
     },
-    "semantic_override_layer": true,
-    "dlpack_ownership_map_unmap_device_sync_explicit": true,
-    "reset_and_warmup_after_camera_or_setting_change": true,
-    "forbidden_fallbacks": [
-      "plain_sage_mesh_appearance",
-      "old_2d_overlay",
-      "browser_render",
-      "unrelated_frames"
+    "required": true,
+    "warm_start_claim_requires_measured_result": true
+  },
+  "scene": {
+    "appearance_is_physics": false,
+    "appearance_layer": "aura_appearance",
+    "approved_object_layer": "approved_can",
+    "collision_is_appearance": false,
+    "collision_layer": "sage_collision",
+    "publisher_scene_id": "840313",
+    "sealed_scene_receipt_digest": "sha256:b259532be614098a3830aa9945770a96371968f9c68e8087eb21a2ca00e3c3e3",
+    "semantic_override_layer_policy": "compose_overlay_never_mutate_sealed_source",
+    "source_target_collider_active": false,
+    "source_target_collider_prim": "/Root/ZHQYGJJVAJYEYPTUKY888888",
+    "support_collider_active": true,
+    "support_collider_prim": "/Root/_LTFTHJVAZ3VMPTUJU888888"
+  },
+  "schema_version": "adp009d_franka_eval_harness_manifest.v1",
+  "status": "native_contact_clear_reset_step_and_camera_tensor_microcheck_passed_policy_observation_blocked",
+  "task": {
+    "grader_authority": "deterministic_simulator_state",
+    "phases": [
+      "approach",
+      "grasp",
+      "lift",
+      "translate",
+      "place",
+      "release",
+      "settle"
     ],
-    "missing_blocker": "sealed_aura_hybrid_policy_observation_renderer_missing"
+    "policy_may_grade_itself": false,
+    "success_thresholds": {
+      "grasp_required": true,
+      "maximum_center_error_m": 0.05,
+      "maximum_settled_angular_speed_rad_s": 0.15,
+      "maximum_settled_linear_speed_m_s": 0.02,
+      "maximum_tilt_degrees": 15.0,
+      "minimum_lift_m": 0.08,
+      "minimum_settle_duration_s": 1.0,
+      "minimum_translation_m": 0.15,
+      "same_support_surface_required": true
+    },
+    "task_id": "pick_lift_translate_place_settle_same_support",
+    "terminal_definitions": {
+      "camera_failure": {
+        "condition": "a required external or wrist frame, calibration, timestamp, metric depth, or segmentation output is missing or stale"
+      },
+      "collision_violation": {
+        "condition": "robot or object contacts a forbidden environment prim or exceeds the frozen impulse limit"
+      },
+      "drop": {
+        "condition": "after grasp, object loses gripper support and falls below the support height minus 0.03 m or contacts a forbidden lower surface"
+      },
+      "invalid_observation": {
+        "condition": "policy observation has the wrong schema, shape, device, timing, calibration, finite-value status, or retained-frame digest"
+      },
+      "joint_limit_violation": {
+        "condition": "any joint exceeds its hard position, velocity, effort, or torque limit after tolerance"
+      },
+      "policy_runtime_failure": {
+        "condition": "policy process errors, misses the frozen deadline, returns an invalid action, or violates its admitted runtime contract"
+      },
+      "success": {
+        "condition": "grasp established, lift >=0.08 m, transport >=0.15 m, released on preregistered target on the same support, settled >=1.0 s, center error <=0.05 m, tilt <=15 degrees"
+      },
+      "support_loss": {
+        "condition": "terminal object center or contact footprint leaves the admitted support polygon outside the frozen edge margin"
+      },
+      "timeout": {
+        "condition": "episode horizon expires before another terminal"
+      }
+    },
+    "terminal_precedence": [
+      "camera_failure",
+      "invalid_observation",
+      "policy_runtime_failure",
+      "joint_limit_violation",
+      "collision_violation",
+      "drop",
+      "support_loss",
+      "success",
+      "timeout"
+    ]
   },
   "validation_sequence": [
     "import_and_configuration",
@@ -575,160 +730,5 @@
     "scripted_control",
     "larger_evaluation_execution"
   ],
-  "runtime_timing_receipt": {
-    "required": true,
-    "fields_seconds": [
-      "environment_build",
-      "reset_0",
-      "reset_1",
-      "zero_action_step",
-      "camera_warmup_40_frames",
-      "camera_retention"
-    ],
-    "warm_start_claim_requires_measured_result": true,
-    "cold_install_time_reported_separately": true,
-    "latest_measurement": {
-      "run_id": "native_microcheck_v22_contact_clear_base",
-      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/native_microcheck_v22_contact_clear_base/attempts/attempt_001/immutable_execution/adp009d_native_microcheck.json",
-      "result_sha256": "sha256:1c01933c7fdfb4fc6177ef8db5fe18507db5304ea3777cc67d3852488c62e1c9",
-      "allocator_result_sha256": "sha256:9bcef162b0efe10000e03335a5768fe97648fac92f7c553fe8613368e28b129e",
-      "status": "completed_contact_clear_reset_step_and_camera_tensor_microcheck",
-      "environment_build": 28.241277,
-      "reset_0": 0.015874,
-      "reset_1": 0.009909,
-      "zero_action_step": 0.140685,
-      "camera_warmup_40_frames": 7.770616,
-      "camera_retention": 0.332189,
-      "can_xy_displacement_m": 5.331201499700045e-7,
-      "can_absolute_z_displacement_m": 0.000003635883331298828,
-      "can_tilt_degrees": 0.009498214903424387,
-      "post_warmup_arm_maximum_error_rad": 0.000004649162292480469,
-      "estimated_cost_usd": 0.099545,
-      "provider_zero_observed": true,
-      "policy_queried": false,
-      "limitations": [
-        "wrist_camera_approved_can_absent",
-        "sealed_aura_hybrid_policy_observation_renderer_missing",
-        "scripted_task_control_not_executed"
-      ]
-    },
-    "latest_blocked_measurement": {
-      "run_id": "native_microcheck_v21_measured_open_gripper",
-      "result_sha256": "sha256:b6a3784dca45bc65de386e40e08451540487024fc4b7a0858b487de01d914c2d",
-      "allocator_result_sha256": "sha256:cf0b13dccb31747bb84ad7ba8f56542fb09cb6db58a05699b6d98259692ad2f8",
-      "status": "blocked_contact_stability_gate",
-      "can_xy_displacement_m": 0.00012196619279790968,
-      "can_absolute_z_displacement_m": 0.003130197525024414,
-      "can_tilt_degrees": 6.254313674694312,
-      "estimated_cost_usd": 0.205707,
-      "provider_zero_observed": true,
-      "policy_queried": false,
-      "smallest_exact_blocker": "canonical_arm_base_standoff_near_contact"
-    }
-  },
-  "runtime_pins": {
-    "isaac_sim_family": "6.0.x",
-    "isaac_lab_arena": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
-    "isaac_lab": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
-    "isaac_groot_submodule": "e29d8fc50b0e4745120ae3fb72447986fe638aa6",
-    "ovrtx": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
-    "physx": "7845321d31fa3619917ebe127ab5e08e73de0bdb",
-    "arena_claim_ceiling": "alpha_internal_rehearsal_only"
-  },
-  "runtime_install_profile": {
-    "profile_id": "isaaclab_arena_physx_task_runtime.v3",
-    "isaac_lab_selective_targets": [
-      "assets",
-      "ov",
-      "physx",
-      "rl[rsl-rl]",
-      "tasks",
-      "teleop"
-    ],
-    "uses_official_selective_installer": true,
-    "isaaclab_newton_install_reason": "pinned_installer_required_physx_newton_package_coupling_only",
-    "newton_runtime_extras_installed": false,
-    "newton_backend_selected": false,
-    "isaaclab_ov_install_reason": "Arena imports every embodiment at package import time; its Kuka Allegro module imports Isaac Lab multi-backend renderer presets, which require the isaaclab_ov configuration extension.",
-    "ovrtx_extra_installed": false,
-    "ovrtx_backend_selected": true,
-    "arena_development_extras_installed": false,
-    "all_isaac_lab_extensions_installed": false,
-    "supplemental_runtime_dependencies": [
-      {
-        "name": "h5py",
-        "version": "3.16.0",
-        "source_url": "https://files.pythonhosted.org/packages/9e/e9/1a19e42cd43cc1365e127db6aae85e1c671da1d9a5d746f4d34a50edb577/h5py-3.16.0-cp312-cp312-manylinux_2_28_x86_64.whl",
-        "sha256": "sha256:dfc21898ff025f1e8e67e194965a95a8d4754f452f83454538f98f8a3fcb207e",
-      "reason": "The pinned Isaac Lab core dataset module imports h5py. The selected Arena closure now installs the official RSL-RL extra that declares h5py, but this direct byte pin prevents that otherwise unpinned requirement from drifting across paid runs."
-      },
-      {
-        "name": "hydra-core",
-        "version": "1.3.5",
-        "source_url": "https://files.pythonhosted.org/packages/9c/97/f9d463a6f3c7d0955753eca5cbbf35b596ac471dd13fe357211a53fd37be/hydra_core-1.3.5-py3-none-any.whl",
-        "sha256": "sha256:a3ff35b4ea6794e4c83d993016f4bde4ac35797ebe7a08f30e83ed9341880331",
-      "reason": "Isaac Lab Arena environment construction requires Hydra. The selected Arena closure now installs the official RSL-RL extra that declares hydra-core, but this direct byte pin prevents that otherwise unpinned requirement from drifting across paid runs."
-      },
-      {
-        "name": "omegaconf",
-        "version": "2.3.1",
-        "source_url": "https://files.pythonhosted.org/packages/a4/0e/152509871bf30df6fc38569f52a2db9b55dd41aae957adae50a053ac7778/omegaconf-2.3.1-py3-none-any.whl",
-        "sha256": "sha256:3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0",
-        "reason": "Exact transitive runtime dependency of the pinned hydra-core wheel."
-      },
-      {
-        "name": "antlr4-python3-runtime",
-        "version": "4.9.3",
-        "source_url": "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz",
-        "sha256": "sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b",
-      "reason": "Exact transitive runtime dependency required by hydra-core and OmegaConf."
-    },
-    {
-      "name": "msgpack",
-      "version": "1.1.0",
-      "source_url": "https://files.pythonhosted.org/packages/f1/54/65af8de681fa8255402c80eda2a501ba467921d5a7a028c9c22a2c2eedb5/msgpack-1.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
-      "sha256": "sha256:17fb65dd0bec285907f68b15734a993ad3fc94332b5bb21b0435846228de1f39",
-      "reason": "The pinned Arena remote-policy serializer imports msgpack; version 1.1.0 is the exact version installed by Arena's official Dockerfile."
-    },
-    {
-      "name": "pyzmq",
-      "version": "27.0.1",
-      "source_url": "https://files.pythonhosted.org/packages/7e/0a/2356305c423a975000867de56888b79e44ec2192c690ff93c3109fd78081/pyzmq-27.0.1-cp312-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
-      "sha256": "sha256:f5b6133c8d313bde8bd0d123c169d22525300ff164c2189f849de495e1344577",
-      "reason": "Arena asset registration imports its remote-policy client even in a no-policy environment; version 27.0.1 is the exact version installed by Arena's official Dockerfile but omitted from Arena setup.py runtime dependencies."
-    }
-    ],
-    "fail_closed_worker_plan_validation": true,
-    "worker_plan_source": "src/blueprint_pipeline/adp009d_native_microcheck_worker.py"
-  },
-  "evaluation_admission": {
-    "full_evaluation": false,
-    "startup_is_not_evaluation": true,
-    "reset_is_not_evaluation": true,
-    "single_nominal_rollout_is_not_evaluation": true,
-    "prepared_job_is_not_evaluation": true,
-    "caller_asserted_success_accepted": false,
-    "required_before_policy": [
-      "physics reachability",
-      "reproducible reset",
-      "live renderer calibration depth segmentation composition",
-      "zero-action canonical rejection",
-      "scripted canonical success",
-      "controls on every scored cell"
-    ]
-  },
-  "blockers": [
-    "sealed_aura_hybrid_policy_observation_renderer_missing",
-    "wrist_camera_approved_can_absent",
-    "scripted_task_control_missing",
-    "cousin_native_control_validation_missing"
-  ],
-  "claim_ceiling": [
-    "development_only",
-    "simulator_only",
-    "public_scene_specific",
-    "no_policy_result_yet",
-    "no_physical_transfer_claim"
-  ],
-  "harness_digest": "sha256:32eceeb6afbcf859de7fbb3cdec130bd745792fc36e17c9bf9906e494b29ff4c"
+  "workflow": "isaac_lab_manager_based"
 }

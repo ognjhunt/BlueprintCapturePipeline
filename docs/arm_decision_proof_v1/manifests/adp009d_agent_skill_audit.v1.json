@@ -1,522 +1,28 @@
 {
-  "schema_version": "adp009d_agent_skill_audit.v1",
-  "program_id": "arm-decision-proof-v1",
-  "milestone": "ADP-009D_public_scene_franka_policy_rehearsal",
+  "audit_digest": "sha256:f54039fb8a19f775819bf2ea133df9489d9fde3d8d60e63de0048fddb82a7ac8",
   "audit_status": "official_source_audit_complete_implementation_bound",
   "audit_window": {
-    "started_at": "2026-08-06T18:20:39Z",
     "completed_at": "2026-08-07T10:59:33Z",
     "retrieval_methods": [
       "GitHub REST branch commit and recursive tree APIs",
       "GitHub immutable blob content at exact revisions",
       "primary NVIDIA Isaac Sim and Omniverse documentation"
-    ]
+    ],
+    "started_at": "2026-08-06T18:20:39Z"
   },
-  "implementation_base": {
-    "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
-    "commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
-    "tree": "086d113022b1254612aeacc41eb962cb86a4942f",
-    "pull_request": "https://github.com/ognjhunt/BlueprintCapturePipeline/pull/374",
-    "provisional_until_pr_374_merge": false,
-    "binding_rule": "Bound to the exact protected-main squash commit and tree produced by merged PR 374."
-  },
-  "repositories": [
-    {
-      "source_id": "isaac_sim_omniverse",
-      "repository_url": "https://github.com/isaac-sim/IsaacSim",
-      "ref": "refs/heads/main",
-      "revision": "987015050efebfd0cd5d3736ae47fffe5adee308",
-      "tree": "7530065964b0bfbb3e6c102ffa20456870079d7e",
-      "ref_verified_at_retrieval": true,
-      "retrieved_at": "2026-08-06T18:45:59Z",
-      "submodules": [],
-      "path_identities": [
-        {
-          "path": "LICENSE",
-          "blob": "6c0a478c97f5994906059642e0a8c3bdc879bf5f"
-        },
-        {
-          "path": "README.md",
-          "blob": "867ed624570ef488479223bd92daacc3aaa4e356"
-        },
-        {
-          "path": "VERSION",
-          "blob": "5bffac65fbe8aa6d33840f5181425c12a71bf1fa"
-        }
-      ],
-      "version_compatibility": {
-        "repository_version": "6.0.1-rc.74",
-        "latest_documented_pip_release": "6.0.1.0",
-        "python": "3.12",
-        "released_6_0_0_kit": "110.1.1",
-        "runtime_decision": "Use the Arena release Dockerfile's Isaac Sim 6.0.0-dev2 image at immutable manifest digest sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9; do not substitute a rolling main image."
-      },
-      "license": {
-        "source_code": "Apache-2.0",
-        "runtime_components": "NVIDIA Omniverse and Isaac Sim additional software terms",
-        "redistribution_boundary": "Internal R&D outputs may be retained; redistribution of Omniverse Kit or NVIDIA assets requires separate terms review."
-      },
-      "official_source_urls": [
-        "https://github.com/isaac-sim/IsaacSim/tree/987015050efebfd0cd5d3736ae47fffe5adee308",
-        "https://docs.isaacsim.omniverse.nvidia.com/latest/installation/install_python.html",
-        "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/requirements.html",
-        "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/common/license-faq.html",
-        "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/overview/release_notes.html",
-        "https://docs.omniverse.nvidia.com/composer/latest/feature_rendering.html"
-      ]
-    },
-    {
-      "source_id": "isaac_lab",
-      "repository_url": "https://github.com/isaac-sim/IsaacLab",
-      "ref": "refs/heads/develop",
-      "revision": "01eb210728ae6a1bd3cba854f31d21c614cbe4b0",
-      "tree": "d1bf0139e9fa4a6f42ae2c74701d87c7015f8367",
-      "ref_verified_at_retrieval": true,
-      "retrieved_at": "2026-08-07T09:31:54Z",
-      "starting_observation_revision": "3ea6f7bbf6c7d515aa1f8e8c54bfdfffda2d4857",
-      "submodules": [],
-      "path_identities": [
-        {
-          "path": "LICENSE",
-          "blob": "dee9ba551f428dd44471e7ee461528374233ad3c"
-        },
-        {
-          "path": "README.md",
-          "blob": "89fdec5f15060925fcf14c9fb05a2d4e0fc576de"
-        },
-        {
-          "path": "VERSION",
-          "blob": "4a36342fcab700951adb18ae7adc930997f6c3f4"
-        },
-        {
-          "path": ".agents/skills/isaaclab-building-environments",
-          "blob": "9c86809f4be3b810776d84e7bfa9b1449cb81cbe",
-          "target_path": "skills/user/create-environments/SKILL.md"
-        },
-        {
-          "path": "skills/user/create-environments/SKILL.md",
-          "blob": "f9b6c7c9b16831ec0a2260c75c02c9198f70cc10"
-        },
-        {
-          "path": ".agents/skills/isaaclab-planning-manipulation-tasks",
-          "blob": "b13818198cf1fac5d91ce14d3a4430786eb1b60a",
-          "target_path": "skills/user/plan-manipulation-tasks/SKILL.md"
-        },
-        {
-          "path": "skills/user/plan-manipulation-tasks/SKILL.md",
-          "blob": "7af45a6449447ea499dbe588525c1ec04c57c186"
-        },
-        {
-          "path": ".agents/skills/isaaclab-randomizing-with-events",
-          "blob": "cfaab189258429582bc8e1358299c5ffd51614dd",
-          "target_path": "skills/user/domain-randomization-events/SKILL.md"
-        },
-        {
-          "path": "skills/user/domain-randomization-events/SKILL.md",
-          "blob": "2c2054ffda6e7c27adc59c781ebe739b21132f16"
-        },
-        {
-          "path": ".agents/skills/isaaclab-using-sensors-actuators",
-          "blob": "1f21fba7f2b25c639416b597670851b3ce86400e",
-          "target_path": "skills/user/use-sensors-actuators/SKILL.md"
-        },
-        {
-          "path": "skills/user/use-sensors-actuators/SKILL.md",
-          "blob": "de4254487ce02d8446d497d99f3f7cff0c03725a"
-        },
-        {
-          "path": ".agents/skills/isaaclab-selecting-backends",
-          "blob": "65ac937bafe709025ccaedd20ee583ed74f441bf",
-          "target_path": "skills/user/select-backends/SKILL.md"
-        },
-        {
-          "path": "skills/user/select-backends/SKILL.md",
-          "blob": "d87e8e7f8926fb610351e2f6e86f941cdd2cb3dd"
-        },
-        {
-          "path": ".agents/skills/isaaclab-using-presets",
-          "blob": "6abea13ebf0c50ef88ef6c2c0e09368777edd7dc",
-          "target_path": "skills/user/use-presets/SKILL.md"
-        },
-        {
-          "path": "skills/user/use-presets/SKILL.md",
-          "blob": "91f3a8e81c55733f92938581d945ca883c7b6f9d"
-        },
-        {
-          "path": "source/isaaclab/test/sensors/generate_synthetic_gaussian_asset.py",
-          "blob": "9c92a9cae7fdcb983a11da737e8970f382a76f76"
-        }
-      ],
-      "version_compatibility": {
-        "version": "3.0.0",
-        "python": "3.12",
-        "intended_isaac_sim_family": "6.0.x",
-        "develop_warning": "The audited README says this develop revision is not compatible with Isaac Sim GitHub develop and directs users to Isaac Lab f0234a82e432e2a0b0f0a26ca3c5b59e527ddaaa or earlier, or v3.0.0-beta.",
-        "runtime_decision": "Treat this revision's skills as current guidance only; do not admit it as the ADP-009D runtime."
-      },
-      "license": {
-        "framework": "BSD-3-Clause",
-        "mimic_component": "Apache-2.0",
-        "isaac_sim_dependency": "NVIDIA proprietary runtime terms"
-      },
-      "official_source_urls": [
-        "https://github.com/isaac-sim/IsaacLab/tree/01eb210728ae6a1bd3cba854f31d21c614cbe4b0",
-        "https://isaac-sim.github.io/IsaacLab/develop/source/tutorials/03_envs/create_manager_base_env.html",
-        "https://isaac-sim.github.io/IsaacLab/develop/source/overview/core-concepts/sensors/camera.html"
-      ]
-    },
-    {
-      "source_id": "isaac_lab_arena",
-      "repository_url": "https://github.com/isaac-sim/IsaacLab-Arena",
-      "ref": "refs/heads/release/0.2.1",
-      "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
-      "tree": "03f31f3dd56c56d00f24dbfb09711ec0ab345de8",
-      "ref_verified_at_retrieval": true,
-      "retrieved_at": "2026-08-06T18:45:59Z",
-      "submodules": [
-        {
-          "path": "submodules/IsaacLab",
-          "repository_url": "https://github.com/isaac-sim/IsaacLab",
-          "revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
-          "tree": "454115265327a80acabd07cbd36e10071fc0c065"
-        },
-        {
-          "path": "submodules/Isaac-GR00T",
-          "repository_url": "https://github.com/NVIDIA/Isaac-GR00T",
-          "revision": "e29d8fc50b0e4745120ae3fb72447986fe638aa6",
-          "tree": "4157b38edab2c64c5f38dd34919e91393ae3dc7e"
-        }
-      ],
-      "path_identities": [
-        {
-          "path": "LICENSE.md",
-          "blob": "34af41dda37a8afab85c3a1f73350cdf7f8dbe47"
-        },
-        {
-          "path": "README.md",
-          "blob": "3a94334fe6f62c852dd2d1bb377b42099ab1cbd5"
-        },
-        {
-          "path": "setup.py",
-          "blob": "034e0dba871cd8b764029969aeda20905abc62e8"
-        },
-        {
-          "path": "isaaclab_arena/scene/scene.py",
-          "blob": "60591e17b6b8c344220e3b6cddafb472904cf577"
-        },
-        {
-          "path": "isaaclab_arena/embodiments/embodiment_base.py",
-          "blob": "664b6ba493ff5fdabb708f68c0196b41b84e1c0a"
-        },
-        {
-          "path": "isaaclab_arena/tasks/task_base.py",
-          "blob": "f1f007556ec8938bc7432f077046c6e414ef80f0"
-        },
-        {
-          "path": "isaaclab_arena/policy/policy_base.py",
-          "blob": "bf594ea562fd02ce8d58a174228ba629a746b71e"
-        },
-        {
-          "path": "isaaclab_arena/metrics/metric_base.py",
-          "blob": "99d734d0dfe0b23ee0623c16ed397743cb1d336e"
-        },
-        {
-          "path": "isaaclab_arena/evaluation/policy_runner.py",
-          "blob": "84b0c965ae28b206a08c1e6bcca1aad106aa6723"
-        },
-        {
-          "path": "docs/pages/quickstart/first_experiments/exploring_variations.rst",
-          "blob": "4e6de190490c9979f82310dd852286a532ee4216"
-        }
-      ],
-      "version_compatibility": {
-        "release_line": "0.2.x",
-        "claim_status": "alpha; incomplete, unstable APIs, not for production",
-        "nested_isaac_lab": "3.0.0 at e57379c634b42db5a0fe9f754341be6e2a7c7c43",
-        "isaac_sim": "6.0.0 family",
-        "readme_python": ">=3.12",
-        "setup_metadata_inconsistency": "setup.py declares package version 1.0.0 and Python >=3.10; the audit uses the README/release compatibility table conservatively.",
-        "runtime_decision": "Pin the repository and both submodules exactly; use Arena only as a thin compositional layer beneath Blueprint evaluation contracts."
-      },
-      "license": {
-        "framework": "Apache-2.0",
-        "isaac_sim_dependency": "NVIDIA proprietary runtime terms"
-      },
-      "official_source_urls": [
-        "https://github.com/isaac-sim/IsaacLab-Arena/tree/8b4a3a47fc53de23e8205089d71109a2e2348acd",
-        "https://isaac-sim.github.io/IsaacLab-Arena/release/0.2.1/index.html",
-        "https://isaac-sim.github.io/IsaacLab-Arena/release/0.2.1/pages/concepts/policy/concept_evaluation_types.html",
-        "https://isaac-sim.github.io/IsaacLab-Arena/release/0.2.1/pages/quickstart/first_experiments/exploring_variations.html"
-      ]
-    },
-    {
-      "source_id": "nvidia_skills",
-      "repository_url": "https://github.com/NVIDIA/skills",
-      "ref": "refs/heads/main",
-      "revision": "358510a74b59120bc3d4bd183ac92734018b38f3",
-      "tree": "b9c86063c7aeb40f83dd4fd8f84051ab96813eb4",
-      "ref_verified_at_retrieval": true,
-      "retrieved_at": "2026-08-07T02:21:30Z",
-      "submodules": [],
-      "path_identities": [
-        {
-          "path": "LICENSE-APACHE",
-          "blob": "001a3281169d6ade30cd1a44544029254ba490a8"
-        },
-        {
-          "path": "LICENSE-CC-BY-4.0",
-          "blob": "b0de5b1eb94213e92ad03b131684bae483db2bd9"
-        },
-        {
-          "path": "README.md",
-          "blob": "2f81999528440b1fcbebb9795988e563c32ba066"
-        },
-        {
-          "path": "skills/omniverse-cad-to-simready/SKILL.md",
-          "blob": "f8269c99a39f3e23be3ebb4133a80c581b6d163d"
-        },
-        {
-          "path": "skills/omniverse-usd-performance-tuning/SKILL.md",
-          "blob": "3b857c72b8f85051397e55fe9dc2ee1121717f82"
-        },
-        {
-          "path": "skills/omniverse-realtime-viewer/SKILL.md",
-          "blob": "3aabd8e04ac51bd3e2e69e618c768aa735b8ef42"
-        }
-      ],
-      "version_compatibility": {
-        "skill_versioning": "Path and blob identity at the audited repository revision; individual skills do not define the ADP runtime stack.",
-        "runtime_decision": "Apply each skill only at its explicit gate and retain its license and evidence boundary."
-      },
-      "license": {
-        "skill_documentation": "CC-BY-4.0",
-        "code_samples": "Apache-2.0"
-      },
-      "official_source_urls": [
-        "https://github.com/NVIDIA/skills/tree/358510a74b59120bc3d4bd183ac92734018b38f3"
-      ]
-    },
-    {
-      "source_id": "aurafusion360",
-      "repository_url": "https://github.com/kkennethwu/AuraFusion360_official",
-      "ref": "refs/heads/main",
-      "revision": "f23b26c44ba84608306ba952510533ebf4c7877d",
-      "tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
-      "ref_verified_at_retrieval": true,
-      "retrieved_at": "2026-08-07T10:59:33Z",
-      "submodules": [
-        {
-          "path": "submodules/diff-surfel-rasterization",
-          "revision": "e0ed0207b3e0669960cfad70852200a4a5847f61"
-        },
-        {
-          "path": "submodules/diff-surfel-rasterization/third_party/glm",
-          "revision": "5c46b9c07008ae65cb81ab79cd677ecc1934b903"
-        },
-        {
-          "path": "submodules/simple-knn",
-          "revision": "86710c2d4b46680c02301765dd79e465819c8f19"
-        }
-      ],
-      "path_identities": [
-        {
-          "path": "README.md",
-          "blob": "56873abdee02336b82eabf437df50e422cb90f20"
-        },
-        {
-          "path": "LICENSE",
-          "blob": "f49a4e16e68b128803cc2dcea614603632b04eac"
-        },
-        {
-          "path": "install.sh",
-          "blob": "7a1a539d574bcd63a320219f9193432a89e98440"
-        },
-        {
-          "path": "gaussian_renderer/__init__.py",
-          "blob": "6d8dac4c5e471cd66dc019caca33bffd351e3f5a"
-        },
-        {
-          "path": "scene/cameras.py",
-          "blob": "ed0b9fc00a62dc04a07ccbb43978943f5f19258b"
-        },
-        {
-          "path": "scene/gaussian_model.py",
-          "blob": "20c35bb09e0d0a014b52b9c988e235d5ed47ff83"
-        },
-        {
-          "path": "submodules/diff-surfel-rasterization/LICENSE.md",
-          "blob": "c869e695fa63bfde6f887d63a24a2a71f03480ac"
-        },
-        {
-          "path": "submodules/diff-surfel-rasterization/cuda_rasterizer/forward.cu",
-          "blob": "6ba9e33c06de309482502758b72d6efbaf28c5e5"
-        }
-      ],
-      "version_compatibility": {
-        "python": "3.10 in publisher install flow",
-        "cuda": "12.4 in publisher install flow",
-        "torch": "2.5.1+cu124 in the previously executed exact-source Blueprint runtime",
-        "representation": "2D Gaussian surflets with two learned scale components",
-        "camera_contract": "ideal centered pinhole cameras; arbitrary live poses are accepted through the publisher Camera and rasterizer interfaces",
-        "depth_contract": "publisher rasterizer returns expected and median camera-space depth; ADP selects expected depth with depth_ratio 0.0 for this unbounded scene",
-        "runtime_decision": "Use the exact publisher rasterizer for sealed Aura RGB and metric camera-space depth, then depth-compose it with Isaac dynamic RGB depth and segmentation at identical live calibration and timestamp."
-      },
-      "license": {
-        "top_level": "Apache-2.0",
-        "nested_diff_surfel_rasterization": "Gaussian-Splatting research-and-evaluation-only license",
-        "use_ceiling": "internal noncommercial research and evaluation",
-        "redistribution_boundary": "Retain both top-level and nested licenses; do not treat the nested rasterizer as unrestricted Apache-2.0 code."
-      },
-      "official_source_urls": [
-        "https://github.com/kkennethwu/AuraFusion360_official/tree/f23b26c44ba84608306ba952510533ebf4c7877d",
-        "https://arxiv.org/abs/2502.05176",
-        "https://github.com/hbb1/2d-gaussian-splatting"
-      ]
-    },
-    {
-      "source_id": "ovrtx",
-      "repository_url": "https://github.com/NVIDIA-Omniverse/ovrtx",
-      "ref": "refs/heads/main",
-      "revision": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
-      "tree": "9bde58c9194250f226d4d24b37924fca62c9ac22",
-      "ref_verified_at_retrieval": true,
-      "retrieved_at": "2026-08-06T18:45:59Z",
-      "submodules": [],
-      "path_identities": [
-        {
-          "path": "LICENSE",
-          "blob": "452c1181a6338a79215235e32d7a0e24ce392a40"
-        },
-        {
-          "path": "README.md",
-          "blob": "a667eba283ac03ab40ebb7fbe106d4a79a38cec3"
-        },
-        {
-          "path": "pyproject.toml",
-          "blob": "267cf113068264cf17b08d0145dd62e5816a497e"
-        },
-        {
-          "path": "skills/loading-usd/SKILL.md",
-          "blob": "a258518c4f153f181794c837b0cdc07641e597a3"
-        },
-        {
-          "path": "skills/renderer-creation/SKILL.md",
-          "blob": "bc70098b430dd449b38139b0514903a7528358c7"
-        },
-        {
-          "path": "skills/render-settings/SKILL.md",
-          "blob": "9e325b384840c46ca92cc12e1187b810d7f30418"
-        },
-        {
-          "path": "skills/camera-outputs-rt2/SKILL.md",
-          "blob": "2bc381f2b9f5f54641661daf54b33a40cb343a4a"
-        },
-        {
-          "path": "skills/reading-render-output/SKILL.md",
-          "blob": "ab71c2b0c051d20a2636be1dd0052b5004160f5e"
-        },
-        {
-          "path": "skills/stepping-and-rendering/SKILL.md",
-          "blob": "3153700b00c6185aa3a3448f92475fd34bd478d1"
-        },
-        {
-          "path": "skills/warmup/SKILL.md",
-          "blob": "28bcd2c84f5ec644280ae9fd591f4a83536609e0"
-        },
-        {
-          "path": "skills/semantic-labels/SKILL.md",
-          "blob": "3938cb3a4e969df6439d8c2d8ab7fd02947640e5"
-        },
-        {
-          "path": "skills/render-product-device-pinning/SKILL.md",
-          "blob": "3a006941a5de4030f626b16ad25218c31a3d442d"
-        },
-        {
-          "path": "skills/cuda-interop/SKILL.md",
-          "blob": "e1b9c107d2b9c9f915fb24b9d0892792701d3d98"
-        }
-      ],
-      "version_compatibility": {
-        "version": "0.4.0",
-        "python": ">=3.10,<3.14",
-        "cuda": "12",
-        "ovstage": ">=0.1.0.343775",
-        "development_status": "alpha",
-        "runtime_decision": "If admitted for live policy observations, initialize OVRTX before ovphysx and prove the selected ovstage/ovphysx/OVRTX wheel set in an immutable micro-check before evaluation."
-      },
-      "license": {
-        "package": "LicenseRef-NvidiaProprietary",
-        "redistribution_boundary": "Do not redistribute OVRTX binaries without separate terms review."
-      },
-      "official_source_urls": [
-        "https://github.com/NVIDIA-Omniverse/ovrtx/tree/4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
-        "https://nvidia-omniverse.github.io/ovrtx/latest/"
-      ]
-    },
-    {
-      "source_id": "physx",
-      "repository_url": "https://github.com/NVIDIA-Omniverse/PhysX",
-      "ref": "refs/heads/main",
-      "revision": "7845321d31fa3619917ebe127ab5e08e73de0bdb",
-      "tree": "c2e1ed19bb3e2648af75bf68437e91f8e0faaca0",
-      "ref_verified_at_retrieval": true,
-      "retrieved_at": "2026-08-06T18:45:59Z",
-      "submodules": [],
-      "path_identities": [
-        {
-          "path": "LICENSE.md",
-          "blob": "2388f6f9a26a42277e0dd0bf4b7b55af5aee29e5"
-        },
-        {
-          "path": "physx/version.txt",
-          "blob": "eb3719817fdd587604e2e6a669874e4a844773a5"
-        },
-        {
-          "path": "ovphysx/LICENSE.txt",
-          "blob": "b2baa8d1de5b8dc204d49c77262298eaf8a0b157"
-        },
-        {
-          "path": "ovphysx/VERSION",
-          "blob": "416bfb0a2212b445e84333c4f3ce8cb4aba564cf"
-        },
-        {
-          "path": "ovphysx/python/pyproject.toml",
-          "blob": "2bb375445ac7707944a7d74bb33ac7c3d2d46ecd"
-        }
-      ],
-      "skill_path_audit": {
-        "recursive_tree": "c2e1ed19bb3e2648af75bf68437e91f8e0faaca0",
-        "query": "SKILL.md files and paths rooted at skills or ovphysx skills",
-        "skill_tree_match_count": 0,
-        "ovphysx_skill_path": null,
-        "decision": "do_not_invent_ovphysx_skill_path",
-        "note": "The package-data stanza mentions SKILLS.md and skills/**/*, but those paths are absent from the inspected revision."
-      },
-      "version_compatibility": {
-        "physx": "5.6.1.51c1f783",
-        "ovphysx": "0.5.9",
-        "python": ">=3.10",
-        "ovstage": "==0.1.0.346039",
-        "development_status": "alpha",
-        "runtime_decision": "Centralize and validate PhysX configuration; prove an exact OVRTX/ovphysx/ovstage co-resident wheel combination before using it for policy inputs."
-      },
-      "license": {
-        "physx_source": "BSD-3-Clause",
-        "ovphysx_package": "LicenseRef-NVIDIA-Omniverse",
-        "prebuilt_binaries": "NVIDIA proprietary terms"
-      },
-      "official_source_urls": [
-        "https://github.com/NVIDIA-Omniverse/PhysX/tree/7845321d31fa3619917ebe127ab5e08e73de0bdb",
-        "https://nvidia-omniverse.github.io/PhysX/physx/5.6.1/",
-        "https://nvidia-omniverse.github.io/PhysX/ovphysx/latest/"
-      ]
-    }
+  "claim_ceiling": [
+    "The audit proves exact official-source observations and binding implementation decisions at the recorded retrieval time.",
+    "The v22 receipt proves that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, exact reset, zero-action step, strict can stability, and two-camera tensor retention together at the sealed-SAGE-validated 0.50 meter base standoff.",
+    "The v19 and v21 receipts show that both the all-zero and measured-open Robotiq resets left the prior 0.40 meter base standoff in near contact; v22 validates only the 0.50 meter reset and physics-step condition, not task solvability.",
+    "The evidence rejects OVRTX for this exact Aura Gaussian-surflet asset after the preregistered v10 run returned black RGB and no positive finite metric depth; it does not reject OVRTX for its documented supported representations.",
+    "The official native Aura renderer reproduced both frozen exact-camera RGB references byte-for-byte and returned positive finite metric expected depth for every pixel; this establishes only standalone construction equivalence at those two cameras, not live Aura and Isaac composition, useful wrist-camera framing, scripted task success, ovphysx execution, or either learned policy.",
+    "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
+    "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
   "guidance_application": [
     {
-      "guidance_id": "isaaclab-building-environments",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Use ManagerBasedRLEnvCfg and manager terms as the default harness architecture.",
         "Separate scene, embodiment, task, observations, actions, events, terminations, and evaluation concerns.",
@@ -525,6 +31,7 @@
         "Persist every redacted provider-log snapshot so interruption or TTL teardown retains the last completed scientific phase.",
         "Use Arena's public Object SPAWNER composition seam for the required light instead of importing the unrelated full asset registry."
       ],
+      "guidance_id": "isaaclab-building-environments",
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
         "src/blueprint_pipeline/vast_provider_adapter.py",
@@ -532,40 +39,40 @@
       ]
     },
     {
-      "guidance_id": "isaaclab-planning-manipulation-tasks",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Encode approach, grasp, lift, translate, place, and settle as explicit task phases.",
         "Compute success and terminal failures from deterministic simulator state rather than visual or policy judgment."
       ],
+      "guidance_id": "isaaclab-planning-manipulation-tasks",
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_franka_evaluation_harness.py"
       ]
     },
     {
-      "guidance_id": "isaaclab-randomizing-with-events",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Use explicit EventManager prestartup, startup, reset, and interval modes.",
         "Resolve every scored factor and seed before execution and reject invalid combinations fail-closed."
       ],
+      "guidance_id": "isaaclab-randomizing-with-events",
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_franka_evaluation_harness.py",
         "src/blueprint_pipeline/adp009d_isaac_runtime.py"
       ]
     },
     {
-      "guidance_id": "isaaclab-using-sensors-actuators",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Bind Franka and Robotiq actuator limits and camera contracts in the embodiment layer.",
         "Validate observation shape, device, timing, calibration, camera memory, and exact lossless retention before policy admission.",
         "Convert simulator-native Warp arrays explicitly at the policy and receipt adapter boundary before indexing or Torch operations.",
         "Follow the exact official Gaussian camera test asset at current develop revision 01eb210728ae6a1bd3cba854f31d21c614cbe4b0 by binding ParticleFieldEmissive.mdl with inverse tonemap and sRGB linearization disabled; retain Aura's sealed raw model and reject the converted layer until exact-camera visual conformance passes."
       ],
+      "guidance_id": "isaaclab-using-sensors-actuators",
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
         "src/blueprint_pipeline/episode_visual_evidence.py",
@@ -573,9 +80,8 @@
       ]
     },
     {
-      "guidance_id": "isaaclab-selecting-backends",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Select PhysX for the ADP-009D task and centralize its settings in one validated configuration.",
         "Treat backend selection as a manifest-bound decision, not scattered runtime conditionals.",
@@ -598,6 +104,7 @@
         "Use the pinned Isaac Lab selective installer for assets, physx, tasks, and teleop only; retain the installer-required isaaclab_newton compatibility package without selecting Newton runtime extras or the Newton backend.",
         "Install Isaac Lab Arena runtime dependencies without its development extra and reject any worker plan that silently expands to all Isaac Lab extensions or RL frameworks."
       ],
+      "guidance_id": "isaaclab-selecting-backends",
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
         "src/blueprint_pipeline/adp009d_native_microcheck_bundle.py",
@@ -605,23 +112,23 @@
       ]
     },
     {
-      "guidance_id": "isaaclab-using-presets",
-      "application_status": "not_applicable",
       "actually_followed": false,
+      "application_status": "not_applicable",
       "decisions": [
         "Do not add PresetCfg aliases until two genuine supported backend or configuration variants exist.",
         "The initial ADP-009D runtime has one exact PhysX configuration."
       ],
+      "guidance_id": "isaaclab-using-presets",
       "implementation_evidence": []
     },
     {
-      "guidance_id": "ovrtx-loading-usd",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "OVRTX guidance was followed for the bounded preregistered exact-camera diagnostic, but OVRTX is rejected for the sealed Aura background after it returned black RGB and no positive finite metric depth for the exact Gaussian-surflet asset.",
         "The failed diagnostic loaded the digest-bound Gaussian-surflet USDC through an attached ovstage ordinal and preserved the sealed Aura PLY unchanged; future OVRTX use remains representation-specific and cannot override this observed blocker."
       ],
+      "guidance_id": "ovrtx-loading-usd",
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_ovrtx_vast.py",
         "scripts/run_ovrtx_preflight_worker.py",
@@ -629,40 +136,40 @@
       ]
     },
     {
-      "guidance_id": "ovrtx-renderer-creation",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Create OVRTX before any possible future OvPhysX initialization; the first bounded renderer microcheck intentionally loads no OvPhysX.",
         "Attach one ovstage, load the immutable scene at ordinal one, advance the write floor, and destroy renderer and stage explicitly."
       ],
+      "guidance_id": "ovrtx-renderer-creation",
       "implementation_evidence": [
         "scripts/run_ovrtx_preflight_worker.py",
         "src/blueprint_pipeline/adp009d_ovrtx_provider_runner.py"
       ]
     },
     {
-      "guidance_id": "ovrtx-render-settings",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Author render settings on each RenderProduct, never as unsupported renderer-global configuration.",
         "Bind path-tracing samples per pixel for PT, reset after camera or setting changes, and use the RTPT warmup contract for the live path.",
         "Apply OmniRtxSettingsParticleFieldAPI_1 to the RenderProduct and bind accumulated Gaussian depth, accumulated albedo, and the documented 48-Gaussian accumulation default explicitly."
       ],
+      "guidance_id": "ovrtx-render-settings",
       "implementation_evidence": [
         "scripts/run_ovrtx_preflight_worker.py",
         "tests/test_public_scene_simready_native.py"
       ]
     },
     {
-      "guidance_id": "ovrtx-camera-outputs-rt2",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Request only LdrColor and metric DistanceToCameraSD for the Aura background probe; dynamic semantics remain owned by the Isaac layer.",
         "Reject unitless DepthSD in configuration, execution receipts, and hybrid composition."
       ],
+      "guidance_id": "ovrtx-camera-outputs-rt2",
       "implementation_evidence": [
         "scripts/run_ovrtx_preflight_worker.py",
         "src/blueprint_pipeline/adp009d_ovrtx_live_camera.py",
@@ -670,39 +177,39 @@
       ]
     },
     {
-      "guidance_id": "ovrtx-reading-render-output",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Map each requested CPU output, copy the DLPack array before retention, then unmap and destroy renderer-owned resources.",
         "Record device, synchronization, map/unmap balance, array shape, dtype, and lossless output identities."
       ],
+      "guidance_id": "ovrtx-reading-render-output",
       "implementation_evidence": [
         "scripts/run_ovrtx_preflight_worker.py",
         "src/blueprint_pipeline/adp009d_ovrtx_provider_runner.py"
       ]
     },
     {
-      "guidance_id": "ovrtx-stepping-and-rendering",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Advance the attached stage write floor before stepping and pass the same resolved ordinal to every warmup and capture step.",
         "A loaded stage or single unvalidated frame cannot clear the renderer gate; both external and wrist RGB plus metric depth must pass."
       ],
+      "guidance_id": "ovrtx-stepping-and-rendering",
       "implementation_evidence": [
         "scripts/run_ovrtx_preflight_worker.py",
         "src/blueprint_pipeline/adp009d_ovrtx_provider_runner.py"
       ]
     },
     {
-      "guidance_id": "ovrtx-warmup",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "Use the skill-documented 40-frame default for each RTPT camera after load and reset.",
         "Use one PT step with an explicit RenderProduct samples-per-pixel value rather than treating repeated steps as PT sample control."
       ],
+      "guidance_id": "ovrtx-warmup",
       "implementation_evidence": [
         "scripts/run_ovrtx_preflight_worker.py",
         "src/blueprint_pipeline/public_scene_simready_native.py",
@@ -710,13 +217,13 @@
       ]
     },
     {
-      "guidance_id": "ovrtx-semantic-labels",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
       "decisions": [
         "The Aura background owns no dynamic semantic IDs; robot and task-object labels remain in a composed Isaac override layer.",
         "Never write semantic labels into the sealed Aura, SAGE, can, or cousin source assets."
       ],
+      "guidance_id": "ovrtx-semantic-labels",
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
         "src/blueprint_pipeline/adp009d_live_hybrid_observation.py",
@@ -724,19 +231,27 @@
       ]
     },
     {
-      "guidance_id": "nvidia-omniverse-cad-to-simready",
-      "application_status": "not_applicable",
       "actually_followed": false,
+      "application_status": "not_applicable",
       "decisions": [
         "Use CAD-to-SimReady only for a newly admitted cousin with explicit source, rights, runtime, and evidence.",
         "Never mutate or replace the sealed approved can through a Content Agent."
       ],
+      "guidance_id": "nvidia-omniverse-cad-to-simready",
       "implementation_evidence": []
     },
     {
-      "guidance_id": "nvidia-omniverse-usd-performance-tuning",
-      "application_status": "followed_in_implementation",
       "actually_followed": true,
+      "application_status": "followed_in_implementation",
+      "applied_references": [
+        "https://github.com/NVIDIA/skills/blob/358510a74b59120bc3d4bd183ac92734018b38f3/skills/omniverse-usd-performance-tuning/SKILL.md",
+        "https://isaac-sim.github.io/IsaacLab/v2.1.1/source/how-to/simulation_performance.html#collision-geometries",
+        "https://isaac-sim.github.io/IsaacLab/develop/source/api/lab_physx/isaaclab_physx.sim.schemas.html#isaaclab_physx.sim.schemas.PhysxTriangleMeshPropertiesCfg",
+        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
+        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/extensions/ux/source/omni.physx.ui/docs/dev_guide/sim_management.html",
+        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.0/dev_guide/simulation_control/simulation_control.html",
+        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/106.5/extensions/runtime/source/omni.physx/docs/api/python.html#omni.physx.bindings._physx.PhysXCooking.compute_edge_length_limited_triangle_mesh"
+      ],
       "decisions": [
         "Take a measured baseline before applying any USD performance mutation.",
         "The first exact-v2 SDF run passed static schema validation but exceeded the intended 30-minute no-progress boundary during collision cooking before live-collider or reset proof.",
@@ -762,15 +277,7 @@
         "The v15 legacy-cooker run completed manager-based construction in 41.396117 seconds without collision fallback or triangle-stability warnings; preserve its exact receipt as the measured basis for keeping this centralized PhysX setting.",
         "Preserve scientific identity and digest bindings across any later optimization."
       ],
-      "applied_references": [
-        "https://github.com/NVIDIA/skills/blob/358510a74b59120bc3d4bd183ac92734018b38f3/skills/omniverse-usd-performance-tuning/SKILL.md",
-        "https://isaac-sim.github.io/IsaacLab/v2.1.1/source/how-to/simulation_performance.html#collision-geometries",
-        "https://isaac-sim.github.io/IsaacLab/develop/source/api/lab_physx/isaaclab_physx.sim.schemas.html#isaaclab_physx.sim.schemas.PhysxTriangleMeshPropertiesCfg",
-        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
-        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/extensions/ux/source/omni.physx.ui/docs/dev_guide/sim_management.html",
-        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.0/dev_guide/simulation_control/simulation_control.html",
-        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/106.5/extensions/runtime/source/omni.physx/docs/api/python.html#omni.physx.bindings._physx.PhysXCooking.compute_edge_length_limited_triangle_mesh"
-      ],
+      "guidance_id": "nvidia-omniverse-usd-performance-tuning",
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_native_microcheck_bundle.py",
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
@@ -779,34 +286,769 @@
       ]
     },
     {
-      "guidance_id": "nvidia-omniverse-realtime-viewer",
-      "application_status": "not_applicable",
       "actually_followed": false,
+      "application_status": "not_applicable",
       "decisions": [
         "Do not build an interactive realtime viewer because it is not an explicit deliverable.",
         "A viewer may never replace lossless external and wrist policy-input media."
       ],
+      "guidance_id": "nvidia-omniverse-realtime-viewer",
       "implementation_evidence": []
     }
   ],
+  "implementation_base": {
+    "binding_rule": "Bound to the exact protected-main squash commit and tree produced by merged PR 374.",
+    "commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
+    "provisional_until_pr_374_merge": false,
+    "pull_request": "https://github.com/ognjhunt/BlueprintCapturePipeline/pull/374",
+    "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
+    "tree": "086d113022b1254612aeacc41eb962cb86a4942f"
+  },
+  "milestone": "ADP-009D_public_scene_franka_policy_rehearsal",
+  "program_id": "arm-decision-proof-v1",
+  "repositories": [
+    {
+      "license": {
+        "redistribution_boundary": "Internal R&D outputs may be retained; redistribution of Omniverse Kit or NVIDIA assets requires separate terms review.",
+        "runtime_components": "NVIDIA Omniverse and Isaac Sim additional software terms",
+        "source_code": "Apache-2.0"
+      },
+      "official_source_urls": [
+        "https://github.com/isaac-sim/IsaacSim/tree/987015050efebfd0cd5d3736ae47fffe5adee308",
+        "https://docs.isaacsim.omniverse.nvidia.com/latest/installation/install_python.html",
+        "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/requirements.html",
+        "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/common/license-faq.html",
+        "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/overview/release_notes.html",
+        "https://docs.omniverse.nvidia.com/composer/latest/feature_rendering.html"
+      ],
+      "path_identities": [
+        {
+          "blob": "6c0a478c97f5994906059642e0a8c3bdc879bf5f",
+          "path": "LICENSE"
+        },
+        {
+          "blob": "867ed624570ef488479223bd92daacc3aaa4e356",
+          "path": "README.md"
+        },
+        {
+          "blob": "5bffac65fbe8aa6d33840f5181425c12a71bf1fa",
+          "path": "VERSION"
+        }
+      ],
+      "ref": "refs/heads/main",
+      "ref_verified_at_retrieval": true,
+      "repository_url": "https://github.com/isaac-sim/IsaacSim",
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "revision": "987015050efebfd0cd5d3736ae47fffe5adee308",
+      "source_id": "isaac_sim_omniverse",
+      "submodules": [],
+      "tree": "7530065964b0bfbb3e6c102ffa20456870079d7e",
+      "version_compatibility": {
+        "latest_documented_pip_release": "6.0.1.0",
+        "python": "3.12",
+        "released_6_0_0_kit": "110.1.1",
+        "repository_version": "6.0.1-rc.74",
+        "runtime_decision": "Use the Arena release Dockerfile's Isaac Sim 6.0.0-dev2 image at immutable manifest digest sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9; do not substitute a rolling main image."
+      }
+    },
+    {
+      "license": {
+        "framework": "BSD-3-Clause",
+        "isaac_sim_dependency": "NVIDIA proprietary runtime terms",
+        "mimic_component": "Apache-2.0"
+      },
+      "official_source_urls": [
+        "https://github.com/isaac-sim/IsaacLab/tree/01eb210728ae6a1bd3cba854f31d21c614cbe4b0",
+        "https://isaac-sim.github.io/IsaacLab/develop/source/tutorials/03_envs/create_manager_base_env.html",
+        "https://isaac-sim.github.io/IsaacLab/develop/source/overview/core-concepts/sensors/camera.html"
+      ],
+      "path_identities": [
+        {
+          "blob": "dee9ba551f428dd44471e7ee461528374233ad3c",
+          "path": "LICENSE"
+        },
+        {
+          "blob": "89fdec5f15060925fcf14c9fb05a2d4e0fc576de",
+          "path": "README.md"
+        },
+        {
+          "blob": "4a36342fcab700951adb18ae7adc930997f6c3f4",
+          "path": "VERSION"
+        },
+        {
+          "blob": "9c86809f4be3b810776d84e7bfa9b1449cb81cbe",
+          "path": ".agents/skills/isaaclab-building-environments",
+          "target_path": "skills/user/create-environments/SKILL.md"
+        },
+        {
+          "blob": "f9b6c7c9b16831ec0a2260c75c02c9198f70cc10",
+          "path": "skills/user/create-environments/SKILL.md"
+        },
+        {
+          "blob": "b13818198cf1fac5d91ce14d3a4430786eb1b60a",
+          "path": ".agents/skills/isaaclab-planning-manipulation-tasks",
+          "target_path": "skills/user/plan-manipulation-tasks/SKILL.md"
+        },
+        {
+          "blob": "7af45a6449447ea499dbe588525c1ec04c57c186",
+          "path": "skills/user/plan-manipulation-tasks/SKILL.md"
+        },
+        {
+          "blob": "cfaab189258429582bc8e1358299c5ffd51614dd",
+          "path": ".agents/skills/isaaclab-randomizing-with-events",
+          "target_path": "skills/user/domain-randomization-events/SKILL.md"
+        },
+        {
+          "blob": "2c2054ffda6e7c27adc59c781ebe739b21132f16",
+          "path": "skills/user/domain-randomization-events/SKILL.md"
+        },
+        {
+          "blob": "1f21fba7f2b25c639416b597670851b3ce86400e",
+          "path": ".agents/skills/isaaclab-using-sensors-actuators",
+          "target_path": "skills/user/use-sensors-actuators/SKILL.md"
+        },
+        {
+          "blob": "de4254487ce02d8446d497d99f3f7cff0c03725a",
+          "path": "skills/user/use-sensors-actuators/SKILL.md"
+        },
+        {
+          "blob": "65ac937bafe709025ccaedd20ee583ed74f441bf",
+          "path": ".agents/skills/isaaclab-selecting-backends",
+          "target_path": "skills/user/select-backends/SKILL.md"
+        },
+        {
+          "blob": "d87e8e7f8926fb610351e2f6e86f941cdd2cb3dd",
+          "path": "skills/user/select-backends/SKILL.md"
+        },
+        {
+          "blob": "6abea13ebf0c50ef88ef6c2c0e09368777edd7dc",
+          "path": ".agents/skills/isaaclab-using-presets",
+          "target_path": "skills/user/use-presets/SKILL.md"
+        },
+        {
+          "blob": "91f3a8e81c55733f92938581d945ca883c7b6f9d",
+          "path": "skills/user/use-presets/SKILL.md"
+        },
+        {
+          "blob": "9c92a9cae7fdcb983a11da737e8970f382a76f76",
+          "path": "source/isaaclab/test/sensors/generate_synthetic_gaussian_asset.py"
+        }
+      ],
+      "ref": "refs/heads/develop",
+      "ref_verified_at_retrieval": true,
+      "repository_url": "https://github.com/isaac-sim/IsaacLab",
+      "retrieved_at": "2026-08-07T09:31:54Z",
+      "revision": "01eb210728ae6a1bd3cba854f31d21c614cbe4b0",
+      "source_id": "isaac_lab",
+      "starting_observation_revision": "3ea6f7bbf6c7d515aa1f8e8c54bfdfffda2d4857",
+      "submodules": [],
+      "tree": "d1bf0139e9fa4a6f42ae2c74701d87c7015f8367",
+      "version_compatibility": {
+        "develop_warning": "The audited README says this develop revision is not compatible with Isaac Sim GitHub develop and directs users to Isaac Lab f0234a82e432e2a0b0f0a26ca3c5b59e527ddaaa or earlier, or v3.0.0-beta.",
+        "intended_isaac_sim_family": "6.0.x",
+        "python": "3.12",
+        "runtime_decision": "Treat this revision's skills as current guidance only; do not admit it as the ADP-009D runtime.",
+        "version": "3.0.0"
+      }
+    },
+    {
+      "license": {
+        "framework": "Apache-2.0",
+        "isaac_sim_dependency": "NVIDIA proprietary runtime terms"
+      },
+      "official_source_urls": [
+        "https://github.com/isaac-sim/IsaacLab-Arena/tree/8b4a3a47fc53de23e8205089d71109a2e2348acd",
+        "https://isaac-sim.github.io/IsaacLab-Arena/release/0.2.1/index.html",
+        "https://isaac-sim.github.io/IsaacLab-Arena/release/0.2.1/pages/concepts/policy/concept_evaluation_types.html",
+        "https://isaac-sim.github.io/IsaacLab-Arena/release/0.2.1/pages/quickstart/first_experiments/exploring_variations.html"
+      ],
+      "path_identities": [
+        {
+          "blob": "34af41dda37a8afab85c3a1f73350cdf7f8dbe47",
+          "path": "LICENSE.md"
+        },
+        {
+          "blob": "3a94334fe6f62c852dd2d1bb377b42099ab1cbd5",
+          "path": "README.md"
+        },
+        {
+          "blob": "034e0dba871cd8b764029969aeda20905abc62e8",
+          "path": "setup.py"
+        },
+        {
+          "blob": "60591e17b6b8c344220e3b6cddafb472904cf577",
+          "path": "isaaclab_arena/scene/scene.py"
+        },
+        {
+          "blob": "664b6ba493ff5fdabb708f68c0196b41b84e1c0a",
+          "path": "isaaclab_arena/embodiments/embodiment_base.py"
+        },
+        {
+          "blob": "f1f007556ec8938bc7432f077046c6e414ef80f0",
+          "path": "isaaclab_arena/tasks/task_base.py"
+        },
+        {
+          "blob": "bf594ea562fd02ce8d58a174228ba629a746b71e",
+          "path": "isaaclab_arena/policy/policy_base.py"
+        },
+        {
+          "blob": "99d734d0dfe0b23ee0623c16ed397743cb1d336e",
+          "path": "isaaclab_arena/metrics/metric_base.py"
+        },
+        {
+          "blob": "84b0c965ae28b206a08c1e6bcca1aad106aa6723",
+          "path": "isaaclab_arena/evaluation/policy_runner.py"
+        },
+        {
+          "blob": "4e6de190490c9979f82310dd852286a532ee4216",
+          "path": "docs/pages/quickstart/first_experiments/exploring_variations.rst"
+        }
+      ],
+      "ref": "refs/heads/release/0.2.1",
+      "ref_verified_at_retrieval": true,
+      "repository_url": "https://github.com/isaac-sim/IsaacLab-Arena",
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+      "source_id": "isaac_lab_arena",
+      "submodules": [
+        {
+          "path": "submodules/IsaacLab",
+          "repository_url": "https://github.com/isaac-sim/IsaacLab",
+          "revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+          "tree": "454115265327a80acabd07cbd36e10071fc0c065"
+        },
+        {
+          "path": "submodules/Isaac-GR00T",
+          "repository_url": "https://github.com/NVIDIA/Isaac-GR00T",
+          "revision": "e29d8fc50b0e4745120ae3fb72447986fe638aa6",
+          "tree": "4157b38edab2c64c5f38dd34919e91393ae3dc7e"
+        }
+      ],
+      "tree": "03f31f3dd56c56d00f24dbfb09711ec0ab345de8",
+      "version_compatibility": {
+        "claim_status": "alpha; incomplete, unstable APIs, not for production",
+        "isaac_sim": "6.0.0 family",
+        "nested_isaac_lab": "3.0.0 at e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+        "readme_python": ">=3.12",
+        "release_line": "0.2.x",
+        "runtime_decision": "Pin the repository and both submodules exactly; use Arena only as a thin compositional layer beneath Blueprint evaluation contracts.",
+        "setup_metadata_inconsistency": "setup.py declares package version 1.0.0 and Python >=3.10; the audit uses the README/release compatibility table conservatively."
+      }
+    },
+    {
+      "license": {
+        "code_samples": "Apache-2.0",
+        "skill_documentation": "CC-BY-4.0"
+      },
+      "official_source_urls": [
+        "https://github.com/NVIDIA/skills/tree/358510a74b59120bc3d4bd183ac92734018b38f3"
+      ],
+      "path_identities": [
+        {
+          "blob": "001a3281169d6ade30cd1a44544029254ba490a8",
+          "path": "LICENSE-APACHE"
+        },
+        {
+          "blob": "b0de5b1eb94213e92ad03b131684bae483db2bd9",
+          "path": "LICENSE-CC-BY-4.0"
+        },
+        {
+          "blob": "2f81999528440b1fcbebb9795988e563c32ba066",
+          "path": "README.md"
+        },
+        {
+          "blob": "f8269c99a39f3e23be3ebb4133a80c581b6d163d",
+          "path": "skills/omniverse-cad-to-simready/SKILL.md"
+        },
+        {
+          "blob": "3b857c72b8f85051397e55fe9dc2ee1121717f82",
+          "path": "skills/omniverse-usd-performance-tuning/SKILL.md"
+        },
+        {
+          "blob": "3aabd8e04ac51bd3e2e69e618c768aa735b8ef42",
+          "path": "skills/omniverse-realtime-viewer/SKILL.md"
+        }
+      ],
+      "ref": "refs/heads/main",
+      "ref_verified_at_retrieval": true,
+      "repository_url": "https://github.com/NVIDIA/skills",
+      "retrieved_at": "2026-08-07T02:21:30Z",
+      "revision": "358510a74b59120bc3d4bd183ac92734018b38f3",
+      "source_id": "nvidia_skills",
+      "submodules": [],
+      "tree": "b9c86063c7aeb40f83dd4fd8f84051ab96813eb4",
+      "version_compatibility": {
+        "runtime_decision": "Apply each skill only at its explicit gate and retain its license and evidence boundary.",
+        "skill_versioning": "Path and blob identity at the audited repository revision; individual skills do not define the ADP runtime stack."
+      }
+    },
+    {
+      "license": {
+        "nested_diff_surfel_rasterization": "Gaussian-Splatting research-and-evaluation-only license",
+        "redistribution_boundary": "Retain both top-level and nested licenses; do not treat the nested rasterizer as unrestricted Apache-2.0 code.",
+        "top_level": "Apache-2.0",
+        "use_ceiling": "internal noncommercial research and evaluation"
+      },
+      "official_source_urls": [
+        "https://github.com/kkennethwu/AuraFusion360_official/tree/f23b26c44ba84608306ba952510533ebf4c7877d",
+        "https://arxiv.org/abs/2502.05176",
+        "https://github.com/hbb1/2d-gaussian-splatting"
+      ],
+      "path_identities": [
+        {
+          "blob": "56873abdee02336b82eabf437df50e422cb90f20",
+          "path": "README.md"
+        },
+        {
+          "blob": "f49a4e16e68b128803cc2dcea614603632b04eac",
+          "path": "LICENSE"
+        },
+        {
+          "blob": "7a1a539d574bcd63a320219f9193432a89e98440",
+          "path": "install.sh"
+        },
+        {
+          "blob": "6d8dac4c5e471cd66dc019caca33bffd351e3f5a",
+          "path": "gaussian_renderer/__init__.py"
+        },
+        {
+          "blob": "ed0b9fc00a62dc04a07ccbb43978943f5f19258b",
+          "path": "scene/cameras.py"
+        },
+        {
+          "blob": "20c35bb09e0d0a014b52b9c988e235d5ed47ff83",
+          "path": "scene/gaussian_model.py"
+        },
+        {
+          "blob": "c869e695fa63bfde6f887d63a24a2a71f03480ac",
+          "path": "submodules/diff-surfel-rasterization/LICENSE.md"
+        },
+        {
+          "blob": "6ba9e33c06de309482502758b72d6efbaf28c5e5",
+          "path": "submodules/diff-surfel-rasterization/cuda_rasterizer/forward.cu"
+        }
+      ],
+      "ref": "refs/heads/main",
+      "ref_verified_at_retrieval": true,
+      "repository_url": "https://github.com/kkennethwu/AuraFusion360_official",
+      "retrieved_at": "2026-08-07T10:59:33Z",
+      "revision": "f23b26c44ba84608306ba952510533ebf4c7877d",
+      "source_id": "aurafusion360",
+      "submodules": [
+        {
+          "path": "submodules/diff-surfel-rasterization",
+          "revision": "e0ed0207b3e0669960cfad70852200a4a5847f61"
+        },
+        {
+          "path": "submodules/diff-surfel-rasterization/third_party/glm",
+          "revision": "5c46b9c07008ae65cb81ab79cd677ecc1934b903"
+        },
+        {
+          "path": "submodules/simple-knn",
+          "revision": "86710c2d4b46680c02301765dd79e465819c8f19"
+        }
+      ],
+      "tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
+      "version_compatibility": {
+        "camera_contract": "ideal centered pinhole cameras; arbitrary live poses are accepted through the publisher Camera and rasterizer interfaces",
+        "cuda": "12.4 in publisher install flow",
+        "depth_contract": "publisher rasterizer returns expected and median camera-space depth; ADP selects expected depth with depth_ratio 0.0 for this unbounded scene",
+        "python": "3.10 in publisher install flow",
+        "representation": "2D Gaussian surflets with two learned scale components",
+        "runtime_decision": "Use the exact publisher rasterizer for sealed Aura RGB and metric camera-space depth, then depth-compose it with Isaac dynamic RGB depth and segmentation at identical live calibration and timestamp.",
+        "torch": "2.5.1+cu124 in the previously executed exact-source Blueprint runtime"
+      }
+    },
+    {
+      "license": {
+        "package": "LicenseRef-NvidiaProprietary",
+        "redistribution_boundary": "Do not redistribute OVRTX binaries without separate terms review."
+      },
+      "official_source_urls": [
+        "https://github.com/NVIDIA-Omniverse/ovrtx/tree/4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+        "https://nvidia-omniverse.github.io/ovrtx/latest/"
+      ],
+      "path_identities": [
+        {
+          "blob": "452c1181a6338a79215235e32d7a0e24ce392a40",
+          "path": "LICENSE"
+        },
+        {
+          "blob": "a667eba283ac03ab40ebb7fbe106d4a79a38cec3",
+          "path": "README.md"
+        },
+        {
+          "blob": "267cf113068264cf17b08d0145dd62e5816a497e",
+          "path": "pyproject.toml"
+        },
+        {
+          "blob": "a258518c4f153f181794c837b0cdc07641e597a3",
+          "path": "skills/loading-usd/SKILL.md"
+        },
+        {
+          "blob": "bc70098b430dd449b38139b0514903a7528358c7",
+          "path": "skills/renderer-creation/SKILL.md"
+        },
+        {
+          "blob": "9e325b384840c46ca92cc12e1187b810d7f30418",
+          "path": "skills/render-settings/SKILL.md"
+        },
+        {
+          "blob": "2bc381f2b9f5f54641661daf54b33a40cb343a4a",
+          "path": "skills/camera-outputs-rt2/SKILL.md"
+        },
+        {
+          "blob": "ab71c2b0c051d20a2636be1dd0052b5004160f5e",
+          "path": "skills/reading-render-output/SKILL.md"
+        },
+        {
+          "blob": "3153700b00c6185aa3a3448f92475fd34bd478d1",
+          "path": "skills/stepping-and-rendering/SKILL.md"
+        },
+        {
+          "blob": "28bcd2c84f5ec644280ae9fd591f4a83536609e0",
+          "path": "skills/warmup/SKILL.md"
+        },
+        {
+          "blob": "3938cb3a4e969df6439d8c2d8ab7fd02947640e5",
+          "path": "skills/semantic-labels/SKILL.md"
+        },
+        {
+          "blob": "3a006941a5de4030f626b16ad25218c31a3d442d",
+          "path": "skills/render-product-device-pinning/SKILL.md"
+        },
+        {
+          "blob": "e1b9c107d2b9c9f915fb24b9d0892792701d3d98",
+          "path": "skills/cuda-interop/SKILL.md"
+        }
+      ],
+      "ref": "refs/heads/main",
+      "ref_verified_at_retrieval": true,
+      "repository_url": "https://github.com/NVIDIA-Omniverse/ovrtx",
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "revision": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+      "source_id": "ovrtx",
+      "submodules": [],
+      "tree": "9bde58c9194250f226d4d24b37924fca62c9ac22",
+      "version_compatibility": {
+        "cuda": "12",
+        "development_status": "alpha",
+        "ovstage": ">=0.1.0.343775",
+        "python": ">=3.10,<3.14",
+        "runtime_decision": "If admitted for live policy observations, initialize OVRTX before ovphysx and prove the selected ovstage/ovphysx/OVRTX wheel set in an immutable micro-check before evaluation.",
+        "version": "0.4.0"
+      }
+    },
+    {
+      "license": {
+        "ovphysx_package": "LicenseRef-NVIDIA-Omniverse",
+        "physx_source": "BSD-3-Clause",
+        "prebuilt_binaries": "NVIDIA proprietary terms"
+      },
+      "official_source_urls": [
+        "https://github.com/NVIDIA-Omniverse/PhysX/tree/7845321d31fa3619917ebe127ab5e08e73de0bdb",
+        "https://nvidia-omniverse.github.io/PhysX/physx/5.6.1/",
+        "https://nvidia-omniverse.github.io/PhysX/ovphysx/latest/"
+      ],
+      "path_identities": [
+        {
+          "blob": "2388f6f9a26a42277e0dd0bf4b7b55af5aee29e5",
+          "path": "LICENSE.md"
+        },
+        {
+          "blob": "eb3719817fdd587604e2e6a669874e4a844773a5",
+          "path": "physx/version.txt"
+        },
+        {
+          "blob": "b2baa8d1de5b8dc204d49c77262298eaf8a0b157",
+          "path": "ovphysx/LICENSE.txt"
+        },
+        {
+          "blob": "416bfb0a2212b445e84333c4f3ce8cb4aba564cf",
+          "path": "ovphysx/VERSION"
+        },
+        {
+          "blob": "2bb375445ac7707944a7d74bb33ac7c3d2d46ecd",
+          "path": "ovphysx/python/pyproject.toml"
+        }
+      ],
+      "ref": "refs/heads/main",
+      "ref_verified_at_retrieval": true,
+      "repository_url": "https://github.com/NVIDIA-Omniverse/PhysX",
+      "retrieved_at": "2026-08-06T18:45:59Z",
+      "revision": "7845321d31fa3619917ebe127ab5e08e73de0bdb",
+      "skill_path_audit": {
+        "decision": "do_not_invent_ovphysx_skill_path",
+        "note": "The package-data stanza mentions SKILLS.md and skills/**/*, but those paths are absent from the inspected revision.",
+        "ovphysx_skill_path": null,
+        "query": "SKILL.md files and paths rooted at skills or ovphysx skills",
+        "recursive_tree": "c2e1ed19bb3e2648af75bf68437e91f8e0faaca0",
+        "skill_tree_match_count": 0
+      },
+      "source_id": "physx",
+      "submodules": [],
+      "tree": "c2e1ed19bb3e2648af75bf68437e91f8e0faaca0",
+      "version_compatibility": {
+        "development_status": "alpha",
+        "ovphysx": "0.5.9",
+        "ovstage": "==0.1.0.346039",
+        "physx": "5.6.1.51c1f783",
+        "python": ">=3.10",
+        "runtime_decision": "Centralize and validate PhysX configuration; prove an exact OVRTX/ovphysx/ovstage co-resident wheel combination before using it for policy inputs."
+      }
+    }
+  ],
   "runtime_compatibility_decision": {
-    "isaac_sim_version_family": "6.0.x",
-    "isaac_sim_container": "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9",
+    "arena_claim_ceiling": "alpha_internal_rehearsal_only",
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff. OVRTX loaded all 415265 sealed Aura surflets, but the fully preregistered exact-camera v10 execution returned black color and no positive finite metric depth for either camera, so OVRTX is rejected for this sealed Aura representation. The official native Aura source at f23b26c subsequently reproduced both frozen 2048x1536 native reference frames byte-for-byte and returned positive finite metric expected camera-space depth for every pixel; the code-derived conformance receipt passed the preregistered thresholds. SAGE remains registered geometry, collision, and depth-reference only and may not replace Aura as policy-visible appearance. This standalone renderer gate did not execute Isaac composition, the wrist camera still omits the can in the retained v22 frame, and live Aura plus Isaac depth composition remains required before policy admission.",
+    "contact_clear_native_microcheck_evidence": {
+      "allocator_result_sha256": "sha256:9bcef162b0efe10000e03335a5768fe97648fac92f7c553fe8613368e28b129e",
+      "camera_warmup_frames": 40,
+      "completed_at": "2026-08-07T07:45:25Z",
+      "environment_build_seconds": 28.241277,
+      "estimated_cost_usd": 0.099545,
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/native_microcheck_v22_contact_clear_base/attempts/attempt_001/immutable_execution/adp009d_native_microcheck.json",
+      "external_camera_approved_can_visible": true,
+      "final_validation_sha256": "sha256:52d518f893a5d2d9db2277d4aaf1d50bef34329a83328d31e44f8a82634b8c06",
+      "lossless_camera_count": 2,
+      "policy_queried": false,
+      "post_warmup_arm_maximum_error_rad": 4.649162292480469e-06,
+      "post_warmup_can_absolute_z_displacement_m": 3.635883331298828e-06,
+      "post_warmup_can_tilt_degrees": 0.009498214903424387,
+      "post_warmup_can_xy_displacement_m": 5.331201499700045e-07,
+      "provider_zero_observed": true,
+      "reset_count": 2,
+      "result_sha256": "sha256:1c01933c7fdfb4fc6177ef8db5fe18507db5304ea3777cc67d3852488c62e1c9",
+      "run_id": "native_microcheck_v22_contact_clear_base",
+      "scientific_limitations": [
+        "the retained wrist frame did not contain the approved can",
+        "the retained physics-only frames did not contain live Aura appearance",
+        "no scripted positive control or learned policy executed"
+      ],
+      "status": "completed_contact_clear_reset_step_and_camera_tensor_microcheck",
+      "teardown_manifest_sha256": "sha256:3a997b1a7055628e4f2a97b66d19d7e8b106ab0bb6cdedcd0c832069c282f1b2",
+      "wrist_camera_approved_can_visible": false,
+      "zero_action_step_completed": true
+    },
+    "isaac_groot_submodule_commit": "e29d8fc50b0e4745120ae3fb72447986fe638aa6",
     "isaac_lab_arena_commit": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
     "isaac_lab_runtime_commit": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
     "isaac_lab_runtime_tree": "454115265327a80acabd07cbd36e10071fc0c065",
-    "isaac_groot_submodule_commit": "e29d8fc50b0e4745120ae3fb72447986fe638aa6",
+    "isaac_sim_container": "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9",
+    "isaac_sim_version_family": "6.0.x",
     "latest_isaac_lab_develop_runtime_admitted": false,
     "latest_isaac_lab_develop_use": "official skill guidance only",
-    "arena_claim_ceiling": "alpha_internal_rehearsal_only",
-    "ovrtx_candidate": "0.4.0 at 4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
-    "ovphysx_candidate": "0.5.9 at 7845321d31fa3619917ebe127ab5e08e73de0bdb",
-    "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX for dynamic geometry plus AuraFusion360 official native 2D-surfel rasterizer for sealed Aura appearance and metric camera-space depth",
-    "sealed_aura_renderer_backend": "AuraFusion360_official_native_2D_surfel_rasterizer",
+    "live_hybrid_frame_composition_evidence": {
+      "approved_task_object_sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+      "aura_appearance_ply_sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
+      "aura_appearance_ply_stage": "post_inpainting_aurafusion360_final",
+      "blockers": [
+        "hybrid_observation_approved_task_object_absent",
+        "isaac_semantic_override_layer_digest_missing",
+        "sealed_aura_appearance_layer_occludes_approved_task_object"
+      ],
+      "camera_pose_conversion_independently_recomputed": {
+        "intrinsic_max_abs_error": 0.0,
+        "method": "OpenGL quaternion and position from the Isaac frame -> OpenCV basis",
+        "rotation_max_abs_error": 0.0,
+        "translation_max_abs_error": 0.0
+      },
+      "candidate_policy_queried": false,
+      "claim_ceiling": "development_only single-frame depth-correct composition over retained arrays; establishes no live co-resident renderer, no moving-occlusion behaviour, and no policy or task outcome",
+      "depth_convention_defect": {
+        "defect": "Aura publishes camera-Z surface depth (surf_depth_expected_camera_z_m) while Isaac publishes ray-length distance_to_camera; the composer compared them directly.",
+        "effect": "Dynamic-layer depth was inflated by 1/cos(theta), up to 1.7767x at the corners of the admitted 1280x720 DROID intrinsics, fabricating occlusion.",
+        "fix": "Every layer declares its depth geometry and is normalised to camera_z using the admitted pinhole intrinsics before any depth ordering.",
+        "measured_after_fix_external_camera": {
+          "approved_can_pixels_occluded": 1124,
+          "robot_pixels_occluded": 0
+        },
+        "measured_before_fix_external_camera": {
+          "approved_can_pixels_occluded": 2998,
+          "robot_pixels_wrongly_occluded": 3478
+        },
+        "physical_validation": "A robot standing in front of the room must have zero pixels occluded by the room background; the corrected comparison yields exactly zero."
+      },
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/live_hybrid_frames_v1/adp009d_live_hybrid_frame_manifest.v1.json",
+      "gpu_executed_in_this_step": false,
+      "implementation_commit": "2de3fd4a47b1abba6f15483a241399d422ee69d6",
+      "manifest_digest": "sha256:69c7ced12e130fef10d22a0b31ba9c9ec1a362bb4dbd503648da9e8af150a47e",
+      "manifest_sha256": "sha256:0257f8bb6004b74683e443477b7f2b15fb24973e73c34c2d8d1dbdc75fa40903",
+      "measured_findings": {
+        "external_camera": {
+          "approved_can": {
+            "aura_in_front_fraction": 0.226,
+            "median_aura_minus_dynamic_camera_z_m": 0.0222,
+            "occluded_pixel_count": 1124,
+            "pixel_count": 5005
+          },
+          "robot": {
+            "median_aura_minus_dynamic_camera_z_m": 0.8321,
+            "occluded_pixel_count": 0,
+            "pixel_count": 121645
+          }
+        },
+        "retained_aura_surface_localisation": {
+          "approved_can_top_world_height_m": 0.6953,
+          "approved_can_visible_surface_horizontal_distance_m": 0.0313,
+          "interpretation": "The post-inpainting Aura asset removed the source can's appearance but retains reconstructed surface geometry co-located with it: a shell about 3.4 cm from the can axis at the can's own height, against a 3.1 cm visible radius for the approved can. Only 18.3% of occluded pixels are legitimate shelf-contact occlusion at the base; the remainder is retained phantom geometry. This is consistent with the retained ADP-009B receipt recording successful_inpainting_admitted false.",
+          "occluded_pixels_within_1cm_of_support_fraction": 0.183,
+          "occluding_surface_horizontal_distance_from_can_axis_m": 0.0339,
+          "occluding_surface_world_height_median_m": 0.6776,
+          "support_world_height_m": 0.5264650138348479
+        },
+        "wrist_camera": {
+          "approved_task_object_present": false,
+          "robot": {
+            "occluded_pixel_count": 0,
+            "pixel_count": 3735
+          }
+        }
+      },
+      "status": "composed_from_retained_live_arrays_blocked_for_admission"
+    },
     "native_aura_renderer_execution_status": "executed_exact_camera_conformance_passed",
+    "native_aura_renderer_selection": {
+      "allocator_result_sha256": "sha256:23817f0f8a6c1a69c39907911a34008e04b720b309b66e67f99a8860b10b85a3",
+      "alpha_output": "rend_alpha",
+      "camera_ids": [
+        "approach_close",
+        "right_translate"
+      ],
+      "camera_interface": "publisher Camera or MiniCam with arbitrary centered-pinhole world pose",
+      "completed_at": "2026-08-07T11:20:19Z",
+      "conformance_receipt_digest": "sha256:8e4c34878c7d08d9c137e48263819a760efa3d438163f25642b5c82056d70a6f",
+      "conformance_receipt_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_native_exact_camera_conformance_v1/adp009d_aura_native_renderer_conformance_receipt.v1.json",
+      "conformance_receipt_sha256": "sha256:e4d784d8881d14e04e0df4913cfc610427630b8008bb2f22157ec7562cfef2fc",
+      "decision_frozen_at": "2026-08-07T10:59:33Z",
+      "estimated_cost_usd": 0.027479,
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_native_exact_camera_conformance_v1/canonical_gpu_run_v2/job/attempts/attempt_001/immutable_execution/adp009d_aura_native_live_camera_result.json",
+      "execution_commit": "d61013c6748053a83d9ef146a061a7408a34f1a6",
+      "final_validation_sha256": "sha256:e3bf86ec82855a83f6a18c72000053aea88d3d42c6db2161b9e66992fd557150",
+      "gpu": "NVIDIA L40",
+      "metric_depth_output": "surf_depth with depth_ratio 0.0 selecting expected camera-space depth",
+      "metric_depth_source_evidence": "diff-surfel-rasterization forward.cu stores p_view.z and accumulates perspective-correct surfel depth in source scene units",
+      "native_rgb_byte_exact_by_camera": true,
+      "policy_queried": false,
+      "positive_finite_metric_depth_pixel_count_by_camera": 3145728,
+      "postrun_provider_zero_sha256": "sha256:e5f7cd4dc3365e5ed9e307e52dfff64d4f20ded90436e3696912e031301531f2",
+      "provider_zero_observed": true,
+      "representation": "2D Gaussian surflets",
+      "required_next_receipt": "execute live exact-calibration Aura plus Isaac dynamic depth and segmentation composition for external and wrist cameras, retain exact lossless policy-input frames, and pass static and moving occlusion probes.",
+      "result_sha256": "sha256:488fcf45ba87ffdefa48204a5dab8a95dccd5d2b04be077d877538b6e10b187a",
+      "rgb_output": "render",
+      "run_id": "canonical_gpu_run_v2",
+      "sealed_source_mutated": false,
+      "selection_reason": "The selected Aura asset is natively 2D surflets; its exact publisher rasterizer preserves that representation and exposes the required RGB alpha and metric camera-space depth without converting it to a 3D Gaussian or SAGE mesh appearance.",
+      "smallest_exact_blocker_after_execution": "sealed_aura_hybrid_policy_observation_renderer_missing",
+      "source_commit": "f23b26c44ba84608306ba952510533ebf4c7877d",
+      "source_modified": false,
+      "source_repository": "https://github.com/kkennethwu/AuraFusion360_official",
+      "source_tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
+      "status": "executed_exact_camera_conformance_passed",
+      "teardown_manifest_sha256": "sha256:14a6ed6b003a0380f35d10839bbc5ad91125c58f08a6ceb8b63e81b3a651e4b5"
+    },
+    "native_microcheck_evidence": {
+      "allocator_result_sha256": "sha256:200f5febaf5736a3b1da80b278e4a89de23c5f823887c7fe3ddc357a666990c9",
+      "camera_warmup_frames": 40,
+      "completed_at": "2026-08-07T06:43:21Z",
+      "environment_build_seconds": 28.082818,
+      "estimated_cost_usd": 0.061795,
+      "live_can_approximation": "sdf",
+      "live_sage_triangle_mesh_count": 15,
+      "lossless_camera_count": 2,
+      "policy_queried": false,
+      "post_warmup_arm_maximum_error_rad": 0.00017905235290527344,
+      "post_warmup_can_tilt_degrees": 89.99862428315234,
+      "post_warmup_can_xy_displacement_m": 0.19788081124568532,
+      "provider_zero_observed": true,
+      "reset_arm_maximum_error_rad": 0.0,
+      "reset_count": 2,
+      "result_sha256": "sha256:fe20dfc3201c77c8fb8ec261fb18ded1f805db5736cdc100fdcdcf936cf45976",
+      "run_id": "native_microcheck_v18_live_event_writer_reset",
+      "scientific_limitations": [
+        "the requested reset pose was reached but is contact-invalid because the can moved 0.197880811 meters XY and tilted about 89.9986 degrees during nominal hold",
+        "the retained wrist frame did not contain the approved can",
+        "the physics-only frames did not contain live Aura appearance",
+        "no scripted positive control or learned policy executed"
+      ],
+      "status": "completed_reset_infrastructure_microcheck_nominal_contact_invalid",
+      "ujitso_default_enabled": true,
+      "ujitso_resolved_enabled": false,
+      "zero_action_step_completed": true
+    },
+    "ovphysx_candidate": "0.5.9 at 7845321d31fa3619917ebe127ab5e08e73de0bdb",
+    "ovrtx_candidate": "0.4.0 at 4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+    "ovrtx_exact_camera_followup_evidence": {
+      "candidate_policy_queried": false,
+      "estimated_cost_usd": 0.14215,
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_ovrtx_exact_camera_conformance_v10_preregistered_run/attempts/attempt_001/immutable_execution/adp009d_aura_ovrtx_failure_diagnostic.v1.json",
+      "failure_diagnostic_sha256": "sha256:2c929125a033e401f663fbb6ef4ba13822f353c61e9980e70327916e1b07eb9e",
+      "gpu": "NVIDIA RTX 5880 Ada Generation",
+      "immutable_input_sha256": "sha256:51cee8507e323ffbaf3cb157c6dab8f8fbe1888fef49b6f0eebb57b00949d52d",
+      "positive_finite_metric_depth_by_camera": {
+        "approach_close": false,
+        "right_translate": false
+      },
+      "preregistered_probe_sha256": "sha256:33acfc801d4cfb0e2e68db71208ef529fc7512cb60181bfd2c1098938a3e3a4c",
+      "representation_diagnosis": {
+        "audited_ovrtx_skill_tree_documents_gaussian_surflet_render_support": false,
+        "aura_source_representation": "2D Gaussian surflets",
+        "official_isaac_lab_test_schema": "ParticleField3DGaussianSplat",
+        "ovrtx_authored_schema": "ParticleField+ParticleFieldKernelGaussianSurfletAPI",
+        "particlefield_emissive_material_wiring_matches_official_test": true,
+        "sage_visible_appearance_substitution_allowed": false
+      },
+      "returned_camera_ids": [
+        "approach_close",
+        "right_translate"
+      ],
+      "returned_lossless_rgb_arrays": 2,
+      "returned_metric_depth_arrays": 2,
+      "rgb_color_signal_by_camera": {
+        "approach_close": false,
+        "right_translate": false
+      },
+      "run_id": "aura_ovrtx_exact_camera_conformance_v10_preregistered_run",
+      "run_owned_provider_zero_observed": true,
+      "smallest_exact_blocker": "sealed_aura_hybrid_policy_observation_renderer_missing",
+      "source_commit": "5a456be4d20ea4118a2bc400f9b945cda4695a77",
+      "source_result_sha256": "sha256:331a3cd31e59077f442a4d51736e14ac97b237ff0df604acbd4f40da1e584d5a",
+      "status": "blocked_black_color_and_missing_metric_depth"
+    },
+    "ovrtx_live_camera_evidence": {
+      "allocator_result_sha256": "sha256:99c671464725a9b587c7b6c65b8b56a1de654092403f3d87bb609e8529bccf82",
+      "candidate_policy_queried": false,
+      "completed_at": "2026-08-07T09:19:40Z",
+      "estimated_cost_usd": 0.205431,
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_ovrtx_live_camera_v6/attempts/attempt_001/immutable_execution/adp009d_ovrtx_live_camera_result.json",
+      "external_positive_finite_metric_depth": false,
+      "external_rgb_sha256": "sha256:299d09d9593dbec4bb1653c0037caccbf4b7e95ebd39fe5a670ab431012a21f2",
+      "global_provider_zero_claimed": false,
+      "gpu": "NVIDIA RTX 6000 Ada Generation",
+      "ovrtx_revision": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+      "ovrtx_version": "0.4.0.346409",
+      "ovstage_version": "0.1.0.346039",
+      "result_sha256": "sha256:a288e8cece0bef2912e24a6551a743369c561d23a97e087895aeb35c2d21cf36",
+      "rtpt_warmup_frames": 40,
+      "run_id": "aura_ovrtx_live_camera_v6",
+      "run_owned_provider_zero_observed": true,
+      "smallest_exact_blockers": [
+        "RenderProduct omitted OmniRtxSettingsParticleFieldAPI_1 Gaussian accumulated-depth settings.",
+        "Generic Aura ParticleField omitted the official ParticleFieldEmissive.mdl binding and therefore did not bind the SH radiance interpretation explicitly.",
+        "Exact-camera visual conformance against Aura native reference frames remains unproven."
+      ],
+      "status": "blocked_metric_depth_and_visual_conformance",
+      "surfel_count": 415265,
+      "teardown_manifest_sha256": "sha256:d0ba4fad917060cb34cea669b434782fa064f9248c60db931c8495e4653cbf0e",
+      "wrist_positive_finite_metric_depth": false,
+      "wrist_rgb_sha256": "sha256:85da69083a75119d6da836360787fd46a813202b892789aa5cc16b997fe940bc"
+    },
     "ovrtx_selected": false,
     "runtime_install_profile": {
-      "profile_id": "isaaclab_arena_physx_task_runtime.v3",
+      "all_isaac_lab_extensions_installed": false,
+      "arena_development_extras_installed": false,
+      "arena_import_closure_decision": "Arena asset decorators execute policy registration during embodiment import. Follow the official selective Isaac Lab rsl-rl extra and Arena Dockerfile msgpack 1.1.0 plus pyzmq 27.0.1 pins; do not rely on accidental packages from a broad development image.",
       "isaac_lab_selective_targets": [
         "assets",
         "ov",
@@ -816,227 +1058,54 @@
         "teleop"
       ],
       "isaaclab_newton_install_reason": "pinned_installer_required_physx_newton_package_coupling_only",
-      "newton_runtime_extras_installed": false,
-      "newton_backend_selected": false,
       "isaaclab_ov_install_reason": "Arena's unconditional embodiment import reaches Isaac Lab multi-backend renderer presets through Kuka Allegro; install the configuration-only isaaclab_ov extension to satisfy that exact closure.",
-      "ovrtx_extra_installed": false,
+      "newton_backend_selected": false,
+      "newton_runtime_extras_installed": false,
       "ovrtx_backend_selected": false,
-      "arena_development_extras_installed": false,
-      "all_isaac_lab_extensions_installed": false,
-      "arena_import_closure_decision": "Arena asset decorators execute policy registration during embodiment import. Follow the official selective Isaac Lab rsl-rl extra and Arena Dockerfile msgpack 1.1.0 plus pyzmq 27.0.1 pins; do not rely on accidental packages from a broad development image.",
-      "runtime_import_preflight": "Import and version-check the exact Arena builder, embodiment, remote transport, and RSL-RL closure after Kit launch and before environment construction; retain exception type and full traceback on failure.",
+      "ovrtx_extra_installed": false,
       "physx_collision_cooking_profile": {
-        "profile_id": "legacy_cooker_after_ujitso_stall.v1",
-        "ujitso_collision_cooking": false,
         "cooker": "legacy",
-        "measured_trigger": "v14_manager_based_environment_construction_stalled_over_17_minutes_after_static_and_import_preflights",
         "geometry_or_cooking_parameters_changed": false,
-        "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
-      }
-    },
-    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff. OVRTX loaded all 415265 sealed Aura surflets, but the fully preregistered exact-camera v10 execution returned black color and no positive finite metric depth for either camera, so OVRTX is rejected for this sealed Aura representation. The official native Aura source at f23b26c subsequently reproduced both frozen 2048x1536 native reference frames byte-for-byte and returned positive finite metric expected camera-space depth for every pixel; the code-derived conformance receipt passed the preregistered thresholds. SAGE remains registered geometry, collision, and depth-reference only and may not replace Aura as policy-visible appearance. This standalone renderer gate did not execute Isaac composition, the wrist camera still omits the can in the retained v22 frame, and live Aura plus Isaac depth composition remains required before policy admission.",
-    "ovrtx_live_camera_evidence": {
-      "run_id": "aura_ovrtx_live_camera_v6",
-      "status": "blocked_metric_depth_and_visual_conformance",
-      "completed_at": "2026-08-07T09:19:40Z",
-      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_ovrtx_live_camera_v6/attempts/attempt_001/immutable_execution/adp009d_ovrtx_live_camera_result.json",
-      "result_sha256": "sha256:a288e8cece0bef2912e24a6551a743369c561d23a97e087895aeb35c2d21cf36",
-      "allocator_result_sha256": "sha256:99c671464725a9b587c7b6c65b8b56a1de654092403f3d87bb609e8529bccf82",
-      "teardown_manifest_sha256": "sha256:d0ba4fad917060cb34cea669b434782fa064f9248c60db931c8495e4653cbf0e",
-      "ovrtx_revision": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
-      "ovrtx_version": "0.4.0.346409",
-      "ovstage_version": "0.1.0.346039",
-      "gpu": "NVIDIA RTX 6000 Ada Generation",
-      "surfel_count": 415265,
-      "rtpt_warmup_frames": 40,
-      "external_rgb_sha256": "sha256:299d09d9593dbec4bb1653c0037caccbf4b7e95ebd39fe5a670ab431012a21f2",
-      "wrist_rgb_sha256": "sha256:85da69083a75119d6da836360787fd46a813202b892789aa5cc16b997fe940bc",
-      "external_positive_finite_metric_depth": false,
-      "wrist_positive_finite_metric_depth": false,
-      "estimated_cost_usd": 0.205431,
-      "run_owned_provider_zero_observed": true,
-      "global_provider_zero_claimed": false,
-      "candidate_policy_queried": false,
-      "smallest_exact_blockers": [
-        "RenderProduct omitted OmniRtxSettingsParticleFieldAPI_1 Gaussian accumulated-depth settings.",
-        "Generic Aura ParticleField omitted the official ParticleFieldEmissive.mdl binding and therefore did not bind the SH radiance interpretation explicitly.",
-        "Exact-camera visual conformance against Aura native reference frames remains unproven."
-      ]
-    },
-    "ovrtx_exact_camera_followup_evidence": {
-      "run_id": "aura_ovrtx_exact_camera_conformance_v10_preregistered_run",
-      "status": "blocked_black_color_and_missing_metric_depth",
-      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_ovrtx_exact_camera_conformance_v10_preregistered_run/attempts/attempt_001/immutable_execution/adp009d_aura_ovrtx_failure_diagnostic.v1.json",
-      "failure_diagnostic_sha256": "sha256:2c929125a033e401f663fbb6ef4ba13822f353c61e9980e70327916e1b07eb9e",
-      "source_result_sha256": "sha256:331a3cd31e59077f442a4d51736e14ac97b237ff0df604acbd4f40da1e584d5a",
-      "preregistered_probe_sha256": "sha256:33acfc801d4cfb0e2e68db71208ef529fc7512cb60181bfd2c1098938a3e3a4c",
-      "immutable_input_sha256": "sha256:51cee8507e323ffbaf3cb157c6dab8f8fbe1888fef49b6f0eebb57b00949d52d",
-      "source_commit": "5a456be4d20ea4118a2bc400f9b945cda4695a77",
-      "gpu": "NVIDIA RTX 5880 Ada Generation",
-      "returned_camera_ids": [
-        "approach_close",
-        "right_translate"
-      ],
-      "returned_lossless_rgb_arrays": 2,
-      "returned_metric_depth_arrays": 2,
-      "positive_finite_metric_depth_by_camera": {
-        "approach_close": false,
-        "right_translate": false
+        "measured_trigger": "v14_manager_based_environment_construction_stalled_over_17_minutes_after_static_and_import_preflights",
+        "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
+        "profile_id": "legacy_cooker_after_ujitso_stall.v1",
+        "ujitso_collision_cooking": false
       },
-      "rgb_color_signal_by_camera": {
-        "approach_close": false,
-        "right_translate": false
-      },
-      "estimated_cost_usd": 0.14215,
-      "run_owned_provider_zero_observed": true,
-      "candidate_policy_queried": false,
-      "representation_diagnosis": {
-        "aura_source_representation": "2D Gaussian surflets",
-        "ovrtx_authored_schema": "ParticleField+ParticleFieldKernelGaussianSurfletAPI",
-        "official_isaac_lab_test_schema": "ParticleField3DGaussianSplat",
-        "particlefield_emissive_material_wiring_matches_official_test": true,
-        "audited_ovrtx_skill_tree_documents_gaussian_surflet_render_support": false,
-        "sage_visible_appearance_substitution_allowed": false
-      },
-      "smallest_exact_blocker": "sealed_aura_hybrid_policy_observation_renderer_missing"
+      "profile_id": "isaaclab_arena_physx_task_runtime.v3",
+      "runtime_import_preflight": "Import and version-check the exact Arena builder, embodiment, remote transport, and RSL-RL closure after Kit launch and before environment construction; retain exception type and full traceback on failure."
     },
-    "native_aura_renderer_selection": {
-      "status": "executed_exact_camera_conformance_passed",
-      "decision_frozen_at": "2026-08-07T10:59:33Z",
-      "source_repository": "https://github.com/kkennethwu/AuraFusion360_official",
-      "source_commit": "f23b26c44ba84608306ba952510533ebf4c7877d",
-      "source_tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
-      "source_modified": false,
-      "representation": "2D Gaussian surflets",
-      "camera_interface": "publisher Camera or MiniCam with arbitrary centered-pinhole world pose",
-      "rgb_output": "render",
-      "alpha_output": "rend_alpha",
-      "metric_depth_output": "surf_depth with depth_ratio 0.0 selecting expected camera-space depth",
-      "metric_depth_source_evidence": "diff-surfel-rasterization forward.cu stores p_view.z and accumulates perspective-correct surfel depth in source scene units",
-      "sealed_source_mutated": false,
-      "policy_queried": false,
-      "selection_reason": "The selected Aura asset is natively 2D surflets; its exact publisher rasterizer preserves that representation and exposes the required RGB alpha and metric camera-space depth without converting it to a 3D Gaussian or SAGE mesh appearance.",
-      "execution_commit": "d61013c6748053a83d9ef146a061a7408a34f1a6",
-      "run_id": "canonical_gpu_run_v2",
-      "completed_at": "2026-08-07T11:20:19Z",
-      "gpu": "NVIDIA L40",
-      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_native_exact_camera_conformance_v1/canonical_gpu_run_v2/job/attempts/attempt_001/immutable_execution/adp009d_aura_native_live_camera_result.json",
-      "result_sha256": "sha256:488fcf45ba87ffdefa48204a5dab8a95dccd5d2b04be077d877538b6e10b187a",
-      "allocator_result_sha256": "sha256:23817f0f8a6c1a69c39907911a34008e04b720b309b66e67f99a8860b10b85a3",
-      "conformance_receipt_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_native_exact_camera_conformance_v1/adp009d_aura_native_renderer_conformance_receipt.v1.json",
-      "conformance_receipt_sha256": "sha256:e4d784d8881d14e04e0df4913cfc610427630b8008bb2f22157ec7562cfef2fc",
-      "conformance_receipt_digest": "sha256:8e4c34878c7d08d9c137e48263819a760efa3d438163f25642b5c82056d70a6f",
-      "teardown_manifest_sha256": "sha256:14a6ed6b003a0380f35d10839bbc5ad91125c58f08a6ceb8b63e81b3a651e4b5",
-      "final_validation_sha256": "sha256:e3bf86ec82855a83f6a18c72000053aea88d3d42c6db2161b9e66992fd557150",
-      "postrun_provider_zero_sha256": "sha256:e5f7cd4dc3365e5ed9e307e52dfff64d4f20ded90436e3696912e031301531f2",
-      "camera_ids": [
-        "approach_close",
-        "right_translate"
-      ],
-      "native_rgb_byte_exact_by_camera": true,
-      "positive_finite_metric_depth_pixel_count_by_camera": 3145728,
-      "estimated_cost_usd": 0.027479,
-      "provider_zero_observed": true,
-      "required_next_receipt": "execute live exact-calibration Aura plus Isaac dynamic depth and segmentation composition for external and wrist cameras, retain exact lossless policy-input frames, and pass static and moving occlusion probes.",
-      "smallest_exact_blocker_after_execution": "sealed_aura_hybrid_policy_observation_renderer_missing"
-    },
-    "native_microcheck_evidence": {
-      "run_id": "native_microcheck_v18_live_event_writer_reset",
-      "status": "completed_reset_infrastructure_microcheck_nominal_contact_invalid",
-      "completed_at": "2026-08-07T06:43:21Z",
-      "result_sha256": "sha256:fe20dfc3201c77c8fb8ec261fb18ded1f805db5736cdc100fdcdcf936cf45976",
-      "allocator_result_sha256": "sha256:200f5febaf5736a3b1da80b278e4a89de23c5f823887c7fe3ddc357a666990c9",
-      "environment_build_seconds": 28.082818,
-      "ujitso_default_enabled": true,
-      "ujitso_resolved_enabled": false,
-      "live_can_approximation": "sdf",
-      "live_sage_triangle_mesh_count": 15,
-      "reset_count": 2,
-      "reset_arm_maximum_error_rad": 0.0,
-      "post_warmup_arm_maximum_error_rad": 0.00017905235290527344,
-      "post_warmup_can_xy_displacement_m": 0.19788081124568532,
-      "post_warmup_can_tilt_degrees": 89.99862428315234,
-      "zero_action_step_completed": true,
-      "camera_warmup_frames": 40,
-      "lossless_camera_count": 2,
-      "estimated_cost_usd": 0.061795,
-      "provider_zero_observed": true,
-      "policy_queried": false,
-      "scientific_limitations": [
-        "the requested reset pose was reached but is contact-invalid because the can moved 0.197880811 meters XY and tilted about 89.9986 degrees during nominal hold",
-        "the retained wrist frame did not contain the approved can",
-        "the physics-only frames did not contain live Aura appearance",
-        "no scripted positive control or learned policy executed"
-      ]
-    },
+    "sealed_aura_renderer_backend": "AuraFusion360_official_native_2D_surfel_rasterizer",
+    "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX for dynamic geometry plus AuraFusion360 official native 2D-surfel rasterizer for sealed Aura appearance and metric camera-space depth",
     "subsequent_blocked_microchecks": [
       {
-        "run_id": "native_microcheck_v19_official_arena_droid_pose",
-        "status": "blocked_contact_stability_gate",
-        "completed_at": "2026-08-07T07:00:59Z",
-        "result_sha256": "sha256:eb8d47119cd773d47643a24c85002685510bf8df97b048bf00e38033245cbc3c",
         "allocator_result_sha256": "sha256:df280c5ce03e59c384fdef6a5dcae9644c21328402783ac54535904f12c94bc0",
-        "post_warmup_can_xy_displacement_m": 0.000011980385328675377,
+        "completed_at": "2026-08-07T07:00:59Z",
+        "estimated_cost_usd": 0.061779,
+        "policy_queried": false,
         "post_warmup_can_absolute_z_displacement_m": 0.0031012296676635742,
         "post_warmup_can_tilt_degrees": 6.1880336690867885,
-        "estimated_cost_usd": 0.061779,
+        "post_warmup_can_xy_displacement_m": 1.1980385328675377e-05,
         "provider_zero_observed": true,
-        "policy_queried": false,
-        "smallest_exact_blocker": "arena_all_zero_robotiq_closed_loop_reset_contact_invalid"
+        "result_sha256": "sha256:eb8d47119cd773d47643a24c85002685510bf8df97b048bf00e38033245cbc3c",
+        "run_id": "native_microcheck_v19_official_arena_droid_pose",
+        "smallest_exact_blocker": "arena_all_zero_robotiq_closed_loop_reset_contact_invalid",
+        "status": "blocked_contact_stability_gate"
       },
       {
-        "run_id": "native_microcheck_v21_measured_open_gripper",
-        "status": "blocked_contact_stability_gate",
-        "completed_at": "2026-08-07T07:26:33Z",
-        "result_sha256": "sha256:b6a3784dca45bc65de386e40e08451540487024fc4b7a0858b487de01d914c2d",
         "allocator_result_sha256": "sha256:cf0b13dccb31747bb84ad7ba8f56542fb09cb6db58a05699b6d98259692ad2f8",
-        "post_warmup_can_xy_displacement_m": 0.00012196619279790968,
+        "completed_at": "2026-08-07T07:26:33Z",
+        "estimated_cost_usd": 0.205707,
+        "policy_queried": false,
         "post_warmup_can_absolute_z_displacement_m": 0.003130197525024414,
         "post_warmup_can_tilt_degrees": 6.254313674694312,
-        "estimated_cost_usd": 0.205707,
+        "post_warmup_can_xy_displacement_m": 0.00012196619279790968,
         "provider_zero_observed": true,
-        "policy_queried": false,
-        "smallest_exact_blocker": "canonical_arm_base_standoff_near_contact"
+        "result_sha256": "sha256:b6a3784dca45bc65de386e40e08451540487024fc4b7a0858b487de01d914c2d",
+        "run_id": "native_microcheck_v21_measured_open_gripper",
+        "smallest_exact_blocker": "canonical_arm_base_standoff_near_contact",
+        "status": "blocked_contact_stability_gate"
       }
-    ],
-    "contact_clear_native_microcheck_evidence": {
-      "run_id": "native_microcheck_v22_contact_clear_base",
-      "status": "completed_contact_clear_reset_step_and_camera_tensor_microcheck",
-      "completed_at": "2026-08-07T07:45:25Z",
-      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/native_microcheck_v22_contact_clear_base/attempts/attempt_001/immutable_execution/adp009d_native_microcheck.json",
-      "result_sha256": "sha256:1c01933c7fdfb4fc6177ef8db5fe18507db5304ea3777cc67d3852488c62e1c9",
-      "allocator_result_sha256": "sha256:9bcef162b0efe10000e03335a5768fe97648fac92f7c553fe8613368e28b129e",
-      "teardown_manifest_sha256": "sha256:3a997b1a7055628e4f2a97b66d19d7e8b106ab0bb6cdedcd0c832069c282f1b2",
-      "final_validation_sha256": "sha256:52d518f893a5d2d9db2277d4aaf1d50bef34329a83328d31e44f8a82634b8c06",
-      "environment_build_seconds": 28.241277,
-      "reset_count": 2,
-      "post_warmup_arm_maximum_error_rad": 0.000004649162292480469,
-      "post_warmup_can_xy_displacement_m": 5.331201499700045e-7,
-      "post_warmup_can_absolute_z_displacement_m": 0.000003635883331298828,
-      "post_warmup_can_tilt_degrees": 0.009498214903424387,
-      "zero_action_step_completed": true,
-      "camera_warmup_frames": 40,
-      "lossless_camera_count": 2,
-      "external_camera_approved_can_visible": true,
-      "wrist_camera_approved_can_visible": false,
-      "estimated_cost_usd": 0.099545,
-      "provider_zero_observed": true,
-      "policy_queried": false,
-      "scientific_limitations": [
-        "the retained wrist frame did not contain the approved can",
-        "the retained physics-only frames did not contain live Aura appearance",
-        "no scripted positive control or learned policy executed"
-      ]
-    }
+    ]
   },
-  "claim_ceiling": [
-    "The audit proves exact official-source observations and binding implementation decisions at the recorded retrieval time.",
-    "The v22 receipt proves that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, exact reset, zero-action step, strict can stability, and two-camera tensor retention together at the sealed-SAGE-validated 0.50 meter base standoff.",
-    "The v19 and v21 receipts show that both the all-zero and measured-open Robotiq resets left the prior 0.40 meter base standoff in near contact; v22 validates only the 0.50 meter reset and physics-step condition, not task solvability.",
-    "The evidence rejects OVRTX for this exact Aura Gaussian-surflet asset after the preregistered v10 run returned black RGB and no positive finite metric depth; it does not reject OVRTX for its documented supported representations.",
-    "The official native Aura renderer reproduced both frozen exact-camera RGB references byte-for-byte and returned positive finite metric expected depth for every pixel; this establishes only standalone construction equivalence at those two cameras, not live Aura and Isaac composition, useful wrist-camera framing, scripted task success, ovphysx execution, or either learned policy.",
-    "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
-    "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
-  ],
-  "audit_digest": "sha256:a71bb2f5ea401c6566b46630e08d4287ff7de3587eff3b2b0ff364517b989e3d"
+  "schema_version": "adp009d_agent_skill_audit.v1"
 }
