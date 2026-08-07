@@ -1329,3 +1329,38 @@ def test_the_render_budget_is_overridable_for_a_slow_scene(monkeypatch) -> None:
     assert runtime._run_under_render_budget(
         lambda: 1, phase_name="p", diagnostics={}
     ) == 1
+
+
+def test_camera_warmup_is_configurable_but_never_below_settling(monkeypatch) -> None:
+    """Forty frames costs forty-three minutes once appearance is composed.
+
+    Each frame waits the full omni.usd idle timeout, so the warmup alone ran
+    past the paid TTL and the run ended having saved no frame at all.
+    """
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    monkeypatch.delenv(runtime.CAMERA_WARMUP_FRAMES_ENV, raising=False)
+    assert runtime._camera_warmup_frames() == runtime.DEFAULT_CAMERA_WARMUP_FRAMES
+
+    monkeypatch.setenv(runtime.CAMERA_WARMUP_FRAMES_ENV, "6")
+    assert runtime._camera_warmup_frames() == 6
+
+    # A frame saved from an unsettled camera is worse than a slow run: it
+    # looks like data.
+    monkeypatch.setenv(runtime.CAMERA_WARMUP_FRAMES_ENV, "1")
+    assert runtime._camera_warmup_frames() == runtime.MIN_CAMERA_WARMUP_FRAMES
+    monkeypatch.setenv(runtime.CAMERA_WARMUP_FRAMES_ENV, "not-a-number")
+    assert runtime._camera_warmup_frames() == runtime.DEFAULT_CAMERA_WARMUP_FRAMES
+
+
+def test_the_saved_frame_index_follows_the_actual_warmup() -> None:
+    """It was a constant 40 that merely happened to match the loop."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "frame_index=warmup_frames," in source
+    assert "frame_index=40," not in source

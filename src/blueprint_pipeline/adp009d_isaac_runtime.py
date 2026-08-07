@@ -342,6 +342,31 @@ def _phase(name: str, status: str = "started") -> None:
     print(f"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d_native:{name}:{status}", flush=True)
 
 
+CAMERA_WARMUP_FRAMES_ENV = "BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES"
+# Forty frames is right for a bare scene whose frames cost milliseconds.  With
+# the appearance composed each frame costs about sixty-five seconds, because
+# every one of them waits the full omni.usd idle timeout, so the warmup alone
+# would run past the paid TTL and the run would end having saved no frame at
+# all.  A proof needs the camera settled, not forty frames of it.
+DEFAULT_CAMERA_WARMUP_FRAMES = 40
+MIN_CAMERA_WARMUP_FRAMES = 4
+
+
+def _camera_warmup_frames() -> int:
+    """Frames to settle the camera before the first saved frame."""
+
+    raw = os.environ.get(CAMERA_WARMUP_FRAMES_ENV)
+    if not raw:
+        return DEFAULT_CAMERA_WARMUP_FRAMES
+    try:
+        requested = int(raw)
+    except ValueError:
+        return DEFAULT_CAMERA_WARMUP_FRAMES
+    # Never fewer than the camera needs to settle: a frame saved from an
+    # unsettled camera is worse than a slow run, because it looks like data.
+    return max(MIN_CAMERA_WARMUP_FRAMES, requested)
+
+
 FIRST_RENDER_BUDGET_SECONDS_ENV = "BLUEPRINT_ADP009D_FIRST_RENDER_BUDGET_SECONDS"
 # Generous: the same scene without appearance renders its first frame in
 # seconds.  A live run sat in this call for over twenty minutes emitting an
@@ -1120,16 +1145,19 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         hold_start_can_pose = _to_torch(approved_can.data.root_pose_w)[0].clone()
         hold_action = torch.zeros_like(action)
         hold_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
+        warmup_frames = _camera_warmup_frames()
         _phase("camera_warmup")
+        print(f"BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES:{warmup_frames}", flush=True)
         phase_started = time.monotonic()
-        for warmup_index in range(40):
+        marker_every = max(1, warmup_frames // 4)
+        for warmup_index in range(warmup_frames):
             observation, reward, terminated, truncated, info = env.step(hold_action)
-            if (warmup_index + 1) % 10 == 0:
+            if (warmup_index + 1) % marker_every == 0:
                 log.flush()
                 _fail_on_physx_collision_fallback(fallback_messages)
                 _fail_on_physx_collision_stability(stability_messages)
                 _phase(f"camera_warmup_{warmup_index + 1}", "completed")
-        timings_seconds["camera_warmup_40_frames"] = round(
+        timings_seconds[f"camera_warmup_{warmup_frames}_frames"] = round(
             time.monotonic() - phase_started, 6
         )
         hold_arm_maximum_error_rad = _assert_arm_pose(
@@ -1146,7 +1174,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     output,
                     camera_name,
                     env.unwrapped.scene[camera_name],
-                    frame_index=40,
+                    frame_index=warmup_frames,
                     sim_time=float(env.unwrapped.episode_length_buf[0].item() * cfg.sim.dt * cfg.decimation),
                 )
             )
