@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.adp009d_ovrtx_vast as ovrtx_vast
+from blueprint_pipeline.adp009d_aura_renderer_conformance import FROZEN_THRESHOLDS
 from blueprint_pipeline.adp009d_ovrtx_vast import build_ovrtx_live_camera_bundle
 from blueprint_pipeline.adp009d_ovrtx_provider_runner import (
     _absolute_executable_without_resolving_symlinks,
@@ -179,6 +180,17 @@ def test_ovrtx_bundle_accepts_two_safe_exact_camera_ids(tmp_path: Path) -> None:
         )
         row["camera_id"] = camera_id
         row["configuration_sha256"] = _sha(source)
+        row["calibration_digest"] = "sha256:" + "a" * 64
+        row["native_source_sha256"] = "sha256:" + "b" * 64
+        row["native_reference_sha256"] = "sha256:" + "c" * 64
+    probe.update(
+        {
+            "probe_purpose": "aura_ovrtx_exact_camera_visual_conformance",
+            "thresholds_frozen_before_ovrtx_execution": True,
+            "ovrtx_outcomes_observed_before_freeze": False,
+            "conformance_thresholds": FROZEN_THRESHOLDS,
+        }
+    )
     probe["manifest_digest"] = canonical_digest(probe, digest_field="manifest_digest")
     probe_path.write_text(json.dumps(probe), encoding="utf-8")
 
@@ -192,6 +204,8 @@ def test_ovrtx_bundle_accepts_two_safe_exact_camera_ids(tmp_path: Path) -> None:
         "approach_close",
         "right_translate",
     ]
+    assert result["source_probe_manifest_digest"] == probe["manifest_digest"]
+    assert result["conformance_thresholds"] == FROZEN_THRESHOLDS
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "exact_preflight",
         generated_at="fixed",

@@ -192,6 +192,7 @@ def test_exact_camera_conformance_probe_binds_native_frames_and_axis_change(
     assert result["camera_ids"] == ["approach_close", "right_translate"]
     assert result["thresholds_frozen_before_ovrtx_execution"] is True
     assert result["ovrtx_outcomes_observed_before_freeze"] is False
+    assert result["conformance_thresholds"]["minimum_mean_psnr_db"] == 18.0
     assert result["materializer_source_sha256"].startswith("sha256:")
     first = result["camera_configs"][0]
     assert first["calibration"]["intrinsic_matrix"][0] == [10.0, 0.0, 8.0]

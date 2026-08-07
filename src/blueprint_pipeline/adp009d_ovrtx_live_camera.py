@@ -10,6 +10,7 @@ from typing import Any
 
 from PIL import Image
 
+from .adp009d_aura_renderer_conformance import FROZEN_THRESHOLDS
 from .common import sha256_file, write_json
 from .decision_evidence_contracts import canonical_digest
 
@@ -299,6 +300,7 @@ def materialize_ovrtx_exact_camera_conformance_probe(
         "materializer_source_sha256": _sha256(Path(__file__).resolve()),
         "thresholds_frozen_before_ovrtx_execution": True,
         "ovrtx_outcomes_observed_before_freeze": False,
+        "conformance_thresholds": FROZEN_THRESHOLDS,
         "exact_camera_path": str(exact_path),
         "exact_camera_sha256": _sha256(exact_path),
         "aura_native_manifest_path": str(native_path),

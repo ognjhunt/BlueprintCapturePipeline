@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -13,8 +14,10 @@ from blueprint_pipeline.adp009d_aura_renderer_conformance import (
     OVRTX_REPOSITORY,
     OVRTX_REVISION,
     REQUEST_SCHEMA_VERSION,
+    THRESHOLD_DEFINITION_COMMIT,
     AuraRendererConformanceError,
     evaluate_aura_renderer_conformance,
+    materialize_aura_renderer_conformance_request,
     validate_aura_renderer_conformance_receipt,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -65,9 +68,10 @@ def _request(tmp_path: Path, *, matching: bool = True) -> dict:
         )
     value = {
         "schema_version": REQUEST_SCHEMA_VERSION,
-        "status": "frozen_before_ovrtx_execution",
+        "status": "materialized_from_prospective_probe_and_observed_outputs",
         "thresholds_frozen_before_ovrtx_execution": True,
-        "ovrtx_outcomes_observed_before_freeze": False,
+        "ovrtx_outcomes_observed_before_threshold_freeze": False,
+        "threshold_definition_commit": THRESHOLD_DEFINITION_COMMIT,
         "ovrtx_repository": OVRTX_REPOSITORY,
         "ovrtx_revision": OVRTX_REVISION,
         "thresholds": FROZEN_THRESHOLDS,
@@ -128,3 +132,104 @@ def test_exact_camera_renderer_conformance_rejects_posthoc_threshold_change(
 
     with pytest.raises(AuraRendererConformanceError, match="thresholds_not_code_frozen"):
         evaluate_aura_renderer_conformance(request)
+
+
+def test_conformance_request_materializer_joins_prospective_probe_to_real_bytes(
+    tmp_path: Path,
+) -> None:
+    base = _request(tmp_path)
+    particlefield = tmp_path / "aura.usdc"
+    particlefield.write_bytes(b"particlefield")
+    particle_receipt = {
+        "status": "completed",
+        "output_sha256": _sha256(particlefield),
+        "source_sha256": "sha256:" + "b" * 64,
+    }
+    particle_receipt["receipt_digest"] = canonical_digest(
+        particle_receipt, digest_field="receipt_digest"
+    )
+    particle_receipt_path = tmp_path / "particle_receipt.json"
+    particle_receipt_path.write_text(json.dumps(particle_receipt), encoding="utf-8")
+    probe_rows = []
+    result_rows = []
+    for pair in base["pairs"]:
+        camera_id = pair["camera_id"]
+        calibration_digest = canonical_digest(pair["native_calibration"])
+        probe_rows.append(
+            {
+                "camera_id": camera_id,
+                "calibration": pair["native_calibration"],
+                "calibration_digest": calibration_digest,
+                "native_reference_path": str(tmp_path / pair["native_frame_path"]),
+                "native_reference_sha256": pair["native_frame_sha256"],
+                "native_source_sha256": pair["native_frame_sha256"],
+            }
+        )
+        output = tmp_path / "outputs" / camera_id / "rgb.png"
+        output.parent.mkdir(parents=True)
+        output.write_bytes((tmp_path / pair["ovrtx_frame_path"]).read_bytes())
+        result_rows.append(
+            {
+                "camera_id": camera_id,
+                "valid": True,
+                "timed_out": False,
+                "artifacts": [
+                    {
+                        "path": output.relative_to(tmp_path).as_posix(),
+                        "sha256": _sha256(output),
+                        "size_bytes": output.stat().st_size,
+                    }
+                ],
+            }
+        )
+    probe = {
+        "schema_version": "adp009d_ovrtx_live_camera_probe.v1",
+        "status": "materialized_unexecuted",
+        "probe_purpose": "aura_ovrtx_exact_camera_visual_conformance",
+        "thresholds_frozen_before_ovrtx_execution": True,
+        "ovrtx_outcomes_observed_before_freeze": False,
+        "conformance_thresholds": FROZEN_THRESHOLDS,
+        "particlefield_receipt_path": str(particle_receipt_path),
+        "particlefield_sha256": _sha256(particlefield),
+        "aura_native_render_manifest_digest": "sha256:" + "c" * 64,
+        "camera_configs": probe_rows,
+    }
+    probe["manifest_digest"] = canonical_digest(probe, digest_field="manifest_digest")
+    probe_path = tmp_path / "probe.json"
+    probe_path.write_text(json.dumps(probe), encoding="utf-8")
+    input_digest = "sha256:" + "d" * 64
+    bundle = {
+        "status": "ready",
+        "source_probe_manifest_digest": probe["manifest_digest"],
+        "conformance_thresholds": FROZEN_THRESHOLDS,
+        "thresholds_frozen_before_ovrtx_execution": True,
+        "ovrtx_outcomes_observed_before_freeze": False,
+        "input_digest": input_digest,
+        "bundle_sha256": "sha256:" + "e" * 64,
+    }
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    result = {
+        "schema_version": "adp009d_ovrtx_live_camera_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "input_digest": input_digest,
+        "particlefield_sha256": _sha256(particlefield),
+        "implementation_commit": "f" * 40,
+        "camera_rows": result_rows,
+    }
+    result_path = tmp_path / "result.json"
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    request = materialize_aura_renderer_conformance_request(
+        probe_manifest_path=probe_path,
+        provider_bundle_receipt_path=bundle_path,
+        ovrtx_result_path=result_path,
+        evidence_root=tmp_path,
+        output_path=tmp_path / "request.json",
+    )
+
+    assert request["source_probe_manifest_digest"] == probe["manifest_digest"]
+    assert request["threshold_definition_commit"] == THRESHOLD_DEFINITION_COMMIT
+    assert request["ovrtx_outcomes_observed_before_threshold_freeze"] is False
+    assert (tmp_path / "request.json").is_file()

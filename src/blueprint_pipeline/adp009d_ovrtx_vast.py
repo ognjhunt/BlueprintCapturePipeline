@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
+from .adp009d_aura_renderer_conformance import FROZEN_THRESHOLDS
 from .common import ensure_dir, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
@@ -201,6 +202,50 @@ def build_ovrtx_live_camera_bundle(
         "provider_zero_required_after_return": True,
         "blockers": [],
     }
+    if probe.get("probe_purpose") == "aura_ovrtx_exact_camera_visual_conformance":
+        if (
+            probe.get("thresholds_frozen_before_ovrtx_execution") is not True
+            or probe.get("ovrtx_outcomes_observed_before_freeze") is not False
+            or probe.get("conformance_thresholds") != FROZEN_THRESHOLDS
+        ):
+            raise ValueError("adp009d_ovrtx_conformance_preregistration_invalid")
+        reference_bindings = []
+        probe_rows = {
+            str(row.get("camera_id")): row
+            for row in probe.get("camera_configs", [])
+            if isinstance(row, Mapping)
+        }
+        for camera_id in sorted(camera_ids):
+            row = probe_rows[camera_id]
+            if not all(
+                isinstance(row.get(field), str)
+                and str(row[field]).startswith("sha256:")
+                and len(str(row[field])) == 71
+                for field in (
+                    "calibration_digest",
+                    "native_source_sha256",
+                    "native_reference_sha256",
+                )
+            ):
+                raise ValueError("adp009d_ovrtx_conformance_reference_binding_invalid")
+            reference_bindings.append(
+                {
+                    "camera_id": camera_id,
+                    "calibration_digest": row["calibration_digest"],
+                    "native_source_sha256": row["native_source_sha256"],
+                    "native_reference_sha256": row["native_reference_sha256"],
+                }
+            )
+        manifest.update(
+            {
+                "probe_purpose": probe["probe_purpose"],
+                "source_probe_manifest_digest": probe["manifest_digest"],
+                "thresholds_frozen_before_ovrtx_execution": True,
+                "ovrtx_outcomes_observed_before_freeze": False,
+                "conformance_thresholds": FROZEN_THRESHOLDS,
+                "conformance_reference_bindings": reference_bindings,
+            }
+        )
     if generated_at is not None:
         manifest["generated_at"] = generated_at
     manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
