@@ -166,10 +166,21 @@ set -euo pipefail
 # paid GPU run, and these are the standard requirements for building any C
 # extension.  linux-libc-dev supplies linux/input.h, python3-dev supplies
 # Python.h, build-essential the compiler, pkg-config the usual discovery.
+# Report every missing prerequisite at once.  Three consecutive paid runs each
+# discovered exactly one -- ensurepip, then linux/input.h, then Python.h --
+# because the script stopped at the first.  Run before the install, so the
+# complete set is known, and again after, so the apt step is proven to have
+# fixed what it claimed.
+/isaac-sim/python.sh "$RUNTIME_DIR/adp009d_provisioning_preflight.py" \
+  "$OUT_DIR/adp009d_provisioning_preflight_before.json" || true
+
 apt-get update -qq >/dev/null 2>&1 || true
 apt-get install -y -qq \
   linux-libc-dev build-essential pkg-config \
   python3-dev python3.12-dev >/dev/null 2>&1 || true
+
+/isaac-sim/python.sh "$RUNTIME_DIR/adp009d_provisioning_preflight.py" \
+  "$OUT_DIR/adp009d_provisioning_preflight_after.json" || true
 
 export UV_INSTALL_DIR={uv_root}
 curl -LsSf https://astral.sh/uv/install.sh | sh

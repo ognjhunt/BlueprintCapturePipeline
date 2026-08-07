@@ -745,6 +745,10 @@ def build_native_microcheck_bundle(
         source_dir / "adp009d_checkpoint_fetch_worker.py",
         runtime / "adp009d_checkpoint_fetch_worker.py",
     )
+    shutil.copy2(
+        source_dir / "adp009d_provisioning_preflight.py",
+        runtime / "adp009d_provisioning_preflight.py",
+    )
     if policy_candidate_id:
         from .adp009d_policy_provisioning import build_provisioning_script
 
