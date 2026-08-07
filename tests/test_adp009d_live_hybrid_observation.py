@@ -80,6 +80,22 @@ def test_metric_depth_composition_preserves_front_and_static_occlusion() -> None
     )
 
 
+def test_metric_depth_composition_accepts_isaac_camera_aov() -> None:
+    composed, receipt = compose_live_hybrid_observation(
+        **_arrays(),
+        aura_calibration=_calibration(),
+        isaac_calibration=_calibration(),
+        timestamp_ns=123,
+        simulation_time_s=1.25,
+        dynamic_depth_aov="distance_to_camera",
+        semantic_labels={7: "robot"},
+        semantic_override_layer_digest="sha256:" + "a" * 64,
+    )
+
+    assert composed.shape == (2, 2, 3)
+    assert receipt["dynamic_depth_aov"] == "distance_to_camera"
+
+
 def test_composition_rejects_unitless_depth_or_mismatched_camera() -> None:
     changed = _calibration()
     changed["world_from_camera"][0][3] = 0.01

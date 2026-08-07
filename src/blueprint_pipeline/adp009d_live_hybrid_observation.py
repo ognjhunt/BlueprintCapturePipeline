@@ -31,6 +31,7 @@ MISSING_RENDERER_BLOCKER = "sealed_aura_hybrid_policy_observation_renderer_missi
 METRIC_DEPTH_AOVS = {"DistanceToCameraSD", "DistanceToImagePlaneSD"}
 ISAAC_CAMERA_BACKEND = "Isaac Lab Camera over Isaac Sim RTX"
 ISAAC_CAMERA_METRIC_DEPTH_AOV = "distance_to_camera"
+COMPOSITION_METRIC_DEPTH_AOVS = METRIC_DEPTH_AOVS | {ISAAC_CAMERA_METRIC_DEPTH_AOV}
 
 
 class LiveHybridObservationError(ValueError):
@@ -136,7 +137,7 @@ def compose_live_hybrid_observation(
     ):
         if array.shape != expected_plane:
             errors.append(f"hybrid_{name}_shape_invalid")
-    if dynamic_depth_aov not in METRIC_DEPTH_AOVS:
+    if dynamic_depth_aov not in COMPOSITION_METRIC_DEPTH_AOVS:
         errors.append("hybrid_metric_dynamic_depth_aov_required")
     if aura_depth_source != "aurafusion360_metric_camera_depth_m":
         errors.append("hybrid_metric_aura_depth_required")
