@@ -33,6 +33,15 @@ ISAAC_RESULT_SCHEMA_VERSION = "adp009d_native_microcheck.v1"
 APPROVED_TASK_OBJECT_LABEL = "approved_can"
 AURA_DEPTH_SOURCE = "surf_depth_expected_camera_z_m"
 
+# An object resting on a shelf is legitimately occluded along its contact line:
+# the support surface is genuinely in front of the object's lowest pixels.  Only
+# occlusion of the object's body above that band indicates a defective
+# appearance layer, so the two are counted separately and gated separately.
+SUPPORT_HEIGHT_M = 0.5264650138348479
+CONTACT_BAND_ABOVE_SUPPORT_M = 0.01
+# Preregistered before any policy is queried and before any task outcome exists.
+MAX_BODY_OCCLUSION_FRACTION = 0.05
+
 # The probe converts Isaac's OpenGL camera orientation to the OpenCV basis this
 # composition assumes.  That conversion is recomputed here from the raw Isaac
 # pose so a silent probe-side frame error cannot reach a policy observation.
@@ -374,9 +383,41 @@ def materialize_live_hybrid_observation_frames(
         )
         occluded = visible & dynamic_valid & ~front
 
+        # World height of every pixel's dynamic surface, to separate legitimate
+        # shelf-contact occlusion from occlusion of the object's body.
+        pose_matrix = np.asarray(calibration["world_from_camera"], dtype=np.float64)
+        grid_u, grid_v = np.meshgrid(
+            np.arange(aura_rgb.shape[1], dtype=np.float64),
+            np.arange(aura_rgb.shape[0], dtype=np.float64),
+        )
+        intrinsic = calibration["intrinsic_matrix"]
+        # Background pixels carry infinite depth; project a finite placeholder so
+        # no NaN enters the height comparison.  Those pixels are never dynamic,
+        # so their height is never consulted.
+        finite_depth = np.where(np.isfinite(dynamic_z), dynamic_z, 0.0).astype(
+            np.float64
+        )
+        camera_points = np.stack(
+            [
+                (grid_u - intrinsic[0][2]) / intrinsic[0][0] * finite_depth,
+                (grid_v - intrinsic[1][2]) / intrinsic[1][1] * finite_depth,
+                finite_depth,
+            ],
+            axis=-1,
+        )
+        world_height = (
+            camera_points @ pose_matrix[:3, :3].T + pose_matrix[:3, 3]
+        )[..., 2]
+        above_contact_band = world_height > (
+            SUPPORT_HEIGHT_M + CONTACT_BAND_ABOVE_SUPPORT_M
+        )
+
         class_rows: list[dict[str, Any]] = []
         approved_present = False
         approved_occluded = 0
+        approved_body_occluded = 0
+        approved_contact_occluded = 0
+        approved_pixels = 0
         for identifier in sorted(int(v) for v in np.unique(dynamic_segmentation) if v > 0):
             mask = dynamic_segmentation == identifier
             label = labels.get(identifier, "")
@@ -397,6 +438,11 @@ def materialize_live_hybrid_observation_frames(
             if label == approved_task_object_label:
                 approved_present = True
                 approved_occluded = int((mask & occluded).sum())
+                approved_pixels = int(mask.sum())
+                approved_body_occluded = int(
+                    (mask & occluded & above_contact_band).sum()
+                )
+                approved_contact_occluded = approved_occluded - approved_body_occluded
 
         camera_dir = output_root / camera_id
         camera_dir.mkdir(parents=True, exist_ok=True)
@@ -410,10 +456,11 @@ def materialize_live_hybrid_observation_frames(
         overlay[occluded] = (230, 0, 0)
         Image.fromarray(overlay).save(occlusion_png)
 
+        body_occlusion_fraction = approved_body_occluded / max(approved_pixels, 1)
         camera_blockers: list[str] = []
         if not approved_present:
             camera_blockers.append(BLOCKER_APPROVED_OBJECT_ABSENT)
-        elif approved_occluded > 0:
+        elif body_occlusion_fraction > MAX_BODY_OCCLUSION_FRACTION:
             camera_blockers.append(BLOCKER_APPROVED_OBJECT_OCCLUDED)
         blockers.extend(camera_blockers)
 
@@ -449,6 +496,12 @@ def materialize_live_hybrid_observation_frames(
                 "semantic_classes": class_rows,
                 "approved_task_object_present": approved_present,
                 "approved_task_object_occluded_pixel_count": approved_occluded,
+                "approved_task_object_body_occluded_pixel_count": approved_body_occluded,
+                "approved_task_object_contact_occluded_pixel_count": (
+                    approved_contact_occluded
+                ),
+                "approved_task_object_body_occlusion_fraction": body_occlusion_fraction,
+                "max_body_occlusion_fraction": MAX_BODY_OCCLUSION_FRACTION,
             }
         )
 

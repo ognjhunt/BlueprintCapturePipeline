@@ -24,7 +24,9 @@ FRAME_INDEX = 40
 
 # Identity OpenGL orientation -> OpenCV basis is diag(1, -1, -1).
 QUATERNION_XYZW = [0.0, 0.0, 0.0, 1.0]
-POSITION_WORLD_M = [0.25, -0.5, 1.0]
+# Chosen so the object surface lands ~0.10 m above the support plane,
+# i.e. on the object body rather than in the shelf-contact band.
+POSITION_WORLD_M = [0.25, -0.5, 1.6112]
 INTRINSIC = [[4.0, 0.0, 1.5], [0.0, 4.0, 1.5], [0.0, 0.0, 1.0]]
 WORLD_FROM_CAMERA = [
     [1.0, 0.0, 0.0, POSITION_WORLD_M[0]],
@@ -223,6 +225,9 @@ def test_records_blocker_when_aura_layer_occludes_approved_object(
     assert manifest["admission_status"] == "blocked"
     camera = manifest["cameras"][0]
     assert camera["approved_task_object_occluded_pixel_count"] == 1
+    # Occlusion of the object body, not of its shelf-contact line.
+    assert camera["approved_task_object_body_occluded_pixel_count"] == 1
+    assert camera["approved_task_object_contact_occluded_pixel_count"] == 0
 
 
 def test_records_blocker_when_approved_object_absent(tmp_path: Path) -> None:

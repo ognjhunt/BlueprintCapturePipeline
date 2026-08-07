@@ -255,8 +255,115 @@ def validate_aura_task_volume_exclusion_receipt(
     return receipt
 
 
+def verify_exclusion_render_confined(
+    *,
+    baseline_rgb: Any,
+    derivative_rgb: Any,
+    baseline_depth_camera_z: Any,
+    intrinsic_matrix: Sequence[Sequence[float]],
+    world_from_camera: Sequence[Sequence[float]],
+    margin_m: float = 0.02,
+    max_outside_fraction: float = 0.02,
+) -> dict[str, Any]:
+    """Prove a re-render changed only pixels that look through the removed volume.
+
+    A pixel can only be affected by deleting geometry if its ray passes through
+    the region that geometry occupied.  Because a surfel paints an area around
+    its centre, the tested volume is the preregistered cylinder dilated by the
+    largest removed surfel extent.  Any changed pixel whose ray misses that
+    dilated volume means the edit reached beyond its bounds.
+    """
+
+    import numpy as np
+
+    baseline = np.asarray(baseline_rgb)
+    derivative = np.asarray(derivative_rgb)
+    if baseline.shape != derivative.shape or baseline.ndim != 3:
+        raise AuraTaskVolumeExclusionError(["aura_exclusion_render_shape_mismatch"])
+    if baseline_depth_camera_z is not None:
+        depth = np.asarray(baseline_depth_camera_z, dtype=np.float64)
+        if depth.shape != baseline.shape[:2]:
+            raise AuraTaskVolumeExclusionError(
+                ["aura_exclusion_render_depth_shape_mismatch"]
+            )
+
+    changed = np.any(baseline != derivative, axis=-1)
+    changed_count = int(changed.sum())
+    matrix = np.asarray(intrinsic_matrix, dtype=np.float64)
+    pose = np.asarray(world_from_camera, dtype=np.float64)
+    fx, fy, cx, cy = matrix[0, 0], matrix[1, 1], matrix[0, 2], matrix[1, 2]
+    rotation, origin = pose[:3, :3], pose[:3, 3]
+
+    radius = EXCLUSION_RADIUS_M + float(margin_m)
+    floor = SUPPORT_HEIGHT_M + EXCLUSION_FLOOR_ABOVE_SUPPORT_M - float(margin_m)
+    ceiling = SUPPORT_HEIGHT_M + EXCLUSION_CEILING_ABOVE_SUPPORT_M + float(margin_m)
+
+    missing = 0
+    delta_outside_max = 0
+    if changed_count:
+        rows, columns = np.nonzero(changed)
+        directions = np.stack(
+            [
+                (columns - cx) / fx,
+                (rows - cy) / fy,
+                np.ones(rows.shape, dtype=np.float64),
+            ],
+            axis=1,
+        ) @ rotation.T
+        ox = origin[0] - CAN_AXIS_XY_M[0]
+        oy = origin[1] - CAN_AXIS_XY_M[1]
+        a = directions[:, 0] ** 2 + directions[:, 1] ** 2
+        b = 2.0 * (ox * directions[:, 0] + oy * directions[:, 1])
+        c = ox * ox + oy * oy - radius * radius
+        discriminant = b * b - 4.0 * a * c
+        hits = discriminant >= 0
+        with np.errstate(invalid="ignore", divide="ignore"):
+            root = np.sqrt(np.where(hits, discriminant, 0.0))
+            t_near = np.where(a > 0, (-b - root) / (2.0 * a), np.inf)
+            t_far = np.where(a > 0, (-b + root) / (2.0 * a), -np.inf)
+        t_near = np.maximum(t_near, 0.0)
+        segment = hits & (t_far > 0)
+        z_near = origin[2] + t_near * directions[:, 2]
+        z_far = origin[2] + t_far * directions[:, 2]
+        z_low = np.minimum(z_near, z_far)
+        z_high = np.maximum(z_near, z_far)
+        intersects = segment & (z_high >= floor) & (z_low <= ceiling)
+        # A ray parallel to the cylinder axis never solves the quadratic; it is
+        # inside iff the camera centre is within the radius, and it always spans
+        # the full height range.
+        parallel = a <= 0
+        if bool(np.any(parallel)):
+            inside_radius = (ox * ox + oy * oy) <= radius * radius
+            intersects = np.where(parallel, bool(inside_radius), intersects)
+        missing = int((~intersects).sum())
+        if missing:
+            delta = np.abs(
+                baseline.astype(np.int32) - derivative.astype(np.int32)
+            ).max(axis=-1)[rows, columns]
+            delta_outside_max = int(delta[~intersects].max())
+
+    total_pixels = int(baseline.shape[0] * baseline.shape[1])
+    missing_fraction = missing / max(changed_count, 1)
+    report = {
+        "changed_pixel_count": changed_count,
+        "changed_pixel_fraction": changed_count / max(total_pixels, 1),
+        "changed_pixels_not_viewing_exclusion_volume": missing,
+        "not_viewing_fraction_of_changed": missing_fraction,
+        "max_delta_outside_exclusion_volume": delta_outside_max,
+        "dilation_margin_m": float(margin_m),
+        "tested_radius_m": radius,
+        "confined": bool(missing_fraction <= float(max_outside_fraction)),
+    }
+    if not report["confined"]:
+        raise AuraTaskVolumeExclusionError(
+            ["aura_exclusion_render_changed_outside_task_volume"]
+        )
+    return report
+
+
 __all__ = [
     "AuraTaskVolumeExclusionError",
+    "verify_exclusion_render_confined",
     "EXCLUSION_RECEIPT_SCHEMA_VERSION",
     "EXPECTED_REMOVED_VERTEX_COUNT",
     "SEALED_AURA_PLY_SHA256",

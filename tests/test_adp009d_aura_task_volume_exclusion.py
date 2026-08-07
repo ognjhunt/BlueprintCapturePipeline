@@ -145,3 +145,72 @@ def test_receipt_validator_rejects_unsealed_or_tampered_evidence(
         AuraTaskVolumeExclusionError, match="aura_exclusion_receipt_digest_mismatch"
     ):
         validate_aura_task_volume_exclusion_receipt(tampered)
+
+
+def _confinement_inputs(tmp_path: Path):
+    """Camera looking down -Z world at the can, so camera_z maps to height."""
+
+    import numpy as np
+
+    height = width = 9
+    intrinsic = [[10.0, 0.0, 4.0], [0.0, 10.0, 4.0], [0.0, 0.0, 1.0]]
+    # Camera 1 m above the can, looking straight down.
+    world_from_camera = [
+        [1.0, 0.0, 0.0, CAN_AXIS_XY_M[0]],
+        [0.0, -1.0, 0.0, CAN_AXIS_XY_M[1]],
+        [0.0, 0.0, -1.0, SUPPORT_HEIGHT_M + 1.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    baseline = np.zeros((height, width, 3), dtype=np.uint8)
+    # Depth chosen so every pixel's surface sits 0.10 m above the support.
+    depth = np.full((height, width), 0.90, dtype=np.float64)
+    return baseline, depth, intrinsic, world_from_camera
+
+
+def test_render_confinement_accepts_changes_inside_the_task_volume(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.adp009d_aura_task_volume_exclusion import (
+        verify_exclusion_render_confined,
+    )
+
+    baseline, depth, intrinsic, pose = _confinement_inputs(tmp_path)
+    derivative = baseline.copy()
+    derivative[4, 4] = (255, 0, 0)  # principal ray -> can axis, inside the cylinder
+
+    report = verify_exclusion_render_confined(
+        baseline_rgb=baseline,
+        derivative_rgb=derivative,
+        baseline_depth_camera_z=depth,
+        intrinsic_matrix=intrinsic,
+        world_from_camera=pose,
+    )
+    assert report["changed_pixel_count"] == 1
+    assert report["changed_pixels_not_viewing_exclusion_volume"] == 0
+    assert report["confined"] is True
+
+
+def test_render_confinement_rejects_changes_beyond_the_task_volume(
+    tmp_path: Path,
+) -> None:
+    """An edit that altered the wider scene must fail closed."""
+
+    from blueprint_pipeline.adp009d_aura_task_volume_exclusion import (
+        verify_exclusion_render_confined,
+    )
+
+    baseline, depth, intrinsic, pose = _confinement_inputs(tmp_path)
+    derivative = baseline.copy()
+    derivative[0, 0] = (255, 0, 0)  # corner ray -> far outside the 6 cm cylinder
+
+    with pytest.raises(
+        AuraTaskVolumeExclusionError,
+        match="aura_exclusion_render_changed_outside_task_volume",
+    ):
+        verify_exclusion_render_confined(
+            baseline_rgb=baseline,
+            derivative_rgb=derivative,
+            baseline_depth_camera_z=depth,
+            intrinsic_matrix=intrinsic,
+            world_from_camera=pose,
+        )
