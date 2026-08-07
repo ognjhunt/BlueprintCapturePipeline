@@ -58,18 +58,23 @@ def _write(path: Path, payload: dict[str, object]) -> None:
 
 def evaluate_device_selection(
     rows: list[dict[str, object]], selected_device_index: int | None
-) -> tuple[list[str], list[int]]:
-    """Decide whether the enumerated devices admit a trustworthy ray-traced render.
+) -> tuple[list[str], list[str], list[int]]:
+    """Judge the enumerated devices for a trustworthy ray-traced render.
 
     Passing because *some* device supports ray tracing is not the property that
-    matters.  On a mixed host the renderer's own device choice decides whether
-    frames contain pixels or nothing, and nothing here pins that choice.  A live
-    OVRTX run passed the old check on a host with one ray-tracing GPU and one
-    114-extension software rasterizer, then produced near-black RGB and zero
-    positive finite depth across both cameras.  So a mixed host fails closed
-    unless the caller pins the device the renderer will bind.
+    matters: on a mixed host the renderer's own device choice decides whether
+    frames contain pixels.  A live OVRTX run passed the old check on a host with
+    one ray-tracing GPU and one 114-extension software rasterizer.
 
-    Kept free of Vulkan calls so the rule can be tested without a GPU.
+    That run's black frames turned out to have an unrelated cause, and Vulkan
+    enumeration order is not necessarily the renderer's device order, so a mixed
+    host cannot be resolved here.  Blocking on it would stop legitimate runs over
+    a failure never observed.  Ambiguity is therefore recorded as a warning and
+    surfaced in the receipt; only a pin that is demonstrably wrong -- naming an
+    incapable or out-of-range device -- fails closed.
+
+    Returns ``(blockers, warnings, incapable_device_indices)``.  Kept free of
+    Vulkan calls so the rule is testable without a GPU.
     """
 
     incapable = [
@@ -79,14 +84,14 @@ def evaluate_device_selection(
     ]
     if not rows or not incapable or len(incapable) == len(rows):
         # No devices, all capable, or none capable: the existing checks decide.
-        return [], incapable
+        return [], [], incapable
     if selected_device_index is None:
-        return ["vulkan_raytracing_device_selection_ambiguous"], incapable
+        return [], ["vulkan_raytracing_device_selection_ambiguous"], incapable
     if not 0 <= int(selected_device_index) < len(rows):
-        return ["vulkan_raytracing_selected_device_out_of_range"], incapable
+        return ["vulkan_raytracing_selected_device_out_of_range"], [], incapable
     if int(selected_device_index) in incapable:
-        return ["vulkan_raytracing_selected_device_incapable"], incapable
-    return [], incapable
+        return ["vulkan_raytracing_selected_device_incapable"], [], incapable
+    return [], [], incapable
 
 
 def probe(selected_device_index: int | None = None) -> dict[str, object]:
@@ -194,7 +199,9 @@ def probe(selected_device_index: int | None = None) -> dict[str, object]:
                     blockers.append("vulkan_raytracing_extensions_missing")
         finally:
             library.vkDestroyInstance(instance, None)
-    device_blockers, incapable = evaluate_device_selection(rows, selected_device_index)
+    device_blockers, warnings, incapable = evaluate_device_selection(
+        rows, selected_device_index
+    )
     blockers.extend(device_blockers)
     return {
         "schema_version": "adp009d_vulkan_raytracing_preflight.v1",
@@ -203,6 +210,7 @@ def probe(selected_device_index: int | None = None) -> dict[str, object]:
         "physical_device_count": len(rows),
         "devices": rows,
         "raytracing_capable_device_count": len(rows) - len(incapable),
+        "warnings": warnings,
         "raytracing_incapable_device_indices": incapable,
         "selected_device_index": selected_device_index,
         "required_extensions": sorted(REQUIRED_EXTENSIONS),
