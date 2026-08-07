@@ -522,6 +522,16 @@ def build_native_microcheck_bundle(
     asset_rows = [
         _copy_bound_asset(sources[name], assets / name, bindings[name]) for name in sorted(bindings)
     ]
+    task_collision_path = assets / TASK_COLLISION_DERIVATIVE_FILENAME
+    task_collision = _build_sage_task_collision_derivative(
+        sources["sage_collision.usd"],
+        task_collision_path,
+        source_sha256=bindings["sage_collision.usd"],
+    )
+    # Build the derivative before the independent whole-source audit. Opening the
+    # million-face source twice in the opposite order leaves enough USD allocator
+    # state resident to exhaust memory while the USDA layer is serialized on the
+    # canonical macOS preflight host.
     sage_profile = _inspect_sage_collision_source(
         sources["sage_collision.usd"],
         enforce_sealed_profile=(bindings["sage_collision.usd"] == ASSET_BINDINGS["sage_collision.usd"]),
@@ -542,12 +552,6 @@ def build_native_microcheck_bundle(
                 key: value for key, value in sage_profile.items() if key != "mesh_prim_paths"
             },
         }
-    )
-    task_collision_path = assets / TASK_COLLISION_DERIVATIVE_FILENAME
-    task_collision = _build_sage_task_collision_derivative(
-        sources["sage_collision.usd"],
-        task_collision_path,
-        source_sha256=bindings["sage_collision.usd"],
     )
     task_collision_manifest_path = assets / TASK_COLLISION_MANIFEST_FILENAME
     write_json(task_collision_manifest_path, task_collision)
