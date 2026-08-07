@@ -345,3 +345,74 @@ def test_runtime_records_stage_transform_on_every_capture() -> None:
         line for line in diagnostics_body.splitlines() if line.strip().startswith("raise")
     ]
     assert raising == [], f"diagnostics must not raise: {raising}"
+
+
+def test_arrival_gate_separates_never_arrived_from_arrived_and_saw_nothing() -> None:
+    """"IK succeeded" only meant "no exception"; arriving is a separate fact.
+
+    The servo clamps joint motion over a fixed step budget, so it can run
+    cleanly to the end and still stop far short of the waypoint.  A wrist that
+    never got there cannot be judged on what it did not see.
+    """
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        APPROACH_WAYPOINT_TOLERANCE_M,
+        BLOCKER_APPROACH_DID_NOT_REACH,
+    )
+
+    def arrival(index: int, error: float) -> dict:
+        return {
+            "waypoint_index": index,
+            "target_position_world_m": [3.468, -3.310, 0.866],
+            "achieved_position_world_m": [3.468, -3.310, 0.866 + error],
+            "position_error_m": error,
+        }
+
+    # Arrived at every waypoint but the object never appeared: a real negative.
+    arrived = summarize_wrist_approach_capture(
+        captured_frames=[_wrist_frame(100, 0)],
+        waypoint_arrivals=[arrival(0, 0.004), arrival(1, 0.011)],
+    )
+    assert BLOCKER_APPROACH_DID_NOT_REACH not in arrived["blockers"]
+    assert BLOCKER_WRIST_NEVER_SAW_OBJECT in arrived["blockers"]
+    assert arrived["worst_waypoint_position_error_m"] == pytest.approx(0.011)
+
+    # Never got close: the wrist result is uninterpretable, so say so.
+    short = summarize_wrist_approach_capture(
+        captured_frames=[_wrist_frame(100, 0)],
+        waypoint_arrivals=[arrival(0, 0.004), arrival(1, 0.42)],
+    )
+    assert BLOCKER_APPROACH_DID_NOT_REACH in short["blockers"]
+    assert short["status"] == "blocked"
+
+    # Exactly at tolerance still counts as arrived.
+    boundary = summarize_wrist_approach_capture(
+        captured_frames=[_wrist_frame(100, 5200)],
+        waypoint_arrivals=[arrival(0, APPROACH_WAYPOINT_TOLERANCE_M)],
+    )
+    assert BLOCKER_APPROACH_DID_NOT_REACH not in boundary["blockers"]
+
+    # No arrival evidence at all must not silently pass the gate.
+    silent = summarize_wrist_approach_capture(captured_frames=[_wrist_frame(100, 5200)])
+    assert silent["worst_waypoint_position_error_m"] is None
+    assert silent["waypoint_arrivals"] == []
+
+
+def test_runtime_records_the_achieved_end_effector_pose_per_waypoint() -> None:
+    """The arrival evidence must come from the simulator, not be inferred."""
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "approach_arrivals.append(" in source
+    assert '"achieved_position_world_m"' in source
+    assert "waypoint_arrivals=approach_arrivals," in source
+    # Recorded before the approach captures, so an aborted waypoint still
+    # reports where it got to.  Anchor inside the approach block: the hold phase
+    # captures from the same camera pair earlier in the file.
+    approach = source[source.index("--- preregistered wrist approach") :]
+    assert approach.index("approach_arrivals.append(") < approach.index(
+        'for camera_name in ("external_camera", "wrist_camera"):'
+    )

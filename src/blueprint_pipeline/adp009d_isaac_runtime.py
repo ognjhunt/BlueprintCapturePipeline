@@ -1018,6 +1018,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         # fatal: the hold-phase evidence above must survive regardless.
         phase_started = time.monotonic()
         approach_frames: list[dict[str, Any]] = []
+        approach_arrivals: list[dict[str, Any]] = []
         approach_ik_succeeded = True
         approach_error: str | None = None
         approach_object_displacement_m = 0.0
@@ -1112,6 +1113,28 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     ):
                         approach_aborted = True
                         break
+                # "IK ran without raising" is not "the arm arrived": the servo
+                # clamps joint motion over a fixed step budget and can finish
+                # far short.  Record where the end effector actually ended up so
+                # a wrist that never saw the object can be told apart from a
+                # wrist that never got there.
+                achieved_world = _to_torch(robot.data.body_pose_w)[0, body_index, :3]
+                target_world = waypoint["position_world_m"]
+                approach_arrivals.append(
+                    {
+                        "waypoint_index": waypoint["waypoint_index"],
+                        "target_position_world_m": [float(v) for v in target_world],
+                        "achieved_position_world_m": [float(v) for v in achieved_world],
+                        "position_error_m": float(
+                            sum(
+                                (float(achieved_world[axis]) - float(target_world[axis])) ** 2
+                                for axis in range(3)
+                            )
+                            ** 0.5
+                        ),
+                        "end_effector_body": end_effector_name,
+                    }
+                )
                 for camera_name in ("external_camera", "wrist_camera"):
                     approach_frames.append(
                         _save_camera(
@@ -1140,6 +1163,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             captured_frames=approach_frames,
             ik_succeeded=approach_ik_succeeded,
             object_displacement_m=approach_object_displacement_m,
+            waypoint_arrivals=approach_arrivals,
         )
         wrist_approach_capture["error"] = approach_error
         camera_rows.extend(approach_frames)

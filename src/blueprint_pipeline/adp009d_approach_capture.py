@@ -81,6 +81,14 @@ BLOCKER_WRIST_NEVER_SAW_OBJECT = "wrist_approach_never_observed_approved_task_ob
 BLOCKER_APPROACH_IK_FAILED = "wrist_approach_differential_ik_failed"
 MIN_WRIST_OBJECT_PIXELS = 200
 
+# "IK succeeded" only ever meant "no exception was raised".  The servo clamps
+# joint motion to APPROACH_MAX_JOINT_STEP_RAD over a fixed step budget, so it
+# can run cleanly to the end and still stop far short of the waypoint -- and a
+# wrist that never arrives obviously never sees the object.  Distinguishing
+# "did not arrive" from "arrived but saw nothing" needs the achieved pose.
+BLOCKER_APPROACH_DID_NOT_REACH = "wrist_approach_did_not_reach_waypoint"
+APPROACH_WAYPOINT_TOLERANCE_M = 0.05
+
 
 class ApproachCaptureError(ValueError):
     """Stable fail-closed approach-capture contract errors."""
@@ -220,6 +228,7 @@ def summarize_wrist_approach_capture(
     object_displacement_m: float = 0.0,
     arm_moved: bool = True,
     min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
+    waypoint_arrivals: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Gate wrist observability over the frames the approach actually produced."""
 
@@ -264,6 +273,19 @@ def summarize_wrist_approach_capture(
     if arm_moved and positions and wrist_pose_travel_m < MIN_WRIST_POSE_TRAVEL_M:
         blockers.append(BLOCKER_WRIST_POSE_STALE)
 
+    arrivals = [dict(row) for row in (waypoint_arrivals or [])]
+    worst_arrival_error_m: float | None = None
+    if arrivals:
+        errors = [
+            float(row.get("position_error_m"))
+            for row in arrivals
+            if row.get("position_error_m") is not None
+        ]
+        if errors:
+            worst_arrival_error_m = max(errors)
+            if worst_arrival_error_m > APPROACH_WAYPOINT_TOLERANCE_M:
+                blockers.append(BLOCKER_APPROACH_DID_NOT_REACH)
+
     pose_discrepancy = classify_wrist_pose_discrepancy(
         reported_positions=[row["position_world_m"] for row in rows],
         usd_positions=[
@@ -283,6 +305,9 @@ def summarize_wrist_approach_capture(
         "object_displacement_m": float(object_displacement_m),
         "wrist_pose_travel_m": wrist_pose_travel_m,
         "wrist_pose_discrepancy": pose_discrepancy,
+        "waypoint_arrivals": arrivals,
+        "worst_waypoint_position_error_m": worst_arrival_error_m,
+        "waypoint_tolerance_m": APPROACH_WAYPOINT_TOLERANCE_M,
         "arm_moved": bool(arm_moved),
         "max_object_displacement_allowed_m": APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         "max_joint_step_rad": APPROACH_MAX_JOINT_STEP_RAD,
@@ -306,6 +331,8 @@ __all__ = [
     "APPROACH_STEPS_PER_WAYPOINT",
     "APPROACH_TOOL_QUAT_WXYZ",
     "ApproachCaptureError",
+    "APPROACH_WAYPOINT_TOLERANCE_M",
+    "BLOCKER_APPROACH_DID_NOT_REACH",
     "BLOCKER_APPROACH_IK_FAILED",
     "BLOCKER_WRIST_NEVER_SAW_OBJECT",
     "MIN_WRIST_POSE_TRAVEL_M",
