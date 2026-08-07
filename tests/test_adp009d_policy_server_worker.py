@@ -160,3 +160,23 @@ def test_the_runtime_runs_an_episode_only_with_a_measured_gripper() -> None:
     episode = source[source.index("--- learned policy episode") :]
     assert "policy_episode_error" in episode
     assert "noqa: BLE001" in episode
+
+
+def test_the_serve_command_matches_openpis_pinned_cli() -> None:
+    """Verified against scripts/serve_policy.py at the frozen source revision.
+
+    That file uses tyro.cli(Args) where Args.policy is Checkpoint | Default and
+    Checkpoint carries config and dir, so the union subcommand form is
+    policy:checkpoint --policy.config=... --policy.dir=...  Its own
+    DEFAULT_CHECKPOINT maps EnvMode.DROID to config="pi05_droid" against
+    gs://openpi-assets/checkpoints/pi05_droid, which is the checkpoint we fetch.
+    """
+
+    import inspect
+
+    source = inspect.getsource(worker)
+    assert '"policy:checkpoint"' in source
+    assert '"--policy.config=pi05_droid"' in source
+    assert 'f"--policy.dir={args.checkpoint_root}"' in source
+    # Port is a top-level Args field, not nested under policy.
+    assert '"--port"' in source
