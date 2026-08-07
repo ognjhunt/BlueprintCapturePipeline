@@ -1370,7 +1370,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
                 from adp009d_droid_action_execution import GripperConvention
                 from adp009d_policy_episode import run_policy_episode
-                from openpi_client import websocket_client_policy
 
                 destination_path = Path(
                     runtime / "adp009d_task_destination.v1.json"
@@ -1390,9 +1389,42 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     open_command=float(gripper_probe["open_command"]),
                     measured_by_probe=True,
                 )
-                client = websocket_client_policy.WebsocketClientPolicy(
-                    host="127.0.0.1", port=8000
+                # Bind whichever transport this candidate speaks.  The server
+                # receipt records the port the worker actually chose, so the
+                # episode connects to what started rather than to a default.
+                server_receipt = json.loads(
+                    Path(
+                        os.environ["BLUEPRINT_ADP009D_OUTPUT_DIR"],
+                        "adp009d_policy_server_receipt.json",
+                    ).read_text(encoding="utf-8")
                 )
+                if server_receipt.get("status") != "ready":
+                    raise RuntimeError(
+                        f"policy_server_not_ready:{server_receipt.get('status')}"
+                    )
+                if server_receipt.get("transport") == "groot_zmq":
+                    from gr00t.policy.server_client import PolicyClient
+
+                    class _GrootEpisodeClient:
+                        """Adapt GR00T's get_action to the loop's infer seam."""
+
+                        def __init__(self, host: str, port: int) -> None:
+                            self._client = PolicyClient(
+                                host=host, port=port, timeout_ms=15000, strict=False
+                            )
+
+                        def infer(self, observation):
+                            return self._client.get_action(observation)
+
+                    client = _GrootEpisodeClient(
+                        "127.0.0.1", int(server_receipt["port"])
+                    )
+                else:
+                    from openpi_client import websocket_client_policy
+
+                    client = websocket_client_policy.WebsocketClientPolicy(
+                        host="127.0.0.1", port=int(server_receipt["port"])
+                    )
                 policy_episode = run_policy_episode(
                     environment=adapter,
                     policy=client,

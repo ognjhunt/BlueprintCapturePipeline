@@ -32,6 +32,65 @@ READINESS_POLL_SECONDS = 10.0
 DROID_ACTION_WIDTH = 8
 DROID_OPEN_LOOP_HORIZON = 8
 
+TRANSPORT_OPENPI_WEBSOCKET = "openpi_websocket"
+TRANSPORT_GROOT_ZMQ = "groot_zmq"
+
+# Read from each vendor runtime rather than assumed: openpi serves over a
+# websocket on 8000 via scripts/serve_policy.py, while GR00T's client is
+# gr00t.policy.server_client.PolicyClient over ZMQ, defaulting to 5555.  They
+# share neither a transport nor a launch command, so a single hardcoded form
+# can only ever serve one of them.
+CANDIDATE_TRANSPORTS = {
+    "pi05_droid": TRANSPORT_OPENPI_WEBSOCKET,
+    "groot_n17_droid": TRANSPORT_GROOT_ZMQ,
+    "groot_n16_droid": TRANSPORT_GROOT_ZMQ,
+    "cosmos3_edge_policy_droid": TRANSPORT_OPENPI_WEBSOCKET,
+}
+CANDIDATE_DEFAULT_PORTS = {
+    TRANSPORT_OPENPI_WEBSOCKET: 8000,
+    TRANSPORT_GROOT_ZMQ: 5555,
+}
+
+
+def transport_for(candidate_id: str) -> str:
+    if candidate_id not in CANDIDATE_TRANSPORTS:
+        raise RuntimeError(f"policy_server_unknown_candidate:{candidate_id}")
+    return CANDIDATE_TRANSPORTS[candidate_id]
+
+
+def build_serve_command(
+    *, candidate_id: str, python: str, source_root: str, checkpoint_root: str, port: int
+) -> list[str]:
+    """The launch command for this candidate's own server.
+
+    openpi's form is verified against scripts/serve_policy.py at the frozen
+    revision: tyro.cli over Args{port, policy: Checkpoint|Default}, so the union
+    subcommand is policy:checkpoint with --policy.config and --policy.dir, and
+    its DEFAULT_CHECKPOINT names config "pi05_droid".
+    """
+
+    transport = transport_for(candidate_id)
+    if transport == TRANSPORT_OPENPI_WEBSOCKET:
+        config = "pi05_droid" if candidate_id == "pi05_droid" else candidate_id
+        return [
+            python,
+            str(Path(source_root, "scripts", "serve_policy.py")),
+            "--port",
+            str(port),
+            "policy:checkpoint",
+            f"--policy.config={config}",
+            f"--policy.dir={checkpoint_root}",
+        ]
+    return [
+        python,
+        "-m",
+        "gr00t.policy.server",
+        "--model-path",
+        checkpoint_root,
+        "--port",
+        str(port),
+    ]
+
 
 def _probe_observation() -> dict:
     """The observation the episode will send, so a shape error surfaces now."""
@@ -48,14 +107,25 @@ def _probe_observation() -> dict:
     }
 
 
-def attempt_round_trip(host: str, port: int) -> dict:
-    """One real inference.  Returns the observed chunk shape, or raises."""
+def attempt_round_trip(host: str, port: int, transport: str = TRANSPORT_OPENPI_WEBSOCKET) -> dict:
+    """One real inference over this candidate's transport, or raises."""
 
     import numpy as np
-    from openpi_client import websocket_client_policy
 
-    client = websocket_client_policy.WebsocketClientPolicy(host=host, port=int(port))
-    response = client.infer(_probe_observation())
+    if transport == TRANSPORT_GROOT_ZMQ:
+        from gr00t.policy.server_client import PolicyClient
+
+        client = PolicyClient(host=host, port=int(port), timeout_ms=15000, strict=False)
+        if client.ping() is not True:
+            raise RuntimeError("policy_server_ping_failed")
+        response = client.get_action(_probe_observation())
+    else:
+        from openpi_client import websocket_client_policy
+
+        client = websocket_client_policy.WebsocketClientPolicy(
+            host=host, port=int(port)
+        )
+        response = client.infer(_probe_observation())
     actions = response["actions"] if isinstance(response, dict) else response
     chunk = np.asarray(actions, dtype=float)
     if chunk.ndim != 2 or chunk.shape[1] != DROID_ACTION_WIDTH:
@@ -76,7 +146,12 @@ def attempt_round_trip(host: str, port: int) -> dict:
 
 
 def wait_for_round_trip(
-    *, host: str, port: int, timeout_seconds: float, process: subprocess.Popen | None
+    *,
+    host: str,
+    port: int,
+    timeout_seconds: float,
+    process: subprocess.Popen | None,
+    transport: str = TRANSPORT_OPENPI_WEBSOCKET,
 ) -> dict:
     """Poll until one inference succeeds, the process dies, or time runs out."""
 
@@ -90,7 +165,7 @@ def wait_for_round_trip(
             )
         attempts += 1
         try:
-            result = attempt_round_trip(host, port)
+            result = attempt_round_trip(host, port, transport)
             result["readiness_attempts"] = attempts
             result["readiness_seconds"] = round(time.monotonic() - started, 3)
             return result
@@ -109,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkpoint-root", required=True)
     parser.add_argument("--python", required=True)
     parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--log", required=True)
     parser.add_argument("--receipt", required=True)
     parser.add_argument(
@@ -122,23 +197,23 @@ def main(argv: list[str] | None = None) -> int:
 
     log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    serve_script = Path(args.source_root, "scripts", "serve_policy.py")
 
-    command = [
-        args.python,
-        str(serve_script),
-        "--port",
-        str(args.port),
-        "policy:checkpoint",
-        "--policy.config=pi05_droid",
-        f"--policy.dir={args.checkpoint_root}",
-    ]
+    transport = transport_for(args.candidate_id)
+    port = int(args.port or CANDIDATE_DEFAULT_PORTS[transport])
+    command = build_serve_command(
+        candidate_id=args.candidate_id,
+        python=args.python,
+        source_root=args.source_root,
+        checkpoint_root=args.checkpoint_root,
+        port=port,
+    )
 
     receipt: dict = {
         "schema_version": SCHEMA_VERSION,
         "candidate_id": args.candidate_id,
         "host": args.host,
-        "port": int(args.port),
+        "port": port,
+        "transport": transport,
         "command": command,
         "policy_interpreter": args.python,
     }
@@ -151,9 +226,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             round_trip = wait_for_round_trip(
                 host=args.host,
-                port=int(args.port),
+                port=port,
                 timeout_seconds=float(args.timeout_seconds),
                 process=process,
+                transport=transport,
             )
         receipt.update(
             {

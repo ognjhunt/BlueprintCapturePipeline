@@ -13,7 +13,7 @@ def test_readiness_requires_a_completed_round_trip_not_a_listening_port(
 
     attempts = {"n": 0}
 
-    def _flaky(host, port):
+    def _flaky(host, port, transport=None):
         attempts["n"] += 1
         if attempts["n"] < 3:
             raise ConnectionRefusedError("not up yet")
@@ -172,14 +172,20 @@ def test_the_serve_command_matches_openpis_pinned_cli() -> None:
     gs://openpi-assets/checkpoints/pi05_droid, which is the checkpoint we fetch.
     """
 
-    import inspect
+    command = worker.build_serve_command(
+        candidate_id="pi05_droid",
+        python="/venv/bin/python",
+        source_root="/source/pi05_droid",
+        checkpoint_root="/checkpoints/pi05_droid",
+        port=8000,
+    )
 
-    source = inspect.getsource(worker)
-    assert '"policy:checkpoint"' in source
-    assert '"--policy.config=pi05_droid"' in source
-    assert 'f"--policy.dir={args.checkpoint_root}"' in source
+    assert "policy:checkpoint" in command
+    assert "--policy.config=pi05_droid" in command
+    assert "--policy.dir=/checkpoints/pi05_droid" in command
     # Port is a top-level Args field, not nested under policy.
-    assert '"--port"' in source
+    assert command[command.index("--port") + 1] == "8000"
+    assert command.index("--port") < command.index("policy:checkpoint")
 
 
 def test_a_skipped_episode_says_why_rather_than_vanishing() -> None:
@@ -204,3 +210,49 @@ def test_a_skipped_episode_says_why_rather_than_vanishing() -> None:
     # The candidate is baked in, never a passthrough of an unset variable.
     assert "@@POLICY_CANDIDATE@@" in ENTRYPOINT
     assert "${BLUEPRINT_ADP009D_POLICY_CANDIDATE:-}" not in ENTRYPOINT
+
+
+def test_each_candidate_gets_its_own_transport_and_launch() -> None:
+    """openpi and GR00T share neither a transport nor a launch command.
+
+    openpi serves a websocket via scripts/serve_policy.py; GR00T's client is
+    gr00t.policy.server_client.PolicyClient over ZMQ.  A single hardcoded form
+    can only ever serve one of them, which is what the first version did.
+    """
+
+    assert worker.transport_for("pi05_droid") == worker.TRANSPORT_OPENPI_WEBSOCKET
+    assert worker.transport_for("groot_n17_droid") == worker.TRANSPORT_GROOT_ZMQ
+
+    groot = worker.build_serve_command(
+        candidate_id="groot_n17_droid",
+        python="/venv/bin/python",
+        source_root="/source/groot_n17_droid",
+        checkpoint_root="/checkpoints/groot_n17_droid",
+        port=5555,
+    )
+    assert "gr00t.policy.server" in groot
+    assert "serve_policy.py" not in " ".join(groot)
+    assert "--model-path" in groot
+
+    # Default ports differ, and neither is guessed at the call site.
+    assert worker.CANDIDATE_DEFAULT_PORTS[worker.TRANSPORT_OPENPI_WEBSOCKET] == 8000
+    assert worker.CANDIDATE_DEFAULT_PORTS[worker.TRANSPORT_GROOT_ZMQ] == 5555
+
+    with pytest.raises(RuntimeError):
+        worker.transport_for("some_other_policy")
+
+
+def test_the_episode_connects_to_the_port_that_actually_started() -> None:
+    """Two transports mean two ports; a default would connect to the wrong one."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "adp009d_policy_server_receipt.json" in source
+    assert 'server_receipt.get("status") != "ready"' in source
+    assert 'int(server_receipt["port"])' in source
+    # And it speaks GR00T's own client rather than assuming a websocket.
+    assert "_GrootEpisodeClient" in source
+    assert "get_action(observation)" in source
