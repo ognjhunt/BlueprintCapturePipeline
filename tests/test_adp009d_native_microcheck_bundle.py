@@ -403,6 +403,20 @@ def test_runtime_preflights_exact_arena_environment_import_closure() -> None:
     assert '"traceback": traceback.format_exc()' in source
 
 
+def test_runtime_emits_granular_environment_construction_phases() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+
+    for phase in (
+        "embodiment_configuration",
+        "sealed_scene_configuration",
+        "arena_environment_definition",
+        "arena_builder_registration",
+        "manager_based_environment_construction",
+    ):
+        assert f'_phase("{phase}")' in source
+        assert f'_phase("{phase}", "completed")' in source
+
+
 def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
     source = Path(isaac_runtime.__file__).with_name("adp009d_native_microcheck_worker.py")
     text = source.read_text(encoding="utf-8")

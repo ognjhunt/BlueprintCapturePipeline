@@ -307,6 +307,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
                 object_type=ObjectType.SPAWNER,
             )
 
+    _phase("embodiment_configuration")
     yaw_half = ROBOT_BASE_YAW_RAD / 2
     robot_pose = Pose(
         position_xyz=ROBOT_BASE_POSITION_M,
@@ -332,7 +333,9 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         camera_cfg.update_period = 0.0
     # The second external camera is outside the frozen two-camera policy contract.
     embodiment.camera_config.external_camera_2 = None
+    _phase("embodiment_configuration", "completed")
 
+    _phase("sealed_scene_configuration")
     sage = Object(
         name="sage_collision",
         object_type=ObjectType.BASE,
@@ -364,6 +367,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         )
     )
     scene = Scene(assets=[sage, approved_can, light])
+    _phase("sealed_scene_configuration", "completed")
 
     def configure(cfg):
         from isaaclab_physx.physics import PhysxCfg
@@ -381,6 +385,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         )
         return cfg
 
+    _phase("arena_environment_definition")
     arena_env = IsaacLabArenaEnvironment(
         name="Blueprint-ADP009D-Franka-Microcheck-v0",
         scene=scene,
@@ -388,6 +393,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         task=NoTask(),
         env_cfg_callback=configure,
     )
+    _phase("arena_environment_definition", "completed")
     builder_args = argparse.Namespace(
         num_envs=1,
         env_spacing=2.0,
@@ -398,8 +404,12 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         disable_fabric=False,
         presets=None,
     )
+    _phase("arena_builder_registration")
     builder = ArenaEnvBuilder(arena_env, builder_args)
+    _phase("arena_builder_registration", "completed")
+    _phase("manager_based_environment_construction")
     env, cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
+    _phase("manager_based_environment_construction", "completed")
     return env, cfg, torch
 
 
