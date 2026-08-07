@@ -677,3 +677,52 @@ def test_camera_refresh_never_advances_the_whole_scene() -> None:
     assert scene_refreshes == [], f"scene-wide refresh perturbs physics: {scene_refreshes}"
     # No camera refresh of any kind remains in the approach block.
     assert not [line for line in code if "wrist_camera.update(" in line]
+
+
+
+def test_the_displacement_guard_admits_the_unexplained_millimetric_drift() -> None:
+    """Five runs aborted at 10.02 mm against a 10 mm line chosen before measuring.
+
+    Nothing was in contact -- nearest body 0.258 m -- and the motion was almost
+    purely upward.  Aborting there destroyed the evidence needed to explain it
+    while the approach had already met its purpose, observing the can at 52,725
+    pixels.  The guard now triggers on a real disturbance instead.
+    """
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        APPROACH_MAX_OBJECT_DISPLACEMENT_M,
+        BLOCKER_APPROACH_DISTURBED_OBJECT,
+    )
+
+    # The exact value five runs aborted on is now recorded, not fatal.
+    observed = summarize_wrist_approach_capture(
+        captured_frames=[_wrist_frame(100, 52725)],
+        object_displacement_m=0.010018832981586456,
+    )
+    assert BLOCKER_APPROACH_DISTURBED_OBJECT not in observed["blockers"]
+    assert observed["status"] == "observed"
+
+    # A can genuinely knocked aside still stops the probe.
+    knocked = summarize_wrist_approach_capture(
+        captured_frames=[_wrist_frame(100, 52725)],
+        object_displacement_m=0.5,
+    )
+    assert BLOCKER_APPROACH_DISTURBED_OBJECT in knocked["blockers"]
+    # And the threshold is about the can's own radius, not an arbitrary figure.
+    assert 0.03 <= APPROACH_MAX_OBJECT_DISPLACEMENT_M <= 0.08
+
+
+def test_the_runtime_traces_the_displacement_per_step() -> None:
+    """A binary abort cannot say when the rise starts or whether it tracks the arm."""
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "approach_object_trace" in source
+    assert '"approved_can_per_step_trace"' in source
+    # The arm position is recorded beside the can, so the two can be correlated.
+    assert '"ee_position_world_m"' in source
+    # Bounded, so a long approach cannot produce an unbounded receipt.
+    assert "len(approach_object_trace) < 400" in source

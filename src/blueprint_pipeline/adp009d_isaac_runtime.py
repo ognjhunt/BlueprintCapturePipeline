@@ -1124,6 +1124,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         approach_error: str | None = None
         approach_object_displacement_m = 0.0
         approach_object_offset_m: list[float] = [0.0, 0.0, 0.0]
+        approach_object_trace: list[dict[str, Any]] = []
         approach_aborted = False
         try:
             from isaaclab.controllers import (  # noqa: PLC0415
@@ -1246,6 +1247,28 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     approach_object_displacement_m = float(
                         torch.linalg.vector_norm(approach_object_offset)
                     )
+                    # Five hypotheses about this displacement were wrong, each
+                    # tested by a binary run.  A per-step trace answers what a
+                    # binary cannot: when the rise begins, whether it is smooth
+                    # or stepped, and whether it tracks arm motion at all.
+                    if len(approach_object_trace) < 400:
+                        approach_object_trace.append(
+                            {
+                                "step": len(approach_object_trace),
+                                "offset_m": [
+                                    round(float(v), 9) for v in approach_object_offset
+                                ],
+                                "displacement_m": round(
+                                    approach_object_displacement_m, 9
+                                ),
+                                "ee_position_world_m": [
+                                    round(float(v), 6)
+                                    for v in _to_torch(robot.data.body_pose_w)[
+                                        0, body_index, :3
+                                    ]
+                                ],
+                            }
+                        )
                     approach_object_offset_m = [
                         float(v) for v in approach_object_offset
                     ]
@@ -1452,6 +1475,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         wrist_approach_capture["error"] = approach_error
         # Recorded so a future attachment defect is diagnosable without a run.
         wrist_approach_capture["approved_can_offset_from_hold_m"] = approach_object_offset_m
+        wrist_approach_capture["approved_can_per_step_trace"] = approach_object_trace
         wrist_approach_capture["articulation_body_names"] = approach_body_names
         wrist_approach_capture["wrist_camera_driven_from_body_pose"] = wrist_camera_driven
         camera_rows.extend(approach_frames)
