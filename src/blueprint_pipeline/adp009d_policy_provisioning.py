@@ -47,6 +47,7 @@ ISAAC_INTERPRETER = "/isaac-sim/python.sh"
 # The policy environment lives beside it, never inside it.
 POLICY_VENV_ROOT = "/opt/adp009d-policy-venv"
 CHECKPOINT_ROOT = "/opt/adp009d-checkpoints"
+UV_ROOT = "/opt/adp009d-uv"
 POLICY_SOURCE_ROOT = "/opt/adp009d-policy-source"
 # Measured on the worker: Isaac runs /isaac-sim/kit/python/bin/python3 at
 # 3.12.12 under its own prefix, and /usr/bin/python3 at 3.12.3 exists
@@ -120,10 +121,11 @@ def _install_commands(candidate_id: str) -> list[str]:
         f'git -C "{source}" fetch --depth 1 origin "{revision}"',
         f'git -C "{source}" checkout --detach FETCH_HEAD',
         f'test "$(git -C "{source}" rev-parse HEAD)" = "{revision}"',
-        # Build isolation stays ON.  A live run disabled it and pip could not
-        # import hatchling.build, because --no-build-isolation is precisely an
-        # instruction not to fetch the build backend the project declares.
-        f'"{POLICY_VENV_ROOT}/bin/python" -m pip install -e "{source}"',
+        # Installed with uv, into the venv named explicitly rather than via an
+        # activated shell, so the target cannot drift.  Build isolation stays
+        # on: disabling it once left pip unable to import hatchling.build, the
+        # backend openpi's pyproject declares.
+        f'VIRTUAL_ENV="{POLICY_VENV_ROOT}" "$UV" pip install -e "{source}"',
     ]
 
 def build_provisioning_script(candidate_id: str) -> str:
@@ -132,6 +134,7 @@ def build_provisioning_script(candidate_id: str) -> str:
     if candidate_id not in EXPECTED_CANDIDATES:
         raise PolicyProvisioningError([f"{BLOCKER_UNKNOWN_CANDIDATE}:{candidate_id}"])
 
+    uv_root = UV_ROOT
     jax_exports = "\n".join(
         f'export {name}="{value}"' for name, value in sorted(JAX_ENVIRONMENT.items())
     )
@@ -144,27 +147,21 @@ set -euo pipefail
 # The policy environment is built BESIDE Isaac's interpreter, never by mutating
 # it: a pip resolve against Isaac's own CPython is how you get an Isaac that no
 # longer starts, and the shipped image's build gate already forbids merging them.
-#
-# A live run measured that this image's /usr/bin/python3 has no ensurepip, so a
-# plain venv fails outright.  Install the system venv package first, and fall
-# back to uv -- which needs no ensurepip and is what the shipped groot_oscar
-# image already uses to build venvs beside Isaac in this container family.
-apt-get update -qq >/dev/null 2>&1 || true
-apt-get install -y -qq python3-venv python3.12-venv >/dev/null 2>&1 || true
+# uv is the installer, not a fallback.  Two measured reasons: this image's
+# /usr/bin/python3 has no ensurepip, so a plain venv cannot be created; and pip
+# cannot resolve openpi at all, failing with "resolution-too-deep" after
+# backtracking through tensorstore releases.  openpi is itself a uv project, so
+# using uv means installing it the way it is packaged rather than fighting it.
+export UV_INSTALL_DIR={uv_root}
+curl -LsSf https://astral.sh/uv/install.sh | sh
+UV="$UV_INSTALL_DIR/uv"
+test -x "$UV"
 
-if ! "{SYSTEM_INTERPRETER}" -m venv "{POLICY_VENV_ROOT}"; then
-  echo "venv unavailable; falling back to uv"
-  rm -rf "{POLICY_VENV_ROOT}"
-  export UV_INSTALL_DIR=/opt/adp009d-uv
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  "$UV_INSTALL_DIR/uv" venv --python "{SYSTEM_INTERPRETER}" "{POLICY_VENV_ROOT}"
-fi
+"$UV" venv --python "{SYSTEM_INTERPRETER}" "{POLICY_VENV_ROOT}"
 
 # Prove the venv is real and is not Isaac's interpreter before anything installs.
 test -x "{POLICY_VENV_ROOT}/bin/python"
 "{POLICY_VENV_ROOT}/bin/python" -c "import sys; assert 'isaac-sim' not in sys.prefix, sys.prefix"
-"{POLICY_VENV_ROOT}/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || true
-"{POLICY_VENV_ROOT}/bin/python" -m pip install --upgrade pip
 
 # JAX would otherwise preallocate most of the device and take the card out from
 # under Isaac as an uncatchable native abort, after the scene is already built.
@@ -246,6 +243,7 @@ __all__ = [
     "POLICY_HOST",
     "POLICY_PORT",
     "POLICY_SOURCE_ROOT",
+    "UV_ROOT",
     "POLICY_VENV_ROOT",
     "SYSTEM_INTERPRETER",
     "PROVISIONING_SCHEMA_VERSION",

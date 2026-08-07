@@ -21,7 +21,7 @@ def test_the_policy_environment_is_built_beside_isaac_never_inside_it() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert "-m venv" in script
+    assert "venv --python" in script
     # Isaac's interpreter must never be the thing pip is pointed at.
     assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
     assert "/opt/adp009d-policy-venv/bin/python" in script
@@ -146,10 +146,10 @@ def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert f'"{SYSTEM_INTERPRETER}" -m venv' in script
+    assert f'venv --python "{SYSTEM_INTERPRETER}"' in script
     assert SYSTEM_INTERPRETER == "/usr/bin/python3"
     # Never Isaac's own interpreter, and never its measured real path either.
-    assert f'"{ISAAC_INTERPRETER}" -m venv' not in script
+    assert ISAAC_INTERPRETER not in script.split('# Prove')[0]
     assert "/isaac-sim/kit/python/bin/python3" not in script
 
 
@@ -181,22 +181,21 @@ def test_every_candidate_installs_its_own_pinned_source() -> None:
         assert str(expected["source_revision"]) in script
 
 
-def test_the_venv_survives_an_image_without_ensurepip() -> None:
-    """A live run measured this image's /usr/bin/python3 as lacking ensurepip.
+def test_uv_creates_the_environment_because_the_image_lacks_ensurepip() -> None:
+    """Two measured failures put uv on the primary path, not a fallback.
 
-    A plain venv fails outright there, which is how the first install attempt
-    ended.  The script installs the system venv package and falls back to uv,
-    which needs no ensurepip and is what the shipped groot_oscar image already
-    uses to build venvs beside Isaac in this container family.
+    This image's /usr/bin/python3 has no ensurepip, so a plain venv cannot be
+    created at all; and pip could not resolve openpi, failing with
+    resolution-too-deep after backtracking through tensorstore releases.
+    openpi is itself a uv project, so uv installs it as packaged.
     """
 
     script = build_provisioning_script("pi05_droid")
 
-    assert "python3-venv" in script
-    assert "falling back to uv" in script
-    assert '/uv" venv --python' in script
-    # The fallback must not inherit a half-built venv.
-    assert 'rm -rf "/opt/adp009d-policy-venv"' in script
+    assert 'curl -LsSf https://astral.sh/uv/install.sh' in script
+    assert '"$UV" venv --python' in script
+    # pip is not used to create the environment at all.
+    assert "-m venv" not in script
 
 
 def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
@@ -207,7 +206,7 @@ def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
     assert 'test -x "/opt/adp009d-policy-venv/bin/python"' in script
     assert "'isaac-sim' not in sys.prefix" in script
     # And the proof precedes any install.
-    assert script.index("not in sys.prefix") < script.index("pip install --upgrade pip")
+    assert script.index("not in sys.prefix") < script.index("pip install -e")
 
 
 def test_build_isolation_is_left_enabled() -> None:
@@ -221,4 +220,4 @@ def test_build_isolation_is_left_enabled() -> None:
     for candidate_id in EXPECTED_CANDIDATES:
         script = build_provisioning_script(candidate_id)
         assert "--no-build-isolation" not in script
-        assert "pip install -e" in script
+        assert '"$UV" pip install -e' in script
