@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import shutil
 import stat
 import subprocess
@@ -66,6 +67,8 @@ RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 export BLUEPRINT_ADP009D_OUTPUT_DIR="$OUT_DIR"
 export BLUEPRINT_ADP009D_POLICY_CANDIDATE="@@POLICY_CANDIDATE@@"
+export BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES="@@CAMERA_WARMUP_FRAMES@@"
+export BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"
 mkdir -p "$OUT_DIR"
 
 # Environment facts the policy-server design could not verify from off-worker:
@@ -808,7 +811,15 @@ def build_native_microcheck_bundle(
     # exactly what a live run did: no episode, no error, nothing to read.
     _write_executable(
         runtime / "run_adp_arena_provider_runtime.sh",
-        ENTRYPOINT.replace("@@POLICY_CANDIDATE@@", policy_candidate_id or ""),
+        ENTRYPOINT.replace("@@POLICY_CANDIDATE@@", policy_candidate_id or "")
+        .replace(
+            "@@CAMERA_WARMUP_FRAMES@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES", "")),
+        )
+        .replace(
+            "@@STOP_AFTER_FRAMES@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_STOP_AFTER_FRAMES", "")),
+        ),
     )
     generated = generated_at or utc_now_iso()
     manifest: dict[str, Any] = {

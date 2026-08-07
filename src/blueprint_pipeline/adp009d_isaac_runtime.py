@@ -342,6 +342,7 @@ def _phase(name: str, status: str = "started") -> None:
     print(f"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d_native:{name}:{status}", flush=True)
 
 
+STOP_AFTER_FRAMES_ENV = "BLUEPRINT_ADP009D_STOP_AFTER_FRAMES"
 CAMERA_WARMUP_FRAMES_ENV = "BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES"
 # Forty frames is right for a bare scene whose frames cost milliseconds.  With
 # the appearance composed each frame costs about sixty-five seconds, because
@@ -1178,6 +1179,53 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     sim_time=float(env.unwrapped.episode_length_buf[0].item() * cfg.sim.dt * cfg.decimation),
                 )
             )
+        # A frame is the only thing that answers whether the appearance actually
+        # draws, and at roughly a minute per rendered frame the phases after
+        # this one -- a four-hundred-step approach, a four-hundred-and-eighty
+        # step episode -- run for hours and end with the TTL killing the
+        # instance before anything is uploaded.  Frames are zipped only after
+        # the runtime exits, so a run that never exits delivers nothing.
+        if os.environ.get(STOP_AFTER_FRAMES_ENV, "").strip() not in {"", "0", "false"}:
+            _phase("stopped_after_frames", "completed")
+            print(
+                "BLUEPRINT_ADP009D_STOPPED_AFTER_FRAMES:"
+                + json.dumps(
+                    {
+                        "reason": "diagnostic_frames_only_mode",
+                        "camera_rows": camera_rows,
+                        "warmup_frames": warmup_frames,
+                        "aura_stage_probe": aura_stage_probe,
+                        "timings_seconds": timings_seconds,
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
+                flush=True,
+            )
+            (output / "adp009d_frames_only_probe.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "adp009d_frames_only_probe.v1",
+                        "status": "completed",
+                        "mode": "frames_only",
+                        # Never a success claim for the micro-check itself: this
+                        # run deliberately skipped every phase after the frames.
+                        "supports_microcheck_success_claim": False,
+                        "camera_rows": camera_rows,
+                        "warmup_frames": warmup_frames,
+                        "aura_stage_probe": aura_stage_probe,
+                        "timings_seconds": timings_seconds,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            log.flush()
+            return
+
         # --- gripper convention probe -----------------------------------------
         # DROID encodes the gripper as a scalar in [0, 1] where above 0.5 means
         # closed.  Arena's eighth action dimension has its own convention, and

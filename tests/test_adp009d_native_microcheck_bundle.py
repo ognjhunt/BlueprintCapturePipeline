@@ -1364,3 +1364,44 @@ def test_the_saved_frame_index_follows_the_actual_warmup() -> None:
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
     assert "frame_index=warmup_frames," in source
     assert "frame_index=40," not in source
+
+
+def test_frames_only_mode_exits_so_the_frames_actually_get_uploaded() -> None:
+    """Frames are zipped only after the runtime exits.
+
+    At roughly a minute per rendered frame the phases after the camera saves
+    -- a four-hundred-step approach, a four-hundred-and-eighty step episode --
+    run for hours, and the TTL kills the instance before anything uploads.  A
+    run that never exits delivers nothing, however many frames it rendered.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "STOP_AFTER_FRAMES_ENV" in source
+    # Placed after the camera saves and before the gripper probe, or it stops
+    # before there is anything worth uploading.
+    assert source.index("STOP_AFTER_FRAMES_ENV, \"\"") > source.index("camera_rows.append(")
+    assert source.index("STOP_AFTER_FRAMES_ENV, \"\"") < source.index(
+        "--- gripper convention probe"
+    )
+    # And it must never read as a passing micro-check.
+    assert '"supports_microcheck_success_claim": False,' in source
+
+
+def test_the_tuning_vars_reach_the_worker() -> None:
+    """An env var the bundle never exports is a setting that does nothing."""
+
+    from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
+
+    assert 'BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES="@@CAMERA_WARMUP_FRAMES@@"' in bundle.ENTRYPOINT
+    assert 'BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"' in bundle.ENTRYPOINT
+    import inspect
+
+    source = inspect.getsource(bundle)
+    # Substituted, not merely declared: an unreplaced @@ placeholder would
+    # export the literal string and read as truthy.
+    assert '"@@CAMERA_WARMUP_FRAMES@@",' in source
+    assert '"@@STOP_AFTER_FRAMES@@",' in source
