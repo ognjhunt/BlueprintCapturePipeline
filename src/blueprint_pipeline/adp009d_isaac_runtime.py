@@ -1034,6 +1034,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         approach_ik_succeeded = True
         approach_error: str | None = None
         approach_object_displacement_m = 0.0
+        approach_object_offset_m: list[float] = [0.0, 0.0, 0.0]
         approach_aborted = False
         try:
             from isaaclab.controllers import (  # noqa: PLC0415
@@ -1157,12 +1158,19 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     approach_action = torch.zeros_like(action)
                     approach_action[:, :7] = joint_target
                     env.step(approach_action)
-                    approach_object_displacement_m = float(
-                        torch.linalg.vector_norm(
-                            _to_torch(approved_can.data.root_pose_w)[0, :3]
-                            - canonical_hold_can_pose[:3]
-                        )
+                    # Record the displacement vector, not just its magnitude: a
+                    # can that is falling and a can that is being pushed both
+                    # cross the same threshold, and they need different fixes.
+                    approach_object_offset = (
+                        _to_torch(approved_can.data.root_pose_w)[0, :3]
+                        - canonical_hold_can_pose[:3]
                     )
+                    approach_object_displacement_m = float(
+                        torch.linalg.vector_norm(approach_object_offset)
+                    )
+                    approach_object_offset_m = [
+                        float(v) for v in approach_object_offset
+                    ]
                     if (
                         approach_object_displacement_m
                         > APPROACH_MAX_OBJECT_DISPLACEMENT_M
@@ -1192,10 +1200,29 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     else None
                 )
                 can_top_z = SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M
+                # The gripper clearance above only watches gripper bodies, and a
+                # run measured 0.095 m of it while still displacing the can by
+                # 10.0 mm -- so whatever is pushing the can is elsewhere on the
+                # arm.  Name it rather than infer it: report the body closest to
+                # the can across the whole articulation.
+                can_position = _to_torch(approved_can.data.root_pose_w)[0, :3]
+                all_body_positions = _to_torch(robot.data.body_pose_w)[0, :, :3]
+                body_distances = torch.linalg.vector_norm(
+                    all_body_positions - can_position, dim=-1
+                )
+                nearest_index = int(torch.argmin(body_distances))
                 approach_arrivals.append(
                     {
                         "waypoint_index": waypoint["waypoint_index"],
                         "lowest_gripper_body_z_m": lowest_gripper_z,
+                        "nearest_body_to_can": body_names[nearest_index],
+                        "nearest_body_distance_to_can_m": float(
+                            body_distances[nearest_index]
+                        ),
+                        "body_distances_to_can_m": {
+                            name: round(float(body_distances[index]), 6)
+                            for index, name in enumerate(body_names)
+                        },
                         "approved_can_top_z_m": can_top_z,
                         "gripper_clearance_over_can_m": (
                             None
@@ -1267,6 +1294,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         )
         wrist_approach_capture["error"] = approach_error
         # Recorded so a future attachment defect is diagnosable without a run.
+        wrist_approach_capture["approved_can_offset_from_hold_m"] = approach_object_offset_m
         wrist_approach_capture["articulation_body_names"] = approach_body_names
         wrist_approach_capture["wrist_camera_driven_from_body_pose"] = wrist_camera_driven
         camera_rows.extend(approach_frames)

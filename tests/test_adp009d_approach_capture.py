@@ -627,3 +627,30 @@ def test_standoffs_clear_the_can_and_the_runtime_measures_real_clearance() -> No
     # The gripper body list must name bodies the articulation actually has.
     assert "base_link" in APPROACH_GRIPPER_BODY_NAMES
     assert "left_inner_finger" in APPROACH_GRIPPER_BODY_NAMES
+
+
+def test_runtime_names_what_actually_disturbs_the_can() -> None:
+    """The gripper measured 0.095 m of clearance while the can still moved.
+
+    So whatever pushes it is elsewhere on the arm, and a magnitude alone cannot
+    say whether the can is being pushed or is falling.  Both must be recorded
+    from the simulator rather than inferred a third time.
+    """
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+
+    # Nearest body across the whole articulation, not just the gripper.
+    assert '"nearest_body_to_can"' in source
+    assert '"nearest_body_distance_to_can_m"' in source
+    assert '"body_distances_to_can_m"' in source
+    assert "torch.argmin(body_distances)" in source
+
+    # Direction, not only magnitude: falling and being pushed differ.
+    assert '"approved_can_offset_from_hold_m"' in source
+    assert "approach_object_offset_m = [" in source
+    # The magnitude must still come from the same vector, not a second read.
+    assert "torch.linalg.vector_norm(approach_object_offset)" in source
