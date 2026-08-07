@@ -32,6 +32,7 @@ RTX_RENDER_PRODUCT_API_SCHEMAS = (
     "OmniRtxSettingsCommonAdvancedAPI_1",
     "OmniRtxSettingsRtAdvancedAPI_1",
     "OmniRtxSettingsPtAdvancedAPI_1",
+    "OmniRtxSettingsParticleFieldAPI_1",
 )
 
 
@@ -148,12 +149,15 @@ def Xform "{parent_components[0]}"
 def "Render"
 {{
     def RenderProduct "BlueprintCamera" (
-        prepend apiSchemas = ["{RTX_RENDER_PRODUCT_API_SCHEMAS[0]}", "{RTX_RENDER_PRODUCT_API_SCHEMAS[1]}", "{RTX_RENDER_PRODUCT_API_SCHEMAS[2]}"]
+        prepend apiSchemas = ["{RTX_RENDER_PRODUCT_API_SCHEMAS[0]}", "{RTX_RENDER_PRODUCT_API_SCHEMAS[1]}", "{RTX_RENDER_PRODUCT_API_SCHEMAS[2]}", "{RTX_RENDER_PRODUCT_API_SCHEMAS[3]}"]
     )
     {{
         rel camera = <{camera_path}>
         int2 resolution = ({width}, {height})
         token omni:rtx:rendermode = "{render_mode}"
+        bool omni:rtx:rtpt:gaussian:accumulatedDepth:enabled = true
+        bool omni:rtx:rtpt:gaussian:accumulatedAlbedo:enabled = true
+        int omni:rtx:rtpt:gaussian:maxGaussiansToAccumulate = 48
 {path_tracing_setting.rstrip()}
         rel orderedVars = [{ordered_vars_usda}]
 {vars_usda}
@@ -399,6 +403,12 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 checks.append(_check("radar_structured_output", count > 0, detection_count=count))
                 nonempty = nonempty and count > 0
 
+        # Release Python references to the fetched step results before renderer
+        # teardown. Mapped outputs have already been copied and unmapped above.
+        frame = None
+        product = None
+        products.clear()
+
         checks.append(
             _check("requested_sensor_outputs_nonempty", nonempty, output_count=len(outputs))
         )
@@ -474,6 +484,9 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "rtpt_warmup_frames": warmup if render_mode == "RealTimePathTracing" else None,
             "path_tracing_samples_per_pixel": path_tracing_spp,
             "render_settings_target": "RenderProduct",
+            "gaussian_accumulated_depth_enabled": True,
+            "gaussian_accumulated_albedo_enabled": True,
+            "gaussian_max_gaussians_to_accumulate": 48,
             "camera_or_settings_change_reset": True,
             "attached_mode_ordinals_respected": True,
             "write_floors_respected": True,

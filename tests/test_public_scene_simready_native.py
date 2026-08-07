@@ -560,6 +560,10 @@ def test_ovrtx_worker_authors_matrix_camera_and_path_tracing(tmp_path: Path) -> 
     assert 'def RenderVar "DepthSD"' not in layer
     assert 'def RenderVar "Normal"' in layer
     assert "OmniRtxSettingsPtAdvancedAPI_1" in layer
+    assert "OmniRtxSettingsParticleFieldAPI_1" in layer
+    assert "bool omni:rtx:rtpt:gaussian:accumulatedDepth:enabled = true" in layer
+    assert "bool omni:rtx:rtpt:gaussian:accumulatedAlbedo:enabled = true" in layer
+    assert "int omni:rtx:rtpt:gaussian:maxGaussiansToAccumulate = 48" in layer
     parsed = Sdf.Layer.CreateAnonymous("blueprint-ovrtx-test.usda")
     assert parsed.ImportFromString(layer) is True
 
