@@ -254,3 +254,43 @@ def test_canonical_allocator_issues_arena_grant_only_for_execute(
     assert admission["candidate_policy_queried"] is False
     assert admission["hard_cap_usd"] == 4.0
     assert admission["hard_ttl_seconds"] == 14400
+
+
+def test_avoidlist_already_in_the_job_directory_does_not_abort_the_launch(
+    tmp_path: Path,
+) -> None:
+    """Staging must be idempotent: the avoidlist may already live in the job dir.
+
+    A live launch passed an avoidlist that was already at its staging
+    destination.  shutil.copy2 raised SameFileError and aborted the run after
+    the paid admission receipt had been written.
+    """
+
+    from blueprint_pipeline.adp_isaac_lab_arena_vast import _stage_machine_avoidlist
+
+    job = tmp_path / "job"
+    job.mkdir()
+    staged = job / "adp_arena_vast_machine_avoidlist.json"
+    write_json(staged, {"machine_ids": [1234]})
+
+    # Source is literally the staging destination.
+    result = _stage_machine_avoidlist(job, staged)
+    assert result == staged
+    assert json.loads(staged.read_text()) == {"machine_ids": [1234]}
+
+    # A symlink pointing at the destination resolves to the same file.
+    link = tmp_path / "avoidlist_link.json"
+    link.symlink_to(staged)
+    assert _stage_machine_avoidlist(job, link) == staged
+    assert json.loads(staged.read_text()) == {"machine_ids": [1234]}
+
+    # A genuinely external avoidlist is still copied in, overwriting the stale one.
+    external = tmp_path / "external.json"
+    write_json(external, {"machine_ids": [5678]})
+    assert _stage_machine_avoidlist(job, external) == staged
+    assert json.loads(staged.read_text()) == {"machine_ids": [5678]}
+
+    # No avoidlist configured still yields the staging path without touching it.
+    staged.unlink()
+    assert _stage_machine_avoidlist(job, None) == staged
+    assert not staged.exists()

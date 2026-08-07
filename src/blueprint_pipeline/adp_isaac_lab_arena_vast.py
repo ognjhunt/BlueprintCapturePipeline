@@ -89,6 +89,24 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _stage_machine_avoidlist(job: Path, machine_avoidlist_path: str | Path | None) -> Path:
+    """Stage the machine avoidlist into the job directory, idempotently.
+
+    Callers reasonably keep the avoidlist inside the job directory, which is
+    exactly where it is staged to.  Copying a file onto itself raises
+    SameFileError and aborts the launch after the admission receipt is already
+    written, so an already-staged avoidlist is treated as satisfied.
+    """
+
+    local_avoidlist = job / "adp_arena_vast_machine_avoidlist.json"
+    if machine_avoidlist_path is None:
+        return local_avoidlist
+    source = Path(machine_avoidlist_path).expanduser().resolve()
+    if source != local_avoidlist.resolve():
+        shutil.copy2(source, local_avoidlist)
+    return local_avoidlist
+
+
 def _next_attempt_root(job: Path) -> tuple[int, Path]:
     """Return a fresh evidence root without ever reusing paid-run staging state."""
 
@@ -377,9 +395,7 @@ def run_arena_native_control_vast(
     output_get_url = (staging_dir / "provider_output_get_url.txt").read_text().strip()
     provider_run = attempt_root / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
-    local_avoidlist = job / "adp_arena_vast_machine_avoidlist.json"
-    if machine_avoidlist_path is not None:
-        shutil.copy2(Path(machine_avoidlist_path).expanduser().resolve(), local_avoidlist)
+    local_avoidlist = _stage_machine_avoidlist(job, machine_avoidlist_path)
     adapter: dict[str, Any] = {}
     try:
         with _vast_authority_environment():
