@@ -208,6 +208,65 @@ def _gpu_memory_used_bytes() -> int | None:
         return None
 
 
+def depth_is_resident(depth: Any, np: Any) -> tuple[bool, int]:
+    """Whether a metric-depth AOV shows the scene was actually traced.
+
+    ``DistanceToCameraSD`` returns infinity where a ray hits nothing, so a frame
+    rendered before the Gaussians finished streaming in is uniformly infinite.
+    Any positive finite sample means geometry was hit.
+
+    Split out from the wait loop so the readiness rule is testable without a GPU.
+    """
+
+    if depth is None or getattr(depth, "size", 0) == 0:
+        return False, 0
+    finite = np.isfinite(depth)
+    count = int(np.count_nonzero(finite & (depth > 0)))
+    return count > 0, count
+
+
+def _await_render_residency(
+    *,
+    renderer: Any,
+    render_products: Any,
+    delta_time: float,
+    ordinal: int,
+    timeout_seconds: float,
+    ovrtx: Any,
+    np: Any,
+) -> dict[str, Any]:
+    """Step until the render traces real geometry, or until the deadline."""
+
+    started = time.monotonic()
+    steps = 0
+    count = 0
+    resident = False
+    while time.monotonic() - started < timeout_seconds:
+        products = renderer.step(
+            render_products=render_products, delta_time=delta_time, ordinal=ordinal
+        )
+        steps += 1
+        for product in (products or {}).values():
+            if not product.frames:
+                continue
+            frame = product.frames[0]
+            name = AOV_BY_KIND["depth"]
+            if name not in frame.render_vars:
+                continue
+            resident, count = depth_is_resident(_map_array(frame, name, ovrtx, np), np)
+            break
+        products = None
+        if resident:
+            break
+    return {
+        "resident": resident,
+        "waited_seconds": round(time.monotonic() - started, 3),
+        "steps": steps,
+        "positive_finite_depth_count": count,
+        "timeout_seconds": timeout_seconds,
+    }
+
+
 def _map_array(frame: Any, name: str, ovrtx: Any, np: Any) -> Any:
     mapped = frame.render_vars[name].map(device=ovrtx.Device.CPU)
     try:
@@ -304,6 +363,36 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         delta_time = float(config.get("delta_time_seconds", 1.0 / 60.0))
         for _ in range(warmup):
             renderer.step(render_products=render_products, delta_time=delta_time, ordinal=ordinal)
+        gpu_memory_samples.append(_gpu_memory_used_bytes())
+
+        # Gaussian assets stream in asynchronously.  A live run logged
+        # "Gaussian prim loaded: ... count=415265" at 311 s, long after the
+        # scene acceleration structures were built at 8 s and 20 s, and long
+        # after these steps had already read back: every ray missed, so depth
+        # came out uniformly infinite and RGB black on both cameras, while every
+        # other check passed.  The warmup above cannot cover this -- it advances
+        # simulation time by delta_time per step and completes in seconds,
+        # whereas residency is a wall-clock streaming cost.
+        #
+        # Step until the render actually traces something, bounded by wall clock.
+        residency = _await_render_residency(
+            renderer=renderer,
+            render_products=render_products,
+            delta_time=delta_time,
+            ordinal=ordinal,
+            timeout_seconds=float(config.get("residency_timeout_seconds", 900.0)),
+            ovrtx=ovrtx,
+            np=np,
+        )
+        checks.append(
+            _check(
+                "render_content_resident",
+                residency["resident"],
+                waited_seconds=residency["waited_seconds"],
+                steps=residency["steps"],
+                positive_finite_depth_count=residency["positive_finite_depth_count"],
+            )
+        )
         gpu_memory_samples.append(_gpu_memory_used_bytes())
 
         if "dynamic_transform_update" in required_checks:
