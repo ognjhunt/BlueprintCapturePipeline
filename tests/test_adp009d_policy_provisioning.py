@@ -210,3 +210,17 @@ def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
     assert "'isaac-sim' not in sys.prefix" in script
     # And the proof precedes any install.
     assert script.index("not in sys.prefix") < script.index("pip install --upgrade pip")
+
+
+def test_build_isolation_is_left_enabled() -> None:
+    """--no-build-isolation is an instruction not to fetch the build backend.
+
+    A live run disabled it and pip failed with
+    BackendUnavailable: Cannot import 'hatchling.build' -- the backend openpi's
+    pyproject declares.  Isolation must stay on so pip provisions it.
+    """
+
+    for candidate_id in EXPECTED_CANDIDATES:
+        script = build_provisioning_script(candidate_id)
+        assert "--no-build-isolation" not in script
+        assert "pip install -e" in script

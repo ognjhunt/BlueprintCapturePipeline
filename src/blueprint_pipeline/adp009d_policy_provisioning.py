@@ -120,7 +120,10 @@ def _install_commands(candidate_id: str) -> list[str]:
         f'git -C "{source}" fetch --depth 1 origin "{revision}"',
         f'git -C "{source}" checkout --detach FETCH_HEAD',
         f'test "$(git -C "{source}" rev-parse HEAD)" = "{revision}"',
-        f'"{POLICY_VENV_ROOT}/bin/python" -m pip install --no-build-isolation -e "{source}"',
+        # Build isolation stays ON.  A live run disabled it and pip could not
+        # import hatchling.build, because --no-build-isolation is precisely an
+        # instruction not to fetch the build backend the project declares.
+        f'"{POLICY_VENV_ROOT}/bin/python" -m pip install -e "{source}"',
     ]
 
 def build_provisioning_script(candidate_id: str) -> str:
