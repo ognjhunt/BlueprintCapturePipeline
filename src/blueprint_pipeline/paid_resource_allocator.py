@@ -1090,6 +1090,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
     gpu.add_argument(
+        "--adp009d-aura-particlefield",
+        default=None,
+        help=(
+            "Aura ParticleField USD to render inside the Isaac scene.  Omit for "
+            "a micro-check with no appearance layer."
+        ),
+    )
+    gpu.add_argument(
         "--adp009d-policy-candidate",
         default=None,
         help=(
@@ -2433,6 +2441,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         harness_manifest_path=args.adp009d_harness_manifest,
                         implementation_commit=control_identity["orchestrator_source_commit"],
                         policy_candidate_id=args.adp009d_policy_candidate,
+                        aura_particlefield_path=args.adp009d_aura_particlefield,
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(f"adp009d_bundle_preparation_failed:{type(exc).__name__}")

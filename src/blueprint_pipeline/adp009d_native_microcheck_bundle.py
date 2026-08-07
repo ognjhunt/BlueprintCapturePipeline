@@ -886,6 +886,10 @@ def build_native_microcheck_bundle_isolated(
     ]
     if policy_candidate_id is not None:
         command.extend(("--policy-candidate-id", policy_candidate_id))
+    if aura_particlefield_path is not None:
+        command.extend(
+            ("--aura-particlefield-path", str(Path(aura_particlefield_path).resolve()))
+        )
     if generated_at is not None:
         command.extend(("--generated-at", generated_at))
     if expected_asset_bindings is not None:
@@ -933,6 +937,7 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--harness-manifest-path", required=True)
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--policy-candidate-id", default=None)
+    parser.add_argument("--aura-particlefield-path", default=None)
     parser.add_argument("--generated-at")
     parser.add_argument("--expected-asset-bindings-json")
     args = parser.parse_args(argv)
@@ -948,6 +953,7 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
         harness_manifest_path=args.harness_manifest_path,
         implementation_commit=args.implementation_commit,
         policy_candidate_id=args.policy_candidate_id,
+        aura_particlefield_path=args.aura_particlefield_path,
         generated_at=args.generated_at,
         expected_asset_bindings=expected_bindings,
     )
