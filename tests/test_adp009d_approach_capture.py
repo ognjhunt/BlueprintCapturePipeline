@@ -156,3 +156,45 @@ def test_runtime_uses_the_arena_pinned_isaac_lab_jacobian_api() -> None:
     assert "body_link_pose_w" not in source
     # Fixed-base articulations drop the root row from the jacobian stack.
     assert "robot.is_fixed_base" in source
+
+
+def test_wrist_gate_blocks_when_the_approach_moved_the_object() -> None:
+    """The approach must observe the object, never move it."""
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        APPROACH_MAX_OBJECT_DISPLACEMENT_M,
+        BLOCKER_APPROACH_DISTURBED_OBJECT,
+    )
+
+    disturbed = summarize_wrist_approach_capture(
+        captured_frames=[_wrist_frame(100, 5200)],
+        object_displacement_m=3.418578212,
+    )
+    assert BLOCKER_APPROACH_DISTURBED_OBJECT in disturbed["blockers"]
+    assert disturbed["status"] == "blocked"
+
+    settled = summarize_wrist_approach_capture(
+        captured_frames=[_wrist_frame(100, 5200)],
+        object_displacement_m=APPROACH_MAX_OBJECT_DISPLACEMENT_M / 2,
+    )
+    assert settled["blockers"] == []
+
+
+def test_canonical_hold_is_judged_before_the_approach_runs() -> None:
+    """The canonical hold must not be scored on motion it never contained.
+
+    A live run evaluated hold stability after the approach and reported the can
+    displaced by 3.42 m, which described the approach, not the hold.
+    """
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    stability = source.index("_assert_canonical_object_stability(")
+    approach = source.index("--- preregistered wrist approach")
+    assert stability < approach, "hold stability must be evaluated before the approach"
+    # The servo must clamp per-step joint motion and abort on object disturbance.
+    assert "APPROACH_MAX_JOINT_STEP_RAD," in source
+    assert "approach_aborted = True" in source

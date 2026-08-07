@@ -49,6 +49,14 @@ APPROACH_STANDOFF_HEIGHTS_M = (0.34, 0.28, 0.24)
 # Tool pointing straight down, in Isaac Lab (w, x, y, z) order.
 APPROACH_TOOL_QUAT_WXYZ = (0.0, 1.0, 0.0, 0.0)
 APPROACH_STEPS_PER_WAYPOINT = 40
+# Differential IK solves for the whole remaining error each step.  Commanding
+# that directly as an absolute joint target lets the arm swing through the
+# object: an unclamped run displaced the approved can by 3.42 m and tilted it
+# 119 degrees.  Joint targets therefore move at most this far per step.
+APPROACH_MAX_JOINT_STEP_RAD = 0.03
+# The approach must observe the object, never move it.  Exceeding this aborts.
+APPROACH_MAX_OBJECT_DISPLACEMENT_M = 0.01
+BLOCKER_APPROACH_DISTURBED_OBJECT = "wrist_approach_disturbed_approved_task_object"
 # Frame indices reserved for approach captures, after the 40-frame hold capture.
 APPROACH_CAPTURE_FRAME_BASE = 100
 
@@ -144,6 +152,7 @@ def summarize_wrist_approach_capture(
     captured_frames: Sequence[Mapping[str, Any]],
     approved_task_object_label: str = "approved_can",
     ik_succeeded: bool = True,
+    object_displacement_m: float = 0.0,
     min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
 ) -> dict[str, Any]:
     """Gate wrist observability over the frames the approach actually produced."""
@@ -174,6 +183,8 @@ def summarize_wrist_approach_capture(
         blockers.append(BLOCKER_APPROACH_IK_FAILED)
     if best < int(min_object_pixels):
         blockers.append(BLOCKER_WRIST_NEVER_SAW_OBJECT)
+    if float(object_displacement_m) > APPROACH_MAX_OBJECT_DISPLACEMENT_M:
+        blockers.append(BLOCKER_APPROACH_DISTURBED_OBJECT)
 
     report: dict[str, Any] = {
         "schema_version": APPROACH_CAPTURE_SCHEMA_VERSION,
@@ -183,6 +194,9 @@ def summarize_wrist_approach_capture(
         "waypoints": approach_waypoints_world(),
         "wrist_frames": rows,
         "max_approved_task_object_pixel_count": best,
+        "object_displacement_m": float(object_displacement_m),
+        "max_object_displacement_allowed_m": APPROACH_MAX_OBJECT_DISPLACEMENT_M,
+        "max_joint_step_rad": APPROACH_MAX_JOINT_STEP_RAD,
         "min_approved_task_object_pixel_count_required": int(min_object_pixels),
         "reset_pose_object_off_axis_deg": 63.8,
         "reset_pose_vertical_half_fov_deg": 28.4,
@@ -194,6 +208,9 @@ def summarize_wrist_approach_capture(
 
 __all__ = [
     "APPROACH_CAPTURE_FRAME_BASE",
+    "APPROACH_MAX_JOINT_STEP_RAD",
+    "APPROACH_MAX_OBJECT_DISPLACEMENT_M",
+    "BLOCKER_APPROACH_DISTURBED_OBJECT",
     "APPROACH_CAPTURE_SCHEMA_VERSION",
     "APPROACH_STANDOFF_HEIGHTS_M",
     "APPROACH_STEPS_PER_WAYPOINT",

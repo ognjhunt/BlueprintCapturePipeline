@@ -19,12 +19,16 @@ from typing import Any
 
 try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_approach_capture import (
+        APPROACH_MAX_JOINT_STEP_RAD,
+        APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         approach_waypoints_world,
         pose_world_to_base,
         summarize_wrist_approach_capture,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_approach_capture import (
+        APPROACH_MAX_JOINT_STEP_RAD,
+        APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         approach_waypoints_world,
         pose_world_to_base,
         summarize_wrist_approach_capture,
@@ -942,6 +946,18 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             time.monotonic() - phase_started, 6
         )
 
+        # The canonical hold is judged on the hold alone.  Evaluating it after the
+        # approach would measure motion the canonical condition never contained.
+        approved_can = env.unwrapped.scene["approved_can"]
+        can_pose = _to_torch(approved_can.data.root_pose_w)[0]
+        if not torch.isfinite(can_pose).all():
+            raise RuntimeError("approved_can_state_nonfinite")
+        object_stability = _assert_canonical_object_stability(
+            hold_start_can_pose,
+            can_pose,
+        )
+        canonical_hold_can_pose = can_pose.clone()
+
         # --- preregistered wrist approach -------------------------------------
         # At the canonical reset pose the wrist camera cannot see the approved
         # can (63.8 deg off axis against a 28.4 deg vertical half FOV), so wrist
@@ -952,6 +968,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         approach_frames: list[dict[str, Any]] = []
         approach_ik_succeeded = True
         approach_error: str | None = None
+        approach_object_displacement_m = 0.0
+        approach_aborted = False
         try:
             from isaaclab.controllers import (  # noqa: PLC0415
                 DifferentialIKController,
@@ -1019,9 +1037,29 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         jacobian,
                         _to_torch(robot.data.joint_pos)[:, arm_joint_ids],
                     )
+                    # Differential IK returns the whole remaining correction;
+                    # commanding it outright swings the arm through the object.
+                    current_arm = _to_torch(robot.data.joint_pos)[:, arm_joint_ids]
+                    joint_target = current_arm + torch.clamp(
+                        joint_target - current_arm,
+                        -APPROACH_MAX_JOINT_STEP_RAD,
+                        APPROACH_MAX_JOINT_STEP_RAD,
+                    )
                     approach_action = torch.zeros_like(action)
                     approach_action[:, :7] = joint_target
                     env.step(approach_action)
+                    approach_object_displacement_m = float(
+                        torch.linalg.vector_norm(
+                            _to_torch(approved_can.data.root_pose_w)[0, :3]
+                            - canonical_hold_can_pose[:3]
+                        )
+                    )
+                    if (
+                        approach_object_displacement_m
+                        > APPROACH_MAX_OBJECT_DISPLACEMENT_M
+                    ):
+                        approach_aborted = True
+                        break
                 for camera_name in ("external_camera", "wrist_camera"):
                     approach_frames.append(
                         _save_camera(
@@ -1037,28 +1075,25 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         )
                     )
                 _phase(
-                    f"wrist_approach_waypoint_{waypoint['waypoint_index']}", "completed"
+                    f"wrist_approach_waypoint_{waypoint['waypoint_index']}",
+                    "blocked" if approach_aborted else "completed",
                 )
+                if approach_aborted:
+                    break
         except Exception as exc:  # noqa: BLE001 - recorded, never fatal
             approach_ik_succeeded = False
             approach_error = f"{type(exc).__name__}: {exc}"
             _phase("wrist_approach", "blocked")
         wrist_approach_capture = summarize_wrist_approach_capture(
-            captured_frames=approach_frames, ik_succeeded=approach_ik_succeeded
+            captured_frames=approach_frames,
+            ik_succeeded=approach_ik_succeeded,
+            object_displacement_m=approach_object_displacement_m,
         )
         wrist_approach_capture["error"] = approach_error
         camera_rows.extend(approach_frames)
         timings_seconds["wrist_approach"] = round(time.monotonic() - phase_started, 6)
 
         robot = env.unwrapped.scene["robot"]
-        approved_can = env.unwrapped.scene["approved_can"]
-        can_pose = _to_torch(approved_can.data.root_pose_w)[0]
-        if not torch.isfinite(can_pose).all():
-            raise RuntimeError("approved_can_state_nonfinite")
-        object_stability = _assert_canonical_object_stability(
-            hold_start_can_pose,
-            can_pose,
-        )
         return {
             "schema_version": "adp009d_native_microcheck.v1",
             "status": "completed",
