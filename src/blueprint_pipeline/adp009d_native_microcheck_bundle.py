@@ -65,7 +65,7 @@ set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 export BLUEPRINT_ADP009D_OUTPUT_DIR="$OUT_DIR"
-export BLUEPRINT_ADP009D_POLICY_CANDIDATE="${BLUEPRINT_ADP009D_POLICY_CANDIDATE:-}"
+export BLUEPRINT_ADP009D_POLICY_CANDIDATE="@@POLICY_CANDIDATE@@"
 mkdir -p "$OUT_DIR"
 
 # Environment facts the policy-server design could not verify from off-worker:
@@ -796,7 +796,13 @@ def build_native_microcheck_bundle(
             runtime / "adp009d_policy_provisioning.sh",
             build_provisioning_script(policy_candidate_id),
         )
-    _write_executable(runtime / "run_adp_arena_provider_runtime.sh", ENTRYPOINT)
+    # Baked in at build time.  A passthrough of an unset variable reads as
+    # empty, and the runtime then skips the episode in silence -- which is
+    # exactly what a live run did: no episode, no error, nothing to read.
+    _write_executable(
+        runtime / "run_adp_arena_provider_runtime.sh",
+        ENTRYPOINT.replace("@@POLICY_CANDIDATE@@", policy_candidate_id or ""),
+    )
     generated = generated_at or utc_now_iso()
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

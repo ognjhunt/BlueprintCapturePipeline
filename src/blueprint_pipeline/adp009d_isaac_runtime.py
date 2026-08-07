@@ -1355,7 +1355,14 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         # no episode must say so rather than look like a policy that scored zero.
         policy_episode: dict[str, Any] | None = None
         policy_episode_error: str | None = None
+        policy_episode_skipped_reason: str | None = None
         candidate_id = os.environ.get("BLUEPRINT_ADP009D_POLICY_CANDIDATE") or ""
+        if not candidate_id:
+            policy_episode_skipped_reason = "no_policy_candidate_bound"
+        elif gripper_probe.get("status") != "measured":
+            policy_episode_skipped_reason = (
+                f"gripper_convention_{gripper_probe.get('status')}"
+            )
         if candidate_id and gripper_probe.get("status") == "measured":
             _phase("policy_episode")
             phase_started = time.monotonic()
@@ -1463,6 +1470,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "gripper_convention_probe": gripper_probe,
             "policy_episode": policy_episode,
             "policy_episode_error": policy_episode_error,
+            "policy_episode_skipped_reason": policy_episode_skipped_reason,
+            "policy_candidate_bound": candidate_id or None,
             "wrist_approach_capture": wrist_approach_capture,
             "semantic_override_layer": SEMANTIC_OVERRIDE_LAYER,
             "semantic_override_layer_digest": _canonical_digest(

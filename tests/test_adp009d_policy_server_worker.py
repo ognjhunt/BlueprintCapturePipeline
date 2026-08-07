@@ -180,3 +180,27 @@ def test_the_serve_command_matches_openpis_pinned_cli() -> None:
     assert 'f"--policy.dir={args.checkpoint_root}"' in source
     # Port is a top-level Args field, not nested under policy.
     assert '"--port"' in source
+
+
+def test_a_skipped_episode_says_why_rather_than_vanishing() -> None:
+    """A live run produced no episode and no error; nothing said the guard skipped.
+
+    The entrypoint exported a passthrough of an unset variable, so the bound
+    candidate read as empty and the runtime silently declined to run.  A run
+    that produced no episode must be distinguishable from a policy that scored
+    zero.
+    """
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "policy_episode_skipped_reason" in source
+    assert '"no_policy_candidate_bound"' in source
+    assert '"policy_candidate_bound"' in source
+
+    # The candidate is baked in, never a passthrough of an unset variable.
+    assert "@@POLICY_CANDIDATE@@" in ENTRYPOINT
+    assert "${BLUEPRINT_ADP009D_POLICY_CANDIDATE:-}" not in ENTRYPOINT
