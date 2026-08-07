@@ -252,21 +252,52 @@ def _finite_vector(value: Any, length: int) -> np.ndarray | None:
     return vector
 
 
-def tilt_degrees_from_quaternion_wxyz(quaternion_wxyz: Sequence[float]) -> float:
+QUATERNION_ORDER_WXYZ = "wxyz"
+QUATERNION_ORDER_XYZW = "xyzw"
+QUATERNION_ORDERS = (QUATERNION_ORDER_WXYZ, QUATERNION_ORDER_XYZW)
+
+
+def tilt_degrees_from_quaternion(
+    quaternion: Sequence[float], *, order: str
+) -> float:
     """Angle between the body's +z axis and world up, in degrees.
 
-    For a unit quaternion ``(w, x, y, z)`` the third diagonal entry of the
-    rotation matrix -- the world-z component of the body's z axis -- is
-    ``1 - 2 * (x**2 + y**2)``.  The indices matter: this reads ``x`` and ``y``
-    from positions 1 and 2, which is only correct for wxyz ordering.
+    For a unit quaternion the third diagonal entry of the rotation matrix --
+    the world-z component of the body's z axis -- is ``1 - 2 * (x**2 + y**2)``.
+    Which slots hold x and y is the whole question, and it is not safe to
+    assume: retained live data for this scene shows the approved can's
+    ``root_pose_w`` quaternion as ``(-1.2e-05, -8.2e-05, -0.0, 1.0)`` for an
+    upright can, i.e. w in the LAST slot -- xyzw, not the wxyz this function
+    originally hardcoded.
+
+    Guessing wrong is silent rather than loud, which is why the order is a
+    required argument.  Near identity both readings agree to four decimals, so
+    a settled can looks correct either way; but a can knocked 90 degrees about
+    x is ``(0.707, 0, 0, 0.707)`` in xyzw, which read as wxyz gives x=0, y=0
+    and therefore 0 degrees of tilt.  The knocked-over predicate would never
+    fire on exactly the case it exists to catch.
     """
 
-    vector = _finite_vector(quaternion_wxyz, 4)
+    if order not in QUATERNION_ORDERS:
+        raise TaskScoringError([f"task_scoring_quaternion_order_unknown:{order}"])
+    vector = _finite_vector(quaternion, 4)
     if vector is None:
         raise TaskScoringError(["task_scoring_quaternion_invalid"])
-    _w, x, y, _z = (float(item) for item in vector)
+    values = [float(item) for item in vector]
+    if order == QUATERNION_ORDER_WXYZ:
+        x, y = values[1], values[2]
+    else:
+        x, y = values[0], values[1]
     alignment = max(-1.0, min(1.0, 1.0 - 2.0 * (x * x + y * y)))
     return math.degrees(math.acos(alignment))
+
+
+def tilt_degrees_from_quaternion_wxyz(quaternion_wxyz: Sequence[float]) -> float:
+    """Backwards-compatible wxyz wrapper.  Prefer the explicit-order form."""
+
+    return tilt_degrees_from_quaternion(
+        quaternion_wxyz, order=QUATERNION_ORDER_WXYZ
+    )
 
 
 def _horizontal_distance(left: np.ndarray, right: np.ndarray) -> float:
@@ -340,6 +371,7 @@ def normalize_object_samples(
     samples: Sequence[Mapping[str, Any]],
     *,
     require_sealed_start_pose: bool = True,
+    quaternion_order: str = QUATERNION_ORDER_XYZW,
 ) -> tuple[dict[str, Any], ...]:
     """Validate an episode's extracted state and raise on anything malformed.
 
@@ -394,8 +426,11 @@ def normalize_object_samples(
             {
                 "step_index": step_index,
                 "position_m": pose[0:3],
-                "quaternion_wxyz": quaternion,
-                "tilt_deg": tilt_degrees_from_quaternion_wxyz(quaternion),
+                "quaternion": quaternion,
+                "quaternion_order": quaternion_order,
+                "tilt_deg": tilt_degrees_from_quaternion(
+                    quaternion, order=quaternion_order
+                ),
                 "gripper_width_m": _normalize_gripper_width(
                     sample.get("gripper_width_m"), errors, index
                 ),
@@ -1035,6 +1070,10 @@ __all__ = [
     "resolve_outcome_ladder",
     "score_task_episode",
     "thresholds_used",
+    "QUATERNION_ORDERS",
+    "QUATERNION_ORDER_WXYZ",
+    "QUATERNION_ORDER_XYZW",
+    "tilt_degrees_from_quaternion",
     "tilt_degrees_from_quaternion_wxyz",
     "translated",
     "validate_destination",

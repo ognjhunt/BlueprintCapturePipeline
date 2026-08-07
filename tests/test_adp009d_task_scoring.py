@@ -75,12 +75,11 @@ from blueprint_pipeline.adp009d_task_scoring import (
     pushed_out_of_task_envelope,
     resolve_outcome_ladder,
     score_task_episode,
-    tilt_degrees_from_quaternion_wxyz,
     translated,
     validate_destination,
 )
 
-UPRIGHT_WXYZ = (1.0, 0.0, 0.0, 0.0)
+UPRIGHT_XYZW = (0.0, 0.0, 0.0, 1.0)
 START = CAN_START_POSITION_M
 # A destination 0.20 m along -x on the same support: clear of the 0.15 m floor,
 # 0.5985 m from the robot base, and inside the SAGE collision ROI.
@@ -93,11 +92,17 @@ EPS = 1.0e-6
 LIFTED_Z = START[2] + LIFT_CLEARANCE_M + EPS
 
 
-def _tilt_quaternion_wxyz(degrees: float) -> tuple[float, float, float, float]:
-    """Unit quaternion tilting the body z axis by ``degrees`` about world x."""
+def _tilt_quaternion_xyzw(degrees: float) -> tuple[float, float, float, float]:
+    """Unit quaternion tilting the body z axis by ``degrees`` about world x.
+
+    Emitted in xyzw, matching what Isaac actually retains for this scene: a live
+    upright can's root_pose_w quaternion is (-1.2e-05, -8.2e-05, -0.0, 1.0),
+    with w last.  Fixtures in the other order would let a convention mistake
+    pass the suite while breaking on real data.
+    """
 
     half = math.radians(degrees) / 2.0
-    return (math.cos(half), math.sin(half), 0.0, 0.0)
+    return (math.sin(half), 0.0, 0.0, math.cos(half))
 
 
 def _sample(
@@ -109,7 +114,7 @@ def _sample(
     grasp_frame_position_world_m=None,
     finger_contact_forces_n=None,
 ) -> dict:
-    quaternion = UPRIGHT_WXYZ if tilt_deg == 0.0 else _tilt_quaternion_wxyz(tilt_deg)
+    quaternion = UPRIGHT_XYZW if tilt_deg == 0.0 else _tilt_quaternion_xyzw(tilt_deg)
     sample: dict = {"step_index": step_index, "can_pose_world": [*position, *quaternion]}
     if gripper_width_m is not None:
         sample["gripper_width_m"] = gripper_width_m
@@ -223,23 +228,66 @@ def _successful_episode(
 # ---------------------------------------------------------------------------
 
 
-def test_tilt_reads_the_wxyz_convention() -> None:
-    assert tilt_degrees_from_quaternion_wxyz(UPRIGHT_WXYZ) == pytest.approx(0.0, abs=1e-9)
-    assert tilt_degrees_from_quaternion_wxyz(_tilt_quaternion_wxyz(15.0)) == pytest.approx(
-        15.0, abs=1e-9
+def test_tilt_is_read_in_the_declared_convention() -> None:
+    """The order is the whole risk, so it is declared rather than assumed."""
+
+    from blueprint_pipeline.adp009d_task_scoring import (
+        QUATERNION_ORDER_WXYZ,
+        QUATERNION_ORDER_XYZW,
+        tilt_degrees_from_quaternion,
     )
-    assert tilt_degrees_from_quaternion_wxyz(_tilt_quaternion_wxyz(90.0)) == pytest.approx(
-        90.0, abs=1e-9
-    )
+
+    for degrees in (0.0, 15.0, 90.0):
+        assert tilt_degrees_from_quaternion(
+            _tilt_quaternion_xyzw(degrees), order=QUATERNION_ORDER_XYZW
+        ) == pytest.approx(degrees, abs=1e-9)
+
     # Yaw does not tilt: a can spun about world z is still upright.
-    assert tilt_degrees_from_quaternion_wxyz((0.0, 0.0, 0.0, 1.0)) == pytest.approx(
-        0.0, abs=1e-9
+    half = math.sqrt(0.5)
+    assert tilt_degrees_from_quaternion(
+        (0.0, 0.0, half, half), order=QUATERNION_ORDER_XYZW
+    ) == pytest.approx(0.0, abs=1e-9)
+
+    # The failure this guards is silent, not loud.  Near identity the two
+    # orders agree, so a settled can looks right either way -- exactly why a
+    # wrong default survives a test suite.
+    upright = _tilt_quaternion_xyzw(0.0)
+    assert tilt_degrees_from_quaternion(
+        upright, order=QUATERNION_ORDER_WXYZ
+    ) == pytest.approx(
+        tilt_degrees_from_quaternion(upright, order=QUATERNION_ORDER_XYZW), abs=1e-9
     )
-    # Reading x and y from the wrong slots is the whole risk: identity shifted
-    # one place is a can standing on its head.
-    assert tilt_degrees_from_quaternion_wxyz((0.0, 1.0, 0.0, 0.0)) == pytest.approx(
-        180.0, abs=1e-9
+
+    # But a can knocked fully onto its side reads as perfectly upright in the
+    # wrong order, so knocked_over would never fire on the case it exists for.
+    knocked = _tilt_quaternion_xyzw(90.0)
+    assert tilt_degrees_from_quaternion(
+        knocked, order=QUATERNION_ORDER_XYZW
+    ) == pytest.approx(90.0, abs=1e-9)
+    assert tilt_degrees_from_quaternion(
+        knocked, order=QUATERNION_ORDER_WXYZ
+    ) == pytest.approx(0.0, abs=1e-9)
+
+    # An unknown order is refused rather than defaulted.
+    with pytest.raises(TaskScoringError):
+        tilt_degrees_from_quaternion(upright, order="wxzy")
+
+
+def test_default_convention_matches_retained_live_isaac_data() -> None:
+    """Retained ADP-009D data puts w last; the default must follow the data."""
+
+    from blueprint_pipeline.adp009d_task_scoring import (
+        QUATERNION_ORDER_XYZW,
+        normalize_object_samples,
     )
+
+    # Verbatim from a live run's canonical_hold_object_stability.final_pose_world.
+    live_upright = [-1.2e-05, -8.2e-05, -0.0, 1.0]
+    normalized = normalize_object_samples(
+        [{"step_index": 0, "can_pose_world": [*START, *live_upright]}]
+    )
+    assert normalized[0]["quaternion_order"] == QUATERNION_ORDER_XYZW
+    assert normalized[0]["tilt_deg"] == pytest.approx(0.0095, abs=1e-3)
 
 
 def test_task_envelope_is_the_sage_roi_intersected_with_reach() -> None:
@@ -284,7 +332,7 @@ def test_task_envelope_is_the_sage_roi_intersected_with_reach() -> None:
             "task_scoring_sample_0_quaternion_not_unit_norm",
         ),
         (
-            [{"can_pose_world": [*START, *UPRIGHT_WXYZ]}],
+            [{"can_pose_world": [*START, *UPRIGHT_XYZW]}],
             "task_scoring_sample_0_step_index_invalid",
         ),
         (["not-a-mapping"], "task_scoring_sample_0_not_a_mapping"),
