@@ -258,6 +258,10 @@ def materialize_inpaint360_adapter(
 
     scene = receipt.get("scene") or {}
     target_object_radius_m = _target_object_radius_m(scene)
+    target_obb_corners_m = [
+        [float(value) for value in row]
+        for row in scene["target_obb_corners_m"]
+    ]
     source_dir = output / "source"
     vanilla_dir = output / "vanilla_3dgs"
     model_dir = output / "inpaint360_model"
@@ -402,6 +406,8 @@ def materialize_inpaint360_adapter(
             "target_method_instance_id": 1,
             "target_object_radius_m": target_object_radius_m,
             "target_object_radius_derivation": "max_distance_from_metric_obb_center",
+            "target_obb_corners_m": target_obb_corners_m,
+            "target_removal_volume_contract": "gaussian_center_inside_exact_publisher_obb",
             "paired_config_contract": (
                 "config/object_removal/blueprint/840313.json_to_"
                 "config/object_inpaint/blueprint/840313.json"

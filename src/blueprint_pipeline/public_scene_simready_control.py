@@ -6,7 +6,10 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
+import shutil
+import statistics
 import subprocess
 from typing import Any, Mapping, Sequence
 
@@ -78,6 +81,81 @@ def _file_evidence(path: Path, *, root: Path) -> dict[str, Any]:
     }
 
 
+def _lab_to_srgb(lab: Sequence[float]) -> list[float]:
+    lightness, channel_a, channel_b = (float(value) for value in lab)
+    fy = (lightness + 16.0) / 116.0
+    fx = channel_a / 500.0 + fy
+    fz = fy - channel_b / 200.0
+
+    def inverse(value: float) -> float:
+        return value**3 if value**3 > 0.008856 else (value - 16.0 / 116.0) / 7.787
+
+    x, y, z = 0.95047 * inverse(fx), inverse(fy), 1.08883 * inverse(fz)
+    linear = (
+        3.2404542 * x - 1.5371385 * y - 0.4985314 * z,
+        -0.969266 * x + 1.8760108 * y + 0.041556 * z,
+        0.0556434 * x - 0.2040259 * y + 1.0572252 * z,
+    )
+
+    def encode(value: float) -> float:
+        value = max(0.0, min(1.0, value))
+        encoded = 12.92 * value if value <= 0.0031308 else 1.055 * value ** (1 / 2.4) - 0.055
+        return max(0.0, min(1.0, encoded))
+
+    return [encode(value) for value in linear]
+
+
+def _visual_match_evidence(
+    request: Mapping[str, Any], *, evidence_root: Path
+) -> dict[str, Any] | None:
+    value = request.get("visual_match_evidence")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise PublicSceneSimReadyControlError("visual_match_evidence_invalid")
+    path = _required_file(
+        evidence_root / str(value.get("relative_path")),
+        evidence_root,
+        name="visual_match_evidence",
+    )
+    receipt = _read_json(path)
+    supplied = receipt.get("receipt_digest")
+    if supplied != canonical_digest(receipt, digest_field="receipt_digest"):
+        raise PublicSceneSimReadyControlError("visual_match_evidence_digest_invalid")
+    if supplied != value.get("receipt_digest"):
+        raise PublicSceneSimReadyControlError("visual_match_evidence_identity_mismatch")
+    aggregate = receipt.get("aggregate")
+    rows = receipt.get("camera_results")
+    if (
+        receipt.get("status") not in {"diagnosed_mismatch", "diagnosed_match_candidate"}
+        or not isinstance(aggregate, Mapping)
+        or aggregate.get("projected_scale_and_pose_gate_passed") is not True
+        or not isinstance(rows, list)
+        or len(rows) < 3
+    ):
+        raise PublicSceneSimReadyControlError("visual_match_evidence_not_usable")
+    labs: list[list[float]] = []
+    for row in rows:
+        appearance = row.get("appearance") if isinstance(row, Mapping) else None
+        lab = appearance.get("reference_median_lab") if isinstance(appearance, Mapping) else None
+        if not isinstance(lab, list) or len(lab) != 3 or not all(
+            isinstance(item, (int, float)) and math.isfinite(float(item)) for item in lab
+        ):
+            raise PublicSceneSimReadyControlError("visual_match_reference_lab_missing")
+        labs.append([float(item) for item in lab])
+    median_lab = [statistics.median(row[index] for row in labs) for index in range(3)]
+    return {
+        "receipt": _file_evidence(path, root=evidence_root),
+        "receipt_digest": supplied,
+        "camera_count": len(labs),
+        "projected_scale_and_pose_gate_passed": True,
+        "reference_median_lab": median_lab,
+        "derived_srgb_diffuse_color": _lab_to_srgb(median_lab),
+        "derivation": "median_of_camera_reference_median_lab_then_cie_lab_d65_to_srgb",
+        "authority": "synthetic_interiorgs_multiview_appearance_diagnostic_not_physical_material_truth",
+    }
+
+
 def _git_value(repo: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -136,6 +214,30 @@ def _run_foundation_validation(
     pending_path = result_path.with_name(f".{result_path.name}.pending")
     pending_path.unlink(missing_ok=True)
 
+    validation_asset_path = asset_path
+    isolated_relative = value.get("isolated_input_relative_path")
+    if isolated_relative is not None:
+        validation_asset_path = _require_under(
+            evidence_root / str(isolated_relative), evidence_root
+        )
+        validation_asset_path.parent.mkdir(parents=True, exist_ok=True)
+        other_usd_files = [
+            path
+            for path in validation_asset_path.parent.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in {".usd", ".usda", ".usdc", ".usdz"}
+            and path != validation_asset_path
+        ]
+        if other_usd_files:
+            raise PublicSceneSimReadyControlError(
+                "simready_validation_isolated_input_not_isolated"
+            )
+        shutil.copyfile(asset_path, validation_asset_path)
+        if _sha256_file(validation_asset_path) != _sha256_file(asset_path):
+            raise PublicSceneSimReadyControlError(
+                "simready_validation_isolated_input_digest_mismatch"
+            )
+
     profile = str(value.get("profile") or "")
     profile_version = str(value.get("profile_version") or "")
     specs_root = foundation_root / "nv_core" / "sr_specs" / "docs"
@@ -154,7 +256,7 @@ def _run_foundation_validation(
         "--output",
         str(pending_path),
         "-v",
-        str(asset_path),
+        str(validation_asset_path),
     ]
     started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     completed = subprocess.run(
@@ -171,7 +273,7 @@ def _run_foundation_validation(
         raise PublicSceneSimReadyControlError("simready_foundation_validation_execution_failed")
 
     payload = _read_json(pending_path)
-    asset_result = payload.get(str(asset_path))
+    asset_result = payload.get(str(validation_asset_path))
     if not isinstance(asset_result, Mapping):
         raise PublicSceneSimReadyControlError("simready_validation_asset_identity_mismatch")
     if asset_result.get("profile_id") != profile or asset_result.get("profile_version") != profile_version:
@@ -206,6 +308,9 @@ def _run_foundation_validation(
         "finished_at": finished_at,
         "exit_status": completed.returncode,
         "asset_sha256": _sha256_file(asset_path),
+        "validated_asset": _file_evidence(validation_asset_path, root=evidence_root)
+        if validation_asset_path != asset_path
+        else None,
         "result": _file_evidence(result_path, root=evidence_root),
         "log": _file_evidence(log_path, root=evidence_root),
         "features": {str(name): dict(feature) for name, feature in features.items()},
@@ -400,6 +505,7 @@ def materialize_parametric_simready_control(
     if abs(size[0] - size[1]) > 0.005:
         raise PublicSceneSimReadyControlError("target_not_cylindrical_within_tolerance")
     world_center = [(lower[index] + upper[index]) / 2.0 for index in range(3)]
+    nominal_base_placement = [world_center[0], world_center[1], lower[2]]
     diameter = (size[0] + size[1]) / 2.0
     radius = diameter / 2.0
     height = size[2]
@@ -418,6 +524,12 @@ def materialize_parametric_simready_control(
     diffuse = [_unit_interval(value, "diffuse_color") for value in visual_material.get("diffuse_color", [])]
     if len(diffuse) != 3:
         raise PublicSceneSimReadyControlError("diffuse_color_rgb_required")
+    visual_match = _visual_match_evidence(request, evidence_root=evidence_root)
+    if visual_match is not None and any(
+        abs(diffuse[index] - visual_match["derived_srgb_diffuse_color"][index]) > 0.02
+        for index in range(3)
+    ):
+        raise PublicSceneSimReadyControlError("diffuse_color_not_derived_from_visual_match")
     roughness = _unit_interval(visual_material.get("roughness"), "roughness")
     metallic = _unit_interval(visual_material.get("metallic"), "metallic")
 
@@ -572,7 +684,10 @@ def materialize_parametric_simready_control(
             "diameter_m": diameter,
             "height_m": height,
             "local_origin": "center_of_base_datum",
-            "world_placement_m": world_center,
+            "obb_center_m": world_center,
+            "nominal_base_placement_m": nominal_base_placement,
+            "world_placement_m": nominal_base_placement,
+            "world_placement_datum": "center_of_base_datum",
             "world_placement_authored_into_asset": False,
             "source": "publisher_semantic_obb_plus_materialized_cad",
             "measurement_authoritative": False,
@@ -584,6 +699,7 @@ def materialize_parametric_simready_control(
             "metallic": metallic,
             "authority": visual_material["authority"],
         },
+        "visual_match_evidence": visual_match,
         "grasp_selection": grasp_evidence,
         "physics": {
             "mass_kg": mass,

@@ -72,17 +72,19 @@ dependent step as blocked instead of guessing.
   now. Keep them `development_only`; they cannot qualify partner capture, owner
   task truth, registration, task physics, observation-domain match, sim-to-real
   fidelity, or partner value. Never copy fixture data into qualified evidence.
-- ADP-008 is observed complete. Until ADP-009 passes, direct nearly all
-  engineering work to exact public-scene/method admission, metric registration,
-  one exact InteriorGS/matching-SAGE-3D object removal through frozen render-
-  derived inputs, unchanged Inpaint360GS author reproduction, an InFusion
-  primary adapter and AuraFusion360 quality challenger, exact SimReady USD
-  replacement, bounded NVIDIA USD Content Agents authoring comparison, targeted ScanNet++
-  real measured transfer after access, hybrid Isaac qualification,
-  abstention, media, and replay. Fresh capture feature work is forbidden unless
-  a measured blocker proves the smallest missing measurement; the next
-  construction phase uses the existing Raw V3.2 path for one fresh
-  clean-background/object-present workcell capture.
+- ADP-008 is observed complete. The 2026-08-06 ADP-009 transition accepts the
+  bounded AuraFusion360/InteriorGS/SAGE/SimReady construction rehearsal while
+  preserving the historical suite at `7/10`; Inpaint360GS and InFusion remain
+  nonblocking typed abstentions, and fresh Raw V3.2 capture replaces ScanNet++
+  as the required real metric transfer. Before fresh capture, direct engineering
+  work to one development-only basic Franka pick-and-place rehearsal on the
+  exact sealed public scene with exactly two frozen runnable learned-policy
+  candidates, complete lossless policy-input media, deterministic non-policy
+  scoring, replay, and teardown. GR00T versions and an exact Cosmos DROID
+  action-policy release may compete during preflight, but only two total
+  candidates enter the matrix; a Cosmos reasoner/world model remains a
+  separately labeled auxiliary. Then use the existing Raw V3.2 path for one
+  fresh clean-background/object-present workcell capture.
 - Do not start or expand humanoid/G1, locomotion, deformables, insertion/force
   tasks, five-policy/general-ranking campaigns, world-model/evaluator research,
   reconstruction/provider bakeoffs, universal runtimes, dynamic-scene research,
@@ -181,6 +183,18 @@ dependent step as blocked instead of guessing.
 - Compatibility work must preserve prior proof boundaries. In particular,
   generated-video or simulator execution never becomes physical truth, and a
   candidate policy or provider never grades itself.
+- Every newly executed ADP simulator policy **evaluation** must use the reusable
+  scenario harness rather than a one-off rollout: preserve one immutable canonical anchor;
+  preregister typed, seed-resolved placement/approach, illumination,
+  camera/sensor, bounded-physics, admitted object cousins, and
+  held-out-composition families; give both frozen candidates identical resolved
+  cells and seeds; and run the zero-action negative plus deterministic scripted
+  positive controls over every scored cell. Report canonical and per-family
+  task metrics, degradation, failures, contacts, and digest-bound media. A
+  simulator startup, single nominal rollout, or ad hoc perturbation remains a
+  smoke/canary and must not be called an evaluation. Object cousins may vary
+  admitted appearance, material, or geometry, but may not silently replace the
+  sealed task object or expand the task family.
 - Every newly executed policy-evaluation episode must retain the exact lossless
   observation frames shown to the policy, a digest-bound frame manifest, and a
   derived human-review video. Completed episodes without all three are invalid;

@@ -1,8 +1,9 @@
 {
-  "schema_version": "arm_decision_proof_north_star.v2",
+  "schema_version": "arm_decision_proof_north_star.v3",
   "program_id": "arm-decision-proof-v1",
   "status": "sole_active_program",
   "approved_on": "2026-08-04",
+  "amended_on": "2026-08-06",
   "north_star": "After qualifying every reusable service seam on a digest-bound, rights-cleared public evidence ladder, including removal of one source object from a metric splat/collision scene, released-code background completion, and replacement with one exact SimReady USD, take one fresh, rights-cleared capture of one previously unseen fixed-arm workcell; construct a candidate Minimum Sufficient Evaluation Replica whose observed metric geometry, registered appearance, collision geometry, and physics-authored task objects remain distinct but share one measured frame; prospectively decide which of exactly two frozen policy or configuration candidates deserves the next scarce physical-test budget, or explicitly abstain, then verify that decision and at least one predicted failure boundary with randomized held-out physical trials.",
   "north_star_metric": {
     "name": "prospectively_physically_validated_new_site_task_decisions",
@@ -15,10 +16,42 @@
   "execution_strategy": {
     "mode": "public_evidence_ladder_then_fresh_site_proof",
     "completed_precursor": "ADP-008_simpler_decision_harness",
-    "active_item": "ADP-009_public_scene_qualification",
-    "public_scene_qualification": "dominant_until_digest_bound_matrix_complete",
+    "active_item": "ADP-009D_public_scene_franka_policy_rehearsal",
+    "public_scene_qualification": "bounded_construction_rehearsal_accepted_with_three_typed_abstentions_and_historical_7_of_10_index",
+    "pre_capture_sim_rehearsal": "required_on_the_sealed_AuraFusion360_SAGE_SimReady_scene_before_fresh_site_capture",
     "fresh_site_capture": "mandatory_final_construction_input_after_public_qualification_and_protocol_freeze",
     "partner_recruitment_and_protocol": "parallel_human_lane"
+  },
+  "public_scene_transition_decision": {
+    "decision_id": "ADP-009-public-scene-transition-2026-08-06",
+    "approved_on": "2026-08-06",
+    "selected_public_scene_editing_path": "AuraFusion360_exact_released_source_on_InteriorGS_840313",
+    "historical_suite_status": "blocked_7_of_10_with_no_relabeling_or_receipt_mutation",
+    "nonblocking_abstentions": [
+      "Inpaint360GS_author_smoke_blocked_on_author_dataset_license_authority",
+      "InFusion_primary_adapter_blocked_on_publisher_checkpoint_license"
+    ],
+    "real_metrology_transfer": "fresh_rights_cleared_Raw_V3_2_capture_replaces_ScanNetPP_as_the_required_real_metric_transfer",
+    "bounded_rehearsal_status": "accepted_for_public_scene_construction_and_pre_capture_simulation_only",
+    "next_gate": "Franka_basic_pick_place_with_exactly_two_frozen_policy_candidates_on_the_sealed_AuraFusion360_SAGE_SimReady_scene",
+    "claim_ceiling": "development_only_not_hidden_background_truth_not_real_metrology_not_policy_validity_not_physical_evidence"
+  },
+  "simulation_evaluation_contract": {
+    "applies_to": "every_new_ADP_simulator_policy_run_claimed_as_an_evaluation",
+    "canonical_anchor": "one_immutable_nominal_condition_retained_in_every_suite",
+    "scenario_families": [
+      "placement_and_approach",
+      "illumination",
+      "camera_and_sensor",
+      "bounded_physics",
+      "admitted_object_cousins",
+      "held_out_composed_cases"
+    ],
+    "candidate_pairing": "exactly_two_frozen_candidates_receive_identical_resolved_cells_and_seeds",
+    "controls": "zero_action_negative_and_deterministic_scripted_positive_run_on_every_scored_cell",
+    "reporting": "canonical_and_per_family_success_degradation_task_state_failures_contacts_paired_deltas_digest_bound_policy_media_and_replay",
+    "smoke_boundary": "startup_nominal_only_single_rollout_or_ad_hoc_perturbation_is_a_smoke_or_canary_not_an_evaluation",
+    "cousin_boundary": "cousins_are_separate_digest_bound_admitted_variants_and_never_overwrite_the_sealed_object_change_the_task_family_or_prove_partner_site_validity"
   },
   "scope": {
     "partners": 1,
@@ -60,12 +93,16 @@
     "render_derived_observation_rule": "when_original_multiview_inputs_are_unavailable_freeze_collision_aware_virtual_cameras_render_object_present_RGB_and_only_the_exact_adapter_declared_splat_rendered_depth_or_disparity_inputs_emit_digest_bound_intrinsics_and_camera_poses_without_running_an_unscaled_mapper_keep_independent_metric_depth_geometry_and_clean_background_truth_out_of_method_inputs_and_keep_calibration_and_test_trajectories_disjoint",
     "inpaint360gs_interface_rule": "the_unchanged_author_data_smoke_is_a_reproducibility_control_not_the_primary_Blueprint_interface_adapter_and_any_future_render_derived_Inpaint360GS_adapter_must_separately_prove_prebuilt_camera_preservation_default_mapper_bypass_and_the_boundary_between_its_virtual_poses_and_Blueprint_source_render_cameras",
     "render_derived_edit_identity": "InFusion_may_add_supplemental_world_aligned_Gaussians_to_a_transcoded_copy_of_the_publisher_PLY_while_AuraFusion360_may_load_or_retrain_an_editable_model_from_frozen_renders_and_neither_path_may_be_called_an_in_place_edit_until_exact_PLY_fields_SH_degree_and_world_transform_round_trip_are_verified",
-    "released_reproducibility_control": "Inpaint360GS_exact_revision_on_author_data_after_license_and_dependency_admission",
-    "primary_released_interface_adapter": "InFusion_exact_revision_after_license_weight_and_dependency_admission",
-    "primary_adapter_reason": "accepts_rendered_depth_intrinsics_and_camera_to_world_emits_supplemental_PLY_in_the_existing_world_frame_and_explicitly_composes_with_an_original_PLY",
-    "primary_adapter_required_patch": "transcode_publisher_PLY_without_coordinate_change_infer_and_preserve_spherical_harmonic_degree_preserve_all_required_fields_and_prove_original_plus_supplemental_round_trip",
-    "released_360_quality_challenger": "AuraFusion360_exact_revision_after_license_weight_and_dependency_admission",
-    "quality_challenger_required_patch": "add_a_generic_dataset_loader_bind_the_custom_masked_Gaussian_PLY_fields_and_prove_camera_frame_and_PLY_round_trip_before_comparison",
+    "released_reproducibility_control": "Inpaint360GS_exact_revision_retained_as_a_nonblocking_typed_abstention_until_author_dataset_license_authority_exists",
+    "primary_released_interface_adapter": "AuraFusion360_exact_released_source_selected_from_observed_InteriorGS_execution_and_project_owner_review",
+    "primary_adapter_reason": "the_exact_released_AuraFusion360_path_completed_the_frozen_InteriorGS_840313_render_packet_preserved_outside_mask_locality_materially_better_than_both_Inpaint360GS_experiments_and_was_accepted_for_the_bounded_internal_hybrid_control",
+    "primary_adapter_required_patch": "retain_the_verified_generic_dataset_camera_and_native_2DGS_representation_adapter_bind_every_future_run_to_exact_source_frames_masks_and_transforms_and_never_call_the_result_an_in_place_edit_of_the_publisher_PLY",
+    "released_360_quality_challenger": "AuraFusion360_historical_quality_challenger_promoted_to_the_selected_ADP_v1_public_scene_editing_path",
+    "quality_challenger_required_patch": "the_scene_specific_adapter_is_observed_for_InteriorGS_840313_but_future_inputs_still_require_exact_camera_frame_mask_native_2DGS_and_output_digest_verification",
+    "nonblocking_released_method_abstentions": [
+      "Inpaint360GS_author_smoke_license_authority_missing",
+      "InFusion_checkpoint_license_missing"
+    ],
     "conditional_released_effect_ablation": "GOR-IS_exact_revision_for_preregistered_shadow_reflection_or_gloss_cases_after_separate_noncommercial_license_admission",
     "released_noncritical_methods": [
       "3DGIC_suboptimal_custom_representation_and_noncommercial_release",
@@ -112,7 +149,7 @@
     "qualification": "geometry_preservation_static_usd_validation_and_dynamic_isaac_contact_grasp_tests"
   },
   "required_evidence": [
-    "digest_bound_public_scene_qualification_matrix",
+    "historical_digest_bound_public_scene_qualification_matrix_with_7_of_10_roles_and_three_typed_abstentions",
     "partner_owned_task_and_decision",
     "immutable_fresh_partner_capture",
     "owner_approved_task_distribution_and_reset",
@@ -142,7 +179,9 @@
     "every_result_is_digest_bound_and_replayable",
     "every_completed_episode_is_visually_reviewable_from_authoritative_lossless_frames_and_a_derived_video",
     "partner_confirms_the_result_changes_or_reduces_the_next_physical_test_allocation",
-    "claims_remain_bounded_to_the_exact_site_task_robot_policies_and_validation_envelope"
+    "claims_remain_bounded_to_the_exact_site_task_robot_policies_and_validation_envelope",
+    "historical_ten_role_index_remains_blocked_7_of_10_and_is_never_rewritten_as_complete",
+    "fresh_Raw_V3_2_capture_supplies_the_required_real_metrology_transfer_instead_of_ScanNetPP"
   ],
   "public_evidence_ladder": [
     {
@@ -172,15 +211,15 @@
     {
       "order": 3,
       "id": "released_inpainting_author_smokes",
-      "status": "required",
-      "substrate": "exact_Inpaint360GS_InFusion_and_AuraFusion360_revisions_with_author_inputs",
-      "purpose": "reproduce_each_unmodified_released_path_before_testing_the_Blueprint_render_derived_interface",
+      "status": "accepted_with_nonblocking_Inpaint360GS_and_InFusion_typed_abstentions",
+      "substrate": "exact_AuraFusion360_author_and_InteriorGS_executions_plus_retained_Inpaint360GS_and_InFusion_blocker_receipts",
+      "purpose": "bind_the_selected_released_editing_path_and_preserve_nonselected_method_failures_without_blocking_the_next_simulation_gate",
       "claim_ceiling": "released_method_reproduction_only"
     },
     {
       "order": 4,
       "id": "synthetic_hybrid_scene_control",
-      "status": "required_after_explicit_rights",
+      "status": "observed_accepted_bounded_control",
       "substrate": "matched_InteriorGS_and_SAGE-3D_scene",
       "purpose": "render_derived_calibration_and_test_trajectories_appearance_semantics_static_collision_pairing_object_removal_InFusion_primary_adapter_AuraFusion360_challenger_and_hybrid_composition",
       "claim_ceiling": "synthetic_static_scene_control_only"
@@ -204,17 +243,17 @@
     {
       "order": 7,
       "id": "real_metrology_transfer",
-      "status": "required_after_access_and_terms_acceptance",
-      "substrate": "one_admitted_ScanNet++_scene",
-      "purpose": "transfer_the_frozen_editing_measurement_and_replacement_contract_to_laser_registered_real_capture",
-      "claim_ceiling": "noncommercial_real_measured_benchmark_only"
+      "status": "superseded_by_mandatory_fresh_site_capture",
+      "substrate": "one_fresh_rights_cleared_Raw_V3_2_workcell_capture_with_object_present_and_clean_background_observations",
+      "purpose": "transfer_the_frozen_editing_measurement_and_replacement_contract_directly_to_the_real_site_used_by_the_prospective_decision",
+      "claim_ceiling": "exact_fresh_site_metric_capture_only"
     },
     {
       "order": 8,
       "id": "deterministic_variation_and_full_rehearsal",
       "status": "required",
-      "substrate": "admitted_InteriorGS_SAGE_control_then_admitted_ScanNet++_transfer_plus_physics_authored_task_island",
-      "purpose": "stress_scale_frame_pose_depth_coverage_appearance_collider_and_task_parameter_variations_then_run_the_complete_simulator_side_Task_Evaluation_Run",
+      "substrate": "sealed_AuraFusion360_InteriorGS_840313_and_SAGE_collision_scene_plus_exact_match_v2_SimReady_can_and_Franka",
+      "purpose": "run_a_basic_Franka_pick_place_rehearsal_with_exactly_two_frozen_policy_candidates_Cosmos_may_be_one_only_after_exact_DROID_action_contract_admission_otherwise_it_remains_auxiliary_before_fresh_capture",
       "claim_ceiling": "construction_robustness_not_multi_site_generalization"
     },
     {
@@ -269,28 +308,28 @@
       "day": 7,
       "phase": "public_scene_qualification",
       "id": "scene_admission_and_positive_control",
-      "required_outcome": "Component receipts plus one suite index bind exact Inpaint360GS InFusion and AuraFusion360 author smokes, the rights-admitted InteriorGS/SAGE hybrid control, a controlled clean-background case, an exact SimReady object, and a physics control; ScanNet++ access and terms, GOR-IS when preregistered, and NVIDIA Content Agents each have an exact admitted receipt, and no component receipt claims matrix completion.",
+      "required_outcome": "The historical ten-role suite remains truthfully blocked at seven admitted roles with exact nonblocking abstentions for Inpaint360GS author data InFusion checkpoint licensing and ScanNet++ access; the index is not rewritten as complete and no component receipt claims matrix completion.",
       "failure_action": "stop"
     },
     {
       "day": 14,
       "phase": "public_scene_qualification",
       "id": "metric_hybrid_scene",
-      "required_outcome": "One exact rights-admitted InteriorGS/SAGE hybrid control preserves the publisher metric frame object boxes and active splat/static-collision pairing without claiming measurement-authoritative local surface geometry, runs the InFusion world-frame supplemental-PLY adapter and AuraFusion360 multiview challenger on one frozen render packet, removes one source object from appearance and matching collision, and inserts one exact SimReady USD; the manual control and NVIDIA Content Agents candidate pass standalone geometry, static, and dynamic Isaac gates.",
+      "required_outcome": "The bounded public-scene construction rehearsal is accepted on exact InteriorGS scene 840313 and matching SAGE collision: selected AuraFusion360 execution removes the source appearance candidate, the matching source collider is inactive, the exact match-v2 SimReady can is inserted at the measured support, and manual plus NVIDIA Content Agents authoring paths pass static and dynamic Isaac gates without claiming metric hidden-background truth.",
       "failure_action": "stop"
     },
     {
       "day": 21,
       "phase": "public_scene_qualification",
       "id": "variation_and_abstention",
-      "required_outcome": "Released-code inpainting is scored for outside-mask locality and multiview self-consistency on object-present test trajectories and for full-reference factual recovery only on controlled clean-background truth released after the edit digest is sealed; one exact ScanNet++ real measured transfer is complete; the replacement USD passes visual collider contact and reset checks; deterministic variations preserve the bounded result or emit typed abstention.",
+      "required_outcome": "AuraFusion360 is scored for outside-mask locality and multiview review on the object-present public scene, the controlled clean-background case supplies separate factual recovery evidence after seal release, the replacement passes visual collider contact reset and grasp checks, and the ScanNet++ transfer remains a historical typed abstention because fresh Raw V3.2 capture now supplies the mandatory real metric transfer.",
       "failure_action": "pivot_or_stop"
     },
     {
       "day": 28,
       "phase": "public_scene_qualification",
       "id": "public_data_rehearsal",
-      "required_outcome": "One command reproduces the admitted component index, render-derived inpainting adapter, removal and exact replacement receipts, asset-authoring comparison, hybrid-scene checks, variation outcomes, simulator-side two-candidate Task Evaluation Run, complete media receipts, failures, claim ceilings, and replay without using partner data.",
+      "required_outcome": "Before fresh capture one command reproduces the sealed AuraFusion360 SAGE and exact SimReady scene then runs a basic Franka pick-place Task Evaluation rehearsal with exactly two frozen runnable policy candidates; an exact Cosmos DROID action policy may be one candidate only after contract admission while a Cosmos reasoner or world model remains a separately labeled auxiliary evaluator, and every episode retains lossless policy inputs review video traces failures claim ceilings replay and provider teardown evidence.",
       "failure_action": "stop"
     },
     {

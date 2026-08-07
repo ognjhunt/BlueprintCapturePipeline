@@ -4952,8 +4952,26 @@ def test_vast_adapter_request_logs_container_missing_retry(
 
 
 def test_adp_simpler_uses_bounded_cold_pull_container_window() -> None:
+    assert vpa._container_missing_max_seconds("isaac") == 720
+    assert vpa._container_missing_max_seconds("adp_simready_isaac") == 720
     assert vpa._container_missing_max_seconds("adp_simpler") == 720
     assert vpa._container_missing_max_seconds("unitree_unifolm") == 60
+
+
+def test_exact_simready_isaac_bundle_does_not_require_policy_video() -> None:
+    assert vpa._provider_expected_video_count("isaac") > 0
+    assert vpa._provider_expected_video_count("adp_simready_isaac") == 0
+
+
+def test_exact_simready_isaac_bundle_forces_http1_download() -> None:
+    script = vpa._probe_shell_script(
+        "https://example.invalid/heartbeat",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="adp_simready_isaac",
+    )
+
+    assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
 
 
 def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs(
@@ -5861,7 +5879,7 @@ def test_vast_adapter_provider_blockers_after_mocked_preflight_pass(
     assert result["status"] == "blocked"
     provider = _read_json(tmp_path / "provider-blockers" / "vast_provider_command_result.json")
     assert "blueprint_bundle_execution_requires_isaac_smoke_path" in provider["blockers"]
-    assert "isaac_provider_runtime_bundle_missing" in provider["blockers"]
+    assert "isaac_provider_runtime_bundle_missing" not in provider["blockers"]
     assert "provider_bundle_fetch_url_missing" in provider["blockers"]
     assert "provider_output_put_url_missing" in provider["blockers"]
 

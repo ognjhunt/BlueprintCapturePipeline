@@ -186,8 +186,79 @@ fi
 "${UV_BIN}" pip freeze --python "${MAIN_PY}" > "${OUTPUT_DIR}/main-pip-freeze.txt"
 "${UV_BIN}" pip freeze --python "${LAMA_PY}" > "${OUTPUT_DIR}/lama-pip-freeze.txt"
 
-"${MAIN_PY}" "${SCRIPT_DIR}/adp_inpaint360_interiorgs_provider_runner.py"
+export TORCH_HOME="${SOURCE_DIR}/.torch"
+python3 - "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${TORCH_HOME}" <<'PY'
+import hashlib
+import json
+import shutil
+import sys
+from pathlib import Path
+
+script_dir = Path(sys.argv[1])
+output_dir = Path(sys.argv[2])
+torch_home = Path(sys.argv[3])
+spec = json.loads((script_dir / "execution_spec.json").read_text(encoding="utf-8"))
+expected = spec["runtime_dependencies"]["torchvision_vgg16_imagenet1k_v1"]
+source = script_dir / expected["filename"]
+destination = torch_home / "hub" / "checkpoints" / expected["filename"]
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+valid_source = (
+    source.is_file()
+    and source.stat().st_size == expected["size_bytes"]
+    and sha256(source) == expected["sha256"]
+)
+if valid_source:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+valid_destination = (
+    destination.is_file()
+    and destination.stat().st_size == expected["size_bytes"]
+    and sha256(destination) == expected["sha256"]
+)
+receipt = {
+    "schema_version": "adp_inpaint360_runtime_dependency_materialization.v1",
+    "status": "accepted" if valid_source and valid_destination else "blocked",
+    "dependency": "torchvision_vgg16_imagenet1k_v1",
+    "source_url": expected["source_url"],
+    "filename": expected["filename"],
+    "size_bytes": expected["size_bytes"],
+    "sha256": expected["sha256"],
+    "torch_home_relative_path": f"hub/checkpoints/{expected['filename']}",
+    "network_retrieval_during_method_execution_required": False,
+    "blockers": [] if valid_source and valid_destination else ["inpaint360_vgg16_materialization_failed"],
+}
+(output_dir / "vgg16_materialization.json").write_text(
+    json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+raise SystemExit(0 if receipt["status"] == "accepted" else 2)
+PY
+vgg16_materialization_rc=$?
+if [ "${vgg16_materialization_rc}" -ne 0 ]; then
+  write_missing_result "inpaint360_vgg16_materialization_failed"
+  exit "${vgg16_materialization_rc}"
+fi
+
+"${MAIN_PY}" "${SCRIPT_DIR}/adp_inpaint360_interiorgs_provider_runner.py" &
+runner_pid=$!
+(
+  while kill -0 "${runner_pid}" 2>/dev/null; do
+    output_bytes="$(du -sk "${OUTPUT_DIR}" 2>/dev/null | awk '{print $1 * 1024}')"
+    echo "BLUEPRINT_ADP_INPAINT360_RUNTIME_PROGRESS:$(date -u +%Y-%m-%dT%H:%M:%SZ):output_bytes=${output_bytes:-0}"
+    sleep 60
+  done
+) &
+progress_pid=$!
+wait "${runner_pid}"
 runner_rc=$?
+kill "${progress_pid}" 2>/dev/null || true
+wait "${progress_pid}" 2>/dev/null || true
 if [ ! -f "${RESULT_PATH}" ]; then
   write_missing_result "adp_inpaint360_runner_failed_without_runtime_result"
   echo "blocked_adp_inpaint360_process_exited_without_result:${runner_rc}"

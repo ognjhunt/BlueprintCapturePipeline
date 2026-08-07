@@ -6,7 +6,9 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,6 +21,15 @@ SCHEMA_VERSION = "adp_inpaint360_interiorgs_result.v1"
 METHOD_RESOLUTION_ARGUMENT = 2
 MASK_ASSOCIATION_MODE = "pre_registered_single_target_resolution_divisor_2"
 COMMAND_TIMEOUT_SECONDS = 10_800
+MIN_VIRTUAL_MASK_FILL_RATIO = 0.2
+MIN_VIRTUAL_MASK_REFERENCE_RATIO = 0.1
+MAX_VIRTUAL_MASK_FRAME_RATIO = 0.1
+MAX_VIRTUAL_MASK_SOURCE_RATIO = 4.0
+MIN_QUALIFYING_VIRTUAL_VIEW_COUNT = 3
+MAX_QUALIFYING_VIRTUAL_VIEW_COUNT = 8
+TARGET_CENTERED_STANDOFF_MULTIPLIER = 5.0
+MAX_ADDED_GAUSSIAN_REMOVAL_MULTIPLIER = 20
+MAX_ADDED_GAUSSIAN_BASELINE_RATIO = 0.05
 
 
 def _sha256(path: Path) -> str:
@@ -157,21 +168,11 @@ def _ply_vertex_count(path: Path) -> int | None:
     return None
 
 
-def _freeze_supplemental_fusion_view(*, handoff: dict[str, Any], output: Path) -> dict[str, Any]:
-    candidates: list[dict[str, Any]] = []
-    for row in handoff.get("output_masks") or []:
-        relative = str(row.get("relative_path") or "")
-        view_id = Path(relative).stem
-        foreground_pixels = row.get("foreground_pixels")
-        if len(view_id) == 5 and view_id.isdigit() and isinstance(foreground_pixels, int):
-            candidates.append(
-                {
-                    "view_id": view_id,
-                    "foreground_pixels": foreground_pixels,
-                    "mask_sha256": row.get("sha256"),
-                }
-            )
-    positive = [row for row in candidates if row["foreground_pixels"] > 0]
+def _freeze_supplemental_fusion_view(
+    *, selection: dict[str, Any], output: Path
+) -> dict[str, Any]:
+    candidates = [dict(row) for row in selection.get("selected_views") or []]
+    positive = [row for row in candidates if int(row.get("foreground_pixels") or 0) > 0]
     selected = sorted(
         positive,
         key=lambda row: (-int(row["foreground_pixels"]), str(row["view_id"])),
@@ -182,9 +183,7 @@ def _freeze_supplemental_fusion_view(*, handoff: dict[str, Any], output: Path) -
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": "accepted" if not blockers else "blocked",
         "selection_timing": "before_lama_color_depth_inpainting",
-        "selection_basis": (
-            "max_pre_inpainting_binary_mask_foreground_pixels_tiebreak_lowest_view_id"
-        ),
+        "selection_basis": "max_pre_inpainting_quality_qualified_mask_coverage_tiebreak_lowest_view_id",
         "publisher_default_view_id": "00004",
         "selected_view": selected,
         "candidate_count": len(candidates),
@@ -196,12 +195,42 @@ def _freeze_supplemental_fusion_view(*, handoff: dict[str, Any], output: Path) -
 
 
 def _freeze_nonempty_virtual_views(
-    *, handoff: dict[str, Any], output: Path
+    *, handoff: dict[str, Any], mask_binding: dict[str, Any], output: Path
 ) -> dict[str, Any]:
     selected: list[dict[str, Any]] = []
     candidate_count = 0
     empty_view_count = 0
     bbox_ineligible_view_count = 0
+    low_fill_ratio_view_count = 0
+    low_reference_coverage_view_count = 0
+    high_frame_coverage_view_count = 0
+    high_source_coverage_view_count = 0
+    source_counts = [
+        int(value)
+        for value in (mask_binding.get("associated_target_pixel_counts") or {}).values()
+        if isinstance(value, int) and value > 0
+    ]
+    reference_min_pixels = min(source_counts) if source_counts else 0
+    reference_max_pixels = max(source_counts) if source_counts else 0
+    minimum_foreground_pixels = max(
+        1, round(reference_min_pixels * MIN_VIRTUAL_MASK_REFERENCE_RATIO)
+    )
+    maximum_foreground_pixels_from_source = max(
+        1, round(reference_max_pixels * MAX_VIRTUAL_MASK_SOURCE_RATIO)
+    )
+    image_width = handoff.get("image_width")
+    image_height = handoff.get("image_height")
+    image_area = (
+        int(image_width) * int(image_height)
+        if isinstance(image_width, int)
+        and image_width > 0
+        and isinstance(image_height, int)
+        and image_height > 0
+        else 0
+    )
+    maximum_foreground_pixels_from_frame = (
+        math.floor(image_area * MAX_VIRTUAL_MASK_FRAME_RATIO) if image_area else 0
+    )
     for row in handoff.get("output_masks") or []:
         relative = str(row.get("relative_path") or "")
         view_id = Path(relative).stem
@@ -220,12 +249,40 @@ def _freeze_nonempty_virtual_views(
             and bbox_height >= 2
         ):
             bbox_ineligible_view_count += 1
-        if (
+        bbox_area = (
+            int(bbox_width) * int(bbox_height)
+            if isinstance(bbox_width, int)
+            and bbox_width > 0
+            and isinstance(bbox_height, int)
+            and bbox_height > 0
+            else 0
+        )
+        fill_ratio = float(foreground_pixels) / float(bbox_area) if bbox_area else 0.0
+        bbox_eligible = (
             foreground_pixels > 0
             and isinstance(bbox_width, int)
             and bbox_width >= 2
             and isinstance(bbox_height, int)
             and bbox_height >= 2
+        )
+        if bbox_eligible and fill_ratio < MIN_VIRTUAL_MASK_FILL_RATIO:
+            low_fill_ratio_view_count += 1
+        if bbox_eligible and foreground_pixels < minimum_foreground_pixels:
+            low_reference_coverage_view_count += 1
+        if bbox_eligible and (
+            not maximum_foreground_pixels_from_frame
+            or foreground_pixels > maximum_foreground_pixels_from_frame
+        ):
+            high_frame_coverage_view_count += 1
+        if bbox_eligible and foreground_pixels > maximum_foreground_pixels_from_source:
+            high_source_coverage_view_count += 1
+        if (
+            bbox_eligible
+            and fill_ratio >= MIN_VIRTUAL_MASK_FILL_RATIO
+            and foreground_pixels >= minimum_foreground_pixels
+            and maximum_foreground_pixels_from_frame > 0
+            and foreground_pixels <= maximum_foreground_pixels_from_frame
+            and foreground_pixels <= maximum_foreground_pixels_from_source
         ):
             selected.append(
                 {
@@ -233,27 +290,83 @@ def _freeze_nonempty_virtual_views(
                     "foreground_pixels": foreground_pixels,
                     "foreground_bbox_width": bbox_width,
                     "foreground_bbox_height": bbox_height,
+                    "foreground_bbox_fill_ratio": fill_ratio,
                     "mask_sha256": row.get("sha256"),
                 }
             )
     selected.sort(key=lambda row: str(row["view_id"]))
-    blockers = [] if selected else ["inpaint360_nonempty_virtual_views_missing"]
+    eligible_count_before_cap = len(selected)
+    if len(selected) > MAX_QUALIFYING_VIRTUAL_VIEW_COUNT:
+        indexes = [
+            round(index * (len(selected) - 1) / (MAX_QUALIFYING_VIRTUAL_VIEW_COUNT - 1))
+            for index in range(MAX_QUALIFYING_VIRTUAL_VIEW_COUNT)
+        ]
+        selected = [selected[index] for index in indexes]
+    blockers: list[str] = []
+    if len(selected) < MIN_QUALIFYING_VIRTUAL_VIEW_COUNT:
+        blockers.append("inpaint360_target_visible_virtual_view_support_inadequate")
     receipt = {
         "schema_version": "inpaint360_nonempty_virtual_view_selection.v1",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": "accepted" if not blockers else "blocked",
         "selection_timing": "before_lama_color_depth_inpainting",
-        "selection_basis": "pre_inpainting_binary_target_mask_nonempty_bbox_at_least_2x2",
+        "selection_basis": "pre_inpainting_binary_target_mask_quality_and_source_coverage",
         "candidate_count": candidate_count,
         "selected_count": len(selected),
         "selected_views": selected,
         "empty_view_count": empty_view_count,
         "bbox_ineligible_view_count": bbox_ineligible_view_count,
+        "low_fill_ratio_view_count": low_fill_ratio_view_count,
+        "low_reference_coverage_view_count": low_reference_coverage_view_count,
+        "high_frame_coverage_view_count": high_frame_coverage_view_count,
+        "high_source_coverage_view_count": high_source_coverage_view_count,
+        "minimum_qualifying_view_count": MIN_QUALIFYING_VIRTUAL_VIEW_COUNT,
+        "maximum_qualifying_view_count": MAX_QUALIFYING_VIRTUAL_VIEW_COUNT,
+        "eligible_count_before_cap": eligible_count_before_cap,
+        "minimum_bbox_fill_ratio": MIN_VIRTUAL_MASK_FILL_RATIO,
+        "minimum_foreground_pixels": minimum_foreground_pixels,
+        "minimum_foreground_pixels_derivation": "10_percent_of_smallest_frozen_source_mask_at_method_resolution",
+        "source_reference_min_foreground_pixels": reference_min_pixels,
+        "source_reference_max_foreground_pixels": reference_max_pixels,
+        "maximum_foreground_pixels_from_source": maximum_foreground_pixels_from_source,
+        "maximum_foreground_pixels_from_source_derivation": (
+            "4_times_largest_frozen_source_mask_at_method_resolution"
+        ),
+        "image_width": image_width,
+        "image_height": image_height,
+        "maximum_frame_fraction": MAX_VIRTUAL_MASK_FRAME_RATIO,
+        "maximum_foreground_pixels_from_frame": maximum_foreground_pixels_from_frame,
         "excluded_view_count": candidate_count - len(selected),
         "mask_pixels_or_images_modified": False,
         "blockers": blockers,
     }
     _write_json(output / "nonempty_virtual_view_selection.json", receipt)
+    return receipt
+
+
+def _validate_lama_depth_numerics(*, log_path: Path, output: Path) -> dict[str, Any]:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+    non_finite_tokens = re.findall(
+        r"(?<![A-Za-z0-9_])(?:nan|[+-]?inf)(?![A-Za-z0-9_])",
+        text,
+        flags=re.IGNORECASE,
+    )
+    blockers: list[str] = []
+    if not log_path.is_file() or not text:
+        blockers.append("inpaint360_lama_depth_log_missing")
+    if non_finite_tokens:
+        blockers.append("inpaint360_lama_depth_non_finite")
+    receipt = {
+        "schema_version": "inpaint360_lama_depth_numerical_validation.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "log": log_path.name,
+        "log_sha256": _sha256(log_path) if log_path.is_file() else None,
+        "non_finite_token_count": len(non_finite_tokens),
+        "fusion_allowed": not blockers,
+        "blockers": blockers,
+    }
+    _write_json(output / "lama_depth_numerical_validation.json", receipt)
     return receipt
 
 
@@ -314,6 +427,357 @@ def _materialize_nonempty_virtual_view_adapter(
         "blockers": blockers,
     }
     _write_json(output / "nonempty_virtual_view_adapter.json", receipt)
+    return receipt
+
+
+def _materialize_target_centered_virtual_view_adapter(
+    *, source: Path, runtime: Path, spec: dict[str, Any], output: Path
+) -> dict[str, Any]:
+    source_virtual = source / "tools/virtual_pose.py"
+    source_pose_utils = source / "utils/pose_utils.py"
+    adapted_virtual = runtime / "adapted_virtual_pose.py"
+    adapted_pose_utils = runtime / "adapted_pose_utils.py"
+    retained_virtual = output / "adapter_overlays/virtual_pose.target_centered.py"
+    retained_pose_utils = output / "adapter_overlays/pose_utils.target_centered.py"
+    corners = spec.get("target_obb_corners_m")
+    blockers: list[str] = []
+    if (
+        not isinstance(corners, list)
+        or len(corners) != 8
+        or any(not isinstance(row, list) or len(row) != 3 for row in corners)
+    ):
+        blockers.append("inpaint360_target_centered_camera_obb_invalid")
+        center: list[float] | None = None
+    else:
+        center = [sum(float(row[axis]) for row in corners) / 8.0 for axis in range(3)]
+    target_id = spec.get("target_method_instance_id")
+    if not isinstance(target_id, int) or not 1 <= target_id <= 255:
+        blockers.append("inpaint360_target_centered_camera_instance_id_invalid")
+    if not source_virtual.is_file() or not source_pose_utils.is_file():
+        blockers.append("inpaint360_target_centered_camera_publisher_source_missing")
+        virtual_text = ""
+        pose_text = ""
+    else:
+        virtual_text = source_virtual.read_text(encoding="utf-8")
+        pose_text = source_pose_utils.read_text(encoding="utf-8")
+
+    import_anchor = (
+        "from utils.pose_utils import generate_ellipse_path, generate_virtual_radius"
+    )
+    call_anchor = (
+        "        poses = generate_ellipse_path(views, n_frames=30, \n"
+        "                                    is_circle=is_circle, circle_radius=args.circle_radius)"
+    )
+    append_anchor = (
+        "            virtual_pose_list.append(view_tmp)\n\n"
+        "        # Step 1: Generate the full scene containing all objects"
+    )
+    signature_anchor = (
+        "def generate_ellipse_path(views, n_frames=240, const_speed=True, z_variation=0., "
+        "z_phase=0., \n"
+        "                          is_circle=False, circle_radius=1.0, ellipse_radius=1.0, "
+        "gaussians=None, \n"
+        "                          object_centered=False):"
+    )
+    center_anchor = (
+        "    if object_centered:\n"
+        "        xyz = gaussians.get_xyz.cpu().numpy()\n"
+        "        xyz_homo = np.concatenate([xyz, np.ones((xyz.shape[0], 1))], axis=1)  # (N, 4)\n\n"
+        "        xyz_transformed = (transform @ xyz_homo.T).T[:, :3]  # shape (N, 3)\n"
+        "        center = xyz_transformed.mean(axis=0)\n"
+        "    else:\n"
+        "        # Calculate the focal point for the path (cameras point toward this).\n"
+        "        center = focus_point_fn(poses)"
+    )
+    circle_anchor = (
+        "    if is_circle:\n"
+        "        r = np.max(sc) * circle_radius \n"
+        "        def get_positions(theta):\n"
+        "            return np.stack([\n"
+        "                center[0] + r * np.cos(theta),\n"
+        "                center[1] + r * np.sin(theta),\n"
+        "                z_variation * (z_low[2] + (z_high - z_low)[2] *\n"
+        "                               (np.cos(theta + 2 * np.pi * z_phase) * .5 + .5)),\n"
+        "            ], -1)"
+    )
+    for anchor, blocker in (
+        (import_anchor, "inpaint360_target_centered_camera_import_anchor_changed"),
+        (call_anchor, "inpaint360_target_centered_camera_call_anchor_changed"),
+        (append_anchor, "inpaint360_target_centered_mask_anchor_changed"),
+    ):
+        if virtual_text.count(anchor) != 1:
+            blockers.append(blocker)
+    for anchor, blocker in (
+        (signature_anchor, "inpaint360_target_centered_pose_signature_changed"),
+        (center_anchor, "inpaint360_target_centered_pose_center_anchor_changed"),
+        (circle_anchor, "inpaint360_target_centered_pose_circle_anchor_changed"),
+    ):
+        if pose_text.count(anchor) != 1:
+            blockers.append(blocker)
+
+    if not blockers and center is not None:
+        center_literal = json.dumps(center, separators=(",", ":"))
+        corners_literal = json.dumps(corners, separators=(",", ":"))
+        adapted_virtual_text = virtual_text.replace(
+            import_anchor,
+            "from adapted_pose_utils import generate_ellipse_path, generate_virtual_radius",
+        )
+        adapted_virtual_text = adapted_virtual_text.replace(
+            call_anchor,
+            (
+                "        poses = generate_ellipse_path(views, n_frames=30,\n"
+                "                                    is_circle=is_circle, "
+                "circle_radius=args.circle_radius,\n"
+                f"                                    explicit_center_world=np.asarray({center_literal}, "
+                "dtype=np.float64),\n"
+                "                                    target_elevation_ratio=0.2)"
+            ),
+        )
+        mask_helper = f'''\n\ndef blueprint_materialize_exact_obb_masks(views, output_dir):
+    corners = torch.tensor({corners_literal}, dtype=torch.float32, device="cuda")
+    homogeneous = torch.cat(
+        [corners, torch.ones((corners.shape[0], 1), device=corners.device)], dim=1
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    for view in views:
+        clip = homogeneous @ view.full_proj_transform
+        if torch.any(clip[:, 3] <= 1e-6):
+            raise ValueError("inpaint360_projected_obb_behind_virtual_camera")
+        ndc = clip[:, :2] / clip[:, 3:4]
+        pixels = torch.empty_like(ndc)
+        pixels[:, 0] = (ndc[:, 0] + 1.0) * 0.5 * (view.image_width - 1)
+        pixels[:, 1] = (1.0 - ndc[:, 1]) * 0.5 * (view.image_height - 1)
+        hull = cv2.convexHull(np.rint(pixels.detach().cpu().numpy()).astype(np.int32))
+        mask = np.zeros((view.image_height, view.image_width), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, hull, color={target_id})
+        if int(np.count_nonzero(mask)) == 0:
+            raise ValueError("inpaint360_projected_obb_virtual_mask_empty")
+        cv2.imwrite(os.path.join(output_dir, view.image_name + ".png"), mask)
+'''
+        adapted_virtual_text = adapted_virtual_text.replace(
+            "\ndef  virtual(dataset : ModelParams, iteration : int, pipeline : PipelineParams):",
+            mask_helper
+            + "\n\ndef  virtual(dataset : ModelParams, iteration : int, pipeline : PipelineParams):",
+        )
+        adapted_virtual_text = adapted_virtual_text.replace(
+            append_anchor,
+            (
+                "            virtual_pose_list.append(view_tmp)\n\n"
+                "        blueprint_materialize_exact_obb_masks(\n"
+                "            virtual_pose_list,\n"
+                "            os.path.join(dataset.model_path, \"virtual\", \"blueprint_obb_masks\"),\n"
+                "        )\n\n"
+                "        # Step 1: Generate the full scene containing all objects"
+            ),
+        )
+
+        adapted_pose_text = pose_text.replace(
+            signature_anchor,
+            (
+                "def generate_ellipse_path(views, n_frames=240, const_speed=True, "
+                "z_variation=0., z_phase=0.,\n"
+                "                          is_circle=False, circle_radius=1.0, "
+                "ellipse_radius=1.0, gaussians=None,\n"
+                "                          object_centered=False, explicit_center_world=None,\n"
+                "                          target_elevation_ratio=0.0):"
+            ),
+        )
+        adapted_pose_text = adapted_pose_text.replace(
+            center_anchor,
+            (
+                "    if explicit_center_world is not None:\n"
+                "        explicit_center_homo = np.concatenate([\n"
+                "            np.asarray(explicit_center_world, dtype=np.float64), np.ones(1)\n"
+                "        ])\n"
+                "        center = (transform @ explicit_center_homo)[:3]\n"
+                "    elif object_centered:\n"
+                "        xyz = gaussians.get_xyz.cpu().numpy()\n"
+                "        xyz_homo = np.concatenate([xyz, np.ones((xyz.shape[0], 1))], axis=1)\n\n"
+                "        xyz_transformed = (transform @ xyz_homo.T).T[:, :3]\n"
+                "        center = xyz_transformed.mean(axis=0)\n"
+                "    else:\n"
+                "        center = focus_point_fn(poses)"
+            ),
+        )
+        adapted_pose_text = adapted_pose_text.replace(
+            circle_anchor,
+            (
+                "    if is_circle:\n"
+                "        r = np.max(sc) * circle_radius\n"
+                "        if explicit_center_world is not None:\n"
+                f"            r = r * {TARGET_CENTERED_STANDOFF_MULTIPLIER}\n"
+                "        def get_positions(theta):\n"
+                "            if explicit_center_world is not None:\n"
+                "                z_positions = center[2] + (r * target_elevation_ratio * "
+                "np.sin(2.0 * theta))\n"
+                "            else:\n"
+                "                z_positions = z_variation * (z_low[2] + "
+                "(z_high - z_low)[2] *\n"
+                "                    (np.cos(theta + 2 * np.pi * z_phase) * .5 + .5))\n"
+                "            return np.stack([\n"
+                "                center[0] + r * np.cos(theta),\n"
+                "                center[1] + r * np.sin(theta),\n"
+                "                z_positions,\n"
+                "            ], -1)"
+            ),
+        )
+        adapted_virtual.parent.mkdir(parents=True, exist_ok=True)
+        adapted_virtual.write_text(adapted_virtual_text, encoding="utf-8")
+        adapted_pose_utils.write_text(adapted_pose_text, encoding="utf-8")
+        retained_virtual.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(adapted_virtual, retained_virtual)
+        shutil.copy2(adapted_pose_utils, retained_pose_utils)
+
+    receipt = {
+        "schema_version": "inpaint360_target_centered_virtual_view_adapter.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "publisher_virtual_pose_sha256": (
+            _sha256(source_virtual) if source_virtual.is_file() else None
+        ),
+        "publisher_pose_utils_sha256": (
+            _sha256(source_pose_utils) if source_pose_utils.is_file() else None
+        ),
+        "adapted_virtual_pose_sha256": (
+            _sha256(adapted_virtual) if adapted_virtual.is_file() else None
+        ),
+        "adapted_pose_utils_sha256": (
+            _sha256(adapted_pose_utils) if adapted_pose_utils.is_file() else None
+        ),
+        "retained_virtual_pose_relative_path": (
+            retained_virtual.relative_to(output).as_posix() if retained_virtual.is_file() else None
+        ),
+        "retained_pose_utils_relative_path": (
+            retained_pose_utils.relative_to(output).as_posix()
+            if retained_pose_utils.is_file()
+            else None
+        ),
+        "target_center_m": center,
+        "target_elevation_ratio": 0.2,
+        "target_centered_standoff_multiplier": TARGET_CENTERED_STANDOFF_MULTIPLIER,
+        "virtual_view_count": spec.get("runtime", {}).get("virtual_view_count"),
+        "virtual_mask_source_kind": "blueprint_exact_obb_projected_virtual_masks",
+        "camera_contract": "exact_obb_centered_circle_with_two_vertical_oscillations",
+        "mask_contract": "solid_convex_hull_of_exact_obb_projection",
+        "publisher_source_files_modified": False,
+        "unchanged_source_execution_claimed": False,
+        "blockers": blockers,
+    }
+    _write_json(output / "target_centered_virtual_view_adapter.json", receipt)
+    return receipt
+
+
+def _validate_added_gaussian_budget(*, model: Path, output: Path) -> dict[str, Any]:
+    baseline = model / "point_cloud/iteration_2000/point_cloud.ply"
+    removal = model / "point_cloud_object_removal/iteration_2000/point_cloud.ply"
+    final = model / "point_cloud_object_inpaint_virtual/iteration_5000/point_cloud.ply"
+    baseline_count = _ply_vertex_count(baseline)
+    removal_count = _ply_vertex_count(removal)
+    final_count = _ply_vertex_count(final)
+    blockers: list[str] = []
+    if None in (baseline_count, removal_count, final_count):
+        blockers.append("inpaint360_gaussian_budget_point_cloud_missing")
+        removed_count = None
+        added_count = None
+        maximum_added_count = None
+    else:
+        removed_count = max(0, int(baseline_count) - int(removal_count))
+        added_count = max(0, int(final_count) - int(removal_count))
+        maximum_added_count = max(
+            removed_count * MAX_ADDED_GAUSSIAN_REMOVAL_MULTIPLIER,
+            math.ceil(int(baseline_count) * MAX_ADDED_GAUSSIAN_BASELINE_RATIO),
+        )
+        if added_count > maximum_added_count:
+            blockers.append("inpaint360_added_gaussian_budget_exceeded")
+    receipt = {
+        "schema_version": "inpaint360_added_gaussian_budget_validation.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "baseline_vertex_count": baseline_count,
+        "post_removal_vertex_count": removal_count,
+        "final_vertex_count": final_count,
+        "removed_vertex_count": removed_count,
+        "added_vertex_count": added_count,
+        "maximum_added_vertex_count": maximum_added_count,
+        "maximum_added_vertex_count_derivation": (
+            "max_20_times_removed_count_or_5_percent_of_baseline"
+        ),
+        "blockers": blockers,
+    }
+    _write_json(output / "added_gaussian_budget_validation.json", receipt)
+    return receipt
+
+
+def _materialize_obb_removal_adapter(
+    *, source: Path, runtime: Path, spec: dict[str, Any], output: Path
+) -> dict[str, Any]:
+    source_script = source / "edit_object_removal.py"
+    adapted_script = runtime / "adapted_edit_object_removal.py"
+    retained_script = output / "adapter_overlays/edit_object_removal.obb.py"
+    corners = spec.get("target_obb_corners_m")
+    blockers: list[str] = []
+    if spec.get("target_removal_volume_contract") != (
+        "gaussian_center_inside_exact_publisher_obb"
+    ):
+        blockers.append("inpaint360_target_removal_volume_contract_invalid")
+    if (
+        not isinstance(corners, list)
+        or len(corners) != 8
+        or any(not isinstance(row, list) or len(row) != 3 for row in corners)
+    ):
+        blockers.append("inpaint360_target_obb_corners_invalid")
+    if not source_script.is_file():
+        blockers.append("inpaint360_publisher_removal_script_missing")
+        source_text = ""
+    else:
+        source_text = source_script.read_text(encoding="utf-8")
+    anchor = (
+        "            mask3d_convex, object_radius = points_inside_convex_hull("
+        "gaussians._xyz.detach(), mask3d, remove_outliers=True, outlier_factor=1.0)\n"
+        "           \n"
+        "            mask3d = torch.logical_or(mask3d,mask3d_convex)"
+    )
+    if source_text.count(anchor) != 1:
+        blockers.append("inpaint360_obb_removal_adapter_anchor_changed")
+    if not blockers:
+        corners_literal = json.dumps(corners, separators=(",", ":"))
+        replacement = (
+            f"            blueprint_target_obb = np.asarray({corners_literal}, dtype=np.float64)\n"
+            "            blueprint_inside_obb = Delaunay(blueprint_target_obb).find_simplex(\n"
+            "                gaussians._xyz.detach().cpu().numpy()\n"
+            "            ) >= 0\n"
+            "            mask3d = torch.tensor(\n"
+            "                blueprint_inside_obb, device=gaussians._xyz.device, dtype=torch.bool\n"
+            "            )\n"
+            "            if not torch.any(mask3d):\n"
+            "                raise ValueError(\"inpaint360_exact_obb_selected_no_gaussians\")\n"
+            "            object_radius = get_hull_size(\n"
+            "                gaussians._xyz.detach()[mask3d].cpu().numpy()\n"
+            "            )"
+        )
+        adapted_text = source_text.replace(anchor, replacement)
+        adapted_script.parent.mkdir(parents=True, exist_ok=True)
+        adapted_script.write_text(adapted_text, encoding="utf-8")
+        retained_script.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(adapted_script, retained_script)
+    receipt = {
+        "schema_version": "inpaint360_obb_removal_adapter.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "accepted" if not blockers else "blocked",
+        "publisher_source_relative_path": "edit_object_removal.py",
+        "publisher_source_sha256": _sha256(source_script) if source_script.is_file() else None,
+        "adapted_script_sha256": _sha256(adapted_script) if adapted_script.is_file() else None,
+        "retained_script_relative_path": (
+            retained_script.relative_to(output).as_posix() if retained_script.is_file() else None
+        ),
+        "target_obb_corners_m": corners,
+        "removal_volume_contract": spec.get("target_removal_volume_contract"),
+        "behavioral_change": "replace_semantic_convex_hull_removal_with_exact_publisher_obb_center_membership",
+        "publisher_source_files_modified": False,
+        "unchanged_source_execution_claimed": False,
+        "blockers": blockers,
+    }
+    _write_json(output / "obb_removal_adapter.json", receipt)
     return receipt
 
 
@@ -765,7 +1229,7 @@ def main() -> int:
                 "--evidence-root",
                 str(output),
                 "--predicted-mask-dir",
-                str(model / "virtual/ours_2000/objects_pred"),
+                str(model / "virtual/blueprint_obb_masks"),
                 "--output-dir",
                 str(source / "Segment-and-Track-Anything/tracking_results/images/images_masks"),
                 "--receipt",
@@ -774,6 +1238,8 @@ def main() -> int:
                 str(spec["target_method_instance_id"]),
                 "--expected-count",
                 str(spec["runtime"]["virtual_view_count"]),
+                "--source-kind",
+                "blueprint_exact_obb_projected_virtual_masks",
             ],
             source,
             main_env,
@@ -909,8 +1375,69 @@ def main() -> int:
         "status": "not_executed",
         "blockers": ["inpaint360_nonempty_virtual_view_adapter_not_executed"],
     }
+    obb_removal_adapter: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_obb_removal_adapter_not_executed"],
+    }
+    target_centered_view_adapter: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_target_centered_virtual_view_adapter_not_executed"],
+    }
+    lama_depth_validation: dict[str, Any] = {
+        "status": "not_executed",
+        "blockers": ["inpaint360_lama_depth_numerical_validation_not_executed"],
+    }
     if resolution_accepted and binding_accepted:
         for stage, command, cwd, env in commands:
+            print(f"BLUEPRINT_ADP_INPAINT360_STAGE_STARTED:{stage}", flush=True)
+            if stage == "removal":
+                obb_removal_adapter = _materialize_obb_removal_adapter(
+                    source=source,
+                    runtime=runtime,
+                    spec=spec,
+                    output=output,
+                )
+                obb_adapter_accepted = obb_removal_adapter["status"] == "accepted"
+                workflow.append(
+                    {
+                        "stage": "obb_removal_adapter",
+                        "operation": "bind_exact_publisher_obb_to_released_removal_runtime",
+                        "cwd": str(runtime),
+                        "returncode": 0 if obb_adapter_accepted else 51,
+                        "timed_out": False,
+                        "receipt": "obb_removal_adapter.json",
+                    }
+                )
+                if not obb_adapter_accepted:
+                    break
+                command = list(command)
+                command[1] = str(runtime / "adapted_edit_object_removal.py")
+            if stage == "virtual_views":
+                target_centered_view_adapter = (
+                    _materialize_target_centered_virtual_view_adapter(
+                        source=source,
+                        runtime=runtime,
+                        spec=spec,
+                        output=output,
+                    )
+                )
+                target_centered_adapter_accepted = (
+                    target_centered_view_adapter["status"] == "accepted"
+                )
+                workflow.append(
+                    {
+                        "stage": "target_centered_virtual_view_adapter",
+                        "operation": "bind_exact_obb_centered_cameras_and_projected_masks",
+                        "cwd": str(runtime),
+                        "returncode": 0 if target_centered_adapter_accepted else 52,
+                        "timed_out": False,
+                        "receipt": "target_centered_virtual_view_adapter.json",
+                    }
+                )
+                if not target_centered_adapter_accepted:
+                    break
+                command = list(command)
+                command[1] = str(runtime / "adapted_virtual_pose.py")
             if stage == "inpaint_3d":
                 nonempty_view_adapter = _materialize_nonempty_virtual_view_adapter(
                     source=source,
@@ -936,11 +1463,16 @@ def main() -> int:
             observed = _run(command, cwd=cwd, env=env, log_path=output / f"{stage}.log")
             observed["stage"] = stage
             workflow.append(observed)
+            print(
+                f"BLUEPRINT_ADP_INPAINT360_STAGE_FINISHED:{stage}:returncode={observed['returncode']}",
+                flush=True,
+            )
             if observed["returncode"] != 0:
                 break
             if stage == "virtual_masks":
                 nonempty_view_selection = _freeze_nonempty_virtual_views(
                     handoff=_read_json(output / "virtual_mask_handoff.json"),
+                    mask_binding=mask_association_validation,
                     output=output,
                 )
                 nonempty_selection_accepted = (
@@ -959,7 +1491,7 @@ def main() -> int:
                 if not nonempty_selection_accepted:
                     break
                 supplemental_selection = _freeze_supplemental_fusion_view(
-                    handoff=_read_json(output / "virtual_mask_handoff.json"),
+                    selection=nonempty_view_selection,
                     output=output,
                 )
                 selection_accepted = supplemental_selection["status"] == "accepted"
@@ -974,6 +1506,24 @@ def main() -> int:
                     }
                 )
                 if not selection_accepted:
+                    break
+            if stage == "lama_depth":
+                lama_depth_validation = _validate_lama_depth_numerics(
+                    log_path=output / "lama_depth.log",
+                    output=output,
+                )
+                numerics_accepted = lama_depth_validation["status"] == "accepted"
+                workflow.append(
+                    {
+                        "stage": "lama_depth_numerical_validation",
+                        "operation": "reject_non_finite_depth_before_point_fusion",
+                        "cwd": str(output),
+                        "returncode": 0 if numerics_accepted else 50,
+                        "timed_out": False,
+                        "receipt": "lama_depth_numerical_validation.json",
+                    }
+                )
+                if not numerics_accepted:
                     break
             if stage == "baseline_render":
                 depth_inventory = _validate_baseline_depth_inventory(
@@ -1018,6 +1568,9 @@ def main() -> int:
     final_ply = model / "point_cloud_object_inpaint_virtual/iteration_5000/point_cloud.ply"
     final_video = model / "video/ours__object_inpaint_virtual/iteration_5000/final_video.mp4"
     final_render_dir = final_video.parent
+    gaussian_budget_validation = _validate_added_gaussian_budget(
+        model=model, output=output
+    )
     source_after = _source_identity(source, spec)
     dependency_after = _nested_dependency_identity(source, spec)
     blockers: list[str] = []
@@ -1026,6 +1579,12 @@ def main() -> int:
         if stage == "inpaint_3d":
             required.append("nonempty_virtual_view_adapter")
         required.append(stage)
+        if stage == "removal":
+            required.append("obb_removal_adapter")
+        if stage == "virtual_views":
+            required.append("target_centered_virtual_view_adapter")
+        if stage == "lama_depth":
+            required.append("lama_depth_numerical_validation")
         if stage == "baseline_render":
             required.append("baseline_depth_inventory")
         if stage == "virtual_masks":
@@ -1047,11 +1606,16 @@ def main() -> int:
         blockers.append("inpaint360_adapter_input_changed_before_execution")
     if not final_ply.is_file() or final_ply.stat().st_size == 0:
         blockers.append("inpaint360_final_point_cloud_missing")
+    if gaussian_budget_validation.get("status") != "accepted":
+        blockers.extend(gaussian_budget_validation.get("blockers") or [])
     review_frames = _retain_review_frames(final_render_dir, output)
     if "inpaint_3d" in completed and len(review_frames) != 8:
         blockers.append("inpaint360_review_frames_missing")
     main_freeze = output / "main-pip-freeze.txt"
     lama_freeze = output / "lama-pip-freeze.txt"
+    vgg16_materialization = _read_json(output / "vgg16_materialization.json")
+    if vgg16_materialization.get("status") != "accepted":
+        blockers.append("inpaint360_vgg16_materialization_receipt_missing_or_blocked")
     for freeze, blocker in (
         (main_freeze, "inpaint360_main_environment_receipt_missing"),
         (lama_freeze, "inpaint360_lama_environment_receipt_missing"),
@@ -1072,6 +1636,7 @@ def main() -> int:
         "source_modified": not source_after["matches"],
         "nested_dependency_identity_before": dependency_before,
         "nested_dependency_identity_after": dependency_after,
+        "vgg16_materialization": vgg16_materialization,
         "adapter_identity_before": packet_before,
         "hardware_probe": hardware,
         "workflow": workflow,
@@ -1082,6 +1647,10 @@ def main() -> int:
         "supplemental_fusion_view_materialization": supplemental_materialization,
         "nonempty_virtual_view_selection": nonempty_view_selection,
         "nonempty_virtual_view_adapter": nonempty_view_adapter,
+        "obb_removal_adapter": obb_removal_adapter,
+        "target_centered_virtual_view_adapter": target_centered_view_adapter,
+        "lama_depth_numerical_validation": lama_depth_validation,
+        "added_gaussian_budget_validation": gaussian_budget_validation,
         "method_resolution_execution": resolution_accepted,
         "mask_association_executed": False,
         "mask_association_mode": MASK_ASSOCIATION_MODE,
@@ -1092,7 +1661,7 @@ def main() -> int:
         "lama_color_executed": "lama_color" in completed,
         "lama_depth_executed": "lama_depth" in completed,
         "inpaint_3d_executed": "inpaint_3d" in completed and final_ply.is_file(),
-        "execution_source_class": "released_source_with_digest_bound_blueprint_input_validity_adapter",
+        "execution_source_class": "released_source_with_digest_bound_blueprint_obb_and_input_validity_adapters",
         "unchanged_source_execution_claimed": False,
         "final_point_cloud": _artifact(final_ply, output),
         "final_review_video": _artifact(final_video, output),

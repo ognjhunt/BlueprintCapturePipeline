@@ -1,0 +1,10 @@
+{
+  "schema_version": "adp009b_aura_human_visual_review_request.v1",
+  "reviewer_role": "project_owner",
+  "decision": "accept_for_internal_hybrid_replacement_control",
+  "approval_statement": "THIS IS GOOD ENOUGH!!!! we can work with this - its not perfect, but def better - but i think this is just good enough for us to continue and go to the next steps of adding it (simready version) back into the scene in the correct location and so on",
+  "aura_execution_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_execution_receipt.v1.json",
+  "locality_measurement_path": "aura_interiorgs/live_v12_openclip_execute/immutable_execution/aura_native_locality_measurement.v1.json",
+  "native_visual_review_receipt_path": "simready/replacement_840313_match_v2/native_visual_review_run007/adp009b_simready_native_visual_review_receipt.v1.json",
+  "native_visual_review_root": "simready/replacement_840313_match_v2/native_visual_review_run007"
+}

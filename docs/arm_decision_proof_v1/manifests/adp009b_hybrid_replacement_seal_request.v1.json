@@ -1,0 +1,8 @@
+{
+  "aura_human_review_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009b_aura_human_review_receipt.v1.json",
+  "exact_simready_component_manifest_path": "docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite/exact_simready_object.component_manifest.json",
+  "exact_simready_component_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite/exact_simready_object.component_receipt.json",
+  "replacement_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009b_simready_replacement_match_v2_receipt.v1.json",
+  "schema_version": "adp009b_hybrid_replacement_seal_request.v1",
+  "static_validation_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_match_v2_static_validation_receipt.v1.json"
+}

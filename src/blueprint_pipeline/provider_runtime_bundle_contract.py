@@ -10,6 +10,7 @@ from pathlib import Path
 
 PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "isaac",
+    "adp_simready_isaac",
     "wam",
     "evaluator",
     "unitree_unifolm",
@@ -106,7 +107,7 @@ def provider_runtime_contract_blockers(
     """
     if provider_bundle_kind not in PROVIDER_RUNTIME_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
-    if provider_bundle_kind == "isaac":
+    if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
         entrypoint_valid = (
             "write_missing_result" in entrypoint_text
             and "isaac_runner_process_exited_without_runtime_result" in entrypoint_text
@@ -195,6 +196,7 @@ def provider_runtime_contract_blockers(
                 "source_modified",
                 "hidden_background_truth_available",
                 "visual_candidate_only",
+                "openclip_offline_cache_verified",
             )
         )
         runner_blocker = "provider_runner_missing_adp_aura_interiorgs_runtime_contract"

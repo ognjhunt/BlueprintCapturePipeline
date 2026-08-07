@@ -47,19 +47,17 @@
       "status": "blocked"
     },
     {
-      "blockers": [
-        "aurafusion360_unchanged_author_smoke_missing"
-      ],
-      "component_admission_receipt_digest": "sha256:e7beaed97813bd517f230e91e65d4c16ccff8aa0b2b91e9b6065613087420e08",
-      "component_manifest_digest": "sha256:6acccfc100b8da28e4fce515a34b45688fe6b5fc7ffd900723ab50f4c116c3e9",
-      "exact_artifact_digest": "sha256:d0e8dc02b2d5f9db4c8a2cd19d4555867a525bca69d0d6082bfcde31f882d125",
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:3345f7d67e51e64e48dae177f10028ea06b65310aa7606f0a0a7dcfbb8564609",
+      "component_manifest_digest": "sha256:eafa9b0d8ac00b3a0d11876ef87ab41f44031c168463197110c52b49aa0f58c7",
+      "exact_artifact_digest": "sha256:dc9e1aa1ece170fb0e651ad54a21b148fd743b0970cb5a8037c91c394d530402",
       "exact_revision": {
         "kind": "git_commit",
         "value": "f23b26c44ba84608306ba952510533ebf4c7877d"
       },
       "role": "aurafusion360_quality_challenger",
       "source_project_id": "AuraFusion360",
-      "status": "blocked"
+      "status": "admitted"
     },
     {
       "blockers": [],
@@ -88,40 +86,36 @@
       "status": "admitted"
     },
     {
-      "blockers": [
-        "controlled_background_truth_case_missing"
-      ],
-      "component_admission_receipt_digest": "sha256:58a0d75a13ba5bd0afc77cd070fbc70c60f516e41f4b0256549f8cde431fca32",
-      "component_manifest_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
-      "exact_artifact_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:88b0ebc59ee029eb4daafc32e9598f7a68d4c82aa619412cf89d46fab406f6ea",
+      "component_manifest_digest": "sha256:5000b7ea24a5245f1111cd0111f3424478ed704b09ce53f299e5e7a48754ade6",
+      "exact_artifact_digest": "sha256:e6a74984230d3e8c631217259fbcd19ae523b87b59cfd43df9ec7bfe70fa5fc8",
       "exact_revision": {
-        "kind": "content_digest",
-        "value": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844"
+        "kind": "git_commit",
+        "value": "786f5936b27fb3dacd2b1ad799e4de968ea697e7"
       },
       "role": "controlled_background_truth",
       "source_project_id": "Blueprint-controlled",
-      "status": "blocked"
+      "status": "admitted"
     },
     {
-      "blockers": [
-        "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
-      ],
-      "component_admission_receipt_digest": "sha256:14cc5895e2d2df4ea36103dba8ef921f353b1a0563152e787bd10cc81ddae120",
-      "component_manifest_digest": "sha256:f95832848f2c8fe82607f9fb0b942e5997dc3a3940b48b5c6a84107f60cf817e",
-      "exact_artifact_digest": "sha256:102cc9c6d1098ce364b3b7f3aebd2630f770f6185fd28b130c37d954db1a8b45",
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:4639ad329883b177f346c9a6f88e7063e8fef34c500427ab2caa048c992e1559",
+      "component_manifest_digest": "sha256:1268909468948cb0d30d071636d69dfcae0b4eb986e78d460a4f71ce87fa3880",
+      "exact_artifact_digest": "sha256:f997f76c3396dedf5a9ef1e92e121565fc6dd263156a1311af0c273bda732660",
       "exact_revision": {
         "kind": "git_commit",
         "value": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3"
       },
       "role": "exact_simready_object",
       "source_project_id": "Blueprint-controlled",
-      "status": "blocked"
+      "status": "admitted"
     },
     {
       "blockers": [],
-      "component_admission_receipt_digest": "sha256:ec32d52a92e501aaac821ba7862929c560dbb5d6bc46a86e08af9799fa99e98b",
-      "component_manifest_digest": "sha256:9c9e71c17aa2ed61737c58f132ca121d678008dd6693e21def12b98ab22b4798",
-      "exact_artifact_digest": "sha256:b1f0eeacc9646b6c8cf4241fa998573ad498a7f3a92e8749245a1f97d6bf13a5",
+      "component_admission_receipt_digest": "sha256:6f05cf0cb4b613626c517a3e043eadb89550965591d95e312a95b9f7099d6df8",
+      "component_manifest_digest": "sha256:5dad484c55d7b88d581a765a0d48ca23b41ad2829da08b1b615bf8beff99516a",
+      "exact_artifact_digest": "sha256:269d26af491e7cf65d263809b88bb874d79297e29bc0df5644e7d737c0e23f43",
       "exact_revision": {
         "kind": "git_commit",
         "value": "36dbf3f274f8e256637230a05a085853f65cc175"
@@ -131,27 +125,25 @@
       "status": "admitted"
     },
     {
-      "blockers": [
-        "physics_positive_control_receipt_missing"
-      ],
-      "component_admission_receipt_digest": "sha256:94202cd5fe0b5bc38f4dfd774adde0dac15abae5e2c7b66d6b4911434a1cb7b4",
-      "component_manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
-      "exact_artifact_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
+      "blockers": [],
+      "component_admission_receipt_digest": "sha256:0e0e216d50aa18e5d1a79b71ac0cf5458b2228f181591a58e858011637cdf4dc",
+      "component_manifest_digest": "sha256:1ce66bcdfe86cdf747b0f02eff5c681106bad0103096cbb744a2dc57b6e7b089",
+      "exact_artifact_digest": "sha256:200be922103cd03634ab9b850fa46c0b84576114aa8f2e0061075415b02cd666",
       "exact_revision": {
-        "kind": "content_digest",
-        "value": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e"
+        "kind": "git_commit",
+        "value": "5ac9fedb5476fd6b0fbea4332d5133514637240c"
       },
       "role": "physics_positive_control",
       "source_project_id": "Blueprint-controlled",
-      "status": "blocked"
+      "status": "admitted"
     },
     {
       "blockers": [
-        "scannetpp_scene_access_and_admission_missing"
+        "scannetpp_account_application_approval_and_terms_authority_required"
       ],
-      "component_admission_receipt_digest": "sha256:0648d90dd69f4057e3970be5bf66fa607a1eb26e93df3c2ff64bfc124371192d",
+      "component_admission_receipt_digest": "sha256:cec06d5a0ef24af367a155371c1cfffa3e5ac05b485a86f5a7178cea91787948",
       "component_manifest_digest": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626",
-      "exact_artifact_digest": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626",
+      "exact_artifact_digest": "sha256:bf551427bb93b2762e29fc326bedde7a8e2cac4e25b3126cea8fc66f46d2e55b",
       "exact_revision": {
         "kind": "content_digest",
         "value": "sha256:f03b5aa0c5cb04c3f662d6e2c966f626eb705fd2d120908da347d255f264a626"
@@ -161,7 +153,7 @@
       "status": "blocked"
     }
   ],
-  "index_digest": "sha256:b506e71e907759a14407e0c02b47b1a1496f9d31e45bd84690cf8328a9ef4615",
+  "index_digest": "sha256:49d18414a02bd40e300909fc54f6814a877bcc8edfc0af594d7158af24d5549b",
   "index_id": "adp009a-public-suite-20260804",
   "program_id": "arm-decision-proof-v1",
   "schema_version": "public_scene_suite_index.v1"

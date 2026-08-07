@@ -18,9 +18,27 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .measurement_adapter_execution import (
+    MeasurementAdapterExecutionError,
+    validate_measurement_adapter_execution_bundle,
+)
 from .public_scene_suite_index import (
     REQUIRED_ROLE_PROJECTS,
     build_public_scene_suite_index_receipt,
+)
+from .public_scene_controlled_background import (
+    CASE_SCHEMA_VERSION as CONTROLLED_CASE_SCHEMA_VERSION,
+    DOCKER_IMAGE as CONTROLLED_DOCKER_IMAGE,
+    DOCKER_IMAGE_ID as CONTROLLED_DOCKER_IMAGE_ID,
+    EXECUTION_SCHEMA_VERSION as CONTROLLED_EXECUTION_SCHEMA_VERSION,
+    LAMA_CHECKPOINT_SHA256,
+    LAMA_COMMIT,
+    LAMA_REPOSITORY,
+    LAMA_SOURCE_SHA256,
+    SCORE_SCHEMA_VERSION as CONTROLLED_SCORE_SCHEMA_VERSION,
+    THRESHOLDS as CONTROLLED_THRESHOLDS,
+    ControlledBackgroundError,
+    score_case as recompute_controlled_background_score,
 )
 from .scene_placement.interiorgs_index import load_interiorgs_labels
 
@@ -35,6 +53,18 @@ AURA_WONDERWORLD_SOURCE_COMMIT = "cae41f9a24a9c5513a7eea8939ee14fa0576162d"
 AURA_WONDERWORLD_SOURCE_TREE = "c9882769e0d8a6823055f76d66b9586fa8433003"
 AURA_WONDERWORLD_MARIGOLD_LICENSE_SHA256 = (
     "sha256:0cec06e0e55fbc3dc5cee4fca9b607f66cb8f4e4dbcf3b3c013594dd156732e9"
+)
+CONTENT_AGENTS_MATCH_V2_CONTROL_RECEIPT = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "adp009a_840313_canned_beverage_match_v2_receipt.v1.json"
+)
+CONTENT_AGENTS_MATCH_V2_REPLACEMENT_RECEIPT = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "adp009b_simready_replacement_match_v2_receipt.v1.json"
+)
+CONTENT_AGENTS_MATCH_V2_HUMAN_REVIEW_RECEIPT = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "adp009b_simready_match_v2_human_review_receipt.v1.json"
 )
 
 
@@ -124,6 +154,74 @@ def _reject_secret_like_execution_text(root: Path) -> None:
             raise PublicSceneSuiteMaterializationError(
                 f"content_agents_secret_like_value_retained:{path.name}"
             )
+
+
+def _content_agents_input_variant_binding(
+    *, bundle: Mapping[str, Any], repo_root: Path
+) -> dict[str, Any]:
+    variant = str(bundle.get("input_variant") or "control_v1")
+    authority = bundle.get("reference_image_authority")
+    if variant == "control_v1":
+        if authority != "blueprint_cad_render_not_interiorgs_dataset_bytes":
+            raise PublicSceneSuiteMaterializationError(
+                "content_agents_reference_image_authority_invalid"
+            )
+        return {"input_variant": variant, "approved_v2_receipt_chain_verified": False}
+    if variant != "match_v2":
+        raise PublicSceneSuiteMaterializationError("content_agents_input_variant_invalid")
+    if authority != (
+        "blueprint_cad_snapshot_bound_to_human_approved_match_v2_not_"
+        "interiorgs_dataset_bytes"
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "content_agents_match_v2_reference_authority_invalid"
+        )
+    paths = {
+        "control_receipt_digest": CONTENT_AGENTS_MATCH_V2_CONTROL_RECEIPT,
+        "replacement_receipt_digest": CONTENT_AGENTS_MATCH_V2_REPLACEMENT_RECEIPT,
+        "human_review_receipt_digest": CONTENT_AGENTS_MATCH_V2_HUMAN_REVIEW_RECEIPT,
+    }
+    receipts: dict[str, dict[str, Any]] = {}
+    expected: dict[str, str] = {}
+    for key, relative in paths.items():
+        receipt = _read_json(_rooted(repo_root, relative))
+        digest = receipt.get("receipt_digest")
+        if digest != canonical_digest(receipt, digest_field="receipt_digest"):
+            raise PublicSceneSuiteMaterializationError(
+                f"content_agents_match_v2_{key}_invalid"
+            )
+        receipts[key] = receipt
+        expected[key] = str(digest)
+    bindings = bundle.get("input_variant_bindings")
+    control = receipts["control_receipt_digest"]
+    replacement = receipts["replacement_receipt_digest"]
+    human = receipts["human_review_receipt_digest"]
+    normalization = bundle.get("input_usd_normalization")
+    if (
+        not isinstance(bindings, Mapping)
+        or dict(bindings) != expected
+        or control.get("control_id")
+        != "adp009a-840313-canned-beverage-multiview-match-v2"
+        or control.get("status") != "prepared_for_independent_validation"
+        or replacement.get("status") != "composed_static_candidate"
+        or (replacement.get("bindings") or {}).get("simready_control_receipt_digest")
+        != control.get("receipt_digest")
+        or human.get("status") != "human_accepted_for_native_validation"
+        or human.get("technical_admission") is not False
+        or (human.get("artifact_chain") or {}).get("replacement_receipt_digest")
+        != replacement.get("receipt_digest")
+        or not isinstance(normalization, Mapping)
+        or normalization.get("source_input_usd_sha256")
+        != (control.get("usd") or {}).get("sha256")
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "content_agents_match_v2_receipt_chain_invalid"
+        )
+    return {
+        "input_variant": variant,
+        "approved_v2_receipt_chain_verified": True,
+        **expected,
+    }
 
 
 def _require_under(path: Path, roots: Sequence[Path]) -> Path:
@@ -999,8 +1097,729 @@ def _blocked_component(
     )
 
 
+def _controlled_background_records(
+    *, records: Any, case_root: Path, data_root: Path, expected_count: int, label: str
+) -> list[dict[str, Any]]:
+    if not isinstance(records, list) or len(records) != expected_count:
+        raise PublicSceneSuiteMaterializationError(
+            f"controlled_background_{label}_inventory_invalid"
+        )
+    verified: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise PublicSceneSuiteMaterializationError(
+                f"controlled_background_{label}_record_invalid"
+            )
+        relative = str(record.get("relative_path") or "")
+        path = _rooted(case_root, relative)
+        if (
+            not path.is_file()
+            or path.stat().st_size != record.get("size_bytes")
+            or _sha256_file(path) != record.get("sha256")
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                f"controlled_background_{label}_bytes_changed:{relative}"
+            )
+        verified.append(
+            _file_record(
+                path,
+                root=data_root,
+                publisher_path=path.relative_to(data_root).as_posix(),
+                role=f"controlled_background_{record.get('role')}",
+            )
+        )
+    return verified
+
+
+def _controlled_background_component(
+    *, spec: Mapping[str, Any], repo_root: Path, data_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    paths = {
+        "case": _rooted(data_root, str(spec["case_receipt_path"])),
+        "execution": _rooted(data_root, str(spec["execution_receipt_path"])),
+        "score": _rooted(data_root, str(spec["score_receipt_path"])),
+        "source_archive": _rooted(data_root, str(spec["source_archive_path"])),
+        "checkpoint_archive": _rooted(data_root, str(spec["checkpoint_archive_path"])),
+        "dockerfile": _rooted(repo_root, str(spec["dockerfile_path"])),
+    }
+    case = _read_json(paths["case"])
+    execution = _read_json(paths["execution"])
+    score = _read_json(paths["score"])
+    for name, value, field in (
+        ("case", case, "receipt_digest"),
+        ("execution", execution, "completion_digest"),
+        ("score", score, "receipt_digest"),
+    ):
+        if value.get(field) != canonical_digest(value, digest_field=field):
+            raise PublicSceneSuiteMaterializationError(
+                f"controlled_background_{name}_digest_mismatch"
+            )
+
+    method = case.get("method")
+    authoring = case.get("authoring")
+    firebreak = case.get("firebreak")
+    if (
+        case.get("schema_version") != CONTROLLED_CASE_SCHEMA_VERSION
+        or case.get("status") != "prepared_truth_withheld"
+        or case.get("method_outcomes_observed") is not False
+        or not isinstance(authoring, Mapping)
+        or authoring.get("rights") != "Blueprint-controlled"
+        or authoring.get("camera_count") != 4
+        or authoring.get("resolution") != [768, 512]
+        or not isinstance(method, Mapping)
+        or method.get("repository") != LAMA_REPOSITORY
+        or method.get("commit") != LAMA_COMMIT
+        or method.get("source_archive_sha256") != LAMA_SOURCE_SHA256
+        or method.get("checkpoint_archive_sha256") != LAMA_CHECKPOINT_SHA256
+        or method.get("license") != "Apache-2.0"
+        or method.get("same_color_and_depth_completion_path") is not True
+        or case.get("thresholds") != CONTROLLED_THRESHOLDS
+        or not isinstance(firebreak, Mapping)
+        or firebreak.get("truth_must_not_be_mounted_during_completion") is not True
+        or firebreak.get("truth_release_requires_sealed_completion_digest") is not True
+        or firebreak.get("thresholds_frozen_before_execution") is not True
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_case_preregistration_invalid"
+        )
+
+    container = execution.get("container")
+    if (
+        execution.get("schema_version") != CONTROLLED_EXECUTION_SCHEMA_VERSION
+        or execution.get("status") != "completion_sealed_truth_unreleased"
+        or execution.get("case_receipt_digest") != case.get("receipt_digest")
+        or execution.get("method") != method
+        or execution.get("truth_opened_for_scoring") is not False
+        or not isinstance(container, Mapping)
+        or container.get("image") != CONTROLLED_DOCKER_IMAGE
+        or container.get("image_id") != CONTROLLED_DOCKER_IMAGE_ID
+        or container.get("network") != "none"
+        or container.get("root_filesystem_read_only") is not True
+        or container.get("withheld_truth_mounted") is not False
+        or any("withheld_truth" in str(path) for path in container.get("mounted_paths") or [])
+        or len(execution.get("commands") or []) != 2
+        or len(execution.get("logs") or []) != 2
+        or not isinstance(execution.get("environment"), Mapping)
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_execution_firebreak_invalid"
+        )
+
+    if (
+        score.get("schema_version") != CONTROLLED_SCORE_SCHEMA_VERSION
+        or score.get("status") != "scored_factual_recovery"
+        or score.get("case_receipt_digest") != case.get("receipt_digest")
+        or score.get("completion_digest") != execution.get("completion_digest")
+        or score.get("truth_released_after_completion_seal") is not True
+        or score.get("thresholds_frozen_before_execution") is not True
+        or score.get("thresholds") != CONTROLLED_THRESHOLDS
+        or score.get("quality_passed") is not True
+        or not isinstance(score.get("checks"), Mapping)
+        or not score["checks"]
+        or not all(value is True for value in score["checks"].values())
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_score_claim_invalid"
+        )
+
+    if _sha256_file(paths["source_archive"]) != LAMA_SOURCE_SHA256:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_source_archive_digest_mismatch"
+        )
+    if _sha256_file(paths["checkpoint_archive"]) != LAMA_CHECKPOINT_SHA256:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_checkpoint_archive_digest_mismatch"
+        )
+    case_root = paths["case"].parent
+    if paths["execution"].parent.parent.parent != case_root:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_execution_not_in_case_root"
+        )
+    try:
+        recomputed = recompute_controlled_background_score(
+            case_root=case_root,
+            execution_receipt_path=paths["execution"],
+            output_path=None,
+        )
+    except ControlledBackgroundError as exc:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_actual_output_verification_failed"
+        ) from exc
+    if recomputed != score:
+        raise PublicSceneSuiteMaterializationError(
+            "controlled_background_score_not_derived_from_actual_outputs"
+        )
+
+    artifacts = [
+        _file_record(
+            paths[name],
+            root=data_root,
+            publisher_path=paths[name].relative_to(data_root).as_posix(),
+            role=f"controlled_background_{name}",
+        )
+        for name in ("case", "execution", "score", "source_archive", "checkpoint_archive")
+    ]
+    artifacts.append(
+        _file_record(
+            paths["dockerfile"],
+            root=repo_root,
+            publisher_path=paths["dockerfile"].relative_to(repo_root).as_posix(),
+            role="controlled_background_dockerfile",
+        )
+    )
+    artifacts.extend(
+        _controlled_background_records(
+            records=case.get("runtime_inputs"),
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=16,
+            label="runtime_inputs",
+        )
+    )
+    artifacts.extend(
+        _controlled_background_records(
+            records=case.get("withheld_truth"),
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=8,
+            label="withheld_truth",
+        )
+    )
+    artifacts.extend(
+        _controlled_background_records(
+            records=execution.get("outputs"),
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=8,
+            label="outputs",
+        )
+    )
+    artifacts.extend(
+        _controlled_background_records(
+            records=execution.get("logs"),
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=2,
+            label="logs",
+        )
+    )
+    environment = execution["environment"]
+    artifacts.extend(
+        _controlled_background_records(
+            records=[environment],
+            case_root=case_root,
+            data_root=data_root,
+            expected_count=1,
+            label="environment",
+        )
+    )
+
+    manifest: dict[str, Any] = {
+        "schema_version": COMPONENT_SCHEMA_VERSION,
+        "program_id": PROGRAM_ID,
+        "adp_item": ADP_ITEM,
+        "component_id": "adp009a-controlled-background-lama-plane-v1",
+        "role": "controlled_background_truth",
+        "source_project_id": REQUIRED_ROLE_PROJECTS["controlled_background_truth"],
+        "publisher_identity": {
+            "repository": LAMA_REPOSITORY,
+            "revision": LAMA_COMMIT,
+            "runtime_image": CONTROLLED_DOCKER_IMAGE,
+            "runtime_image_id": CONTROLLED_DOCKER_IMAGE_ID,
+        },
+        "materialized_artifacts": artifacts,
+        "rights": {
+            "established": True,
+            "scene_and_truth": "Blueprint-controlled deterministic authored case",
+            "method_source_and_checkpoint_license": "Apache-2.0",
+            "allowed_use_ceiling": "internal_development_and_public_receipt_metadata",
+            "raw_method_archive_redistribution": False,
+        },
+        "observed_evidence": {
+            "case_receipt_digest": case["receipt_digest"],
+            "completion_digest": execution["completion_digest"],
+            "score_receipt_digest": score["receipt_digest"],
+            "camera_count": authoring["camera_count"],
+            "resolution": authoring["resolution"],
+            "completion_outputs_reopened_and_rescored": True,
+            "truth_withheld_until_completion_sealed": True,
+            "aggregate_metrics": score["aggregate"],
+            "frozen_thresholds": score["thresholds"],
+            "quality_checks": score["checks"],
+        },
+        "claim_ceiling": CLAIM_CEILING,
+        "claim_boundaries": {
+            "known_blueprint_authored_background_only": True,
+            "interiorgs_hidden_background_truth": False,
+            "real_scene_measurement": False,
+            "method_generalization": False,
+            "physical_evidence": False,
+        },
+    }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    return manifest, _component_receipt(
+        manifest,
+        blockers=(),
+        checks={
+            "actual_source_checkpoint_and_execution_bytes_hashed": True,
+            "canonical_receipt_digests_verified": True,
+            "completion_sealed_before_truth_release": True,
+            "outputs_reopened_and_scores_recomputed": True,
+            "preregistered_rgb_and_depth_thresholds_passed": True,
+            "rights_authority_bound": True,
+        },
+    )
+
+
+def _physics_positive_control_component(
+    *, spec: Mapping[str, Any], data_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    paths = {
+        name: _rooted(data_root, str(spec[f"{name}_path"]))
+        for name in ("runtime_result", "execution_result", "teardown_receipt", "provider_zero")
+    }
+    values = {name: _read_json(path) for name, path in paths.items()}
+    digest_fields = {
+        "runtime_result": "runtime_result_digest",
+        "execution_result": "execution_result_digest",
+        "teardown_receipt": "teardown_receipt_digest",
+        "provider_zero": "provider_zero_digest",
+    }
+    for name, digest_field in digest_fields.items():
+        value = values[name]
+        if value.get(digest_field) != canonical_digest(value, digest_field=digest_field):
+            raise PublicSceneSuiteMaterializationError(
+                f"physics_positive_control_{name}_digest_mismatch"
+            )
+
+    runtime = values["runtime_result"]
+    execution = values["execution_result"]
+    teardown = values["teardown_receipt"]
+    provider_zero = values["provider_zero"]
+    expected_schemas = {
+        "runtime_result": "measurement_isaac_physx_rtx_vast_runtime_result.v2",
+        "execution_result": "measurement_isaac_physx_vast_execution.v1",
+        "teardown_receipt": "measurement_isaac_physx_vast_teardown.v1",
+        "provider_zero": "measurement_isaac_physx_vast_provider_zero.v1",
+    }
+    if any(values[name].get("schema_version") != schema for name, schema in expected_schemas.items()):
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_receipt_schema_invalid"
+        )
+
+    runtime_digest = runtime["runtime_result_digest"]
+    teardown_digest = teardown["teardown_receipt_digest"]
+    provider_zero_digest = provider_zero["provider_zero_digest"]
+    if (
+        runtime.get("status") != "passed"
+        or runtime.get("blockers") != []
+        or runtime.get("development_only") is not True
+        or runtime.get("synthetic_fixture") is not True
+        or runtime.get("qualification_created") is not False
+        or runtime.get("production_route_eligible") is not False
+        or runtime.get("physical_success_established") is not False
+        or runtime.get("r7_admission") is not False
+        or runtime.get("raw_secret_values_recorded") is not False
+        or execution.get("status") != "completed"
+        or execution.get("blockers") != []
+        or execution.get("runtime_result_digest") != runtime_digest
+        or execution.get("source_commit_sha") != runtime.get("source_commit_sha")
+        or execution.get("worker_image_digest") != runtime.get("runtime_image_digest")
+        or execution.get("teardown_receipt_digest") != teardown_digest
+        or execution.get("provider_zero_digest") != provider_zero_digest
+        or execution.get("provider_zero_verified") is not True
+        or execution.get("provider_mutation_outcome_ambiguous") is not False
+        or execution.get("development_execution_completed") is not True
+        or execution.get("qualification_created") is not False
+        or execution.get("r7_admission_created") is not False
+        or execution.get("physical_success_established") is not False
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_runtime_or_execution_invalid"
+        )
+
+    request_digest = execution.get("request_digest")
+    bound_request_digest = execution.get("bound_request_digest")
+    worker_image_digest = execution.get("worker_image_digest")
+    if (
+        teardown.get("status") != "PASS"
+        or teardown.get("provider") != "vast"
+        or teardown.get("request_digest") != request_digest
+        or teardown.get("bound_request_digest") != bound_request_digest
+        or teardown.get("worker_image_digest") != worker_image_digest
+        or teardown.get("instance_id") != execution.get("instance_id")
+        or teardown.get("provider_zero_verified") is not True
+        or provider_zero.get("status") != "PASS"
+        or provider_zero.get("provider") != "vast"
+        or provider_zero.get("request_digest") != request_digest
+        or provider_zero.get("bound_request_digest") != bound_request_digest
+        or provider_zero.get("api_confirmed") is not True
+        or provider_zero.get("scoped_live_resource_count") != 0
+        or provider_zero.get("global_live_resource_count") != 0
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_teardown_or_provider_zero_invalid"
+        )
+
+    bundles = runtime.get("execution_bundles")
+    if not isinstance(bundles, list) or len(bundles) != 2:
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_execution_bundles_invalid"
+        )
+    case_summaries: list[dict[str, Any]] = []
+    for raw_bundle in bundles:
+        try:
+            bundle = validate_measurement_adapter_execution_bundle(raw_bundle)
+        except MeasurementAdapterExecutionError as exc:
+            raise PublicSceneSuiteMaterializationError(
+                "physics_positive_control_execution_bundle_invalid"
+            ) from exc
+        receipt = bundle["receipt"]
+        observations = receipt.get("runtime_observations", {})
+        operating_point = bundle["request"]["case_manifest"].get("operating_point", {})
+        penetration = observations.get("penetration_m")
+        threshold = operating_point.get("penetration_unsafe_threshold_m")
+        if (
+            receipt.get("status") != "completed"
+            or receipt.get("exit_code") != 0
+            or receipt.get("failure_codes") != []
+            or observations.get("engine_version") != "6.0.1"
+            or observations.get("deterministic_replay_match") is not True
+            or not isinstance(observations.get("contact_report_event_count"), int)
+            or observations.get("contact_report_event_count", 0) <= 0
+            or not isinstance(penetration, (int, float))
+            or not isinstance(threshold, (int, float))
+            or penetration > threshold
+            or bundle.get("qualification_created") is not False
+            or bundle.get("production_route_created") is not False
+            or bundle.get("catalog_mutated") is not False
+            or bundle.get("physical_success_established") is not False
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                "physics_positive_control_execution_observation_invalid"
+            )
+        case_summaries.append(
+            {
+                "case_id": bundle["request"]["case_manifest"]["case_id"],
+                "contact_report_event_count": observations["contact_report_event_count"],
+                "deterministic_replay_match": True,
+                "penetration_m": penetration,
+                "penetration_threshold_m": threshold,
+            }
+        )
+
+    rtx = runtime.get("rtx_openusd_runtime_preflight")
+    if not isinstance(rtx, Mapping):
+        raise PublicSceneSuiteMaterializationError("physics_positive_control_rtx_missing")
+    rtx_checks = rtx.get("checks")
+    by_name = {
+        str(row.get("name")): row
+        for row in rtx_checks
+        if isinstance(rtx_checks, list) and isinstance(row, Mapping) and row.get("name")
+    }
+    frame = by_name.get("rtx_smoke_frame_render", {})
+    boundary = rtx.get("proof_boundary", {})
+    if (
+        rtx.get("preflight_result_digest")
+        != canonical_digest(rtx, digest_field="preflight_result_digest")
+        or rtx.get("status") != "passed"
+        or rtx.get("blockers") != []
+        or rtx.get("secret_values_in_artifact") is not False
+        or frame.get("status") != "passed"
+        or frame.get("renderer") != "RayTracedLighting"
+        or not isinstance(frame.get("pixel_count"), int)
+        or frame.get("pixel_count", 0) <= 0
+        or not isinstance(boundary, Mapping)
+        or boundary.get("rtx_pixels_rendered") is not True
+        or boundary.get("public_claim_upgrade_allowed") is not False
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "physics_positive_control_rtx_observation_invalid"
+        )
+
+    artifacts = [
+        _file_record(
+            paths[name],
+            root=data_root,
+            publisher_path=paths[name].relative_to(data_root).as_posix(),
+            role=f"physics_positive_control_{name}",
+        )
+        for name in ("runtime_result", "execution_result", "teardown_receipt", "provider_zero")
+    ]
+    manifest: dict[str, Any] = {
+        "schema_version": COMPONENT_SCHEMA_VERSION,
+        "program_id": PROGRAM_ID,
+        "adp_item": ADP_ITEM,
+        "component_id": "adp009a-isaac-physx-positive-control-attempt17",
+        "role": "physics_positive_control",
+        "source_project_id": REQUIRED_ROLE_PROJECTS["physics_positive_control"],
+        "publisher_identity": {
+            "repository": "BlueprintCapturePipeline",
+            "revision": runtime["source_commit_sha"],
+            "runtime_image_digest": runtime["runtime_image_digest"],
+        },
+        "materialized_artifacts": artifacts,
+        "rights": {
+            "established": True,
+            "source": "Blueprint-controlled synthetic fixture and execution receipts",
+            "allowed_use_ceiling": "internal_development_only",
+            "redistribution_allowed": False,
+        },
+        "observed_evidence": {
+            "native_isaac_sim_version": "6.0.1",
+            "execution_case_count": len(case_summaries),
+            "case_summaries": case_summaries,
+            "rtx_pixels_rendered": True,
+            "runtime_result_digest": runtime_digest,
+            "execution_result_digest": execution["execution_result_digest"],
+            "teardown_receipt_digest": teardown_digest,
+            "provider_zero_digest": provider_zero_digest,
+            "provider_zero_verified": True,
+            "cost_usd": execution.get("cost_usd"),
+        },
+        "claim_ceiling": CLAIM_CEILING,
+        "claim_boundaries": {
+            "synthetic_positive_control_only": True,
+            "exact_public_scene_qualified": False,
+            "exact_simready_object_qualified": False,
+            "physical_evidence": False,
+            "production_route_created": False,
+        },
+    }
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    return manifest, _component_receipt(
+        manifest,
+        blockers=(),
+        checks={
+            "actual_receipt_bytes_hashed": True,
+            "canonical_receipt_digests_verified": True,
+            "nested_execution_bundles_verified": True,
+            "native_contact_and_deterministic_replay_observed": True,
+            "rtx_pixels_observed": True,
+            "teardown_and_provider_zero_verified": True,
+        },
+    )
+
+
+def _simready_dynamic_evidence(
+    *, spec: Mapping[str, Any], data_root: Path
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    dynamic_keys = (
+        "dynamic_run_result_path",
+        "dynamic_runtime_result_path",
+        "dynamic_bundle_receipt_path",
+        "dynamic_bundle_path",
+        "dynamic_final_validation_path",
+        "dynamic_teardown_manifest_path",
+        "dynamic_object_cleanup_path",
+    )
+    configured = [key in spec for key in dynamic_keys]
+    if not any(configured):
+        return None
+    if not all(configured):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_evidence_paths_incomplete"
+        )
+
+    paths = {
+        key.removesuffix("_path"): _rooted(data_root, str(spec[key]))
+        for key in dynamic_keys
+    }
+    run = _read_json(paths["dynamic_run_result"])
+    runtime = _read_json(paths["dynamic_runtime_result"])
+    bundle_receipt = _read_json(paths["dynamic_bundle_receipt"])
+    final_validation = _read_json(paths["dynamic_final_validation"])
+    teardown = _read_json(paths["dynamic_teardown_manifest"])
+    cleanup = _read_json(paths["dynamic_object_cleanup"])
+
+    if (
+        run.get("result_digest")
+        != canonical_digest(run, digest_field="result_digest")
+        or runtime.get("result_digest")
+        != canonical_digest(runtime, digest_field="result_digest")
+        or bundle_receipt.get("receipt_digest")
+        != canonical_digest(bundle_receipt, digest_field="receipt_digest")
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_receipt_digest_mismatch"
+        )
+
+    bundle_path = paths["dynamic_bundle"]
+    bundle_sha = bundle_receipt.get("bundle_sha256")
+    probe_spec_sha = bundle_receipt.get("probe_spec_sha256")
+    if (
+        bundle_receipt.get("schema_version")
+        != "adp009b_simready_isaac_provider_bundle.v1"
+        or bundle_receipt.get("status") != "ready"
+        or bundle_receipt.get("blockers") != []
+        or bundle_receipt.get("provider_zero_required_after_return") is not True
+        or bundle_receipt.get("local_bundle_ready_for_remote_staging") is not True
+        or bundle_receipt.get("bundle_path") != str(bundle_path)
+        or bundle_path.stat().st_size != bundle_receipt.get("bundle_size_bytes")
+        or _sha256_file(bundle_path) != bundle_sha
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_bundle_invalid"
+        )
+
+    if (
+        run.get("schema_version") != "adp009b_simready_isaac_vast_run.v1"
+        or run.get("status") != "completed"
+        or run.get("blockers") != []
+        or run.get("bundle_sha256") != bundle_sha
+        or run.get("probe_spec_sha256") != probe_spec_sha
+        or run.get("native_result_path") != str(paths["dynamic_runtime_result"])
+        or run.get("retry_cap") != 0
+        or run.get("continuing_spend_from_this_run") is not False
+        or run.get("all_staged_objects_absent") is not True
+        or run.get("raw_secret_values_recorded") is not False
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_run_invalid"
+        )
+
+    probes = runtime.get("probe_results")
+    by_probe = (
+        {row.get("probe"): row for row in probes if isinstance(row, Mapping)}
+        if isinstance(probes, list)
+        else {}
+    )
+    required_checks = {
+        "drop": ("contact", "minimum_drop", "settled", "support_height"),
+        "slide": ("bounded_motion", "minimum_motion", "support_height"),
+        "tip": ("center_drop_bounded", "perturbation_authored", "support_height"),
+        "gripper": ("finger_contact", "lift", "release"),
+    }
+    if (
+        runtime.get("schema_version") != "adp009b_simready_isaac_result.v1"
+        or runtime.get("status") != "completed"
+        or runtime.get("blockers") != []
+        or runtime.get("native_isaac_executed") is not True
+        or runtime.get("observed_isaac_sim_version") != "6.0.1"
+        or runtime.get("probe_spec_sha256") != probe_spec_sha
+        or runtime.get("replacement_count") != 1
+        or runtime.get("source_target_collider_active") is not False
+        or runtime.get("provider_zero_required_after_return") is not True
+        or runtime.get("physical_success_established") is not False
+        or runtime.get("robot_task_success_established") is not False
+        or not isinstance(probes, list)
+        or len(probes) != 4
+        or set(by_probe) != set(required_checks)
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_runtime_invalid"
+        )
+    for probe_name, check_names in required_checks.items():
+        probe = by_probe[probe_name]
+        inventory = probe.get("inventory") or {}
+        checks = probe.get("checks") or {}
+        if (
+            probe.get("passed") is not True
+            or probe.get("step_count") != 360
+            or inventory.get("replacement_count") != 1
+            or inventory.get("source_target_collider_active") is not False
+            or not str(inventory.get("replacement_path") or "").endswith(
+                "/BlueprintReplacement"
+            )
+            or not all(checks.get(name) is True for name in check_names)
+            or not str(probe.get("stage_sha256") or "").startswith("sha256:")
+            or not str(probe.get("trace_digest") or "").startswith("sha256:")
+        ):
+            raise PublicSceneSuiteMaterializationError(
+                f"simready_control_dynamic_probe_invalid:{probe_name}"
+            )
+    if (
+        int(by_probe["drop"].get("contact_report_event_count") or 0) <= 0
+        or int(by_probe["slide"].get("contact_report_event_count") or 0) <= 0
+        or float(by_probe["slide"].get("horizontal_motion_m") or 0.0) <= 0.002
+        or int(by_probe["tip"].get("contact_report_event_count") or 0) <= 0
+        or int(by_probe["gripper"].get("finger_contact_report_event_count") or 0) <= 0
+        or float(by_probe["gripper"].get("observed_lift_m") or 0.0) <= 0.0
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_probe_measurement_invalid"
+        )
+
+    instance_ids = list(final_validation.get("vast_instance_ids") or [])
+    teardown_actions = teardown.get("teardown_actions_performed") or []
+    if (
+        final_validation.get("schema_version") != "vast_final_validation.v1"
+        or final_validation.get("status") != "passed"
+        or final_validation.get("blockers") != []
+        or len(instance_ids) != 1
+        or final_validation.get("all_vast_instances_destroyed_by_adapter") is not True
+        or final_validation.get("continuing_spend_from_this_run") is not False
+        or teardown.get("schema_version") != "vast_teardown_manifest.v1"
+        or teardown.get("status") != "completed"
+        or teardown.get("vast_instance_ids") != instance_ids
+        or teardown.get("runner_gpu_teardown_completed") is not True
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or len(teardown_actions) != 1
+        or teardown_actions[0].get("instance_id") != instance_ids[0]
+        or teardown_actions[0].get("action") != "destroy_instance"
+        or teardown_actions[0].get("status") != "completed"
+        or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("status") != "completed"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or cleanup.get("blockers") != []
+        or cleanup.get("exact_object_count") != len(cleanup.get("objects") or [])
+        or not cleanup.get("objects")
+        or not all(
+            (row.get("absence") or {}).get("absence_confirmed") is True
+            for row in cleanup["objects"]
+        )
+    ):
+        raise PublicSceneSuiteMaterializationError(
+            "simready_control_dynamic_teardown_or_cleanup_invalid"
+        )
+
+    artifacts = [
+        _file_record(
+            path,
+            root=data_root,
+            publisher_path=path.relative_to(data_root).as_posix(),
+            role=f"simready_{name}",
+        )
+        for name, path in paths.items()
+    ]
+    return artifacts, {
+        "isaac_dynamic_probes_executed": True,
+        "isaac_dynamic_probes_passed": True,
+        "native_isaac_sim_version": runtime["observed_isaac_sim_version"],
+        "probe_spec_sha256": probe_spec_sha,
+        "runtime_result_digest": runtime["result_digest"],
+        "provider_instance_ids": instance_ids,
+        "provider_zero_verified": True,
+        "object_store_zero_verified": True,
+        "estimated_cost_usd": run.get("estimated_cost_usd"),
+        "probe_summaries": [
+            {
+                "probe": name,
+                "passed": True,
+                "contact_report_event_count": by_probe[name].get(
+                    "contact_report_event_count"
+                ),
+                "finger_contact_report_event_count": by_probe[name].get(
+                    "finger_contact_report_event_count"
+                ),
+                "horizontal_motion_m": by_probe[name].get("horizontal_motion_m"),
+                "observed_lift_m": by_probe[name].get("observed_lift_m"),
+                "trace_digest": by_probe[name]["trace_digest"],
+            }
+            for name in required_checks
+        ],
+    }
+
+
 def _simready_control_component(
-    *, spec: Mapping[str, Any], request: Mapping[str, Any], repo_root: Path
+    *,
+    spec: Mapping[str, Any],
+    request: Mapping[str, Any],
+    repo_root: Path,
+    data_root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     receipt_path = _rooted(repo_root, str(spec["receipt_path"]))
     receipt = _read_json(receipt_path)
@@ -1046,6 +1865,13 @@ def _simready_control_component(
             role="materialization_and_static_validation_receipt",
         ),
     ]
+    dynamic = _simready_dynamic_evidence(spec=spec, data_root=data_root)
+    dynamic_observed: dict[str, Any] = {"isaac_dynamic_probes_executed": False}
+    admitted = dynamic is not None
+    if dynamic is not None:
+        dynamic_artifacts, dynamic_observed = dynamic
+        artifacts.extend(dynamic_artifacts)
+
     source_skill = receipt["cad_evidence"]["source_skill"]
     manifest: dict[str, Any] = {
         "schema_version": COMPONENT_SCHEMA_VERSION,
@@ -1053,7 +1879,7 @@ def _simready_control_component(
         "adp_item": ADP_ITEM,
         "component_id": str(receipt["control_id"]),
         "role": "exact_simready_object",
-        "source_project_id": "SimReady",
+        "source_project_id": REQUIRED_ROLE_PROJECTS["exact_simready_object"],
         "publisher_identity": {
             "cad_skill_repository": source_skill["repository"],
             "cad_skill_revision": source_skill["commit"],
@@ -1078,7 +1904,7 @@ def _simready_control_component(
             "simready_foundation_profile": validation["profile"],
             "simready_foundation_profile_version": validation["profile_version"],
             "simready_foundation_profile_passed": True,
-            "isaac_dynamic_probes_executed": False,
+            **dynamic_observed,
         },
         "claim_ceiling": CLAIM_CEILING,
         "claim_boundaries": {
@@ -1092,12 +1918,13 @@ def _simready_control_component(
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     return manifest, _component_receipt(
         manifest,
-        blockers=(blocker,),
+        blockers=() if admitted else (blocker,),
         checks={
             "cad_materialization_receipt_digest_verified": True,
             "usd_bytes_verified": True,
             "simready_foundation_profile_passed": True,
-            "isaac_dynamic_probes_passed": False,
+            "isaac_dynamic_probes_passed": admitted,
+            "teardown_and_object_cleanup_verified": admitted,
         },
     )
 
@@ -1168,6 +1995,10 @@ def _content_agents_component(
         container_image_digest = runtime.get("image_digest")
         container_platform = runtime.get("platform")
         container_image_reference = runtime.get("image_reference")
+        input_variant_binding = {
+            "input_variant": "unexecuted",
+            "approved_v2_receipt_chain_verified": False,
+        }
     else:
         execution_result_path = _rooted(data_root, str(execution_result_value))
         execution_root = execution_result_path.parent
@@ -1216,10 +2047,11 @@ def _content_agents_component(
             or bundle.get("bundle_sha256") != _sha256_file(bundle_path)
             or bundle.get("bundle_size_bytes") != bundle_path.stat().st_size
             or bundle.get("input_usd_sha256") != execution.get("input_usd_sha256")
-            or bundle.get("reference_image_authority")
-            != "blueprint_cad_render_not_interiorgs_dataset_bytes"
         ):
             raise PublicSceneSuiteMaterializationError("content_agents_execution_bundle_invalid")
+        input_variant_binding = _content_agents_input_variant_binding(
+            bundle=bundle, repo_root=repo_root
+        )
         normalization = bundle.get("input_usd_normalization")
         if (
             not isinstance(normalization, Mapping)
@@ -1498,6 +2330,7 @@ def _content_agents_component(
             "staged_objects_absent": execution_observed,
             "source_input_usd_sha256": source_input_usd_sha256,
             "normalized_input_usd_sha256": normalized_input_usd_sha256,
+            "input_variant_binding": input_variant_binding,
         },
         "claim_ceiling": CLAIM_CEILING,
         "claim_boundaries": {
@@ -1564,6 +2397,7 @@ def materialize_public_scene_suite(
             spec=simready_control,
             request=request,
             repo_root=repo_root,
+            data_root=data_root,
         )
     content_agents = request.get("content_agents")
     if content_agents is not None:
@@ -1574,6 +2408,35 @@ def materialize_public_scene_suite(
         by_role["usd_content_agents_candidate"] = _content_agents_component(
             spec=content_agents,
             repo_root=repo_root,
+            data_root=data_root,
+        )
+    controlled_background = request.get("controlled_background")
+    if controlled_background is not None:
+        if not isinstance(controlled_background, Mapping):
+            raise PublicSceneSuiteMaterializationError(
+                "controlled_background_spec_invalid"
+            )
+        if "controlled_background_truth" in request["missing_roles"]:
+            raise PublicSceneSuiteMaterializationError(
+                "controlled_background_role_duplicated"
+            )
+        by_role["controlled_background_truth"] = _controlled_background_component(
+            spec=controlled_background,
+            repo_root=repo_root,
+            data_root=data_root,
+        )
+    physics_positive_control = request.get("physics_positive_control")
+    if physics_positive_control is not None:
+        if not isinstance(physics_positive_control, Mapping):
+            raise PublicSceneSuiteMaterializationError(
+                "physics_positive_control_spec_invalid"
+            )
+        if "physics_positive_control" in request["missing_roles"]:
+            raise PublicSceneSuiteMaterializationError(
+                "physics_positive_control_role_duplicated"
+            )
+        by_role["physics_positive_control"] = _physics_positive_control_component(
+            spec=physics_positive_control,
             data_root=data_root,
         )
     if set(by_role) != set(REQUIRED_ROLE_PROJECTS):
@@ -1597,9 +2460,7 @@ def materialize_public_scene_suite(
         else:
             exact_revision = {"kind": "content_digest", "value": manifest["manifest_digest"]}
         artifacts = manifest.get("materialized_artifacts", [])
-        artifact_digest = (
-            canonical_digest({"artifacts": artifacts}) if artifacts else manifest["manifest_digest"]
-        )
+        artifact_digest = canonical_digest({"artifacts": artifacts})
         components.append(
             {
                 "role": role,
@@ -1636,7 +2497,12 @@ def materialize_public_scene_suite(
     }
     index["index_digest"] = canonical_digest(index, digest_field="index_digest")
     evaluated_on = dt.date.fromisoformat(str(request["evaluated_on"]))
-    index_receipt = build_public_scene_suite_index_receipt(index, evaluated_on=evaluated_on)
+    index_receipt = build_public_scene_suite_index_receipt(
+        index,
+        evaluated_on=evaluated_on,
+        component_root=output_root,
+        artifact_roots=(repo_root, data_root, method_root),
+    )
     (output_root / "public_scene_suite_index.v1.json").write_text(
         json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

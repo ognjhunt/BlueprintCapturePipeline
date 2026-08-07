@@ -23,6 +23,14 @@ def _sha256_json(value: Any) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -49,52 +57,26 @@ def _gpu_diagnostic() -> dict[str, Any]:
         return {"query_error": type(exc).__name__}
 
 
-def _scene_inventory(path: Path, config: dict[str, Any]) -> dict[str, Any]:
-    from pxr import Usd, UsdPhysics
+def _scene_inventory(config: dict[str, Any], input_path: Path) -> dict[str, Any]:
+    """Read the digest-bound inventory derived by the OpenUSD environment.
 
-    stage = Usd.Stage.Open(str(path))
-    if not stage:
-        raise RuntimeError(f"OpenUSD could not open {path}")
-    rigid: list[str] = []
-    colliders: list[str] = []
-    joints: list[dict[str, Any]] = []
-    masses: list[dict[str, Any]] = []
-    materials: list[dict[str, Any]] = []
-    for prim in stage.Traverse():
-        prim_path = str(prim.GetPath())
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-            rigid.append(prim_path)
-        if prim.HasAPI(UsdPhysics.CollisionAPI):
-            colliders.append(prim_path)
-        if prim.IsA(UsdPhysics.Joint):
-            lower = prim.GetAttribute("physics:lowerLimit").Get()
-            upper = prim.GetAttribute("physics:upperLimit").Get()
-            joints.append({"path": prim_path, "lower": lower, "upper": upper})
-        if prim.HasAPI(UsdPhysics.MassAPI):
-            api = UsdPhysics.MassAPI(prim)
-            masses.append(
-                {
-                    "path": prim_path,
-                    "mass": api.GetMassAttr().Get(),
-                    "density": api.GetDensityAttr().Get(),
-                }
-            )
-        if prim.HasAPI(UsdPhysics.MaterialAPI):
-            api = UsdPhysics.MaterialAPI(prim)
-            materials.append(
-                {
-                    "path": prim_path,
-                    "static_friction": api.GetStaticFrictionAttr().Get(),
-                    "dynamic_friction": api.GetDynamicFrictionAttr().Get(),
-                    "restitution": api.GetRestitutionAttr().Get(),
-                }
-            )
+    ``ovphysx`` and ``usd-exchange`` each ship USD libraries. Importing both in
+    one process is unsupported, so native dynamics ingests the USD through
+    ``PhysX.add_usd`` while schema inspection is bound into the frozen config.
+    """
+
+    inventory = config.get("usd_scene_inventory")
+    if not isinstance(inventory, dict):
+        raise ValueError("usd_scene_inventory is required")
+    required_lists = ("rigid_bodies", "colliders", "joints", "masses", "materials")
+    if any(not isinstance(inventory.get(name), list) for name in required_lists):
+        raise ValueError("usd_scene_inventory is malformed")
+    if not str(inventory.get("source_sha256") or "").startswith("sha256:"):
+        raise ValueError("usd_scene_inventory source digest is missing")
+    if inventory["source_sha256"] != _sha256_file(input_path):
+        raise ValueError("usd_scene_inventory source digest changed")
     return {
-        "rigid_bodies": rigid,
-        "colliders": colliders,
-        "joints": joints,
-        "masses": masses,
-        "materials": materials,
+        **inventory,
         "expected_joint_min_count": int(config.get("expected_joint_min_count", 0)),
     }
 
@@ -112,7 +94,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 
     started = time.monotonic()
     config = json.loads(args.config.read_text(encoding="utf-8"))
-    inventory = _scene_inventory(args.input, config)
+    inventory = _scene_inventory(config, args.input)
     checks: list[dict[str, Any]] = [
         _check("usd_scene_load", True, inventory=inventory),
     ]
@@ -122,6 +104,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     bindings: list[Any] = []
     contact_binding = None
     snapshots: list[dict[str, Any]] = []
+    pose_history: list[list[Any]] = []
     try:
         usd_handle, _ = physx.add_usd(str(args.input))
         physx.wait_all()
@@ -159,21 +142,30 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         steps = int(config.get("steps", 60))
         snapshot_steps = set(int(value) for value in config.get("snapshot_steps", [0, steps - 1]))
         initial_contact_norm = 0.0
+        maximum_contact_norm = 0.0
+        contact_step_count = 0
         for step_index in range(steps):
             physx.step(dt, step_index * dt)
             physx.wait_all()
-            if contact_binding is not None and step_index == 0:
+            if contact_binding is not None:
                 forces = np.zeros((contact_binding.sensor_count, 3), dtype=np.float32)
                 contact_binding.read_net_forces(forces)
-                initial_contact_norm = (
+                contact_norm = (
                     float(np.max(np.linalg.norm(forces, axis=-1))) if forces.size else 0.0
                 )
+                if step_index == 0:
+                    initial_contact_norm = contact_norm
+                maximum_contact_norm = max(maximum_contact_norm, contact_norm)
+                if contact_norm > float(config.get("contact_force_threshold", 1.0e-3)):
+                    contact_step_count += 1
+            history_state: list[Any] = []
+            for binding in bindings:
+                array = np.zeros(binding.shape, dtype=np.float32)
+                binding.read(array)
+                history_state.append(array.copy())
+            pose_history.append(history_state)
             if step_index in snapshot_steps:
-                state: list[list[Any]] = []
-                for binding in bindings:
-                    array = np.zeros(binding.shape, dtype=np.float32)
-                    binding.read(array)
-                    state.append(array.round(decimals=7).tolist())
+                state = [array.round(decimals=7).tolist() for array in history_state]
                 snapshots.append(
                     {"step": step_index, "time_seconds": step_index * dt, "rigid_body_poses": state}
                 )
@@ -210,6 +202,86 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 maximum_initial_contact_force=max_initial_force,
             )
         )
+
+        settle = config.get("drop_contact_settle")
+        if settle is not None:
+            if not isinstance(settle, dict) or len(bindings) != 1:
+                raise ValueError(
+                    "drop_contact_settle requires one rigid body binding and an object config"
+                )
+            if not pose_history or not pose_history[0] or not pose_history[0][0].size:
+                raise ValueError("drop_contact_settle pose history is empty")
+            rows = [np.asarray(sample[0], dtype=np.float64).reshape(-1, 7) for sample in pose_history]
+            if any(row.shape[0] != 1 for row in rows):
+                raise ValueError("drop_contact_settle pattern must resolve exactly one rigid body")
+            positions = np.stack([row[0, :3] for row in rows], axis=0)
+            quaternions = np.stack([row[0, 3:7] for row in rows], axis=0)
+            settle_window = int(settle.get("settle_window_steps", 30))
+            if settle_window < 2 or settle_window > len(rows):
+                raise ValueError("drop_contact_settle settle_window_steps is invalid")
+            expected_support_z = float(settle["expected_support_z_m"])
+            initial_drop_height = float(settle["initial_drop_height_m"])
+            support_tolerance = float(settle.get("support_height_tolerance_m", 0.005))
+            maximum_settle_motion = float(settle.get("maximum_settle_motion_m", 0.002))
+            maximum_rotation_degrees = float(
+                settle.get("maximum_rotation_from_initial_degrees", 5.0)
+            )
+            minimum_drop = float(
+                settle.get("minimum_observed_drop_m", initial_drop_height * 0.5)
+            )
+            final_position = positions[-1]
+            window_positions = positions[-settle_window:]
+            maximum_window_motion = float(
+                np.max(np.linalg.norm(window_positions - final_position, axis=1))
+            )
+            initial_quaternion = quaternions[0]
+            final_quaternion = quaternions[-1]
+            initial_quaternion /= max(float(np.linalg.norm(initial_quaternion)), 1.0e-12)
+            final_quaternion /= max(float(np.linalg.norm(final_quaternion)), 1.0e-12)
+            quaternion_dot = float(
+                np.clip(abs(np.dot(initial_quaternion, final_quaternion)), 0.0, 1.0)
+            )
+            rotation_degrees = float(np.degrees(2.0 * np.arccos(quaternion_dot)))
+            observed_drop = float(positions[0, 2] - np.min(positions[:, 2]))
+            final_support_error = abs(float(final_position[2]) - expected_support_z)
+            required_contact_steps = int(settle.get("minimum_contact_steps", 1))
+            checks.extend(
+                [
+                    _check(
+                        "drop_height_observed",
+                        observed_drop >= minimum_drop,
+                        observed_drop_m=observed_drop,
+                        minimum_observed_drop_m=minimum_drop,
+                        configured_initial_drop_height_m=initial_drop_height,
+                    ),
+                    _check(
+                        "support_contact_observed",
+                        contact_binding is not None
+                        and contact_step_count >= required_contact_steps,
+                        maximum_contact_force_norm=maximum_contact_norm,
+                        contact_step_count=contact_step_count,
+                        minimum_contact_steps=required_contact_steps,
+                    ),
+                    _check(
+                        "settled_on_expected_support",
+                        final_support_error <= support_tolerance
+                        and maximum_window_motion <= maximum_settle_motion,
+                        final_position_m=final_position.round(decimals=7).tolist(),
+                        expected_support_z_m=expected_support_z,
+                        final_support_error_m=final_support_error,
+                        support_height_tolerance_m=support_tolerance,
+                        settle_window_steps=settle_window,
+                        maximum_settle_window_motion_m=maximum_window_motion,
+                        maximum_allowed_settle_motion_m=maximum_settle_motion,
+                    ),
+                    _check(
+                        "upright_after_settle",
+                        rotation_degrees <= maximum_rotation_degrees,
+                        rotation_from_initial_degrees=rotation_degrees,
+                        maximum_rotation_from_initial_degrees=maximum_rotation_degrees,
+                    ),
+                ]
+            )
 
         expected_joints = inventory["expected_joint_min_count"]
         limits_valid = all(

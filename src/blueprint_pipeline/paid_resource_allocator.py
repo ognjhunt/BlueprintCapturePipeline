@@ -14,7 +14,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
 from .groot_oscar_digitalocean_builder import (
@@ -123,6 +123,11 @@ from .adp_isaac_lab_arena_vast import (
     build_arena_native_control_bundle,
     run_arena_native_control_vast,
 )
+from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE as ADP_SIMREADY_ISAAC_IMAGE
+from .public_scene_simready_isaac_vast import (
+    PROBE_KIND as ADP_SIMREADY_ISAAC_PROBE_KIND,
+    run_simready_isaac_vast,
+)
 from .adp_content_agents_vast import (
     DEFAULT_IMAGE as ADP_CONTENT_AGENTS_IMAGE,
     PROBE_KIND as ADP_CONTENT_AGENTS_PROBE_KIND,
@@ -140,6 +145,7 @@ from .adp_aura_author_smoke_vast import (
     run_aura_author_smoke_vast,
 )
 from .adp_aura_interiorgs_vast import (
+    AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST as ADP_AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST,
     PROBE_KIND as ADP_AURA_INTERIORGS_PROBE_KIND,
     run_aura_interiorgs_vast,
 )
@@ -412,6 +418,22 @@ def _control_plane_checkout_blockers() -> tuple[list[str], dict[str, object]]:
         "raw_secret_values_recorded": False,
     }
     return blockers, identity
+
+
+def _adp_expected_source_commit_blockers(
+    expected_source_commit: str, control_identity: Mapping[str, object]
+) -> tuple[list[str], str]:
+    """Bind an ADP paid run to the exact clean orchestrator commit."""
+
+    expected = expected_source_commit.strip().lower()
+    blockers: list[str] = []
+    if not expected:
+        blockers.append("adp_gpu_canary_expected_source_commit_missing")
+    elif len(expected) != 40 or any(character not in "0123456789abcdef" for character in expected):
+        blockers.append("adp_gpu_canary_expected_source_commit_invalid")
+    elif expected != str(control_identity.get("orchestrator_source_commit") or "").lower():
+        blockers.append("adp_gpu_canary_expected_source_commit_not_control_plane_checkout")
+    return blockers, expected
 
 
 def _write_blocked_qualification_allocation_outputs(args: argparse.Namespace, result: dict) -> None:
@@ -974,6 +996,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
             ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
+            ADP_SIMREADY_ISAAC_PROBE_KIND,
             ADP_CONTENT_AGENTS_PROBE_KIND,
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,
@@ -1045,6 +1068,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-authority-id")
     gpu.add_argument("--adp-public-reference-manifest")
     gpu.add_argument("--adp-arena-approval")
+    gpu.add_argument("--adp-simready-isaac-bundle-receipt")
     gpu.add_argument("--adp-job-dir")
     gpu.add_argument("--adp-max-hourly-rate-usd", type=float, default=0.80)
     gpu.add_argument("--adp-max-spend-usd", type=float, default=2.00)
@@ -1314,7 +1338,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not getattr(args, name, None)
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
-            blockers = [*missing, *control_blockers]
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            blockers = [*missing, *control_blockers, *source_blockers]
             if args.provider != "vast":
                 blockers.append("adp_inpaint360_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
@@ -1359,6 +1386,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("blockers") not in ([], None)
                     or not prepared_bundle.get("adapter_receipt_digest")
                     or prepared_bundle.get("blueprint_repository_tracked_state") != "clean"
+                    or prepared_bundle.get("blueprint_repository_commit")
+                    != expected_source_commit
                     or not bundle_path.is_file()
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
@@ -1395,6 +1424,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "orchestrator_source_commit": control_identity.get(
                     "orchestrator_source_commit"
                 ),
+                "expected_source_commit": expected_source_commit or None,
                 "bundle_receipt_sha256": receipt_sha256,
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
@@ -1519,7 +1549,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not value
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
-            blockers = [*missing, *control_blockers]
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            blockers = [*missing, *control_blockers, *source_blockers]
             if args.provider != "vast":
                 blockers.append("adp_aura_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
@@ -1560,6 +1593,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("retry_cap") != 0
                     or prepared_bundle.get("blockers") not in ([], None)
                     or (aura_interiorgs and not prepared_bundle.get("adapter_receipt_digest"))
+                    or (
+                        aura_interiorgs
+                        and prepared_bundle.get("runtime_prerequisite_receipt_digest")
+                        != ADP_AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST
+                    )
+                    or (
+                        aura_interiorgs
+                        and prepared_bundle.get("blueprint_commit") != expected_source_commit
+                    )
                     or not bundle_path.is_file()
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
@@ -1596,6 +1638,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "orchestrator_source_commit": control_identity.get(
                     "orchestrator_source_commit"
                 ),
+                "expected_source_commit": expected_source_commit or None,
                 "bundle_receipt_sha256": receipt_sha256,
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
@@ -1603,6 +1646,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "aura_source_commit": ADP_AURA_SOURCE_COMMIT,
                 "aura_source_tree": ADP_AURA_SOURCE_TREE,
                 "prerequisite_receipt_digest": ADP_AURA_PREREQUISITE_RECEIPT_DIGEST,
+                "runtime_prerequisite_receipt_digest": (
+                    ADP_AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST
+                    if aura_interiorgs
+                    else None
+                ),
                 "adapter_receipt_digest": (
                     prepared_bundle.get("adapter_receipt_digest")
                     if prepared_bundle and aura_interiorgs
@@ -1825,6 +1873,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             paid_admission = build_paid_lane_admission(
                 resource_class="vast_provider_adapter", blockers=sorted(set(blockers))
             )
+            public_sage_collision_uploaded = bool(
+                prepared_bundle
+                and (prepared_bundle.get("native_probe") or {}).get(
+                    "sage_collision_sha256"
+                )
+            )
             paid_admission.update(
                 {
                     "program_id": "arm-decision-proof-v1",
@@ -1837,8 +1891,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "authority": (
                         "user_authorized_all_in_scope_goal_resources_including_gpu_usage"
                     ),
-                    "private_or_licensed_dataset_bytes_uploaded": False,
-                    "input_is_blueprint_owned_parametric_control": True,
+                    "private_or_licensed_dataset_bytes_uploaded": (
+                        public_sage_collision_uploaded
+                    ),
+                    "private_or_gated_dataset_bytes_uploaded": False,
+                    "public_licensed_sage_collision_bytes_uploaded": (
+                        public_sage_collision_uploaded
+                    ),
+                    "public_licensed_dataset_identity": (
+                        {
+                            "repository": "spatialverse/SAGE-3D_Collision_Mesh",
+                            "license": "CC-BY-NC-4.0",
+                            "use_ceiling": "internal_noncommercial_validation",
+                            "raw_bytes_redistributed": False,
+                        }
+                        if public_sage_collision_uploaded
+                        else None
+                    ),
+                    "input_is_blueprint_owned_parametric_control": not (
+                        public_sage_collision_uploaded
+                    ),
+                    "input_contains_blueprint_owned_parametric_control": True,
                     "allocation_binding": allocation_binding,
                     "allocation_binding_digest": allocation_binding_digest,
                 }
@@ -1877,6 +1950,155 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     public_image=ADP_CONTENT_AGENTS_IMAGE,
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == ADP_SIMREADY_ISAAC_PROBE_KIND:
+            missing = [
+                name
+                for name in ("adp_simready_isaac_bundle_receipt", "adp_job_dir")
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            blockers = [*missing, *control_blockers, *source_blockers]
+            if args.provider != "vast":
+                blockers.append("simready_isaac_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("simready_isaac_budget_invalid")
+            if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
+                blockers.append("simready_isaac_hard_ttl_invalid")
+            prepared_bundle: dict[str, Any] | None = None
+            receipt_path: Path | None = None
+            if args.adp_simready_isaac_bundle_receipt:
+                receipt_path = Path(
+                    args.adp_simready_isaac_bundle_receipt
+                ).expanduser().resolve()
+                try:
+                    prepared_bundle = _load(receipt_path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("simready_isaac_bundle_receipt_invalid")
+            bundle_path: Path | None = None
+            if prepared_bundle is not None:
+                bundle_path = Path(
+                    str(prepared_bundle.get("bundle_path") or "")
+                ).expanduser().resolve()
+                observed_bundle_sha256 = (
+                    "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+                    if bundle_path.is_file()
+                    else ""
+                )
+                if (
+                    prepared_bundle.get("status") != "ready"
+                    or prepared_bundle.get("source_commit_sha") != expected_source_commit
+                    or prepared_bundle.get("container_image") != ADP_SIMREADY_ISAAC_IMAGE
+                    or prepared_bundle.get("retry_cap") != 0
+                    or prepared_bundle.get("blockers") not in ([], None)
+                    or not prepared_bundle.get("probe_spec_sha256")
+                    or not bundle_path.is_file()
+                    or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
+                ):
+                    blockers.append("simready_isaac_bundle_binding_invalid")
+            receipt_sha256 = (
+                "sha256:" + hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+                if receipt_path and receipt_path.is_file()
+                else None
+            )
+            avoidlist_sha256 = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                if not avoidlist_path.is_file():
+                    blockers.append("simready_isaac_machine_avoidlist_missing")
+                else:
+                    avoidlist_sha256 = (
+                        "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+                    )
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": ADP_SIMREADY_ISAAC_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get(
+                    "orchestrator_source_commit"
+                ),
+                "expected_source_commit": expected_source_commit or None,
+                "bundle_receipt_sha256": receipt_sha256,
+                "bundle_sha256": (
+                    prepared_bundle.get("bundle_sha256") if prepared_bundle else None
+                ),
+                "probe_spec_sha256": (
+                    prepared_bundle.get("probe_spec_sha256") if prepared_bundle else None
+                ),
+                "container_image": ADP_SIMREADY_ISAAC_IMAGE,
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "machine_avoidlist_sha256": avoidlist_sha256,
+                "retry_cap": 0,
+            }
+            allocation_binding_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(
+                        allocation_binding, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                ).hexdigest()
+            )
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=sorted(set(blockers))
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": ADP_SIMREADY_ISAAC_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": "user_authorized_all_in_scope_goal_resources_including_gpu_usage",
+                    "private_data_uploaded": False,
+                    "physical_success_established": False,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if prepared_bundle is None or blockers:
+                result = {
+                    "status": "blocked",
+                    "blockers": sorted(set(blockers)),
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_simready_isaac_vast(
+                    job_dir=args.adp_job_dir,
+                    prepared_bundle=prepared_bundle,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    machine_avoidlist_path=args.adp_machine_avoidlist,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

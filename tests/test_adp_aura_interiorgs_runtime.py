@@ -5,6 +5,11 @@ import sys
 import zipfile
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import adp_aura_interiorgs_vast as bundle
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
 
 def _load_runner():
     root = Path(__file__).resolve().parents[1]
@@ -166,3 +171,174 @@ def test_aura_lama_checkpoint_rejects_archive_without_config(tmp_path: Path) -> 
 
     assert receipt["status"] == "blocked"
     assert "aurafusion360_interiorgs_lama_checkpoint_members_missing" in receipt["blockers"]
+
+
+def test_aura_reference_lama_command_uses_absolute_verified_checkpoint_path(
+    tmp_path: Path,
+) -> None:
+    runner = _load_runner()
+    source = tmp_path / "AuraFusion360_official"
+    checkpoint_root = source / "LaMa/big-lama"
+    (checkpoint_root / "models").mkdir(parents=True)
+    (checkpoint_root / "config.yaml").write_text("training_model: {}\n")
+    (checkpoint_root / "models/best.ckpt").write_bytes(b"checkpoint")
+
+    command = runner._reference_lama_command(
+        source=source,
+        runtime=tmp_path / "runtime",
+        lama_python=str(source / "LaMa/.venv/bin/python"),
+    )
+
+    assert command[2] == f"model.path={checkpoint_root.resolve()}"
+    assert command[3] == f"indir={(tmp_path / 'runtime/reference_lama_input').resolve()}"
+    assert command[4] == f"outdir={(tmp_path / 'runtime/reference_lama_output').resolve()}"
+
+
+def test_aura_reference_lama_command_rejects_missing_checkpoint_bytes(
+    tmp_path: Path,
+) -> None:
+    runner = _load_runner()
+    source = tmp_path / "AuraFusion360_official"
+    checkpoint_root = source / "LaMa/big-lama"
+    checkpoint_root.mkdir(parents=True)
+    (checkpoint_root / "config.yaml").write_text("training_model: {}\n")
+
+    try:
+        runner._reference_lama_command(
+            source=source,
+            runtime=tmp_path / "runtime",
+            lama_python=str(source / "LaMa/.venv/bin/python"),
+        )
+    except ValueError as exc:
+        assert str(exc) == "aurafusion360_interiorgs_lama_checkpoint_path_unresolved"
+    else:
+        raise AssertionError("missing LaMa checkpoint bytes were not rejected")
+
+
+def test_aura_openclip_cache_is_resolved_offline_and_exact(tmp_path: Path) -> None:
+    runner = _load_runner()
+    checkpoint = tmp_path / "open_clip_pytorch_model.bin"
+    checkpoint.write_bytes(b"exact-openclip")
+    sha256 = "sha256:" + hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    calls: list[dict[str, object]] = []
+
+    def fake_download(**kwargs: object) -> str:
+        calls.append(kwargs)
+        return str(checkpoint)
+
+    receipt = runner._verify_openclip_offline_cache(
+        spec={
+            "runtime_models": [
+                {
+                    "repository": "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+                    "revision": "1" * 40,
+                    "materialized_files": [
+                        {
+                            "path": checkpoint.name,
+                            "size_bytes": checkpoint.stat().st_size,
+                            "sha256": sha256,
+                        }
+                    ],
+                }
+            ]
+        },
+        hf_hub_download=fake_download,
+    )
+
+    assert receipt["resolved_without_network"] is True
+    assert calls == [
+        {
+            "repo_id": "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+            "filename": "open_clip_pytorch_model.bin",
+            "local_files_only": True,
+        }
+    ]
+
+
+def test_aura_openclip_cache_rejects_changed_bytes(tmp_path: Path) -> None:
+    runner = _load_runner()
+    checkpoint = tmp_path / "open_clip_pytorch_model.bin"
+    checkpoint.write_bytes(b"changed")
+
+    try:
+        runner._verify_openclip_offline_cache(
+            spec={
+                "runtime_models": [
+                    {
+                        "repository": "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+                        "revision": "1" * 40,
+                        "materialized_files": [
+                            {
+                                "path": checkpoint.name,
+                                "size_bytes": checkpoint.stat().st_size,
+                                "sha256": "sha256:" + "0" * 64,
+                            }
+                        ],
+                    }
+                ]
+            },
+            hf_hub_download=lambda **_kwargs: str(checkpoint),
+        )
+    except ValueError as exc:
+        assert str(exc) == "aurafusion360_openclip_offline_cache_missing_or_changed"
+    else:
+        raise AssertionError("changed OpenCLIP bytes were not rejected")
+
+
+def test_aura_runtime_prerequisite_binds_exact_public_openclip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt: dict[str, object] = {
+        "methods": {
+            "aurafusion360_interiorgs_runtime": {
+                "checkpoint_rights_established": True,
+                "remote_snapshots": [
+                    {
+                        "artifact_id": "aurafusion360_openclip_vit_h_14",
+                        "rights_established": True,
+                        "rights": {"license_id": "MIT"},
+                        "publisher": {
+                            "repository": bundle.OPENCLIP_REPOSITORY,
+                            "revision": bundle.OPENCLIP_REVISION,
+                            "path_prefix": bundle.OPENCLIP_PATH,
+                            "snapshot_digest": bundle.OPENCLIP_SNAPSHOT_DIGEST,
+                            "gated": False,
+                            "private": False,
+                            "single_file_identity": {
+                                "path": bundle.OPENCLIP_PATH,
+                                "size_bytes": bundle.OPENCLIP_SIZE_BYTES,
+                                "lfs_sha256": bundle.OPENCLIP_SHA256,
+                            },
+                        },
+                    }
+                ],
+            }
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    monkeypatch.setattr(
+        bundle,
+        "AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST",
+        receipt["receipt_digest"],
+    )
+
+    model = bundle._validated_runtime_prerequisite(receipt)
+
+    assert model["repository"] == bundle.OPENCLIP_REPOSITORY
+    assert model["materialized_files"][0]["sha256"] == bundle.OPENCLIP_SHA256
+    mutated = dict(receipt)
+    mutated["receipt_digest"] = "sha256:" + "0" * 64
+    with pytest.raises(ValueError, match="runtime_prerequisite_digest_mismatch"):
+        bundle._validated_runtime_prerequisite(mutated)
+
+
+def test_aura_interiorgs_entrypoint_emits_long_stage_liveness() -> None:
+    entrypoint = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp_aura_interiorgs_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
+    assert "BLUEPRINT_ADP_AURA_INTERIORGS_RUNTIME_PROGRESS" in entrypoint
+    assert "BLUEPRINT_ADP_AURA_INTERIORGS_STAGE_STARTED" in entrypoint
+    assert "run_with_progress prepare" in entrypoint
+    assert "run_with_progress execute" in entrypoint

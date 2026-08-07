@@ -20,12 +20,117 @@ No capture or reconstruction feature was added.
 
 ## Public Scene Qualification Phase
 
+The approved [public-scene transition decision](ADP_009_PUBLIC_SCENE_TRANSITION_DECISION.md)
+selects AuraFusion360 for ADP v1, preserves Inpaint360GS and InFusion as
+nonblocking typed abstentions, moves real metric transfer from ScanNet++ to the
+mandatory fresh Raw V3.2 capture, and accepts the bounded construction
+rehearsal without rewriting the historical `7/10` suite. The next active item is
+ADP-009D: a development-only Franka policy rehearsal on the exact sealed
+Aura/SAGE/SimReady scene before fresh capture.
+
 | Item | Status | Observed evidence |
 |---|---|---|
-| ADP-009A | `partial` | The deterministic [`public_scene_suite_index.v1.json`](manifests/adp009a_materialized_suite/public_scene_suite_index.v1.json) admits three of ten roles from inspected bytes: InteriorGS scene `840313`, its exact SAGE-3D USDZ/collision companion, and NVIDIA USD Content Agents v0.5.2. Scene `840313` was selected under the preregistered criteria with target `ins160` (`canned_beverage`) mapped to removable collider `/Root/ZHQYGJJVAJYEYPTUKY888888`; candidate `841244` and the subsequent shortlist failures remain retained rather than silently relaxed. The Content Agents run executed Material, Texture, Physics, and Validation Agents against exact source commit `36dbf3f274f8e256637230a05a085853f65cc175`; its [component receipt](manifests/adp009a_materialized_suite/usd_content_agents_candidate.component_receipt.json) recomputes 75 retained artifact identities and binds provider teardown and object-store cleanup. Replayed method prerequisite receipt `sha256:ed309230e5dd216117789ef3abab947e3a0dabfe66afacd7b0de7732217b4902` binds exact source trees, real local checkpoint bytes, publisher snapshots, observed licenses, AuraFusion360's published sunflower expected-output snapshot, the exact single-file Stable Diffusion checkpoint identity, and both exact Marigold repository names used by Aura. The [Inpaint360GS archive probe](manifests/adp009a_inpaint360_author_archive_probe.v1.json) independently opened the exact publisher input and evaluation ZIP central directories, verified 6,566 and 1,751 entries, and bound the default `doppelherz` author case as two contiguous ranges totaling 785,699,813 bytes instead of requiring 12.3 GB of bulk downloads. Neither archive nor the pinned README contains a dataset-license authority, so the unchanged author smoke remains blocked rather than executed. Twelve zero-retry Aura attempts have not produced an admitted output: `live_v1` exposed isolated CUDA builds, `live_v2` hit a publisher-results `429`, `live_v3` hit an HTTP/2 bundle transfer failure, `live_v4` rejected a mistranscribed Stable Diffusion LFS hash, `live_v5` hit Hugging Face Xet `429`, `live_v6` exposed the omitted WonderWorld/Marigold utilities, `live_v7` proved that direct inpaint-init omitted the publisher's prerequisite training workflow, `live_v9` stopped before method execution when uv rejected the selected host's injected PyTorch TLS issuer, `live_v10` proved the native-TLS fix before the host's injected Hugging Face mirror repeatedly truncated the exact 206,112,053-byte publisher expected-output PLY, `live_v11` proved the embedded-reference fix before the public 15,482,514,887-byte Marigold snapshot stopped at 16 of 24 files for roughly forty minutes, `live_v12` completed training, rendering, removal, and SAM2 masks before Diffusers 0.39 rejected a verified 12-file partial Marigold cache during offline fallback, and `live_v13` again completed training, rendering, removal, and SAM2, loaded all 24 verified Marigold files offline, and completed 50 diffusion steps before Aura's AGDD utility requested the alias repository name `prs-eth/marigold-v1-0`. Their estimated cost totals `$2.518590`; every instance and staged object was removed, and the post-`live_v13` independent provider inventory reports zero active instances. The exact 636-file, 44,778,262-byte sunflower scene is materialized outside git with receipt `sha256:67f7fdbf6315f2d2d12d071c0598207847a68748a391232d8ce9ce075684f956`. The bundle materializer binds the three omitted Apache-licensed Marigold utilities from exact WonderWorld commit `cae41f9a24a9c5513a7eea8939ee14fa0576162d` without modifying Aura's tracked source. The corrected harness follows the publisher-documented unchanged order through inpaint-init—train, render, remove, SAM2 masks, then inpaint—and forces uv to use the host system CA store for all package retrieval. Bundle v11 and later require the exact locally inspected publisher expected-output PLY and embed that digest-bound reference, eliminating GPU-host mirror retrieval for this byte. The next bundle deterministically hardlinks the verified `prs-eth/marigold-depth-v1-0` snapshot under Aura's second exact repository identity after proving identical revision, 24-file manifest, byte sizes, SHA-256 identities, and Apache-2.0 license; it does not download a duplicate 15.48 GB snapshot. After successful inpaint-init, the runner also renders the publisher expected-output PLY through the same 240-view camera trajectory and retains eight fixed full-resolution produced/reference frame pairs with PSNR and pixel-error measurements. Those measurements establish reproduction similarity only, not physical or hidden-surface truth. Inpaint360GS author-data rights, the InFusion checkpoint license, and a successful Aura inpaint-init execution remain unresolved. The other controlled truth, dynamic SimReady, physics, and ScanNet++ roles also remain blocked, so the suite is correctly `blocked`, not complete. |
-| ADP-009B | `partial` | The frozen, non-orbiting InteriorGS input request materializes eight lossless `2048x1536` RGB frames and eight OBB-plus-contained-Gaussian masks for selected scene `840313`, target `ins160`; the [input receipt](manifests/adp009b_interiorgs_edit_input_receipt.v1.json) binds actual source/render bytes, camera transforms, Git source identity, and executed commands. A deterministic [Inpaint360GS adapter receipt](manifests/adp009b_inpaint360_adapter_receipt.v1.json) additionally stages those frames as exact COLMAP PINHOLE cameras, uint8 instance masks, and an iteration-30000 publisher-splat seed; it is an experimental prepared packet, not the frozen InteriorGS method lane. The deterministic virtual-mask materializer now converts Inpaint360GS full-scene virtual instance renders into exact binary target masks, refuses missing target pixels or changed view shapes, and binds every output to observed bytes; this removes the publisher workflow's manual Gradio handoff but does not execute the method. The remaining exploratory packet must still bind both publisher environments and execute virtual pose generation, Big-LaMa color/depth completion, fusion, and final 3DGS optimization before a second GPU is allocated. Aura is not a dependency for that packet. The North Star reserves Inpaint360GS for unchanged author data and requires InFusion as the primary InteriorGS adapter, with AuraFusion360 as challenger. The [InFusion adapter receipt](manifests/adp009b_infusion_adapter_receipt.v1.json) now derives an exact blocked execution packet from observed bytes: it removes the 39 OBB-contained target Gaussians from a degree-3 publisher-Ply copy, preserves all 45 higher-order SH fields across the remaining 540,673 Gaussians, freezes `low_approach` by maximum preregistered target-mask coverage (79,681 pixels), binds the already admitted Apache-2.0 Big-LaMa checkpoint for single-view RGB completion, and prepares the native InFusion depth/render commands plus a tested SH-preserving compositor. This mechanical OBB partition is not yet semantic-completeness proof, no color/depth method or compositor has executed, no collider has been removed, and no SimReady object has been inserted. Execution remains fail-closed on `infusion_checkpoint_license_missing`; the public 6.86 GB checkpoint repository is accessible but still declares no license. NVIDIA USD Content Agents executed on the parametric can control, but that remains an authoring candidate rather than inpainting, measured geometry, dynamic simulation, or physical evidence. |
-| ADP-009C | `missing` | No exact ScanNet++ real measured scene or controlled known-background completion has passed the new metric/editing tests. |
-| ADP-009D | `missing` | No deterministic InteriorGS/SAGE-to-ScanNet++ variation matrix or one-command public-data replacement rehearsal exists. ARKitScenes and WildRGB-D were explicitly removed from the required stack. |
+| ADP-009A | `partial` | The immutable historical [`public_scene_suite_index.v1.json`](manifests/adp009a_materialized_suite/public_scene_suite_index.v1.json) admits seven of ten roles from actual bytes and execution receipts: selected InteriorGS scene `840313`, its exact SAGE-3D companion, NVIDIA USD Content Agents v0.5.2, AuraFusion360's unchanged author smoke, the native Isaac/PhysX positive control, the exact approved match-v2 SimReady can, and a seal-before-truth-release controlled-background completion. Scene `840313` retains target `ins160` (`canned_beverage`) mapped to removable collider `/Root/ZHQYGJJVAJYEYPTUKY888888`; rejected candidate `841244` and shortlist failures remain retained. Exact SimReady `run_011` passed native Isaac Sim 6.0.1 drop/contact, slide, tip, and gripper probes. The index remains truthfully blocked on Inpaint360GS author-data license authority, InFusion checkpoint license, and ScanNet++ transfer. Under the 2026-08-06 transition these are historical nonblocking abstentions, not admissions and not a `10/10` claim. |
+| ADP-009B | `observed_complete` | The frozen, non-orbiting InteriorGS input request materializes eight lossless `2048x1536` RGB frames and eight OBB-plus-contained-Gaussian masks for selected scene `840313`, target `ins160`; the [input receipt](manifests/adp009b_interiorgs_edit_input_receipt.v1.json) binds actual source/render bytes, camera transforms, Git source identity, and executed commands. Two retained Inpaint360GS scene experiments completed or failed honestly and were rejected for visual artifacts. AuraFusion360 `live_v12_openclip_execute` completed the exact released-source workflow and materially improved locality: mean PSNR `39.30477`, windowed SSIM `0.99231201`, LPIPS `0.01379092`, and `0.266055%` of outside-mask pixels changing by more than `20/255`. The project-owner [human-review receipt](manifests/adp009b_aura_human_review_receipt.v1.json) accepts it for the bounded internal hybrid control while retaining faint residue and representation limitations. The exact [hybrid replacement seal](manifests/adp009b_hybrid_replacement_seal_receipt.v1.json) binds Aura, matching SAGE collision, inactive source collider, preserved cabinet support, exact match-v2 SimReady can, official SimReady Foundation validation, and native Isaac drop/contact, slide, tip, and gripper lift/release results. Inpaint360GS author smoke and the prepared [InFusion adapter](manifests/adp009b_infusion_adapter_receipt.v1.json) remain nonblocking typed abstentions; neither is relabeled as executed or admitted. This completion is bounded to public-scene construction and does not establish hidden-background truth, real metrology, policy validity, or physical evidence. |
+| ADP-009C | `observed_complete` | The Blueprint-authored known-background case passed its preregistered factual RGB/depth recovery checks: mean RGB mask PSNR `37.120493` dB, crop SSIM `0.983894`, boundary MAE `1.476368/255`, depth RMSE `0.006581` m, maximum p95 depth error `0.009391` m, and plane RMSE `0.006453` m. This is known synthetic truth, not InteriorGS hidden-background truth or real measurement. The retained [ScanNet++ access outcome](manifests/adp009c_scannetpp_access_outcome.v1.json) remains blocked and immutable; the required real metric transfer now occurs through the fresh Raw V3.2 capture rather than this public-data item. |
+| ADP-009D | `partial` | The sealed Aura/SAGE/SimReady scene and exact native Isaac object probes are ready, but no Franka has yet been registered into that scene and no two-candidate learned-policy Task Evaluation Run has executed. The required next terminal is one basic pick-and-place rehearsal with exactly two frozen runnable policy candidates, complete policy-input media, deterministic non-policy scoring, replay, and provider teardown. Cosmos remains an auxiliary world-model/evaluator lane rather than a policy candidate unless an action-producing contract is separately proven. |
+
+AuraFusion360 InteriorGS run `live_v12_openclip_execute` completed the exact
+released source workflow through 10,000 inpaint-finetune steps with zero retries.
+It retained a native 2D-Gaussian-surfels PLY with 415,265 vertices,
+106,309,429 bytes, and SHA-256
+`cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd`,
+plus eight native `2048x1536` renders at the frozen cameras. Estimated cost was
+`$1.742443`; teardown and staged-object cleanup prove no continuing spend. The
+[execution receipt](manifests/adp009b_aurafusion360_execution_receipt.v1.json)
+is `executed_candidate`, not self-admitted. A deterministic native-2DGS render
+manifest opens and rehashes the eight PNGs and derives their camera IDs from the
+adapter inventory because the independent Spark verifier requires a third 3DGS
+scale that Aura's native 2DGS PLY intentionally lacks. The resulting outside-mask
+measurement (`sha256:eb3fb61eb5fe7da98728b3280bf832b49be0ff0684257b761d55599a88a5a4a4`)
+is materially better than both Inpaint360GS runs: mean PSNR `39.30477`, windowed
+SSIM `0.99231201`, LPIPS `0.01379092`, and `0.266055%` of outside-mask pixels
+changing by more than `20/255`. Visual review of all eight before/mask/after
+triplets finds no Inpaint360-style spikes or translucent sheets, but does find a
+faint prismatic residue at the former can location and a white edge fringe in one
+oblique view. Aura therefore remains a substantially improved visual candidate,
+not admitted successful completion.
+
+The exact SimReady can is now statically composed with the matching SAGE
+collision proxy in a separate digest-bound USD layer. The deterministic
+[replacement receipt](manifests/adp009b_simready_replacement_receipt.v1.json)
+opens and hashes the actual collision USD, Aura PLY, and exact SimReady asset;
+deactivates only target collider `/Root/ZHQYGJJVAJYEYPTUKY888888`; and preserves
+the TV-cabinet support collider. Direct mesh inspection found four overlapping
+horizontal support triangles at `z=0.5264650138348479` m with `0` m height span,
+`0` degrees maximum tilt, and `0.785568074625` square meters of combined triangle
+area. No mesh smoothing or generated support geometry was needed. Because the
+SimReady asset uses a base-centered local datum, its placement is
+`[3.4681748, -3.3100837, 0.5264650138348479]` m, a measured `+1.499910722` mm
+support correction from the publisher OBB bottom. The project owner accepted
+match-v2's eight-view identity, scale, and pose for native validation. Paid run
+`vast_match_v2_native_run_007` then executed the same exact candidate on one
+L40S with zero retries. All eight native OVRTX `2048x1536` RGB/depth renders
+passed. The native OVPhysX 0.4.13 probe loaded the exact SAGE support mesh,
+observed a `0.0493258238` m drop and 38 contact steps, and settled the can at
+`z=0.5264592` m, only `0.0000057968` m below the expected support height,
+with zero final motion and `0.00775` degrees upright rotation error. Material,
+Texture, Physics, and Validation Agents also returned success. The run cost an
+estimated `$0.196057`, destroyed Vast instance `46956437`, removed staged
+objects, and a fresh independent inventory probe found zero active Vast
+instances.
+
+The digest-bound native visual review receipt is retained outside Git at
+`simready/replacement_840313_match_v2/native_visual_review_run007/` with digest
+`sha256:7b95577d254d9a1c4764f361362e7cd903b30e19c7c666f9d89e1b77a6357f51`.
+It derives eight before/after pairs from the actual returned OVRTX arrays and
+sealed Aura frames. These are native object-layer renders composited over Aura,
+not native OVRTX renders of the 3DGS background. The project owner's explicit
+decision to continue with this Aura result is now bound by the
+[human-review receipt](manifests/adp009b_aura_human_review_receipt.v1.json) to
+the Aura execution, the eight-camera locality measurement, and all 32 retained
+review images. That receipt accepts a visual candidate for the bounded internal
+hybrid replacement control; it does not manufacture hidden-background truth,
+technical inpainting admission, or physical evidence. The exact unchanged
+match-v2 USD subsequently passed the official SimReady Foundation
+`Prop-Robotics-Physx 2.0.0` profile from an isolated byte-identical validation
+input. Canonical Vast run `run_011` then loaded the exact SAGE collision layer
+and match-v2 replacement in Isaac Sim 6.0.1 and passed four frozen 360-step
+probes: drop/contact/settle, a `0.0041117726` m bounded slide, tip stability, and
+gripper contact/lift/release with `0.0300313830` m observed lift. It confirmed
+one replacement, the source target collider inactive, and the publisher support
+collider active. The zero-retry run cost `$0.159906`, destroyed instance
+`46976013`, removed both staged objects, and a fresh provider inventory returned
+zero active Vast instances. This admits the exact-SimReady component. The
+[hybrid replacement seal](manifests/adp009b_hybrid_replacement_seal_receipt.v1.json)
+now fail-closed joins that admitted component and exact runtime digest to the
+same Aura execution, project-owner visual decision, static replacement layer,
+scene `840313`, target `160`, inactive source collider, and preserved support
+collider. This completes the bounded internal hybrid replacement control, not
+ADP-009B: the composite is not a native render of the 3DGS background, Aura has
+no hidden-background truth, InFusion remains blocked, and all simulation
+evidence remains distinct from physical truth.
+
+Suite replay now fails closed on file identity as well as JSON shape. The
+materializer opens the ten component manifests and receipts plus every referenced
+artifact under explicit repository, data, and method roots; it recomputes their
+sizes, SHA-256 values, canonical digests, roles, source-project identities,
+statuses, and cross-bindings before matrix completion is possible. The current
+blocked `7/10` replay opened and verified the referenced bytes, recomputed the
+controlled-case scores from the actual outputs, and emitted index receipt
+`sha256:4ac6de73e9d82ff881a7f662c58340700c76fa3762fa8ab25271d29cc77d9f43`.
+It preserves the exact-SimReady component identity as the contract-required
+`Blueprint-controlled` value and admits it only after the static profile, four
+native Isaac probes, teardown, and staged-object cleanup all pass.
+
+The exact 2026-08-02 Isaac development runtime, execution, teardown, and
+provider-zero receipt bytes were recovered and retained outside Git under
+`physics_positive_control/isaac_physx_attempt17_20260802/`. The materializer
+recomputes all four file hashes and canonical digests, validates both nested
+Isaac Sim 6.0.1 execution bundles, and cross-binds the request, image, instance,
+teardown, and API-confirmed provider-zero evidence. This admits the separate
+physics-positive-control role only; it does not establish exact-scene behavior,
+physical truth, production readiness, or qualification of the replacement can.
 
 Candidate `0787_841244` remains a retained, rejected warm start rather than the
 selected scene. Direct inspection could not establish a suitable target whose
@@ -36,8 +141,9 @@ closeups. The InteriorGS/SAGE release provides a metric frame, OBBs, and static
 collision pairing, not a measurement-authoritative local surface mesh. Rendered
 cameras and RGB are therefore synthetic method inputs/self-consistency probes;
 external metric depth remains a validation oracle unless a released method
-explicitly accepts it through a preregistered adapter. No completion run has yet
-demonstrated the required seal-before-clean-background-release firebreak.
+explicitly accepts it through a preregistered adapter. The separate Blueprint-
+authored case now demonstrates the seal-before-clean-background-release
+firebreak, but does not establish InteriorGS hidden-background truth.
 
 The retained survey PNGs are lossless `1024x768` selection evidence, not the
 final edit-quality render contract. A later ADP-009B edit must render the native
@@ -77,6 +183,11 @@ python -m blueprint_pipeline.public_scene_suite_materializer \
   --repo-root "$PWD" --data-root "$ADP009A_DATA_ROOT" \
   --method-root "$ADP009A_METHOD_ROOT" \
   --output-root docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite
+python -m blueprint_pipeline.public_scene_simready_replacement \
+  --request docs/arm_decision_proof_v1/manifests/adp009b_simready_replacement_request.v1.json \
+  --repo-root "$PWD" --evidence-root "$ADP009A_DATA_ROOT" \
+  --output-usda "$ADP009A_DATA_ROOT/simready/replacement_840313/collision_and_replacement.usda" \
+  --output-receipt docs/arm_decision_proof_v1/manifests/adp009b_simready_replacement_receipt.v1.json
 python -m blueprint_pipeline.public_scene_inpainting_inputs \
   --request docs/arm_decision_proof_v1/manifests/adp009b_interiorgs_edit_input_request.v1.json \
   --repo-root "$PWD" --data-root "$ADP009A_DATA_ROOT" \
@@ -98,9 +209,34 @@ python -m blueprint_pipeline.public_scene_infusion_adapter \
   --lama-source-root "$ADP009A_METHOD_ROOT/Inpaint360GS" \
   --output-root "$ADP009A_DATA_ROOT/inpainting_inputs/840313_ins160_infusion_adapter_v1" \
   --receipt-output docs/arm_decision_proof_v1/manifests/adp009b_infusion_adapter_receipt.v1.json
+python -m blueprint_pipeline.public_scene_aura_execution \
+  --adapter-receipt docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_adapter_receipt.v1.json \
+  --runtime-result "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/adp_aura_interiorgs_result.json" \
+  --run-result "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/adp_aura_interiorgs_vast_result.json" \
+  --evidence-root "$ADP009A_DATA_ROOT" --repo-root "$PWD" \
+  --receipt-output docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_execution_receipt.v1.json
+python -m blueprint_pipeline.public_scene_aura_native_render \
+  --adapter-receipt docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_adapter_receipt.v1.json \
+  --execution-receipt docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_execution_receipt.v1.json \
+  --evidence-root "$ADP009A_DATA_ROOT" \
+  --output "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/aura_native_exact_camera_manifest.v1.json"
+python -m blueprint_pipeline.public_scene_inpainting_locality \
+  --before-dir "$ADP009A_DATA_ROOT/inpainting_inputs/840313_ins160_v1/images" \
+  --mask-dir "$ADP009A_DATA_ROOT/inpainting_inputs/840313_ins160_v1/masks" \
+  --after-render-manifest "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/aura_native_exact_camera_manifest.v1.json" \
+  --output "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/aura_native_locality_measurement.v1.json" \
+  --approved-root "$ADP009A_DATA_ROOT" --dilation-pixels 16 \
+  --lpips-checkpoint-digest sha256:df73285e35b22355a2df87cdb6b70b343713b667eddbda73e1977e0c860835c0 \
+  --lpips-backbone-digest sha256:7be5be791159472b1fbf3c69796f7cb30dca7ad8466c2df70058c37116cdee02
 python -m blueprint_pipeline.public_scene_inpaint360_author_archive \
   --source-root "$ADP009A_METHOD_ROOT/Inpaint360GS" \
   --output docs/arm_decision_proof_v1/manifests/adp009a_inpaint360_author_archive_probe.v1.json
+python -m blueprint_pipeline.public_scene_simready_visual_review \
+  --native-provider-result "$ADP009A_DATA_ROOT/simready/content_agents/vast_match_v2_native_run_007/job_live/immutable_execution/adp_content_agents_vast_result.json" \
+  --exact-camera-manifest "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/aura_native_exact_camera_manifest.v1.json" \
+  --frame-root "$ADP009A_DATA_ROOT/aura_interiorgs/live_v12_openclip_execute/immutable_execution/artifacts/final_frames" \
+  --evidence-root "$ADP009A_DATA_ROOT" \
+  --output-root "$ADP009A_DATA_ROOT/simready/replacement_840313_match_v2/native_visual_review_run007"
 ```
 
 The successful Content Agents execution used a deterministic NVIDIA-compatible

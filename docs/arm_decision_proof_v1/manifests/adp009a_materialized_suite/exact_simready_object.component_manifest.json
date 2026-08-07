@@ -8,27 +8,124 @@
     "static_profile_is_not_isaac_runtime": true
   },
   "claim_ceiling": "development_only",
-  "component_id": "adp009a-840313-canned-beverage-cad-control",
-  "manifest_digest": "sha256:f95832848f2c8fe82607f9fb0b942e5997dc3a3940b48b5c6a84107f60cf817e",
+  "component_id": "adp009a-840313-canned-beverage-multiview-match-v2",
+  "manifest_digest": "sha256:1268909468948cb0d30d071636d69dfcae0b4eb986e78d460a4f71ce87fa3880",
   "materialized_artifacts": [
     {
-      "external_relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda",
-      "publisher_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda",
+      "external_relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
+      "publisher_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
       "role": "cad_derived_simready_usd",
-      "sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
-      "size_bytes": 200375
+      "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+      "size_bytes": 20705128
     },
     {
-      "external_relative_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
-      "publisher_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
+      "external_relative_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_match_v2_static_validation_receipt.v1.json",
+      "publisher_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_match_v2_static_validation_receipt.v1.json",
       "role": "materialization_and_static_validation_receipt",
-      "sha256": "sha256:771c48f8f408826ee5c33564b344e5d0da04de0d7ec95a45b436872c7b5a5aff",
-      "size_bytes": 9407
+      "sha256": "sha256:1361b0beedeec3359d29c7cdc2cf7a836fbc07dfca4cb1a22b7c079d424de54f",
+      "size_bytes": 10964
+    },
+    {
+      "external_relative_path": "simready/isaac_qualification/run_011/adp009b_simready_isaac_vast_result.json",
+      "publisher_path": "simready/isaac_qualification/run_011/adp009b_simready_isaac_vast_result.json",
+      "role": "simready_dynamic_run_result",
+      "sha256": "sha256:8fa7f1fc578dec1c822ae213b3ef0ec6a08a6b1c6f1eb9ec38886d5670d93ad4",
+      "size_bytes": 1059
+    },
+    {
+      "external_relative_path": "simready/isaac_qualification/run_011/attempts/attempt_001/immutable_execution/isaac_runtime_result.json",
+      "publisher_path": "simready/isaac_qualification/run_011/attempts/attempt_001/immutable_execution/isaac_runtime_result.json",
+      "role": "simready_dynamic_runtime_result",
+      "sha256": "sha256:411a1c593b86a3bffb62d28abb236c1d7bdfb4910765a84f583aaad51940fe13",
+      "size_bytes": 7724
+    },
+    {
+      "external_relative_path": "simready/isaac_qualification/run_011/bundle/adp009b_simready_isaac_bundle_receipt.json",
+      "publisher_path": "simready/isaac_qualification/run_011/bundle/adp009b_simready_isaac_bundle_receipt.json",
+      "role": "simready_dynamic_bundle_receipt",
+      "sha256": "sha256:db5ca61dd3f2f4fb54087ef8659e93c824859827a788210f69e816277660db34",
+      "size_bytes": 5102
+    },
+    {
+      "external_relative_path": "simready/isaac_qualification/run_011/bundle/isaac_provider_runtime_bundle.zip",
+      "publisher_path": "simready/isaac_qualification/run_011/bundle/isaac_provider_runtime_bundle.zip",
+      "role": "simready_dynamic_bundle",
+      "sha256": "sha256:aab90d2508d6e7eaad7f16d6531910566102a2db6a12c945ed2217e0153579ed",
+      "size_bytes": 32674949
+    },
+    {
+      "external_relative_path": "simready/isaac_qualification/run_011/attempts/attempt_001/vast_provider_run/vast_final_validation.json",
+      "publisher_path": "simready/isaac_qualification/run_011/attempts/attempt_001/vast_provider_run/vast_final_validation.json",
+      "role": "simready_dynamic_final_validation",
+      "sha256": "sha256:a0a6986d079f6e8b6716f009db0ce3ca3966394986e56f723149002b61063f49",
+      "size_bytes": 2472
+    },
+    {
+      "external_relative_path": "simready/isaac_qualification/run_011/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+      "publisher_path": "simready/isaac_qualification/run_011/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+      "role": "simready_dynamic_teardown_manifest",
+      "sha256": "sha256:d58ceadba9674bb624dd74b24907448b13ea44bba02f6db1ec29ba4d163b72c8",
+      "size_bytes": 1358
+    },
+    {
+      "external_relative_path": "simready/isaac_qualification/run_011/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json",
+      "publisher_path": "simready/isaac_qualification/run_011/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json",
+      "role": "simready_dynamic_object_cleanup",
+      "sha256": "sha256:3f7a7d97cceb689394607200d41f1d6218fa7663080194f28e5dd72d2775eaee",
+      "size_bytes": 943
     }
   ],
   "observed_evidence": {
     "cad_step_and_mesh_opened": true,
-    "isaac_dynamic_probes_executed": false,
+    "estimated_cost_usd": 0.159906,
+    "isaac_dynamic_probes_executed": true,
+    "isaac_dynamic_probes_passed": true,
+    "native_isaac_sim_version": "6.0.1",
+    "object_store_zero_verified": true,
+    "probe_spec_sha256": "sha256:a92f6a4279e901b3d825c6cfa58c1777c042e4359da7aeb91c3cd85301f9354f",
+    "probe_summaries": [
+      {
+        "contact_report_event_count": 38,
+        "finger_contact_report_event_count": 0,
+        "horizontal_motion_m": 3.3207865422210978e-06,
+        "observed_lift_m": null,
+        "passed": true,
+        "probe": "drop",
+        "trace_digest": "sha256:ff44a649fb41d887548adfc46965b9453fe74e40e773ce58152eed0e70655b63"
+      },
+      {
+        "contact_report_event_count": 85,
+        "finger_contact_report_event_count": 0,
+        "horizontal_motion_m": 0.004111772628414217,
+        "observed_lift_m": null,
+        "passed": true,
+        "probe": "slide",
+        "trace_digest": "sha256:8078272328124d681f0a7800faa7220d50963a636979de6f37d099d7133eb73e"
+      },
+      {
+        "contact_report_event_count": 65,
+        "finger_contact_report_event_count": 0,
+        "horizontal_motion_m": 6.389084124686687e-05,
+        "observed_lift_m": null,
+        "passed": true,
+        "probe": "tip",
+        "trace_digest": "sha256:dec435c62dffe8acea0142aea556672ba15d0ca8f7fe6c9794fab7a40970e6cc"
+      },
+      {
+        "contact_report_event_count": 226,
+        "finger_contact_report_event_count": 141,
+        "horizontal_motion_m": 0.0034610445993042568,
+        "observed_lift_m": 0.03003138303756714,
+        "passed": true,
+        "probe": "gripper",
+        "trace_digest": "sha256:25ccf19250e4523ee671d89865540ae0a9905c2857a10077460cb26ec4ae111f"
+      }
+    ],
+    "provider_instance_ids": [
+      46976013
+    ],
+    "provider_zero_verified": true,
+    "runtime_result_digest": "sha256:7b4874280ce9d9829d2bc54a6496b0bf4396e68a51ff64a96a0bb4c6c253c5fc",
     "simready_foundation_profile": "Prop-Robotics-Physx",
     "simready_foundation_profile_passed": true,
     "simready_foundation_profile_version": "2.0.0",
@@ -54,5 +151,5 @@
     "publisher_scene_id": "840313"
   },
   "schema_version": "public_scene_component_manifest.v1",
-  "source_project_id": "SimReady"
+  "source_project_id": "Blueprint-controlled"
 }

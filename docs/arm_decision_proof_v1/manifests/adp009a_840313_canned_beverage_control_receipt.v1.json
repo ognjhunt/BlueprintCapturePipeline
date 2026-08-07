@@ -95,12 +95,23 @@
     "kind": "text_to_cad_step_derived_triangle_mesh",
     "local_origin": "center_of_base_datum",
     "measurement_authoritative": false,
-    "source": "publisher_semantic_obb_plus_materialized_cad",
-    "world_placement_authored_into_asset": false,
-    "world_placement_m": [
+    "nominal_base_placement_m": [
+      3.4681748,
+      -3.3100837000000003,
+      0.5249651031127929
+    ],
+    "obb_center_m": [
       3.4681748,
       -3.3100837000000003,
       0.6096790999999999
+    ],
+    "source": "publisher_semantic_obb_plus_materialized_cad",
+    "world_placement_authored_into_asset": false,
+    "world_placement_datum": "center_of_base_datum",
+    "world_placement_m": [
+      3.4681748,
+      -3.3100837000000003,
+      0.5249651031127929
     ]
   },
   "grasp_selection": {
@@ -139,7 +150,7 @@
     "static_friction": 0.5
   },
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:da55a4d5dd4b1c872571a113ff61642dca586585c81092d927a6d9c296b5b561",
+  "receipt_digest": "sha256:f33bcf84771e5175c0bb20651a1fb0c454b594a16e5347d5000b8fde0ce704fd",
   "schema_version": "adp009a_parametric_simready_receipt.v1",
   "simready_foundation_validation": {
     "asset_sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
@@ -158,7 +169,7 @@
       "--output",
       "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready/.840313_canned_beverage_control.validation.bound.json.pending",
       "-v",
-      "/private/tmp/blueprint-adp009a-tranche1-20260804/docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda"
+      "/private/tmp/blueprint-inpaint-control-a2634-20260805/docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda"
     ],
     "commit": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
     "exit_status": 0,
@@ -206,7 +217,7 @@
         "version": "0.1.0"
       }
     },
-    "finished_at": "2026-08-04T20:40:12.109437Z",
+    "finished_at": "2026-08-06T03:38:59.058161Z",
     "license": "Apache-2.0",
     "license_file": {
       "relative_path": "LICENSE.txt",
@@ -215,8 +226,8 @@
     },
     "log": {
       "relative_path": "simready/840313_canned_beverage_control.validation.bound.log",
-      "sha256": "sha256:894219eba47e5a82f5067dabdf15e410ce8084c50ea83d9f64dfc5e9935e4ec7",
-      "size_bytes": 59597
+      "sha256": "sha256:1e4304e7672994dca04c59c476fd37bd8f208fe24bb251e1b32592fde96b984c",
+      "size_bytes": 59602
     },
     "passed": true,
     "profile": "Prop-Robotics-Physx",
@@ -224,10 +235,10 @@
     "repository": "https://github.com/NVIDIA/simready-foundation",
     "result": {
       "relative_path": "simready/840313_canned_beverage_control.validation.bound.json",
-      "sha256": "sha256:b5ce42783701796e232aa7d787a6511d91a62a4ed37553b7bd1e01501c801d72",
-      "size_bytes": 1801
+      "sha256": "sha256:9599c710ea0a3b9a38edb9086b650e36f96a41c839bc9dfaa80a2c4a78254f7b",
+      "size_bytes": 1806
     },
-    "started_at": "2026-08-04T20:40:10.301863Z",
+    "started_at": "2026-08-06T03:38:57.135837Z",
     "tree": "3794fa2eeb96e3e48c3f4874f638f6ab5a9636d5",
     "validator_version": "simready-validate 2026.6.4"
   },

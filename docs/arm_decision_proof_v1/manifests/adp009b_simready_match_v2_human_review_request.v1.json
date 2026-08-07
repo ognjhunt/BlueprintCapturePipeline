@@ -1,0 +1,14 @@
+{
+  "schema_version": "adp009b_simready_human_visual_review_request.v1",
+  "decision": "approve_for_native_validation",
+  "reviewer_role": "project_owner",
+  "approval_statement": "great, this is close enough - i approve",
+  "artifacts": {
+    "replacement_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009b_simready_replacement_match_v2_receipt.v1.json",
+    "replacement_receipt_digest": "sha256:6f173cadd7b4a0ea0e19a975ded93fc367de950c11a450988e5289015d5e35f2",
+    "visual_review_relative_path": "simready/replacement_840313_match_v2/visual_review_v1/adp009b_simready_visual_review_receipt.v1.json",
+    "visual_review_receipt_digest": "sha256:7b88dffc816b8f0db275e854eedae10acfebacf36b18f64f6f39acc903be5645",
+    "match_review_relative_path": "simready/replacement_840313_match_v2/match_review_v1/adp009b_simready_replacement_match_review.v1.json",
+    "match_review_receipt_digest": "sha256:e5e8bfa7b64a6f0a1817e4af58dccd0a621b9604d259876dd22bd6e0684669c7"
+  }
+}

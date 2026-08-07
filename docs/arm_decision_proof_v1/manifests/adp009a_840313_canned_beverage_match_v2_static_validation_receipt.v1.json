@@ -1,0 +1,300 @@
+{
+  "adp_item": "ADP-009A",
+  "blockers": [
+    "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
+  ],
+  "cad_evidence": {
+    "generator": {
+      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.py",
+      "sha256": "sha256:aaade87009adeead1d2093da93203d6edcd2c8d918c3d2b7e134c72658a2bbe7",
+      "size_bytes": 1703
+    },
+    "inspection": {
+      "relative_path": "simready/cad_match_v2/adp009a_840313_canned_beverage_match_v2.inspection.json",
+      "sha256": "sha256:a37f8cc929bc8d592464e5162cabe3646f7b0c4b2ad6a913af96b7162741e025",
+      "size_bytes": 5687
+    },
+    "mesh": {
+      "body_count": 1,
+      "bounds_m": [
+        [
+          -0.0310947265625,
+          -0.0310947265625,
+          0.0
+        ],
+        [
+          0.0310947265625,
+          0.0310947265625,
+          0.16942799377441406
+        ]
+      ],
+      "size_m": [
+        0.062189453125,
+        0.062189453125,
+        0.16942799377441406
+      ],
+      "source_length_unit": "millimeter",
+      "triangle_count": 65516,
+      "vertex_count": 32760,
+      "watertight": true,
+      "winding_consistent": true
+    },
+    "mesh_angular_deflection_rad": 0.05,
+    "mesh_linear_deflection_mm": 0.05,
+    "scene_target_contact_sheet": {
+      "relative_path": "selection_inspection/840313/target_160_contact_sheet.png",
+      "sha256": "sha256:61ee9aebc9bf17fc961d755c113d205e5c6cc29e25dedffc2d3d717be2537417",
+      "size_bytes": 767702
+    },
+    "snapshot": {
+      "relative_path": "simready/cad_match_v2/adp009a_840313_canned_beverage_match_v2_20260806T041914Z.png",
+      "sha256": "sha256:78a514d4460a05202d5d1764c9e26b4abe80867f7df6a99999be6cffa1f13646",
+      "size_bytes": 139774
+    },
+    "source_skill": {
+      "commit": "4fd71ea75fbb8a80b0d7c76862e0fd73c52a8989",
+      "license": "MIT",
+      "repository": "https://github.com/earthtojake/text-to-cad",
+      "skill_path": "skills/cad/SKILL.md",
+      "tree": "a5bf8c8eb14561557f44064c59c254d031665c65"
+    },
+    "step": {
+      "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.step",
+      "sha256": "sha256:184686548edfc56bcaa5f3dfb0f3e87a8278386d7efa6455437080860231c37e",
+      "size_bytes": 16162
+    },
+    "stl": {
+      "relative_path": "simready/cad_match_v2/adp009a_840313_canned_beverage_match_v2.stl",
+      "sha256": "sha256:863ac2c1bf96339d7089970809bfa61b7a74c8e756ec71469b7950cf7fe30ccc",
+      "size_bytes": 3275884
+    }
+  },
+  "checks": {
+    "cad_inspection_passed": true,
+    "cad_mesh_watertight_single_body": true,
+    "cad_snapshot_and_scene_contact_sheet_verified": true,
+    "cad_source_and_step_hashed": true,
+    "collision_and_mesh_collision_apis_present": true,
+    "contact_material_authored": true,
+    "mass_and_inertia_authored": true,
+    "mesh_geometry_authored": true,
+    "rigid_body_api_present": true,
+    "scene_component_digest_verified": true,
+    "simready_foundation_profile_passed": true,
+    "target_dimensions_derived_not_caller_asserted": true,
+    "usd_readback_passed": true,
+    "vision_selected_grasp_curve_authored": true,
+    "visual_material_bound": true,
+    "world_placement_separate_from_asset": true
+  },
+  "claim_ceiling": "development_only",
+  "control_id": "adp009a-840313-canned-beverage-multiview-match-v2",
+  "geometry": {
+    "diameter_m": 0.062189452028690084,
+    "height_m": 0.1694279937744141,
+    "kind": "text_to_cad_step_derived_triangle_mesh",
+    "local_origin": "center_of_base_datum",
+    "measurement_authoritative": false,
+    "nominal_base_placement_m": [
+      3.4681748,
+      -3.3100837000000003,
+      0.5249651031127929
+    ],
+    "obb_center_m": [
+      3.4681748,
+      -3.3100837000000003,
+      0.6096790999999999
+    ],
+    "source": "publisher_semantic_obb_plus_materialized_cad",
+    "world_placement_authored_into_asset": false,
+    "world_placement_datum": "center_of_base_datum",
+    "world_placement_m": [
+      3.4681748,
+      -3.3100837000000003,
+      0.5249651031127929
+    ]
+  },
+  "grasp_selection": {
+    "coordinate_note": "The STEP and generated USD both use a base-centered local origin, +Z height, and meters after CAD conversion.",
+    "points_local_m": [
+      [
+        -0.031094726218814,
+        0.0,
+        0.084713996887207
+      ],
+      [
+        0.031094726218814,
+        0.0,
+        0.084713996887207
+      ]
+    ],
+    "rationale": "Preserve the v1 diameter-through-body grasp at mid-height; the v2 visual refinement does not change the frozen extent or grasp datum."
+  },
+  "inpainting_result": false,
+  "physical_material_authority": false,
+  "physics": {
+    "authority": "frozen_authoring_priors_not_measurements",
+    "center_of_mass_m": [
+      0.0,
+      0.0,
+      0.08471399688720704
+    ],
+    "diagonal_inertia_kg_m2": [
+      0.0009350253597009403,
+      0.0009350253597009403,
+      0.00017162155249852556
+    ],
+    "dynamic_friction": 0.4,
+    "mass_kg": 0.355,
+    "restitution": 0.1,
+    "static_friction": 0.5
+  },
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:ac077c2b88bd5dd31a7b33503dfe0729cec645ddd56d3c882b978563f1ee2625",
+  "schema_version": "adp009a_parametric_simready_receipt.v1",
+  "simready_foundation_validation": {
+    "asset_sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+    "command": [
+      "/private/tmp/adp009a-simready-validator-venv/bin/simready-validate",
+      "--profile",
+      "Prop-Robotics-Physx",
+      "--version",
+      "2.0.0",
+      "--rules-path",
+      "/private/tmp/adp009a-nvidia-20260804/simready-foundation/nv_core/sr_specs/docs/capabilities",
+      "--features-path",
+      "/private/tmp/adp009a-nvidia-20260804/simready-foundation/nv_core/sr_specs/docs/features",
+      "--profiles-path",
+      "/private/tmp/adp009a-nvidia-20260804/simready-foundation/nv_core/sr_specs/docs/profiles/profiles.toml",
+      "--output",
+      "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready/.840313_canned_beverage_match_v2.validation.bound.json.pending",
+      "-v",
+      "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready/validation_inputs/840313_canned_beverage_match_v2/adp009a_840313_canned_beverage_match_v2.usda"
+    ],
+    "commit": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
+    "exit_status": 0,
+    "features": {
+      "FET000_CORE": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET001_BASE_NEUTRAL": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "1.0.0"
+      },
+      "FET003_BASE_NEUTRAL": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET003_BASE_PHYSX": {
+        "dependencies": "[{'FET003_BASE_NEUTRAL': {'version': '0.1.0'}}]",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET004_BASE_NEUTRAL": {
+        "dependencies": "[{'FET003_BASE_NEUTRAL': {'version': '0.1.0'}}]",
+        "optional requirements": "['RB.MB.001']",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET004_BASE_PHYSX": {
+        "dependencies": "[{'FET003_BASE_PHYSX': {'version': '0.1.0'}}, {'FET004_BASE_NEUTRAL': {'version': '0.1.0'}}]",
+        "optional requirements": "['RB.MB.001']",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET005_BASE_NEUTRAL": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "0.1.0"
+      },
+      "FET006_BASE_MDL": {
+        "dependencies": "[]",
+        "passed": true,
+        "version": "0.1.0"
+      }
+    },
+    "finished_at": "2026-08-06T12:12:30.631131Z",
+    "license": "Apache-2.0",
+    "license_file": {
+      "relative_path": "LICENSE.txt",
+      "sha256": "sha256:5d3c30d3dbce415a760a6d10dc6976d6e02a38b861ade08b13850a2d860a5b38",
+      "size_bytes": 11346
+    },
+    "log": {
+      "relative_path": "simready/840313_canned_beverage_match_v2.validation.bound.log",
+      "sha256": "sha256:4fbc7efe850c23631719503a0498f41065cdcbaf9f601a77bd4ea514a2b51db5",
+      "size_bytes": 59655
+    },
+    "passed": true,
+    "profile": "Prop-Robotics-Physx",
+    "profile_version": "2.0.0",
+    "repository": "https://github.com/NVIDIA/simready-foundation",
+    "result": {
+      "relative_path": "simready/840313_canned_beverage_match_v2.validation.bound.json",
+      "sha256": "sha256:371cd33b801fcf28ed65e0f5d3d8f439960d4a9c6b062257455638231317298a",
+      "size_bytes": 1858
+    },
+    "started_at": "2026-08-06T12:12:00.015344Z",
+    "tree": "3794fa2eeb96e3e48c3f4874f638f6ab5a9636d5",
+    "validated_asset": {
+      "relative_path": "simready/validation_inputs/840313_canned_beverage_match_v2/adp009a_840313_canned_beverage_match_v2.usda",
+      "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+      "size_bytes": 20705128
+    },
+    "validator_version": "simready-validate 2026.6.4"
+  },
+  "source_component_manifest_digest": "sha256:f96681e8d23499926b7417196415840a69f5bfd22425eedd61e0b2dbac475e38",
+  "source_instance_id": "160",
+  "source_scene_id": "840313",
+  "source_semantic_label": "canned_beverage",
+  "status": "statically_validated",
+  "usd": {
+    "collision_prim": "/canned_beverage/colliders/body_collider",
+    "default_prim": "/canned_beverage",
+    "grasp_prim": "/canned_beverage/grasp_identifier_01",
+    "meters_per_unit": 1.0,
+    "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
+    "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+    "size_bytes": 20705128,
+    "up_axis": "Z",
+    "visual_and_collision_prims_distinct": true,
+    "visual_prim": "/canned_beverage/visuals/body"
+  },
+  "visual_match_evidence": {
+    "authority": "synthetic_interiorgs_multiview_appearance_diagnostic_not_physical_material_truth",
+    "camera_count": 8,
+    "derivation": "median_of_camera_reference_median_lab_then_cie_lab_d65_to_srgb",
+    "derived_srgb_diffuse_color": [
+      0.47728447849430594,
+      0.8366053501964427,
+      0.650897271186033
+    ],
+    "projected_scale_and_pose_gate_passed": true,
+    "receipt": {
+      "relative_path": "simready/replacement_840313/match_review_v1/adp009b_simready_replacement_match_review.v1.json",
+      "sha256": "sha256:28c698bd44d596a3f3afca64144fb62ad9d8f5a0de211020aeb6593607231ab2",
+      "size_bytes": 35399
+    },
+    "receipt_digest": "sha256:760a34dae27df9c10bcf676998e4d1655a732814a81461630578e2aa08efe381",
+    "reference_median_lab": [
+      78.8235,
+      -38.0,
+      15.0
+    ]
+  },
+  "visual_material": {
+    "authority": "Retained InteriorGS multi-view target appearance diagnostic; not measured physical material or verified transparency",
+    "diffuse_color": [
+      0.4772844785,
+      0.8366053502,
+      0.6508972712
+    ],
+    "metallic": 0.1,
+    "roughness": 0.32,
+    "strategy": "eight_view_target_support_median_lab_derived_srgb_candidate"
+  }
+}

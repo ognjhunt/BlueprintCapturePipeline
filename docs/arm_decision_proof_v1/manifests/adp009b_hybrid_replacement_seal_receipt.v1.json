@@ -1,0 +1,51 @@
+{
+  "adp009b_complete": false,
+  "adp_item": "ADP-009B",
+  "bindings": {
+    "aura_execution_receipt_digest": "sha256:2476eae9ba019ba000ddd4064dd1c51960e089ea370f4051955a2999d09e22da",
+    "aura_human_review_receipt_digest": "sha256:d2597d3f18daa07c04e12dc44f02a6894a6713445614d17a9d90a5ee2200179b",
+    "composition_sha256": "sha256:c4f19dd3f058c5f9182b390322f1dcbe71dbfb45fcc607365f3ee8b4c9d47dba",
+    "exact_simready_asset_sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+    "exact_simready_component_manifest_digest": "sha256:1268909468948cb0d30d071636d69dfcae0b4eb986e78d460a4f71ce87fa3880",
+    "exact_simready_component_receipt_digest": "sha256:4639ad329883b177f346c9a6f88e7063e8fef34c500427ab2caa048c992e1559",
+    "isaac_runtime_result_digest": "sha256:7b4874280ce9d9829d2bc54a6496b0bf4396e68a51ff64a96a0bb4c6c253c5fc",
+    "native_visual_review_receipt_digest": "sha256:7b95577d254d9a1c4764f361362e7cd903b30e19c7c666f9d89e1b77a6357f51",
+    "replacement_receipt_digest": "sha256:6f173cadd7b4a0ea0e19a975ded93fc367de950c11a450988e5289015d5e35f2",
+    "static_validation_receipt_digest": "sha256:ac077c2b88bd5dd31a7b33503dfe0729cec645ddd56d3c882b978563f1ee2625"
+  },
+  "claim_boundaries": {
+    "aura_background_is_project_owner_accepted_visual_candidate": true,
+    "digital_twin": false,
+    "hidden_background_truth_available": false,
+    "native_object_layer_composite_is_not_full_scene_native_render": true,
+    "simulation_is_not_physical_truth": true
+  },
+  "claim_ceiling": "internal_noncommercial_hybrid_replacement_control_only",
+  "observed_gates": {
+    "four_native_isaac_probes_passed": true,
+    "frozen_camera_count": 8,
+    "project_owner_visual_acceptance": true,
+    "provider_and_object_store_zero": true,
+    "source_collider_deactivated": true,
+    "static_simready_profile_passed": true,
+    "support_collider_preserved": true
+  },
+  "physical_evidence": false,
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:b259532be614098a3830aa9945770a96371968f9c68e8087eb21a2ca00e3c3e3",
+  "remaining_blockers": [
+    "infusion_primary_adapter_checkpoint_license_missing",
+    "full_native_hybrid_background_renderer_missing",
+    "controlled_background_truth_missing"
+  ],
+  "scene": {
+    "publisher_scene_id": "840313",
+    "source_target_collider_active": false,
+    "support_collider_active": true,
+    "target_instance_id": "160",
+    "target_semantic_label": "canned_beverage"
+  },
+  "schema_version": "adp009b_hybrid_replacement_seal.v1",
+  "status": "sealed_internal_hybrid_replacement_control",
+  "technical_inpainting_admitted": false
+}

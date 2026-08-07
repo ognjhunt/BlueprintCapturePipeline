@@ -146,6 +146,49 @@ def _materialize_lama_checkpoint(
     return receipt
 
 
+def _verify_openclip_offline_cache(
+    *, spec: dict[str, Any], hf_hub_download: Any
+) -> dict[str, Any]:
+    models = [
+        model
+        for model in spec.get("runtime_models") or []
+        if model.get("repository") == "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+    ]
+    if len(models) != 1:
+        raise ValueError("aurafusion360_openclip_runtime_model_binding_invalid")
+    model = models[0]
+    files = model.get("materialized_files") or []
+    if len(files) != 1:
+        raise ValueError("aurafusion360_openclip_runtime_file_binding_invalid")
+    expected = files[0]
+    try:
+        resolved = Path(
+            hf_hub_download(
+                repo_id=model["repository"],
+                filename=expected["path"],
+                local_files_only=True,
+            )
+        )
+    except Exception as exc:
+        raise ValueError(
+            "aurafusion360_openclip_checkpoint_not_materialized_and_offline_verified"
+        ) from exc
+    if (
+        not resolved.is_file()
+        or resolved.stat().st_size != expected["size_bytes"]
+        or _sha256(resolved) != expected["sha256"]
+    ):
+        raise ValueError("aurafusion360_openclip_offline_cache_missing_or_changed")
+    return {
+        "repository": model["repository"],
+        "revision": model["revision"],
+        "path": expected["path"],
+        "size_bytes": resolved.stat().st_size,
+        "sha256": _sha256(resolved),
+        "resolved_without_network": True,
+    }
+
+
 def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -196,6 +239,9 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
             shared._pin_hf_ref(cache, model["repository"], model["revision"])
         shared._verify_runtime_model_snapshot(snapshot, model)
         resolved[str(model["repository"])] = snapshot
+    openclip_offline_cache = _verify_openclip_offline_cache(
+        spec=spec, hf_hub_download=hf_hub_download
+    )
     sd2 = spec["sd2_checkpoint"]
     downloaded = Path(
         hf_hub_download(
@@ -207,7 +253,14 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
     shutil.copy2(downloaded, destination)
     if destination.stat().st_size != sd2["size_bytes"] or _sha256(destination) != sd2["sha256"]:
         raise ValueError("aurafusion360_interiorgs_sd2_checkpoint_changed")
-    _write(runtime / "prepare_receipt.json", {"status": "prepared"})
+    _write(
+        runtime / "prepare_receipt.json",
+        {
+            "status": "prepared",
+            "openclip_offline_cache_verified": True,
+            "openclip_offline_cache": openclip_offline_cache,
+        },
+    )
     return 0
 
 
@@ -222,6 +275,21 @@ def _ply_count(path: Path) -> int | None:
             if line == "end_header":
                 break
     return None
+
+
+def _reference_lama_command(*, source: Path, runtime: Path, lama_python: str) -> list[str]:
+    checkpoint_root = (source / "LaMa/big-lama").resolve()
+    if not (checkpoint_root / "config.yaml").is_file() or not (
+        checkpoint_root / "models/best.ckpt"
+    ).is_file():
+        raise ValueError("aurafusion360_interiorgs_lama_checkpoint_path_unresolved")
+    return [
+        lama_python,
+        "bin/predict.py",
+        f"model.path={checkpoint_root}",
+        f"indir={(runtime / 'reference_lama_input').resolve()}",
+        f"outdir={(runtime / 'reference_lama_output').resolve()}",
+    ]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -259,13 +327,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = [
         (
             "reference_lama",
-            [
-                lama_python,
-                "bin/predict.py",
-                "model.path=./big-lama",
-                f"indir={runtime / 'reference_lama_input'}",
-                f"outdir={runtime / 'reference_lama_output'}",
-            ],
+            _reference_lama_command(
+                source=source,
+                runtime=runtime,
+                lama_python=lama_python,
+            ),
             source / "LaMa",
             lama_env,
         ),
@@ -316,7 +382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         destination = output / "artifacts/final_frames" / frame.name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(frame, destination)
-        retained_frames.append({"path": destination.relative_to(output).as_posix(), "size_bytes": destination.stat().st_size, "sha256": _sha256(destination)})
+        retained_frames.append({"relative_path": destination.relative_to(output).as_posix(), "size_bytes": destination.stat().st_size, "sha256": _sha256(destination)})
     result = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),

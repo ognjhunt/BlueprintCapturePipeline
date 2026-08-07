@@ -2,7 +2,16 @@
 
 Status: **sole active Blueprint program**
 Approved: 2026-08-04
+Amended: 2026-08-06
 Machine-readable contract: [`north_star_contract.json`](north_star_contract.json)
+
+The approved [public-scene transition decision](ADP_009_PUBLIC_SCENE_TRANSITION_DECISION.md)
+selects AuraFusion360 as the ADP-v1 editing path, preserves Inpaint360GS and
+InFusion as nonblocking typed abstentions, moves real metric transfer from
+ScanNet++ to the mandatory fresh Raw V3.2 capture, and keeps the historical
+suite truthfully blocked at `7/10`. Before fresh capture, the active engineering
+terminal is a development-only Franka two-candidate policy rehearsal on the
+exact sealed Aura/SAGE/SimReady scene.
 
 ## North Star
 
@@ -36,10 +45,10 @@ execution, or a completed report cannot establish sufficiency.
 
 ADP-008 is observed complete: SIMPLER already exercised the retrospective
 two-candidate decision, receipt, sealing, external-outcome join, and replay
-machinery. The active engineering item is **ADP-009 public-scene
-qualification**.
+machinery. The bounded ADP-009 construction rehearsal is accepted. The active
+engineering item is **ADP-009D public-scene Franka policy rehearsal**.
 
-Until ADP-009 is complete:
+Until the pre-capture Franka rehearsal is complete:
 
 - dominant engineering effort goes to exact dataset/method admission, metric
   transforms, 3DGS object selection/removal, released-code inpainting, exact
@@ -47,17 +56,14 @@ Until ADP-009 is complete:
   deterministic variation, typed abstention, and full simulator-side rehearsal;
 - InteriorGS/SAGE-3D is the preferred paired synthetic hybrid control after
   exact rights; an authored positive control is separate and can never
-  substitute for that exact pair. ScanNet++ is the second and only public real
-  measured transfer after exact access/rights admission; lack of access leaves
-  the day-21 gate incomplete;
-- [Inpaint360GS](https://github.com/dfki-av/Inpaint360GS) is the unchanged
-  author-data reproducibility control. [InFusion](https://github.com/ali-vilab/Infusion) is
-  the primary Blueprint interface-adapter candidate because its released path
-  accepts depth, camera-to-world, and intrinsics, emits a supplemental PLY, and
-  explicitly composes it with an original PLY.
-  [AuraFusion360](https://github.com/kkennethwu/AuraFusion360_official) is the 360-quality
-  challenger but starts from its own trained/checkpoint representation and needs
-  a separate adapter.
+  substitute for that exact pair. Real measured transfer occurs through the
+  mandatory fresh Raw V3.2 capture, not ScanNet++;
+- [AuraFusion360](https://github.com/kkennethwu/AuraFusion360_official) is the
+  selected public-scene editing path. It starts from its own
+  trained/checkpoint representation, so its output is never called an in-place
+  edit of the publisher PLY. [Inpaint360GS](https://github.com/dfki-av/Inpaint360GS)
+  and [InFusion](https://github.com/ali-vilab/Infusion) retain exact blocked
+  receipts as nonblocking abstentions;
   [3DGIC](https://github.com/peterjohnsonhuang/3dgic),
   [GPGS](https://github.com/yongjoon99/GPGS), and
   [GOR-IS](https://github.com/applezyh/GOR-IS) are conditional research ablations;
@@ -83,8 +89,9 @@ Until ADP-009 is complete:
 [`PUBLIC_EVIDENCE_LADDER.md`](PUBLIC_EVIDENCE_LADDER.md) is the active stack and
 step-by-step test contract. [`PUBLIC_REFERENCE_SUBSTRATE.md`](PUBLIC_REFERENCE_SUBSTRATE.md)
 is retained as the immutable historical ADP-002 through ADP-008 decision.
-The dataset order is exact: InteriorGS plus matching SAGE-3D first, then
-ScanNet++. ARKitScenes and WildRGB-D are excluded from ADP v1.
+The construction order is exact: sealed InteriorGS plus matching SAGE-3D and
+SimReady replacement, Franka public-scene rehearsal, then one fresh Raw V3.2
+workcell capture. ARKitScenes and WildRGB-D are excluded from ADP v1.
 
 ## Exact v1 Envelope
 
@@ -128,8 +135,8 @@ SimReady candidates must exercise:
 - metric-frame preservation across cameras, 3DGS, collision, and Isaac, plus
   depth/mesh only where the source actually provides authoritative geometry;
 - one exact source-object Gaussian/collider partition and removal;
-- unchanged Inpaint360GS author-data reproducibility, InFusion interface-adapter
-  completion, AuraFusion360 quality-challenger, and controlled known-background
+- selected AuraFusion360 author and InteriorGS executions, the retained
+  Inpaint360GS/InFusion nonblocking abstentions, and controlled known-background
   factual-recovery tests;
 - insertion of one exact visual/collider/physics-authored SimReady USD;
 - visual/collider/contact/dynamics alignment;
@@ -148,9 +155,10 @@ Use the smallest exact corpus that covers the orthogonal claims:
    is required to exercise execution and receipt plumbing;
 4. one exact rights-admitted matched InteriorGS/SAGE-3D scene; an authored
    positive control may be added but never substitutes;
-5. one exact rights-admitted targeted ScanNet++ scene;
-6. the released Inpaint360GS author data for the unchanged reproducibility
-   control, exact InFusion and AuraFusion360 releases, and a separate controlled
+5. the retained ScanNet++ access outcome as historical evidence; the required
+   real metric transfer is the later fresh Raw V3.2 capture;
+6. the selected exact AuraFusion360 release and executions, retained
+   Inpaint360GS/InFusion abstention receipts, and a separate controlled
    clean-background case for the factual-recovery firebreak;
 7. one exact SimReady USD replacement asset;
 8. one pinned NVIDIA USD Content Agents authoring candidate and a known-good
@@ -265,15 +273,13 @@ Stop or pivot rather than adding infrastructure when:
 
 - the mandatory capability matrix lacks an admitted component or explicit
   rights/runtime outcome by public-scene day 7;
-- the exact rights-admitted InteriorGS/SAGE-3D pair is unavailable, or one
-  object cannot be removed from appearance and collision through the frozen
-  render-derived InFusion adapter and AuraFusion360 challenger, replaced by one
-  exact SimReady USD, and qualified in Isaac
-  by public-scene day 14;
-- the exact ScanNet++ real measured transfer, controlled
-  known-background score, or deterministic fault/abstention matrix is incomplete
-  by public-scene day 21;
-- the one-command public-data replacement rehearsal and evidence matrix are
+- the exact sealed AuraFusion360/InteriorGS/SAGE-3D/match-v2 construction cannot
+  be replayed without changed bytes, ghost collision, or missing support by
+  public-scene day 14;
+- the controlled known-background score, replacement dynamics, or explicit
+  ScanNet++ access abstention is missing by public-scene day 21;
+- the depth-correct Franka observation path, exactly two learned-policy
+  candidates, media-complete task rehearsal, replay, or teardown evidence is
   incomplete by public-scene day 28;
 - after the partner-proof clock starts, no suitable partner, task, candidates,
   holdout authority, or rights are secured by partner day 7;

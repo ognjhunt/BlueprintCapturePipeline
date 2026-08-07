@@ -34,11 +34,13 @@ def test_materializes_exact_binary_masks_and_receipt(tmp_path: Path) -> None:
         receipt_path=receipt_path,
         target_instance_id=7,
         expected_count=3,
+        source_kind="blueprint_exact_obb_projected_virtual_masks",
     )
 
     assert receipt["status"] == "completed"
     assert receipt["view_count"] == 3
     assert receipt["handoff_kind"] == "binary_target_mask_without_interactive_refinement"
+    assert receipt["source_kind"] == "blueprint_exact_obb_projected_virtual_masks"
     assert all(row["foreground_pixels"] == 6 for row in receipt["output_masks"])
     assert all(row["foreground_bbox_xyxy"] == [3, 2, 5, 3] for row in receipt["output_masks"])
     assert all(row["foreground_bbox_width"] == 3 for row in receipt["output_masks"])
@@ -62,6 +64,23 @@ def test_rejects_target_missing_from_all_views(tmp_path: Path) -> None:
             receipt_path=tmp_path / "receipt.json",
             target_instance_id=7,
             expected_count=1,
+        )
+
+
+def test_rejects_caller_asserted_virtual_mask_source_kind(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_mask(source / "00000.png")
+
+    with pytest.raises(ValueError, match="source_kind_invalid"):
+        materialize_virtual_masks(
+            runtime_root=tmp_path,
+            predicted_mask_dir=source,
+            output_dir=tmp_path / "output",
+            receipt_path=tmp_path / "receipt.json",
+            target_instance_id=7,
+            expected_count=1,
+            source_kind="caller_says_good",
         )
 
 

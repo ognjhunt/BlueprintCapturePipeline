@@ -1,18 +1,21 @@
 {
   "adp_item": "ADP-009A",
-  "artifact_bytes_opened": false,
-  "blockers": [
-    "physics_positive_control_receipt_missing"
-  ],
+  "artifact_bytes_opened": true,
+  "blockers": [],
   "checks": {
-    "required_receipt_present": false
+    "actual_receipt_bytes_hashed": true,
+    "canonical_receipt_digests_verified": true,
+    "native_contact_and_deterministic_replay_observed": true,
+    "nested_execution_bundles_verified": true,
+    "rtx_pixels_observed": true,
+    "teardown_and_provider_zero_verified": true
   },
   "claim_ceiling": "development_only",
-  "component_id": "adp009a-physics_positive_control",
-  "component_manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
+  "component_id": "adp009a-isaac-physx-positive-control-attempt17",
+  "component_manifest_digest": "sha256:1ce66bcdfe86cdf747b0f02eff5c681106bad0103096cbb744a2dc57b6e7b089",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:94202cd5fe0b5bc38f4dfd774adde0dac15abae5e2c7b66d6b4911434a1cb7b4",
+  "receipt_digest": "sha256:0e0e216d50aa18e5d1a79b71ac0cf5458b2228f181591a58e858011637cdf4dc",
   "role": "physics_positive_control",
   "schema_version": "public_scene_component_admission_receipt.v1",
-  "status": "blocked"
+  "status": "admitted"
 }

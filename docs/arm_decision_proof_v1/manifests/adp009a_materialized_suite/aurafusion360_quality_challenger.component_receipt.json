@@ -1,9 +1,7 @@
 {
   "adp_item": "ADP-009A",
   "artifact_bytes_opened": true,
-  "blockers": [
-    "aurafusion360_unchanged_author_smoke_missing"
-  ],
+  "blockers": [],
   "checks": {
     "clean_source_tree": true,
     "exact_source_revision": true,
@@ -11,14 +9,14 @@
     "official_remote_head": true,
     "source_license_and_dependency_files_hashed": true,
     "submodule_revisions": true,
-    "unchanged_author_smoke_executed": false
+    "unchanged_author_smoke_executed": true
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-aurafusion360_quality_challenger",
-  "component_manifest_digest": "sha256:6acccfc100b8da28e4fce515a34b45688fe6b5fc7ffd900723ab50f4c116c3e9",
+  "component_manifest_digest": "sha256:eafa9b0d8ac00b3a0d11876ef87ab41f44031c168463197110c52b49aa0f58c7",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:e7beaed97813bd517f230e91e65d4c16ccff8aa0b2b91e9b6065613087420e08",
+  "receipt_digest": "sha256:3345f7d67e51e64e48dae177f10028ea06b65310aa7606f0a0a7dcfbb8564609",
   "role": "aurafusion360_quality_challenger",
   "schema_version": "public_scene_component_admission_receipt.v1",
-  "status": "blocked"
+  "status": "admitted"
 }

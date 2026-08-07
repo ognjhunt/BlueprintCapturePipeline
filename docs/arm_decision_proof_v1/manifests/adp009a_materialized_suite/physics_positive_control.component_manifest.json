@@ -1,22 +1,83 @@
 {
   "adp_item": "ADP-009A",
   "claim_boundaries": {
+    "exact_public_scene_qualified": false,
+    "exact_simready_object_qualified": false,
     "physical_evidence": false,
-    "qualified": false
+    "production_route_created": false,
+    "synthetic_positive_control_only": true
   },
   "claim_ceiling": "development_only",
-  "component_id": "adp009a-physics_positive_control",
-  "manifest_digest": "sha256:535a0baa55f123191737c91fe0c2e5faf4cbed46d5cb5c1e93af3236ebf3920e",
-  "materialized_artifacts": [],
+  "component_id": "adp009a-isaac-physx-positive-control-attempt17",
+  "manifest_digest": "sha256:1ce66bcdfe86cdf747b0f02eff5c681106bad0103096cbb744a2dc57b6e7b089",
+  "materialized_artifacts": [
+    {
+      "external_relative_path": "physics_positive_control/isaac_physx_attempt17_20260802/provider_runtime_result.json",
+      "publisher_path": "physics_positive_control/isaac_physx_attempt17_20260802/provider_runtime_result.json",
+      "role": "physics_positive_control_runtime_result",
+      "sha256": "sha256:25e12dfd881740b02746882fdcbd4b2fa36a4c8b0d249ce4aea862ba9d48f5f0",
+      "size_bytes": 47721
+    },
+    {
+      "external_relative_path": "physics_positive_control/isaac_physx_attempt17_20260802/measurement_isaac_vast_execution.json",
+      "publisher_path": "physics_positive_control/isaac_physx_attempt17_20260802/measurement_isaac_vast_execution.json",
+      "role": "physics_positive_control_execution_result",
+      "sha256": "sha256:2c2614564d630003c32c258bea9d317317e0f679efed8c9c241247683643c35e",
+      "size_bytes": 1641
+    },
+    {
+      "external_relative_path": "physics_positive_control/isaac_physx_attempt17_20260802/teardown_receipt.json",
+      "publisher_path": "physics_positive_control/isaac_physx_attempt17_20260802/teardown_receipt.json",
+      "role": "physics_positive_control_teardown_receipt",
+      "sha256": "sha256:946f688479f606a9240d9d3f645e8678685359032744645a19b1ae19d90c7de8",
+      "size_bytes": 723
+    },
+    {
+      "external_relative_path": "physics_positive_control/isaac_physx_attempt17_20260802/provider_zero_verification.json",
+      "publisher_path": "physics_positive_control/isaac_physx_attempt17_20260802/provider_zero_verification.json",
+      "role": "physics_positive_control_provider_zero",
+      "sha256": "sha256:c3bbf56bc440f4e45231ce54748ede055b3560a0321360fcc21bbbf19c1e4074",
+      "size_bytes": 556
+    }
+  ],
   "observed_evidence": {
-    "required_receipt_present": false
+    "case_summaries": [
+      {
+        "case_id": "rigid-sphere-drop-development-001--isaac-sim-6-physx",
+        "contact_report_event_count": 301,
+        "deterministic_replay_match": true,
+        "penetration_m": 2.980232241545089e-09,
+        "penetration_threshold_m": 0.03
+      },
+      {
+        "case_id": "rigid-box-drop-development-002--isaac-sim-6-physx",
+        "contact_report_event_count": 399,
+        "deterministic_replay_match": true,
+        "penetration_m": 0.029889646396040914,
+        "penetration_threshold_m": 0.03
+      }
+    ],
+    "cost_usd": 0.06725104791656934,
+    "execution_case_count": 2,
+    "execution_result_digest": "sha256:005a58613f7d55126bbb96ae5b27637d53cbc4b3b0fd7c4472cc2edc8dc82a65",
+    "native_isaac_sim_version": "6.0.1",
+    "provider_zero_digest": "sha256:22e248daa4a595779a82d9812c8108882f599e5b8e0bb1636859ceeed9992306",
+    "provider_zero_verified": true,
+    "rtx_pixels_rendered": true,
+    "runtime_result_digest": "sha256:d8be6fe117ce540c68a78900c981500e8112dd43fd7074a8f908176aef8af66e",
+    "teardown_receipt_digest": "sha256:93f0e3e53f1e8ae10d75a1f12c9ee530eb1d893c8c4a53aab0058df3a12884dc"
   },
   "program_id": "arm-decision-proof-v1",
   "publisher_identity": {
-    "revision": "not_materialized"
+    "repository": "BlueprintCapturePipeline",
+    "revision": "5ac9fedb5476fd6b0fbea4332d5133514637240c",
+    "runtime_image_digest": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9"
   },
   "rights": {
-    "established": false
+    "allowed_use_ceiling": "internal_development_only",
+    "established": true,
+    "redistribution_allowed": false,
+    "source": "Blueprint-controlled synthetic fixture and execution receipts"
   },
   "role": "physics_positive_control",
   "schema_version": "public_scene_component_manifest.v1",

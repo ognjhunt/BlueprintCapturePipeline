@@ -1,0 +1,28 @@
+{
+  "approval_scope": "visual_identity_scale_pose_sufficient_to_continue_native_validation",
+  "approval_statement": "great, this is close enough - i approve",
+  "artifact_chain": {
+    "camera_count": 8,
+    "match_review_file_sha256": "sha256:c23824b11ef3d243b8697bfe25da521d93250edb212ad79196f7e55a39e7cc51",
+    "match_review_receipt_digest": "sha256:e5e8bfa7b64a6f0a1817e4af58dccd0a621b9604d259876dd22bd6e0684669c7",
+    "median_delta_e76": 10.421596530472698,
+    "median_silhouette_iou": 0.9323253649224277,
+    "replacement_receipt_digest": "sha256:6f173cadd7b4a0ea0e19a975ded93fc367de950c11a450988e5289015d5e35f2",
+    "visual_review_receipt_digest": "sha256:7b88dffc816b8f0db275e854eedae10acfebacf36b18f64f6f39acc903be5645"
+  },
+  "blockers": [
+    "native_ovrtx_material_render_missing",
+    "native_ovphysx_drop_contact_settle_missing",
+    "nvidia_agent_v2_static_validation_missing"
+  ],
+  "claim_ceiling": "human_visual_acceptance_of_exact_static_candidate",
+  "decision": "approve_for_native_validation",
+  "dynamic_contact_proven": false,
+  "generated_at": "2026-08-06T04:36:28.881277+00:00",
+  "native_ovrtx_proven": false,
+  "receipt_digest": "sha256:43540b079b0cdfdda81a1c44d947332775c97c66ad2d7bcdf281ed68290a74d6",
+  "reviewer_role": "project_owner",
+  "schema_version": "adp009b_simready_human_visual_review.v1",
+  "status": "human_accepted_for_native_validation",
+  "technical_admission": false
+}

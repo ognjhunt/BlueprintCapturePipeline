@@ -9,7 +9,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-aurafusion360_quality_challenger",
-  "manifest_digest": "sha256:6acccfc100b8da28e4fce515a34b45688fe6b5fc7ffd900723ab50f4c116c3e9",
+  "manifest_digest": "sha256:eafa9b0d8ac00b3a0d11876ef87ab41f44031c168463197110c52b49aa0f58c7",
   "materialized_artifacts": [
     {
       "external_relative_path": "AuraFusion360_official/LICENSE",
@@ -73,16 +73,112 @@
       "role": "method_prerequisite_receipt",
       "sha256": "sha256:a618da9bfc305d48dcf9d758cc11529616ce409bb30bebfec9c9bc55ee6ff6fa",
       "size_bytes": 18899
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/adp_aura_author_smoke_vast_result.json",
+      "publisher_path": "aura_author_smoke/live_v14_execute/adp_aura_author_smoke_vast_result.json",
+      "role": "author_smoke_run_receipt",
+      "sha256": "sha256:9ea63c93d59566f997ccf93e78623f6dc50cc39f098e97ab7513c7f8fc3a7458",
+      "size_bytes": 1059
+    },
+    {
+      "external_relative_path": "aura_author_smoke/bundle_v14/adp_aura_author_smoke_bundle_receipt.json",
+      "publisher_path": "aura_author_smoke/bundle_v14/adp_aura_author_smoke_bundle_receipt.json",
+      "role": "author_smoke_bundle_receipt",
+      "sha256": "sha256:14266f43a109d085ecfb6a25a374d7890434da84f3292038f259ca1dd53fd568",
+      "size_bytes": 3880
+    },
+    {
+      "external_relative_path": "aura_author_smoke/bundle_v14/adp_aura_author_smoke_provider_runtime_bundle.zip",
+      "publisher_path": "aura_author_smoke/bundle_v14/adp_aura_author_smoke_provider_runtime_bundle.zip",
+      "role": "author_smoke_bundle",
+      "sha256": "sha256:64003b05c2a0db6a25740f7acb77b5cca7c28deeea03e52c4686400c7d84184e",
+      "size_bytes": 285750425
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/immutable_execution/adp_aura_author_smoke_result.json",
+      "publisher_path": "aura_author_smoke/live_v14_execute/immutable_execution/adp_aura_author_smoke_result.json",
+      "role": "author_smoke_execution_receipt",
+      "sha256": "sha256:7dfd9537bde4a6151e16c890c43c6cfce967bfb4a4b0aff4eb6ec58dd7388d97",
+      "size_bytes": 13673
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/vast_provider_run/vast_provider_adapter_result.json",
+      "publisher_path": "aura_author_smoke/live_v14_execute/vast_provider_run/vast_provider_adapter_result.json",
+      "role": "author_smoke_adapter_receipt",
+      "sha256": "sha256:6527e85069b7134cdf2453dd9222ea23314d3ef229bfc17494394a7ce43bcecf",
+      "size_bytes": 14311
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/vast_provider_run/vast_teardown_manifest.json",
+      "publisher_path": "aura_author_smoke/live_v14_execute/vast_provider_run/vast_teardown_manifest.json",
+      "role": "author_smoke_teardown_receipt",
+      "sha256": "sha256:7db31802bac6813c029abe37fb670a7e0fc71a48f4be07a4f64de68157e4b4b6",
+      "size_bytes": 1358
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/vast_provider_run/vast_final_validation.json",
+      "publisher_path": "aura_author_smoke/live_v14_execute/vast_provider_run/vast_final_validation.json",
+      "role": "author_smoke_final_validation",
+      "sha256": "sha256:c549c6db0354dcc4d38aecc45f5cc988ac21388913b076e0409e161b5db182e6",
+      "size_bytes": 2449
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/object_store_staging/wam_provider_object_store_cleanup.json",
+      "publisher_path": "aura_author_smoke/live_v14_execute/object_store_staging/wam_provider_object_store_cleanup.json",
+      "role": "author_smoke_object_cleanup",
+      "sha256": "sha256:fe03800e8203d3bb71d5ea3c13d7b7bf8f9a3d8b4abd60827bad3c68eb99e896",
+      "size_bytes": 943
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/immutable_execution/artifacts/aurafusion360_inpaint_init_point_cloud.ply",
+      "publisher_path": "aura_author_smoke/live_v14_execute/immutable_execution/artifacts/aurafusion360_inpaint_init_point_cloud.ply",
+      "role": "author_smoke_produced_point_cloud",
+      "sha256": "sha256:d0d56fee8c2aa9bb7977f390bb0afb394cdcc1a3cbf5859e57d5c976a0d44269",
+      "size_bytes": 210134581
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/immutable_execution/pip-freeze.txt",
+      "publisher_path": "aura_author_smoke/live_v14_execute/immutable_execution/pip-freeze.txt",
+      "role": "author_smoke_python_environment",
+      "sha256": "sha256:1016d4aec6f837155377444a040d0fb81c6130befc35b819a7657f23c9c73ed3",
+      "size_bytes": 3431
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/immutable_execution/aura-inpaint-init.log",
+      "publisher_path": "aura_author_smoke/live_v14_execute/immutable_execution/aura-inpaint-init.log",
+      "role": "author_smoke_author_command_log",
+      "sha256": "sha256:b4772a619cbbf2e21ea1cdc4a8820c563e14bc2d8360077fa516cbebac8ad703",
+      "size_bytes": 77077
+    },
+    {
+      "external_relative_path": "aura_author_smoke/live_v14_execute/immutable_execution/nvidia-smi.log",
+      "publisher_path": "aura_author_smoke/live_v14_execute/immutable_execution/nvidia-smi.log",
+      "role": "author_smoke_hardware_probe_log",
+      "sha256": "sha256:6c8c9601e3256e57bd142c48ab80305cee61f0a8a1516edb696f0e75d7673229",
+      "size_bytes": 14074
     }
   ],
   "observed_evidence": {
-    "author_method_executed": false,
-    "author_smoke_receipt_bound": false,
+    "author_method_executed": true,
+    "author_smoke_receipt_bound": true,
+    "author_source_modified": false,
     "author_workflow_declarations_hashed": true,
     "checkpoint_bytes_verified": true,
     "dependency_declarations_hashed": true,
+    "estimated_cost_usd": 0.788692,
+    "inpaint_init_executed": true,
     "method_prerequisite_receipt_bound": true,
+    "object_store_zero_proven": true,
     "official_remote_head_verified": true,
+    "produced_point_cloud_sha256": "sha256:d0d56fee8c2aa9bb7977f390bb0afb394cdcc1a3cbf5859e57d5c976a0d44269",
+    "produced_point_cloud_size_bytes": 210134581,
+    "produced_point_cloud_vertex_count": 820832,
+    "provider_instance_ids": [
+      46881016
+    ],
+    "provider_zero_proven": true,
+    "published_expected_output_bound": true,
     "source_checkout_opened": true,
     "source_tree_clean": true,
     "source_tree_matches_expected": true,

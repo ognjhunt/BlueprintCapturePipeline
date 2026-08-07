@@ -1,0 +1,15 @@
+{
+  "schema_version": "adp009b_simready_replacement_request.v1",
+  "sage_component_manifest_path": "docs/arm_decision_proof_v1/manifests/adp009a_materialized_suite/sage3d_collision_companion.component_manifest.json",
+  "simready_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
+  "edit_input_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009b_interiorgs_edit_input_receipt.v1.json",
+  "aura_execution_receipt_path": "docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_execution_receipt.v1.json",
+  "aura_execution_root_relative_path": "aura_interiorgs/live_v12_openclip_execute/immutable_execution",
+  "support_probe": {
+    "footprint_margin_m": 0.01,
+    "maximum_flatness_error_m": 0.002,
+    "maximum_tilt_degrees": 5.0,
+    "minimum_overlapping_area_m2": 0.003,
+    "maximum_support_correction_m": 0.01
+  }
+}

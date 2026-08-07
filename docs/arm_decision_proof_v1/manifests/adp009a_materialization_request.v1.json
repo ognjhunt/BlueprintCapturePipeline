@@ -1,7 +1,7 @@
 {
   "schema_version": "public_scene_suite_materialization_request.v1",
   "index_id": "adp009a-public-suite-20260804",
-  "evaluated_on": "2026-08-04",
+  "evaluated_on": "2026-08-05",
   "scene": {
     "publisher_scene_id": "840313",
     "interiorgs_folder": "0442_840313",
@@ -113,26 +113,48 @@
         ]
       },
       "prerequisite_receipt": "methods/adp009a_method_prerequisite_receipt.v2.json",
+      "author_smoke_receipt": "aura_author_smoke/live_v14_execute/adp_aura_author_smoke_vast_result.json",
+      "author_smoke_bundle_receipt": "aura_author_smoke/bundle_v14/adp_aura_author_smoke_bundle_receipt.json",
+      "author_smoke_object_cleanup_receipt": "aura_author_smoke/live_v14_execute/object_store_staging/wam_provider_object_store_cleanup.json",
       "smallest_blocker": "aurafusion360_unchanged_author_smoke_missing"
     }
   },
   "simready_control": {
-    "receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
+    "receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_match_v2_static_validation_receipt.v1.json",
+    "dynamic_run_result_path": "simready/isaac_qualification/run_011/adp009b_simready_isaac_vast_result.json",
+    "dynamic_runtime_result_path": "simready/isaac_qualification/run_011/attempts/attempt_001/immutable_execution/isaac_runtime_result.json",
+    "dynamic_bundle_receipt_path": "simready/isaac_qualification/run_011/bundle/adp009b_simready_isaac_bundle_receipt.json",
+    "dynamic_bundle_path": "simready/isaac_qualification/run_011/bundle/isaac_provider_runtime_bundle.zip",
+    "dynamic_final_validation_path": "simready/isaac_qualification/run_011/attempts/attempt_001/vast_provider_run/vast_final_validation.json",
+    "dynamic_teardown_manifest_path": "simready/isaac_qualification/run_011/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+    "dynamic_object_cleanup_path": "simready/isaac_qualification/run_011/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json",
     "smallest_blocker": "isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"
   },
   "content_agents": {
     "receipt_path": "docs/arm_decision_proof_v1/manifests/adp009a_usd_content_agents_preflight_receipt.v1.json",
-    "execution_result_path": "simready/content_agents/vast_run_004/immutable_execution/adp_content_agents_vast_result.json",
-    "allocator_result_path": "simready/content_agents/vast_run_004/allocator_result.live.json",
-    "bundle_receipt_path": "simready/content_agents/vast_candidate_006/adp_content_agents_bundle_receipt.json",
-    "bundle_path": "simready/content_agents/vast_candidate_006/adp_content_agents_provider_runtime_bundle.zip",
-    "final_validation_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_final_validation.json",
-    "teardown_manifest_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_teardown_manifest.json",
-    "object_cleanup_path": "simready/content_agents/vast_run_004/object_store_staging/wam_provider_object_store_cleanup.json"
+    "execution_result_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/adp_content_agents_vast_result.json",
+    "allocator_result_path": "simready/content_agents/vast_match_v2_run_001/job_live/adp_content_agents_vast_result.json",
+    "bundle_receipt_path": "simready/content_agents/vast_match_v2_bundle_001/adp_content_agents_bundle_receipt.json",
+    "bundle_path": "simready/content_agents/vast_match_v2_bundle_001/adp_content_agents_provider_runtime_bundle.zip",
+    "final_validation_path": "simready/content_agents/vast_match_v2_run_001/job_live/vast_provider_run/vast_final_validation.json",
+    "teardown_manifest_path": "simready/content_agents/vast_match_v2_run_001/job_live/vast_provider_run/vast_teardown_manifest.json",
+    "object_cleanup_path": "simready/content_agents/vast_match_v2_run_001/job_live/object_store_staging/wam_provider_object_store_cleanup.json"
+  },
+  "physics_positive_control": {
+    "runtime_result_path": "physics_positive_control/isaac_physx_attempt17_20260802/provider_runtime_result.json",
+    "execution_result_path": "physics_positive_control/isaac_physx_attempt17_20260802/measurement_isaac_vast_execution.json",
+    "teardown_receipt_path": "physics_positive_control/isaac_physx_attempt17_20260802/teardown_receipt.json",
+    "provider_zero_path": "physics_positive_control/isaac_physx_attempt17_20260802/provider_zero_verification.json"
+  },
+  "controlled_background": {
+    "case_receipt_path": "controlled_background/blueprint_authored_plane_v2/controlled_background_case_receipt.json",
+    "execution_receipt_path": "controlled_background/blueprint_authored_plane_v2/attempts/attempt_001/controlled_background_execution_receipt.json",
+    "score_receipt_path": "controlled_background/blueprint_authored_plane_v2/controlled_background_score_receipt.json",
+    "source_archive_path": "aura_interiorgs/bundle_v13_openclip_975006ca/provider_runtime/lama_source.zip",
+    "checkpoint_archive_path": "methods/Inpaint360GS/LaMa/big-lama.zip",
+    "dockerfile_path": "scripts/containers/adp009_controlled_lama_cpu.Dockerfile"
   },
   "missing_roles": {
-    "controlled_background_truth": "controlled_background_truth_case_missing",
-    "physics_positive_control": "physics_positive_control_receipt_missing",
-    "scannetpp_real_transfer": "scannetpp_scene_access_and_admission_missing"
+    "scannetpp_real_transfer": "scannetpp_account_application_approval_and_terms_authority_required"
   }
 }

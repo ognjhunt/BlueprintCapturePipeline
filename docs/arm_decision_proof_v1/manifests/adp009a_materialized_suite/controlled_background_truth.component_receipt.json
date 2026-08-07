@@ -1,18 +1,21 @@
 {
   "adp_item": "ADP-009A",
-  "artifact_bytes_opened": false,
-  "blockers": [
-    "controlled_background_truth_case_missing"
-  ],
+  "artifact_bytes_opened": true,
+  "blockers": [],
   "checks": {
-    "required_receipt_present": false
+    "actual_source_checkpoint_and_execution_bytes_hashed": true,
+    "canonical_receipt_digests_verified": true,
+    "completion_sealed_before_truth_release": true,
+    "outputs_reopened_and_scores_recomputed": true,
+    "preregistered_rgb_and_depth_thresholds_passed": true,
+    "rights_authority_bound": true
   },
   "claim_ceiling": "development_only",
-  "component_id": "adp009a-controlled_background_truth",
-  "component_manifest_digest": "sha256:ba0795104e9fa3e4db80ed49ec9da6fa5648076ac379d53bedd691f5cd9e4844",
+  "component_id": "adp009a-controlled-background-lama-plane-v1",
+  "component_manifest_digest": "sha256:5000b7ea24a5245f1111cd0111f3424478ed704b09ce53f299e5e7a48754ade6",
   "program_id": "arm-decision-proof-v1",
-  "receipt_digest": "sha256:58a0d75a13ba5bd0afc77cd070fbc70c60f516e41f4b0256549f8cde431fca32",
+  "receipt_digest": "sha256:88b0ebc59ee029eb4daafc32e9598f7a68d4c82aa619412cf89d46fab406f6ea",
   "role": "controlled_background_truth",
   "schema_version": "public_scene_component_admission_receipt.v1",
-  "status": "blocked"
+  "status": "admitted"
 }

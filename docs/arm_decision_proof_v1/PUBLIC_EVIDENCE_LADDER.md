@@ -1,19 +1,31 @@
 # ADP-009 Public Evidence Ladder And SimReady Replacement Test Program
 
-Status: **active execution strategy**
+Status: **bounded construction rehearsal accepted; Franka rehearsal active**
 Approved: 2026-08-04
+Amended: 2026-08-06
 Backlog item: **ADP-009**
 Phase gates: public-scene day 7 / 14 / 21 / 28
 Observed completion artifact: one digest-bound public-scene qualification matrix
 with exact inputs, rights, code revisions, transformations, metrics, failures,
 claim ceilings, and replay commands.
 
-Observed tranche state (2026-08-04): the deterministic ten-role index admits
-the matched InteriorGS/SAGE-3D `840313` pair and the bounded NVIDIA USD Content
-Agents v0.5.2 authoring comparison. Seven roles remain explicitly blocked, so
-ADP-009A is partial. Material, Texture, Physics, and static Validation Agents
-executed on the parametric replacement control; this does not constitute scene
-inpainting, dynamic Isaac qualification, metric truth, or physical evidence.
+Observed tranche state (2026-08-06): the deterministic ten-role index admits
+seven roles: the matched InteriorGS/SAGE-3D `840313` pair, bounded NVIDIA USD
+Content Agents v0.5.2, AuraFusion360's unchanged author smoke, the exact
+SimReady replacement, the native Isaac/PhysX positive control, and the seal-
+before-truth-release controlled-background case. Three roles remain blocked, so
+ADP-009A is partial: Inpaint360GS author smoke, InFusion primary adapter, and
+ScanNet++ real transfer. Aura's author control is not an InteriorGS result; the
+controlled case proves only factual recovery against Blueprint-authored known
+truth; and Content Agents execution is not scene inpainting, metric truth,
+Franka-policy evaluation, or physical evidence.
+
+The approved [transition decision](ADP_009_PUBLIC_SCENE_TRANSITION_DECISION.md)
+selects AuraFusion360 for ADP v1, preserves Inpaint360GS and InFusion as
+nonblocking typed abstentions, replaces the ScanNet++ critical-path transfer
+with the mandatory fresh Raw V3.2 capture, and leaves the historical index
+truthfully blocked at `7/10`. The next public-data terminal is a basic Franka
+two-candidate policy rehearsal on the sealed Aura/SAGE/SimReady scene.
 
 ## Decision
 
@@ -37,14 +49,15 @@ The first falsifiable deliverable is therefore:
 
 > For one exact rights-admitted InteriorGS/SAGE-3D scene, remove one annotated
 > source object from both the appearance and collision representations, run the
-> exact released InFusion path through a preregistered Blueprint interface
+> selected exact released AuraFusion360 path through a preregistered Blueprint
 > adapter to complete the background, insert one
 > digest-bound SimReady USD with explicit visual mesh, collider, metric size,
 > pose, mass, inertia, friction, and restitution, load the result in Isaac Sim,
 > and produce visual, frame, collision, contact, dynamics, media, and replay
-> receipts. Then repeat the editing path with independent metric-surface scoring
-> on one admitted ScanNet++ scene. Inpaint360GS remains an unchanged author-data
-> reproducibility control rather than the InteriorGS adapter.
+> receipts. Then run one basic Franka pick-and-place rehearsal with exactly two
+> frozen runnable policy candidates before fresh capture. Independent real
+> metric-surface evidence comes from that later Raw V3.2 capture. Inpaint360GS
+> and InFusion remain retained nonblocking abstentions rather than prerequisites.
 
 The public outputs remain `development_only`. The final acquisition phase is one
 fresh, previously unseen, rights-cleared site with observed clean-background and
@@ -82,7 +95,7 @@ InteriorGS 3DGS + metadata -> synthetic appearance and metric frame/OBB oracle
 matching SAGE-3D USD       -> static collision proxy
 rendered RGB + cameras     -> synthetic method inputs, never independent evidence
 
-ScanNet++ RGB + aligned poses + laser/depth -> independent metric surface authority
+fresh Raw V3.2 RGB-D/LiDAR + calibrated poses -> independent metric surface authority
 
 registered 3DGS appearance -> remove source-object Gaussians
                                   |
@@ -116,8 +129,8 @@ Several readiness claims need tightening.
 | SAM 3.1 plus DA3 provides a metric apple | No. SAM proposes pixels; DA3 predicts geometry. Neither creates observed physical dimensions. | SAM may propose masks; DA3 may cross-check or identify a missing measurement; neither may authorize metric or collision claims. |
 | The listed 2026 editing stack is executable | Only some cited methods have released implementations. Several project names have papers/pages but no runnable official code. | Critical-path admission requires exact code revision, dependencies, weights, license, and a smoke receipt. |
 | Inpaint360GS is the closest adapter for publisher splats | No. Its released custom-data path reconstructs/trains its own representation and its virtual-view/depth stages are method-internal. | Run its unchanged author-data workflow as a reproducibility control; do not present a Blueprint render adapter as stock Inpaint360GS. |
-| InFusion directly solves our interface | It is the closest released interface shape audited: depth, camera-to-world, and intrinsics produce a supplemental PLY that is explicitly composed with an original PLY. It still needs exact format, license, coordinate-frame, mask, and checkpoint admission. | Make a thin InFusion adapter the primary InteriorGS completion candidate, while keeping predicted hidden depth `visual_candidate_only`. |
-| AuraFusion360 is drop-in for InteriorGS | Its released 360 pipeline starts by training object-masked Gaussians and then operates on its own checkpoint/config representation. | Admit it as a modern quality challenger only after a custom checkpoint/format adapter passes. |
+| InFusion directly solves our interface | It is the closest supplemental-PLY interface shape audited, but its checkpoint license remains missing. | Preserve the exact prepared adapter and blocker as a nonblocking abstention. |
+| AuraFusion360 is drop-in for InteriorGS | Its released 360 pipeline starts by training object-masked Gaussians and then operates on its own checkpoint/config representation. | Use the exact observed scene adapter and native 2DGS output as the selected public editing path; never call it an in-place edit of the publisher PLY. |
 | Inpainting recovers the hidden counter | Only when the surface is observed elsewhere or in a second state. Otherwise it creates a candidate completion. | Score visual plausibility separately from factual recovery, and obtain clean-background observations in the final capture. |
 
 Primary sources:
@@ -132,10 +145,13 @@ Primary sources:
 
 ## Exact Dataset Stack
 
-The required dataset order is exact: (1) one rights-admitted InteriorGS scene
-plus its matching SAGE-3D scene/collider, then (2) one rights-admitted
-ScanNet++ scene. ARKitScenes, WildRGB-D, a heterogeneous aggregate, or an
-authored control cannot substitute for either required dataset.
+The required order after the 2026-08-06 transition is exact: (1) the sealed
+rights-admitted InteriorGS scene plus its matching SAGE-3D scene/collider and
+SimReady replacement, (2) the Franka public-scene rehearsal, then (3) one fresh
+rights-cleared Raw V3.2 capture for real metric transfer. The retained ScanNet++
+access outcome is historical and optional. ARKitScenes, WildRGB-D, a
+heterogeneous aggregate, or an authored control cannot substitute for the
+public pair or the fresh capture.
 
 ### 0. SIMPLER: retained decision-harness proof
 
@@ -176,12 +192,14 @@ collision proxy. It does **not** provide a measurement-authoritative local
 surface mesh. Rendered depth from the splat or SAGE collider is therefore not
 surface truth; it may support debugging and collision-aware camera placement.
 
-### 2. Inpaint360GS: unchanged author-data reproducibility control
+### 2. Inpaint360GS: retained nonblocking reproducibility abstention
 
 [Inpaint360GS](https://github.com/dfki-av/Inpaint360GS) released code, data, and
 results. Admit one exact commit, every nested dependency and license, the exact
 weights, and one unchanged author-dataset smoke as the upstream reproducibility
-control.
+control when and only when the exact author-data rights authority exists. Under
+the 2026-08-06 transition, its current rights blocker is nonblocking and its
+receipt remains immutable.
 
 The repository's top-level license is Apache-2.0, but that does not authorize
 every vendored/submodule dependency. The admission record must inventory the
@@ -194,7 +212,7 @@ mask` boundary. Run the exact unchanged author-data workflow only. That smoke
 answers whether the pinned upstream code reproduces; it does not complete the
 InteriorGS edit and may not be relabeled as a Blueprint interface test.
 
-### 3. InFusion: primary Blueprint interface-adapter candidate
+### 3. InFusion: retained nonblocking interface-adapter abstention
 
 The released [InFusion repository](https://github.com/ali-vilab/Infusion) is the
 closest audited code boundary to Blueprint's hybrid scene. Its inference stage
@@ -233,13 +251,15 @@ recover an unobserved true surface. Its completion remains
 `visual_candidate_only`. Any clean-background truth stays inaccessible until the
 result digest is sealed.
 
-### 4. AuraFusion360: modern 360-quality challenger
+### 4. AuraFusion360: selected ADP-v1 public-scene editing path
 
 [AuraFusion360](https://github.com/kkennethwu/AuraFusion360_official) has a
 released full-code pipeline for depth-aware unseen masks, Gaussian
-initialization, and multiview appearance refinement. It is the primary quality
-challenger after InFusion because the selected InteriorGS case is a 360-degree
-scene.
+initialization, and multiview appearance refinement. Exact run
+`live_v12_openclip_execute` on InteriorGS `840313` is the selected ADP-v1 path
+because it completed the frozen packet, materially outperformed both retained
+Inpaint360GS scene experiments on outside-mask locality, and passed bounded
+project-owner visual review.
 
 It is not a drop-in PLY editor: the released workflow begins by training
 object-masked Gaussians, writes custom `is_masked_*` PLY fields, and then
@@ -270,7 +290,7 @@ unchanged author path or an in-place publisher-Ply edit.
   shadow case; separate admission and noncommercial-use review are required.
 
 These are bounded ablations, not silent fallbacks and not substitutes for the
-InFusion primary or AuraFusion360 challenger.
+selected AuraFusion360 path or the retained Inpaint360GS/InFusion abstentions.
 
 ### 6. NVIDIA USD Content Agents: candidate SimReady authoring backend
 
@@ -300,10 +320,12 @@ and human-correction gates. A Codex- or Claude-authored CAD script is acceptable
 only when the script, parameters, CAD kernel, and output are immutable and the
 geometry passes independent tests.
 
-### 7. ScanNet++: targeted real measured transfer
+### 7. ScanNet++: retained access outcome; transfer moved to fresh capture
 
-After account/access and noncommercial terms are explicitly accepted, select one
-train/validation scene with:
+The exact account/access outcome remains historical evidence, but ScanNet++ is
+no longer a critical-path prerequisite. The mandatory fresh Raw V3.2 capture
+must supply the equivalent or stronger real metric evidence. If ScanNet++ is
+later used as an optional benchmark, select one train/validation scene with:
 
 - laser mesh/point cloud;
 - aligned metric DSLR poses and frozen calibration/test DSLR trajectories;
@@ -354,7 +376,7 @@ identities, not admission receipts:
 | Role | Project | Audited commit | Blocking admission finding |
 | --- | --- | --- | --- |
 | Reproducibility control | Inpaint360GS | `d54c893285c6cb27788e05cce607e7d3cca6388a` | own training/distillation path; nested dependency licenses |
-| Primary interface adapter | InFusion | `788da7f40cad4314831a053b7419df277d7814c4` | checkpoint license, Graphdeco terms, SH0-only author compositor |
+| Primary interface adapter | InFusion | `788da7f40cad4314831a053b7419df277d7814c4` | checkpoint license, Graphdeco terms, prepared SH-preserving compositor still unexecuted |
 | Multiview challenger | AuraFusion360 | `f23b26c44ba84608306ba952510533ebf4c7877d` | custom PLY/checkpoint adapter and nested dependency licenses |
 
 A paper, project page, pseudocode, announced code release, or arXiv revision does
@@ -402,10 +424,10 @@ Pass only if:
 - each released method runs with an allowlist-only artifact mount; a manifest
   flag alone does not protect truth if the process can read the whole suite;
 - calibration and test trajectory IDs are digest-bound and disjoint;
-- exact code/weights/dependencies pass a smoke;
-- the reproducibility control binds one exact unchanged Inpaint360GS revision;
-- the InteriorGS adapter binds exact InFusion code plus the Blueprint adapter,
-  with AuraFusion360 admitted separately as the challenger;
+- the selected AuraFusion360 source, weights, dependencies, author smoke, and
+  InteriorGS execution are exact and digest-bound;
+- the Inpaint360GS author-data and InFusion checkpoint blockers remain exact
+  nonblocking abstentions and are never promoted to admissions;
 - the replacement is one independently versioned, digest-bound USD package
   whose visual, collision, and physics payloads come from that same SimReady
   object source;
@@ -423,16 +445,17 @@ Tests:
 2. determinant/handedness/up-axis checks;
 3. known-distance and room-extent residuals;
 4. camera reprojection against test-trajectory landmarks;
-5. source mesh/depth versus registered appearance depth only on ScanNet++ or
-   another source that actually provides measurement-authoritative surface
-   geometry;
+5. source mesh/depth versus registered appearance depth only on the fresh Raw
+   V3.2 capture or another optional source that actually provides
+   measurement-authoritative surface geometry;
 6. support-plane height/orientation;
 7. object OBB center/size residual against the source oracle;
 8. deliberate `cm`/`m`, `x0.1`/`x10`, axis-swap, and reflection mutations.
 
 For InteriorGS/SAGE, support-plane and object tests qualify consistency with the
 published OBB/collision proxy only; they do not establish local physical surface
-accuracy. ScanNet++ laser/depth supplies that independent surface test.
+accuracy. The fresh Raw V3.2 RGB-D/LiDAR bundle supplies that independent
+surface test for the prospective site proof.
 
 Silent recentering or scale repair is failure. A mutation must either be rejected
 or produce the exact typed missing measurement.
@@ -460,12 +483,13 @@ Produce the default outputs:
 
 1. unedited source scene;
 2. source object removed without completion;
-3. InFusion-completed scene through the preregistered Blueprint adapter;
-4. AuraFusion360 completion through its separately verified adapter.
+3. selected AuraFusion360 completion through its exact verified adapter; and
+4. retained Inpaint360GS rejected-scene executions plus the blocked InFusion
+   packet as explicit nonblocking abstention evidence, never completion output.
 
-The unchanged Inpaint360GS author-data output is a separate reproducibility
-control. GPGS and GOR-IS outputs exist only for preregistered conditional
-ablations.
+The unchanged Inpaint360GS author-data control remains blocked on publisher
+license authority. GPGS and GOR-IS outputs exist only for preregistered
+conditional ablations.
 
 Score three evidence levels separately.
 
@@ -629,10 +653,10 @@ coverage/registration gate proves it necessary.
 
 | Day | Required outcome | Stop condition |
 | --- | --- | --- |
-| 7 | Component receipts and a matrix index bind the unchanged Inpaint360GS author-data control, exact rights-admitted InteriorGS/SAGE pair, InFusion primary, AuraFusion360 challenger, controlled clean-background case, exact SimReady object, and physics control; ScanNet++ has an admitted receipt or a recorded still-blocking access outcome; conditional ablations and NVIDIA Content Agents have an admitted receipt or explicit outcome | Exact InteriorGS/SAGE rights are unavailable; an authored positive control is offered as a substitute; a required capability has neither an admitted input nor a recorded outcome; a component receipt is mislabeled as matrix completion |
-| 14 | The exact InteriorGS/SAGE pair uses frozen render-derived method-input cameras, removes one object from appearance and collision, runs the InFusion adapter and AuraFusion360 challenger, and inserts one exact USD; the standalone object passes frame, collision, contact, and Isaac checks, with NVIDIA Content Agents compared as an authoring candidate | Hidden scale repair, circular calibration/test trajectories, external validation depth leaked into a method without a preregistered interface, ghost collision, unregistered representations, or unreproducible method |
-| 21 | The exact rights-admitted ScanNet++ real measured transfer, controlled known-background recovery, and deterministic variation tests are complete; measurement gaps may produce typed abstentions inside the admitted run | ScanNet++ access/rights remain blocked, generated content is promoted to factual truth, or faults pass silently |
-| 28 | One command reproduces all admitted public cases, editing receipts, hybrid-scene qualification, variation outcomes, simulator-side two-candidate run, media, claim ceilings, and replay | Any non-site-specific seam still needs hand-authored evidence or a paper-only dependency |
+| 7 | Preserve the exact historical `7/10` index, all seven admitted component receipts, and the three nonblocking typed abstentions without relabeling the matrix complete | The historical index or any component status is rewritten to manufacture completion |
+| 14 | Accept the exact AuraFusion360/InteriorGS `840313` plus matching SAGE and match-v2 SimReady construction control; preserve representation and hidden-truth claim ceilings | Hidden scale repair, ghost collision, unregistered representations, or a visual candidate promoted to metric truth |
+| 21 | Retain Aura locality review, controlled known-background factual recovery, exact replacement dynamics, and the ScanNet++ access abstention; bind real metrology to future Raw V3.2 capture | Generated content is promoted to factual truth or the fresh-capture metrology requirement is waived |
+| 28 | One command verifies the sealed public scene and runs a basic Franka task with exactly two frozen runnable learned-policy candidates, complete lossless policy-input media, deterministic scoring, replay, and teardown; an exact Cosmos DROID action policy may be one candidate after contract admission, while Cosmos reasoning remains auxiliary | A prepared job, import, scripted controller, world model, or missing-media episode is called a learned-policy evaluation |
 
 ## Claim Boundaries
 

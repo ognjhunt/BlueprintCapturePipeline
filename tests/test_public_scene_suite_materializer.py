@@ -4,8 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
+from blueprint_pipeline import public_scene_controlled_background as controlled
 from blueprint_pipeline import public_scene_suite_materializer as materializer
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_suite_materializer import (
@@ -16,6 +19,71 @@ from blueprint_pipeline.public_scene_suite_materializer import (
 
 TARGET_PRIM = "/Root/target"
 SUPPORT_PRIM = "/Root/support"
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_content_agents_match_v2_binding_verifies_exact_approval_chain() -> None:
+    control = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_CONTROL_RECEIPT).read_text()
+    )
+    replacement = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_REPLACEMENT_RECEIPT).read_text()
+    )
+    human = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_HUMAN_REVIEW_RECEIPT).read_text()
+    )
+    bundle = {
+        "input_variant": "match_v2",
+        "reference_image_authority": (
+            "blueprint_cad_snapshot_bound_to_human_approved_match_v2_not_"
+            "interiorgs_dataset_bytes"
+        ),
+        "input_variant_bindings": {
+            "control_receipt_digest": control["receipt_digest"],
+            "replacement_receipt_digest": replacement["receipt_digest"],
+            "human_review_receipt_digest": human["receipt_digest"],
+        },
+        "input_usd_normalization": {
+            "source_input_usd_sha256": control["usd"]["sha256"]
+        },
+    }
+
+    binding = materializer._content_agents_input_variant_binding(
+        bundle=bundle, repo_root=ROOT
+    )
+
+    assert binding["input_variant"] == "match_v2"
+    assert binding["approved_v2_receipt_chain_verified"] is True
+
+
+def test_content_agents_match_v2_binding_rejects_changed_human_receipt_digest() -> None:
+    control = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_CONTROL_RECEIPT).read_text()
+    )
+    replacement = json.loads(
+        (ROOT / materializer.CONTENT_AGENTS_MATCH_V2_REPLACEMENT_RECEIPT).read_text()
+    )
+    bundle = {
+        "input_variant": "match_v2",
+        "reference_image_authority": (
+            "blueprint_cad_snapshot_bound_to_human_approved_match_v2_not_"
+            "interiorgs_dataset_bytes"
+        ),
+        "input_variant_bindings": {
+            "control_receipt_digest": control["receipt_digest"],
+            "replacement_receipt_digest": replacement["receipt_digest"],
+            "human_review_receipt_digest": "sha256:" + "0" * 64,
+        },
+        "input_usd_normalization": {
+            "source_input_usd_sha256": control["usd"]["sha256"]
+        },
+    }
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="match_v2_receipt_chain_invalid",
+    ):
+        materializer._content_agents_input_variant_binding(bundle=bundle, repo_root=ROOT)
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -217,6 +285,270 @@ def _run(paths: dict[str, Path]) -> dict:
         method_root=paths["methods"],
         output_root=paths["output"],
     )
+
+
+def _add_controlled_background(
+    paths: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    source = paths["data"] / "controlled/source.zip"
+    checkpoint = paths["data"] / "controlled/checkpoint.zip"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"exact-lama-source")
+    checkpoint.write_bytes(b"exact-lama-checkpoint")
+    source_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    checkpoint_digest = "sha256:" + hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    image_id = "sha256:" + "9" * 64
+    for module in (controlled, materializer):
+        monkeypatch.setattr(module, "LAMA_SOURCE_SHA256", source_digest)
+        monkeypatch.setattr(module, "LAMA_CHECKPOINT_SHA256", checkpoint_digest)
+        monkeypatch.setattr(module, "CONTROLLED_DOCKER_IMAGE_ID", image_id, raising=False)
+    monkeypatch.setattr(controlled, "DOCKER_IMAGE_ID", image_id)
+
+    case_root = paths["data"] / "controlled/case"
+    case = controlled.prepare_case(case_root)
+    attempt_root = case_root / "attempts/attempt_001"
+    output_root = attempt_root / "outputs"
+    outputs = []
+    for modality in ("rgb", "depth"):
+        (output_root / modality).mkdir(parents=True)
+        for index in range(controlled.VIEW_COUNT):
+            camera_id = f"view_{index:02d}"
+            output = output_root / modality / f"{camera_id}_mask.png"
+            if modality == "rgb":
+                pixels = np.asarray(
+                    Image.open(case_root / f"withheld_truth/rgb/{camera_id}.png")
+                )
+            else:
+                encoded = controlled._encode_depth(controlled._clean_depth_m(index))
+                pixels = np.repeat(encoded[..., None], 3, axis=2)
+            Image.fromarray(pixels).save(output)
+            outputs.append(controlled._record(output, case_root, f"completed_{modality}"))
+    logs = []
+    for modality in ("rgb", "depth"):
+        log = attempt_root / f"lama_{modality}.log"
+        log.write_text("exit 0\n", encoding="utf-8")
+        logs.append(
+            {
+                "modality": modality,
+                "started_at": "2026-08-06T00:00:00Z",
+                "finished_at": "2026-08-06T00:00:01Z",
+                "exit_status": 0,
+                **controlled._record(log, case_root, f"lama_{modality}_log"),
+            }
+        )
+    freeze = attempt_root / "pip-freeze.txt"
+    freeze.write_text("torch==2.0.1\n", encoding="utf-8")
+    execution = {
+        "schema_version": controlled.EXECUTION_SCHEMA_VERSION,
+        "program_id": "arm-decision-proof-v1",
+        "adp_item": "ADP-009C",
+        "status": "completion_sealed_truth_unreleased",
+        "attempt_id": "attempt_001",
+        "case_receipt_digest": case["receipt_digest"],
+        "method": case["method"],
+        "container": {
+            "image": controlled.DOCKER_IMAGE,
+            "image_id": image_id,
+            "network": "none",
+            "root_filesystem_read_only": True,
+            "withheld_truth_mounted": False,
+            "mounted_paths": ["source", "model", "runtime_inputs", "outputs"],
+        },
+        "commands": [["docker", "rgb"], ["docker", "depth"]],
+        "logs": logs,
+        "outputs": outputs,
+        "environment": controlled._record(freeze, case_root, "pip_freeze"),
+        "truth_opened_for_scoring": False,
+        "completion_digest": "",
+    }
+    execution["completion_digest"] = canonical_digest(
+        execution, digest_field="completion_digest"
+    )
+    execution_path = attempt_root / "controlled_background_execution_receipt.json"
+    _write_json(execution_path, execution)
+    score_path = case_root / "controlled_background_score_receipt.json"
+    controlled.score_case(
+        case_root=case_root,
+        execution_receipt_path=execution_path,
+        output_path=score_path,
+    )
+    dockerfile = paths["repo"] / "scripts/containers/controlled.Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("FROM python:3.11\n", encoding="utf-8")
+    request = json.loads(paths["request"].read_text())
+    del request["missing_roles"]["controlled_background_truth"]
+    request["controlled_background"] = {
+        "case_receipt_path": case_root.relative_to(paths["data"]).as_posix()
+        + "/controlled_background_case_receipt.json",
+        "execution_receipt_path": execution_path.relative_to(paths["data"]).as_posix(),
+        "score_receipt_path": score_path.relative_to(paths["data"]).as_posix(),
+        "source_archive_path": source.relative_to(paths["data"]).as_posix(),
+        "checkpoint_archive_path": checkpoint.relative_to(paths["data"]).as_posix(),
+        "dockerfile_path": dockerfile.relative_to(paths["repo"]).as_posix(),
+    }
+    _write_json(paths["request"], request)
+    return {
+        "execution": execution_path,
+        "score": score_path,
+        "output": output_root / "rgb/view_00_mask.png",
+    }
+
+
+def _add_physics_positive_control(
+    paths: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    evidence_root = paths["data"] / "physics_positive_control" / "attempt17"
+    evidence_root.mkdir(parents=True)
+    image = "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:" + "a" * 64
+    source_commit = "b" * 40
+    request_digest = "sha256:" + "c" * 64
+    bound_request_digest = "sha256:" + "d" * 64
+    instance_id = "46627972"
+    bundles = []
+    for name, penetration, events in (
+        ("sphere", 0.0, 301),
+        ("box", 0.029, 399),
+    ):
+        bundles.append(
+            {
+                "request": {
+                    "case_manifest": {
+                        "case_id": f"rigid-{name}-drop-development",
+                        "operating_point": {"penetration_unsafe_threshold_m": 0.03},
+                    }
+                },
+                "receipt": {
+                    "status": "completed",
+                    "exit_code": 0,
+                    "failure_codes": [],
+                    "runtime_observations": {
+                        "engine_version": "6.0.1",
+                        "deterministic_replay_match": True,
+                        "contact_report_event_count": events,
+                        "penetration_m": penetration,
+                    },
+                },
+                "qualification_created": False,
+                "production_route_created": False,
+                "catalog_mutated": False,
+                "physical_success_established": False,
+            }
+        )
+    rtx = {
+        "schema_version": "isaac_worker_runtime_preflight.v1",
+        "status": "passed",
+        "blockers": [],
+        "secret_values_in_artifact": False,
+        "checks": [
+            {
+                "name": "rtx_smoke_frame_render",
+                "status": "passed",
+                "renderer": "RayTracedLighting",
+                "pixel_count": 4096,
+            }
+        ],
+        "proof_boundary": {
+            "rtx_pixels_rendered": True,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+    rtx["preflight_result_digest"] = canonical_digest(
+        rtx, digest_field="preflight_result_digest"
+    )
+    runtime = {
+        "schema_version": "measurement_isaac_physx_rtx_vast_runtime_result.v2",
+        "status": "passed",
+        "blockers": [],
+        "development_only": True,
+        "synthetic_fixture": True,
+        "qualification_created": False,
+        "production_route_eligible": False,
+        "physical_success_established": False,
+        "r7_admission": False,
+        "raw_secret_values_recorded": False,
+        "source_commit_sha": source_commit,
+        "runtime_image_digest": image,
+        "execution_bundles": bundles,
+        "rtx_openusd_runtime_preflight": rtx,
+    }
+    runtime["runtime_result_digest"] = canonical_digest(
+        runtime, digest_field="runtime_result_digest"
+    )
+    teardown = {
+        "schema_version": "measurement_isaac_physx_vast_teardown.v1",
+        "status": "PASS",
+        "provider": "vast",
+        "request_digest": request_digest,
+        "bound_request_digest": bound_request_digest,
+        "worker_image_digest": image,
+        "instance_id": instance_id,
+        "provider_zero_verified": True,
+    }
+    teardown["teardown_receipt_digest"] = canonical_digest(
+        teardown, digest_field="teardown_receipt_digest"
+    )
+    provider_zero = {
+        "schema_version": "measurement_isaac_physx_vast_provider_zero.v1",
+        "status": "PASS",
+        "provider": "vast",
+        "request_digest": request_digest,
+        "bound_request_digest": bound_request_digest,
+        "api_confirmed": True,
+        "scoped_live_resource_count": 0,
+        "global_live_resource_count": 0,
+    }
+    provider_zero["provider_zero_digest"] = canonical_digest(
+        provider_zero, digest_field="provider_zero_digest"
+    )
+    execution = {
+        "schema_version": "measurement_isaac_physx_vast_execution.v1",
+        "status": "completed",
+        "blockers": [],
+        "request_digest": request_digest,
+        "bound_request_digest": bound_request_digest,
+        "source_commit_sha": source_commit,
+        "worker_image_digest": image,
+        "instance_id": instance_id,
+        "runtime_result_digest": runtime["runtime_result_digest"],
+        "teardown_receipt_digest": teardown["teardown_receipt_digest"],
+        "provider_zero_digest": provider_zero["provider_zero_digest"],
+        "provider_zero_verified": True,
+        "provider_mutation_outcome_ambiguous": False,
+        "development_execution_completed": True,
+        "qualification_created": False,
+        "r7_admission_created": False,
+        "physical_success_established": False,
+        "cost_usd": 0.067,
+    }
+    execution["execution_result_digest"] = canonical_digest(
+        execution, digest_field="execution_result_digest"
+    )
+    files = {
+        "runtime_result": evidence_root / "provider_runtime_result.json",
+        "execution_result": evidence_root / "measurement_isaac_vast_execution.json",
+        "teardown_receipt": evidence_root / "teardown_receipt.json",
+        "provider_zero": evidence_root / "provider_zero_verification.json",
+    }
+    for name, value in (
+        ("runtime_result", runtime),
+        ("execution_result", execution),
+        ("teardown_receipt", teardown),
+        ("provider_zero", provider_zero),
+    ):
+        _write_json(files[name], value)
+    request = json.loads(paths["request"].read_text())
+    del request["missing_roles"]["physics_positive_control"]
+    request["physics_positive_control"] = {
+        f"{name}_path": files[name].relative_to(paths["data"]).as_posix()
+        for name in files
+    }
+    _write_json(paths["request"], request)
+    monkeypatch.setattr(
+        materializer,
+        "validate_measurement_adapter_execution_bundle",
+        lambda value: value,
+    )
+    return files
 
 
 def _add_method_prerequisite_receipt(paths: dict[str, Path]) -> Path:
@@ -586,6 +918,198 @@ def _add_statically_validated_simready_control(paths: dict[str, Path]) -> Path:
     }
     _write_json(paths["request"], request)
     return asset
+
+
+def _add_completed_simready_dynamic_evidence(paths: dict[str, Path]) -> dict[str, Path]:
+    _add_statically_validated_simready_control(paths)
+    root = paths["data"] / "simready" / "run"
+    bundle_path = root / "bundle.zip"
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    bundle_path.write_bytes(b"immutable-provider-bundle")
+    probe_spec_sha = "sha256:" + "1" * 64
+    bundle_sha = "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+    bundle_receipt: dict[str, object] = {
+        "schema_version": "adp009b_simready_isaac_provider_bundle.v1",
+        "status": "ready",
+        "source_commit_sha": "a" * 40,
+        "container_image": "isaac@sha256:" + "2" * 64,
+        "probe_spec_sha256": probe_spec_sha,
+        "provider_zero_required_after_return": True,
+        "local_bundle_ready_for_remote_staging": True,
+        "blockers": [],
+        "bundle_path": str(bundle_path),
+        "bundle_size_bytes": bundle_path.stat().st_size,
+        "bundle_sha256": bundle_sha,
+        "receipt_digest": "",
+    }
+    bundle_receipt["receipt_digest"] = canonical_digest(
+        bundle_receipt, digest_field="receipt_digest"
+    )
+    bundle_receipt_path = root / "bundle-receipt.json"
+    _write_json(bundle_receipt_path, bundle_receipt)
+
+    inventory = {
+        "replacement_count": 1,
+        "replacement_path": "/World/BlueprintReplacement",
+        "source_target_collider_active": False,
+    }
+    probe_rows = [
+        {
+            "probe": "drop",
+            "passed": True,
+            "step_count": 360,
+            "checks": {
+                "contact": True,
+                "minimum_drop": True,
+                "settled": True,
+                "support_height": True,
+            },
+            "inventory": inventory,
+            "contact_report_event_count": 10,
+            "stage_sha256": "sha256:" + "3" * 64,
+            "trace_digest": "sha256:" + "4" * 64,
+        },
+        {
+            "probe": "slide",
+            "passed": True,
+            "step_count": 360,
+            "checks": {
+                "bounded_motion": True,
+                "minimum_motion": True,
+                "support_height": True,
+            },
+            "inventory": inventory,
+            "contact_report_event_count": 11,
+            "horizontal_motion_m": 0.004,
+            "stage_sha256": "sha256:" + "5" * 64,
+            "trace_digest": "sha256:" + "6" * 64,
+        },
+        {
+            "probe": "tip",
+            "passed": True,
+            "step_count": 360,
+            "checks": {
+                "center_drop_bounded": True,
+                "perturbation_authored": True,
+                "support_height": True,
+            },
+            "inventory": inventory,
+            "contact_report_event_count": 12,
+            "stage_sha256": "sha256:" + "7" * 64,
+            "trace_digest": "sha256:" + "8" * 64,
+        },
+        {
+            "probe": "gripper",
+            "passed": True,
+            "step_count": 360,
+            "checks": {"finger_contact": True, "lift": True, "release": True},
+            "inventory": inventory,
+            "contact_report_event_count": 13,
+            "finger_contact_report_event_count": 7,
+            "observed_lift_m": 0.03,
+            "stage_sha256": "sha256:" + "9" * 64,
+            "trace_digest": "sha256:" + "a" * 64,
+        },
+    ]
+    runtime: dict[str, object] = {
+        "schema_version": "adp009b_simready_isaac_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "native_isaac_executed": True,
+        "observed_isaac_sim_version": "6.0.1",
+        "probe_spec_sha256": probe_spec_sha,
+        "replacement_count": 1,
+        "source_target_collider_active": False,
+        "provider_zero_required_after_return": True,
+        "physical_success_established": False,
+        "robot_task_success_established": False,
+        "probe_results": probe_rows,
+        "result_digest": "",
+    }
+    runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
+    runtime_path = root / "runtime-result.json"
+    _write_json(runtime_path, runtime)
+
+    run: dict[str, object] = {
+        "schema_version": "adp009b_simready_isaac_vast_run.v1",
+        "status": "completed",
+        "blockers": [],
+        "bundle_sha256": bundle_sha,
+        "probe_spec_sha256": probe_spec_sha,
+        "native_result_path": str(runtime_path),
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "raw_secret_values_recorded": False,
+        "estimated_cost_usd": 0.1,
+        "result_digest": "",
+    }
+    run["result_digest"] = canonical_digest(run, digest_field="result_digest")
+    run_path = root / "run-result.json"
+    _write_json(run_path, run)
+
+    instance_id = 42
+    final_path = root / "final-validation.json"
+    _write_json(
+        final_path,
+        {
+            "schema_version": "vast_final_validation.v1",
+            "status": "passed",
+            "blockers": [],
+            "vast_instance_ids": [instance_id],
+            "all_vast_instances_destroyed_by_adapter": True,
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    teardown_path = root / "teardown.json"
+    _write_json(
+        teardown_path,
+        {
+            "schema_version": "vast_teardown_manifest.v1",
+            "status": "completed",
+            "vast_instance_ids": [instance_id],
+            "runner_gpu_teardown_completed": True,
+            "continuing_spend_from_this_run": False,
+            "teardown_actions_performed": [
+                {
+                    "instance_id": instance_id,
+                    "action": "destroy_instance",
+                    "status": "completed",
+                }
+            ],
+        },
+    )
+    cleanup_path = root / "cleanup.json"
+    _write_json(
+        cleanup_path,
+        {
+            "schema_version": "wam_provider_object_store_cleanup.v1",
+            "status": "completed",
+            "all_objects_absent": True,
+            "signed_url_files_removed": True,
+            "exact_object_count": 1,
+            "objects": [{"absence": {"absence_confirmed": True}}],
+            "blockers": [],
+        },
+    )
+    evidence_paths = {
+        "dynamic_run_result": run_path,
+        "dynamic_runtime_result": runtime_path,
+        "dynamic_bundle_receipt": bundle_receipt_path,
+        "dynamic_bundle": bundle_path,
+        "dynamic_final_validation": final_path,
+        "dynamic_teardown_manifest": teardown_path,
+        "dynamic_object_cleanup": cleanup_path,
+    }
+    request = json.loads(paths["request"].read_text())
+    request["simready_control"].update(
+        {
+            f"{name}_path": path.relative_to(paths["data"]).as_posix()
+            for name, path in evidence_paths.items()
+        }
+    )
+    _write_json(paths["request"], request)
+    return evidence_paths
 
 
 def _add_content_agents_preflight(paths: dict[str, Path]) -> Path:
@@ -993,10 +1517,96 @@ def test_statically_validated_simready_control_is_bound_but_not_admitted(
     receipt = json.loads(
         (paths["output"] / "exact_simready_object.component_receipt.json").read_text()
     )
+    index = json.loads(
+        (paths["output"] / "public_scene_suite_index.v1.json").read_text()
+    )
+    index_row = next(
+        row for row in index["components"] if row["role"] == "exact_simready_object"
+    )
+    assert manifest["source_project_id"] == "Blueprint-controlled"
+    assert index_row["source_project_id"] == manifest["source_project_id"]
+    assert index_row["component_manifest_digest"] == manifest["manifest_digest"]
+    assert index_row["component_admission_receipt_digest"] == receipt["receipt_digest"]
     assert manifest["observed_evidence"]["simready_foundation_profile_passed"] is True
     assert manifest["observed_evidence"]["isaac_dynamic_probes_executed"] is False
     assert receipt["status"] == "blocked"
     assert receipt["blockers"] == ["isaac_dynamic_contact_drop_slide_tip_gripper_probes_missing"]
+
+
+def test_completed_simready_dynamic_evidence_admits_exact_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_completed_simready_dynamic_evidence(paths)
+
+    _run(paths)
+
+    manifest = json.loads(
+        (paths["output"] / "exact_simready_object.component_manifest.json").read_text()
+    )
+    receipt = json.loads(
+        (paths["output"] / "exact_simready_object.component_receipt.json").read_text()
+    )
+    assert manifest["observed_evidence"]["isaac_dynamic_probes_executed"] is True
+    assert manifest["observed_evidence"]["isaac_dynamic_probes_passed"] is True
+    assert [row["probe"] for row in manifest["observed_evidence"]["probe_summaries"]] == [
+        "drop",
+        "slide",
+        "tip",
+        "gripper",
+    ]
+    assert receipt["status"] == "admitted"
+    assert receipt["blockers"] == []
+    assert receipt["checks"]["teardown_and_object_cleanup_verified"] is True
+
+
+def test_simready_dynamic_evidence_rejects_rewritten_failed_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    evidence = _add_completed_simready_dynamic_evidence(paths)
+    runtime_path = evidence["dynamic_runtime_result"]
+    runtime = json.loads(runtime_path.read_text())
+    runtime["probe_results"][1]["passed"] = False
+    runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
+    _write_json(runtime_path, runtime)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="simready_control_dynamic_probe_invalid:slide",
+    ):
+        _run(paths)
+
+
+def test_simready_dynamic_evidence_rejects_changed_bundle_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    evidence = _add_completed_simready_dynamic_evidence(paths)
+    evidence["dynamic_bundle"].write_bytes(b"changed-provider-bundle")
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="simready_control_dynamic_bundle_invalid",
+    ):
+        _run(paths)
+
+
+def test_simready_dynamic_evidence_rejects_incomplete_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    evidence = _add_completed_simready_dynamic_evidence(paths)
+    teardown_path = evidence["dynamic_teardown_manifest"]
+    teardown = json.loads(teardown_path.read_text())
+    teardown["continuing_spend_from_this_run"] = True
+    _write_json(teardown_path, teardown)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="simready_control_dynamic_teardown_or_cleanup_invalid",
+    ):
+        _run(paths)
 
 
 def test_content_agents_preflight_is_bound_without_promoting_dry_runs(
@@ -1075,6 +1685,69 @@ def test_content_agents_full_execution_rejects_changed_output_bytes(
         _run(paths)
 
 
+def test_physics_positive_control_is_admitted_from_exact_execution_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_physics_positive_control(paths, monkeypatch)
+
+    result = _run(paths)
+
+    manifest = json.loads(
+        (paths["output"] / "physics_positive_control.component_manifest.json").read_text()
+    )
+    receipt = json.loads(
+        (paths["output"] / "physics_positive_control.component_receipt.json").read_text()
+    )
+    assert result["admitted_role_count"] == 3
+    assert receipt["status"] == "admitted"
+    assert receipt["blockers"] == []
+    assert manifest["observed_evidence"]["execution_case_count"] == 2
+    assert manifest["observed_evidence"]["provider_zero_verified"] is True
+    assert manifest["claim_boundaries"]["exact_simready_object_qualified"] is False
+
+
+def test_physics_positive_control_rejects_changed_runtime_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    files = _add_physics_positive_control(paths, monkeypatch)
+    runtime = json.loads(files["runtime_result"].read_text())
+    runtime["status"] = "caller_claimed_pass"
+    _write_json(files["runtime_result"], runtime)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="physics_positive_control_runtime_result_digest_mismatch",
+    ):
+        _run(paths)
+
+
+def test_physics_positive_control_rejects_cross_run_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    files = _add_physics_positive_control(paths, monkeypatch)
+    teardown = json.loads(files["teardown_receipt"].read_text())
+    teardown["instance_id"] = "different-instance"
+    teardown["teardown_receipt_digest"] = canonical_digest(
+        teardown, digest_field="teardown_receipt_digest"
+    )
+    _write_json(files["teardown_receipt"], teardown)
+    execution = json.loads(files["execution_result"].read_text())
+    execution["teardown_receipt_digest"] = teardown["teardown_receipt_digest"]
+    execution["execution_result_digest"] = canonical_digest(
+        execution, digest_field="execution_result_digest"
+    )
+    _write_json(files["execution_result"], execution)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="physics_positive_control_teardown_or_provider_zero_invalid",
+    ):
+        _run(paths)
+
+
 def test_simready_control_rejects_changed_usd_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1084,6 +1757,66 @@ def test_simready_control_rejects_changed_usd_bytes(
 
     with pytest.raises(
         PublicSceneSuiteMaterializationError, match="simready_control_usd_bytes_changed"
+    ):
+        _run(paths)
+
+
+def test_controlled_background_is_admitted_from_recomputed_actual_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    _add_controlled_background(paths, monkeypatch)
+
+    result = _run(paths)
+
+    assert result["admitted_role_count"] == 3
+    manifest = json.loads(
+        (paths["output"] / "controlled_background_truth.component_manifest.json").read_text()
+    )
+    receipt = json.loads(
+        (paths["output"] / "controlled_background_truth.component_receipt.json").read_text()
+    )
+    assert receipt["status"] == "admitted"
+    assert manifest["observed_evidence"]["completion_outputs_reopened_and_rescored"] is True
+    assert manifest["observed_evidence"]["quality_checks"] == {
+        "depth_p95": True,
+        "depth_plane": True,
+        "depth_rmse": True,
+        "rgb_boundary": True,
+        "rgb_mask_psnr": True,
+        "rgb_mask_ssim": True,
+    }
+
+
+def test_controlled_background_rejects_changed_output_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    files = _add_controlled_background(paths, monkeypatch)
+    files["output"].write_bytes(files["output"].read_bytes() + b"mutation")
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="controlled_background_actual_output_verification_failed",
+    ):
+        _run(paths)
+
+
+def test_controlled_background_rejects_truth_mounted_during_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    files = _add_controlled_background(paths, monkeypatch)
+    execution = json.loads(files["execution"].read_text())
+    execution["container"]["withheld_truth_mounted"] = True
+    execution["completion_digest"] = canonical_digest(
+        execution, digest_field="completion_digest"
+    )
+    _write_json(files["execution"], execution)
+
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="controlled_background_execution_firebreak_invalid",
     ):
         _run(paths)
 

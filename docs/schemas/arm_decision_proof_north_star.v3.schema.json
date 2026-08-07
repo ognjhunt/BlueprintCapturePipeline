@@ -1,0 +1,424 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/arm_decision_proof_north_star.v3.schema.json",
+  "title": "Arm Decision Proof North Star v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "program_id",
+    "status",
+    "approved_on",
+    "amended_on",
+    "north_star",
+    "north_star_metric",
+    "product",
+    "construction_method",
+    "showcase_label",
+    "execution_strategy",
+    "public_scene_transition_decision",
+    "simulation_evaluation_contract",
+    "scope",
+    "representation_contract",
+    "scene_edit_contract",
+    "method_admission",
+    "asset_authoring_contract",
+    "required_evidence",
+    "acceptance",
+    "public_evidence_ladder",
+    "development_substrates",
+    "non_goals",
+    "gates",
+    "compatibility"
+  ],
+  "properties": {
+    "schema_version": {"const": "arm_decision_proof_north_star.v3"},
+    "program_id": {"const": "arm-decision-proof-v1"},
+    "status": {"const": "sole_active_program"},
+    "approved_on": {"type": "string", "format": "date"},
+    "amended_on": {"type": "string", "format": "date"},
+    "north_star": {"type": "string", "minLength": 200},
+    "north_star_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "current", "target"],
+      "properties": {
+        "name": {"const": "prospectively_physically_validated_new_site_task_decisions"},
+        "current": {"const": 0},
+        "target": {"const": 1}
+      }
+    },
+    "product": {"const": "task_evaluation_run"},
+    "construction_method": {"const": "candidate_minimum_sufficient_evaluation_replica"},
+    "showcase_label": {"const": "SiteBench"},
+    "execution_strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "completed_precursor",
+        "active_item",
+        "public_scene_qualification",
+        "pre_capture_sim_rehearsal",
+        "fresh_site_capture",
+        "partner_recruitment_and_protocol"
+      ],
+      "properties": {
+        "mode": {"const": "public_evidence_ladder_then_fresh_site_proof"},
+        "completed_precursor": {"const": "ADP-008_simpler_decision_harness"},
+        "active_item": {"const": "ADP-009D_public_scene_franka_policy_rehearsal"},
+        "public_scene_qualification": {"const": "bounded_construction_rehearsal_accepted_with_three_typed_abstentions_and_historical_7_of_10_index"},
+        "pre_capture_sim_rehearsal": {"const": "required_on_the_sealed_AuraFusion360_SAGE_SimReady_scene_before_fresh_site_capture"},
+        "fresh_site_capture": {"const": "mandatory_final_construction_input_after_public_qualification_and_protocol_freeze"},
+        "partner_recruitment_and_protocol": {"const": "parallel_human_lane"}
+      }
+    },
+    "public_scene_transition_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "approved_on",
+        "selected_public_scene_editing_path",
+        "historical_suite_status",
+        "nonblocking_abstentions",
+        "real_metrology_transfer",
+        "bounded_rehearsal_status",
+        "next_gate",
+        "claim_ceiling"
+      ],
+      "properties": {
+        "decision_id": {"const": "ADP-009-public-scene-transition-2026-08-06"},
+        "approved_on": {"type": "string", "format": "date"},
+        "selected_public_scene_editing_path": {"const": "AuraFusion360_exact_released_source_on_InteriorGS_840313"},
+        "historical_suite_status": {"const": "blocked_7_of_10_with_no_relabeling_or_receipt_mutation"},
+        "nonblocking_abstentions": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 20}
+        },
+        "real_metrology_transfer": {"const": "fresh_rights_cleared_Raw_V3_2_capture_replaces_ScanNetPP_as_the_required_real_metric_transfer"},
+        "bounded_rehearsal_status": {"const": "accepted_for_public_scene_construction_and_pre_capture_simulation_only"},
+        "next_gate": {"const": "Franka_basic_pick_place_with_exactly_two_frozen_policy_candidates_on_the_sealed_AuraFusion360_SAGE_SimReady_scene"},
+        "claim_ceiling": {"const": "development_only_not_hidden_background_truth_not_real_metrology_not_policy_validity_not_physical_evidence"}
+      }
+    },
+    "simulation_evaluation_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "applies_to",
+        "canonical_anchor",
+        "scenario_families",
+        "candidate_pairing",
+        "controls",
+        "reporting",
+        "smoke_boundary",
+        "cousin_boundary"
+      ],
+      "properties": {
+        "applies_to": {"const": "every_new_ADP_simulator_policy_run_claimed_as_an_evaluation"},
+        "canonical_anchor": {"const": "one_immutable_nominal_condition_retained_in_every_suite"},
+        "scenario_families": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "placement_and_approach"},
+            {"const": "illumination"},
+            {"const": "camera_and_sensor"},
+            {"const": "bounded_physics"},
+            {"const": "admitted_object_cousins"},
+            {"const": "held_out_composed_cases"}
+          ],
+          "items": false,
+          "minItems": 6,
+          "maxItems": 6
+        },
+        "candidate_pairing": {"const": "exactly_two_frozen_candidates_receive_identical_resolved_cells_and_seeds"},
+        "controls": {"const": "zero_action_negative_and_deterministic_scripted_positive_run_on_every_scored_cell"},
+        "reporting": {"const": "canonical_and_per_family_success_degradation_task_state_failures_contacts_paired_deltas_digest_bound_policy_media_and_replay"},
+        "smoke_boundary": {"const": "startup_nominal_only_single_rollout_or_ad_hoc_perturbation_is_a_smoke_or_canary_not_an_evaluation"},
+        "cousin_boundary": {"const": "cousins_are_separate_digest_bound_admitted_variants_and_never_overwrite_the_sealed_object_change_the_task_family_or_prove_partner_site_validity"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "partners",
+        "sites",
+        "tasks",
+        "embodiment",
+        "candidate_count",
+        "task_family",
+        "object_class",
+        "scene_edit_count",
+        "replacement_asset",
+        "camera_arrangement",
+        "gripper"
+      ],
+      "properties": {
+        "partners": {"const": 1},
+        "sites": {"const": 1},
+        "tasks": {"const": 1},
+        "embodiment": {"const": "fixed_robot_arm"},
+        "candidate_count": {"const": 2},
+        "task_family": {"const": "bounded_rigid_object_pick_place"},
+        "object_class": {"const": "rigid_opaque"},
+        "scene_edit_count": {"const": 1},
+        "replacement_asset": {"const": "simready_usd_with_distinct_visual_and_collision_geometry"},
+        "camera_arrangement": {"const": "fixed"},
+        "gripper": {"const": "parallel_jaw"}
+      }
+    },
+    "representation_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "appearance",
+        "static_metric_geometry",
+        "static_collision",
+        "dynamic_task_objects",
+        "shared_frame",
+        "metric_authority_order",
+        "non_authoritative_aids",
+        "hidden_surface_rule",
+        "preferred_background_rule"
+      ],
+      "properties": {
+        "appearance": {"const": "registered_3dgs_or_explicit_visual_geometry_candidate"},
+        "static_metric_geometry": {"const": "observed_laser_rgbd_lidar_stereo_or_surveyed_surface_evidence"},
+        "static_collision": {"const": "separate_simplified_mesh_independently_checked_against_metric_geometry"},
+        "dynamic_task_objects": {"const": "explicit_visual_mesh_and_separate_collider_with_measured_dimensions_and_task_physics"},
+        "shared_frame": {"const": "one_digest_bound_metric_transform_chain_from_source_to_simulator"},
+        "metric_authority_order": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 3}
+        },
+        "non_authoritative_aids": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 3}
+        },
+        "hidden_surface_rule": {"const": "unobserved_surface_may_be_visual_candidate_only_never_factual_recovery"},
+        "preferred_background_rule": {"const": "use_observed_clean_background_or_source_view_coverage_before_generation"}
+      }
+    },
+    "scene_edit_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_object_selection",
+        "source_object_removal",
+        "background_completion",
+        "render_derived_observation_rule",
+        "inpaint360gs_interface_rule",
+        "render_derived_edit_identity",
+        "released_reproducibility_control",
+        "primary_released_interface_adapter",
+        "primary_adapter_reason",
+        "primary_adapter_required_patch",
+        "released_360_quality_challenger",
+        "quality_challenger_required_patch",
+        "nonblocking_released_method_abstentions",
+        "conditional_released_effect_ablation",
+        "released_noncritical_methods",
+        "replacement",
+        "ground_truth_levels",
+        "paper_only_exclusions"
+      ],
+      "properties": {
+        "source_object_selection": {"type": "string", "minLength": 20},
+        "source_object_removal": {"type": "string", "minLength": 20},
+        "background_completion": {"type": "string", "minLength": 20},
+        "render_derived_observation_rule": {"type": "string", "minLength": 80},
+        "inpaint360gs_interface_rule": {"type": "string", "minLength": 80},
+        "render_derived_edit_identity": {"type": "string", "minLength": 80},
+        "released_reproducibility_control": {"const": "Inpaint360GS_exact_revision_retained_as_a_nonblocking_typed_abstention_until_author_dataset_license_authority_exists"},
+        "primary_released_interface_adapter": {"const": "AuraFusion360_exact_released_source_selected_from_observed_InteriorGS_execution_and_project_owner_review"},
+        "primary_adapter_reason": {"type": "string", "minLength": 80},
+        "primary_adapter_required_patch": {"type": "string", "minLength": 80},
+        "released_360_quality_challenger": {"const": "AuraFusion360_historical_quality_challenger_promoted_to_the_selected_ADP_v1_public_scene_editing_path"},
+        "quality_challenger_required_patch": {"type": "string", "minLength": 80},
+        "nonblocking_released_method_abstentions": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 20}
+        },
+        "conditional_released_effect_ablation": {"const": "GOR-IS_exact_revision_for_preregistered_shadow_reflection_or_gloss_cases_after_separate_noncommercial_license_admission"},
+        "released_noncritical_methods": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 20}
+        },
+        "replacement": {"type": "string", "minLength": 40},
+        "ground_truth_levels": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 8}
+        },
+        "paper_only_exclusions": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 2}
+        }
+      }
+    },
+    "method_admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "software_rule",
+        "paper_only_rule",
+        "proprietary_tool_rule",
+        "rights_rule",
+        "threshold_rule",
+        "generative_editing_rule"
+      ],
+      "properties": {
+        "software_rule": {"type": "string", "minLength": 20},
+        "paper_only_rule": {"const": "inadmissible_for_critical_path"},
+        "proprietary_tool_rule": {"type": "string", "minLength": 20},
+        "rights_rule": {"type": "string", "minLength": 20},
+        "threshold_rule": {"type": "string", "minLength": 20},
+        "generative_editing_rule": {"type": "string", "minLength": 20}
+      }
+    },
+    "asset_authoring_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "geometry_authority",
+        "provider_interface",
+        "released_candidate",
+        "candidate_scope",
+        "candidate_limit",
+        "required_control",
+        "optional_comparison",
+        "required_blueprint_completion",
+        "qualification"
+      ],
+      "properties": {
+        "geometry_authority": {"type": "string", "minLength": 20},
+        "provider_interface": {"const": "replaceable_simready_authoring_backend"},
+        "released_candidate": {"const": "NVIDIA_USD_Content_Agents_v0.5.2_after_exact_admission"},
+        "candidate_scope": {"type": "string", "minLength": 20},
+        "candidate_limit": {"type": "string", "minLength": 20},
+        "required_control": {"const": "known_good_manually_authored_usd"},
+        "optional_comparison": {"type": "string", "minLength": 20},
+        "required_blueprint_completion": {"type": "string", "minLength": 20},
+        "qualification": {"type": "string", "minLength": 20}
+      }
+    },
+    "required_evidence": {
+      "type": "array",
+      "minItems": 12,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 3}
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 10,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 3}
+    },
+    "public_evidence_ladder": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["order", "id", "status", "substrate", "purpose", "claim_ceiling"],
+        "properties": {
+          "order": {"type": "integer", "minimum": 0, "maximum": 9},
+          "id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+          "status": {"type": "string", "minLength": 3},
+          "substrate": {"type": "string", "minLength": 3},
+          "purpose": {"type": "string", "minLength": 10},
+          "claim_ceiling": {"type": "string", "minLength": 5}
+        }
+      }
+    },
+    "development_substrates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed",
+        "purpose",
+        "claim_ceiling",
+        "canonical_fixtures",
+        "historical_public_decision_reference",
+        "public_scene_admission_status",
+        "cannot_qualify"
+      ],
+      "properties": {
+        "allowed": {"const": true},
+        "purpose": {"const": "qualify_non_site_specific_service_seams_before_fresh_site_capture"},
+        "claim_ceiling": {"const": "development_only"},
+        "canonical_fixtures": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 3}
+        },
+        "historical_public_decision_reference": {"const": "SIMPLER"},
+        "public_scene_admission_status": {"type": "string", "minLength": 20},
+        "cannot_qualify": {
+          "type": "array",
+          "minItems": 7,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 3}
+        }
+      }
+    },
+    "non_goals": {
+      "type": "array",
+      "minItems": 10,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 3}
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase", "day", "id", "required_outcome", "failure_action"],
+        "properties": {
+          "phase": {"enum": ["public_scene_qualification", "partner_proof"]},
+          "day": {"type": "integer", "minimum": 1, "maximum": 42},
+          "id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+          "required_outcome": {"type": "string", "minLength": 10},
+          "failure_action": {"enum": ["stop", "pivot_or_stop"]}
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preserve_readers",
+        "preserve_historical_evidence",
+        "historical_adp_008_digest_unchanged",
+        "allow_unrelated_new_work"
+      ],
+      "properties": {
+        "preserve_readers": {"const": true},
+        "preserve_historical_evidence": {"const": true},
+        "historical_adp_008_digest_unchanged": {"const": true},
+        "allow_unrelated_new_work": {"const": false}
+      }
+    }
+  }
+}

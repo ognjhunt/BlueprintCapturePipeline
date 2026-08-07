@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Headless ovrtx 0.4 preflight worker for an isolated Linux/RTX environment.
+"""Headless OVRTX 0.4 + OVStage preflight worker for Linux/RTX.
 
 The core pipeline launches this script as a subprocess. It deliberately has no
 Blueprint imports so prerelease NVIDIA dependencies remain outside the core
@@ -23,9 +23,16 @@ from typing import Any
 AOV_BY_KIND = {
     "rgb": "LdrColor",
     "depth": "DepthSD",
+    "normal": "Normal",
     "semantic_segmentation": "SemanticSegmentation",
     "semantic_id_map": "SemanticIdMap",
 }
+
+RTX_RENDER_PRODUCT_API_SCHEMAS = (
+    "OmniRtxSettingsCommonAdvancedAPI_1",
+    "OmniRtxSettingsRtAdvancedAPI_1",
+    "OmniRtxSettingsPtAdvancedAPI_1",
+)
 
 
 def _sha256_json(value: Any) -> str:
@@ -54,12 +61,52 @@ def _camera_layer(scene: Path, config: dict[str, Any]) -> str:
         raise ValueError("worker-authored camera currently requires a one-level parent path")
     position = config.get("camera_position", [2.5, -2.5, 1.8])
     rotation = config.get("camera_rotate_xyz_degrees", [68.0, 0.0, 45.0])
+    transform = config.get("camera_transform_matrix_usd")
+    if transform is not None:
+        if (
+            not isinstance(transform, list)
+            or len(transform) != 4
+            or any(not isinstance(row, list) or len(row) != 4 for row in transform)
+        ):
+            raise ValueError("camera_transform_matrix_usd must be a 4x4 row-major matrix")
+        transform_rows = ",\n            ".join(
+            "(" + ", ".join(str(float(value)) for value in row) + ")"
+            for row in transform
+        )
+        transform_usda = (
+            "        matrix4d xformOp:transform = (\n"
+            f"            {transform_rows}\n"
+            "        )\n"
+            '        uniform token[] xformOpOrder = ["xformOp:transform"]'
+        )
+    else:
+        transform_usda = (
+            "        double3 xformOp:translate = "
+            f"({float(position[0])}, {float(position[1])}, {float(position[2])})\n"
+            "        float3 xformOp:rotateXYZ = "
+            f"({float(rotation[0])}, {float(rotation[1])}, {float(rotation[2])})\n"
+            '        uniform token[] xformOpOrder = '
+            '["xformOp:translate", "xformOp:rotateXYZ"]'
+        )
     focal = float(config.get("focal_length_mm", 24.0))
     aperture = float(config.get("horizontal_aperture_mm", 20.955))
+    vertical_aperture = float(
+        config.get("vertical_aperture_mm", aperture * height / width)
+    )
+    horizontal_offset = float(config.get("horizontal_aperture_offset_mm", 0.0))
+    vertical_offset = float(config.get("vertical_aperture_offset_mm", 0.0))
     clipping = config.get("clipping_range", [0.01, 10000.0])
+    render_mode = str(config.get("render_mode", "RealTimePathTracing"))
+    if render_mode not in {"RaytracedLighting", "RealTimePathTracing", "PathTracing"}:
+        raise ValueError("render_mode is not supported")
     ordered = [AOV_BY_KIND[kind] for kind in AOV_BY_KIND]
+    ordered_vars_usda = ", ".join(f"<{name}>" for name in ordered)
     vars_usda = "\n".join(
-        f'''        def RenderVar "{name}" {{ string sourceName = "{name}" }}''' for name in ordered
+        f'''        def RenderVar "{name}"
+        {{
+            string sourceName = "{name}"
+        }}'''
+        for name in ordered
     )
     return f'''#usda 1.0
 (
@@ -74,21 +121,24 @@ def Xform "{parent_components[0]}"
     {{
         float focalLength = {focal}
         float horizontalAperture = {aperture}
+        float verticalAperture = {vertical_aperture}
+        float horizontalApertureOffset = {horizontal_offset}
+        float verticalApertureOffset = {vertical_offset}
         float2 clippingRange = ({float(clipping[0])}, {float(clipping[1])})
-        double3 xformOp:translate = ({float(position[0])}, {float(position[1])}, {float(position[2])})
-        float3 xformOp:rotateXYZ = ({float(rotation[0])}, {float(rotation[1])}, {float(rotation[2])})
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+{transform_usda}
     }}
 }}
 
 def "Render"
 {{
-    def RenderProduct "BlueprintCamera"
+    def RenderProduct "BlueprintCamera" (
+        prepend apiSchemas = ["{RTX_RENDER_PRODUCT_API_SCHEMAS[0]}", "{RTX_RENDER_PRODUCT_API_SCHEMAS[1]}", "{RTX_RENDER_PRODUCT_API_SCHEMAS[2]}"]
+    )
     {{
         rel camera = <{camera_path}>
         int2 resolution = ({width}, {height})
-        token omni:rtx:rendermode = "RealTimePathTracing"
-        rel orderedVars = [<LdrColor>, <DepthSD>, <SemanticSegmentation>, <SemanticIdMap>]
+        token omni:rtx:rendermode = "{render_mode}"
+        rel orderedVars = [{ordered_vars_usda}]
 {vars_usda}
     }}
 }}
@@ -211,6 +261,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         checks.append(_check("usd_scene_load", True, ovstage_attached=True))
 
         warmup = max(0, int(config.get("warmup_frames", 3)))
+        quality_steps = max(1, int(config.get("quality_steps", 1)))
         delta_time = float(config.get("delta_time_seconds", 1.0 / 60.0))
         for _ in range(warmup):
             renderer.step(render_products=render_products, delta_time=delta_time, ordinal=ordinal)
@@ -225,11 +276,13 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 _check("dynamic_transform_update", True, usd_time_seconds=usd_time, ordinal=ordinal)
             )
 
-        products = renderer.step(
-            render_products=render_products,
-            delta_time=delta_time,
-            ordinal=ordinal,
-        )
+        products = {}
+        for _ in range(quality_steps):
+            products = renderer.step(
+                render_products=render_products,
+                delta_time=0.0 if quality_steps > 1 else delta_time,
+                ordinal=ordinal,
+            )
         gpu_memory_samples.append(_gpu_memory_used_bytes())
         nonempty = True
         labels: list[str] = []
@@ -259,6 +312,18 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         "horizontal_aperture_mm": float(
                             config.get("horizontal_aperture_mm", 20.955)
                         ),
+                        "vertical_aperture_mm": float(
+                            config.get(
+                                "vertical_aperture_mm",
+                                float(config.get("horizontal_aperture_mm", 20.955))
+                                * int(config.get("height", 480))
+                                / int(config.get("width", 640)),
+                            )
+                        ),
+                        "render_mode": str(
+                            config.get("render_mode", "RealTimePathTracing")
+                        ),
+                        "quality_steps": quality_steps,
                     }
                     outputs.append({"kind": kind, "path": path.name, "metadata": metadata})
                     nonempty = nonempty and array.size > 0

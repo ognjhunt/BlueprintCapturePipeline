@@ -1,0 +1,275 @@
+{
+  "adp_item": "ADP-009B",
+  "approval_statement": "THIS IS GOOD ENOUGH!!!! we can work with this - its not perfect, but def better - but i think this is just good enough for us to continue and go to the next steps of adding it (simready version) back into the scene in the correct location and so on",
+  "bindings": {
+    "aura_execution_receipt_digest": "sha256:2476eae9ba019ba000ddd4064dd1c51960e089ea370f4051955a2999d09e22da",
+    "aura_locality_measurement_digest": "sha256:eb3fb61eb5fe7da98728b3280bf832b49be0ff0684257b761d55599a88a5a4a4",
+    "native_visual_review_receipt_digest": "sha256:7b95577d254d9a1c4764f361362e7cd903b30e19c7c666f9d89e1b77a6357f51",
+    "review_files": [
+      {
+        "camera_id": "approach_close",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/approach_close.before.png",
+        "role": "before",
+        "sha256": "sha256:2474ab4bf6c95e3340e9672ea0aad56faa2ba53fef67d0477cd5983a00061ba8",
+        "size_bytes": 1416834
+      },
+      {
+        "camera_id": "approach_close",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/approach_close.after.png",
+        "role": "after",
+        "sha256": "sha256:1549e445e80090d395d8564f3610a1dc33da6699be5756ee8df0984f1e6d3ed2",
+        "size_bytes": 1445362
+      },
+      {
+        "camera_id": "approach_close",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/approach_close.before_after.png",
+        "role": "before_after",
+        "sha256": "sha256:ac5243ce56a5cd0f2f5f13743c9aa3c27c60b90576c1b5d5811fd5193f7117ed",
+        "size_bytes": 2863000
+      },
+      {
+        "camera_id": "approach_close",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/approach_close.contact_crop.before_after.png",
+        "role": "contact_crop_before_after",
+        "sha256": "sha256:711918d2ad5e4a5d1a5773f7ca1a20c6b6ec479defa999f8988c78fe1e1d78f6",
+        "size_bytes": 657426
+      },
+      {
+        "camera_id": "approach_wide",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/approach_wide.before.png",
+        "role": "before",
+        "sha256": "sha256:a3f35dd8249f412b892bcd88db1a90e9b24e1e162965fb2742c1582d55186876",
+        "size_bytes": 1570391
+      },
+      {
+        "camera_id": "approach_wide",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/approach_wide.after.png",
+        "role": "after",
+        "sha256": "sha256:a55714cbbf7fffd5951404e369f2331c7d5897f7c0ff7ffef887c6331962fd0e",
+        "size_bytes": 1586687
+      },
+      {
+        "camera_id": "approach_wide",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/approach_wide.before_after.png",
+        "role": "before_after",
+        "sha256": "sha256:2b7950dc105c0b002383510b16fedd9b9cb832386c0e18f6ab93a02170e43bf3",
+        "size_bytes": 3151500
+      },
+      {
+        "camera_id": "approach_wide",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/approach_wide.contact_crop.before_after.png",
+        "role": "contact_crop_before_after",
+        "sha256": "sha256:4ef1a3fa02376b9a708702091317fee2df1d47766bc69ce7f585f3dba0378936",
+        "size_bytes": 252561
+      },
+      {
+        "camera_id": "cabinet_context",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/cabinet_context.before.png",
+        "role": "before",
+        "sha256": "sha256:04a9707479f7fb983674be6d79943924d2f04e62caeefdf47907b083ff00ccb4",
+        "size_bytes": 2070090
+      },
+      {
+        "camera_id": "cabinet_context",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/cabinet_context.after.png",
+        "role": "after",
+        "sha256": "sha256:47d247dae9b6dec09b161b5b29bc944e647d559353ea8b292df5c45420312803",
+        "size_bytes": 2078397
+      },
+      {
+        "camera_id": "cabinet_context",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/cabinet_context.before_after.png",
+        "role": "before_after",
+        "sha256": "sha256:9f9dcfb8b6b4defa9f7195952e678036131d3e60c541bf9ccdfff83a6a689860",
+        "size_bytes": 4139841
+      },
+      {
+        "camera_id": "cabinet_context",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/cabinet_context.contact_crop.before_after.png",
+        "role": "contact_crop_before_after",
+        "sha256": "sha256:f28125f1b5657e65db777447b584be3606c9bfb9a418c86553c95b6925e6dabe",
+        "size_bytes": 166469
+      },
+      {
+        "camera_id": "left_translate",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/left_translate.before.png",
+        "role": "before",
+        "sha256": "sha256:77a1d2f409c8c96401061e318599f27cad3ce1a0a4164ccda637de0f3002ec57",
+        "size_bytes": 2155837
+      },
+      {
+        "camera_id": "left_translate",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/left_translate.after.png",
+        "role": "after",
+        "sha256": "sha256:cbcac340101120513992eeec7b7c004837df01966c25bbf55faca5b64dc059ac",
+        "size_bytes": 2175172
+      },
+      {
+        "camera_id": "left_translate",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/left_translate.before_after.png",
+        "role": "before_after",
+        "sha256": "sha256:dffa97fd50e4dc4a242b38380f02d98f410658056e543b15d4d75653b0d10132",
+        "size_bytes": 4321462
+      },
+      {
+        "camera_id": "left_translate",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/left_translate.contact_crop.before_after.png",
+        "role": "contact_crop_before_after",
+        "sha256": "sha256:2ddb60c5fb0c369de7015802fdd8c75e39075faebd8dc15be72d05314e18e8ce",
+        "size_bytes": 425430
+      },
+      {
+        "camera_id": "low_approach",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/low_approach.before.png",
+        "role": "before",
+        "sha256": "sha256:2704ce8817b75febd0db57c02c8e5cb014733e1814933f68c9624791e88456a2",
+        "size_bytes": 1666587
+      },
+      {
+        "camera_id": "low_approach",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/low_approach.after.png",
+        "role": "after",
+        "sha256": "sha256:f7ca7e7f0fffecee669a97610ad2f182f8d403a321a1351ae525b6de4bef463d",
+        "size_bytes": 1712652
+      },
+      {
+        "camera_id": "low_approach",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/low_approach.before_after.png",
+        "role": "before_after",
+        "sha256": "sha256:d0883c877b71d18d532fc65481f6941195e3b6530a9563c5e83cc868a779aa62",
+        "size_bytes": 3377050
+      },
+      {
+        "camera_id": "low_approach",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/low_approach.contact_crop.before_after.png",
+        "role": "contact_crop_before_after",
+        "sha256": "sha256:3c9ac4790e947e0fa761d81dfb336ec6a9777413f96b0a009d114f49b082af0c",
+        "size_bytes": 827571
+      },
+      {
+        "camera_id": "raised_left",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/raised_left.before.png",
+        "role": "before",
+        "sha256": "sha256:def1e2a5f301995ffb2b2d0f7a9a4758a2957a0d6f60453637b4ba652134547e",
+        "size_bytes": 1786588
+      },
+      {
+        "camera_id": "raised_left",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/raised_left.after.png",
+        "role": "after",
+        "sha256": "sha256:af756e7af463101764f6cde3206d4898aa93787f7dc12c30e5aa6674a7da040e",
+        "size_bytes": 1802718
+      },
+      {
+        "camera_id": "raised_left",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/raised_left.before_after.png",
+        "role": "before_after",
+        "sha256": "sha256:c24a893599eb1b7c0bd648ef7ca333e7a12fc17ef07f2ca9ef9403d95f722e27",
+        "size_bytes": 3586611
+      },
+      {
+        "camera_id": "raised_left",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/raised_left.contact_crop.before_after.png",
+        "role": "contact_crop_before_after",
+        "sha256": "sha256:68638312b85af04f8dc034f2bd7b251f6769b74f9bc3e5395aeadad34ffe3aef",
+        "size_bytes": 275312
+      },
+      {
+        "camera_id": "raised_right",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/raised_right.before.png",
+        "role": "before",
+        "sha256": "sha256:3a27a1b02b42a58951634c4c1e8919ac5217aedde75403fa28ea5addf240140a",
+        "size_bytes": 1867319
+      },
+      {
+        "camera_id": "raised_right",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/raised_right.after.png",
+        "role": "after",
+        "sha256": "sha256:abbdae499d76de91489734ae717ddbdfc49a421ed6ab97f8a083f095dcb1c463",
+        "size_bytes": 1874631
+      },
+      {
+        "camera_id": "raised_right",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/raised_right.before_after.png",
+        "role": "before_after",
+        "sha256": "sha256:8fe4cee5be2435f8940a747814617dea00f4e86928590bc92903401d3eb0efba",
+        "size_bytes": 3736635
+      },
+      {
+        "camera_id": "raised_right",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/raised_right.contact_crop.before_after.png",
+        "role": "contact_crop_before_after",
+        "sha256": "sha256:782adbb2d245050dbb3f006f0f2eb910d859a28205219b0fe682487b54e68a17",
+        "size_bytes": 241871
+      },
+      {
+        "camera_id": "right_translate",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/right_translate.before.png",
+        "role": "before",
+        "sha256": "sha256:b8b18453dde9bade63de4cfe5a5a0edbdc0671e28c5b9cb768c2c28be52a7870",
+        "size_bytes": 1587107
+      },
+      {
+        "camera_id": "right_translate",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/right_translate.after.png",
+        "role": "after",
+        "sha256": "sha256:22ba5f86bd81e7364b76504a54a54c3dea28678713aad35edd2883c3a488c247",
+        "size_bytes": 1601827
+      },
+      {
+        "camera_id": "right_translate",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/right_translate.before_after.png",
+        "role": "before_after",
+        "sha256": "sha256:f665d51510dd9581313d0e0b8b95ffcd07107ae8bb866ac9533ec29f6465c20e",
+        "size_bytes": 3183550
+      },
+      {
+        "camera_id": "right_translate",
+        "relative_path": "simready/replacement_840313_match_v2/native_visual_review_run007/right_translate.contact_crop.before_after.png",
+        "role": "contact_crop_before_after",
+        "sha256": "sha256:df6c19d8b762a75f3e5bc1cb35099348521db91d2394940902b15a8814f742c0",
+        "size_bytes": 374746
+      }
+    ]
+  },
+  "blockers": [
+    "digest_bound_hybrid_replacement_seal_missing"
+  ],
+  "claim_boundaries": {
+    "digital_twin": false,
+    "human_review_does_not_create_hidden_background_truth": true,
+    "native_object_layer_composite_is_not_full_scene_native_render": true,
+    "simulation_or_physical_truth": false
+  },
+  "claim_ceiling": "project_owner_accepted_internal_visual_candidate_only",
+  "decision": "accept_for_internal_hybrid_replacement_control",
+  "hidden_background_truth_available": false,
+  "observed_quality": {
+    "human_visual_acceptance": true,
+    "mean_outside_mask_lpips": 0.01379092,
+    "mean_outside_mask_psnr_db": 39.30477,
+    "mean_outside_mask_windowed_ssim": 0.99231201,
+    "view_count": 8
+  },
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:d2597d3f18daa07c04e12dc44f02a6894a6713445614d17a9d90a5ee2200179b",
+  "reviewer_role": "project_owner",
+  "scene": {
+    "camera_ids": [
+      "approach_close",
+      "approach_wide",
+      "cabinet_context",
+      "left_translate",
+      "low_approach",
+      "raised_left",
+      "raised_right",
+      "right_translate"
+    ],
+    "publisher_scene_id": "840313",
+    "target_instance_id": "ins160"
+  },
+  "schema_version": "adp009b_aura_human_visual_review.v1",
+  "status": "human_accepted_visual_candidate_for_internal_hybrid_control",
+  "successful_inpainting_admitted": false,
+  "technical_admission": false
+}

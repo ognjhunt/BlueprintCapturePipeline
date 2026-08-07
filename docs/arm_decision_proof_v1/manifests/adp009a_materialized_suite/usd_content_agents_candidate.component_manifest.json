@@ -9,7 +9,7 @@
   },
   "claim_ceiling": "development_only",
   "component_id": "adp009a-usd-content-agents-candidate",
-  "manifest_digest": "sha256:9c9e71c17aa2ed61737c58f132ca121d678008dd6693e21def12b98ab22b4798",
+  "manifest_digest": "sha256:5dad484c55d7b88d581a765a0d48ca23b41ad2829da08b1b615bf8beff99516a",
   "materialized_artifacts": [
     {
       "external_relative_path": "docs/arm_decision_proof_v1/manifests/adp009a_usd_content_agents_preflight_receipt.v1.json",
@@ -19,519 +19,519 @@
       "size_bytes": 10143
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/adp_content_agents_vast_result.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/adp_content_agents_vast_result.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/adp_content_agents_vast_result.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/adp_content_agents_vast_result.json",
       "role": "content_agents_execution_result",
-      "sha256": "sha256:cece626b7a9e60f388b738ada3cb3cb7771f30b726ba3a290a1830717a64a907",
-      "size_bytes": 19777
+      "sha256": "sha256:b57f6f2978d85f5a8e2ae5e69b97d37e711f7c337441b4effc7c789d0201573d",
+      "size_bytes": 19784
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/allocator_result.live.json",
-      "publisher_path": "simready/content_agents/vast_run_004/allocator_result.live.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/adp_content_agents_vast_result.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/adp_content_agents_vast_result.json",
       "role": "content_agents_allocator_result",
-      "sha256": "sha256:7b0ab0483a63d0ab9d0dfea8c51c75a43e7b73976e0db2e07e87c2fef26fbe63",
-      "size_bytes": 1063
+      "sha256": "sha256:beba170c6d79fe6d3c0c3d6325056ad6f93fbaba6b91008d551bbdfd94c22e76",
+      "size_bytes": 1117
     },
     {
-      "external_relative_path": "simready/content_agents/vast_candidate_006/adp_content_agents_bundle_receipt.json",
-      "publisher_path": "simready/content_agents/vast_candidate_006/adp_content_agents_bundle_receipt.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_bundle_001/adp_content_agents_bundle_receipt.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_bundle_001/adp_content_agents_bundle_receipt.json",
       "role": "content_agents_bundle_receipt",
-      "sha256": "sha256:5e17d491156e8bdbfa86bdcdaddb002b7c5b6cc21bba9cdaa10142e0568d5213",
-      "size_bytes": 2337
+      "sha256": "sha256:6beb792dc57028b3598e25c2bce3dfcbb46ada0e85e9ce3d91b79b15880790e7",
+      "size_bytes": 3103
     },
     {
-      "external_relative_path": "simready/content_agents/vast_candidate_006/adp_content_agents_provider_runtime_bundle.zip",
-      "publisher_path": "simready/content_agents/vast_candidate_006/adp_content_agents_provider_runtime_bundle.zip",
+      "external_relative_path": "simready/content_agents/vast_match_v2_bundle_001/adp_content_agents_provider_runtime_bundle.zip",
+      "publisher_path": "simready/content_agents/vast_match_v2_bundle_001/adp_content_agents_provider_runtime_bundle.zip",
       "role": "content_agents_immutable_bundle",
-      "sha256": "sha256:51318d80fcfe93470618ae89fa0bd9efbced76780c4f2ffe0d02e441ea7d2819",
-      "size_bytes": 47878368
+      "sha256": "sha256:0b30990123ef698981980d744c269229f6f164bf5a4addd80f21384586a628a9",
+      "size_bytes": 50896069
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_final_validation.json",
-      "publisher_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_final_validation.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/vast_provider_run/vast_final_validation.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/vast_provider_run/vast_final_validation.json",
       "role": "content_agents_provider_final_validation",
-      "sha256": "sha256:6298f4c27199b3e56f5c3e7bd866abeb26d4222fabe386b971745010b6b3d849",
-      "size_bytes": 2451
+      "sha256": "sha256:0d50ca9922644fd699cfcf859e488df9381019097ebf8092e244d0b674f47b5f",
+      "size_bytes": 2469
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_teardown_manifest.json",
-      "publisher_path": "simready/content_agents/vast_run_004/vast_provider_run/vast_teardown_manifest.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/vast_provider_run/vast_teardown_manifest.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/vast_provider_run/vast_teardown_manifest.json",
       "role": "content_agents_provider_teardown",
-      "sha256": "sha256:1cf995ea4499810c8fa53808731089c0098eb5645e76059e873f14d5c49131d3",
+      "sha256": "sha256:e9c135fd5e50530c43e962572ad0288372027c5e8e7172631b8efd5b3d00bb80",
       "size_bytes": 1358
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/object_store_staging/wam_provider_object_store_cleanup.json",
-      "publisher_path": "simready/content_agents/vast_run_004/object_store_staging/wam_provider_object_store_cleanup.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/object_store_staging/wam_provider_object_store_cleanup.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/object_store_staging/wam_provider_object_store_cleanup.json",
       "role": "content_agents_object_store_cleanup",
-      "sha256": "sha256:b924da5d522fb93422c9c69e29b174e795e9665e4a4b69a97217957a6e608c7e",
+      "sha256": "sha256:cf3ef58a57aa932b98c78d48893871624787de274c9a8dffe22fd102cb36f275",
       "size_bytes": 943
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/.pipeline_state.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/.pipeline_state.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/.pipeline_state.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/.pipeline_state.json",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:4ef3d3789d7a295816ec801aad463a990fe647d668fd3dfcc37c6db4b455f1b7",
-      "size_bytes": 6871
+      "sha256": "sha256:53059c43e149b77f9b0cbbe185f46f0fb5e4bf6bb65a4308d03aaba6b87fdd33",
+      "size_bytes": 6882
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/._prim_0000.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/._prim_0000.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/._prim_0000.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/._prim_0000.json",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:e605112935afb3244b3dfadefa78160b8c8857e936734f87d2b08105779ebb1c",
-      "size_bytes": 5541
+      "sha256": "sha256:04c49429d8286dd9a6a82c8ce1e3674dad7ae091af028dd40ce5bcf5122fa64c",
+      "size_bytes": 5624
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/dataset.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/dataset.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/dataset.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/dataset.json",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:8fe543f507e3677bc124e9285838fd73a9c09e7f8d2cef9f6dc66eae10c72558",
+      "sha256": "sha256:a0674c0b5d86fe26f67132317acb0a5b08c6f7abca9ac6be1cd381c876135fcb",
       "size_bytes": 6022
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/dataset.jsonl",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/dataset.jsonl",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/dataset.jsonl",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/dataset.jsonl",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:a0e8d06f0ba9885e9c595e1bfad0a8fb2af6471a179b1f01458e9e12cd022973",
-      "size_bytes": 3738
+      "sha256": "sha256:f040b72ce1f03282abc8b95ac9d76ae84ce39b09a3d97dde4a442432275d7400",
+      "size_bytes": 3821
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/reference_image_0.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/reference_image_0.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/reference_image_0.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/reference_image_0.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:f8797e58e64a6d7e40d819fe3e90dbeda321ba37425ba7978117ec647d569162",
-      "size_bytes": 106146
+      "sha256": "sha256:a58cbcb4523899474330e50f002409eff7231d9b6e72228ce0426bd61c787cbd",
+      "size_bytes": 84921
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/spec.txt",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/spec.txt",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/spec.txt",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/spec.txt",
       "role": "content_agents_material_artifact",
       "sha256": "sha256:95fc9eaf5b1ea512c86ca93e6198f6e112579fdc7dcc5d077dd4be65613b3966",
       "size_bytes": 46
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/dataset.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/dataset.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/dataset.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/dataset.json",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:4059cd2d3be97825bb3a9d5da1bc2c7aa004d0426060254c5caccbf5c33a68fb",
+      "sha256": "sha256:efa472f4d41340a530ae87b6b5d1e6476d4cf86934bf4ff099ca0b4a49c880e0",
       "size_bytes": 1449
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/prims.jsonl",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/prims.jsonl",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/prims.jsonl",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/prims.jsonl",
       "role": "content_agents_material_artifact",
       "sha256": "sha256:17e0a19d0b9386b1baa81c4cb8d328814fb0054a9eed9c503dd1ebd1f0e5aa14",
       "size_bytes": 2883
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_composition.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:3190234a488de3924f36568ccd437b3b4092db5749fa8d3c939f1065e37b8dd0",
-      "size_bytes": 66378
+      "sha256": "sha256:ecdd41ea8f7ae713357167be758279ecd830e800b9989646f61c9322158f96f2",
+      "size_bytes": 54256
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_negy_posz_prim_only.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_negy_posz_prim_only.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_negy_posz_prim_only.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_negy_posz_prim_only.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:a2087d06fffdebfb7d421ea53ec7c69255334b591890c2345382a1de7dc96f5f",
-      "size_bytes": 51523
+      "sha256": "sha256:0dac5b2e0712298d33509337614de5b58c3e396da31378b886c1a2945056a4f2",
+      "size_bytes": 44341
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_posy_posz_prim_only.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_posy_posz_prim_only.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_posy_posz_prim_only.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_posy_posz_prim_only.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:4211bc2e3fbdebc0bf57986e5431db80e2553a44e091dcc5f118f2c7f60a806d",
-      "size_bytes": 49641
+      "sha256": "sha256:fb853386a3686239503ccfbe7d830eda10c3182cc9bf5f511dbfc6ad28940f49",
+      "size_bytes": 45288
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negy_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negy_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negy_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_negy_composition.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:ba15799515fdac4dd7391337a104008c43cee29133e568aefe9d9e7c38924410",
-      "size_bytes": 57115
+      "sha256": "sha256:cc5f81a7f5dee2c314554fd81d629769411edb31c590f41be8f4b09fcdbb6570",
+      "size_bytes": 63319
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_composition.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:8eb20266a719ce2f68a84e481c567d341a238eba30e52907773ea0acc2a1ba72",
-      "size_bytes": 72153
+      "sha256": "sha256:e342530a1daff5c8023803774b941ba7fe1fce62ac9f1542fc21b99425b0c97a",
+      "size_bytes": 51497
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_negy_posz_prim_only.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_negy_posz_prim_only.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_negy_posz_prim_only.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_negy_posz_prim_only.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:c1efa42619304a3fb5a6bc57a21963106b8b8676451d10bbdc145c245cb1ddd4",
-      "size_bytes": 48401
+      "sha256": "sha256:0e33c4cc64e478f867289b2a2f2e18855465f6f2c2903be61af5f27f48ef331a",
+      "size_bytes": 41650
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_posy_posz_prim_only.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_posy_posz_prim_only.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_posy_posz_prim_only.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_posy_posz_prim_only.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:3cf0c388f86819a86a6e2df4bf2d4cdadceb069b325d91407e7a58bd6a4077dd",
-      "size_bytes": 47376
+      "sha256": "sha256:369273938002ad9789fd46566b544772272b872903152d0b171eecd61187bf5c",
+      "size_bytes": 43276
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posy_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posy_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posy_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posy_composition.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:877e5930b2624d0056fad315629653d9ea866b4720bfb10f8697924eab8405b3",
-      "size_bytes": 65071
+      "sha256": "sha256:7293afca617545e9aaee36df87ca3667cd4572d02650c71a8c2d11e7fa45d7fb",
+      "size_bytes": 60046
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posz_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posz_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posz_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/renders/canned_beverage/visuals/body_posz_composition.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:a00f5ddb7bf66d36fd2db7c95b22363ddc9e3a366f0c967afdfa7bec2daff6e9",
-      "size_bytes": 57915
+      "sha256": "sha256:f926d72ff8ee4a905d6ef4995239420e23f459df1858fd7f41b2e5a095a65cc0",
+      "size_bytes": 55457
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/usd_model.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/dataset/usd/usd_model.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/usd_model.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/dataset/usd/usd_model.json",
       "role": "content_agents_material_artifact",
       "sha256": "sha256:f801daf7b4a760d096a2e62209466bb6cf80cf83a7d918ec973392e2ae938243",
       "size_bytes": 6643
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output.usd",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output.usd",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output.usd",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output.usd",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:1f26ba22cc2e01a6dd928126c4339c9085fc33bee057166dcb05b3b584489e00",
-      "size_bytes": 17460
+      "sha256": "sha256:3a3a51ba72de3cbfcc4a5eadc336bb68122f1ce45acc685a38e92988e898b3e2",
+      "size_bytes": 17350
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_flat.usd",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_flat.usd",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_flat.usd",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_flat.usd",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:549761a43f7d6b43ce83fcddaffd3fcdf31bd2a728ebdbb5f0e74313061f6960",
-      "size_bytes": 66315
+      "sha256": "sha256:03bc48f07df6656e1de7247901edb99513d8f0917c91268f6ebf1414afb91427",
+      "size_bytes": 2876800
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_negx_negy_posz.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_negx_negy_posz.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_negx_negy_posz.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_negx_negy_posz.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:6138492b27c1ea7c532d0c840eed5c0a4522edf4ca45d3baca3c5c7e83abde8f",
-      "size_bytes": 44087
+      "sha256": "sha256:dba2282a47b13d59ba95e3c77fe7d6072cce555f9ff342a9f0ed8e94190f22fb",
+      "size_bytes": 44449
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_negx_posy_posz.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_negx_posy_posz.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_negx_posy_posz.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_negx_posy_posz.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:355d3d40ad12d666a3a1f18d41d067bfbb3ade1967889018e05fab0adb2bc35f",
-      "size_bytes": 38816
+      "sha256": "sha256:2c4a586d8ca500ac9d384b6dea44b2811951592da6b34f574f45c01977639762",
+      "size_bytes": 36400
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_posx_negy_posz.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_posx_negy_posz.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_posx_negy_posz.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_posx_negy_posz.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:e3028d0a5d70e8049ac2174bcd9fe69e47c2b04e447a16f7c93963fb6b2b40fc",
-      "size_bytes": 37597
+      "sha256": "sha256:5ce940044ffdb2e3ad0e9c78bab4a597b59663a82add025b152584d409e4b252",
+      "size_bytes": 33933
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_posx_posy_posz.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/output/output_posx_posy_posz.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_posx_posy_posz.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/output/output_posx_posy_posz.png",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:fab5a345c44af23c04a21d5232960122099adcdddc38c673aa45e1798a36fef1",
-      "size_bytes": 40240
+      "sha256": "sha256:d0c2410f7de332cb1c64e14745e4914b52e4576935e398da71be777d56c23398",
+      "size_bytes": 37935
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/predictions/prediction_report.html",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/predictions/prediction_report.html",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/predictions/prediction_report.html",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/predictions/prediction_report.html",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:a0959664babb7561aa2599b6971e7473f0a6f2455cdf75e01f3349dc976cdc10",
-      "size_bytes": 1621306
+      "sha256": "sha256:e4409b3296f5e605397694caf057c5c397f4e2a8ef9768c711c1b91debea0172",
+      "size_bytes": 1407949
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/predictions/predictions.jsonl",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/predictions/predictions.jsonl",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/predictions/predictions.jsonl",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/predictions/predictions.jsonl",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:532a0d7b6778ccbb19b1a95723ad3ec4fe088751b7e0dedf2fe7b53c16251c1a",
-      "size_bytes": 445
+      "sha256": "sha256:7fdb6ca5710d2190ce62fe5a2457cac2006beea87a8bf0310e54fbff9e4f13da",
+      "size_bytes": 745
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/predictions/token_usage.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/predictions/token_usage.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/predictions/token_usage.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/predictions/token_usage.json",
       "role": "content_agents_material_artifact",
-      "sha256": "sha256:e411425b460b7c70ca9114746a84fecec75e5f85a25a2330afe8cab88a7f5035",
-      "size_bytes": 1086
+      "sha256": "sha256:fcabb485c851f784f87bc29c4d851c6dcac4003d577a5e07779e0a0a543f0b25",
+      "size_bytes": 1090
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/predictions/validate_report.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/predictions/validate_report.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/predictions/validate_report.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/predictions/validate_report.json",
       "role": "content_agents_material_artifact",
       "sha256": "sha256:d75d85a84ea8ecf024243b27fa3091b06aa331f7a437ae9331fc2e39451cf0b1",
       "size_bytes": 346
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/validation/input/validation_report.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/validation/input/validation_report.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/validation/input/validation_report.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/validation/input/validation_report.json",
       "role": "content_agents_material_artifact",
       "sha256": "sha256:c7ce2d86ff2bf8d74266fbbcb53246e162e393190c459761bb4a0e8f125be687",
       "size_bytes": 930
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/validation/output/validation_report.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/material_workdir/validation/output/validation_report.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/validation/output/validation_report.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/material_workdir/validation/output/validation_report.json",
       "role": "content_agents_material_artifact",
       "sha256": "sha256:0420e200513d3b6e9b9b08619181967ab38e00101f9e3265584d47f2aedcd680",
       "size_bytes": 1764
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/artifacts_manifest.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/artifacts_manifest.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/artifacts_manifest.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/artifacts_manifest.json",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:c79a9b13a390f3e24374c216eb6f7df32c7dbb5d9b0e7afc0ebef96559aefb50",
-      "size_bytes": 14231
+      "sha256": "sha256:97fde5b41367c8eb0b047c2b9715c8acbdbd0e27f312d280dd36c4768969719e",
+      "size_bytes": 14292
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/discovery/materials.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/discovery/materials.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/discovery/materials.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/discovery/materials.json",
       "role": "content_agents_texture_artifact",
       "sha256": "sha256:170117ac1325d6705aa4f717e090e5e61567eacd619c72f4768c1c9cf2493bf8",
       "size_bytes": 458
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/execution/texture_execution_checkpoint.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/execution/texture_execution_checkpoint.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/execution/texture_execution_checkpoint.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/execution/texture_execution_checkpoint.json",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:7cf0e2716a710a4f73aedca74b2d18373e0e78b5686f4577e878d54a75dd350f",
+      "sha256": "sha256:c2756c4a518d99a39ca145ef34578c89f21ea54389a46b7976826af66ccd75c4",
       "size_bytes": 1715
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_albedo.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_albedo.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_albedo.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_albedo.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:f228949361c7b52fdc581aa16fe4e885b5346064e9c8958dfc05390810d402e0",
-      "size_bytes": 1489418
+      "sha256": "sha256:0d12b3928a177e3c681d4aac6a14805a823c11515602b92a7e1663505ce1f250",
+      "size_bytes": 1368710
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_normal.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_normal.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_normal.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_normal.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:9a566e7c099e4cdba7ed7721b89c3bf313ee8c93cacc997fbd34f10a192d5535",
-      "size_bytes": 1048419
+      "sha256": "sha256:b6f1c9a714ed807e1560b3584ac56e2b660f4fa99c0ea3ab8422d8808e8fabd0",
+      "size_bytes": 1034669
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_orm.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_orm.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_orm.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/generated/tu_1cfc4979914999ac736f/tu_1cfc4979914999ac736f_orm.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:5a5417384dc166f8e35eea63468d84545d5ddbaf57060ba6a1f9dc2445604633",
-      "size_bytes": 1008703
+      "sha256": "sha256:6f508db9dd405f6616331f4877fde816787e34c4b152c62e2b69a917fa9f2f1a",
+      "size_bytes": 1022430
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/output/textured_output.usd",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/output/textured_output.usd",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/output/textured_output.usd",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/output/textured_output.usd",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:395d306a1c5474183bc7885d92eb4773ac0780dc48710db83ae477dd6f47fb84",
-      "size_bytes": 72911
+      "sha256": "sha256:fa81591661ede8b57c4325a80fc81e001559c6742dca8c3f71bf744d7a41d58c",
+      "size_bytes": 4431838
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/prepared/prepared_input.usd",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/prepared/prepared_input.usd",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/prepared/prepared_input.usd",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/prepared/prepared_input.usd",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:8576e645dc96890f98350dc3f52248a44d3fc448d8337ae868a5d41ab679947f",
-      "size_bytes": 72680
+      "sha256": "sha256:e14f1c22d5e5b75c11e9b56530783b40aafc2525ced66aaede32c2869e3de0fc",
+      "size_bytes": 4431603
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/prepared/uv_report.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/prepared/uv_report.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/prepared/uv_report.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/prepared/uv_report.json",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:7af2746d039bb34611d599be13d7f688c9c93f46e936a6eec4d6d5d4ec0a4a8d",
-      "size_bytes": 2551
+      "sha256": "sha256:7a373ae51c888d9aa9b1ed1fa811e58ec7bc3547ccf781e03d22138edc8a4e65",
+      "size_bytes": 2567
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/previews/green_can_preview.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/previews/green_can_preview.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/previews/green_can_preview.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/previews/green_can_preview.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:97fc610fcc44536d4906678763d9a6610ee98fdeb1dd77d2b019dd103808c3d5",
-      "size_bytes": 87662
+      "sha256": "sha256:23524cc1c4411df4991ed749c3d88dae3d4adbe27cda0bab70f207d2f4aec9a5",
+      "size_bytes": 87748
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/prompts/material_prompts.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/prompts/material_prompts.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/prompts/material_prompts.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/prompts/material_prompts.json",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:2567007414f529fea7af128b579fa43157d3cbb92e0e588691e6334e64015aec",
-      "size_bytes": 258
+      "sha256": "sha256:f136cc4d2007f599204432d46eba8e6dae556841fe0f87fdb4e099366ec3d0ca",
+      "size_bytes": 289
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/renders/render_0_0_0.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/renders/render_0_0_0.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/renders/render_0_0_0.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/renders/render_0_0_0.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:ce64a3bf1def19fc0074f1e6b0d7d318065e7f435d7d70e2aa46042c21590ae5",
-      "size_bytes": 96257
+      "sha256": "sha256:cb9c93615906d478eb0c4066588118611fb5a824856f1fdc988aa643c7b91f8b",
+      "size_bytes": 61799
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/renders/render_0_1_0.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/renders/render_0_1_0.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/renders/render_0_1_0.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/renders/render_0_1_0.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:9aac077af3c4f5deb5f1a529a402b685fa03476d23fc1ecabb084538b5f1c784",
-      "size_bytes": 383831
+      "sha256": "sha256:951ed0477079f02cf9fe65456da9ff5d68d0ab2854565a455439fd7478fbbc1c",
+      "size_bytes": 65554
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/texture_plan.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/texture_plan.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/texture_plan.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/texture_plan.json",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:32ed325a5b5006f7dea69f0dc2ebb037d03e7d20fe49c58fc4ea064dbb8febac",
+      "sha256": "sha256:88bf88f88fb64caac65eccbb4f349130e71f611d6b34ff5b24558d436e04ec90",
       "size_bytes": 2405
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_albedo.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_albedo.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_albedo.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_albedo.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:f228949361c7b52fdc581aa16fe4e885b5346064e9c8958dfc05390810d402e0",
-      "size_bytes": 1489418
+      "sha256": "sha256:0d12b3928a177e3c681d4aac6a14805a823c11515602b92a7e1663505ce1f250",
+      "size_bytes": 1368710
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_metalness.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_metalness.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_metalness.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_metalness.png",
       "role": "content_agents_texture_artifact",
       "sha256": "sha256:c8b6bb3e837f846489438b47ae42f3960b820a17095ea66df3c5fa00fcd60665",
       "size_bytes": 1097
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_normal.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_normal.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_normal.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_normal.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:9a566e7c099e4cdba7ed7721b89c3bf313ee8c93cacc997fbd34f10a192d5535",
-      "size_bytes": 1048419
+      "sha256": "sha256:b6f1c9a714ed807e1560b3584ac56e2b660f4fa99c0ea3ab8422d8808e8fabd0",
+      "size_bytes": 1034669
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_orm.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_orm.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_orm.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_orm.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:5a5417384dc166f8e35eea63468d84545d5ddbaf57060ba6a1f9dc2445604633",
-      "size_bytes": 1008703
+      "sha256": "sha256:6f508db9dd405f6616331f4877fde816787e34c4b152c62e2b69a917fa9f2f1a",
+      "size_bytes": 1022430
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_roughness.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_roughness.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_roughness.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/texture_workdir/textures/tu_1cfc4979914999ac736f_roughness.png",
       "role": "content_agents_texture_artifact",
-      "sha256": "sha256:9847b5833cf648ab2b65a06d07b30077f25c5e5f88bca427bfc7d302146cd41a",
-      "size_bytes": 737060
+      "sha256": "sha256:b195bfea43e1887d887b28b8295b65f08c459da3c70836e30a1fdcaa3ba6d64d",
+      "size_bytes": 749786
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/.pipeline_state.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/.pipeline_state.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/.pipeline_state.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/.pipeline_state.json",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:91bd80d53ee3f8597fdb489ce26356a44717f4eb4cae8dc53174febd5dd951da",
-      "size_bytes": 2322
+      "sha256": "sha256:6b6f0283da943edcb5c469500b667b05453639be0aba9649698ab4828040d036",
+      "size_bytes": 2340
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/._prim_0000.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/._prim_0000.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/._prim_0000.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/._prim_0000.json",
       "role": "content_agents_physics_artifact",
       "sha256": "sha256:aa4a5b3128390396017671101a1f8b108586ca0f1b1f0ffc7dea98a156bb29b1",
       "size_bytes": 6537
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/dataset.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/dataset.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/dataset.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/dataset.json",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:5e91f64b5e41227dea36cf5f1febc32b0bb50216126b24d1b8b468b9c5efb389",
+      "sha256": "sha256:2a644e1020488aea8762551b178e16e5c742bc87f578ea72dba45926deadf4a3",
       "size_bytes": 5309
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/dataset.jsonl",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/dataset.jsonl",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/dataset.jsonl",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/dataset.jsonl",
       "role": "content_agents_physics_artifact",
       "sha256": "sha256:f7b293f5de3bec9b4fa06133adcb0146c48f95beee56dc58a0a2287c0468cdff",
       "size_bytes": 4188
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/dataset.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/dataset.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/dataset.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/dataset.json",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:2239a276de87a220184c04bcaef974f6e67bef3a007f569a2755e273a1e30e9f",
+      "sha256": "sha256:aa24d13c6fdc78885f3f854a710351551b2f3a9f9f5d413e8cee12de758bc284",
       "size_bytes": 1449
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/prims.jsonl",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/prims.jsonl",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/prims.jsonl",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/prims.jsonl",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:f17f5289c643e942ab3dd7979b28f9355a9f0c08245dd730dbd0263d6ccc5f68",
+      "sha256": "sha256:162302a6fe5becc1b185b01656b29c5cf80165dff436adb462ced5d26c7dda44",
       "size_bytes": 2509
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_composition.png",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:3190234a488de3924f36568ccd437b3b4092db5749fa8d3c939f1065e37b8dd0",
-      "size_bytes": 66378
+      "sha256": "sha256:38abfaaa150aca0b0a29c5a488f8a6528195187c46c611cfd44c4938a658802a",
+      "size_bytes": 54483
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_negy_posz_prim_only.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_negy_posz_prim_only.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_negy_posz_prim_only.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negx_negy_posz_prim_only.png",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:a2087d06fffdebfb7d421ea53ec7c69255334b591890c2345382a1de7dc96f5f",
-      "size_bytes": 51523
+      "sha256": "sha256:36656bd9341c107645338f13a2c0f10dc767fbdcbfbd34a9cee532d22f92eaed",
+      "size_bytes": 44817
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negy_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negy_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negy_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_negy_composition.png",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:ba15799515fdac4dd7391337a104008c43cee29133e568aefe9d9e7c38924410",
-      "size_bytes": 57115
+      "sha256": "sha256:acdbb10706c65d87413cac5c53d9442ba5e830ace9bd38840700cff05d81ce43",
+      "size_bytes": 63552
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_composition.png",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:8eb20266a719ce2f68a84e481c567d341a238eba30e52907773ea0acc2a1ba72",
-      "size_bytes": 72153
+      "sha256": "sha256:3064d9667e4e128cf6cc5efb9ec989c83880e91fe7ca0459fa7dcc813bcd2545",
+      "size_bytes": 51487
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_posy_posz_prim_only.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_posy_posz_prim_only.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_posy_posz_prim_only.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posx_posy_posz_prim_only.png",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:3cf0c388f86819a86a6e2df4bf2d4cdadceb069b325d91407e7a58bd6a4077dd",
-      "size_bytes": 47376
+      "sha256": "sha256:7386dc8648ba831780130ca7761edc5de8b274c17a3c7206cc6a67a9aca503c3",
+      "size_bytes": 43129
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posy_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posy_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posy_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posy_composition.png",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:877e5930b2624d0056fad315629653d9ea866b4720bfb10f8697924eab8405b3",
-      "size_bytes": 65071
+      "sha256": "sha256:95984b9219a25d2a08ed71a4c8cd2d001d9f7f47c942510cef86834a463cb948",
+      "size_bytes": 59930
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posz_composition.png",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posz_composition.png",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posz_composition.png",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/renders/canned_beverage/visuals/body_posz_composition.png",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:a00f5ddb7bf66d36fd2db7c95b22363ddc9e3a366f0c967afdfa7bec2daff6e9",
-      "size_bytes": 57915
+      "sha256": "sha256:2d69f6313f53a5bc9e737268366bd172f0133a19643132cc9590b980c19e3ec0",
+      "size_bytes": 55899
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/usd_model.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/dataset/usd/usd_model.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/usd_model.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/dataset/usd/usd_model.json",
       "role": "content_agents_physics_artifact",
       "sha256": "sha256:f801daf7b4a760d096a2e62209466bb6cf80cf83a7d918ec973392e2ae938243",
       "size_bytes": 6643
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/physics/adp009a_840313_canned_beverage_control_physics.usda",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/physics/adp009a_840313_canned_beverage_control_physics.usda",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/physics/adp009a_840313_canned_beverage_control_physics.usda",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/physics/adp009a_840313_canned_beverage_control_physics.usda",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:4fadf66c4ed96e57ae61663061da5591907381d81495d7619244c806c39b9f42",
-      "size_bytes": 201354
+      "sha256": "sha256:b9cd6b6928bbf45b82fa5322182f13b9ef750e991da99ff993ed09df1253df5a",
+      "size_bytes": 20706108
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/predictions/predictions.jsonl",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/predictions/predictions.jsonl",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/predictions/predictions.jsonl",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/predictions/predictions.jsonl",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:cecec0edf0f831a852990c68427383fb509078424712e838ae616664a37cadcc",
-      "size_bytes": 2456
+      "sha256": "sha256:368b06058b814416baf61c327f29fedf73d59b9c7ee3fd206716737f8122d861",
+      "size_bytes": 2587
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/predictions/report.html",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/physics_workdir/predictions/report.html",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/predictions/report.html",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/physics_workdir/predictions/report.html",
       "role": "content_agents_physics_artifact",
-      "sha256": "sha256:7b07c1ab68d2007e50c315d69c7d1bc705a4333ece9f68500a97b2351fc39cea",
-      "size_bytes": 1202871
+      "sha256": "sha256:c3113593e305c1f3e26bd6421c36b2bc50e4c4c3ded3d02071fe1c3c12a76045",
+      "size_bytes": 1123802
     },
     {
-      "external_relative_path": "simready/content_agents/vast_run_004/immutable_execution/validation_agent/validation_result.json",
-      "publisher_path": "simready/content_agents/vast_run_004/immutable_execution/validation_agent/validation_result.json",
+      "external_relative_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/validation_agent/validation_result.json",
+      "publisher_path": "simready/content_agents/vast_match_v2_run_001/job_live/immutable_execution/validation_agent/validation_result.json",
       "role": "content_agents_validation_result",
       "sha256": "sha256:9f1d64758ee6d21af9db6615ef87ed6b4810151039f2bb749fb80acaeb8761f2",
       "size_bytes": 7697
@@ -539,14 +539,21 @@
   ],
   "observed_evidence": {
     "continuing_spend_zero_verified": true,
+    "input_variant_binding": {
+      "approved_v2_receipt_chain_verified": true,
+      "control_receipt_digest": "sha256:08de885af7b1b3e808c96ab8b6b1b5b4ed128c35801d51d328335310cf2de076",
+      "human_review_receipt_digest": "sha256:43540b079b0cdfdda81a1c44d947332775c97c66ad2d7bcdf281ed68290a74d6",
+      "input_variant": "match_v2",
+      "replacement_receipt_digest": "sha256:6f173cadd7b4a0ea0e19a975ded93fc367de950c11a450988e5289015d5e35f2"
+    },
     "joint_agent_inapplicable_single_rigid_body": true,
     "material_agent_dry_run": true,
     "material_agent_full_execution": true,
-    "normalized_input_usd_sha256": "sha256:d23bfbc73ca05a54717d23494e0aecac72617be744f1b86d48e3cf34dc550c43",
+    "normalized_input_usd_sha256": "sha256:cce99051bfc8db94bfe53aeeef8d8e96921bb96d1f198cac1286792edffe9b2f",
     "paid_resource_allocated": true,
     "physics_agent_dry_run": true,
     "physics_agent_full_execution": true,
-    "source_input_usd_sha256": "sha256:544921e701459d7661be81f35f76c3d058cc862cdcf0eb90d5127fb3905e25ca",
+    "source_input_usd_sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "staged_objects_absent": true,
     "texture_agent_dry_run": true,
     "texture_agent_full_execution": true,

@@ -164,6 +164,15 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
             "target_method_instance_id": runtime.TARGET_METHOD_INSTANCE_ID,
             "target_object_radius_m": 0.095,
             "target_object_radius_derivation": "max_distance_from_metric_obb_center",
+            "target_obb_corners_m": [
+                [float(x), float(y), float(z)]
+                for x in (0, 1)
+                for y in (0, 1)
+                for z in (0, 1)
+            ],
+            "target_removal_volume_contract": (
+                "gaussian_center_inside_exact_publisher_obb"
+            ),
             "staged_artifacts": records,
         },
     }
@@ -195,6 +204,10 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     monkeypatch.setattr(runtime, "PREREQUISITE_RECEIPT_DIGEST", prerequisite["receipt_digest"])
     prerequisite_path = tmp_path / "prerequisite.json"
     _write_json(prerequisite_path, prerequisite)
+    vgg16_weights = tmp_path / runtime.VGG16_WEIGHTS_FILENAME
+    vgg16_weights.write_bytes(b"vgg16 fixture")
+    monkeypatch.setattr(runtime, "VGG16_WEIGHTS_SIZE_BYTES", vgg16_weights.stat().st_size)
+    monkeypatch.setattr(runtime, "VGG16_WEIGHTS_SHA256", runtime._sha256(vgg16_weights))
     return {
         "repo": repo,
         "source": source,
@@ -203,6 +216,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         "adapter_receipt": adapter_receipt_path,
         "prerequisite": prerequisite_path,
         "big_lama": big_lama,
+        "vgg16_weights": vgg16_weights,
         "job": tmp_path / "job",
     }
 
@@ -216,6 +230,7 @@ def _build(paths: dict[str, Path]) -> dict[str, object]:
         adapter_receipt_path=paths["adapter_receipt"],
         prerequisite_receipt_path=paths["prerequisite"],
         big_lama_path=paths["big_lama"],
+        vgg16_weights_path=paths["vgg16_weights"],
         job_dir=paths["job"],
         generated_at="2026-08-05T00:00:00+00:00",
     )
@@ -242,6 +257,13 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
     )
     assert spec["runtime"]["method_resolution_argument"] == 2
     assert spec["runtime"]["method_input_resolution"] == "1024x768"
+    adapter_payload = json.loads(paths["adapter_receipt"].read_text())
+    assert spec["target_obb_corners_m"] == adapter_payload["adapter"][
+        "target_obb_corners_m"
+    ]
+    assert spec["target_removal_volume_contract"] == (
+        "gaussian_center_inside_exact_publisher_obb"
+    )
     assert spec["nested_dependencies"]["lama"]["commit"]
     assert spec["nested_dependencies"]["lama"]["tree"]
     assert spec["nested_dependencies"]["lama"]["materialization"] == (
@@ -269,6 +291,7 @@ def test_bundle_binds_source_packet_rights_and_two_environments(
         names = set(archive.namelist())
     assert "provider_runtime/execution_spec.json" in names
     assert "provider_runtime/big-lama.zip" in names
+    assert f"provider_runtime/{runtime.VGG16_WEIGHTS_FILENAME}" in names
     assert "provider_runtime/lama_training_data.zip" in names
     assert "provider_runtime/probe_inpaint360_camera_rasterizer.py" in names
 
@@ -296,6 +319,10 @@ def test_bundle_passes_vast_preflight_and_has_fail_closed_launch_script(
     assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
     assert "adp_inpaint360_provider_runtime_output.zip" in script
     assert "provider_output_zip_exclusions.json" in script
+    assert "BLUEPRINT_ADP_INPAINT360_RUNTIME_PROGRESS" in (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp_inpaint360_interiorgs_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
         generated_at="fixed",
@@ -327,6 +354,15 @@ def test_bundle_rejects_mutated_lama_dependency(
         "changed", encoding="utf-8"
     )
     with pytest.raises(ValueError, match="lama_dependency_identity_mismatch"):
+        _build(paths)
+
+
+def test_bundle_rejects_mutated_vgg16_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    paths["vgg16_weights"].write_bytes(b"changed")
+    with pytest.raises(ValueError, match="vgg16_weights_bytes_changed"):
         _build(paths)
 
 
@@ -649,15 +685,17 @@ def test_supplemental_fusion_view_is_frozen_from_pre_inpainting_mask_coverage(
     tmp_path: Path,
 ) -> None:
     runner = _load_provider_runner()
-    handoff = {
-        "output_masks": [
-            {"relative_path": "masks/00004.png", "foreground_pixels": 0, "sha256": "d"},
-            {"relative_path": "masks/00001.png", "foreground_pixels": 430, "sha256": "b"},
-            {"relative_path": "masks/00000.png", "foreground_pixels": 430, "sha256": "a"},
-        ]
+    selection = {
+        "status": "accepted",
+        "selected_views": [
+            {"view_id": "00001", "foreground_pixels": 430, "mask_sha256": "b"},
+            {"view_id": "00000", "foreground_pixels": 430, "mask_sha256": "a"},
+        ],
     }
 
-    receipt = runner._freeze_supplemental_fusion_view(handoff=handoff, output=tmp_path)
+    receipt = runner._freeze_supplemental_fusion_view(
+        selection=selection, output=tmp_path
+    )
 
     assert receipt["status"] == "accepted"
     assert receipt["selected_view"] == {
@@ -673,6 +711,8 @@ def test_nonempty_virtual_views_are_frozen_before_inpainting_and_filter_adapter_
 ) -> None:
     runner = _load_provider_runner()
     handoff = {
+        "image_width": 100,
+        "image_height": 100,
         "output_masks": [
             {
                 "relative_path": "masks/00000.png",
@@ -695,10 +735,19 @@ def test_nonempty_virtual_views_are_frozen_before_inpainting_and_filter_adapter_
                 "foreground_bbox_height": 6,
                 "sha256": "c",
             },
+            {
+                "relative_path": "masks/00003.png",
+                "foreground_pixels": 30,
+                "foreground_bbox_width": 5,
+                "foreground_bbox_height": 7,
+                "sha256": "d",
+            },
         ]
     }
     selection = runner._freeze_nonempty_virtual_views(
-        handoff=handoff, output=tmp_path / "evidence"
+        handoff=handoff,
+        mask_binding={"associated_target_pixel_counts": {"view.png": 200}},
+        output=tmp_path / "evidence",
     )
     source = tmp_path / "source"
     source.mkdir()
@@ -722,19 +771,23 @@ def test_nonempty_virtual_views_are_frozen_before_inpainting_and_filter_adapter_
     )
 
     assert selection["status"] == "accepted"
-    assert selection["selected_count"] == 2
+    assert selection["selected_count"] == 3
     assert selection["empty_view_count"] == 1
     assert selection["bbox_ineligible_view_count"] == 0
     assert selection["excluded_view_count"] == 1
-    assert [row["view_id"] for row in selection["selected_views"]] == ["00000", "00002"]
+    assert [row["view_id"] for row in selection["selected_views"]] == [
+        "00000",
+        "00002",
+        "00003",
+    ]
     assert receipt["status"] == "accepted"
-    assert receipt["selected_view_ids"] == ["00000", "00002"]
+    assert receipt["selected_view_ids"] == ["00000", "00002", "00003"]
     assert receipt["publisher_source_files_modified"] is False
     assert receipt["mask_pixels_or_images_modified"] is False
     assert receipt["unchanged_source_execution_claimed"] is False
     assert publisher.read_bytes() == publisher_before
     adapted = (tmp_path / "runtime/adapted_edit_object_inpaint.py").read_text()
-    assert 'set(["00000","00002"])' in adapted
+    assert 'set(["00000","00002","00003"])' in adapted
     assert "if view_tmp.image_name in blueprint_nonempty_view_ids" in adapted
     compile(adapted, "adapted_edit_object_inpaint.py", "exec")
 
@@ -745,6 +798,8 @@ def test_nonempty_virtual_view_adapter_rejects_empty_selection_and_source_drift(
     runner = _load_provider_runner()
     blocked_selection = runner._freeze_nonempty_virtual_views(
         handoff={
+            "image_width": 100,
+            "image_height": 100,
             "output_masks": [
                 {
                     "relative_path": "00000.png",
@@ -760,6 +815,7 @@ def test_nonempty_virtual_view_adapter_rejects_empty_selection_and_source_drift(
                 }
             ]
         },
+        mask_binding={"associated_target_pixel_counts": {"view.png": 100}},
         output=tmp_path / "empty",
     )
     source = tmp_path / "source"
@@ -780,6 +836,300 @@ def test_nonempty_virtual_view_adapter_rejects_empty_selection_and_source_drift(
     assert "inpaint360_nonempty_virtual_view_selection_not_accepted" in receipt["blockers"]
     assert "inpaint360_nonempty_virtual_view_adapter_anchor_changed" in receipt["blockers"]
     assert not (tmp_path / "runtime/adapted_edit_object_inpaint.py").exists()
+
+
+def test_obb_removal_adapter_replaces_semantic_convex_hull_without_mutating_source(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    source = tmp_path / "source"
+    source.mkdir()
+    publisher = source / "edit_object_removal.py"
+    publisher.write_text(
+        "import numpy as np\n"
+        "import torch\n"
+        "from scipy.spatial import Delaunay\n\n"
+        "def removal(gaussians, mask3d):\n"
+        "            mask3d_convex, object_radius = points_inside_convex_hull(gaussians._xyz.detach(), mask3d, remove_outliers=True, outlier_factor=1.0)\n"
+        "           \n"
+        "            mask3d = torch.logical_or(mask3d,mask3d_convex)\n"
+        "            return mask3d, object_radius\n",
+        encoding="utf-8",
+    )
+    before = publisher.read_bytes()
+    spec = {
+        "target_obb_corners_m": [
+            [float(x), float(y), float(z)]
+            for x in (0, 1)
+            for y in (0, 1)
+            for z in (0, 1)
+        ],
+        "target_removal_volume_contract": (
+            "gaussian_center_inside_exact_publisher_obb"
+        ),
+    }
+
+    receipt = runner._materialize_obb_removal_adapter(
+        source=source,
+        runtime=tmp_path / "runtime",
+        spec=spec,
+        output=tmp_path / "evidence",
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["publisher_source_files_modified"] is False
+    assert publisher.read_bytes() == before
+    adapted = (tmp_path / "runtime/adapted_edit_object_removal.py").read_text()
+    assert "blueprint_inside_obb" in adapted
+    assert "torch.logical_or(mask3d,mask3d_convex)" not in adapted
+    compile(adapted, "adapted_edit_object_removal.py", "exec")
+
+
+def test_target_centered_virtual_view_adapter_binds_exact_obb_without_source_mutation(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    source = tmp_path / "source"
+    (source / "tools").mkdir(parents=True)
+    (source / "utils").mkdir()
+    virtual_source = source / "tools/virtual_pose.py"
+    virtual_source.write_text(
+        "import os\nimport cv2\nimport numpy as np\nimport torch\n"
+        "from utils.pose_utils import generate_ellipse_path, generate_virtual_radius\n\n"
+        "def  virtual(dataset : ModelParams, iteration : int, pipeline : PipelineParams):\n"
+        "        poses = generate_ellipse_path(views, n_frames=30, \n"
+        "                                    is_circle=is_circle, circle_radius=args.circle_radius)\n"
+        "        virtual_pose_list = []\n"
+        "        for view_tmp in views:\n"
+        "            virtual_pose_list.append(view_tmp)\n\n"
+        "        # Step 1: Generate the full scene containing all objects\n"
+        "        return poses\n",
+        encoding="utf-8",
+    )
+    pose_source = source / "utils/pose_utils.py"
+    pose_source.write_text(
+        "import numpy as np\n\n"
+        "def generate_ellipse_path(views, n_frames=240, const_speed=True, z_variation=0., z_phase=0., \n"
+        "                          is_circle=False, circle_radius=1.0, ellipse_radius=1.0, gaussians=None, \n"
+        "                          object_centered=False):\n"
+        "    poses, transform = source_poses(views)\n"
+        "    if object_centered:\n"
+        "        xyz = gaussians.get_xyz.cpu().numpy()\n"
+        "        xyz_homo = np.concatenate([xyz, np.ones((xyz.shape[0], 1))], axis=1)  # (N, 4)\n\n"
+        "        xyz_transformed = (transform @ xyz_homo.T).T[:, :3]  # shape (N, 3)\n"
+        "        center = xyz_transformed.mean(axis=0)\n"
+        "    else:\n"
+        "        # Calculate the focal point for the path (cameras point toward this).\n"
+        "        center = focus_point_fn(poses)\n"
+        "    sc = np.ones(3)\n"
+        "    z_low = np.zeros(3)\n"
+        "    z_high = np.ones(3)\n"
+        "    if is_circle:\n"
+        "        r = np.max(sc) * circle_radius \n"
+        "        def get_positions(theta):\n"
+        "            return np.stack([\n"
+        "                center[0] + r * np.cos(theta),\n"
+        "                center[1] + r * np.sin(theta),\n"
+        "                z_variation * (z_low[2] + (z_high - z_low)[2] *\n"
+        "                               (np.cos(theta + 2 * np.pi * z_phase) * .5 + .5)),\n"
+        "            ], -1)\n"
+        "    return get_positions(np.zeros(n_frames))\n",
+        encoding="utf-8",
+    )
+    before_virtual = virtual_source.read_bytes()
+    before_pose = pose_source.read_bytes()
+    spec = {
+        "target_obb_corners_m": [
+            [float(x), float(y), float(z)]
+            for x in (0, 1)
+            for y in (0, 1)
+            for z in (0, 1)
+        ],
+        "target_method_instance_id": 1,
+        "runtime": {"virtual_view_count": 30},
+    }
+
+    receipt = runner._materialize_target_centered_virtual_view_adapter(
+        source=source,
+        runtime=tmp_path / "runtime",
+        spec=spec,
+        output=tmp_path / "evidence",
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["target_center_m"] == [0.5, 0.5, 0.5]
+    assert receipt["target_centered_standoff_multiplier"] == 5.0
+    assert receipt["publisher_source_files_modified"] is False
+    assert virtual_source.read_bytes() == before_virtual
+    assert pose_source.read_bytes() == before_pose
+    adapted_virtual = (tmp_path / "runtime/adapted_virtual_pose.py").read_text()
+    adapted_pose = (tmp_path / "runtime/adapted_pose_utils.py").read_text()
+    assert "blueprint_materialize_exact_obb_masks" in adapted_virtual
+    assert "explicit_center_world=np.asarray([0.5,0.5,0.5]" in adapted_virtual
+    assert "target_elevation_ratio=0.2" in adapted_virtual
+    assert "explicit_center_world is not None" in adapted_pose
+    assert "r = r * 5.0" in adapted_pose
+    compile(adapted_virtual, "adapted_virtual_pose.py", "exec")
+    compile(adapted_pose, "adapted_pose_utils.py", "exec")
+
+
+def test_virtual_view_quality_gate_rejects_fragmented_and_low_coverage_masks(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    selection = runner._freeze_nonempty_virtual_views(
+        handoff={
+            "image_width": 100,
+            "image_height": 100,
+            "output_masks": [
+                {
+                    "relative_path": "masks/00000.png",
+                    "foreground_pixels": 430,
+                    "foreground_bbox_width": 310,
+                    "foreground_bbox_height": 303,
+                    "sha256": "fragmented",
+                },
+                {
+                    "relative_path": "masks/00001.png",
+                    "foreground_pixels": 276,
+                    "foreground_bbox_width": 23,
+                    "foreground_bbox_height": 28,
+                    "sha256": "too-small",
+                },
+            ]
+        },
+        mask_binding={"associated_target_pixel_counts": {"smallest.png": 2943}},
+        output=tmp_path,
+    )
+
+    assert selection["status"] == "blocked"
+    assert selection["selected_count"] == 0
+    assert selection["low_fill_ratio_view_count"] == 1
+    assert selection["low_reference_coverage_view_count"] == 1
+    assert selection["minimum_foreground_pixels"] == 294
+    assert selection["blockers"] == [
+        "inpaint360_target_visible_virtual_view_support_inadequate"
+    ]
+
+
+def test_virtual_view_quality_gate_rejects_v2_oversized_target_masks(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    selection = runner._freeze_nonempty_virtual_views(
+        handoff={
+            "image_width": 1024,
+            "image_height": 768,
+            "output_masks": [
+                {
+                    "relative_path": f"masks/{index:05d}.png",
+                    "foreground_pixels": pixels,
+                    "foreground_bbox_width": 696,
+                    "foreground_bbox_height": 725,
+                    "sha256": str(index),
+                }
+                for index, pixels in enumerate((189_388, 218_547, 240_629))
+            ],
+        },
+        mask_binding={
+            "associated_target_pixel_counts": {
+                "approach_wide.png": 4_916,
+                "low_approach.png": 19_896,
+            }
+        },
+        output=tmp_path,
+    )
+
+    assert selection["status"] == "blocked"
+    assert selection["selected_count"] == 0
+    assert selection["high_frame_coverage_view_count"] == 3
+    assert selection["high_source_coverage_view_count"] == 3
+    assert selection["maximum_foreground_pixels_from_frame"] == 78_643
+    assert selection["maximum_foreground_pixels_from_source"] == 79_584
+
+
+def test_virtual_view_quality_gate_caps_eligible_views_with_even_angular_sampling(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    selection = runner._freeze_nonempty_virtual_views(
+        handoff={
+            "image_width": 100,
+            "image_height": 100,
+            "output_masks": [
+                {
+                    "relative_path": f"masks/{index:05d}.png",
+                    "foreground_pixels": 100,
+                    "foreground_bbox_width": 10,
+                    "foreground_bbox_height": 10,
+                    "sha256": str(index),
+                }
+                for index in range(12)
+            ],
+        },
+        mask_binding={"associated_target_pixel_counts": {"source.png": 100}},
+        output=tmp_path,
+    )
+
+    assert selection["status"] == "accepted"
+    assert selection["eligible_count_before_cap"] == 12
+    assert selection["selected_count"] == 8
+    assert [row["view_id"] for row in selection["selected_views"]] == [
+        "00000",
+        "00002",
+        "00003",
+        "00005",
+        "00006",
+        "00008",
+        "00009",
+        "00011",
+    ]
+
+
+def test_added_gaussian_budget_rejects_v2_scale_insertion(tmp_path: Path) -> None:
+    runner = _load_provider_runner()
+    model = tmp_path / "model"
+    paths = {
+        "point_cloud/iteration_2000/point_cloud.ply": 540_712,
+        "point_cloud_object_removal/iteration_2000/point_cloud.ply": 539_894,
+        "point_cloud_object_inpaint_virtual/iteration_5000/point_cloud.ply": 775_800,
+    }
+    for relative, count in paths.items():
+        path = model / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"ply\nformat ascii 1.0\nelement vertex {count}\nend_header\n",
+            encoding="ascii",
+        )
+
+    receipt = runner._validate_added_gaussian_budget(model=model, output=tmp_path)
+
+    assert receipt["status"] == "blocked"
+    assert receipt["removed_vertex_count"] == 818
+    assert receipt["added_vertex_count"] == 235_906
+    assert receipt["maximum_added_vertex_count"] == 27_036
+    assert receipt["blockers"] == ["inpaint360_added_gaussian_budget_exceeded"]
+
+
+def test_lama_depth_numerical_validation_rejects_non_finite_refinement(
+    tmp_path: Path,
+) -> None:
+    runner = _load_provider_runner()
+    log = tmp_path / "lama_depth.log"
+    log.write_text("loss: 0.2\nloss: nan\nloss: +inf\n", encoding="utf-8")
+
+    blocked = runner._validate_lama_depth_numerics(log_path=log, output=tmp_path)
+
+    assert blocked["status"] == "blocked"
+    assert blocked["non_finite_token_count"] == 2
+    assert blocked["fusion_allowed"] is False
+    assert blocked["blockers"] == ["inpaint360_lama_depth_non_finite"]
+
+    log.write_text("loss: 0.2\nloss: 0.1\n", encoding="utf-8")
+    accepted = runner._validate_lama_depth_numerics(log_path=log, output=tmp_path)
+    assert accepted["status"] == "accepted"
+    assert accepted["non_finite_token_count"] == 0
+    assert accepted["fusion_allowed"] is True
 
 
 def test_supplemental_fusion_view_materialization_rejects_empty_and_binds_selected(
@@ -824,6 +1174,7 @@ def test_supplemental_fusion_view_materialization_rejects_empty_and_binds_select
 
 
 def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str]:
+    receipt_payload = json.loads(receipt.read_text(encoding="utf-8"))
     args = [
         "gpu-canary",
         "--probe-kind",
@@ -846,6 +1197,8 @@ def _allocator_args(tmp_path: Path, receipt: Path, *, execute: bool) -> list[str
         str(tmp_path / "adapter.json"),
         "--pod-name",
         "adp-inpaint360-interiorgs",
+        "--expected-source-commit",
+        receipt_payload["blueprint_repository_commit"],
         "--adp-inpaint360-bundle-receipt",
         str(receipt),
         "--adp-job-dir",
@@ -897,7 +1250,13 @@ def test_canonical_allocator_issues_inpaint360_grant_only_for_execute(
     monkeypatch.setattr(
         allocator,
         "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+        lambda: (
+            [],
+            {
+                "orchestrator_source_commit": receipt["blueprint_repository_commit"],
+                "checkout_clean": True,
+            },
+        ),
     )
     observed: dict[str, object] = {}
 
@@ -916,6 +1275,50 @@ def test_canonical_allocator_issues_inpaint360_grant_only_for_execute(
     assert admission["rendered_frames_have_no_hidden_background_truth"] is True
     assert admission["replacement_or_physics_result_claimed"] is False
     assert admission["hard_cap_usd"] == 6.0
+    assert admission["allocation_binding"]["expected_source_commit"] == receipt[
+        "blueprint_repository_commit"
+    ]
+
+
+def test_canonical_allocator_rejects_mistyped_expected_source_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    receipt = _build(paths)
+    receipt_path = paths["job"] / "adp_inpaint360_interiorgs_bundle_receipt.json"
+    monkeypatch.setattr(allocator, "ADP_INPAINT360_SOURCE_COMMIT", receipt["source_commit"])
+    monkeypatch.setattr(allocator, "ADP_INPAINT360_SOURCE_TREE", receipt["source_tree"])
+    monkeypatch.setattr(
+        allocator, "ADP_INPAINT360_LAMA_SOURCE_COMMIT", receipt["lama_source_commit"]
+    )
+    monkeypatch.setattr(
+        allocator, "ADP_INPAINT360_LAMA_SOURCE_TREE", receipt["lama_source_tree"]
+    )
+    monkeypatch.setattr(
+        allocator,
+        "ADP_INPAINT360_PREREQUISITE_RECEIPT_DIGEST",
+        receipt["prerequisite_receipt_digest"],
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: (
+            [],
+            {
+                "orchestrator_source_commit": receipt["blueprint_repository_commit"],
+                "checkout_clean": True,
+            },
+        ),
+    )
+    args = _allocator_args(tmp_path, receipt_path, execute=False)
+    args[args.index("--expected-source-commit") + 1] = "f" * 40
+
+    assert allocator.main(args) == 2
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["status"] == "blocked"
+    assert "adp_gpu_canary_expected_source_commit_not_control_plane_checkout" in admission[
+        "blockers"
+    ]
 
 
 def test_output_inspector_recognizes_inpaint360_runtime_result(tmp_path: Path) -> None:
@@ -966,9 +1369,10 @@ def test_live_runner_requires_observed_rasterizer_architecture_floor() -> None:
     assert "gpu_selection_policy=INPAINT360_GPU_SELECTION_POLICY" in source
 
 
-def test_live_runner_bounds_provider_startup_without_reducing_scientific_ttl() -> None:
-    assert runtime.PROVIDER_STARTUP_TIMEOUT_SECONDS == 1800
+def test_live_runner_allows_full_scientific_ttl_with_shorter_silence_watchdog() -> None:
+    assert runtime.PROVIDER_EXECUTION_TIMEOUT_SECONDS == 14_400
     assert runtime.PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS == 1800
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     assert "startup_timeout_seconds=min(" in source
+    assert "PROVIDER_EXECUTION_TIMEOUT_SECONDS, remaining_minutes * 60" in source
     assert "allowed_active_instance_ids=allowed_active_instance_ids" in source
