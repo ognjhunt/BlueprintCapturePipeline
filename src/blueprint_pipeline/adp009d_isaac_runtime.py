@@ -940,6 +940,37 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         import omni.usd
 
         live_stage = omni.usd.get_context().get_stage()
+        # Two explanations for the invisible appearance have now failed: the
+        # OVRTX lane's crash-then-residency theory, and authoring gaussian
+        # accumulation settings here.  Rather than guess a third, ask the live
+        # stage what actually became of the prim -- whether it exists at all,
+        # under what path, and whether the surflet API survived Arena's spawner.
+        aura_stage_probe: dict[str, Any] = {
+            "schema_version": "adp009d_aura_stage_probe.v1",
+            "expected_prim": AURA_PARTICLEFIELD_PRIM,
+        }
+        try:
+            matches = [
+                str(prim.GetPath())
+                for prim in live_stage.Traverse()
+                if "Gauss" in str(prim.GetPath()) or "Aura" in str(prim.GetPath())
+            ]
+            aura_stage_probe["matching_prim_paths"] = matches[:20]
+            aura_stage_probe["matching_prim_count"] = len(matches)
+            if matches:
+                found = live_stage.GetPrimAtPath(matches[0])
+                aura_stage_probe["applied_schemas"] = [
+                    str(v) for v in found.GetAppliedSchemas()
+                ]
+                aura_stage_probe["type_name"] = str(found.GetTypeName())
+                aura_stage_probe["is_active"] = bool(found.IsActive())
+                visibility = found.GetAttribute("visibility")
+                aura_stage_probe["visibility"] = (
+                    str(visibility.Get()) if visibility and visibility.IsValid() else None
+                )
+        except Exception as exc:  # noqa: BLE001 - a diagnostic must not fail a run
+            aura_stage_probe["error"] = f"{type(exc).__name__}: {exc}"
+
         live_collider = _inspect_physx_sdf_collider(
             live_stage, APPROVED_CAN_LIVE_COLLIDER_PRIM
         )
@@ -1253,6 +1284,17 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     )
                     approach_action = torch.zeros_like(action)
                     approach_action[:, :7] = joint_target
+                    # Hold the gripper OPEN for the whole approach.  A
+                    # zero-initialised action leaves dimension seven at 0.0, and
+                    # the convention probe measured 0.0 as *closed* -- so every
+                    # approach step was commanding a grasp.  The per-step trace
+                    # shows exactly that: the can sits still for eighteen steps,
+                    # then rises to 31 mm and stops as the gripper takes it, then
+                    # drifts in x and y as the arm carries it.  Five earlier
+                    # hypotheses looked for contact from an arm that was in fact
+                    # deliberately holding the object.
+                    if gripper_probe.get("status") == "measured":
+                        approach_action[:, 7] = float(gripper_probe["open_command"])
                     env.step(approach_action)
                     # Record the displacement vector, not just its magnitude: a
                     # can that is falling and a can that is being pushed both
@@ -1541,6 +1583,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             # existed, and reported True on a run whose frames were byte-for-byte
             # the same as a run with no appearance at all.  A receipt that
             # asserts a render it never observed is worse than one that is silent.
+            "aura_stage_probe": aura_stage_probe,
             "aura_particlefield_shipped": (
                 runtime / "assets" / AURA_PARTICLEFIELD_FILENAME
             ).is_file(),

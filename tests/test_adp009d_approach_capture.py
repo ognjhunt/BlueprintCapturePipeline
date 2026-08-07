@@ -726,3 +726,30 @@ def test_the_runtime_traces_the_displacement_per_step() -> None:
     assert '"ee_position_world_m"' in source
     # Bounded, so a long approach cannot produce an unbounded receipt.
     assert "len(approach_object_trace) < 400" in source
+
+
+def test_the_approach_holds_the_gripper_open() -> None:
+    """A zero-initialised action commands a grasp under the measured convention.
+
+    Dimension seven defaults to 0.0, and the probe measured 0.0 as closed, so
+    every approach step was closing the gripper.  The per-step trace shows the
+    can still for eighteen steps, rising to 31 mm as the gripper takes it, then
+    drifting in x and y as the arm carries it -- an observation probe silently
+    performing a pick.
+    """
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    approach = source[source.index("--- preregistered wrist approach") :]
+
+    assert 'approach_action[:, 7] = float(gripper_probe["open_command"])' in approach
+    # Set after the joint targets, so it cannot be overwritten by them.
+    assert approach.index("approach_action[:, :7] = joint_target") < approach.index(
+        "approach_action[:, 7] ="
+    )
+    # Only when the convention is measured: guessing which value opens would
+    # reintroduce exactly the bug this fixes.
+    assert 'gripper_probe.get("status") == "measured"' in approach

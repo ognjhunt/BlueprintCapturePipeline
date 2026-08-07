@@ -769,6 +769,13 @@ def build_native_microcheck_bundle(
         "adp009d_isaac_episode_adapter.py",
         "adp009d_task_scoring.py",
         "adp009d_policy_server_worker.py",
+        # Imported by the episode for its digest helper.  It has no intra-package
+        # imports of its own, so it ships flat without dragging anything with it.
+        # Omitting it made both arms of the dual-layout import fail: the flat one
+        # with ModuleNotFoundError, the fallback with "attempted relative import
+        # with no known parent package" -- a different exception than the one the
+        # except clause names, so the fallback could never have caught it.
+        "decision_evidence_contracts.py",
     ):
         shutil.copy2(source_dir / module_name, runtime / module_name)
     if policy_candidate_id:

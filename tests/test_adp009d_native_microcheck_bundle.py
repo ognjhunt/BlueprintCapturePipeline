@@ -1077,3 +1077,30 @@ def test_shipped_modules_import_in_the_flat_provider_layout() -> None:
         source = (root / f"{name}.py").read_text(encoding="utf-8")
         assert "try:  # flat provider-bundle layout" in source
         assert "except ModuleNotFoundError:" in source
+
+
+def test_every_module_the_episode_imports_is_shipped() -> None:
+    """A dual-layout import cannot save a module that is simply absent.
+
+    The episode imports its digest helper; omitting it from the bundle made the
+    flat arm fail with ModuleNotFoundError and the fallback raise a different
+    exception than the except clause names, so neither arm could succeed.
+    """
+
+    import ast
+    from pathlib import Path as _Path
+
+    import blueprint_pipeline
+
+    root = _Path(blueprint_pipeline.__file__).parent
+    bundle_source = (root / "adp009d_native_microcheck_bundle.py").read_text(
+        encoding="utf-8"
+    )
+
+    for module in ("adp009d_policy_episode", "adp009d_isaac_episode_adapter"):
+        tree = ast.parse((root / f"{module}.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+                assert f'"{node.module}.py"' in bundle_source, (
+                    f"{module} imports {node.module}, which the bundle does not ship"
+                )
