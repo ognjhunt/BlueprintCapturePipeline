@@ -502,6 +502,10 @@
         "Require the resolved UJITSO setting and cooker identity in the native receipt; live collider validation and no-fallback checks remain mandatory, so changing the cooker cannot admit an episode by itself.",
         "The v15 native microcheck resolved UJITSO false, built the same manager-based environment in 41.396117 seconds, validated the exact-v2 SDF can and 15 static SAGE triangle meshes live, completed two resets, one zero-action step, and two-camera retention, then tore down at 0.309049 USD with provider-zero observed.",
         "Treat v15 as infrastructure reachability only: its receipt exposed that Arena release/0.2.1 did not reach the requested canonical joint pose and the wrist frame omitted the can, so bind the articulation initial state explicitly and fail closed on reset or hold-pose error before policy admission.",
+        "The v16 exact-joint-map probe correctly failed before reset because updating Arena's regex defaults created overlapping matches; replace the entire joint-position map instead of updating it. The run cost 0.221264 USD and provider-zero was observed.",
+        "The v17 replacement-map probe reached both native construction and the reset gate, then rejected the stock live arm pose at 1.152022362 radians maximum error. The run cost 0.067609 USD and provider-zero was observed.",
+        "Inspection of the exact pinned Isaac Lab reset implementation showed that Arena's first event updates only the default-joint buffer and its second event writes that buffer into simulation. Retain the second EventManager reset event with zero mean and zero standard deviation rather than disabling it.",
+        "The v18 EventManager-writer probe reached the requested pose exactly on both resets, held it within 0.000179053 radians, completed the native camera path, and preserved the v2 SDF can and task-envelope SAGE topology without warnings. It also measured a 0.197880811 meter XY can displacement and about 89.9986 degrees of tilt during nominal hold, so the prior reset pose is contact-invalid and may not be frozen as the canonical anchor.",
         "Label the historical convex-hull native probe as approximation-only and prohibit it from substituting for exact-v2 SDF admission.",
         "Use the pinned Isaac Lab selective installer for assets, physx, tasks, and teleop only; retain the installer-required isaaclab_newton compatibility package without selecting Newton runtime extras or the Newton backend.",
         "Install Isaac Lab Arena runtime dependencies without its development extra and reject any worker plan that silently expands to all Isaac Lab extensions or RL frameworks."
@@ -711,27 +715,31 @@
         "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
       }
     },
-    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native microcheck passed in v15; OVRTX and ovphysx remain unselected; live Aura depth composition and corrected canonical reset-camera reprobe remain required before policy admission",
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, step, and camera retention passed in v18; the measured canonical reset pose is contact-invalid; OVRTX and ovphysx remain unselected; live Aura depth composition and a collision-free nominal-pose reprobe remain required before policy admission",
     "native_microcheck_evidence": {
-      "run_id": "native_microcheck_v15_legacy_cooker",
-      "status": "completed_infrastructure_microcheck_only",
-      "completed_at": "2026-08-07T05:42:19Z",
-      "result_sha256": "sha256:c1be9dae8f687d37b8f934fec6268c73a4745231b59936063f162be40f1ca9e8",
-      "allocator_result_sha256": "sha256:14c78fbdfc70c35c5779abd2517748f067fb355d989ca50b93a3978a33b2b31e",
-      "environment_build_seconds": 41.396117,
+      "run_id": "native_microcheck_v18_live_event_writer_reset",
+      "status": "completed_reset_infrastructure_microcheck_nominal_contact_invalid",
+      "completed_at": "2026-08-07T06:43:21Z",
+      "result_sha256": "sha256:fe20dfc3201c77c8fb8ec261fb18ded1f805db5736cdc100fdcdcf936cf45976",
+      "allocator_result_sha256": "sha256:200f5febaf5736a3b1da80b278e4a89de23c5f823887c7fe3ddc357a666990c9",
+      "environment_build_seconds": 28.082818,
       "ujitso_default_enabled": true,
       "ujitso_resolved_enabled": false,
       "live_can_approximation": "sdf",
       "live_sage_triangle_mesh_count": 15,
       "reset_count": 2,
+      "reset_arm_maximum_error_rad": 0.0,
+      "post_warmup_arm_maximum_error_rad": 0.00017905235290527344,
+      "post_warmup_can_xy_displacement_m": 0.19788081124568532,
+      "post_warmup_can_tilt_degrees": 89.99862428315234,
       "zero_action_step_completed": true,
       "camera_warmup_frames": 40,
       "lossless_camera_count": 2,
-      "estimated_cost_usd": 0.309049,
+      "estimated_cost_usd": 0.061795,
       "provider_zero_observed": true,
       "policy_queried": false,
       "scientific_limitations": [
-        "the requested canonical joint pose was not reached because Arena release/0.2.1 bound it only through a reset event",
+        "the requested reset pose was reached but is contact-invalid because the can moved 0.197880811 meters XY and tilted about 89.9986 degrees during nominal hold",
         "the retained wrist frame did not contain the approved can",
         "the physics-only frames did not contain live Aura appearance",
         "no scripted positive control or learned policy executed"
@@ -740,10 +748,10 @@
   },
   "claim_ceiling": [
     "The audit proves exact official-source observations and binding implementation decisions at the recorded retrieval time.",
-    "The v15 receipt proves only that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, reset, step, and two-camera tensor retention together.",
-    "It does not prove live Aura depth composition, corrected canonical reset-camera calibration, scripted task success, OVRTX or ovphysx execution, or either learned policy.",
+    "The v18 receipt proves only that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, exact reset, step, and two-camera tensor retention together.",
+    "It also proves the measured reset pose is contact-invalid; it does not prove a collision-free canonical pose, live Aura depth composition, scripted task success, OVRTX or ovphysx execution, or either learned policy.",
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:e3c57ee869cbef4e6afc6b8764fdadbf12284da5baeeef9d64f95fb1cefca9c1"
+  "audit_digest": "sha256:520934bda520941bedd240106ccff315dce8c9548240017a3716c2355b434fcd"
 }

@@ -51,12 +51,12 @@ ROBOT_BASE_YAW_RAD = -math.pi / 2
 CAN_START_POSITION_M = (3.4681748, -3.3100837, 0.5264650138348479)
 RESET_JOINTS = (
     0.0,
-    -0.569,
+    -0.628318530718,
     0.0,
-    -2.81,
+    -2.513274122872,
     0.0,
-    3.037,
-    0.741,
+    1.884955592154,
+    0.0,
     0.0,
     0.0,
     0.0,
@@ -81,6 +81,9 @@ RESET_JOINT_NAMES = (
 )
 RESET_ARM_TOLERANCE_RAD = 1.0e-3
 HOLD_ARM_TOLERANCE_RAD = 1.0e-2
+CAN_HOLD_XY_TOLERANCE_M = 5.0e-3
+CAN_HOLD_Z_TOLERANCE_M = 5.0e-3
+CAN_HOLD_TILT_TOLERANCE_DEG = 2.0
 
 
 class CanonicalPoseError(RuntimeError):
@@ -91,6 +94,18 @@ class CanonicalPoseError(RuntimeError):
         super().__init__(
             f"{blocker}:maximum_error_rad="
             f"{diagnostics['maximum_error_rad']:.9f}"
+        )
+
+
+class CanonicalObjectStabilityError(RuntimeError):
+    """A typed nominal-pose failure with exact object-pose diagnostics."""
+
+    def __init__(self, diagnostics: dict[str, Any]) -> None:
+        self.diagnostics = diagnostics
+        super().__init__(
+            "canonical_hold_object_pose_unstable:"
+            f"xy_displacement_m={diagnostics['xy_displacement_m']:.9f}:"
+            f"tilt_degrees={diagnostics['final_tilt_degrees']:.6f}"
         )
 
 
@@ -204,6 +219,60 @@ def _canonical_pose_diagnostics(
         "maximum_error_rad": maximum_error,
         "tolerance_rad": tolerance_rad,
     }
+
+
+def _canonical_object_stability_diagnostics(
+    initial_pose: Any,
+    final_pose: Any,
+) -> dict[str, Any]:
+    initial = [float(item) for item in _jsonable(initial_pose)]
+    final = [float(item) for item in _jsonable(final_pose)]
+    if len(initial) != 7 or len(final) != 7:
+        raise RuntimeError("canonical_object_pose_shape_invalid")
+    delta = [final[index] - initial[index] for index in range(3)]
+    xy_displacement = math.hypot(delta[0], delta[1])
+    position_displacement = math.sqrt(sum(item * item for item in delta))
+    qx, qy, _qz, _qw = final[3:7]
+    world_up_alignment = max(-1.0, min(1.0, 1.0 - 2.0 * (qx * qx + qy * qy)))
+    tilt_degrees = math.degrees(math.acos(world_up_alignment))
+    return {
+        "initial_pose_world": initial,
+        "final_pose_world": final,
+        "position_delta_m": delta,
+        "position_displacement_m": position_displacement,
+        "xy_displacement_m": xy_displacement,
+        "absolute_z_displacement_m": abs(delta[2]),
+        "final_tilt_degrees": tilt_degrees,
+        "thresholds": {
+            "xy_displacement_m": CAN_HOLD_XY_TOLERANCE_M,
+            "absolute_z_displacement_m": CAN_HOLD_Z_TOLERANCE_M,
+            "tilt_degrees": CAN_HOLD_TILT_TOLERANCE_DEG,
+        },
+    }
+
+
+def _assert_canonical_object_stability(initial_pose: Any, final_pose: Any) -> dict[str, Any]:
+    diagnostics = _canonical_object_stability_diagnostics(initial_pose, final_pose)
+    thresholds = diagnostics["thresholds"]
+    if (
+        not all(
+            math.isfinite(float(value))
+            for key, value in diagnostics.items()
+            if key
+            in {
+                "position_displacement_m",
+                "xy_displacement_m",
+                "absolute_z_displacement_m",
+                "final_tilt_degrees",
+            }
+        )
+        or diagnostics["xy_displacement_m"] > thresholds["xy_displacement_m"]
+        or diagnostics["absolute_z_displacement_m"]
+        > thresholds["absolute_z_displacement_m"]
+        or diagnostics["final_tilt_degrees"] > thresholds["tilt_degrees"]
+    ):
+        raise CanonicalObjectStabilityError(diagnostics)
+    return diagnostics
 
 
 def _phase(name: str, status: str = "started") -> None:
@@ -792,6 +861,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         }
         env.reset(seed=20260806)
         robot = env.unwrapped.scene["robot"]
+        approved_can = env.unwrapped.scene["approved_can"]
+        hold_start_can_pose = _to_torch(approved_can.data.root_pose_w)[0].clone()
         hold_action = torch.zeros_like(action)
         hold_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
         phase_started = time.monotonic()
@@ -831,8 +902,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         can_pose = _to_torch(approved_can.data.root_pose_w)[0]
         if not torch.isfinite(can_pose).all():
             raise RuntimeError("approved_can_state_nonfinite")
-        if float(can_pose[2].item()) < CAN_START_POSITION_M[2] - 0.05:
-            raise RuntimeError("approved_can_support_loss_after_zero_action")
+        object_stability = _assert_canonical_object_stability(
+            hold_start_can_pose,
+            can_pose,
+        )
         return {
             "schema_version": "adp009d_native_microcheck.v1",
             "status": "completed",
@@ -865,6 +938,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             ),
             "post_warmup_arm_maximum_error_rad": hold_arm_maximum_error_rad,
             "post_warmup_approved_can_root_pose_world": _jsonable(can_pose),
+            "canonical_hold_object_stability": object_stability,
             "camera_frames": camera_rows,
             "camera_warmup_frames": 40,
             "timings_seconds": timings_seconds,

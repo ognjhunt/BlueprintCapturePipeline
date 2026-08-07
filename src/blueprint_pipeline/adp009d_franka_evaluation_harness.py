@@ -33,7 +33,7 @@ SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 
 REQUIRED_ASSET_DIGESTS = {
-    "agent_skill_audit": "sha256:5f132f0aa57ca56282b935b2e374b7ecc00e28908e79fdcf60d555b3e33f5a74",
+    "agent_skill_audit": "sha256:e203efec59659ee573fea551b59e1688f1bedc0e7365be2f50c77cdcf3fd0b91",
     "approved_can": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "aura_appearance": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
     "hybrid_seal_receipt": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b",
@@ -460,10 +460,12 @@ def validate_harness_manifest(
         for field in required_measured_seconds
     )
     if not (
-        latest_timing.get("run_id") == "native_microcheck_v15_legacy_cooker"
+        latest_timing.get("run_id")
+        == "native_microcheck_v18_live_event_writer_reset"
         and latest_timing.get("result_sha256")
-        == "sha256:c1be9dae8f687d37b8f934fec6268c73a4745231b59936063f162be40f1ca9e8"
-        and latest_timing.get("status") == "completed_infrastructure_microcheck_only"
+        == "sha256:fe20dfc3201c77c8fb8ec261fb18ded1f805db5736cdc100fdcdcf936cf45976"
+        and latest_timing.get("status")
+        == "completed_reset_infrastructure_microcheck_nominal_contact_invalid"
         and latest_timing.get("provider_zero_observed") is True
         and latest_timing.get("policy_queried") is False
         and measured_seconds_valid

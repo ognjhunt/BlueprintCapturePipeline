@@ -453,6 +453,15 @@ def test_runtime_binds_and_verifies_canonical_reset_pose() -> None:
     assert 'blocker="canonical_hold_arm_pose_drift"' in source
     assert '"post_warmup_arm_maximum_error_rad"' in source
     assert 'result["diagnostics"] = _json_safe(diagnostics)' in source
+    assert "_assert_canonical_object_stability(" in source
+    assert '"canonical_hold_object_stability": object_stability' in source
+    assert "approved_can_support_loss_after_zero_action" not in source
+
+
+def test_canonical_reset_uses_official_arena_droid_safe_pose() -> None:
+    assert isaac_runtime.RESET_JOINTS[:7] == pytest.approx(
+        (0.0, -0.2 * 3.14159265359, 0.0, -0.8 * 3.14159265359, 0.0, 0.6 * 3.14159265359, 0.0)
+    )
 
 
 def test_canonical_reset_replaces_overlapping_arena_regex_defaults() -> None:
@@ -535,6 +544,40 @@ def test_canonical_pose_failure_retains_per_joint_diagnostics() -> None:
     assert diagnostics["absolute_error_rad"] == [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     assert diagnostics["maximum_error_rad"] == 1.0
     assert str(error) == "canonical_reset_arm_pose_mismatch:maximum_error_rad=1.000000000"
+
+
+def test_canonical_object_stability_rejects_contact_displacement() -> None:
+    initial = [3.4681747, -3.3100836, 0.5264650, 0.0, 0.0, 0.0, 1.0]
+    final = [
+        3.2928247,
+        -3.4017854,
+        0.5575565,
+        -0.6239471,
+        -0.3326830,
+        0.0779095,
+        -0.7028100,
+    ]
+    with pytest.raises(isaac_runtime.CanonicalObjectStabilityError) as exc_info:
+        isaac_runtime._assert_canonical_object_stability(initial, final)
+
+    diagnostics = exc_info.value.diagnostics
+    assert diagnostics["xy_displacement_m"] == pytest.approx(0.1978808, abs=1e-6)
+    assert diagnostics["final_tilt_degrees"] == pytest.approx(89.9986, abs=1e-3)
+    assert diagnostics["thresholds"] == {
+        "xy_displacement_m": 0.005,
+        "absolute_z_displacement_m": 0.005,
+        "tilt_degrees": 2.0,
+    }
+
+
+def test_canonical_object_stability_accepts_settled_pose() -> None:
+    initial = [3.4681747, -3.3100836, 0.5264650, 0.0, 0.0, 0.0, 1.0]
+    final = [3.4681745, -3.3100832, 0.5264686, -1.16e-5, -8.21e-5, 0.0, 1.0]
+    diagnostics = isaac_runtime._assert_canonical_object_stability(initial, final)
+
+    assert diagnostics["xy_displacement_m"] < 1.0e-6
+    assert diagnostics["absolute_z_displacement_m"] < 5.0e-6
+    assert diagnostics["final_tilt_degrees"] < 0.01
 
 
 def test_runtime_retains_camera_semantic_mapping_and_quality_diagnostics() -> None:
