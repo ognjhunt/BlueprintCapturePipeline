@@ -2166,7 +2166,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         job_dir=Path(args.adp_job_dir) / "bundle",
                         probe_manifest_path=args.adp009d_ovrtx_probe_manifest,
                         implementation_commit=control_identity["orchestrator_source_commit"],
-                        policy_candidate_id=args.adp009d_policy_candidate,
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(
@@ -2433,6 +2432,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         sage_collision_path=args.adp009d_sage_collision,
                         harness_manifest_path=args.adp009d_harness_manifest,
                         implementation_commit=control_identity["orchestrator_source_commit"],
+                        policy_candidate_id=args.adp009d_policy_candidate,
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(f"adp009d_bundle_preparation_failed:{type(exc).__name__}")
