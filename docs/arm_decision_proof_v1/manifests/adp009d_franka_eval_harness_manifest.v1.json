@@ -2,7 +2,7 @@
   "schema_version": "adp009d_franka_eval_harness_manifest.v1",
   "program_id": "arm-decision-proof-v1",
   "harness_id": "blueprint-isaac-lab-franka-task-evaluation-v1",
-  "status": "native_reset_microcheck_passed_open_gripper_reprobe_and_policy_observation_blocked",
+  "status": "native_reset_microcheck_passed_contact_clear_base_reprobe_and_policy_observation_blocked",
   "reusable_harness": true,
   "workflow": "isaac_lab_manager_based",
   "implementation_base_commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 43499,
-      "sha256": "sha256:67dc4c528bca7b892dc8484473ab26d0956299d551e093ace18734bd4f890e03"
+      "size_bytes": 44868,
+      "sha256": "sha256:a7f6f49d3d4b6d08cbebbc9868109feeb29818b9fbcf3baf4e6917e0b27086d7"
     },
     {
       "role": "approved_can",
@@ -172,19 +172,21 @@
       "left_inner_finger_joint": -0.080966427922
     },
     "reset_pose_exception": {
-      "status": "measured_compatibility_exception_requires_native_reprobe",
+      "status": "measured_open_gripper_preserved_but_insufficient_at_original_standoff",
       "official_arena_arm_pose_preserved": true,
       "trigger_run_id": "native_microcheck_v19_official_arena_droid_pose",
       "trigger": "Arena release/0.2.1 all-joint reset wrote zero into every Robotiq closed-loop joint and tilted the can 6.188034 degrees",
       "open_gripper_source_run_id": "native_microcheck_v15_legacy_cooker",
       "open_gripper_source": "exact settled contact-stable live joint coordinates",
+      "measured_open_gripper_reprobe_run_id": "native_microcheck_v21_measured_open_gripper",
+      "measured_open_gripper_reprobe_result": "can_tilt_6.254314_degrees_original_standoff_rejected",
       "asset_or_collider_mutated": false
     },
-    "robot_base_pose_status": "sealed_sage_analytic_candidate_v19_arm_pose_valid_open_gripper_reprobe_required",
+    "robot_base_pose_status": "sealed_sage_validated_0_50m_contact_clearance_candidate_requires_native_reprobe",
     "robot_base_pose_candidate": {
       "position_m": [
         3.4681748,
-        -2.9100837,
+        -2.8100837,
         0.2766791
       ],
       "yaw_radians": -1.570796326795,
@@ -192,11 +194,25 @@
       "placement_packet_sha256": "sha256:e71368265ccf4aa9f4de048afced5d7535c05ed9baa4e2384837ad722b0289b4",
       "placement_packet_size_bytes": 13596,
       "placement_packet_evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/placement_v1/placement/adp009d_sage_franka_placement_packet.v1.json",
-      "analytic_shoulder_to_target_distance_m": 0.4,
+      "analytic_shoulder_to_target_distance_m": 0.5,
       "analytic_reach_candidate": true,
       "collision_triangle_overlap_count": 0,
       "base_support_samples_passed": 5,
       "base_support_samples_required": 5,
+      "contact_clearance_adjustment": {
+        "source": "sealed SAGE collision analysis GLB bound by placement packet",
+        "trigger_run_id": "native_microcheck_v21_measured_open_gripper",
+        "original_base_y_m": -2.9100837,
+        "resolved_base_y_m": -2.8100837,
+        "base_shift_away_from_object_m": 0.1,
+        "target_xy_distance_m": 0.5,
+        "collision_triangle_overlap_count": 0,
+        "collision_vertex_overlap_count": 0,
+        "base_support_samples_passed": 5,
+        "base_support_samples_required": 5,
+        "learned_outcomes_observed": false,
+        "native_reprobe_required": true
+      },
       "learned_outcomes_observed_before_selection": false
     },
     "wrist_camera_mount_status": "requires_robotiq_variant_native_calibration_probe"
@@ -219,7 +235,7 @@
       "translation_m": 0.16,
       "non_support_overlap_count": 0,
       "measurement_authority": "materialized SAGE collision bytes",
-      "native_contact_validation_status": "v19_all_zero_gripper_contact_invalid_measured_open_gripper_reprobe_required"
+      "native_contact_validation_status": "v21_original_standoff_near_contact_sealed_sage_validated_0_50m_base_reprobe_required"
     },
     "support_bounds": {
       "x_min_m": 3.2342791209657826,
@@ -239,7 +255,7 @@
       "target_y_m": -3.3100837,
       "target_z_m": 0.5264650138348479,
       "robot_base_x_m": 3.4681748,
-      "robot_base_y_m": -2.9100837,
+      "robot_base_y_m": -2.8100837,
       "robot_base_yaw_degrees": -90.0,
       "light_intensity_scale": 1.0,
       "light_direction_yaw_degrees": 0.0,
@@ -264,7 +280,7 @@
       "object_radius_m": 0.031094726014345042,
       "object_height_m": 0.1694279937744141
     },
-    "camera_calibration_status": "native_tensors_retained_v19_measured_open_gripper_pose_and_policy_frame_quality_reprobe_required",
+    "camera_calibration_status": "native_tensors_retained_v21_shifted_base_wrist_calibration_and_policy_frame_quality_reprobe_required",
     "lighting_status": "requires_native_renderer_probe_before_protocol_freeze",
     "robot_base_status": "analytic_candidate_frozen_requires_native_reachability_probe_before_protocol_freeze"
   },
@@ -572,17 +588,17 @@
       ]
     },
     "latest_blocked_measurement": {
-      "run_id": "native_microcheck_v19_official_arena_droid_pose",
-      "result_sha256": "sha256:eb8d47119cd773d47643a24c85002685510bf8df97b048bf00e38033245cbc3c",
-      "allocator_result_sha256": "sha256:df280c5ce03e59c384fdef6a5dcae9644c21328402783ac54535904f12c94bc0",
+      "run_id": "native_microcheck_v21_measured_open_gripper",
+      "result_sha256": "sha256:b6a3784dca45bc65de386e40e08451540487024fc4b7a0858b487de01d914c2d",
+      "allocator_result_sha256": "sha256:cf0b13dccb31747bb84ad7ba8f56542fb09cb6db58a05699b6d98259692ad2f8",
       "status": "blocked_contact_stability_gate",
-      "can_xy_displacement_m": 0.000011980385328675377,
-      "can_absolute_z_displacement_m": 0.0031012296676635742,
-      "can_tilt_degrees": 6.1880336690867885,
-      "estimated_cost_usd": 0.061779,
+      "can_xy_displacement_m": 0.00012196619279790968,
+      "can_absolute_z_displacement_m": 0.003130197525024414,
+      "can_tilt_degrees": 6.254313674694312,
+      "estimated_cost_usd": 0.205707,
       "provider_zero_observed": true,
       "policy_queried": false,
-      "smallest_exact_blocker": "arena_all_zero_robotiq_closed_loop_reset_contact_invalid"
+      "smallest_exact_blocker": "canonical_arm_base_standoff_near_contact"
     }
   },
   "runtime_pins": {
@@ -678,7 +694,7 @@
   },
   "blockers": [
     "sealed_aura_hybrid_policy_observation_renderer_missing",
-    "measured_open_gripper_canonical_reset_reprobe_missing",
+    "sealed_sage_validated_0_50m_base_native_reprobe_missing",
     "canonical_safe_pose_camera_quality_reprobe_missing",
     "cousin_native_control_validation_missing"
   ],
@@ -689,5 +705,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:7e28977a10fda0b21db140057ae29af9f97e3709a68417f21bd5cc0c8489f031"
+  "harness_digest": "sha256:e08fc7f46d7323b9fb45face167727eea06a944aad703aa988529cc67f14218a"
 }

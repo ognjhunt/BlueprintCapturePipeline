@@ -325,7 +325,7 @@ def test_runtime_binds_official_droid_franka_and_sealed_anchor() -> None:
         "approved_can.usda": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
         "sage_collision.usd": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
     }
-    assert isaac_runtime.ROBOT_BASE_POSITION_M == (3.4681748, -2.9100837, 0.2766791)
+    assert isaac_runtime.ROBOT_BASE_POSITION_M == (3.4681748, -2.8100837, 0.2766791)
     assert isaac_runtime.CAN_START_POSITION_M == (
         3.4681748,
         -3.3100837,
