@@ -33,7 +33,7 @@ SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 
 REQUIRED_ASSET_DIGESTS = {
-    "agent_skill_audit": "sha256:9a35788675b1376fc3fca5c27a1defed63040c169c9544bc1ff71ffeef479fdb",
+    "agent_skill_audit": "sha256:d74d62322424c047714820dd8a32a967196fa0b4bc75add3ac45baea01d65d64",
     "approved_can": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "aura_appearance": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
     "hybrid_seal_receipt": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b",

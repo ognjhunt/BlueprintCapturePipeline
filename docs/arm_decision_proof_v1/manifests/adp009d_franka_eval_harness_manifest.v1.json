@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 32974,
-      "sha256": "sha256:9a35788675b1376fc3fca5c27a1defed63040c169c9544bc1ff71ffeef479fdb"
+      "size_bytes": 33231,
+      "sha256": "sha256:d74d62322424c047714820dd8a32a967196fa0b4bc75add3ac45baea01d65d64"
     },
     {
       "role": "approved_can",
@@ -568,5 +568,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:dd8b750f321b2de68655bf5eee25ec5a86b3e3df969d9b9c4fe2130cc63a636e"
+  "harness_digest": "sha256:a9827efb59dcc43db275dd7d5a1e9de0ecbc1868e51d05d2b1b9f5bd7dee2c0e"
 }

@@ -22,7 +22,7 @@ EXPECTED_ASSETS = {
     "sage_collision.usd": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
 }
 APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
-TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usdc"
+TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usda"
 TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
 APPROVED_CAN_ADAPTER_SHA256 = (
     "sha256:5db5bc33b72983065bd47e30db0c5945ab3cba8fb3caeb6290bf07edc7337adc"
