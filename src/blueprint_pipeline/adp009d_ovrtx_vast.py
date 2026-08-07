@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 
@@ -154,7 +154,6 @@ def build_ovrtx_live_camera_bundle(
     _write_executable(runtime / "run_adp009d_ovrtx_provider_runtime.sh", ENTRYPOINT)
     manifest: dict[str, Any] = {
         "schema_version": "adp009d_ovrtx_provider_manifest.v1",
-        "generated_at": generated_at or utc_now_iso(),
         "status": "ready",
         "program_id": "arm-decision-proof-v1",
         "probe_kind": PROBE_KIND,
@@ -174,6 +173,8 @@ def build_ovrtx_live_camera_bundle(
         "provider_zero_required_after_return": True,
         "blockers": [],
     }
+    if generated_at is not None:
+        manifest["generated_at"] = generated_at
     manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
     write_json(runtime / "adp009d_ovrtx_provider_manifest.json", manifest)
     bundle_path = job / "adp009d_ovrtx_live_camera_bundle.zip"

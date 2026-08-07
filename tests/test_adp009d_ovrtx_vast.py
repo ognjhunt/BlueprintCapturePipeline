@@ -112,6 +112,19 @@ def test_ovrtx_bundle_is_deterministic_and_contract_complete(tmp_path: Path) -> 
     assert "adp009d_ovrtx_provider_runtime_output.zip" in launch
 
 
+def test_ovrtx_bundle_is_deterministic_without_generated_at(tmp_path: Path) -> None:
+    probe = _probe(tmp_path)
+    kwargs = {
+        "probe_manifest_path": probe,
+        "implementation_commit": "a" * 40,
+    }
+    first = build_ovrtx_live_camera_bundle(job_dir=tmp_path / "first", **kwargs)
+    second = build_ovrtx_live_camera_bundle(job_dir=tmp_path / "second", **kwargs)
+    assert "generated_at" not in first
+    assert first["input_digest"] == second["input_digest"]
+    assert first["bundle_sha256"] == second["bundle_sha256"]
+
+
 def test_ovrtx_bundle_rejects_changed_camera_config(tmp_path: Path) -> None:
     probe_path = _probe(tmp_path)
     probe = json.loads(probe_path.read_text())
