@@ -21,16 +21,20 @@ try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_approach_capture import (
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
+        apply_rigid_offset,
         approach_waypoints_world,
         pose_world_to_base,
+        rigid_offset_in_body_frame,
         summarize_wrist_approach_capture,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_approach_capture import (
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
+        apply_rigid_offset,
         approach_waypoints_world,
         pose_world_to_base,
+        rigid_offset_in_body_frame,
         summarize_wrist_approach_capture,
     )
 
@@ -1019,6 +1023,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         phase_started = time.monotonic()
         approach_frames: list[dict[str, Any]] = []
         approach_arrivals: list[dict[str, Any]] = []
+        approach_body_names: list[str] = []
+        wrist_camera_driven = False
         approach_ik_succeeded = True
         approach_error: str | None = None
         approach_object_displacement_m = 0.0
@@ -1053,6 +1059,35 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 body_names[-1],
             )
             body_index = body_names.index(end_effector_name)
+            approach_body_names = list(body_names)
+            # Arena parents the wrist camera under the Robotiq gripper base,
+            # which is not an articulation body: PhysX writes no pose for it, so
+            # the camera keeps its authored transform while the arm moves.  A
+            # live run measured the hand travelling 0.27 m while every recorded
+            # wrist pose stayed byte-identical, which would silently
+            # mis-register the entire wrist observation.
+            #
+            # Measure the camera's offset in the end-effector frame here, at the
+            # canonical reset pose where the authored transform is still the
+            # true one, then re-apply it from the live body pose at each
+            # capture.  This assumes the gripper base is rigidly fixed to the
+            # body it hangs from -- the fingers articulate, the base does not.
+            wrist_camera = env.unwrapped.scene["wrist_camera"]
+            reset_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
+            wrist_offset_position, wrist_offset_quaternion = rigid_offset_in_body_frame(
+                body_position_world=[float(v) for v in reset_body_pose[:3]],
+                body_quaternion_world_wxyz=[float(v) for v in reset_body_pose[3:7]],
+                child_position_world=[
+                    float(v) for v in _to_torch(wrist_camera.data.pos_w)[0]
+                ],
+                child_quaternion_world_wxyz=[
+                    float(v) for v in _to_torch(wrist_camera.data.quat_w_world)[0]
+                ],
+            )
+            wrist_camera_driven = True
+            # Feasible-by-construction orientation target: the pose the arm is
+            # already in.  Recorded so the report shows what was actually held.
+            approach_hold_quaternion = [float(v) for v in reset_body_pose[3:7]]
             # Isaac Lab e57379c drops the root row from the jacobian stack for a
             # fixed-base articulation, so the jacobian index is offset by one.
             jacobian_index = body_index - 1 if robot.is_fixed_base else body_index
@@ -1061,7 +1096,17 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             for waypoint in approach_waypoints_world():
                 position_base, quaternion_base = pose_world_to_base(
                     position_world=waypoint["position_world_m"],
-                    quaternion_world_wxyz=waypoint["quaternion_wxyz"],
+                    # The preregistered waypoint carries a tool-down quaternion
+                    # chosen for a hand frame, but this articulation exposes no
+                    # panda_hand or robotiq_base_link body, so the controlled
+                    # body is panda_link7, whose frame is different.  Commanding
+                    # that orientation asks for a pose the solver cannot satisfy,
+                    # and a damped-least-squares solver then trades position
+                    # error away chasing it: a live run diverged monotonically,
+                    # 0.069 -> 0.252 -> 0.318 m, while reporting success.
+                    # Hold the orientation the arm already has so the solve is
+                    # a pure translation, which is all wrist observability needs.
+                    quaternion_world_wxyz=approach_hold_quaternion,
                     base_position_world=[float(v) for v in base_pose[:3]],
                     base_quaternion_world_wxyz=[float(v) for v in base_pose[3:7]],
                 )
@@ -1135,6 +1180,27 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         "end_effector_body": end_effector_name,
                     }
                 )
+                # Drive the wrist camera from the live body pose before capture,
+                # since nothing else moves it.
+                live_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
+                wrist_position, wrist_quaternion = apply_rigid_offset(
+                    body_position_world=[float(v) for v in live_body_pose[:3]],
+                    body_quaternion_world_wxyz=[float(v) for v in live_body_pose[3:7]],
+                    offset_position_body=wrist_offset_position,
+                    offset_quaternion_body_wxyz=wrist_offset_quaternion,
+                )
+                wrist_camera.set_world_poses(
+                    torch.tensor(
+                        [wrist_position], device=env.unwrapped.device, dtype=torch.float32
+                    ),
+                    torch.tensor(
+                        [wrist_quaternion],
+                        device=env.unwrapped.device,
+                        dtype=torch.float32,
+                    ),
+                    convention="world",
+                )
+                env.unwrapped.scene.update(cfg.sim.dt * cfg.decimation)
                 for camera_name in ("external_camera", "wrist_camera"):
                     approach_frames.append(
                         _save_camera(
@@ -1166,6 +1232,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             waypoint_arrivals=approach_arrivals,
         )
         wrist_approach_capture["error"] = approach_error
+        # Recorded so a future attachment defect is diagnosable without a run.
+        wrist_approach_capture["articulation_body_names"] = approach_body_names
+        wrist_approach_capture["wrist_camera_driven_from_body_pose"] = wrist_camera_driven
         camera_rows.extend(approach_frames)
         timings_seconds["wrist_approach"] = round(time.monotonic() - phase_started, 6)
 

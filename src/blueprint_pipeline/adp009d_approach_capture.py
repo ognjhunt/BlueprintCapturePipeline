@@ -172,6 +172,56 @@ def pose_world_to_base(
     return position_base, quaternion_base
 
 
+def rigid_offset_in_body_frame(
+    *,
+    body_position_world: Sequence[float],
+    body_quaternion_world_wxyz: Sequence[float],
+    child_position_world: Sequence[float],
+    child_quaternion_world_wxyz: Sequence[float],
+) -> tuple[list[float], list[float]]:
+    """Express a child's world pose as a constant offset in a body's frame.
+
+    Arena parents the wrist camera under the Robotiq gripper base, which is not
+    an articulation body -- PhysX never writes a pose for it, so the camera keeps
+    its authored transform while the arm moves.  A live run measured the hand
+    travelling 0.27 m while every recorded wrist pose stayed byte-identical.
+
+    Rather than re-author Arena's rig, the offset is measured once at the reset
+    pose, where the authored transform is still the true one, and re-applied from
+    the live body pose at each capture.  This assumes the gripper base is rigidly
+    fixed to the body it hangs from, which holds: the fingers articulate, the
+    base does not.
+    """
+
+    body_inverse = _quat_conjugate(body_quaternion_world_wxyz)
+    delta = [
+        float(child_position_world[index]) - float(body_position_world[index])
+        for index in range(3)
+    ]
+    position_body = list(_quat_rotate(body_inverse, delta))
+    quaternion_body = list(_quat_multiply(body_inverse, child_quaternion_world_wxyz))
+    return position_body, quaternion_body
+
+
+def apply_rigid_offset(
+    *,
+    body_position_world: Sequence[float],
+    body_quaternion_world_wxyz: Sequence[float],
+    offset_position_body: Sequence[float],
+    offset_quaternion_body_wxyz: Sequence[float],
+) -> tuple[list[float], list[float]]:
+    """Rebuild a child's world pose from a live body pose and a constant offset."""
+
+    rotated = _quat_rotate(body_quaternion_world_wxyz, offset_position_body)
+    position_world = [
+        float(body_position_world[index]) + rotated[index] for index in range(3)
+    ]
+    quaternion_world = list(
+        _quat_multiply(body_quaternion_world_wxyz, offset_quaternion_body_wxyz)
+    )
+    return position_world, quaternion_world
+
+
 def _max_travel_m(positions: Sequence[Sequence[float]]) -> float:
     """Largest displacement of any sample from the first sample."""
 
@@ -340,8 +390,10 @@ __all__ = [
     "WRIST_POSE_CAUSE_PRIM_DETACHED",
     "WRIST_POSE_CAUSE_STALE_BUFFER",
     "WRIST_POSE_CAUSE_UNDETERMINED",
+    "apply_rigid_offset",
     "approach_waypoints_world",
     "classify_wrist_pose_discrepancy",
+    "rigid_offset_in_body_frame",
     "pose_world_to_base",
     "summarize_wrist_approach_capture",
 ]

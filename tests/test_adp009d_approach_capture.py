@@ -416,3 +416,126 @@ def test_runtime_records_the_achieved_end_effector_pose_per_waypoint() -> None:
     assert approach.index("approach_arrivals.append(") < approach.index(
         'for camera_name in ("external_camera", "wrist_camera"):'
     )
+
+
+def test_rigid_offset_round_trips_a_camera_through_a_moving_body() -> None:
+    """A camera on a non-articulation prim must be driven from its parent body.
+
+    Arena parents the wrist camera under the Robotiq gripper base, which PhysX
+    never writes a pose for.  A live run measured the hand travelling 0.27 m
+    while every recorded wrist pose stayed byte-identical.
+    """
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        MIN_WRIST_POSE_TRAVEL_M,
+        apply_rigid_offset,
+        rigid_offset_in_body_frame,
+    )
+
+    half = np.sqrt(0.5)
+    # Reset: body yawed -90 deg, camera offset ahead of and above it.
+    body_reset_pos = [3.4107, -3.2714, 0.8660]
+    body_reset_quat = [half, 0.0, 0.0, -half]
+    camera_reset_pos = [3.4372, -3.0958, 0.7374]
+    camera_reset_quat = [0.0, 1.0, 0.0, 0.0]
+
+    offset_pos, offset_quat = rigid_offset_in_body_frame(
+        body_position_world=body_reset_pos,
+        body_quaternion_world_wxyz=body_reset_quat,
+        child_position_world=camera_reset_pos,
+        child_quaternion_world_wxyz=camera_reset_quat,
+    )
+
+    # Re-applying at the reset pose must reproduce the authored camera exactly.
+    back_pos, back_quat = apply_rigid_offset(
+        body_position_world=body_reset_pos,
+        body_quaternion_world_wxyz=body_reset_quat,
+        offset_position_body=offset_pos,
+        offset_quaternion_body_wxyz=offset_quat,
+    )
+    for index in range(3):
+        assert back_pos[index] == pytest.approx(camera_reset_pos[index], abs=1e-9)
+    for index in range(4):
+        assert back_quat[index] == pytest.approx(camera_reset_quat[index], abs=1e-9)
+
+    # Moving the body must move the camera by the same rigid displacement.
+    moved_pos = [3.1578, -3.3789, 0.7823]
+    live_pos, _ = apply_rigid_offset(
+        body_position_world=moved_pos,
+        body_quaternion_world_wxyz=body_reset_quat,
+        offset_position_body=offset_pos,
+        offset_quaternion_body_wxyz=offset_quat,
+    )
+    for index in range(3):
+        expected = camera_reset_pos[index] + (moved_pos[index] - body_reset_pos[index])
+        assert live_pos[index] == pytest.approx(expected, abs=1e-9)
+    # The camera must actually have travelled, unlike the observed live run.
+    travel = sum((a - b) ** 2 for a, b in zip(live_pos, camera_reset_pos)) ** 0.5
+    assert travel > MIN_WRIST_POSE_TRAVEL_M
+
+
+def test_rigid_offset_rotates_the_camera_with_the_body() -> None:
+    """Pure body rotation must swing the camera around it, not translate it."""
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        apply_rigid_offset,
+        rigid_offset_in_body_frame,
+    )
+
+    half = np.sqrt(0.5)
+    body_pos = [0.0, 0.0, 0.0]
+    identity = [1.0, 0.0, 0.0, 0.0]
+    camera_pos = [1.0, 0.0, 0.0]
+
+    offset_pos, offset_quat = rigid_offset_in_body_frame(
+        body_position_world=body_pos,
+        body_quaternion_world_wxyz=identity,
+        child_position_world=camera_pos,
+        child_quaternion_world_wxyz=identity,
+    )
+    assert offset_pos[0] == pytest.approx(1.0, abs=1e-9)
+
+    # Yaw the body +90 deg about z: the camera should swing to world +y.
+    yawed = [half, 0.0, 0.0, half]
+    live_pos, live_quat = apply_rigid_offset(
+        body_position_world=body_pos,
+        body_quaternion_world_wxyz=yawed,
+        offset_position_body=offset_pos,
+        offset_quaternion_body_wxyz=offset_quat,
+    )
+    assert live_pos[0] == pytest.approx(0.0, abs=1e-9)
+    assert live_pos[1] == pytest.approx(1.0, abs=1e-9)
+    assert live_pos[2] == pytest.approx(0.0, abs=1e-9)
+    assert live_quat[0] == pytest.approx(half, abs=1e-9)
+    assert live_quat[3] == pytest.approx(half, abs=1e-9)
+
+
+def test_runtime_drives_the_wrist_camera_before_each_approach_capture() -> None:
+    """Nothing else moves this camera, so the drive must precede the readback.
+
+    The camera hangs off the Robotiq gripper base, which is not an articulation
+    body -- PhysX writes no pose for it.  If the capture ran first, every wrist
+    frame would carry the reset pose while showing a moved view.
+    """
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    approach = source[source.index("--- preregistered wrist approach") :]
+
+    # The offset is measured once, at the reset pose, before any waypoint motion.
+    setup = source.index("rigid_offset_in_body_frame(")
+    assert setup < source.index("for waypoint in approach_waypoints_world():")
+
+    # Then applied and written before the captures, every waypoint.
+    drive = approach.index("wrist_camera.set_world_poses(")
+    capture = approach.index('for camera_name in ("external_camera", "wrist_camera"):')
+    assert drive < capture, "wrist pose must be driven before it is read back"
+    assert approach.index("apply_rigid_offset(") < drive
+
+    # The report must say whether the drive actually ran, so a silently skipped
+    # drive cannot be mistaken for a camera that legitimately did not move.
+    assert '"wrist_camera_driven_from_body_pose"' in source
+    assert '"articulation_body_names"' in source
