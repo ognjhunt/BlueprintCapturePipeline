@@ -222,7 +222,17 @@ def write_gaussian_surflet_particlefield_usd(
     stage = Usd.Stage.CreateNew(str(out_path))
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-    UsdGeom.Xform.Define(stage, "/World")
+    world = UsdGeom.Xform.Define(stage, "/World")
+    # Without a default prim a reference resolves to nothing.  Arena brings this
+    # asset in with Object(usd_path=...), i.e. a USD reference, and a live run
+    # added it to the scene and produced frames byte-comparable to a run with no
+    # appearance at all -- max difference 12 of 255.  Nothing composed, so there
+    # was nothing to render, which is also why authoring gaussian accumulation
+    # settings changed nothing.  Both assets that do compose in this scene carry
+    # one: sage_task_collision has /Root, the approved can has /canned_beverage.
+    # The standalone OVRTX worker never noticed because it opens the file as a
+    # stage rather than referencing it.
+    stage.SetDefaultPrim(world.GetPrim())
     field = UsdVol.ParticleField.Define(stage, prim_path)
     prim = field.GetPrim()
     api_classes = (
@@ -309,6 +319,7 @@ def write_gaussian_surflet_particlefield_usd(
         "output_bytes": out_path.stat().st_size,
         "schema": GAUSSIAN_SURFLET_SCHEMA,
         "prim_path": prim_path,
+        "default_prim": "/World",
         "surfel_count": arrays["count"],
         "sh_degree": arrays["sh_degree"],
         "source_frame": "right_handed_z_up_meters_identity_to_admitted_world",

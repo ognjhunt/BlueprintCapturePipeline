@@ -1104,3 +1104,43 @@ def test_every_module_the_episode_imports_is_shipped() -> None:
                 assert f'"{node.module}.py"' in bundle_source, (
                     f"{module} imports {node.module}, which the bundle does not ship"
                 )
+
+
+def test_the_particlefield_declares_a_default_prim(tmp_path) -> None:
+    """Without one, a USD reference resolves to nothing.
+
+    Arena brings this asset in with Object(usd_path=...), a reference.  A live
+    run added it and produced frames byte-comparable to a run with no
+    appearance -- max difference 12 of 255 -- because nothing composed, which
+    is also why authoring gaussian accumulation settings changed nothing.  Both
+    assets that do compose here carry one: sage_task_collision has /Root and
+    the approved can has /canned_beverage.
+    """
+
+    import inspect
+
+    from blueprint_pipeline import particlefield_usd
+
+    source = inspect.getsource(particlefield_usd.write_gaussian_surflet_particlefield_usd)
+    assert "stage.SetDefaultPrim(world.GetPrim())" in source
+    # Set before the field is defined, so the file is never written without one.
+    assert source.index("SetDefaultPrim") < source.index("ParticleField.Define")
+    # And recorded, so an asset lacking one is visible in its own receipt.
+    assert '"default_prim"' in inspect.getsource(particlefield_usd)
+
+
+def test_the_runtime_probes_the_live_stage_for_the_appearance_prim() -> None:
+    """One run must yield both the fix and the confirmation of why it failed."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert '"aura_stage_probe"' in source
+    assert "matching_prim_paths" in source
+    assert "GetAppliedSchemas()" in source
+    # A diagnostic must never fail the run it is diagnosing.
+    probe = source[source.index("aura_stage_probe: dict") :]
+    probe = probe[: probe.index("live_collider = ")]
+    assert "except Exception" in probe
