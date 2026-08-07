@@ -76,11 +76,19 @@ mkdir -p "$OUT_DIR"
 # Policy provisioning, when a candidate is bound.  Non-fatal by design: the
 # micro-check's own evidence must survive a provisioning failure, and the
 # exit code is retained so the failure is visible rather than inferred.
-if [ -x "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]; then
-  "$RUNTIME_DIR/adp009d_policy_provisioning.sh" \
+# Tested with -f and invoked through bash, never relying on the execute bit:
+# Python's zipfile.extractall does not preserve Unix permissions, so a 755
+# script in the archive arrives non-executable and an -x test skips it in
+# silence.  That is exactly what happened on the first provisioning run.
+if [ -f "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]; then
+  bash "$RUNTIME_DIR/adp009d_policy_provisioning.sh" \
     >"$OUT_DIR/adp009d_policy_provisioning.log" 2>&1
   provisioning_rc=$?
-  printf '{"provisioning_exit_code": %d}\n' "$provisioning_rc" \
+  printf '{"provisioning_exit_code": %d, "provisioning_ran": true}\n' \
+    "$provisioning_rc" >"$OUT_DIR/adp009d_policy_provisioning_status.json"
+else
+  # A bound candidate whose script is absent must say so rather than vanish.
+  printf '{"provisioning_exit_code": null, "provisioning_ran": false}\n' \
     >"$OUT_DIR/adp009d_policy_provisioning_status.json"
 fi
 

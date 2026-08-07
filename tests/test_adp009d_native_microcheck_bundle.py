@@ -932,7 +932,25 @@ def test_provisioning_ships_only_when_a_candidate_is_bound(tmp_path: Path) -> No
     from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
 
     # Guarded on the script existing, so an unbound bundle simply skips it.
-    assert 'if [ -x "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]; then' in ENTRYPOINT
+    assert 'if [ -f "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]; then' in ENTRYPOINT
     # Non-fatal, and the exit code is retained rather than inferred from silence.
     assert "provisioning_exit_code" in ENTRYPOINT
     assert "adp009d_policy_provisioning.log" in ENTRYPOINT
+
+
+def test_provisioning_never_depends_on_a_preserved_execute_bit() -> None:
+    """extractall drops Unix permissions, so an -x test skips the script in silence.
+
+    A live run shipped the script at mode 755 inside the archive, extracted it
+    non-executable, and produced no provisioning log, no status file and no
+    error -- the block simply did not run.
+    """
+
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+
+    assert '[ -f "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]' in ENTRYPOINT
+    assert '[ -x "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]' not in ENTRYPOINT
+    assert 'bash "$RUNTIME_DIR/adp009d_policy_provisioning.sh"' in ENTRYPOINT
+    # A bound candidate whose script is missing must be visible, not silent.
+    assert '"provisioning_ran": false' in ENTRYPOINT
+    assert '"provisioning_ran": true' in ENTRYPOINT
