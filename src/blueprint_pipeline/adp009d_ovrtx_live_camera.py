@@ -205,16 +205,11 @@ def materialize_ovrtx_exact_camera_conformance_probe(
     aura_native_manifest_path: str | Path,
     particlefield_receipt_path: str | Path,
     output_dir: str | Path,
-    implementation_commit: str,
     camera_ids: Sequence[str] = DEFAULT_CONFORMANCE_CAMERA_IDS,
     resolution: Sequence[int] = DEFAULT_CONFORMANCE_RESOLUTION,
 ) -> dict[str, Any]:
     """Freeze a low-cost exact-camera oracle probe before OVRTX execution."""
 
-    if len(implementation_commit) != 40 or any(
-        character not in "0123456789abcdef" for character in implementation_commit
-    ):
-        raise ValueError("ovrtx_exact_camera_implementation_commit_invalid")
     if len(camera_ids) < 2 or len(set(camera_ids)) != len(camera_ids):
         raise ValueError("ovrtx_exact_camera_set_invalid")
     if len(resolution) != 2:
@@ -300,7 +295,8 @@ def materialize_ovrtx_exact_camera_conformance_probe(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "status": "materialized_unexecuted",
         "probe_purpose": "aura_ovrtx_exact_camera_visual_conformance",
-        "implementation_commit": implementation_commit,
+        "materializer_source_path": Path(__file__).name,
+        "materializer_source_sha256": _sha256(Path(__file__).resolve()),
         "thresholds_frozen_before_ovrtx_execution": True,
         "ovrtx_outcomes_observed_before_freeze": False,
         "exact_camera_path": str(exact_path),

@@ -186,13 +186,13 @@ def test_exact_camera_conformance_probe_binds_native_frames_and_axis_change(
         aura_native_manifest_path=native_path,
         particlefield_receipt_path=particle_path,
         output_dir=tmp_path / "probe",
-        implementation_commit="a" * 40,
         resolution=(16, 12),
     )
 
     assert result["camera_ids"] == ["approach_close", "right_translate"]
     assert result["thresholds_frozen_before_ovrtx_execution"] is True
     assert result["ovrtx_outcomes_observed_before_freeze"] is False
+    assert result["materializer_source_sha256"].startswith("sha256:")
     first = result["camera_configs"][0]
     assert first["calibration"]["intrinsic_matrix"][0] == [10.0, 0.0, 8.0]
     config = json.loads(Path(first["configuration_path"]).read_text())
