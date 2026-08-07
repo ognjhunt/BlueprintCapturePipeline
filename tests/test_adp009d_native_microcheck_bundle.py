@@ -855,3 +855,47 @@ def test_bundle_ships_the_approach_helper_next_to_the_runtime() -> None:
     source = Path(bundle_module.__file__).read_text(encoding="utf-8")
     assert 'runtime / "adp009d_approach_capture.py"' in source
     assert 'runtime / "adp009d_isaac_runtime.py"' in source
+
+
+def test_entrypoint_records_how_the_worker_died(tmp_path: Path) -> None:
+    """A native abort and a Python error need different repairs.
+
+    A co-resident policy server exhausting VRAM kills Isaac as SIGABRT or
+    SIGKILL, which no Python except clause in the runtime can catch -- the
+    runtime's own main only catches Exception.  The shell's exit status is the
+    only place that distinction survives.
+    """
+
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+
+    # The fallback must receive the exit status, not just the output directory.
+    assert '"$OUT_DIR" "$runner_rc"' in ENTRYPOINT
+    assert '"worker_exit_code"' in ENTRYPOINT
+    assert '"worker_terminating_signal"' in ENTRYPOINT
+    assert "adp009d_worker_terminated_by_signal" in ENTRYPOINT
+    # Still emits the generic blocker so existing consumers keep working.
+    assert "adp009d_worker_failed_without_runtime_result" in ENTRYPOINT
+
+
+def test_entrypoint_signal_decoding_is_correct(tmp_path: Path) -> None:
+    """Exercise the embedded decoder on the exit codes that actually occur."""
+
+    import signal as signal_module
+
+    def decode(code: int) -> str | None:
+        number = code - 128 if code > 128 else None
+        if number is None:
+            return None
+        try:
+            return signal_module.Signals(number).name
+        except ValueError:
+            return None
+
+    assert decode(134) == "SIGABRT"   # CUDA abort / assertion failure
+    assert decode(139) == "SIGSEGV"   # native segfault
+    assert decode(137) == "SIGKILL"   # OOM killer
+    # An ordinary Python failure is not a signal.
+    assert decode(1) is None
+    assert decode(2) is None
+    # Out-of-range values must not raise.
+    assert decode(255) is None

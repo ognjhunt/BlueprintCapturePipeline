@@ -69,16 +69,34 @@ mkdir -p "$OUT_DIR"
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
 if [ $runner_rc -ne 0 ] && [ ! -f "$OUT_DIR/adp009d_native_microcheck.json" ]; then
-/isaac-sim/python.sh - "$OUT_DIR" <<'PY'
+/isaac-sim/python.sh - "$OUT_DIR" "$runner_rc" <<'PY'
 import json
+import signal
 import sys
 from pathlib import Path
 out = Path(sys.argv[1])
+code = int(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
+# A native abort and an ordinary Python error both reach here, and they need
+# different repairs: a CUDA out-of-memory kill from a co-resident policy server
+# arrives as SIGABRT or SIGKILL, which no Python except clause can catch.
+# Recording the shell's exit status separates them.
+signal_number = code - 128 if code > 128 else None
+signal_name = None
+if signal_number is not None:
+    try:
+        signal_name = signal.Signals(signal_number).name
+    except ValueError:
+        signal_name = None
+blockers = ["adp009d_worker_failed_without_runtime_result"]
+if signal_name:
+    blockers.append(f"adp009d_worker_terminated_by_signal:{signal_name}")
 (out / "adp009d_native_microcheck.json").write_text(json.dumps({
     "schema_version": "adp009d_native_microcheck.v1",
     "status": "blocked",
-    "blockers": ["adp009d_worker_failed_without_runtime_result"],
+    "blockers": sorted(blockers),
+    "worker_exit_code": code,
+    "worker_terminating_signal": signal_name,
     "candidate_policy_queried": False,
     "candidate_outcomes_accessed": False
 }, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
