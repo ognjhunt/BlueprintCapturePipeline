@@ -342,6 +342,57 @@ def _phase(name: str, status: str = "started") -> None:
     print(f"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d_native:{name}:{status}", flush=True)
 
 
+FIRST_RENDER_BUDGET_SECONDS_ENV = "BLUEPRINT_ADP009D_FIRST_RENDER_BUDGET_SECONDS"
+# Generous: the same scene without appearance renders its first frame in
+# seconds.  A live run sat in this call for over twenty minutes emitting an
+# omni.usd "failed to wait for idle" every seventy seconds and would have burnt
+# the whole TTL to tell us nothing.
+DEFAULT_FIRST_RENDER_BUDGET_SECONDS = 300.0
+
+
+def _run_under_render_budget(call, *, phase_name: str, diagnostics: dict[str, Any]):
+    """Run the first render under a hard budget, naming the failure if it blows.
+
+    Isaac blocks inside native code, so a Python exception raised from a timer
+    thread would never unwind it and a plain join would hang with it.  The only
+    way to get a diagnosis out of a wedged renderer is to print it from a
+    watchdog thread and hard-exit, which is what this does -- deliberately
+    ``os._exit`` after flushing, because a normal exit path runs Omniverse
+    shutdown handlers that are themselves blocked on the same idle wait.
+    """
+
+    import os
+    import threading
+
+    budget = float(
+        os.environ.get(FIRST_RENDER_BUDGET_SECONDS_ENV)
+        or DEFAULT_FIRST_RENDER_BUDGET_SECONDS
+    )
+    finished = threading.Event()
+
+    def _watchdog() -> None:
+        if finished.wait(budget):
+            return
+        _phase(phase_name, "blocked")
+        print(
+            f"BLUEPRINT_ADP009D_BLOCKER:first_render_budget_exceeded:{budget:.0f}s",
+            flush=True,
+        )
+        print(
+            "BLUEPRINT_ADP009D_FIRST_RENDER_DIAGNOSTICS:"
+            + json.dumps(diagnostics, sort_keys=True, default=str),
+            flush=True,
+        )
+        os._exit(93)
+
+    watcher = threading.Thread(target=_watchdog, daemon=True)
+    watcher.start()
+    try:
+        return call()
+    finally:
+        finished.set()
+
+
 def _configure_physx_collision_cooking() -> dict[str, Any]:
     """Apply the documented UJITSO-stall diagnostic before scene construction."""
 
@@ -1028,7 +1079,20 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         # thing it had said was reset_1:completed, several phases earlier.
         _phase("zero_action_step")
         phase_started = time.monotonic()
-        observation, reward, terminated, truncated, info = env.step(action)
+        observation, reward, terminated, truncated, info = _run_under_render_budget(
+            lambda: env.step(action),
+            phase_name="zero_action_step",
+            diagnostics={
+                "aura_stage_probe": aura_stage_probe,
+                "aura_particlefield_shipped": (
+                    runtime / "assets" / AURA_PARTICLEFIELD_FILENAME
+                ).is_file(),
+                "note": (
+                    "first step is the first render; a budget overrun here means "
+                    "the scene composed but cannot be drawn in bounded time"
+                ),
+            },
+        )
         timings_seconds["zero_action_step"] = round(
             time.monotonic() - phase_started, 6
         )

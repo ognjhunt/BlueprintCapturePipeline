@@ -1285,7 +1285,47 @@ def test_the_first_render_step_is_visible_in_the_phase_log() -> None:
     assert '_phase("zero_action_step", "completed")' in source
     # Emitted before the step, or it cannot report a hang inside it.
     assert source.index('_phase("zero_action_step")') < source.index(
-        "observation, reward, terminated, truncated, info = env.step(action)"
+        "lambda: env.step(action)"
     )
     # And the warmup loop announces itself before its first tenth-frame marker.
     assert '_phase("camera_warmup")' in source
+
+
+def test_the_first_render_runs_under_a_hard_budget() -> None:
+    """A wedged renderer must name itself rather than burn the whole TTL.
+
+    A live run sat in the first step for over twenty minutes emitting an
+    omni.usd "failed to wait for idle" every seventy seconds.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "_run_under_render_budget(" in source
+    assert "first_render_budget_exceeded" in source
+    # Isaac blocks in native code, so only a hard exit from the watchdog thread
+    # can get the diagnosis out; a normal exit runs shutdown handlers that are
+    # themselves blocked on the same idle wait.
+    assert "os._exit(93)" in source
+    # The diagnosis must carry the stage probe, or it names a symptom only.
+    assert '"aura_stage_probe": aura_stage_probe,' in source
+
+
+def test_the_render_budget_lets_a_fast_render_through() -> None:
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    result = runtime._run_under_render_budget(
+        lambda: "rendered", phase_name="zero_action_step", diagnostics={}
+    )
+    assert result == "rendered"
+
+
+def test_the_render_budget_is_overridable_for_a_slow_scene(monkeypatch) -> None:
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    monkeypatch.setenv(runtime.FIRST_RENDER_BUDGET_SECONDS_ENV, "900")
+    assert runtime._run_under_render_budget(
+        lambda: 1, phase_name="p", diagnostics={}
+    ) == 1
