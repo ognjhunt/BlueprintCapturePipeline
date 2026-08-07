@@ -226,6 +226,7 @@ def run_ovrtx_live_camera_vast(
         instance_label_prefix="blueprint-adp009d-ovrtx-",
         blocker_prefix="adp009d_ovrtx",
         min_gpu_ram_mb=46_000,
+        minimum_driver_version="580.95.05",
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
     )
 

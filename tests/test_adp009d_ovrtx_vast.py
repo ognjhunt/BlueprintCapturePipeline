@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import blueprint_pipeline.adp009d_ovrtx_vast as ovrtx_vast
 from blueprint_pipeline.adp009d_ovrtx_vast import build_ovrtx_live_camera_bundle
 from blueprint_pipeline.adp009d_ovrtx_provider_runner import (
     _absolute_executable_without_resolving_symlinks,
@@ -154,3 +155,22 @@ def test_ovrtx_runner_preserves_virtualenv_python_symlink(tmp_path: Path) -> Non
 
     assert observed == venv_python
     assert observed != base_python.resolve()
+
+
+def test_ovrtx_vast_binds_documented_minimum_driver(monkeypatch, tmp_path: Path) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(**kwargs):  # type: ignore[no-untyped-def]
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(ovrtx_vast, "run_arena_native_control_vast", fake_run)
+    result = ovrtx_vast.run_ovrtx_live_camera_vast(
+        job_dir=tmp_path,
+        prepared_bundle={},
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert observed["minimum_driver_version"] == "580.95.05"

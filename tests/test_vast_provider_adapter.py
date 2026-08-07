@@ -2421,6 +2421,32 @@ def test_vast_adapter_prefers_known_supported_driver_over_known_unsupported_driv
     )
 
 
+def test_vast_adapter_enforces_backend_minimum_driver_version() -> None:
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "L40",
+                "dph_total": 0.20,
+                "driver_version": "580.82.09",
+            },
+            {
+                "id": 2,
+                "ask_contract_id": 2,
+                "gpu_name": "RTX 6000 Ada Generation",
+                "dph_total": 0.31,
+                "driver_version": "580.119.02",
+            },
+        ],
+        max_hourly_rate=0.60,
+        minimum_driver_version="580.95.05",
+    )
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
+
+
 def test_vast_adapter_can_require_known_supported_driver_for_rendering() -> None:
     selected = _select_offer(
         [

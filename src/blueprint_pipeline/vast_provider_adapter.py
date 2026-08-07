@@ -1100,6 +1100,7 @@ def _provider_plan(
     provider_output_put_url: str | None = None,
     provider_bundle_inline_transport: Mapping[str, Any] | None = None,
     require_known_supported_isaac_driver: bool = False,
+    minimum_driver_version: str = "",
 ) -> dict[str, Any]:
     inline_transport = _mapping(provider_bundle_inline_transport)
     plan = {
@@ -1169,6 +1170,7 @@ def _provider_plan(
                 inline_transport.get("inline_provider_bundle_sha256_present") is True
             ),
             "require_known_supported_isaac_driver": require_known_supported_isaac_driver,
+            "minimum_driver_version": minimum_driver_version or None,
         },
         "truth_boundaries": _truth_boundaries(),
         "raw_secret_values_recorded": False,
@@ -1432,6 +1434,23 @@ def _machine_id_set(values: Iterable[Any]) -> set[int]:
     return result
 
 
+def _version_tuple(value: Any) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", _string(value)))
+
+
+def _version_at_least(value: Any, minimum: str) -> bool:
+    if not minimum:
+        return True
+    observed = _version_tuple(value)
+    required = _version_tuple(minimum)
+    if not observed or not required:
+        return False
+    width = max(len(observed), len(required))
+    return observed + (0,) * (width - len(observed)) >= required + (0,) * (
+        width - len(required)
+    )
+
+
 def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {
@@ -1548,6 +1567,7 @@ def _select_offer(
     allowed_machine_ids: Iterable[Any] = (),
     require_avx: bool = False,
     require_known_supported_isaac_driver: bool = False,
+    minimum_driver_version: str = "",
     min_reliability: float = 0.0,
     require_direct_port: bool = False,
     preferred_gpu_keywords: Sequence[str] = (),
@@ -1580,6 +1600,7 @@ def _select_offer(
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and (not require_avx or item.get("has_avx") is True)
+        and _version_at_least(item.get("driver_version"), minimum_driver_version)
     ]
     if require_known_supported_isaac_driver:
         candidates = [
@@ -1645,6 +1666,7 @@ def _offer_selection_manifest(
     machine_avoidlist_path: Path,
     avoidlist_status: str | None,
     blockers: Sequence[str],
+    minimum_driver_version: str = "",
     min_reliability: float = 0.0,
     require_direct_port: bool = False,
     preferred_gpu_keywords: Sequence[str] = (),
@@ -1665,6 +1687,11 @@ def _offer_selection_manifest(
         1
         for item in summaries
         if item.get("isaac_driver_support_status") == "known_unsupported_omniverse_rtx_driver_range"
+    )
+    minimum_driver_offer_count = sum(
+        1
+        for item in summaries
+        if _version_at_least(item.get("driver_version"), minimum_driver_version)
     )
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
@@ -1694,6 +1721,7 @@ def _offer_selection_manifest(
         and gpu_allowed_by_policy(item, policy)
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
+        and _version_at_least(item.get("driver_version"), minimum_driver_version)
     )
     return {
         "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -1710,6 +1738,7 @@ def _offer_selection_manifest(
             summaries, max_compute_cap
         ),
         "require_known_supported_isaac_driver": require_known_supported_isaac_driver,
+        "minimum_driver_version": minimum_driver_version or None,
         "min_reliability": min_reliability,
         "require_direct_port": require_direct_port,
         "preferred_gpu_keywords": list(preferred_gpu_keywords),
@@ -1719,6 +1748,7 @@ def _offer_selection_manifest(
         "quality_filtered_offer_count": quality_filtered_offer_count,
         "known_supported_driver_offer_count": known_supported_offer_count,
         "known_unsupported_driver_offer_count": known_unsupported_driver_offer_count,
+        "minimum_driver_offer_count": minimum_driver_offer_count,
         "selected_offer": _offer_artifact_summary(selected_offer),
         "selected_offer_isaac_rt_candidate": bool(
             selected_offer and selected_offer.get("isaac_rt_candidate")
@@ -4670,6 +4700,7 @@ def run_vast_provider_adapter(
     verify_staging_urls: bool = False,
     allow_staging_output_put_probe: bool = False,
     require_known_supported_isaac_driver: bool = False,
+    minimum_driver_version: str = "",
     min_reliability: float | None = None,
     require_direct_port: bool | None = None,
     preferred_gpu_keywords: Sequence[str] = (),
@@ -4748,6 +4779,11 @@ def run_vast_provider_adapter(
     resolved_preferred_gpu_keywords = [
         _string(item) for item in preferred_gpu_keywords if _string(item)
     ] or _env_csv(VAST_PREFERRED_GPU_KEYWORDS_ENV)
+    resolved_minimum_driver_version = _string(minimum_driver_version)
+    if resolved_minimum_driver_version and not _version_tuple(
+        resolved_minimum_driver_version
+    ):
+        raise ValueError("invalid_vast_minimum_driver_version")
     resolved_preferred_geolocation_regex = _string(
         preferred_geolocation_regex or os.getenv(VAST_PREFERRED_GEOLOCATION_REGEX_ENV)
     )
@@ -4920,6 +4956,7 @@ def run_vast_provider_adapter(
         provider_output_put_url=provider_output_put_url,
         provider_bundle_inline_transport=inline_bundle_transport,
         require_known_supported_isaac_driver=require_known_supported_isaac_driver,
+        minimum_driver_version=resolved_minimum_driver_version,
     )
     _budget_ledger(
         job_dir=resolved_job_dir,
@@ -4952,6 +4989,7 @@ def run_vast_provider_adapter(
         "isaac_image": isaac_image,
         "selected_container_image": selected_container_image,
         "require_known_supported_isaac_driver": require_known_supported_isaac_driver,
+        "minimum_driver_version": resolved_minimum_driver_version or None,
         "provider_bundle_inline_transport_used": (
             inline_bundle_transport.get("inline_provider_bundle_transport_used") is True
         ),
@@ -5815,6 +5853,7 @@ def run_vast_provider_adapter(
                 excluded_machine_ids=excluded_machine_ids,
                 allowed_machine_ids=resolved_allowed_machine_ids,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
+                minimum_driver_version=resolved_minimum_driver_version,
                 min_reliability=resolved_min_reliability,
                 require_direct_port=resolved_require_direct_port,
                 preferred_gpu_keywords=resolved_preferred_gpu_keywords,
@@ -5828,6 +5867,8 @@ def run_vast_provider_adapter(
                     offer_blockers.append("no_vast_offer_matching_allowed_machine_ids")
                 if resolved_min_compute_cap:
                     offer_blockers.append("no_vast_offer_meeting_min_compute_cap")
+                if resolved_minimum_driver_version:
+                    offer_blockers.append("no_vast_offer_meeting_minimum_driver_version")
                 if vcc.any_offer_exceeds_ceiling(offers, resolved_max_compute_cap):
                     offer_blockers.append("no_vast_offer_at_or_below_max_compute_cap")
                 offer_blockers.append(
@@ -5845,6 +5886,7 @@ def run_vast_provider_adapter(
                 min_compute_cap=resolved_min_compute_cap,
                 max_compute_cap=resolved_max_compute_cap,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
+                minimum_driver_version=resolved_minimum_driver_version,
                 excluded_machine_ids=excluded_machine_ids,
                 allowed_machine_ids=resolved_allowed_machine_ids,
                 machine_avoidlist_path=resolved_machine_avoidlist_path,
@@ -5983,6 +6025,7 @@ def run_vast_provider_adapter(
                     max_hourly_rate=max_hourly_rate,
                     min_gpu_ram_mb=resolved_min_gpu_ram_mb,
                     require_known_supported_isaac_driver=require_known_supported_isaac_driver,
+                    minimum_driver_version=resolved_minimum_driver_version,
                     excluded_machine_ids=excluded_machine_ids,
                     allowed_machine_ids=resolved_allowed_machine_ids,
                     machine_avoidlist_path=resolved_machine_avoidlist_path,
@@ -6730,6 +6773,8 @@ def run_vast_provider_adapter(
                 exception_blockers.append("no_vast_offer_matching_allowed_machine_ids")
             if resolved_min_compute_cap:
                 exception_blockers.append("no_vast_offer_meeting_min_compute_cap")
+            if resolved_minimum_driver_version:
+                exception_blockers.append("no_vast_offer_meeting_minimum_driver_version")
             exception_blockers.append(
                 "no_vast_offer_with_known_supported_isaac_driver_at_or_below_max_hourly_rate"
                 if require_known_supported_isaac_driver
