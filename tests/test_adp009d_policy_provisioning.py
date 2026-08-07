@@ -151,7 +151,12 @@ def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
     assert f'venv --python "{SYSTEM_INTERPRETER}"' in script
     assert SYSTEM_INTERPRETER == "/usr/bin/python3"
     # Never Isaac's own interpreter, and never its measured real path either.
-    assert ISAAC_INTERPRETER not in script.split('# Prove')[0]
+    # Isaac's interpreter may appear -- the preflight checker runs under it --
+    # but it must never be what creates the venv or installs the policy.
+    venv_lines = [ln for ln in script.splitlines() if "venv --python" in ln]
+    assert venv_lines and all(ISAAC_INTERPRETER not in ln for ln in venv_lines)
+    install_lines = [ln for ln in script.splitlines() if "pip install -e" in ln]
+    assert install_lines and all(ISAAC_INTERPRETER not in ln for ln in install_lines)
     assert "/isaac-sim/kit/python/bin/python3" not in script
 
 
