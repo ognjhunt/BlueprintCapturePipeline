@@ -445,9 +445,14 @@ def test_runtime_binds_and_verifies_canonical_reset_pose() -> None:
     assert "robot.init_state = robot.init_state.replace" in source
     assert "joint_pos=canonical_joint_positions" in source
     assert ".joint_pos.update(" not in source
+    assert "_configure_deterministic_reset_events(embodiment)" in source
+    assert 'reset_writer.params["mean"] = 0.0' in source
+    assert 'reset_writer.params["std"] = 0.0' in source
+    assert "randomize_franka_joint_state = None" not in source
     assert 'blocker="canonical_reset_arm_pose_mismatch"' in source
     assert 'blocker="canonical_hold_arm_pose_drift"' in source
     assert '"post_warmup_arm_maximum_error_rad"' in source
+    assert 'result["diagnostics"] = _json_safe(diagnostics)' in source
 
 
 def test_canonical_reset_replaces_overlapping_arena_regex_defaults() -> None:
@@ -486,6 +491,50 @@ def test_canonical_reset_replaces_overlapping_arena_regex_defaults() -> None:
         )
     )
     assert not any("*" in name for name in resolved)
+
+
+def test_canonical_reset_keeps_zero_noise_state_writer_event() -> None:
+    class FakeTerm:
+        def __init__(self, params: dict[str, object]) -> None:
+            self.params = params
+
+    class FakeEvents:
+        init_franka_arm_pose = FakeTerm({"default_pose": [99.0]})
+        randomize_franka_joint_state = FakeTerm({"mean": 1.0, "std": 2.0})
+
+    class FakeEmbodiment:
+        event_config = FakeEvents()
+
+    embodiment = FakeEmbodiment()
+    isaac_runtime._configure_deterministic_reset_events(embodiment)
+
+    assert embodiment.event_config.init_franka_arm_pose.params["default_pose"] == list(
+        isaac_runtime.RESET_JOINTS
+    )
+    assert embodiment.event_config.randomize_franka_joint_state.params == {
+        "mean": 0.0,
+        "std": 0.0,
+    }
+
+
+def test_canonical_pose_failure_retains_per_joint_diagnostics() -> None:
+    diagnostics = isaac_runtime._canonical_pose_diagnostics(
+        actual_arm=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        expected_arm=[0.0] * 7,
+        absolute_error=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        maximum_error=1.0,
+        tolerance_rad=1.0e-3,
+    )
+    error = isaac_runtime.CanonicalPoseError(
+        "canonical_reset_arm_pose_mismatch", diagnostics
+    )
+
+    assert diagnostics["joint_names"] == list(isaac_runtime.RESET_JOINT_NAMES[:7])
+    assert diagnostics["requested_joint_positions_rad"] == [0.0] * 7
+    assert diagnostics["observed_joint_positions_rad"] == [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert diagnostics["absolute_error_rad"] == [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert diagnostics["maximum_error_rad"] == 1.0
+    assert str(error) == "canonical_reset_arm_pose_mismatch:maximum_error_rad=1.000000000"
 
 
 def test_runtime_retains_camera_semantic_mapping_and_quality_diagnostics() -> None:

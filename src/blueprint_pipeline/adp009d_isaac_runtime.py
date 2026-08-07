@@ -83,6 +83,17 @@ RESET_ARM_TOLERANCE_RAD = 1.0e-3
 HOLD_ARM_TOLERANCE_RAD = 1.0e-2
 
 
+class CanonicalPoseError(RuntimeError):
+    """A typed reset/hold failure with exact per-joint diagnostics."""
+
+    def __init__(self, blocker: str, diagnostics: dict[str, Any]) -> None:
+        self.diagnostics = diagnostics
+        super().__init__(
+            f"{blocker}:maximum_error_rad="
+            f"{diagnostics['maximum_error_rad']:.9f}"
+        )
+
+
 def _bind_canonical_joint_positions(embodiment: Any) -> None:
     """Replace Arena's regex defaults with one exact, non-overlapping map."""
 
@@ -93,6 +104,17 @@ def _bind_canonical_joint_positions(embodiment: Any) -> None:
     robot.init_state = robot.init_state.replace(
         joint_pos=canonical_joint_positions
     )
+
+
+def _configure_deterministic_reset_events(embodiment: Any) -> None:
+    """Make Arena's reset event write the exact authored pose without noise."""
+
+    embodiment.event_config.init_franka_arm_pose.params["default_pose"] = list(
+        RESET_JOINTS
+    )
+    reset_writer = embodiment.event_config.randomize_franka_joint_state
+    reset_writer.params["mean"] = 0.0
+    reset_writer.params["std"] = 0.0
 
 
 def _sha256(path: Path) -> str:
@@ -152,10 +174,36 @@ def _assert_arm_pose(
     expected_arm = torch.tensor(
         expected[:7], device=actual_arm.device, dtype=actual_arm.dtype
     )
-    maximum_error = float(torch.max(torch.abs(actual_arm - expected_arm)).item())
+    absolute_error = torch.abs(actual_arm - expected_arm)
+    maximum_error = float(torch.max(absolute_error).item())
     if not math.isfinite(maximum_error) or maximum_error > tolerance_rad:
-        raise RuntimeError(f"{blocker}:maximum_error_rad={maximum_error:.9f}")
+        diagnostics = _canonical_pose_diagnostics(
+            actual_arm=actual_arm,
+            expected_arm=expected_arm,
+            absolute_error=absolute_error,
+            maximum_error=maximum_error,
+            tolerance_rad=tolerance_rad,
+        )
+        raise CanonicalPoseError(blocker, diagnostics)
     return maximum_error
+
+
+def _canonical_pose_diagnostics(
+    *,
+    actual_arm: Any,
+    expected_arm: Any,
+    absolute_error: Any,
+    maximum_error: float,
+    tolerance_rad: float,
+) -> dict[str, Any]:
+    return {
+        "joint_names": list(RESET_JOINT_NAMES[:7]),
+        "requested_joint_positions_rad": _jsonable(expected_arm),
+        "observed_joint_positions_rad": _jsonable(actual_arm),
+        "absolute_error_rad": _jsonable(absolute_error),
+        "maximum_error_rad": maximum_error,
+        "tolerance_rad": tolerance_rad,
+    }
 
 
 def _phase(name: str, status: str = "started") -> None:
@@ -417,8 +465,11 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         initial_joint_pose=list(RESET_JOINTS),
     )
     embodiment.scene_config.robot.spawn.semantic_tags = [("class", "robot")]
-    # The canonical anchor is immutable: no reset noise is permitted.
-    embodiment.event_config.randomize_franka_joint_state = None
+    # The canonical anchor is immutable: retain Arena's second reset event as
+    # the state writer, but set its Gaussian mean and standard deviation to
+    # zero.  Arena's first event updates only the default-joint buffer; without
+    # the writer event, the live articulation remains at its stock pose.
+    _configure_deterministic_reset_events(embodiment)
     # Apply the official pose helper while its stock stand still exists, then remove
     # that scene-specific stand.  The robot base is supported by sealed SAGE geometry.
     embodiment.get_scene_cfg()
@@ -854,6 +905,9 @@ def main(argv: list[str] | None = None) -> int:
             "candidate_policy_queried": False,
             "candidate_outcomes_accessed": False,
         }
+        diagnostics = getattr(exc, "diagnostics", None)
+        if diagnostics is not None:
+            result["diagnostics"] = _json_safe(diagnostics)
     result_path = output / RESULT_NAME
     result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     app_launcher.app.close()
