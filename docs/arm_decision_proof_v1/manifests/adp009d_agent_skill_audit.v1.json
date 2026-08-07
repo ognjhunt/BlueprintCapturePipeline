@@ -803,7 +803,7 @@
     "ovphysx_candidate": "0.5.9 at 7845321d31fa3619917ebe127ab5e08e73de0bdb",
     "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX for dynamic geometry plus AuraFusion360 official native 2D-surfel rasterizer for sealed Aura appearance and metric camera-space depth",
     "sealed_aura_renderer_backend": "AuraFusion360_official_native_2D_surfel_rasterizer",
-    "native_aura_renderer_execution_status": "materialized_unexecuted",
+    "native_aura_renderer_execution_status": "executed_exact_camera_conformance_passed",
     "ovrtx_selected": false,
     "runtime_install_profile": {
       "profile_id": "isaaclab_arena_physx_task_runtime.v3",
@@ -834,7 +834,7 @@
         "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
       }
     },
-    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff. OVRTX loaded all 415265 sealed Aura surflets, but the fully preregistered exact-camera v10 execution returned black color and no positive finite metric depth for either camera after the official ParticleFieldEmissive material and Gaussian accumulated-depth settings were bound. The audited OVRTX skill tree does not establish support for Aura's Gaussian-surflet kernel, so OVRTX is rejected for the sealed Aura layer. The exact official Aura source at f23b26c accepts arbitrary centered-pinhole camera poses and emits RGB, alpha, and expected or median camera-space depth; a bounded native exact-camera conformance canary is now the selected smallest next gate. SAGE remains registered geometry, collision, and depth-reference only and may not replace Aura as policy-visible appearance. OvPhysX remains unselected, the wrist camera omits the can, and live Aura plus Isaac depth composition remains required before policy admission.",
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff. OVRTX loaded all 415265 sealed Aura surflets, but the fully preregistered exact-camera v10 execution returned black color and no positive finite metric depth for either camera, so OVRTX is rejected for this sealed Aura representation. The official native Aura source at f23b26c subsequently reproduced both frozen 2048x1536 native reference frames byte-for-byte and returned positive finite metric expected camera-space depth for every pixel; the code-derived conformance receipt passed the preregistered thresholds. SAGE remains registered geometry, collision, and depth-reference only and may not replace Aura as policy-visible appearance. This standalone renderer gate did not execute Isaac composition, the wrist camera still omits the can in the retained v22 frame, and live Aura plus Isaac depth composition remains required before policy admission.",
     "ovrtx_live_camera_evidence": {
       "run_id": "aura_ovrtx_live_camera_v6",
       "status": "blocked_metric_depth_and_visual_conformance",
@@ -901,7 +901,7 @@
       "smallest_exact_blocker": "sealed_aura_hybrid_policy_observation_renderer_missing"
     },
     "native_aura_renderer_selection": {
-      "status": "materialized_unexecuted",
+      "status": "executed_exact_camera_conformance_passed",
       "decision_frozen_at": "2026-08-07T10:59:33Z",
       "source_repository": "https://github.com/kkennethwu/AuraFusion360_official",
       "source_commit": "f23b26c44ba84608306ba952510533ebf4c7877d",
@@ -916,8 +916,29 @@
       "sealed_source_mutated": false,
       "policy_queried": false,
       "selection_reason": "The selected Aura asset is natively 2D surflets; its exact publisher rasterizer preserves that representation and exposes the required RGB alpha and metric camera-space depth without converting it to a 3D Gaussian or SAGE mesh appearance.",
-      "required_next_receipt": "two frozen exact cameras must reproduce retained method-native RGB within preregistered thresholds and return positive finite metric depth before any live Isaac hybrid composition is admitted.",
-      "smallest_exact_blocker_until_execution": "sealed_aura_hybrid_policy_observation_renderer_missing"
+      "execution_commit": "d61013c6748053a83d9ef146a061a7408a34f1a6",
+      "run_id": "canonical_gpu_run_v2",
+      "completed_at": "2026-08-07T11:20:19Z",
+      "gpu": "NVIDIA L40",
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_native_exact_camera_conformance_v1/canonical_gpu_run_v2/job/attempts/attempt_001/immutable_execution/adp009d_aura_native_live_camera_result.json",
+      "result_sha256": "sha256:488fcf45ba87ffdefa48204a5dab8a95dccd5d2b04be077d877538b6e10b187a",
+      "allocator_result_sha256": "sha256:23817f0f8a6c1a69c39907911a34008e04b720b309b66e67f99a8860b10b85a3",
+      "conformance_receipt_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_native_exact_camera_conformance_v1/adp009d_aura_native_renderer_conformance_receipt.v1.json",
+      "conformance_receipt_sha256": "sha256:e4d784d8881d14e04e0df4913cfc610427630b8008bb2f22157ec7562cfef2fc",
+      "conformance_receipt_digest": "sha256:8e4c34878c7d08d9c137e48263819a760efa3d438163f25642b5c82056d70a6f",
+      "teardown_manifest_sha256": "sha256:14a6ed6b003a0380f35d10839bbc5ad91125c58f08a6ceb8b63e81b3a651e4b5",
+      "final_validation_sha256": "sha256:e3bf86ec82855a83f6a18c72000053aea88d3d42c6db2161b9e66992fd557150",
+      "postrun_provider_zero_sha256": "sha256:e5f7cd4dc3365e5ed9e307e52dfff64d4f20ded90436e3696912e031301531f2",
+      "camera_ids": [
+        "approach_close",
+        "right_translate"
+      ],
+      "native_rgb_byte_exact_by_camera": true,
+      "positive_finite_metric_depth_pixel_count_by_camera": 3145728,
+      "estimated_cost_usd": 0.027479,
+      "provider_zero_observed": true,
+      "required_next_receipt": "execute live exact-calibration Aura plus Isaac dynamic depth and segmentation composition for external and wrist cameras, retain exact lossless policy-input frames, and pass static and moving occlusion probes.",
+      "smallest_exact_blocker_after_execution": "sealed_aura_hybrid_policy_observation_renderer_missing"
     },
     "native_microcheck_evidence": {
       "run_id": "native_microcheck_v18_live_event_writer_reset",
@@ -1013,9 +1034,9 @@
     "The v22 receipt proves that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, exact reset, zero-action step, strict can stability, and two-camera tensor retention together at the sealed-SAGE-validated 0.50 meter base standoff.",
     "The v19 and v21 receipts show that both the all-zero and measured-open Robotiq resets left the prior 0.40 meter base standoff in near contact; v22 validates only the 0.50 meter reset and physics-step condition, not task solvability.",
     "The evidence rejects OVRTX for this exact Aura Gaussian-surflet asset after the preregistered v10 run returned black RGB and no positive finite metric depth; it does not reject OVRTX for its documented supported representations.",
-    "The official native Aura renderer path is implemented and materialized but not yet executed in the new exact-camera canary, so it does not yet prove valid live Aura metric depth, visual conformance, hybrid composition, useful wrist-camera framing, scripted task success, ovphysx execution, or either learned policy.",
+    "The official native Aura renderer reproduced both frozen exact-camera RGB references byte-for-byte and returned positive finite metric expected depth for every pixel; this establishes only standalone construction equivalence at those two cameras, not live Aura and Isaac composition, useful wrist-camera framing, scripted task success, ovphysx execution, or either learned policy.",
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:df1982abfce42177f4ccc804c422213e11d6fdc3f2380f56f48ba011bb2b8f44"
+  "audit_digest": "sha256:a71bb2f5ea401c6566b46630e08d4287ff7de3587eff3b2b0ff364517b989e3d"
 }

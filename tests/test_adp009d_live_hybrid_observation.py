@@ -16,6 +16,15 @@ from blueprint_pipeline.adp009d_aura_renderer_conformance import (
     FROZEN_THRESHOLDS,
     RECEIPT_SCHEMA_VERSION,
 )
+from blueprint_pipeline.adp009d_aura_native_conformance import (
+    RECEIPT_SCHEMA_VERSION as NATIVE_RECEIPT_SCHEMA_VERSION,
+)
+from blueprint_pipeline.adp009d_aura_native_vast import (
+    EXPECTED_AURA_PLY_SHA256,
+    SOURCE_COMMIT,
+    SOURCE_REPOSITORY,
+    SOURCE_TREE,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
@@ -220,6 +229,27 @@ def test_live_runtime_receipt_accepts_selected_isaac_camera_evidence() -> None:
         receipt, digest_field="receipt_digest"
     )
 
+    assert validate_live_hybrid_runtime_receipt(receipt) == receipt
+
+    native_conformance = {
+        "schema_version": NATIVE_RECEIPT_SCHEMA_VERSION,
+        "status": "passed_exact_camera_conformance",
+        "passed": True,
+        "thresholds": FROZEN_THRESHOLDS,
+        "source_repository": SOURCE_REPOSITORY,
+        "source_commit": SOURCE_COMMIT,
+        "source_tree": SOURCE_TREE,
+        "source_modified": False,
+        "aura_ply_sha256": EXPECTED_AURA_PLY_SHA256,
+        "candidate_policy_queried": False,
+    }
+    native_conformance["receipt_digest"] = canonical_digest(
+        native_conformance, digest_field="receipt_digest"
+    )
+    receipt["aura_renderer_conformance_receipt"] = native_conformance
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
     assert validate_live_hybrid_runtime_receipt(receipt) == receipt
 
     mutated = copy.deepcopy(receipt)

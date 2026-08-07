@@ -288,6 +288,7 @@ def run_arena_native_control_vast(
     min_compute_cap: int = 0,
     minimum_driver_version: str = "",
     require_known_supported_isaac_driver: bool = True,
+    enable_isaac_smoke: bool = True,
     preferred_gpu_keywords: tuple[str, ...] = (
         "RTX 4090",
         "RTX A6000",
@@ -400,7 +401,7 @@ def run_arena_native_control_vast(
                 provider_output_put_url=output_put_url,
                 provider_output_get_url=output_get_url,
                 provider_runtime_output_zip=output_zip,
-                enable_isaac_smoke=True,
+                enable_isaac_smoke=enable_isaac_smoke,
                 enable_blueprint_bundle=True,
                 provider_bundle_kind=provider_bundle_kind,
                 vast_launch_mode="ssh_direct",

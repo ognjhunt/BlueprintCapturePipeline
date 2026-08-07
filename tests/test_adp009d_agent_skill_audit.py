@@ -72,7 +72,7 @@ def test_audit_separates_followed_guidance_from_pending_and_inapplicable() -> No
         "AuraFusion360_official_native_2D_surfel_rasterizer"
     )
     assert runtime["native_aura_renderer_execution_status"] == (
-        "materialized_unexecuted"
+        "executed_exact_camera_conformance_passed"
     )
     assert guidance["nvidia-omniverse-usd-performance-tuning"][
         "application_status"

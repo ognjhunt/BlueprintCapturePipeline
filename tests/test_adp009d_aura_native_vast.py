@@ -318,5 +318,6 @@ def test_native_aura_uses_cuda_driver_floor_without_omniverse_ceiling(
     assert result["status"] == "dry_run_ready"
     assert observed["minimum_driver_version"] == "550.54.14"
     assert observed["require_known_supported_isaac_driver"] is False
+    assert observed["enable_isaac_smoke"] is False
     assert observed["min_gpu_ram_mb"] == 46_000
     assert observed["min_compute_cap"] == 860
