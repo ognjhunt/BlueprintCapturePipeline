@@ -192,6 +192,18 @@ def test_ovrtx_bundle_accepts_two_safe_exact_camera_ids(tmp_path: Path) -> None:
         "approach_close",
         "right_translate",
     ]
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "exact_preflight",
+        generated_at="fixed",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp009d_ovrtx",
+        bundle_path=Path(result["bundle_path"]),
+        provider_bundle_url="https://example.com/bundle.zip?signature=redacted",
+        provider_output_put_url="https://example.com/output.zip?signature=redacted",
+    )
+    assert preflight["status"] == "passed"
+    assert preflight["missing_zip_entries"] == []
 
 
 def test_ovrtx_runner_preserves_virtualenv_python_symlink(tmp_path: Path) -> None:

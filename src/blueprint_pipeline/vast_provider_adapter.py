@@ -1988,8 +1988,6 @@ def _blueprint_bundle_preflight(
         "provider_runtime/adp009d_ovrtx_provider_manifest.json",
         "provider_runtime/run_ovrtx_preflight_worker.py",
         "provider_runtime/assets/aura_gaussian_surflets.usdc",
-        "provider_runtime/configs/external.ovrtx.json",
-        "provider_runtime/configs/wrist.ovrtx.json",
     }
     adp_content_agents_required_entries = {
         "provider_runtime/run_adp_content_agents_provider_runtime.sh",
@@ -2169,6 +2167,42 @@ def _blueprint_bundle_preflight(
                         )
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
+                    if provider_bundle_kind == "adp009d_ovrtx":
+                        manifest_member = (
+                            "provider_runtime/adp009d_ovrtx_provider_manifest.json"
+                        )
+                        try:
+                            manifest_payload = json.loads(
+                                archive.read(manifest_member).decode("utf-8")
+                            )
+                            camera_rows = manifest_payload.get("camera_configs")
+                            camera_ids = [
+                                str(row.get("camera_id") or "")
+                                for row in camera_rows
+                                if isinstance(row, Mapping)
+                            ] if isinstance(camera_rows, list) else []
+                            valid_camera_ids = (
+                                2 <= len(camera_ids) <= 8
+                                and len(camera_ids) == len(set(camera_ids))
+                                and all(
+                                    re.fullmatch(r"[a-z][a-z0-9_]{0,63}", camera_id)
+                                    for camera_id in camera_ids
+                                )
+                            )
+                            if not valid_camera_ids:
+                                blockers.append(
+                                    "adp009d_ovrtx_camera_manifest_invalid"
+                                )
+                            else:
+                                required_entries.update(
+                                    {
+                                        "provider_runtime/configs/"
+                                        f"{camera_id}.ovrtx.json"
+                                        for camera_id in camera_ids
+                                    }
+                                )
+                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                            blockers.append("adp009d_ovrtx_camera_manifest_invalid")
                     if (
                         provider_bundle_kind in {"isaac", "adp_simready_isaac"}
                         and "provider_runtime/isaac_provider_eval_manifest.json" in zip_entries
