@@ -156,9 +156,14 @@ set -euo pipefail
 # then failed compiling evdev, which needs linux/input.h: the chain is
 # openpi -> lerobot -> pynput -> evdev, pulled in for input-device handling that
 # inference never uses but that the dependency graph still requires to build.
-# linux-libc-dev supplies those headers; build-essential supplies the compiler.
+# Installed as one set rather than one package per run: each round trip costs a
+# paid GPU run, and these are the standard requirements for building any C
+# extension.  linux-libc-dev supplies linux/input.h, python3-dev supplies
+# Python.h, build-essential the compiler, pkg-config the usual discovery.
 apt-get update -qq >/dev/null 2>&1 || true
-apt-get install -y -qq linux-libc-dev build-essential >/dev/null 2>&1 || true
+apt-get install -y -qq \
+  linux-libc-dev build-essential pkg-config \
+  python3-dev python3.12-dev >/dev/null 2>&1 || true
 
 export UV_INSTALL_DIR={uv_root}
 curl -LsSf https://astral.sh/uv/install.sh | sh

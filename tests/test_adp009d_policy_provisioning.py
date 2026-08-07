@@ -233,14 +233,19 @@ def test_native_build_dependencies_are_installed_before_the_policy() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert "linux-libc-dev" in script
-    assert "build-essential" in script
+    # The full standard C-extension build set, installed at once: iterating one
+    # package per run costs a paid GPU run each time.  A live run cleared
+    # linux/input.h and then failed on Python.h one package later.
+    for package in (
+        "linux-libc-dev",
+        "build-essential",
+        "python3-dev",
+        "python3.12-dev",
+        "pkg-config",
+    ):
+        assert package in script
     # Headers must be present before uv is asked to build anything.
     assert script.index("linux-libc-dev") < script.index("pip install -e")
     # And never fatal on their own: the apt step is best-effort.
-    apt_lines = [
-        ln
-        for ln in script.splitlines()
-        if "linux-libc-dev" in ln and not ln.lstrip().startswith("#")
-    ]
-    assert apt_lines and all(ln.rstrip().endswith("|| true") for ln in apt_lines)
+    # Best-effort: a missing apt must not fail provisioning on its own.
+    assert "|| true" in script[script.index("apt-get install") :][:400]
