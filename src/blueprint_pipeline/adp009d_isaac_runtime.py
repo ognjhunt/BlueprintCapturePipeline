@@ -414,6 +414,7 @@ def _preflight_environment_imports() -> dict[str, str]:
     import msgpack  # noqa: F401
     import omegaconf  # noqa: F401
     import zmq  # noqa: F401
+    from isaaclab_ov.renderers import OVRTXRendererCfg  # noqa: F401
     from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: F401
     from rsl_rl.runners import DistillationRunner, OnPolicyRunner  # noqa: F401
     from isaaclab_arena.assets.object import Object  # noqa: F401
@@ -435,6 +436,7 @@ def _preflight_environment_imports() -> dict[str, str]:
             "hydra-core",
             "isaaclab",
             "isaaclab_arena",
+            "isaaclab_ov",
             "isaaclab_rl",
             "msgpack",
             "omegaconf",

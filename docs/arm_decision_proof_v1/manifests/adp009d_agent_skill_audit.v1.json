@@ -674,9 +674,10 @@
     "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX",
     "ovrtx_selected": false,
     "runtime_install_profile": {
-      "profile_id": "isaaclab_arena_physx_task_runtime.v2",
+      "profile_id": "isaaclab_arena_physx_task_runtime.v3",
       "isaac_lab_selective_targets": [
         "assets",
+        "ov",
         "physx",
         "rl[rsl-rl]",
         "tasks",
@@ -685,6 +686,9 @@
       "isaaclab_newton_install_reason": "pinned_installer_required_physx_newton_package_coupling_only",
       "newton_runtime_extras_installed": false,
       "newton_backend_selected": false,
+      "isaaclab_ov_install_reason": "Arena's unconditional embodiment import reaches Isaac Lab multi-backend renderer presets through Kuka Allegro; install the configuration-only isaaclab_ov extension to satisfy that exact closure.",
+      "ovrtx_extra_installed": false,
+      "ovrtx_backend_selected": false,
       "arena_development_extras_installed": false,
       "all_isaac_lab_extensions_installed": false,
       "arena_import_closure_decision": "Arena asset decorators execute policy registration during embodiment import. Follow the official selective Isaac Lab rsl-rl extra and Arena Dockerfile msgpack 1.1.0 plus pyzmq 27.0.1 pins; do not rely on accidental packages from a broad development image.",
@@ -698,5 +702,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:3bce2e6823e153e41765dd900a084ecba55be9b176d845838ae7194d40fb3773"
+  "audit_digest": "sha256:bc5bc712c1c32f26848cc9f56306717cc55cd61ae65597e4a0bd1ffad48e9049"
 }

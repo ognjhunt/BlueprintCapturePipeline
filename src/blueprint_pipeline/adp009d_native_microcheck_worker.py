@@ -20,12 +20,13 @@ ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ISAAC_LAB_TREE = "454115265327a80acabd07cbd36e10071fc0c065"
 RESULT_NAME = "adp009d_native_microcheck.json"
 ISAAC_PYTHON = Path("/isaac-sim/python.sh")
-INSTALL_PROFILE_ID = "isaaclab_arena_physx_task_runtime.v2"
+INSTALL_PROFILE_ID = "isaaclab_arena_physx_task_runtime.v3"
 # Arena's asset decorators execute its policy-package registration closure even
 # for a no-policy environment. That closure imports isaaclab_rl.rsl_rl and
 # rsl_rl, so include the official rsl-rl extra explicitly.
 ISAAC_LAB_INSTALL_TARGETS = (
     "assets",
+    "ov",
     "physx",
     "rl[rsl-rl]",
     "tasks",
@@ -72,6 +73,7 @@ EXPECTED_RUNTIME_DISTRIBUTIONS = (
     "isaaclab",
     "isaaclab_assets",
     "isaaclab_newton",
+    "isaaclab_ov",
     "isaaclab_physx",
     "isaaclab_rl",
     "isaaclab_tasks",
@@ -192,6 +194,7 @@ def _install_commands(source: Path) -> list[list[str]]:
     lab = source / "submodules/IsaacLab"
     distribution_probe = (
         "import antlr4, h5py, hydra, importlib.metadata as m, json, msgpack, omegaconf, zmq; "
+        "from isaaclab_ov.renderers import OVRTXRendererCfg; "
         "from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper; "
         "from rsl_rl.runners import DistillationRunner, OnPolicyRunner; "
         f"names={EXPECTED_RUNTIME_DISTRIBUTIONS!r}; "

@@ -396,6 +396,7 @@ def test_runtime_preflights_exact_arena_environment_import_closure() -> None:
     assert "from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder" in source
     assert '"hydra-core"' in source
     assert '"h5py"' in source
+    assert "from isaaclab_ov.renderers import OVRTXRendererCfg" in source
     assert "from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper" in source
     assert "from rsl_rl.runners import DistillationRunner, OnPolicyRunner" in source
     assert "import zmq" in source
@@ -417,15 +418,16 @@ def test_worker_uses_smallest_pinned_official_arena_physx_install_closure(tmp_pa
     commands = worker._install_commands(source)
     flattened = "\n".join(" ".join(command) for command in commands)
 
-    assert worker.INSTALL_PROFILE_ID == "isaaclab_arena_physx_task_runtime.v2"
+    assert worker.INSTALL_PROFILE_ID == "isaaclab_arena_physx_task_runtime.v3"
     assert worker.ISAAC_LAB_INSTALL_TARGETS == (
         "assets",
+        "ov",
         "physx",
         "rl[rsl-rl]",
         "tasks",
         "teleop",
     )
-    assert "isaaclab.sh -i assets,physx,rl[rsl-rl],tasks,teleop" in flattened
+    assert "isaaclab.sh -i assets,ov,physx,rl[rsl-rl],tasks,teleop" in flattened
     assert worker.H5PY_VERSION == "3.16.0"
     assert worker.H5PY_LINUX_CP312_WHEEL_URL in flattened
     assert f"#sha256={worker.H5PY_LINUX_CP312_WHEEL_SHA256}" in flattened
@@ -437,6 +439,7 @@ def test_worker_uses_smallest_pinned_official_arena_physx_install_closure(tmp_pa
     assert "msgpack-1.1.0-cp312-cp312-manylinux" in flattened
     assert "pyzmq-27.0.1-cp312-abi3-manylinux" in flattened
     assert "import antlr4, h5py, hydra" in flattened
+    assert "from isaaclab_ov.renderers import OVRTXRendererCfg" in flattened
     assert "from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper" in flattened
     assert "from rsl_rl.runners import DistillationRunner, OnPolicyRunner" in flattened
     assert f"pip install --editable {source}" in flattened

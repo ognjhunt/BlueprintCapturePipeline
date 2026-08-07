@@ -543,9 +543,10 @@
     "arena_claim_ceiling": "alpha_internal_rehearsal_only"
   },
   "runtime_install_profile": {
-    "profile_id": "isaaclab_arena_physx_task_runtime.v2",
+    "profile_id": "isaaclab_arena_physx_task_runtime.v3",
     "isaac_lab_selective_targets": [
       "assets",
+      "ov",
       "physx",
       "rl[rsl-rl]",
       "tasks",
@@ -555,6 +556,9 @@
     "isaaclab_newton_install_reason": "pinned_installer_required_physx_newton_package_coupling_only",
     "newton_runtime_extras_installed": false,
     "newton_backend_selected": false,
+    "isaaclab_ov_install_reason": "Arena imports every embodiment at package import time; its Kuka Allegro module imports Isaac Lab multi-backend renderer presets, which require the isaaclab_ov configuration extension.",
+    "ovrtx_extra_installed": false,
+    "ovrtx_backend_selected": false,
     "arena_development_extras_installed": false,
     "all_isaac_lab_extensions_installed": false,
     "supplemental_runtime_dependencies": [
@@ -633,5 +637,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:e2d78caf2af85a9a279734c83b96ab815b438e4cc13f648ea0f0f52dd381d780"
+  "harness_digest": "sha256:b446b5585b36dede951e7f10a2a80feb4b1e8deeefcc196ad9647432a94ca776"
 }
