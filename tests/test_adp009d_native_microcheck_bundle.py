@@ -388,6 +388,16 @@ def test_runtime_does_not_import_unneeded_arena_asset_registry() -> None:
     assert "object_type=ObjectType.SPAWNER" in source
 
 
+def test_runtime_preflights_exact_arena_environment_import_closure() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+
+    assert 'def _preflight_environment_imports() -> dict[str, str]:' in source
+    assert '_phase("runtime_import_preflight")' in source
+    assert "from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder" in source
+    assert '"hydra-core"' in source
+    assert '"h5py"' in source
+
+
 def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
     source = Path(isaac_runtime.__file__).with_name("adp009d_native_microcheck_worker.py")
     text = source.read_text(encoding="utf-8")
@@ -409,6 +419,11 @@ def test_worker_uses_smallest_pinned_official_physx_install_profile(tmp_path: Pa
     assert worker.H5PY_VERSION == "3.16.0"
     assert worker.H5PY_LINUX_CP312_WHEEL_URL in flattened
     assert f"#sha256={worker.H5PY_LINUX_CP312_WHEEL_SHA256}" in flattened
+    assert all(url in flattened for url in worker.HYDRA_RUNTIME_URLS)
+    assert "hydra_core-1.3.5-py3-none-any.whl" in flattened
+    assert "omegaconf-2.3.1-py3-none-any.whl" in flattened
+    assert "antlr4-python3-runtime-4.9.3.tar.gz" in flattened
+    assert "import antlr4, h5py, hydra" in flattened
     assert f"pip install --editable {source}" in flattened
     assert "isaaclab_arena" in flattened
     assert "isaaclab_newton" in flattened
@@ -438,6 +453,18 @@ def test_worker_rejects_missing_h5py_wheel_pin() -> None:
         if worker.H5PY_LINUX_CP312_WHEEL_URL not in command
     ]
     with pytest.raises(RuntimeError, match="adp009d_runtime_h5py_pin_missing"):
+        worker._validate_install_commands(commands)
+
+
+def test_worker_rejects_missing_hydra_runtime_pin() -> None:
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    commands = [
+        command
+        for command in worker._install_commands(Path("arena"))
+        if not any(url in command for url in worker.HYDRA_RUNTIME_URLS)
+    ]
+    with pytest.raises(RuntimeError, match="adp009d_runtime_hydra_pin_missing"):
         worker._validate_install_commands(commands)
 
 

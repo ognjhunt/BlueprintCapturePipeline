@@ -402,6 +402,39 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     return env, cfg, torch
 
 
+def _preflight_environment_imports() -> dict[str, str]:
+    """Import the exact environment-builder closure after Kit is available."""
+
+    import importlib.metadata as metadata
+
+    import antlr4  # noqa: F401
+    import h5py  # noqa: F401
+    import hydra  # noqa: F401
+    import omegaconf  # noqa: F401
+    from isaaclab_arena.assets.object import Object  # noqa: F401
+    from isaaclab_arena.embodiments.droid.droid import (  # noqa: F401
+        DroidAbsoluteJointPositionEmbodiment,
+    )
+    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder  # noqa: F401
+    from isaaclab_arena.environments.isaaclab_arena_environment import (  # noqa: F401
+        IsaacLabArenaEnvironment,
+    )
+    from isaaclab_arena.scene.scene import Scene  # noqa: F401
+    from isaaclab_arena.tasks.no_task import NoTask  # noqa: F401
+
+    return {
+        name: metadata.version(name)
+        for name in (
+            "antlr4-python3-runtime",
+            "h5py",
+            "hydra-core",
+            "isaaclab",
+            "isaaclab_arena",
+            "omegaconf",
+        )
+    }
+
+
 def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any]:
     for name, digest in EXPECTED_ASSETS.items():
         path = runtime / "assets" / name
@@ -491,6 +524,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     env = None
     timings_seconds: dict[str, float] = {}
     try:
+        _phase("runtime_import_preflight")
+        runtime_import_preflight = _preflight_environment_imports()
+        _phase("runtime_import_preflight", "completed")
         _phase("environment_build")
         phase_started = time.monotonic()
         env, cfg, torch = _build_environment(runtime, args)
@@ -611,6 +647,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "arena_revision": ARENA_REVISION,
             "isaac_lab_revision": ISAAC_LAB_REVISION,
             "workflow": "isaac_lab_manager_based_via_arena_composition",
+            "runtime_import_preflight": runtime_import_preflight,
             "embodiment": "official_arena_droid_abs_joint_pos_franka_robotiq_2f_85",
             "physics": {
                 "backend": "PhysX",

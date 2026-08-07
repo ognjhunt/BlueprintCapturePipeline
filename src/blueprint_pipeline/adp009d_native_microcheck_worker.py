@@ -32,14 +32,31 @@ H5PY_LINUX_CP312_WHEEL_URL = (
     f"h5py-{H5PY_VERSION}-cp312-cp312-manylinux_2_28_x86_64.whl"
     f"#sha256={H5PY_LINUX_CP312_WHEEL_SHA256}"
 )
+HYDRA_RUNTIME_URLS = (
+    "https://files.pythonhosted.org/packages/3e/38/"
+    "7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/"
+    "antlr4-python3-runtime-4.9.3.tar.gz"
+    "#sha256=f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b",
+    "https://files.pythonhosted.org/packages/a4/0e/"
+    "152509871bf30df6fc38569f52a2db9b55dd41aae957adae50a053ac7778/"
+    "omegaconf-2.3.1-py3-none-any.whl"
+    "#sha256=3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0",
+    "https://files.pythonhosted.org/packages/9c/97/"
+    "f9d463a6f3c7d0955753eca5cbbf35b596ac471dd13fe357211a53fd37be/"
+    "hydra_core-1.3.5-py3-none-any.whl"
+    "#sha256=a3ff35b4ea6794e4c83d993016f4bde4ac35797ebe7a08f30e83ed9341880331",
+)
 EXPECTED_RUNTIME_DISTRIBUTIONS = (
+    "antlr4-python3-runtime",
     "h5py",
+    "hydra-core",
     "isaaclab",
     "isaaclab_assets",
     "isaaclab_newton",
     "isaaclab_physx",
     "isaaclab_tasks",
     "isaaclab_teleop",
+    "omegaconf",
     "isaaclab_arena",
 )
 
@@ -151,7 +168,7 @@ def _install_commands(source: Path) -> list[list[str]]:
 
     lab = source / "submodules/IsaacLab"
     distribution_probe = (
-        "import importlib.metadata as m, json; "
+        "import antlr4, h5py, hydra, importlib.metadata as m, json, omegaconf; "
         f"names={EXPECTED_RUNTIME_DISTRIBUTIONS!r}; "
         "print(json.dumps({name: m.version(name) for name in names}, sort_keys=True))"
     )
@@ -159,6 +176,14 @@ def _install_commands(source: Path) -> list[list[str]]:
         ["ln", "-sfn", "/isaac-sim", str(lab / "_isaac_sim")],
         [str(lab / "isaaclab.sh"), "-i", ",".join(ISAAC_LAB_INSTALL_TARGETS)],
         [str(ISAAC_PYTHON), "-m", "pip", "install", H5PY_LINUX_CP312_WHEEL_URL],
+        [
+            str(ISAAC_PYTHON),
+            "-m",
+            "pip",
+            "install",
+            "--no-build-isolation",
+            *HYDRA_RUNTIME_URLS,
+        ],
         [str(ISAAC_PYTHON), "-m", "pip", "install", "--editable", str(source)],
         [str(ISAAC_PYTHON), "-c", distribution_probe],
     ]
@@ -182,6 +207,8 @@ def _validate_install_commands(commands: list[list[str]]) -> None:
         raise RuntimeError("adp009d_runtime_install_profile_selector_mismatch")
     if H5PY_LINUX_CP312_WHEEL_URL not in flattened:
         raise RuntimeError("adp009d_runtime_h5py_pin_missing")
+    if any(url not in flattened for url in HYDRA_RUNTIME_URLS):
+        raise RuntimeError("adp009d_runtime_hydra_pin_missing")
     if any(marker in flattened for marker in forbidden):
         raise RuntimeError("adp009d_runtime_install_profile_expanded")
 
