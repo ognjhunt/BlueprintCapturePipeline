@@ -298,3 +298,51 @@ def test_receipt_records_the_observation_conversion_actually_applied() -> None:
     assert conversion["source_resolution_hw"] == [720, 1280]
     assert conversion["target_resolution_hw"] == [224, 224]
     assert conversion["scene_content_cropped"] is False
+
+
+def test_the_shipped_openpi_client_satisfies_the_episode_loop_seam() -> None:
+    """No new client is needed: the existing one already fits the protocol.
+
+    The loop asks for exactly one method, infer(observation) -> chunk.  The
+    shipped OpenPI websocket client provides it and additionally verifies
+    server identity on construction, so binding it needs no adapter.
+    """
+
+    import inspect
+
+    from blueprint_pipeline.openpi_droid_policy_runtime import (
+        OpenPIWebsocketDroidPolicyClient,
+    )
+
+    assert hasattr(OpenPIWebsocketDroidPolicyClient, "infer")
+    signature = inspect.signature(OpenPIWebsocketDroidPolicyClient.infer)
+    assert list(signature.parameters) == ["self", "observation"]
+    # Identity verification is not optional: the constructor fetches and
+    # validates server metadata rather than trusting the endpoint.
+    source = inspect.getsource(OpenPIWebsocketDroidPolicyClient.__init__)
+    assert "get_server_metadata" in source
+    assert "validate_server_metadata" in source
+
+
+def test_a_client_shaped_like_the_shipped_one_drives_a_full_episode() -> None:
+    """Bind by duck type, so the real client needs no wrapper to be used."""
+
+    class _ShapedLikeOpenPI:
+        learned_policy = True
+        policy_id = "pi05_droid"
+        action_space = "joint_position"
+
+        def __init__(self):
+            self.calls = 0
+
+        def infer(self, observation):
+            self.calls += 1
+            chunk = np.zeros((10, 8), dtype=float)
+            chunk[:, 7] = 0.9
+            return chunk
+
+    client = _ShapedLikeOpenPI()
+    receipt = _run(policy=client)
+
+    assert client.calls == receipt["policy_queries"] == 4
+    assert receipt["candidate_policy_queried"] is True
