@@ -127,6 +127,7 @@ def materialize_aura_native_from_isaac_camera_probe(
     aura_ply_path: str | Path,
     output_path: str | Path,
     camera_ids: Sequence[str] = ("external_camera", "wrist_camera"),
+    exclusion_receipt_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Freeze exact retained Isaac camera poses and input layers for Aura rendering."""
 
@@ -147,8 +148,43 @@ def materialize_aura_native_from_isaac_camera_probe(
         != "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
     ):
         raise ValueError("aura_native_isaac_result_invalid")
-    if not ply.is_file() or _sha256(ply) != EXPECTED_AURA_PLY_SHA256:
+    if not ply.is_file():
         raise ValueError("aura_native_sealed_ply_digest_mismatch")
+    if exclusion_receipt_path is None:
+        if _sha256(ply) != EXPECTED_AURA_PLY_SHA256:
+            raise ValueError("aura_native_sealed_ply_digest_mismatch")
+        appearance_provenance: dict[str, Any] = {
+            "asset": "sealed_aurafusion360_final_ply",
+            "task_volume_exclusion_applied": False,
+        }
+    else:
+        # A derivative is admissible only when its receipt chains back to the
+        # sealed asset and the bytes on disk are the ones that receipt produced.
+        from .adp009d_aura_task_volume_exclusion import (
+            AuraTaskVolumeExclusionError,
+            validate_aura_task_volume_exclusion_receipt,
+        )
+
+        exclusion = _read_mapping(
+            Path(exclusion_receipt_path).expanduser().resolve(),
+            "aura_native_exclusion_receipt_invalid",
+        )
+        try:
+            exclusion = validate_aura_task_volume_exclusion_receipt(exclusion)
+        except AuraTaskVolumeExclusionError as exc:
+            raise ValueError("aura_native_exclusion_receipt_invalid:" + str(exc)) from exc
+        if exclusion.get("source_ply_sha256") != EXPECTED_AURA_PLY_SHA256:
+            raise ValueError("aura_native_exclusion_source_not_sealed_asset")
+        if _sha256(ply) != exclusion.get("output_ply_sha256"):
+            raise ValueError("aura_native_exclusion_output_digest_mismatch")
+        appearance_provenance = {
+            "asset": "blueprint_task_volume_exclusion_derivative_of_sealed_ply",
+            "task_volume_exclusion_applied": True,
+            "sealed_source_ply_sha256": exclusion["source_ply_sha256"],
+            "exclusion_receipt_digest": exclusion["receipt_digest"],
+            "removed_vertex_count": exclusion["removed_vertex_count"],
+            "claim_ceiling": exclusion["claim_ceiling"],
+        }
     if len(camera_ids) != 2 or len(set(camera_ids)) != 2:
         raise ValueError("aura_native_isaac_camera_set_invalid")
     by_id = {
@@ -242,6 +278,7 @@ def materialize_aura_native_from_isaac_camera_probe(
         "aura_submodules": SUBMODULES,
         "aura_ply_path": str(ply),
         "aura_ply_sha256": _sha256(ply),
+        "aura_appearance_provenance": appearance_provenance,
         "aura_native_render_manifest_digest": AURA_NATIVE_RENDER_MANIFEST_DIGEST,
         "source_isaac_result_path": str(result_path),
         "source_isaac_result_sha256": _sha256(result_path),

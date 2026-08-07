@@ -406,3 +406,107 @@ def test_isaac_camera_materializer_binds_live_layers_and_converts_opengl_axes(
     assert probe["manifest_digest"] == canonical_digest(
         probe, digest_field="manifest_digest"
     )
+
+
+def _isaac_fixture(tmp_path: Path) -> Path:
+    frames = []
+    for index, camera_id in enumerate(("external_camera", "wrist_camera")):
+        root = tmp_path / camera_id
+        root.mkdir(exist_ok=True)
+        rgb, depth, semantic = root / "rgb.png", root / "depth.npy", root / "semantic.npy"
+        Image.new("RGB", (16, 12), color=(10 + index, 20, 30)).save(rgb)
+        np.save(depth, np.ones((12, 16), dtype=np.float32), allow_pickle=False)
+        np.save(semantic, np.full((12, 16), 2 + index, dtype=np.int32), allow_pickle=False)
+        frames.append(
+            {
+                "camera_id": camera_id,
+                "frame_index": 40,
+                "sim_time_seconds": 2.5,
+                "timestamp_ns": 100 + index,
+                "resolution_hw": [12, 16],
+                "intrinsic_matrix": [[10.0, 0.0, 8.0], [0.0, 10.0, 6.0], [0.0, 0.0, 1.0]],
+                "position_world_m": [1.0, 2.0, 3.0],
+                "quaternion_world_opengl_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "rgb_png": {"path": rgb.relative_to(tmp_path).as_posix(), "sha256": subject._sha256(rgb)},
+                "metric_depth": {"path": depth.relative_to(tmp_path).as_posix(), "sha256": subject._sha256(depth)},
+                "semantic_segmentation": {
+                    "path": semantic.relative_to(tmp_path).as_posix(),
+                    "sha256": subject._sha256(semantic),
+                    "id_to_labels": {"idToLabels": {str(2 + index): {"class": "robot"}}},
+                },
+            }
+        )
+    path = tmp_path / "result.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "adp009d_native_microcheck.v1",
+                "status": "completed",
+                "blockers": [],
+                "workflow": "isaac_lab_manager_based_via_arena_composition",
+                "sealed_source_mutated": False,
+                "candidate_policy_queried": False,
+                "candidate_outcomes_accessed": False,
+                "arena_revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+                "isaac_lab_revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+                "camera_frames": frames,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _exclusion_receipt(tmp_path: Path, derivative_sha: str) -> Path:
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    receipt = {
+        "schema_version": "adp009d_aura_task_volume_exclusion.v1",
+        "source_ply_sha256": subject.EXPECTED_AURA_PLY_SHA256,
+        "output_ply_sha256": derivative_sha,
+        "source_modified": False,
+        "support_surface_disturbed": False,
+        "retained_rows_copied_verbatim": True,
+        "removed_vertex_count": 943,
+        "removed_fraction": 0.00227,
+        "exclusion_rule": {"preregistered_before_rerender": True},
+        "claim_ceiling": "blueprint authored removal inside the can task volume",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    path = tmp_path / "exclusion_receipt.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    return path
+
+
+def test_probe_admits_task_volume_exclusion_derivative_only_with_chained_receipt(
+    tmp_path: Path,
+) -> None:
+    """A derivative renders only when its receipt chains to the sealed asset."""
+
+    result_path = _isaac_fixture(tmp_path)
+    ply = tmp_path / "aura_excluded.ply"
+    ply.write_bytes(b"derivative-aura-bytes")
+    derivative_sha = subject._sha256(ply)
+    receipt_path = _exclusion_receipt(tmp_path, derivative_sha)
+
+    probe = subject.materialize_aura_native_from_isaac_camera_probe(
+        isaac_result_path=result_path,
+        aura_ply_path=ply,
+        output_path=tmp_path / "probe.json",
+        exclusion_receipt_path=receipt_path,
+    )
+    provenance = probe["aura_appearance_provenance"]
+    assert provenance["task_volume_exclusion_applied"] is True
+    assert provenance["sealed_source_ply_sha256"] == subject.EXPECTED_AURA_PLY_SHA256
+    assert provenance["removed_vertex_count"] == 943
+    assert probe["aura_ply_sha256"] == derivative_sha
+
+    # Swapping the bytes without reissuing the receipt must fail closed.
+    ply.write_bytes(b"someone-elses-appearance")
+    with pytest.raises(ValueError, match="aura_native_exclusion_output_digest_mismatch"):
+        subject.materialize_aura_native_from_isaac_camera_probe(
+            isaac_result_path=result_path,
+            aura_ply_path=ply,
+            output_path=tmp_path / "probe2.json",
+            exclusion_receipt_path=receipt_path,
+        )
