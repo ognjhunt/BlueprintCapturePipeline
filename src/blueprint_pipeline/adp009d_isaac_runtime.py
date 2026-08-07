@@ -22,6 +22,8 @@ EXPECTED_ASSETS = {
     "sage_collision.usd": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
 }
 APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
+TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usdc"
+TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
 APPROVED_CAN_ADAPTER_SHA256 = (
     "sha256:5db5bc33b72983065bd47e30db0c5945ab3cba8fb3caeb6290bf07edc7337adc"
 )
@@ -32,11 +34,11 @@ SAGE_LIVE_ROOT_PRIM = "/World/envs/env_0/sage_collision"
 SAGE_TARGET_COLLIDER_NAME = "ZHQYGJJVAJYEYPTUKY888888"
 SAGE_SUPPORT_COLLIDER_NAME = "_LTFTHJVAZ3VMPTUJU888888"
 SAGE_RUNTIME_PROFILE = {
-    "active_mesh_count": 164,
-    "active_point_count": 508_744,
-    "active_face_count": 992_650,
+    "active_mesh_count": 15,
+    "active_point_count": 297_684,
+    "active_face_count": 99_228,
     "rigid_body_count": 0,
-    "triangle_mesh_count": 164,
+    "triangle_mesh_count": 15,
 }
 PHYSX_FALLBACK_MARKER = "falling back to convexHull approximation"
 PHYSX_TRIANGLE_STABILITY_MARKER = "TriangleMesh: triangles are too big"
@@ -333,7 +335,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     sage = Object(
         name="sage_collision",
         object_type=ObjectType.BASE,
-        usd_path=str(runtime / "assets" / "sage_collision_overlay.usda"),
+        usd_path=str(runtime / "assets" / TASK_COLLISION_DERIVATIVE_FILENAME),
         initial_pose=Pose.identity(),
         spawn_cfg_addon={"visible": False},
     )
@@ -417,12 +419,56 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     static_collider = _inspect_physx_sdf_collider(
         adapter_stage, APPROVED_CAN_SOURCE_COLLIDER_PRIM
     )
-    sage_overlay_path = runtime / "assets" / "sage_collision_overlay.usda"
-    sage_overlay_stage = Usd.Stage.Open(str(sage_overlay_path))
+    task_collision_manifest_path = runtime / "assets" / TASK_COLLISION_MANIFEST_FILENAME
+    if not task_collision_manifest_path.is_file():
+        raise RuntimeError("sage_task_collision_manifest_missing")
+    task_collision_manifest = json.loads(
+        task_collision_manifest_path.read_text(encoding="utf-8")
+    )
+    task_collision_path = runtime / "assets" / TASK_COLLISION_DERIVATIVE_FILENAME
+    if (
+        task_collision_manifest.get("status") != "ready"
+        or task_collision_manifest.get("sealed_source_sha256")
+        != EXPECTED_ASSETS["sage_collision.usd"]
+        or task_collision_manifest.get("sealed_source_mutated") is not False
+        or task_collision_manifest.get("derivative_filename")
+        != TASK_COLLISION_DERIVATIVE_FILENAME
+        or not task_collision_path.is_file()
+        or _sha256(task_collision_path)
+        != task_collision_manifest.get("derivative_sha256")
+        or task_collision_manifest.get("claim_ceiling")
+        != "preregistered_franka_task_envelope_only"
+    ):
+        raise RuntimeError("sage_task_collision_derivative_binding_invalid")
+    expected_sage_profile = {
+        "active_mesh_count": int(task_collision_manifest["active_source_prim_count"]),
+        "active_point_count": int(task_collision_manifest["derived_point_count"]),
+        "active_face_count": int(task_collision_manifest["derived_face_count"]),
+        "rigid_body_count": 0,
+        "triangle_mesh_count": int(task_collision_manifest["active_source_prim_count"]),
+    }
+    if (
+        expected_sage_profile != SAGE_RUNTIME_PROFILE
+        or task_collision_manifest.get("candidate_source_prim_count") != 16
+        or task_collision_manifest.get("source_face_count") != 47_359
+        or task_collision_manifest.get("roi_min_m")
+        != [2.4681748, -4.3100837, -0.1]
+        or task_collision_manifest.get("roi_max_m")
+        != [4.4681748, -1.9100837, 1.8]
+        or task_collision_manifest.get("maximum_edge_limit_m") != 0.5
+        or float(task_collision_manifest.get("observed_maximum_edge_m", math.inf))
+        > 0.500001
+        or float(task_collision_manifest.get("relative_surface_area_error", math.inf))
+        > 1.0e-6
+    ):
+        raise RuntimeError("sage_task_collision_profile_invalid")
+    sage_overlay_stage = Usd.Stage.Open(str(task_collision_path))
     if sage_overlay_stage is None:
-        raise RuntimeError("sage_collision_overlay_unreadable")
+        raise RuntimeError("sage_task_collision_derivative_unreadable")
     static_sage_collision = _inspect_sage_static_triangle_colliders(
-        sage_overlay_stage, SAGE_SOURCE_ROOT_PRIM
+        sage_overlay_stage,
+        SAGE_SOURCE_ROOT_PRIM,
+        expected_profile=expected_sage_profile,
     )
     _phase("static_collider_validation", "completed")
 
@@ -462,7 +508,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             live_stage, APPROVED_CAN_LIVE_COLLIDER_PRIM
         )
         live_sage_collision = _inspect_sage_static_triangle_colliders(
-            live_stage, SAGE_LIVE_ROOT_PRIM
+            live_stage,
+            SAGE_LIVE_ROOT_PRIM,
+            expected_profile=expected_sage_profile,
         )
         _phase("live_collider_validation", "completed")
         reset_rows: list[dict[str, Any]] = []
@@ -574,6 +622,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "live_collider_validation": live_collider,
                 "static_sage_collision_validation": static_sage_collision,
                 "live_sage_collision_validation": live_sage_collision,
+                "sage_task_collision_derivative": task_collision_manifest,
                 "fallback_messages": fallback_messages,
                 "stability_messages": stability_messages,
             },

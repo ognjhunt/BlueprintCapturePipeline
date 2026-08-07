@@ -33,7 +33,7 @@ SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 
 REQUIRED_ASSET_DIGESTS = {
-    "agent_skill_audit": "sha256:90d4de2bb3752f8e706affe9c892e0a986ef3967e5155080f650470b08e1cf09",
+    "agent_skill_audit": "sha256:9a35788675b1376fc3fca5c27a1defed63040c169c9544bc1ff71ffeef479fdb",
     "approved_can": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "aura_appearance": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
     "hybrid_seal_receipt": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b",
@@ -345,12 +345,29 @@ def validate_harness_manifest(
         "source_face_count": 993678,
         "source_rigid_body_count": 0,
         "source_convex_decomposition_count": 164,
-        "runtime_active_triangle_mesh_count": 164,
+        "runtime_task_roi_min_m": [2.4681748, -4.3100837, -0.1],
+        "runtime_task_roi_max_m": [4.4681748, -1.9100837, 1.8],
+        "runtime_candidate_source_mesh_count": 16,
+        "runtime_active_triangle_mesh_count": 15,
+        "runtime_source_face_count": 47359,
+        "runtime_derived_face_count": 99228,
+        "runtime_derived_point_count": 297684,
+        "runtime_maximum_edge_m": 0.5,
         "runtime_approximation": "none",
         "runtime_approximation_semantics": "static_triangle_mesh",
+        "runtime_surface_operation": (
+            "coplanar_longest_edge_midpoint_retriangulation"
+        ),
+        "runtime_surface_area_relative_error_maximum": 1.0e-6,
+        "runtime_derivative_claim_ceiling": (
+            "preregistered_franka_task_envelope_only"
+        ),
         "source_target_collider_active": False,
         "support_collider_active": True,
         "geometry_mutation_allowed": False,
+        "sealed_source_bytes_retained": True,
+        "runtime_surface_preserving_derivative_allowed": True,
+        "out_of_envelope_source_colliders_active": False,
         "required_blocker_on_mismatch": "sage_runtime_collision_profile_mismatch",
         "physx_triangle_stability_warning_allowed": False,
         "required_blocker_on_triangle_stability_warning": (

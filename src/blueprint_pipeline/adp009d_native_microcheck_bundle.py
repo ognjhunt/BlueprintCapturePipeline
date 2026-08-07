@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import shutil
 import stat
 import zipfile
@@ -41,6 +42,18 @@ SEALED_SAGE_PROFILE = {
     "rigid_body_count": 0,
     "convex_decomposition_count": 164,
     "triangle_mesh_count": 1,
+}
+TASK_COLLISION_ROI_MIN_M = (2.4681748, -4.3100837, -0.1)
+TASK_COLLISION_ROI_MAX_M = (4.4681748, -1.9100837, 1.8)
+TASK_COLLISION_MAX_EDGE_M = 0.5
+TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usdc"
+TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
+SEALED_TASK_COLLISION_PROFILE = {
+    "candidate_source_prim_count": 16,
+    "active_source_prim_count": 15,
+    "source_face_count": 47_359,
+    "derived_face_count": 99_228,
+    "derived_point_count": 297_684,
 }
 ENTRYPOINT = """#!/usr/bin/env bash
 set +e
@@ -204,6 +217,234 @@ def Xform "Root" (
 '''
 
 
+def _triangle_area(a: tuple[float, float, float], b: tuple[float, float, float], c: tuple[float, float, float]) -> float:
+    ab = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    ac = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+    cross = (
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    )
+    return 0.5 * math.sqrt(sum(value * value for value in cross))
+
+
+def _edge_length_squared(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    return sum((a[index] - b[index]) ** 2 for index in range(3))
+
+
+def _refine_triangle_to_edge_limit(
+    triangle: tuple[tuple[float, float, float], ...],
+    *,
+    max_edge_m: float,
+) -> list[tuple[tuple[float, float, float], ...]]:
+    """Split the longest edge until every coplanar child edge is bounded."""
+
+    if max_edge_m <= 0.0:
+        raise ValueError("adp009d_task_collision_edge_limit_invalid")
+    limit_squared = max_edge_m * max_edge_m
+    output: list[tuple[tuple[float, float, float], ...]] = []
+    stack = [triangle]
+    while stack:
+        a, b, c = stack.pop()
+        lengths = (
+            _edge_length_squared(a, b),
+            _edge_length_squared(b, c),
+            _edge_length_squared(c, a),
+        )
+        longest = max(range(3), key=lengths.__getitem__)
+        if lengths[longest] <= limit_squared * (1.0 + 1.0e-12):
+            output.append((a, b, c))
+            continue
+        pairs = ((a, b, c), (b, c, a), (c, a, b))
+        first, second, opposite = pairs[longest]
+        midpoint = tuple((first[index] + second[index]) * 0.5 for index in range(3))
+        stack.append((first, midpoint, opposite))
+        stack.append((midpoint, second, opposite))
+    return output
+
+
+def _ranges_intersect(
+    lower: tuple[float, float, float],
+    upper: tuple[float, float, float],
+    *,
+    roi_min: tuple[float, float, float],
+    roi_max: tuple[float, float, float],
+) -> bool:
+    return all(upper[index] >= roi_min[index] and lower[index] <= roi_max[index] for index in range(3))
+
+
+def _build_sage_task_collision_derivative(
+    source_path: Path,
+    destination: Path,
+    *,
+    source_sha256: str,
+    roi_min_m: tuple[float, float, float] = TASK_COLLISION_ROI_MIN_M,
+    roi_max_m: tuple[float, float, float] = TASK_COLLISION_ROI_MAX_M,
+    max_edge_m: float = TASK_COLLISION_MAX_EDGE_M,
+) -> dict[str, Any]:
+    """Author an exact-surface collision derivative for the frozen task envelope."""
+
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+    source = Usd.Stage.Open(str(source_path), load=Usd.Stage.LoadNone)
+    if source is None:
+        raise ValueError("adp009d_sage_collision_unreadable")
+    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    selected: list[Any] = []
+    candidate_paths: list[str] = []
+    for prim in source.Traverse():
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        world_range = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        lower = tuple(float(value) for value in world_range.GetMin())
+        upper = tuple(float(value) for value in world_range.GetMax())
+        path = str(prim.GetPath())
+        if path in {TARGET_COLLIDER_PRIM, SUPPORT_COLLIDER_PRIM} or _ranges_intersect(
+            lower, upper, roi_min=roi_min_m, roi_max=roi_max_m
+        ):
+            candidate_paths.append(path)
+            if path != TARGET_COLLIDER_PRIM:
+                selected.append(prim)
+    if TARGET_COLLIDER_PRIM not in candidate_paths:
+        raise ValueError("adp009d_task_collision_target_not_in_roi")
+    if SUPPORT_COLLIDER_PRIM not in {str(prim.GetPath()) for prim in selected}:
+        raise ValueError("adp009d_task_collision_support_not_selected")
+
+    derived = Usd.Stage.CreateNew(str(destination))
+    if derived is None:
+        raise ValueError("adp009d_task_collision_derivative_create_failed")
+    UsdGeom.SetStageMetersPerUnit(derived, 1.0)
+    UsdGeom.SetStageUpAxis(derived, UsdGeom.Tokens.z)
+    root = UsdGeom.Xform.Define(derived, "/Root").GetPrim()
+    derived.SetDefaultPrim(root)
+    target = derived.DefinePrim(TARGET_COLLIDER_PRIM, "Mesh")
+    target.SetActive(False)
+
+    rows: list[dict[str, Any]] = []
+    total_source_faces = 0
+    total_derived_faces = 0
+    total_derived_points = 0
+    source_area_m2 = 0.0
+    derived_area_m2 = 0.0
+    observed_max_edge_m = 0.0
+    for source_prim in sorted(selected, key=lambda value: str(value.GetPath())):
+        source_mesh = UsdGeom.Mesh(source_prim)
+        counts = list(source_mesh.GetFaceVertexCountsAttr().Get() or [])
+        indices = list(source_mesh.GetFaceVertexIndicesAttr().Get() or [])
+        if not counts or any(int(value) != 3 for value in counts):
+            raise ValueError(f"adp009d_task_collision_non_triangle_source:{source_prim.GetPath()}")
+        transform = xform_cache.GetLocalToWorldTransform(source_prim)
+        world_points = [
+            tuple(float(value) for value in transform.Transform(Gf.Vec3d(point)))
+            for point in source_mesh.GetPointsAttr().Get() or []
+        ]
+        leaves: list[tuple[tuple[float, float, float], ...]] = []
+        for offset in range(0, len(indices), 3):
+            triangle = tuple(world_points[int(index)] for index in indices[offset : offset + 3])
+            source_area_m2 += _triangle_area(*triangle)
+            leaves.extend(
+                _refine_triangle_to_edge_limit(triangle, max_edge_m=max_edge_m)
+            )
+
+        points: list[Any] = []
+        derived_indices: list[int] = []
+        mesh_area_m2 = 0.0
+        mesh_max_edge_m = 0.0
+        for triangle in leaves:
+            quantized_triangle = tuple(
+                tuple(float(value) for value in Gf.Vec3f(*point))
+                for point in triangle
+            )
+            base = len(points)
+            points.extend(Gf.Vec3f(*point) for point in quantized_triangle)
+            derived_indices.extend((base, base + 1, base + 2))
+            mesh_area_m2 += _triangle_area(*quantized_triangle)
+            mesh_max_edge_m = max(
+                mesh_max_edge_m,
+                *(
+                    math.sqrt(
+                        _edge_length_squared(
+                            quantized_triangle[index],
+                            quantized_triangle[(index + 1) % 3],
+                        )
+                    )
+                    for index in range(3)
+                ),
+            )
+        path = str(source_prim.GetPath())
+        output_mesh = UsdGeom.Mesh.Define(derived, path)
+        output_mesh.CreatePointsAttr(points)
+        output_mesh.CreateFaceVertexCountsAttr([3] * len(leaves))
+        output_mesh.CreateFaceVertexIndicesAttr(derived_indices)
+        output_mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+        output_mesh.CreateDoubleSidedAttr(source_mesh.GetDoubleSidedAttr().Get() or False)
+        output_mesh.CreateVisibilityAttr(UsdGeom.Tokens.invisible)
+        collision = UsdPhysics.CollisionAPI.Apply(output_mesh.GetPrim())
+        collision.CreateCollisionEnabledAttr(True)
+        mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(output_mesh.GetPrim())
+        mesh_collision.CreateApproximationAttr(UsdPhysics.Tokens.none)
+        output_mesh.GetPrim().SetCustomDataByKey("blueprint:sourcePrim", path)
+
+        total_source_faces += len(counts)
+        total_derived_faces += len(leaves)
+        total_derived_points += len(points)
+        derived_area_m2 += mesh_area_m2
+        observed_max_edge_m = max(observed_max_edge_m, mesh_max_edge_m)
+        rows.append(
+            {
+                "source_prim": path,
+                "source_face_count": len(counts),
+                "derived_face_count": len(leaves),
+                "derived_point_count": len(points),
+                "derived_surface_area_m2": round(mesh_area_m2, 9),
+                "maximum_edge_m": round(mesh_max_edge_m, 9),
+            }
+        )
+
+    relative_area_error = abs(derived_area_m2 - source_area_m2) / max(source_area_m2, 1.0e-12)
+    if relative_area_error > 1.0e-6:
+        raise ValueError("adp009d_task_collision_surface_area_changed")
+    if observed_max_edge_m > max_edge_m * (1.0 + 1.0e-6):
+        raise ValueError("adp009d_task_collision_edge_limit_not_met")
+    root.SetCustomDataByKey("blueprint:sealedSourceSha256", source_sha256)
+    root.SetCustomDataByKey("blueprint:claimCeiling", "preregistered_franka_task_envelope_only")
+    root.SetCustomDataByKey("blueprint:maxEdgeM", max_edge_m)
+    derived.GetRootLayer().Save()
+    result = {
+        "schema_version": "adp009d_sage_task_collision_derivative.v1",
+        "status": "ready",
+        "sealed_source_sha256": source_sha256,
+        "sealed_source_mutated": False,
+        "derivative_filename": destination.name,
+        "derivative_sha256": _sha256(destination),
+        "roi_min_m": list(roi_min_m),
+        "roi_max_m": list(roi_max_m),
+        "maximum_edge_limit_m": max_edge_m,
+        "observed_maximum_edge_m": round(observed_max_edge_m, 9),
+        "candidate_source_prim_count": len(candidate_paths),
+        "active_source_prim_count": len(rows),
+        "source_target_prim_excluded": TARGET_COLLIDER_PRIM,
+        "support_prim_included": SUPPORT_COLLIDER_PRIM,
+        "source_face_count": total_source_faces,
+        "derived_face_count": total_derived_faces,
+        "derived_point_count": total_derived_points,
+        "source_surface_area_m2": round(source_area_m2, 9),
+        "derived_surface_area_m2": round(derived_area_m2, 9),
+        "relative_surface_area_error": relative_area_error,
+        "surface_operation": "coplanar_longest_edge_midpoint_retriangulation",
+        "source_prim_rows": rows,
+        "claim_ceiling": "preregistered_franka_task_envelope_only",
+    }
+    if source_sha256 == ASSET_BINDINGS["sage_collision.usd"]:
+        observed_profile = {
+            key: result[key] for key in SEALED_TASK_COLLISION_PROFILE
+        }
+        if observed_profile != SEALED_TASK_COLLISION_PROFILE:
+            raise ValueError("adp009d_sealed_sage_task_collision_profile_mismatch")
+    return result
+
+
 def _approved_can_physx_sdf_adapter_text() -> str:
     """Compose the sealed can with the PhysX schema required to consume its SDF token."""
 
@@ -301,6 +542,32 @@ def build_native_microcheck_bundle(
                 key: value for key, value in sage_profile.items() if key != "mesh_prim_paths"
             },
         }
+    )
+    task_collision_path = assets / TASK_COLLISION_DERIVATIVE_FILENAME
+    task_collision = _build_sage_task_collision_derivative(
+        sources["sage_collision.usd"],
+        task_collision_path,
+        source_sha256=bindings["sage_collision.usd"],
+    )
+    task_collision_manifest_path = assets / TASK_COLLISION_MANIFEST_FILENAME
+    write_json(task_collision_manifest_path, task_collision)
+    asset_rows.extend(
+        [
+            {
+                "filename": task_collision_path.name,
+                "sha256": task_collision["derivative_sha256"],
+                "size_bytes": task_collision_path.stat().st_size,
+                "derived_from": "sage_collision.usd",
+                "sealed_source_mutated": False,
+                "claim_ceiling": task_collision["claim_ceiling"],
+            },
+            {
+                "filename": task_collision_manifest_path.name,
+                "sha256": _sha256(task_collision_manifest_path),
+                "size_bytes": task_collision_manifest_path.stat().st_size,
+                "binds_derivative": task_collision_path.name,
+            },
+        ]
     )
     can_adapter_path = assets / APPROVED_CAN_ADAPTER_FILENAME
     can_adapter_path.write_text(_approved_can_physx_sdf_adapter_text(), encoding="utf-8")

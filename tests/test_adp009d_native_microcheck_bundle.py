@@ -14,7 +14,11 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     DEFAULT_IMAGE,
     PROBE_KIND,
     SUPPORT_COLLIDER_PRIM,
+    TASK_COLLISION_DERIVATIVE_FILENAME,
+    TASK_COLLISION_MANIFEST_FILENAME,
+    TASK_COLLISION_MAX_EDGE_M,
     TARGET_COLLIDER_PRIM,
+    _refine_triangle_to_edge_limit,
     _inspect_sage_collision_source,
     build_native_microcheck_bundle,
 )
@@ -153,6 +157,43 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     assert "provider_runtime/assets/approved_can.usda" in names
     assert f"provider_runtime/assets/{APPROVED_CAN_ADAPTER_FILENAME}" in names
     assert "provider_runtime/assets/sage_collision.usd" in names
+    assert f"provider_runtime/assets/{TASK_COLLISION_DERIVATIVE_FILENAME}" in names
+    assert f"provider_runtime/assets/{TASK_COLLISION_MANIFEST_FILENAME}" in names
+    derivative_root = Path(first["bundle_path"]).parent / "provider_runtime/assets"
+    derivative = Usd.Stage.Open(str(derivative_root / TASK_COLLISION_DERIVATIVE_FILENAME))
+    derivative_manifest = json.loads(
+        (derivative_root / TASK_COLLISION_MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    assert not derivative.GetPrimAtPath(TARGET_COLLIDER_PRIM).IsActive()
+    assert derivative.GetPrimAtPath(SUPPORT_COLLIDER_PRIM).IsActive()
+    assert derivative_manifest["sealed_source_sha256"] == bindings["sage_collision.usd"]
+    assert derivative_manifest["sealed_source_mutated"] is False
+    assert derivative_manifest["observed_maximum_edge_m"] <= TASK_COLLISION_MAX_EDGE_M
+    assert derivative_manifest["relative_surface_area_error"] <= 1.0e-6
+
+
+def test_task_collision_retriangulation_preserves_area_and_limits_edges() -> None:
+    triangle = ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (0.0, 3.0, 0.0))
+
+    leaves = _refine_triangle_to_edge_limit(triangle, max_edge_m=0.5)
+
+    def area(value):
+        a, b, c = value
+        return abs(
+            (b[0] - a[0]) * (c[1] - a[1])
+            - (b[1] - a[1]) * (c[0] - a[0])
+        ) * 0.5
+
+    assert sum(area(value) for value in leaves) == pytest.approx(6.0)
+    assert max(
+        sum(
+            (value[edge][axis] - value[(edge + 1) % 3][axis]) ** 2
+            for axis in range(3)
+        )
+        ** 0.5
+        for value in leaves
+        for edge in range(3)
+    ) <= 0.5 + 1.0e-9
 
 
 def test_bundle_passes_existing_arena_transport_preflight(tmp_path: Path) -> None:

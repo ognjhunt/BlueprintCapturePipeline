@@ -5,7 +5,7 @@
   "audit_status": "official_source_audit_complete_implementation_bound",
   "audit_window": {
     "started_at": "2026-08-06T18:20:39Z",
-    "completed_at": "2026-08-06T23:35:00Z",
+    "completed_at": "2026-08-07T00:02:30Z",
     "retrieval_methods": [
       "GitHub REST branch commit and recursive tree APIs",
       "GitHub immutable blob content at exact revisions",
@@ -620,6 +620,11 @@
         "Reject PhysX triangle-size stability warnings in the reusable runtime even if reset or stepping later becomes reachable.",
         "Use only an immutable, digest-bound cooked USD or local-mesh-cache derivative tied to the exact source digest, Isaac Sim image, PhysX version, and runtime settings to avoid repeated cooking; a cache hit must still pass exact live topology and no-warning validation.",
         "Do not decimate, merge, deduplicate, crop, or otherwise change SAGE geometry for this fix; measure native build, reset, step, and camera timing before any further optimization.",
+        "The static-triangle measurement subsequently hit the frozen 30-minute no-log-progress watchdog during environment build, cost 0.495256 USD, reached neither reset nor camera proof, and tore down with provider-zero observed.",
+        "Apply the smallest measured exception after that baseline: retain the full sealed SAGE bytes, but materialize a deterministic collision derivative for the preregistered Franka swept envelope only.",
+        "Select source meshes by exact world-space AABB intersection with the frozen task ROI, always include the registered support, exclude the replaced source can, and deactivate all out-of-envelope collision meshes.",
+        "Use coplanar longest-edge midpoint retriangulation with a 0.5 meter edge ceiling; fail closed on source/derived face counts, source-prim mapping, surface-area error above 1e-6, edge-limit failure, digest mismatch, or any live PhysX collision warning.",
+        "Limit claims from this derivative to the preregistered Franka task envelope; it is not whole-scene navigation or general SAGE collision proof.",
         "Preserve scientific identity and digest bindings across any later optimization."
       ],
       "applied_references": [
@@ -627,7 +632,8 @@
         "https://isaac-sim.github.io/IsaacLab/v2.1.1/source/how-to/simulation_performance.html#collision-geometries",
         "https://isaac-sim.github.io/IsaacLab/develop/source/api/lab_physx/isaaclab_physx.sim.schemas.html#isaaclab_physx.sim.schemas.PhysxTriangleMeshPropertiesCfg",
         "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
-        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.0/dev_guide/simulation_control/simulation_control.html"
+        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.0/dev_guide/simulation_control/simulation_control.html",
+        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/106.5/extensions/runtime/source/omni.physx/docs/api/python.html#omni.physx.bindings._physx.PhysXCooking.compute_edge_length_limited_triangle_mesh"
       ],
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_native_microcheck_bundle.py",
@@ -669,5 +675,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:3771a1835a5d9a809a2fa8367422a4fc06000abe7ddf7261135657bfa14a605c"
+  "audit_digest": "sha256:c2a482aad08c1ac91f9c13271bfcf0f1253eee785c17209340d1b8de564dd133"
 }

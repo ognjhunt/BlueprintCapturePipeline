@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 31681,
-      "sha256": "sha256:90d4de2bb3752f8e706affe9c892e0a986ef3967e5155080f650470b08e1cf09"
+      "size_bytes": 32974,
+      "sha256": "sha256:9a35788675b1376fc3fca5c27a1defed63040c169c9544bc1ff71ffeef479fdb"
     },
     {
       "role": "approved_can",
@@ -425,12 +425,33 @@
         "source_face_count": 993678,
         "source_rigid_body_count": 0,
         "source_convex_decomposition_count": 164,
-        "runtime_active_triangle_mesh_count": 164,
+        "runtime_task_roi_min_m": [
+          2.4681748,
+          -4.3100837,
+          -0.1
+        ],
+        "runtime_task_roi_max_m": [
+          4.4681748,
+          -1.9100837,
+          1.8
+        ],
+        "runtime_candidate_source_mesh_count": 16,
+        "runtime_active_triangle_mesh_count": 15,
+        "runtime_source_face_count": 47359,
+        "runtime_derived_face_count": 99228,
+        "runtime_derived_point_count": 297684,
+        "runtime_maximum_edge_m": 0.5,
         "runtime_approximation": "none",
         "runtime_approximation_semantics": "static_triangle_mesh",
+        "runtime_surface_operation": "coplanar_longest_edge_midpoint_retriangulation",
+        "runtime_surface_area_relative_error_maximum": 1e-06,
+        "runtime_derivative_claim_ceiling": "preregistered_franka_task_envelope_only",
         "source_target_collider_active": false,
         "support_collider_active": true,
         "geometry_mutation_allowed": false,
+        "sealed_source_bytes_retained": true,
+        "runtime_surface_preserving_derivative_allowed": true,
+        "out_of_envelope_source_colliders_active": false,
         "required_blocker_on_mismatch": "sage_runtime_collision_profile_mismatch",
         "physx_triangle_stability_warning_allowed": false,
         "required_blocker_on_triangle_stability_warning": "physx_collision_stability_warning_detected",
@@ -547,5 +568,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:97ebd8d7ff72e9c52d5bf20b68d30d7111d5147cc21849b96f4388cdbc90c005"
+  "harness_digest": "sha256:dd8b750f321b2de68655bf5eee25ec5a86b3e3df969d9b9c4fe2130cc63a636e"
 }
