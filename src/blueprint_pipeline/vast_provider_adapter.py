@@ -3995,6 +3995,50 @@ def _instance_status(instance_payload: Mapping[str, Any]) -> str:
     )
 
 
+def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
+    """Ask the provider whether the container is still alive.
+
+    The log poller could not tell a dead container from a slow one: a process
+    that exits stops writing, so the log simply freezes, which is byte-identical
+    to a boot that is merely slow.  A live run sat on a container that had
+    exited mid-Isaac-startup and kept polling it for twenty-six minutes while
+    the API reported ``actual_status: exited`` the whole time.  Worse, once a
+    worker has emitted phase markers only a new marker counts as progress, and
+    a dead container emits markers never -- so the no-progress watchdog was the
+    only backstop, at thirty minutes, and would have blamed "no progress"
+    rather than naming the exit.
+
+    A probe error is not evidence of death: only a positive reading counts, so
+    a network blip cannot kill a healthy run.
+    """
+
+    try:
+        _status_code, payload = _api_json(
+            method="GET", path="/instances/", api_key=api_key, timeout_seconds=30
+        )
+    except Exception as exc:  # pragma: no cover - live network dependent.
+        # Same shape on every path: a caller must never have to know that the
+        # error branch omits the key it is about to test.
+        return {
+            "probe_error": f"{type(exc).__name__}: {str(exc)[:200]}",
+            "observed": False,
+            "status": "unknown",
+            "exited": False,
+        }
+    rows = _instance_list_rows(payload)
+    for row in rows:
+        if _number(row.get("id")) == float(int(instance_id)):
+            status = _instance_status(row).lower()
+            return {
+                "observed": True,
+                "status": status,
+                "exited": status in {"exited", "stopped_before_start"},
+                "probe_error": None,
+            }
+    # Absent from the listing entirely: destroyed out from under this run.
+    return {"observed": True, "status": "absent", "exited": True, "probe_error": None}
+
+
 def _instance_list_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     instances = payload.get("instances")
     if isinstance(instances, list):
@@ -4232,6 +4276,10 @@ def _request_logs_and_fetch(
     break_reason = ""
     attempt_index = 0
     container_missing_count = 0
+    # Two consecutive readings, so a single API glitch cannot kill a healthy
+    # run; still detects a dead container in about a minute rather than thirty.
+    instance_exited_count = 0
+    last_instance_liveness: dict[str, Any] = {}
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -4266,6 +4314,11 @@ def _request_logs_and_fetch(
         output_log_path.write_text(
             _redact_text(output_text, secret_values), encoding="utf-8"
         )
+        last_instance_liveness = _instance_liveness(instance_id=instance_id, api_key=api_key)
+        if last_instance_liveness.get("exited"):
+            instance_exited_count += 1
+        elif last_instance_liveness.get("observed"):
+            instance_exited_count = 0
         marker_found = any(marker and marker in attempt_text for marker in success_markers)
         container_missing = "No such container" in attempt_text
         runtime_phase_count = attempt_text.count("BLUEPRINT_WAM_RUNTIME_PHASE:")
@@ -4320,14 +4373,22 @@ def _request_logs_and_fetch(
                 "success_marker_found": marker_found,
                 "container_missing_marker_observed": container_missing,
                 "container_missing_observed_count": container_missing_count,
+                "instance_status": last_instance_liveness.get("status"),
+                "instance_exited_observed_count": instance_exited_count,
+                "instance_liveness_probe_error": last_instance_liveness.get("probe_error"),
             }
         )
         terminal_container_missing = container_missing and container_missing_count >= max(
             1, int(container_missing_retry_attempts)
         )
         deadline_reached = time.monotonic() >= deadline
+        instance_exited = instance_exited_count >= 2
         if marker_found:
             break_reason = "success_marker_found"
+        elif instance_exited:
+            # Ahead of the generic watchdogs so the reason names the exit rather
+            # than blaming absent log progress, which is only its symptom.
+            break_reason = "instance_exited"
         elif terminal_container_missing:
             break_reason = "terminal_container_missing"
         elif no_progress_timeout_reached:
@@ -4350,6 +4411,8 @@ def _request_logs_and_fetch(
         "log_poll_attempts": attempts,
         "no_progress_timeout_seconds": no_progress_limit_seconds,
         "no_progress_timeout_reached": no_progress_timeout_reached,
+        "instance_final_status": last_instance_liveness.get("status"),
+        "instance_exited_observed": instance_exited_count >= 2,
         "break_reason": break_reason,
     }
 
@@ -6405,8 +6468,17 @@ def run_vast_provider_adapter(
             onstart_logs.get("no_progress_timeout_reached")
             or heartbeat_log_break_reason == "no_log_progress_timeout"
         )
+        heartbeat_instance_exited = bool(
+            onstart_logs.get("instance_exited_observed")
+            or heartbeat_log_break_reason == "instance_exited"
+        )
         heartbeat_blockers = []
         if not startup_probe_ok:
+            if heartbeat_instance_exited:
+                # Named ahead of the timeout: a frozen log is the symptom of a
+                # dead container, and reporting the symptom sent one run
+                # chasing a render bug that was really a host that died.
+                heartbeat_blockers.append("vast_heartbeat_instance_exited")
             if heartbeat_no_progress_timeout:
                 heartbeat_blockers.append("vast_heartbeat_no_log_progress_timeout")
             if _log_result_has_container_missing(onstart_logs):
@@ -6419,6 +6491,8 @@ def run_vast_provider_adapter(
             "status": "completed" if startup_probe_ok else "blocked",
             "instance_id": instance_id,
             "heartbeat_completed": heartbeat_ok,
+            "instance_final_status": onstart_logs.get("instance_final_status"),
+            "instance_exited_observed": heartbeat_instance_exited,
             "startup_probe_proven": startup_probe_ok,
             "startup_probe_proof_source": "heartbeat_url"
             if heartbeat_ok
@@ -7188,6 +7262,7 @@ def run_vast_provider_adapter(
             blocker
             in {
                 "vast_heartbeat_blocked",
+                "vast_heartbeat_instance_exited",
                 "vast_heartbeat_no_log_progress_timeout",
                 "vast_heartbeat_container_missing",
                 "vast_heartbeat_output_missing_success_marker",

@@ -1187,3 +1187,82 @@ def test_a_failing_download_tool_falls_through_to_the_next_one() -> None:
     assert "; return $?; fi; " not in script.split("blueprint_download_src")[1][:400]
     # And the fallthrough is visible in the log rather than silent.
     assert "BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl" in script
+
+
+def _liveness_rows(status: str) -> dict:
+    return {"instances": [{"id": 4711, "actual_status": status, "cur_state": "running"}]}
+
+
+def test_a_dead_container_is_detected_by_asking_the_provider(monkeypatch) -> None:
+    """A frozen log cannot distinguish a dead container from a slow one.
+
+    A live run polled a container that had exited mid-Isaac-startup for
+    twenty-six minutes while the API reported ``actual_status: exited``
+    throughout, because the poller only ever asked for logs.
+    """
+
+    from blueprint_pipeline import vast_provider_adapter as adapter
+
+    monkeypatch.setattr(
+        adapter, "_api_json", lambda **kw: (200, _liveness_rows("exited"))
+    )
+    result = adapter._instance_liveness(instance_id=4711, api_key="k")
+    assert result["exited"] is True
+    assert result["status"] == "exited"
+
+
+def test_a_probe_error_is_not_evidence_of_death(monkeypatch) -> None:
+    """Only a positive reading counts, so a blip cannot kill a healthy run."""
+
+    from blueprint_pipeline import vast_provider_adapter as adapter
+
+    def boom(**_kw):
+        raise TimeoutError("network")
+
+    monkeypatch.setattr(adapter, "_api_json", boom)
+    result = adapter._instance_liveness(instance_id=4711, api_key="k")
+    assert result["exited"] is not True
+    assert result["observed"] is False
+    assert "TimeoutError" in result["probe_error"]
+
+
+def test_a_running_container_is_not_reported_dead(monkeypatch) -> None:
+    from blueprint_pipeline import vast_provider_adapter as adapter
+
+    monkeypatch.setattr(
+        adapter, "_api_json", lambda **kw: (200, _liveness_rows("running"))
+    )
+    assert adapter._instance_liveness(instance_id=4711, api_key="k")["exited"] is False
+
+
+def test_an_instance_destroyed_out_from_under_the_run_counts_as_dead(monkeypatch) -> None:
+    from blueprint_pipeline import vast_provider_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_api_json", lambda **kw: (200, {"instances": []}))
+    result = adapter._instance_liveness(instance_id=4711, api_key="k")
+    assert result["exited"] is True
+    assert result["status"] == "absent"
+
+
+def test_the_exit_is_named_rather_than_blamed_on_absent_log_progress() -> None:
+    """Reporting the symptom sent one run chasing a render bug.
+
+    The break must be checked ahead of the generic watchdogs, and two
+    consecutive readings are required so one API glitch cannot kill a run.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import vast_provider_adapter as adapter
+
+    source = _Path(adapter.__file__).read_text(encoding="utf-8")
+    assert 'break_reason = "instance_exited"' in source
+    assert "instance_exited_count >= 2" in source
+    # Ahead of the no-progress timeout in the break chain.
+    assert source.index('break_reason = "instance_exited"') < source.index(
+        'break_reason = "no_log_progress_timeout"'
+    )
+    # And it blacklists the machine, like the other startup-plane failures.
+    assert '"vast_heartbeat_instance_exited",' in source
+    blockers = source[source.index("startup_control_plane_blocked = any("):]
+    assert "vast_heartbeat_instance_exited" in blockers[:600]
