@@ -198,3 +198,50 @@ def test_canonical_hold_is_judged_before_the_approach_runs() -> None:
     # The servo must clamp per-step joint motion and abort on object disturbance.
     assert "APPROACH_MAX_JOINT_STEP_RAD," in source
     assert "approach_aborted = True" in source
+
+
+def _wrist_frame_at(frame_index: int, can_pixels: int, position) -> dict:
+    frame = _wrist_frame(frame_index, can_pixels)
+    frame["position_world_m"] = list(position)
+    return frame
+
+
+def test_stale_wrist_pose_is_blocked_when_the_arm_moved() -> None:
+    """A hand-mounted camera whose recorded pose never changes is mis-registered.
+
+    A live run captured a visibly changing wrist view while every recorded wrist
+    pose stayed byte-identical.  Composing an appearance layer against that pose
+    would silently mis-register the entire wrist observation.
+    """
+
+    from blueprint_pipeline.adp009d_approach_capture import BLOCKER_WRIST_POSE_STALE
+
+    stale = summarize_wrist_approach_capture(
+        captured_frames=[
+            _wrist_frame_at(100, 5200, (3.437, -3.096, 0.737)),
+            _wrist_frame_at(101, 5200, (3.437, -3.096, 0.737)),
+            _wrist_frame_at(102, 5200, (3.437, -3.096, 0.737)),
+        ]
+    )
+    assert BLOCKER_WRIST_POSE_STALE in stale["blockers"]
+    assert stale["wrist_pose_travel_m"] == pytest.approx(0.0, abs=1e-12)
+
+    moved = summarize_wrist_approach_capture(
+        captured_frames=[
+            _wrist_frame_at(100, 5200, (3.437, -3.096, 0.737)),
+            _wrist_frame_at(101, 5200, (3.450, -3.150, 0.700)),
+            _wrist_frame_at(102, 5200, (3.468, -3.250, 0.660)),
+        ]
+    )
+    assert BLOCKER_WRIST_POSE_STALE not in moved["blockers"]
+    assert moved["wrist_pose_travel_m"] > 0.1
+
+    # A deliberately stationary arm must not trip the gate.
+    stationary = summarize_wrist_approach_capture(
+        captured_frames=[
+            _wrist_frame_at(100, 5200, (3.437, -3.096, 0.737)),
+            _wrist_frame_at(101, 5200, (3.437, -3.096, 0.737)),
+        ],
+        arm_moved=False,
+    )
+    assert BLOCKER_WRIST_POSE_STALE not in stationary["blockers"]

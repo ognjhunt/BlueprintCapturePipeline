@@ -57,6 +57,12 @@ APPROACH_MAX_JOINT_STEP_RAD = 0.03
 # The approach must observe the object, never move it.  Exceeding this aborts.
 APPROACH_MAX_OBJECT_DISPLACEMENT_M = 0.01
 BLOCKER_APPROACH_DISTURBED_OBJECT = "wrist_approach_disturbed_approved_task_object"
+# The wrist camera is parented to the Robotiq base link, so its recorded pose
+# must move when the arm moves.  A run captured a visibly changing wrist view
+# while every recorded wrist pose stayed byte-identical: composing an Aura layer
+# against that pose would silently mis-register the whole wrist observation.
+BLOCKER_WRIST_POSE_STALE = "wrist_camera_pose_metadata_stale"
+MIN_WRIST_POSE_TRAVEL_M = 1.0e-4
 # Frame indices reserved for approach captures, after the 40-frame hold capture.
 APPROACH_CAPTURE_FRAME_BASE = 100
 
@@ -153,6 +159,7 @@ def summarize_wrist_approach_capture(
     approved_task_object_label: str = "approved_can",
     ik_succeeded: bool = True,
     object_displacement_m: float = 0.0,
+    arm_moved: bool = True,
     min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
 ) -> dict[str, Any]:
     """Gate wrist observability over the frames the approach actually produced."""
@@ -175,6 +182,7 @@ def summarize_wrist_approach_capture(
             {
                 "frame_index": frame.get("frame_index"),
                 "approved_task_object_pixel_count": observed,
+                "position_world_m": list(frame.get("position_world_m") or []),
             }
         )
 
@@ -185,6 +193,16 @@ def summarize_wrist_approach_capture(
         blockers.append(BLOCKER_WRIST_NEVER_SAW_OBJECT)
     if float(object_displacement_m) > APPROACH_MAX_OBJECT_DISPLACEMENT_M:
         blockers.append(BLOCKER_APPROACH_DISTURBED_OBJECT)
+    positions = [tuple(row["position_world_m"]) for row in rows if row["position_world_m"]]
+    wrist_pose_travel_m = 0.0
+    if len(positions) > 1:
+        first = positions[0]
+        wrist_pose_travel_m = max(
+            sum((float(a) - float(b)) ** 2 for a, b in zip(other, first)) ** 0.5
+            for other in positions[1:]
+        )
+    if arm_moved and positions and wrist_pose_travel_m < MIN_WRIST_POSE_TRAVEL_M:
+        blockers.append(BLOCKER_WRIST_POSE_STALE)
 
     report: dict[str, Any] = {
         "schema_version": APPROACH_CAPTURE_SCHEMA_VERSION,
@@ -195,6 +213,8 @@ def summarize_wrist_approach_capture(
         "wrist_frames": rows,
         "max_approved_task_object_pixel_count": best,
         "object_displacement_m": float(object_displacement_m),
+        "wrist_pose_travel_m": wrist_pose_travel_m,
+        "arm_moved": bool(arm_moved),
         "max_object_displacement_allowed_m": APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         "max_joint_step_rad": APPROACH_MAX_JOINT_STEP_RAD,
         "min_approved_task_object_pixel_count_required": int(min_object_pixels),
@@ -211,6 +231,7 @@ __all__ = [
     "APPROACH_MAX_JOINT_STEP_RAD",
     "APPROACH_MAX_OBJECT_DISPLACEMENT_M",
     "BLOCKER_APPROACH_DISTURBED_OBJECT",
+    "BLOCKER_WRIST_POSE_STALE",
     "APPROACH_CAPTURE_SCHEMA_VERSION",
     "APPROACH_STANDOFF_HEIGHTS_M",
     "APPROACH_STEPS_PER_WAYPOINT",
