@@ -53,7 +53,7 @@ def run(*, runtime_dir: Path, output_dir: Path, ovrtx_python: Path) -> dict[str,
     rows: list[dict[str, Any]] = []
     worker = runtime_dir / "run_ovrtx_preflight_worker.py"
     asset = runtime_dir / "assets/aura_gaussian_surflets.usdc"
-    vulkan_preflight = output_dir / "ovrtx_vulkan_preflight.log"
+    vulkan_preflight = output_dir / "ovrtx_vulkan_raytracing_preflight.json"
     if (
         manifest.get("headless_graphics_backend") != "xvfb"
         or manifest.get("vulkan_preflight_required") is not True
@@ -61,6 +61,17 @@ def run(*, runtime_dir: Path, output_dir: Path, ovrtx_python: Path) -> dict[str,
         blockers.append("ovrtx_headless_graphics_manifest_invalid")
     if not vulkan_preflight.is_file() or vulkan_preflight.stat().st_size <= 0:
         blockers.append("ovrtx_vulkan_preflight_evidence_missing")
+    else:
+        try:
+            vulkan_payload = json.loads(vulkan_preflight.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            blockers.append("ovrtx_vulkan_preflight_parse_failed")
+        else:
+            if (
+                vulkan_payload.get("status") != "passed"
+                or vulkan_payload.get("window_or_surface_created") is not False
+            ):
+                blockers.append("ovrtx_vulkan_preflight_invalid")
     if _sha256(asset) != manifest.get("particlefield_sha256"):
         blockers.append("ovrtx_particlefield_runtime_digest_mismatch")
     for camera_id in ("external", "wrist"):

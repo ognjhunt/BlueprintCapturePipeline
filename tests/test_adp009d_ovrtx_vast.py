@@ -82,12 +82,16 @@ def test_ovrtx_bundle_is_deterministic_and_contract_complete(tmp_path: Path) -> 
             "provider_runtime/assets/aura_gaussian_surflets.usdc",
             "provider_runtime/configs/external.ovrtx.json",
             "provider_runtime/configs/wrist.ovrtx.json",
+            "provider_runtime/run_vulkan_raytracing_preflight.py",
             "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh",
         } <= names
         entrypoint = archive.read(
             "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh"
         ).decode()
         runner = archive.read("provider_runtime/adp009d_ovrtx_provider_runner.py").decode()
+        vulkan_probe = archive.read(
+            "provider_runtime/run_vulkan_raytracing_preflight.py"
+        ).decode()
     assert provider_runtime_contract_blockers(
         provider_bundle_kind="adp009d_ovrtx",
         entrypoint_text=entrypoint,
@@ -116,8 +120,14 @@ def test_ovrtx_bundle_is_deterministic_and_contract_complete(tmp_path: Path) -> 
     assert "adp009d_ovrtx_provider_runtime_output.zip" in launch
     assert "xserver-xorg-core xvfb" in launch
     assert "libGLX_nvidia.so.0" in entrypoint
+    assert "XDG_RUNTIME_DIR" in entrypoint
+    assert "run_vulkan_raytracing_preflight.py" in entrypoint
     assert "vulkaninfo --summary" in entrypoint
     assert "xvfb-run" in entrypoint
+    compile(vulkan_probe, "run_vulkan_raytracing_preflight.py", "exec")
+    assert "VK_KHR_acceleration_structure" in vulkan_probe
+    assert "VK_KHR_ray_tracing_pipeline" in vulkan_probe
+    assert '"window_or_surface_created": False' in vulkan_probe
 
 
 def test_ovrtx_bundle_is_deterministic_without_generated_at(tmp_path: Path) -> None:

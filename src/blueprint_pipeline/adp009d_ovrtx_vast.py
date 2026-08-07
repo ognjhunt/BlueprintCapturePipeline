@@ -73,9 +73,14 @@ if ! command -v xvfb-run >/dev/null 2>&1 || ! command -v vulkaninfo >/dev/null 2
   write_missing_result "adp009d_ovrtx_headless_graphics_tools_missing"
   exit 2
 fi
-xvfb-run -a -s '-screen 0 1280x720x24' sh -c \
-  'vulkaninfo --summary >"$1/ovrtx_vulkan_preflight.log" 2>&1' sh "${OUTPUT_DIR}"
+export XDG_RUNTIME_DIR="${OUTPUT_DIR}/xdg-runtime"
+mkdir -p "${XDG_RUNTIME_DIR}"
+chmod 700 "${XDG_RUNTIME_DIR}"
+"${OVRTX_ENV}/bin/python" "${RUNTIME_DIR}/run_vulkan_raytracing_preflight.py" \
+  --output "${OUTPUT_DIR}/ovrtx_vulkan_raytracing_preflight.json"
 if [ $? -ne 0 ]; then write_missing_result "adp009d_ovrtx_vulkan_preflight_failed"; exit 2; fi
+xvfb-run -a -s '-screen 0 1280x720x24' sh -c \
+  'vulkaninfo --summary >"$1/ovrtx_vulkaninfo.log" 2>&1 || true' sh "${OUTPUT_DIR}"
 xvfb-run -a -s '-screen 0 1280x720x24' python3 "${RUNTIME_DIR}/adp009d_ovrtx_provider_runner.py" \
   --runtime-dir "${RUNTIME_DIR}" --output-dir "${OUTPUT_DIR}" \
   --ovrtx-python "${OVRTX_ENV}/bin/python"
@@ -161,6 +166,10 @@ def build_ovrtx_live_camera_bundle(
     shutil.copy2(
         repo_root / "scripts/run_ovrtx_preflight_worker.py",
         runtime / "run_ovrtx_preflight_worker.py",
+    )
+    shutil.copy2(
+        repo_root / "scripts/run_vulkan_raytracing_preflight.py",
+        runtime / "run_vulkan_raytracing_preflight.py",
     )
     _write_executable(runtime / "run_adp009d_ovrtx_provider_runtime.sh", ENTRYPOINT)
     manifest: dict[str, Any] = {
