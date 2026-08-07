@@ -506,6 +506,7 @@
         "The v17 replacement-map probe reached both native construction and the reset gate, then rejected the stock live arm pose at 1.152022362 radians maximum error. The run cost 0.067609 USD and provider-zero was observed.",
         "Inspection of the exact pinned Isaac Lab reset implementation showed that Arena's first event updates only the default-joint buffer and its second event writes that buffer into simulation. Retain the second EventManager reset event with zero mean and zero standard deviation rather than disabling it.",
         "The v18 EventManager-writer probe reached the requested pose exactly on both resets, held it within 0.000179053 radians, completed the native camera path, and preserved the v2 SDF can and task-envelope SAGE topology without warnings. It also measured a 0.197880811 meter XY can displacement and about 89.9986 degrees of tilt during nominal hold, so the prior reset pose is contact-invalid and may not be frozen as the canonical anchor.",
+        "The v19 official Arena arm-pose probe reduced can XY motion to 0.000011980 meters but tilted the can 6.188034 degrees because Arena's all-joint reset wrote zero into every Robotiq closed-loop joint. Retain the exact official seven-joint arm pose and use the contact-stable open-gripper coordinates measured in v15 as the smallest documented Arena compatibility exception; re-probe before admission.",
         "Label the historical convex-hull native probe as approximation-only and prohibit it from substituting for exact-v2 SDF admission.",
         "Use the pinned Isaac Lab selective installer for assets, physx, tasks, and teleop only; retain the installer-required isaaclab_newton compatibility package without selecting Newton runtime extras or the Newton backend.",
         "Install Isaac Lab Arena runtime dependencies without its development extra and reject any worker plan that silently expands to all Isaac Lab extensions or RL frameworks."
@@ -715,7 +716,7 @@
         "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
       }
     },
-    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, step, and camera retention passed in v18; the measured canonical reset pose is contact-invalid; OVRTX and ovphysx remain unselected; live Aura depth composition and a collision-free nominal-pose reprobe remain required before policy admission",
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, step, and camera retention passed in v18; v19 isolated the remaining contact defect to Arena's all-zero Robotiq closed-loop reset; OVRTX and ovphysx remain unselected; the measured open-gripper reprobe and live Aura depth composition remain required before policy admission",
     "native_microcheck_evidence": {
       "run_id": "native_microcheck_v18_live_event_writer_reset",
       "status": "completed_reset_infrastructure_microcheck_nominal_contact_invalid",
@@ -744,14 +745,29 @@
         "the physics-only frames did not contain live Aura appearance",
         "no scripted positive control or learned policy executed"
       ]
+    },
+    "subsequent_blocked_microcheck": {
+      "run_id": "native_microcheck_v19_official_arena_droid_pose",
+      "status": "blocked_contact_stability_gate",
+      "completed_at": "2026-08-07T07:00:59Z",
+      "result_sha256": "sha256:eb8d47119cd773d47643a24c85002685510bf8df97b048bf00e38033245cbc3c",
+      "allocator_result_sha256": "sha256:df280c5ce03e59c384fdef6a5dcae9644c21328402783ac54535904f12c94bc0",
+      "post_warmup_can_xy_displacement_m": 0.000011980385328675377,
+      "post_warmup_can_absolute_z_displacement_m": 0.0031012296676635742,
+      "post_warmup_can_tilt_degrees": 6.1880336690867885,
+      "estimated_cost_usd": 0.061779,
+      "provider_zero_observed": true,
+      "policy_queried": false,
+      "smallest_exact_blocker": "arena_all_zero_robotiq_closed_loop_reset_contact_invalid"
     }
   },
   "claim_ceiling": [
     "The audit proves exact official-source observations and binding implementation decisions at the recorded retrieval time.",
     "The v18 receipt proves only that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, exact reset, step, and two-camera tensor retention together.",
-    "It also proves the measured reset pose is contact-invalid; it does not prove a collision-free canonical pose, live Aura depth composition, scripted task success, OVRTX or ovphysx execution, or either learned policy.",
+    "The v19 receipt narrows the residual contact defect to the Arena all-zero Robotiq reset, but does not prove the measured open-gripper exception until a new native reprobe passes.",
+    "The evidence does not yet prove a collision-free canonical pose, live Aura depth composition, scripted task success, OVRTX or ovphysx execution, or either learned policy.",
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:520934bda520941bedd240106ccff315dce8c9548240017a3716c2355b434fcd"
+  "audit_digest": "sha256:2a9e46054fb117c016232334077603e23c61b5fad5bfee274df8e70b51f2e3e9"
 }

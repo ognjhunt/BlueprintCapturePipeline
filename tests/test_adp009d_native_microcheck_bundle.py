@@ -464,6 +464,19 @@ def test_canonical_reset_uses_official_arena_droid_safe_pose() -> None:
     )
 
 
+def test_canonical_reset_uses_measured_contact_stable_open_gripper() -> None:
+    assert isaac_runtime.RESET_JOINTS[7:] == pytest.approx(
+        (
+            0.104255385697,
+            0.104152053595,
+            -0.128436118364,
+            0.125143155456,
+            -0.071244180202,
+            -0.080966427922,
+        )
+    )
+
+
 def test_canonical_reset_replaces_overlapping_arena_regex_defaults() -> None:
     class FakeInitialState:
         def __init__(self, joint_pos: dict[str, float]) -> None:

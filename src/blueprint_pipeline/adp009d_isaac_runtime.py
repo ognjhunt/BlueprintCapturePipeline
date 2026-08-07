@@ -57,12 +57,12 @@ RESET_JOINTS = (
     0.0,
     1.884955592154,
     0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
+    0.104255385697,
+    0.104152053595,
+    -0.128436118364,
+    0.125143155456,
+    -0.071244180202,
+    -0.080966427922,
 )
 RESET_JOINT_NAMES = (
     "panda_joint1",
@@ -122,7 +122,13 @@ def _bind_canonical_joint_positions(embodiment: Any) -> None:
 
 
 def _configure_deterministic_reset_events(embodiment: Any) -> None:
-    """Make Arena's reset event write the exact authored pose without noise."""
+    """Write the measured collision-free arm/open-gripper pose without noise.
+
+    Arena release/0.2.1 authors zero for every Robotiq closed-loop joint.  The
+    v19 native probe measured that all-zero gripper state leaning the approved
+    can by 6.188 degrees.  The last six values in ``RESET_JOINTS`` are the exact
+    settled open-gripper state retained by the contact-stable v15 native probe.
+    """
 
     embodiment.event_config.init_franka_arm_pose.params["default_pose"] = list(
         RESET_JOINTS

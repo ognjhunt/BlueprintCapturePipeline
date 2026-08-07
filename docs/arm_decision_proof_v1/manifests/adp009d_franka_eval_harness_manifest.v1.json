@@ -2,7 +2,7 @@
   "schema_version": "adp009d_franka_eval_harness_manifest.v1",
   "program_id": "arm-decision-proof-v1",
   "harness_id": "blueprint-isaac-lab-franka-task-evaluation-v1",
-  "status": "native_reset_microcheck_passed_nominal_contact_and_policy_observation_blocked",
+  "status": "native_reset_microcheck_passed_open_gripper_reprobe_and_policy_observation_blocked",
   "reusable_harness": true,
   "workflow": "isaac_lab_manager_based",
   "implementation_base_commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 42104,
-      "sha256": "sha256:e203efec59659ee573fea551b59e1688f1bedc0e7365be2f50c77cdcf3fd0b91"
+      "size_bytes": 43499,
+      "sha256": "sha256:67dc4c528bca7b892dc8484473ab26d0956299d551e093ace18734bd4f890e03"
     },
     {
       "role": "approved_can",
@@ -164,9 +164,23 @@
       "panda_joint5": 0.0,
       "panda_joint6": 1.884955592154,
       "panda_joint7": 0.0,
-      "finger_joint": 0.0
+      "finger_joint": 0.104255385697,
+      "right_outer_knuckle_joint": 0.104152053595,
+      "right_inner_finger_joint": -0.128436118364,
+      "right_inner_finger_knuckle_joint": 0.125143155456,
+      "left_inner_finger_knuckle_joint": -0.071244180202,
+      "left_inner_finger_joint": -0.080966427922
     },
-    "robot_base_pose_status": "sealed_sage_analytic_candidate_v18_requested_pose_contact_invalid_safe_pose_reprobe_required",
+    "reset_pose_exception": {
+      "status": "measured_compatibility_exception_requires_native_reprobe",
+      "official_arena_arm_pose_preserved": true,
+      "trigger_run_id": "native_microcheck_v19_official_arena_droid_pose",
+      "trigger": "Arena release/0.2.1 all-joint reset wrote zero into every Robotiq closed-loop joint and tilted the can 6.188034 degrees",
+      "open_gripper_source_run_id": "native_microcheck_v15_legacy_cooker",
+      "open_gripper_source": "exact settled contact-stable live joint coordinates",
+      "asset_or_collider_mutated": false
+    },
+    "robot_base_pose_status": "sealed_sage_analytic_candidate_v19_arm_pose_valid_open_gripper_reprobe_required",
     "robot_base_pose_candidate": {
       "position_m": [
         3.4681748,
@@ -205,7 +219,7 @@
       "translation_m": 0.16,
       "non_support_overlap_count": 0,
       "measurement_authority": "materialized SAGE collision bytes",
-      "native_contact_validation_status": "v18_requested_reset_pose_contact_invalid_safe_pose_reprobe_required"
+      "native_contact_validation_status": "v19_all_zero_gripper_contact_invalid_measured_open_gripper_reprobe_required"
     },
     "support_bounds": {
       "x_min_m": 3.2342791209657826,
@@ -250,7 +264,7 @@
       "object_radius_m": 0.031094726014345042,
       "object_height_m": 0.1694279937744141
     },
-    "camera_calibration_status": "native_tensors_retained_v18_collision_safe_pose_and_policy_frame_quality_reprobe_required",
+    "camera_calibration_status": "native_tensors_retained_v19_measured_open_gripper_pose_and_policy_frame_quality_reprobe_required",
     "lighting_status": "requires_native_renderer_probe_before_protocol_freeze",
     "robot_base_status": "analytic_candidate_frozen_requires_native_reachability_probe_before_protocol_freeze"
   },
@@ -556,6 +570,19 @@
         "wrist_camera_approved_can_absent",
         "sealed_aura_hybrid_policy_observation_renderer_missing"
       ]
+    },
+    "latest_blocked_measurement": {
+      "run_id": "native_microcheck_v19_official_arena_droid_pose",
+      "result_sha256": "sha256:eb8d47119cd773d47643a24c85002685510bf8df97b048bf00e38033245cbc3c",
+      "allocator_result_sha256": "sha256:df280c5ce03e59c384fdef6a5dcae9644c21328402783ac54535904f12c94bc0",
+      "status": "blocked_contact_stability_gate",
+      "can_xy_displacement_m": 0.000011980385328675377,
+      "can_absolute_z_displacement_m": 0.0031012296676635742,
+      "can_tilt_degrees": 6.1880336690867885,
+      "estimated_cost_usd": 0.061779,
+      "provider_zero_observed": true,
+      "policy_queried": false,
+      "smallest_exact_blocker": "arena_all_zero_robotiq_closed_loop_reset_contact_invalid"
     }
   },
   "runtime_pins": {
@@ -651,7 +678,7 @@
   },
   "blockers": [
     "sealed_aura_hybrid_policy_observation_renderer_missing",
-    "collision_free_canonical_reset_pose_reprobe_missing",
+    "measured_open_gripper_canonical_reset_reprobe_missing",
     "canonical_safe_pose_camera_quality_reprobe_missing",
     "cousin_native_control_validation_missing"
   ],
@@ -662,5 +689,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:75e2d27bf15a9e985168e3bb43bdb2fef85a8589ea100e2ee69076b3c30a23d9"
+  "harness_digest": "sha256:7e28977a10fda0b21db140057ae29af9f97e3709a68417f21bd5cc0c8489f031"
 }
