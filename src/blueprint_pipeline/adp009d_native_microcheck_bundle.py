@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import math
 import shutil
 import stat
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -652,9 +656,109 @@ def build_native_microcheck_bundle(
     return receipt
 
 
+def build_native_microcheck_bundle_isolated(
+    *,
+    job_dir: str | Path,
+    approved_can_path: str | Path,
+    sage_collision_path: str | Path,
+    harness_manifest_path: str | Path,
+    implementation_commit: str,
+    generated_at: str | None = None,
+    expected_asset_bindings: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build the large USD bundle in a fresh, bounded process."""
+
+    job = Path(job_dir).expanduser().resolve()
+    command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.adp009d_native_microcheck_bundle",
+        "--isolated-child",
+        "--job-dir",
+        str(job),
+        "--approved-can-path",
+        str(Path(approved_can_path).expanduser().resolve()),
+        "--sage-collision-path",
+        str(Path(sage_collision_path).expanduser().resolve()),
+        "--harness-manifest-path",
+        str(Path(harness_manifest_path).expanduser().resolve()),
+        "--implementation-commit",
+        implementation_commit,
+    ]
+    if generated_at is not None:
+        command.extend(("--generated-at", generated_at))
+    if expected_asset_bindings is not None:
+        command.extend(
+            (
+                "--expected-asset-bindings-json",
+                json.dumps(dict(expected_asset_bindings), sort_keys=True, separators=(",", ":")),
+            )
+        )
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("adp009d_bundle_subprocess_timeout") from exc
+    if completed.returncode != 0:
+        raise ValueError(f"adp009d_bundle_subprocess_failed:{completed.returncode}")
+
+    receipt_path = job / "adp009d_native_microcheck_bundle_receipt.json"
+    if not receipt_path.is_file():
+        raise ValueError("adp009d_bundle_subprocess_receipt_missing")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    bundle_path = job / "adp009d_native_microcheck_bundle.zip"
+    if (
+        receipt.get("status") != "ready"
+        or receipt.get("implementation_commit") != implementation_commit
+        or Path(receipt.get("bundle_path", "")).resolve() != bundle_path
+        or not bundle_path.is_file()
+        or receipt.get("bundle_sha256") != _sha256(bundle_path)
+    ):
+        raise ValueError("adp009d_bundle_subprocess_receipt_invalid")
+    return receipt
+
+
+def _isolated_child_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--isolated-child", action="store_true", required=True)
+    parser.add_argument("--job-dir", required=True)
+    parser.add_argument("--approved-can-path", required=True)
+    parser.add_argument("--sage-collision-path", required=True)
+    parser.add_argument("--harness-manifest-path", required=True)
+    parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument("--generated-at")
+    parser.add_argument("--expected-asset-bindings-json")
+    args = parser.parse_args(argv)
+    expected_bindings = (
+        json.loads(args.expected_asset_bindings_json)
+        if args.expected_asset_bindings_json is not None
+        else None
+    )
+    build_native_microcheck_bundle(
+        job_dir=args.job_dir,
+        approved_can_path=args.approved_can_path,
+        sage_collision_path=args.sage_collision_path,
+        harness_manifest_path=args.harness_manifest_path,
+        implementation_commit=args.implementation_commit,
+        generated_at=args.generated_at,
+        expected_asset_bindings=expected_bindings,
+    )
+    return 0
+
+
 __all__ = [
     "APPROVED_CAN_ADAPTER_FILENAME",
     "DEFAULT_IMAGE",
     "PROBE_KIND",
     "build_native_microcheck_bundle",
+    "build_native_microcheck_bundle_isolated",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(_isolated_child_main())

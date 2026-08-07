@@ -21,6 +21,7 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     _refine_triangle_to_edge_limit,
     _inspect_sage_collision_source,
     build_native_microcheck_bundle,
+    build_native_microcheck_bundle_isolated,
 )
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
@@ -170,6 +171,23 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     assert derivative_manifest["sealed_source_mutated"] is False
     assert derivative_manifest["observed_maximum_edge_m"] <= TASK_COLLISION_MAX_EDGE_M
     assert derivative_manifest["relative_surface_area_error"] <= 1.0e-6
+
+
+def test_isolated_bundle_builder_returns_fresh_digest_bound_receipt(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    receipt = build_native_microcheck_bundle_isolated(
+        job_dir=tmp_path / "isolated",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="d" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    assert receipt["status"] == "ready"
+    assert receipt["implementation_commit"] == "d" * 40
+    assert receipt["bundle_sha256"] == _digest(Path(receipt["bundle_path"]))
 
 
 def test_task_collision_retriangulation_preserves_area_and_limits_edges() -> None:

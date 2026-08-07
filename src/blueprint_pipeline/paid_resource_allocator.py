@@ -126,7 +126,7 @@ from .adp_isaac_lab_arena_vast import (
 from .adp009d_franka_vast import run_adp009d_native_microcheck_vast
 from .adp009d_native_microcheck_bundle import (
     PROBE_KIND as ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
-    build_native_microcheck_bundle,
+    build_native_microcheck_bundle_isolated as build_native_microcheck_bundle,
 )
 from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE as ADP_SIMREADY_ISAAC_IMAGE
 from .public_scene_simready_isaac_vast import (
