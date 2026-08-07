@@ -14,6 +14,10 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .adp009d_aura_renderer_conformance import (
+    AuraRendererConformanceError,
+    validate_aura_renderer_conformance_receipt,
+)
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -307,6 +311,12 @@ def validate_live_hybrid_runtime_receipt(value: Mapping[str, Any]) -> dict[str, 
         errors.append("hybrid_runtime_frame_receipts_missing")
     if receipt.get("policy_frames_retained_losslessly") is not True:
         errors.append("hybrid_runtime_lossless_frames_missing")
+    try:
+        validate_aura_renderer_conformance_receipt(
+            receipt.get("aura_renderer_conformance_receipt")
+        )
+    except AuraRendererConformanceError:
+        errors.append("hybrid_runtime_aura_exact_camera_conformance_missing")
     if receipt.get("camera_motion_occlusion_probe_passed") is not True:
         errors.append("hybrid_runtime_camera_motion_occlusion_probe_failed")
     if receipt.get("static_occlusion_probe_passed") is not True:

@@ -12,6 +12,10 @@ from blueprint_pipeline.adp009d_live_hybrid_observation import (
     compose_live_hybrid_observation,
     validate_live_hybrid_runtime_receipt,
 )
+from blueprint_pipeline.adp009d_aura_renderer_conformance import (
+    FROZEN_THRESHOLDS,
+    RECEIPT_SCHEMA_VERSION,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
@@ -107,6 +111,18 @@ def test_composition_rejects_visible_semantic_pixel_without_metric_depth() -> No
 
 
 def _runtime_receipt() -> dict:
+    conformance = {
+        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "status": "passed_exact_camera_conformance",
+        "passed": True,
+        "thresholds": FROZEN_THRESHOLDS,
+        "thresholds_frozen_before_ovrtx_execution": True,
+        "ovrtx_repository": "https://github.com/NVIDIA-Omniverse/ovrtx",
+        "ovrtx_revision": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+    }
+    conformance["receipt_digest"] = canonical_digest(
+        conformance, digest_field="receipt_digest"
+    )
     value = {
         "schema_version": HYBRID_RUNTIME_RECEIPT_SCHEMA_VERSION,
         "status": "executed_live_renderer_microcheck",
@@ -131,6 +147,7 @@ def _runtime_receipt() -> dict:
         "observed_frame_count": 4,
         "frame_receipt_digests": ["sha256:" + "b" * 64],
         "policy_frames_retained_losslessly": True,
+        "aura_renderer_conformance_receipt": conformance,
         "camera_motion_occlusion_probe_passed": True,
         "static_occlusion_probe_passed": True,
         "moving_occlusion_probe_passed": True,
@@ -159,6 +176,20 @@ def test_live_runtime_receipt_requires_executed_ovrtx_evidence() -> None:
         ),
     ):
         validate_live_hybrid_runtime_receipt(mutated)
+
+
+def test_live_runtime_receipt_rejects_missing_aura_renderer_conformance() -> None:
+    receipt = _runtime_receipt()
+    receipt.pop("aura_renderer_conformance_receipt")
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+    with pytest.raises(
+        LiveHybridObservationError,
+        match="hybrid_runtime_aura_exact_camera_conformance_missing",
+    ):
+        validate_live_hybrid_runtime_receipt(receipt)
 
 
 def test_live_runtime_receipt_accepts_selected_isaac_camera_evidence() -> None:
