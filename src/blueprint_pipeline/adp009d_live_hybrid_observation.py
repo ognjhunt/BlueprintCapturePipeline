@@ -31,7 +31,27 @@ MISSING_RENDERER_BLOCKER = "sealed_aura_hybrid_policy_observation_renderer_missi
 METRIC_DEPTH_AOVS = {"DistanceToCameraSD", "DistanceToImagePlaneSD"}
 ISAAC_CAMERA_BACKEND = "Isaac Lab Camera over Isaac Sim RTX"
 ISAAC_CAMERA_METRIC_DEPTH_AOV = "distance_to_camera"
-COMPOSITION_METRIC_DEPTH_AOVS = METRIC_DEPTH_AOVS | {ISAAC_CAMERA_METRIC_DEPTH_AOV}
+
+# Metric depth is published in two different, non-interchangeable geometries.
+# ``ray_length`` measures along the pixel ray from the camera centre;
+# ``camera_z`` measures along the optical axis to the image plane.  They differ
+# by 1/cos(theta), which reaches 1.78x at the corners of a 1280x720 frame with
+# the admitted DROID intrinsics, so comparing them directly silently fabricates
+# occlusion.  Every layer therefore declares its geometry and is normalised to
+# ``camera_z`` before any depth ordering is computed.
+DEPTH_CONVENTION_CAMERA_Z = "camera_z"
+DEPTH_CONVENTION_RAY_LENGTH = "ray_length"
+DEPTH_COMPARISON_CONVENTION = DEPTH_CONVENTION_CAMERA_Z
+DYNAMIC_DEPTH_AOV_CONVENTIONS = {
+    "DistanceToCameraSD": DEPTH_CONVENTION_RAY_LENGTH,
+    "DistanceToImagePlaneSD": DEPTH_CONVENTION_CAMERA_Z,
+    ISAAC_CAMERA_METRIC_DEPTH_AOV: DEPTH_CONVENTION_RAY_LENGTH,
+}
+AURA_DEPTH_SOURCE_CONVENTIONS = {
+    "aurafusion360_metric_camera_depth_m": DEPTH_CONVENTION_CAMERA_Z,
+    "surf_depth_expected_camera_z_m": DEPTH_CONVENTION_CAMERA_Z,
+}
+COMPOSITION_METRIC_DEPTH_AOVS = frozenset(DYNAMIC_DEPTH_AOV_CONVENTIONS)
 
 
 class LiveHybridObservationError(ValueError):
@@ -95,6 +115,28 @@ def _calibration_digest(value: Mapping[str, Any]) -> str:
     return canonical_digest(calibration)
 
 
+def camera_ray_length_scale(
+    intrinsic_matrix: Sequence[Sequence[float]], plane_shape: tuple[int, int]
+) -> Any:
+    """Per-pixel ``ray_length / camera_z`` factor for a pinhole camera."""
+
+    import numpy as np
+
+    fx = float(intrinsic_matrix[0][0])
+    fy = float(intrinsic_matrix[1][1])
+    cx = float(intrinsic_matrix[0][2])
+    cy = float(intrinsic_matrix[1][2])
+    if not (fx > 0 and fy > 0 and math.isfinite(cx) and math.isfinite(cy)):
+        raise LiveHybridObservationError(["hybrid_camera_intrinsics_invalid"])
+    height, width = int(plane_shape[0]), int(plane_shape[1])
+    columns = np.arange(width, dtype=np.float64)[None, :]
+    rows = np.arange(height, dtype=np.float64)[:, None]
+    scale = np.sqrt(
+        1.0 + ((columns - cx) / fx) ** 2 + ((rows - cy) / fy) ** 2
+    )
+    return scale.astype(np.float32)
+
+
 def compose_live_hybrid_observation(
     *,
     aura_rgb: Any,
@@ -137,9 +179,11 @@ def compose_live_hybrid_observation(
     ):
         if array.shape != expected_plane:
             errors.append(f"hybrid_{name}_shape_invalid")
-    if dynamic_depth_aov not in COMPOSITION_METRIC_DEPTH_AOVS:
+    dynamic_depth_convention = DYNAMIC_DEPTH_AOV_CONVENTIONS.get(dynamic_depth_aov)
+    if dynamic_depth_convention is None:
         errors.append("hybrid_metric_dynamic_depth_aov_required")
-    if aura_depth_source != "aurafusion360_metric_camera_depth_m":
+    aura_depth_convention = AURA_DEPTH_SOURCE_CONVENTIONS.get(aura_depth_source)
+    if aura_depth_convention is None:
         errors.append("hybrid_metric_aura_depth_required")
     if not isinstance(timestamp_ns, int) or timestamp_ns < 0:
         errors.append("hybrid_timestamp_invalid")
@@ -188,8 +232,16 @@ def compose_live_hybrid_observation(
         alpha_float > 1
     ).any():
         raise LiveHybridObservationError(["hybrid_dynamic_alpha_invalid"])
+    # Normalise both layers to camera_z before any ordering decision.
+    ray_scale = camera_ray_length_scale(
+        aura_calibration["intrinsic_matrix"], expected_plane
+    )
     aura_depth_float = aura_depth.astype(np.float32, copy=False)
     dynamic_depth_float = dynamic_depth.astype(np.float32, copy=False)
+    if aura_depth_convention == DEPTH_CONVENTION_RAY_LENGTH:
+        aura_depth_float = aura_depth_float / ray_scale
+    if dynamic_depth_convention == DEPTH_CONVENTION_RAY_LENGTH:
+        dynamic_depth_float = dynamic_depth_float / ray_scale
     dynamic_semantic = segmentation > 0
     dynamic_visible = dynamic_semantic & (alpha_float > 0)
     dynamic_depth_valid = np.isfinite(dynamic_depth_float) & (dynamic_depth_float > 0)
@@ -217,6 +269,10 @@ def compose_live_hybrid_observation(
         "isaac_calibration_digest": isaac_calibration_digest,
         "dynamic_depth_aov": dynamic_depth_aov,
         "aura_depth_source": aura_depth_source,
+        "dynamic_depth_convention": dynamic_depth_convention,
+        "aura_depth_convention": aura_depth_convention,
+        "depth_comparison_convention": DEPTH_COMPARISON_CONVENTION,
+        "ray_length_scale_max": float(ray_scale.max()),
         "depth_epsilon_m": float(depth_epsilon_m),
         "semantic_override_layer_digest": semantic_override_layer_digest,
         "semantic_labels": {str(key): normalized_labels[key] for key in sorted(positive_ids)},
@@ -345,6 +401,12 @@ def validate_live_hybrid_runtime_receipt(value: Mapping[str, Any]) -> dict[str, 
 
 
 __all__ = [
+    "AURA_DEPTH_SOURCE_CONVENTIONS",
+    "COMPOSITION_METRIC_DEPTH_AOVS",
+    "DEPTH_COMPARISON_CONVENTION",
+    "DEPTH_CONVENTION_CAMERA_Z",
+    "DEPTH_CONVENTION_RAY_LENGTH",
+    "DYNAMIC_DEPTH_AOV_CONVENTIONS",
     "HYBRID_FRAME_RECEIPT_SCHEMA_VERSION",
     "HYBRID_RUNTIME_RECEIPT_SCHEMA_VERSION",
     "LiveHybridObservationError",
@@ -352,6 +414,7 @@ __all__ = [
     "ISAAC_CAMERA_METRIC_DEPTH_AOV",
     "METRIC_DEPTH_AOVS",
     "MISSING_RENDERER_BLOCKER",
+    "camera_ray_length_scale",
     "compose_live_hybrid_observation",
     "validate_live_hybrid_runtime_receipt",
 ]

@@ -49,6 +49,18 @@ ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ROBOT_BASE_POSITION_M = (3.4681748, -2.8100837, 0.2766791)
 ROBOT_BASE_YAW_RAD = -math.pi / 2
 CAN_START_POSITION_M = (3.4681748, -3.3100837, 0.5264650138348479)
+# Semantics are authored as a runtime spawn-config override so the sealed can
+# and SAGE USD bytes are never mutated.  The exact override is emitted with the
+# result and digest-bound, so a downstream composition can prove which labelling
+# produced the retained segmentation.
+SEMANTIC_OVERRIDE_LAYER: dict[str, Any] = {
+    "authoring": "isaac_lab_spawn_semantic_tags_runtime_override",
+    "sealed_source_usd_mutated": False,
+    "tags": {
+        "approved_can": [["class", "approved_can"]],
+        "robot": [["class", "robot"]],
+    },
+}
 RESET_JOINTS = (
     0.0,
     -0.628318530718,
@@ -136,6 +148,19 @@ def _configure_deterministic_reset_events(embodiment: Any) -> None:
     reset_writer = embodiment.event_config.randomize_franka_joint_state
     reset_writer.params["mean"] = 0.0
     reset_writer.params["std"] = 0.0
+
+
+def _canonical_digest(value: dict[str, Any]) -> str:
+    """Digest matching ``decision_evidence_contracts.canonical_digest``."""
+
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _semantic_tags(role: str) -> list[tuple[str, str]]:
+    return [tuple(tag) for tag in SEMANTIC_OVERRIDE_LAYER["tags"][role]]
 
 
 def _sha256(path: Path) -> str:
@@ -539,7 +564,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         initial_pose=robot_pose,
         initial_joint_pose=list(RESET_JOINTS),
     )
-    embodiment.scene_config.robot.spawn.semantic_tags = [("class", "robot")]
+    embodiment.scene_config.robot.spawn.semantic_tags = _semantic_tags("robot")
     # The canonical anchor is immutable: retain Arena's second reset event as
     # the state writer, but set its Gaussian mean and standard deviation to
     # zero.  Arena's first event updates only the default-joint buffer; without
@@ -578,7 +603,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         usd_path=str(runtime / "assets" / APPROVED_CAN_ADAPTER_FILENAME),
         initial_pose=Pose(position_xyz=CAN_START_POSITION_M),
         spawn_cfg_addon={
-            "semantic_tags": [("class", "approved_can")],
+            "semantic_tags": _semantic_tags("approved_can"),
             "rigid_props": sim_utils.RigidBodyPropertiesCfg(
                 solver_position_iteration_count=8,
                 solver_velocity_iteration_count=2,
@@ -949,6 +974,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "camera_warmup_frames": 40,
             "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": True,
+            "semantic_override_layer": SEMANTIC_OVERRIDE_LAYER,
+            "semantic_override_layer_digest": _canonical_digest(
+                SEMANTIC_OVERRIDE_LAYER
+            ),
+            "semantic_override_layer_composed": True,
+            "semantic_source_usd_mutated": False,
             "sealed_source_mutated": False,
             "candidate_policy_queried": False,
             "candidate_outcomes_accessed": False,

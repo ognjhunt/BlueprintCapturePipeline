@@ -824,3 +824,24 @@ def test_allocator_routes_microcheck_only_through_canonical_grant(
     assert admission["probe_kind"] == PROBE_KIND
     assert admission["retry_cap"] == 0
     assert admission["candidate_policy_queried"] is False
+
+
+def test_semantic_override_layer_is_digest_bound_and_used_at_every_spawn_site() -> None:
+    """Semantics must come from one digest-bound runtime override, not literals."""
+
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    layer = isaac_runtime.SEMANTIC_OVERRIDE_LAYER
+    assert layer["sealed_source_usd_mutated"] is False
+    # The in-container digest helper must agree with the repository contract so
+    # a downstream composer can recompute it.
+    assert isaac_runtime._canonical_digest(layer) == canonical_digest(layer)
+    assert isaac_runtime._semantic_tags("robot") == [("class", "robot")]
+    assert isaac_runtime._semantic_tags("approved_can") == [("class", "approved_can")]
+
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+    # No spawn site may reintroduce a hard-coded tag that bypasses the override.
+    assert '"semantic_tags": _semantic_tags("approved_can")' in source
+    assert "spawn.semantic_tags = _semantic_tags(\"robot\")" in source
+    assert '[("class", "robot")]' not in source
+    assert '[("class", "approved_can")]' not in source

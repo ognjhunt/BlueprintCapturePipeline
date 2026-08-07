@@ -96,6 +96,95 @@ def test_metric_depth_composition_accepts_isaac_camera_aov() -> None:
     assert receipt["dynamic_depth_aov"] == "distance_to_camera"
 
 
+def _wide_angle_calibration() -> dict:
+    """3x3 pinhole whose corner pixels have ray_length / camera_z == sqrt(3)."""
+
+    return {
+        "camera_model": "pinhole",
+        "intrinsic_matrix": [
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ],
+        "world_from_camera": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "resolution": [3, 3],
+    }
+
+
+def _wide_angle_arrays(corner_depths: tuple[float, float]) -> dict:
+    segmentation = np.zeros((3, 3), dtype=np.int32)
+    segmentation[0, 0] = 7
+    segmentation[0, 2] = 7
+    alpha = (segmentation > 0).astype(np.float32)
+    depth = np.full((3, 3), 10.0, dtype=np.float32)
+    depth[0, 0] = corner_depths[0]
+    depth[0, 2] = corner_depths[1]
+    return {
+        "aura_rgb": np.full((3, 3, 3), 10, dtype=np.uint8),
+        "aura_depth_m": np.full((3, 3), 1.0, dtype=np.float32),
+        "dynamic_rgb": np.full((3, 3, 3), 100, dtype=np.uint8),
+        "dynamic_depth_m": depth,
+        "dynamic_segmentation": segmentation,
+        "dynamic_alpha": alpha,
+    }
+
+
+def test_ray_length_dynamic_depth_is_normalized_to_camera_z_before_ordering() -> None:
+    """A ray-length AOV must not be compared directly against Aura camera_z.
+
+    Both corner pixels carry ray_length depth.  Their true camera_z values are
+    0.9 (in front of the 1.0 Aura surface) and 1.2 (behind it).  Comparing the
+    raw ray lengths (1.559 and 2.079) against 1.0 would occlude both, which is
+    how a physically-in-front robot acquires fabricated occlusion.
+    """
+
+    root_three = float(np.sqrt(3.0))
+    composed, receipt = compose_live_hybrid_observation(
+        **_wide_angle_arrays((0.9 * root_three, 1.2 * root_three)),
+        aura_calibration=_wide_angle_calibration(),
+        isaac_calibration=_wide_angle_calibration(),
+        timestamp_ns=7,
+        simulation_time_s=0.5,
+        dynamic_depth_aov="distance_to_camera",
+        semantic_labels={7: "robot"},
+        semantic_override_layer_digest="sha256:" + "c" * 64,
+    )
+
+    assert receipt["dynamic_depth_convention"] == "ray_length"
+    assert receipt["aura_depth_convention"] == "camera_z"
+    assert receipt["depth_comparison_convention"] == "camera_z"
+    assert receipt["ray_length_scale_max"] == pytest.approx(root_three, rel=1e-6)
+    assert receipt["dynamic_front_pixel_count"] == 1
+    assert receipt["dynamic_occluded_pixel_count"] == 1
+    assert composed[0, 0].tolist() == [100, 100, 100]
+    assert composed[0, 2].tolist() == [10, 10, 10]
+
+
+def test_camera_z_dynamic_depth_is_never_rescaled() -> None:
+    """The image-plane AOV is already camera_z and must pass through unchanged."""
+
+    root_three = float(np.sqrt(3.0))
+    _, receipt = compose_live_hybrid_observation(
+        **_wide_angle_arrays((0.9 * root_three, 1.2 * root_three)),
+        aura_calibration=_wide_angle_calibration(),
+        isaac_calibration=_wide_angle_calibration(),
+        timestamp_ns=7,
+        simulation_time_s=0.5,
+        dynamic_depth_aov="DistanceToImagePlaneSD",
+        semantic_labels={7: "robot"},
+        semantic_override_layer_digest="sha256:" + "c" * 64,
+    )
+
+    assert receipt["dynamic_depth_convention"] == "camera_z"
+    assert receipt["dynamic_front_pixel_count"] == 0
+    assert receipt["dynamic_occluded_pixel_count"] == 2
+
+
 def test_composition_rejects_unitless_depth_or_mismatched_camera() -> None:
     changed = _calibration()
     changed["world_from_camera"][0][3] = 0.01
