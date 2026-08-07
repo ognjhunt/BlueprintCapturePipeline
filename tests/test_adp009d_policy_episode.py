@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from blueprint_pipeline.adp009d_droid_action_execution import GripperConvention
+from blueprint_pipeline.adp009d_droid_observation import (
+    DROID_EXTERIOR_VIEW_1,
+    DROID_WRIST_VIEW,
+)
+from blueprint_pipeline.adp009d_policy_episode import (
+    BLOCKER_CLIENT_RETURNED_NOTHING,
+    BLOCKER_ENVIRONMENT_CONTRACT,
+    BLOCKER_STEP_INDEX_NOT_INCREASING,
+    PolicyEpisodeError,
+    run_policy_episode,
+)
+from blueprint_pipeline.adp009d_task_scoring import (
+    CAN_START_POSITION_M,
+    GRIPPER_FULL_OPENING_M,
+    SUPPORT_PLANE_Z_M,
+)
+
+_MEASURED = GripperConvention(
+    closed_command=1.0, open_command=0.0, measured_by_probe=True
+)
+# The frozen destination, derived from the sealed SAGE support triangles.
+_DESTINATION = [3.750152333333333, -3.4074919, SUPPORT_PLANE_Z_M]
+_UPRIGHT_XYZW = (0.0, 0.0, 0.0, 1.0)
+_LIMITS = [[-2.9, 2.9]] * 7
+_CLOSED = 0.070
+
+
+class _Environment:
+    """A scripted simulator: carries the can to the destination, then releases."""
+
+    def __init__(self, *, steps_to_destination: int = 24, lift_height: float = 0.12):
+        self.steps_to_destination = steps_to_destination
+        self.lift_height = lift_height
+        self.reset_count = 0
+        self.steps: list[list[float]] = []
+        self._t = 0
+
+    def reset(self) -> None:
+        self.reset_count += 1
+        self._t = 0
+        self.steps.clear()
+
+    def joint_limits(self):
+        return _LIMITS
+
+    def read_policy_inputs(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[..., 0] = 128
+        return {
+            DROID_EXTERIOR_VIEW_1: frame,
+            DROID_WRIST_VIEW: frame,
+            "joint_position": [0.0] * 7,
+            "gripper_position": 0.04,
+        }
+
+    def step(self, isaac_action):
+        self.steps.append(list(isaac_action))
+        self._t += 1
+
+    def _position(self):
+        """Lift, translate to the destination, then rest on the support."""
+
+        progress = min(1.0, self._t / self.steps_to_destination)
+        x = CAN_START_POSITION_M[0] + progress * (_DESTINATION[0] - CAN_START_POSITION_M[0])
+        y = CAN_START_POSITION_M[1] + progress * (_DESTINATION[1] - CAN_START_POSITION_M[1])
+        if self._t == 0 or progress >= 1.0:
+            z = SUPPORT_PLANE_Z_M
+        else:
+            z = SUPPORT_PLANE_Z_M + self.lift_height
+        return [x, y, z]
+
+    def read_object_sample(self):
+        progress = min(1.0, self._t / self.steps_to_destination)
+        carrying = 0.0 < progress < 1.0
+        position = self._position()
+        sample = {
+            "can_pose_world": [*position, *_UPRIGHT_XYZW],
+            "gripper_width_m": _CLOSED if carrying else GRIPPER_FULL_OPENING_M,
+        }
+        if carrying:
+            sample["grasp_frame_position_world_m"] = list(position)
+            sample["finger_contact_forces_n"] = [2.5, 2.5]
+        return sample
+
+
+class _Policy:
+    """Returns a well-formed 10x8 chunk and records what it was asked."""
+
+    def __init__(self):
+        self.observations: list[dict] = []
+
+    def infer(self, observation):
+        self.observations.append(observation)
+        chunk = np.zeros((10, 8), dtype=float)
+        chunk[:, 7] = 0.9  # closed, in DROID's convention
+        return chunk
+
+
+def _run(environment=None, policy=None, **overrides):
+    kwargs = dict(
+        environment=environment or _Environment(),
+        policy=policy or _Policy(),
+        candidate_id="pi05_droid",
+        destination_position_world_m=_DESTINATION,
+        prompt="pick up the can and place it on the counter",
+        gripper=_MEASURED,
+        max_policy_queries=4,
+        settle_window_samples=6,
+    )
+    kwargs.update(overrides)
+    return run_policy_episode(**kwargs)
+
+
+def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
+    """The whole point: observation, query, execution and scoring in one path."""
+
+    environment = _Environment()
+    policy = _Policy()
+
+    receipt = _run(environment, policy)
+
+    assert receipt["candidate_policy_queried"] is True
+    assert receipt["policy_queries"] == 4
+    # 4 queries x 8 executed rows, plus the settle window.
+    assert receipt["environment_steps"] == 4 * 8 + 6
+    assert len(environment.steps) == receipt["environment_steps"]
+
+    # The policy actually saw this candidate's observation format.
+    assert len(policy.observations) == 4
+    assert policy.observations[0][DROID_EXTERIOR_VIEW_1].shape == (224, 224, 3)
+    assert policy.observations[0][DROID_WRIST_VIEW].dtype == np.uint8
+    assert policy.observations[0]["prompt"]
+
+    # And the episode scored on deterministic object state.
+    assert receipt["score"]["status"] in {"scored", "undetermined"}
+    assert receipt["score"]["outcome"] == "placed"
+
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def test_the_settle_window_releases_the_gripper() -> None:
+    """placed is judged on a released can; a held one must not qualify."""
+
+    environment = _Environment()
+
+    _run(environment)
+
+    settle = environment.steps[-6:]
+    assert all(action[7] == _MEASURED.open_command for action in settle)
+    # Everything before the settle carried the policy's own gripper command.
+    assert environment.steps[-7][7] == _MEASURED.closed_command
+
+
+def test_only_the_open_loop_horizon_of_each_chunk_executes() -> None:
+    """A 10-row chunk must advance the simulator exactly eight steps."""
+
+    environment = _Environment()
+
+    receipt = _run(environment, max_policy_queries=1, settle_window_samples=2)
+
+    assert receipt["queries"][0]["chunk_shape"] == [10, 8]
+    assert receipt["queries"][0]["executed_rows"] == 8
+    assert receipt["queries"][0]["discarded_rows"] == 2
+    assert len(environment.steps) == 8 + 2
+
+
+def test_the_episode_resets_before_it_observes_anything() -> None:
+    environment = _Environment()
+
+    _run(environment)
+
+    assert environment.reset_count == 1
+
+
+def test_a_client_returning_nothing_fails_closed() -> None:
+    class _Silent:
+        def infer(self, observation):
+            return None
+
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(policy=_Silent())
+    assert BLOCKER_CLIENT_RETURNED_NOTHING in excinfo.value.errors
+
+
+def test_a_malformed_chunk_never_reaches_the_simulator() -> None:
+    from blueprint_pipeline.adp009d_droid_action_execution import (
+        DroidActionExecutionError,
+    )
+
+    class _Wrong:
+        def infer(self, observation):
+            return np.zeros((10, 7))
+
+    environment = _Environment()
+    with pytest.raises(DroidActionExecutionError):
+        _run(environment, policy=_Wrong())
+    assert environment.steps == []
+
+
+def test_an_environment_missing_a_required_view_fails_closed() -> None:
+    class _OneEye(_Environment):
+        def read_policy_inputs(self):
+            inputs = dict(super().read_policy_inputs())
+            del inputs[DROID_WRIST_VIEW]
+            return inputs
+
+    from blueprint_pipeline.adp009d_droid_observation import DroidObservationError
+
+    with pytest.raises(DroidObservationError):
+        _run(_OneEye())
+
+
+def test_an_environment_missing_proprioception_names_the_contract() -> None:
+    class _NoJoints(_Environment):
+        def read_policy_inputs(self):
+            inputs = dict(super().read_policy_inputs())
+            del inputs["joint_position"]
+            return inputs
+
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(_NoJoints())
+    assert any(BLOCKER_ENVIRONMENT_CONTRACT in e for e in excinfo.value.errors)
+
+
+def test_an_environment_omitting_the_can_pose_fails_closed() -> None:
+    class _NoPose(_Environment):
+        def read_object_sample(self):
+            return {"gripper_width_m": GRIPPER_FULL_OPENING_M}
+
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(_NoPose())
+    assert any(BLOCKER_ENVIRONMENT_CONTRACT in e for e in excinfo.value.errors)
+
+
+def test_step_indices_increase_across_query_boundaries() -> None:
+    """The scorer treats a repeated index as malformed, so the loop must not emit one."""
+
+    environment = _Environment()
+    receipt = _run(environment)
+
+    # Re-derive the indices the loop must have produced.
+    assert receipt["queries"][0]["final_step_index"] == 8
+    assert receipt["queries"][1]["final_step_index"] == 16
+    assert receipt["queries"][-1]["final_step_index"] == 32
+    assert BLOCKER_STEP_INDEX_NOT_INCREASING not in str(receipt)
+
+
+def test_an_unmeasured_gripper_convention_is_refused() -> None:
+    from blueprint_pipeline.adp009d_droid_action_execution import (
+        DroidActionExecutionError,
+    )
+
+    unmeasured = GripperConvention(closed_command=1.0, open_command=0.0)
+    with pytest.raises(DroidActionExecutionError):
+        _run(gripper=unmeasured)
+
+
+def test_unknown_candidate_and_invalid_budgets_are_refused() -> None:
+    with pytest.raises(PolicyEpisodeError):
+        _run(candidate_id="some_other_policy")
+    with pytest.raises(PolicyEpisodeError):
+        _run(max_policy_queries=0)
+    with pytest.raises(PolicyEpisodeError):
+        _run(settle_window_samples=0)
+
+
+def test_a_policy_that_never_moves_the_can_scores_never_moved() -> None:
+    """A real negative must be reported as one, not as an error."""
+
+    class _Static(_Environment):
+        def read_object_sample(self):
+            return {
+                "can_pose_world": [*CAN_START_POSITION_M, *_UPRIGHT_XYZW],
+                "gripper_width_m": GRIPPER_FULL_OPENING_M,
+            }
+
+    receipt = _run(_Static())
+
+    assert receipt["score"]["outcome"] == "never_moved"
+    assert receipt["candidate_policy_queried"] is True
+
+
+def test_receipt_records_the_observation_conversion_actually_applied() -> None:
+    receipt = _run()
+
+    conversion = receipt["observation_conversion"]
+    assert conversion["candidate_id"] == "pi05_droid"
+    assert conversion["source_resolution_hw"] == [720, 1280]
+    assert conversion["target_resolution_hw"] == [224, 224]
+    assert conversion["scene_content_cropped"] is False
