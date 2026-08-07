@@ -5,7 +5,7 @@
   "audit_status": "official_source_audit_complete_implementation_bound",
   "audit_window": {
     "started_at": "2026-08-06T18:20:39Z",
-    "completed_at": "2026-08-07T01:09:38Z",
+    "completed_at": "2026-08-07T02:21:30Z",
     "retrieval_methods": [
       "GitHub REST branch commit and recursive tree APIs",
       "GitHub immutable blob content at exact revisions",
@@ -247,10 +247,10 @@
       "source_id": "nvidia_skills",
       "repository_url": "https://github.com/NVIDIA/skills",
       "ref": "refs/heads/main",
-      "revision": "276b9bcce5d1b224769f9b10ad26975c15e0dd4c",
-      "tree": "a5b880ee64f834287821d9997d5694ca1b5e2ef2",
+      "revision": "358510a74b59120bc3d4bd183ac92734018b38f3",
+      "tree": "b9c86063c7aeb40f83dd4fd8f84051ab96813eb4",
       "ref_verified_at_retrieval": true,
-      "retrieved_at": "2026-08-06T18:45:59Z",
+      "retrieved_at": "2026-08-07T02:21:30Z",
       "submodules": [],
       "path_identities": [
         {
@@ -263,7 +263,7 @@
         },
         {
           "path": "README.md",
-          "blob": "0bf1e0bdd27151d1b3c5e72d1ae39af9537d7645"
+          "blob": "2f81999528440b1fcbebb9795988e563c32ba066"
         },
         {
           "path": "skills/omniverse-cad-to-simready/SKILL.md",
@@ -287,7 +287,7 @@
         "code_samples": "Apache-2.0"
       },
       "official_source_urls": [
-        "https://github.com/NVIDIA/skills/tree/276b9bcce5d1b224769f9b10ad26975c15e0dd4c"
+        "https://github.com/NVIDIA/skills/tree/358510a74b59120bc3d4bd183ac92734018b38f3"
       ]
     },
     {
@@ -634,7 +634,7 @@
         "Preserve scientific identity and digest bindings across any later optimization."
       ],
       "applied_references": [
-        "https://github.com/NVIDIA/skills/blob/276b9bcce5d1b224769f9b10ad26975c15e0dd4c/skills/omniverse-usd-performance-tuning/SKILL.md",
+        "https://github.com/NVIDIA/skills/blob/358510a74b59120bc3d4bd183ac92734018b38f3/skills/omniverse-usd-performance-tuning/SKILL.md",
         "https://isaac-sim.github.io/IsaacLab/v2.1.1/source/how-to/simulation_performance.html#collision-geometries",
         "https://isaac-sim.github.io/IsaacLab/develop/source/api/lab_physx/isaaclab_physx.sim.schemas.html#isaaclab_physx.sim.schemas.PhysxTriangleMeshPropertiesCfg",
         "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
@@ -695,5 +695,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:d934a2dfb7435ce31cfac01804d36cef2f610b5f5a2ed0773a5f95b54107fe0a"
+  "audit_digest": "sha256:7369c342745aec687e2ee8c699fba2d0fb8d9f94cc3c77ba4ccfd27462983856"
 }

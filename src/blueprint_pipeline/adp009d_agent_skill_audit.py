@@ -37,8 +37,8 @@ EXPECTED_REPOSITORIES = {
     },
     "nvidia_skills": {
         "repository_url": "https://github.com/NVIDIA/skills",
-        "revision": "276b9bcce5d1b224769f9b10ad26975c15e0dd4c",
-        "tree": "a5b880ee64f834287821d9997d5694ca1b5e2ef2",
+        "revision": "358510a74b59120bc3d4bd183ac92734018b38f3",
+        "tree": "b9c86063c7aeb40f83dd4fd8f84051ab96813eb4",
     },
     "ovrtx": {
         "repository_url": "https://github.com/NVIDIA-Omniverse/ovrtx",
