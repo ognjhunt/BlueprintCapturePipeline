@@ -3064,16 +3064,18 @@ def _probe_shell_script(
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     quoted_url = shlex.quote(heartbeat_url)
+    # Unconditional, and retried.  This began as an allowlist of the four kinds
+    # observed to fail, but an HTTP/2 stream reset is a property of the
+    # transport and the object size, not of what is inside the zip: a bundle
+    # kind absent from the list died with `curl: (92) HTTP/2 stream 1 was not
+    # closed cleanly` after transferring zero bytes, which is precisely what
+    # --http1.1 exists here to prevent.  --retry-all-errors is what makes curl
+    # retry a transport error like 92 at all; plain --retry covers only
+    # transient HTTP status codes and timeouts, so it would not have retried
+    # this failure.
     curl_download_protocol = (
-        "--http1.1 "
-        if provider_bundle_kind
-        in {
-            "adp_aura_smoke",
-            "adp_aura_interiorgs",
-            "adp_inpaint360_interiorgs",
-            "adp_simready_isaac",
-        }
-        else ""
+        "--http1.1 --retry 5 --retry-delay 3 --retry-all-errors "
+        "--connect-timeout 30 "
     )
     script = (
         "set +e; WORK_DIR=/workspace; "
@@ -3137,8 +3139,10 @@ def _probe_shell_script(
         "PY\n"
         "return $?; "
         "fi; "
-        f'if command -v curl >/dev/null 2>&1; then curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst"; return $?; fi; '
-        'if command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src"; return $?; fi; '
+        f'if command -v curl >/dev/null 2>&1; then curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst" && return 0; '
+        'echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl; fi; '
+        'if command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src" && return 0; '
+        'echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:wget; fi; '
         'blueprint_download_py="${PY_NET:-${RUNTIME_PY:-}}"; '
         'if [ -n "$blueprint_download_py" ]; then '
         'BLUEPRINT_DOWNLOAD_URL="$blueprint_download_src" BLUEPRINT_DOWNLOAD_PATH="$blueprint_download_dst" "$blueprint_download_py" - <<\'PY\'\n'

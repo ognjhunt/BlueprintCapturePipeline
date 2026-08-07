@@ -1144,3 +1144,46 @@ def test_the_runtime_probes_the_live_stage_for_the_appearance_prim() -> None:
     probe = source[source.index("aura_stage_probe: dict") :]
     probe = probe[: probe.index("live_collider = ")]
     assert "except Exception" in probe
+
+
+def _download_script(kind: str) -> str:
+    from blueprint_pipeline.vast_provider_adapter import _probe_shell_script
+
+    return _probe_shell_script(
+        heartbeat_url="https://example.invalid/heartbeat",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind=kind,
+    )
+
+
+def test_every_bundle_kind_downloads_over_http11_with_retries() -> None:
+    """A stream reset is a transport property, not a property of the zip.
+
+    This was an allowlist of the four kinds observed to fail.  A kind absent
+    from it died with `curl: (92) HTTP/2 stream 1 was not closed cleanly`
+    after transferring zero bytes -- exactly what the flag prevents.
+    """
+
+    from blueprint_pipeline.vast_provider_adapter import VAST_PROVIDER_BUNDLE_KINDS
+
+    for kind in VAST_PROVIDER_BUNDLE_KINDS:
+        script = _download_script(kind)
+        assert "--http1.1" in script, kind
+        # --retry alone covers transient HTTP statuses and timeouts, not a
+        # transport error like 92, so it would not have retried this failure.
+        assert "--retry-all-errors" in script, kind
+
+
+def test_a_failing_download_tool_falls_through_to_the_next_one() -> None:
+    """The chain handled a tool being absent, not a tool failing.
+
+    ``curl ...; return $?`` ended the download on the first curl error with
+    wget and python still available and untried.
+    """
+
+    script = _download_script("isaac")
+    assert 'curl' in script and '-o "$blueprint_download_dst" && return 0' in script
+    assert 'wget -O "$blueprint_download_dst" "$blueprint_download_src" && return 0' in script
+    assert "; return $?; fi; " not in script.split("blueprint_download_src")[1][:400]
+    # And the fallthrough is visible in the log rather than silent.
+    assert "BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl" in script
