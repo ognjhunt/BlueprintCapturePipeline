@@ -654,3 +654,31 @@ def test_runtime_names_what_actually_disturbs_the_can() -> None:
     assert "approach_object_offset_m = [" in source
     # The magnitude must still come from the same vector, not a second read.
     assert "torch.linalg.vector_norm(approach_object_offset)" in source
+
+
+def test_camera_refresh_never_advances_the_whole_scene() -> None:
+    """A scene-wide refresh perturbed physics and moved the sealed can.
+
+    Runs without it displaced the approved can by 0.00093 mm.  Runs with it
+    displaced it by 10.019 mm, bit-identically across two runs, straight up in
+    z, with the nearest articulation body 0.258 m away -- nothing was touching
+    it.  Only the camera whose pose changed may be refreshed.
+    """
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    approach = source[source.index("--- preregistered wrist approach") :]
+
+    code = [
+        line for line in approach.splitlines() if not line.strip().startswith("#")
+    ]
+    scene_refreshes = [line for line in code if "scene.update(" in line]
+    assert scene_refreshes == [], f"scene-wide refresh perturbs physics: {scene_refreshes}"
+    assert "wrist_camera.update(" in approach
+    # The refresh must still precede the readback it exists to serve.
+    assert approach.index("wrist_camera.update(") < approach.index(
+        'for camera_name in ("external_camera", "wrist_camera"):'
+    )

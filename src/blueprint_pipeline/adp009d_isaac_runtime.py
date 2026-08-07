@@ -1261,7 +1261,16 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     ),
                     convention="world",
                 )
-                env.unwrapped.scene.update(cfg.sim.dt * cfg.decimation)
+                # Refresh only the camera whose pose just changed.  A previous
+                # revision called env.unwrapped.scene.update() here, and that
+                # perturbed physics: the approved can rose by 9.85 mm in z with
+                # the nearest articulation body 0.258 m away, tripping the
+                # displacement abort on three consecutive runs.  Runs without
+                # this call displaced the can by 0.00093 mm, and the two runs
+                # with it were bit-identical at 10.019 mm, so the disturbance
+                # was deterministic and came from the scene refresh rather than
+                # from any contact.
+                wrist_camera.update(cfg.sim.dt * cfg.decimation)
                 for camera_name in ("external_camera", "wrist_camera"):
                     approach_frames.append(
                         _save_camera(
