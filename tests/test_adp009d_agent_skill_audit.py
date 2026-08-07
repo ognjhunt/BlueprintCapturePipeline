@@ -46,8 +46,9 @@ def test_checked_in_agent_skill_audit_is_exact_and_fail_closed() -> None:
         REQUIRED_GUIDANCE
     )
     assert audit["implementation_base"]["commit"] == (
-        "2dc6d76f7bce9f92c2f2745895079a5d6c6acb69"
+        "39ec8091e182e325f0ff0eb494f4dc9434c3bb27"
     )
+    assert audit["implementation_base"]["provisional_until_pr_374_merge"] is False
     assert audit["runtime_compatibility_decision"][
         "latest_isaac_lab_develop_runtime_admitted"
     ] is False

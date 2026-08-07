@@ -5,7 +5,7 @@
   "status": "pre_runtime_contract",
   "reusable_harness": true,
   "workflow": "isaac_lab_manager_based",
-  "implementation_base_commit": "2dc6d76f7bce9f92c2f2745895079a5d6c6acb69",
+  "implementation_base_commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
   "layers": {
     "scene": {
       "owns": [
@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 34990,
-      "sha256": "sha256:72389a8e69c4c86ae2e7cdc4b28449991e25b3d94df07defe7b3644fa6013ac7"
+      "size_bytes": 34995,
+      "sha256": "sha256:9e2b4b1dacb70e45057918d3b850d42b7373f4adb34d24ac15d778171d75b98b"
     },
     {
       "role": "approved_can",
@@ -588,5 +588,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:88a8ff3e8997a06d135af26bcab63f486bbf8156099c1c5254b658db87860e75"
+  "harness_digest": "sha256:597d415375c27cdcba51b78a39c80a89c3f621772f35515a936ae1a142fae271"
 }

@@ -14,11 +14,11 @@
   },
   "implementation_base": {
     "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
-    "commit": "2dc6d76f7bce9f92c2f2745895079a5d6c6acb69",
-    "tree": "89d9ca6ed83f4b6bf6425f1ca4398416af7f53d6",
+    "commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
+    "tree": "086d113022b1254612aeacc41eb962cb86a4942f",
     "pull_request": "https://github.com/ognjhunt/BlueprintCapturePipeline/pull/374",
-    "provisional_until_pr_374_merge": true,
-    "binding_rule": "Re-read and re-diff every ADP-009D binding file if PR 374 changes before merge."
+    "provisional_until_pr_374_merge": false,
+    "binding_rule": "Bound to the exact protected-main squash commit and tree produced by merged PR 374."
   },
   "repositories": [
     {
@@ -695,5 +695,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:7369c342745aec687e2ee8c699fba2d0fb8d9f94cc3c77ba4ccfd27462983856"
+  "audit_digest": "sha256:f23f19a235b266c9828ffb1ccb3cc71e0be35b6366445797f5377d42946b485b"
 }

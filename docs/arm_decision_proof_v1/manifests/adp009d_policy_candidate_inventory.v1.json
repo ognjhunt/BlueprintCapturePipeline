@@ -8,9 +8,9 @@
   "execution_attempted": false,
   "implementation_base": {
     "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
-    "commit": "2dc6d76f7bce9f92c2f2745895079a5d6c6acb69",
-    "tree": "89d9ca6ed83f4b6bf6425f1ca4398416af7f53d6",
-    "publication_status": "exact_pr_374_head_local_merge_not_required_for_implementation"
+    "commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
+    "tree": "086d113022b1254612aeacc41eb962cb86a4942f",
+    "publication_status": "protected_main_squash_commit_from_merged_pr_374"
   },
   "candidate_selection": {
     "required_count": 2,
@@ -749,5 +749,5 @@
       "candidate_digest": "sha256:8846c0239f84e702bb617b64878a94f3b55f680c735c98820dc4806af3cd7862"
     }
   ],
-  "inventory_digest": "sha256:75daa9dadaa595f36116824c9c3528c79ddb0606fd1f246480101757596181d7"
+  "inventory_digest": "sha256:3c6aead117c8f436b81d81d0d21de0658f5555cded1ac5963619665fac482102"
 }

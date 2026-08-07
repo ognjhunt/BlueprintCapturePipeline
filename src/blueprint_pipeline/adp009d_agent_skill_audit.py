@@ -144,8 +144,8 @@ def validate_agent_skill_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
             errors.append("implementation_base_commit_invalid")
         if not _SHA.fullmatch(str(base.get("tree") or "")):
             errors.append("implementation_base_tree_invalid")
-        if base.get("provisional_until_pr_374_merge") is not True:
-            errors.append("implementation_base_provisional_boundary_missing")
+        if base.get("provisional_until_pr_374_merge") is not False:
+            errors.append("implementation_base_not_final")
 
     repository_rows = _rows(normalized.get("repositories"))
     repositories = {
