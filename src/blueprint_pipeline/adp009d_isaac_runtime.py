@@ -958,8 +958,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 DifferentialIKControllerCfg,
             )
             from isaaclab.utils.math import (  # noqa: PLC0415
-                matrix_from_quat,
-                quat_inv,
                 subtract_frame_transforms,
             )
 
@@ -984,8 +982,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 body_names[-1],
             )
             body_index = body_names.index(end_effector_name)
+            # Isaac Lab e57379c drops the root row from the jacobian stack for a
+            # fixed-base articulation, so the jacobian index is offset by one.
+            jacobian_index = body_index - 1 if robot.is_fixed_base else body_index
             arm_joint_ids = list(range(7))
-            base_pose = _to_torch(robot.data.root_state_w)[0, :7]
+            base_pose = _to_torch(robot.data.root_pose_w)[0, :7]
             for waypoint in approach_waypoints_world():
                 position_base, quaternion_base = pose_world_to_base(
                     position_world=waypoint["position_world_m"],
@@ -1001,20 +1002,16 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 controller.reset()
                 controller.set_command(command)
                 for _ in range(int(waypoint["steps"])):
-                    jacobian = _to_torch(robot.data.body_link_jacobian_w)[
-                        :, body_index, :, arm_joint_ids
+                    jacobian = _to_torch(robot.root_view.get_jacobians())[
+                        :, jacobian_index, :, arm_joint_ids
                     ]
-                    root_quat = _to_torch(robot.data.root_quat_w)
-                    rotation = matrix_from_quat(quat_inv(root_quat))
-                    jacobian = jacobian.clone()
-                    jacobian[:, :3, :] = torch.bmm(rotation, jacobian[:, :3, :])
-                    jacobian[:, 3:, :] = torch.bmm(rotation, jacobian[:, 3:, :])
-                    body_pose_w = _to_torch(robot.data.body_link_pose_w)[:, body_index]
+                    ee_pose_w = _to_torch(robot.data.body_pose_w)[:, body_index]
+                    root_pose_w = _to_torch(robot.data.root_pose_w)
                     ee_pos_b, ee_quat_b = subtract_frame_transforms(
-                        _to_torch(robot.data.root_pos_w),
-                        root_quat,
-                        body_pose_w[:, :3],
-                        body_pose_w[:, 3:7],
+                        root_pose_w[:, 0:3],
+                        root_pose_w[:, 3:7],
+                        ee_pose_w[:, 0:3],
+                        ee_pose_w[:, 3:7],
                     )
                     joint_target = controller.compute(
                         ee_pos_b,

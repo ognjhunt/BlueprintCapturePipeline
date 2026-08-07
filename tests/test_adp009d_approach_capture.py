@@ -132,3 +132,27 @@ def test_runtime_imports_helper_in_both_layouts() -> None:
     # Both import layouts must remain present: the bundle is a flat directory.
     assert "from adp009d_approach_capture import" in source
     assert "from .adp009d_approach_capture import" in source
+
+
+def test_runtime_uses_the_arena_pinned_isaac_lab_jacobian_api() -> None:
+    """Isaac Lab e57379c exposes jacobians on root_view, not on ArticulationData.
+
+    A live run against the pinned revision failed with
+    ``'ArticulationData' object has no attribute 'body_link_jacobian_w'`` because
+    that accessor only exists on newer revisions.  Pin the pinned-revision API so
+    a future edit cannot silently reintroduce it.
+    """
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "robot.root_view.get_jacobians()" in source
+    assert "robot.data.body_pose_w" in source
+    assert "robot.data.root_pose_w" in source
+    # Newer-revision accessors that do not exist at the pinned revision.
+    assert "body_link_jacobian_w" not in source
+    assert "body_link_pose_w" not in source
+    # Fixed-base articulations drop the root row from the jacobian stack.
+    assert "robot.is_fixed_base" in source
