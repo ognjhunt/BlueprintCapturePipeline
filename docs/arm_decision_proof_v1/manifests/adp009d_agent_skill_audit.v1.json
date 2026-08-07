@@ -755,7 +755,7 @@
         "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
       }
     },
-    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff. The first exact OVRTX live-camera execution loaded all 415265 Aura surflets and returned lossless nonconstant external and wrist RGB, but failed closed because both metric DistanceToCameraSD outputs were entirely nonfinite and the color frames were not visually conformant. OvPhysX remains unselected, the wrist camera omits the can, and live Aura depth composition remains required before policy admission.",
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff. OVRTX loaded all 415265 sealed Aura surflets, but the fully preregistered exact-camera v10 execution returned black color and no positive finite metric depth for either camera after the official ParticleFieldEmissive material and Gaussian accumulated-depth settings were bound. The exact Isaac Lab source uses the same material wiring but tests a concrete ParticleField3DGaussianSplat; neither the audited OVRTX skill tree nor the executed evidence establishes live support for Aura's ParticleField Gaussian-surflet kernel. SAGE remains the registered geometry, collision, and depth-reference layer and may not silently replace Aura as policy-visible appearance. OvPhysX remains unselected, the wrist camera omits the can, and live Aura depth composition remains required before policy admission.",
     "ovrtx_live_camera_evidence": {
       "run_id": "aura_ovrtx_live_camera_v6",
       "status": "blocked_metric_depth_and_visual_conformance",
@@ -783,6 +783,43 @@
         "Generic Aura ParticleField omitted the official ParticleFieldEmissive.mdl binding and therefore did not bind the SH radiance interpretation explicitly.",
         "Exact-camera visual conformance against Aura native reference frames remains unproven."
       ]
+    },
+    "ovrtx_exact_camera_followup_evidence": {
+      "run_id": "aura_ovrtx_exact_camera_conformance_v10_preregistered_run",
+      "status": "blocked_black_color_and_missing_metric_depth",
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_ovrtx_exact_camera_conformance_v10_preregistered_run/attempts/attempt_001/immutable_execution/adp009d_aura_ovrtx_failure_diagnostic.v1.json",
+      "failure_diagnostic_sha256": "sha256:2c929125a033e401f663fbb6ef4ba13822f353c61e9980e70327916e1b07eb9e",
+      "source_result_sha256": "sha256:331a3cd31e59077f442a4d51736e14ac97b237ff0df604acbd4f40da1e584d5a",
+      "preregistered_probe_sha256": "sha256:33acfc801d4cfb0e2e68db71208ef529fc7512cb60181bfd2c1098938a3e3a4c",
+      "immutable_input_sha256": "sha256:51cee8507e323ffbaf3cb157c6dab8f8fbe1888fef49b6f0eebb57b00949d52d",
+      "source_commit": "5a456be4d20ea4118a2bc400f9b945cda4695a77",
+      "gpu": "NVIDIA RTX 5880 Ada Generation",
+      "returned_camera_ids": [
+        "approach_close",
+        "right_translate"
+      ],
+      "returned_lossless_rgb_arrays": 2,
+      "returned_metric_depth_arrays": 2,
+      "positive_finite_metric_depth_by_camera": {
+        "approach_close": false,
+        "right_translate": false
+      },
+      "rgb_color_signal_by_camera": {
+        "approach_close": false,
+        "right_translate": false
+      },
+      "estimated_cost_usd": 0.14215,
+      "run_owned_provider_zero_observed": true,
+      "candidate_policy_queried": false,
+      "representation_diagnosis": {
+        "aura_source_representation": "2D Gaussian surflets",
+        "ovrtx_authored_schema": "ParticleField+ParticleFieldKernelGaussianSurfletAPI",
+        "official_isaac_lab_test_schema": "ParticleField3DGaussianSplat",
+        "particlefield_emissive_material_wiring_matches_official_test": true,
+        "audited_ovrtx_skill_tree_documents_gaussian_surflet_render_support": false,
+        "sage_visible_appearance_substitution_allowed": false
+      },
+      "smallest_exact_blocker": "sealed_aura_hybrid_policy_observation_renderer_missing"
     },
     "native_microcheck_evidence": {
       "run_id": "native_microcheck_v18_live_event_writer_reset",
@@ -881,5 +918,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:ecbf07a2dc8774678c225db59b13274880488b27d280a81798261f22bbfd43ae"
+  "audit_digest": "sha256:63d753f69c466f86aa3018a0069677dec3c0346e221ca015b06b452c02b7ac38"
 }
