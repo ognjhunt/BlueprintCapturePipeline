@@ -33,7 +33,7 @@ SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 
 REQUIRED_ASSET_DIGESTS = {
-    "agent_skill_audit": "sha256:d74d62322424c047714820dd8a32a967196fa0b4bc75add3ac45baea01d65d64",
+    "agent_skill_audit": "sha256:effccaf8af175a1504c7d4310f580dc036cc7313eb76e809a6f5c3b6accd44ec",
     "approved_can": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "aura_appearance": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
     "hybrid_seal_receipt": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b",
@@ -350,13 +350,16 @@ def validate_harness_manifest(
         "runtime_candidate_source_mesh_count": 16,
         "runtime_active_triangle_mesh_count": 15,
         "runtime_source_face_count": 47359,
-        "runtime_derived_face_count": 99228,
-        "runtime_derived_point_count": 297684,
+        "runtime_clipped_source_face_count": 24248,
+        "runtime_derived_face_count": 26828,
+        "runtime_derived_point_count": 80484,
+        "runtime_selected_source_surface_area_m2": 774.974830891,
+        "runtime_clipped_source_surface_area_m2": 26.28230143,
         "runtime_maximum_edge_m": 0.5,
         "runtime_approximation": "none",
         "runtime_approximation_semantics": "static_triangle_mesh",
         "runtime_surface_operation": (
-            "coplanar_longest_edge_midpoint_retriangulation"
+            "aabb_clip_then_coplanar_longest_edge_midpoint_retriangulation"
         ),
         "runtime_surface_area_relative_error_maximum": 1.0e-6,
         "runtime_derivative_claim_ceiling": (
@@ -376,7 +379,7 @@ def validate_harness_manifest(
         "cold_cooking_is_startup_evidence_only": True,
         "warm_start_cache_requirements": [
             "exact sealed SAGE source digest",
-            "exact composed overlay digest",
+            "exact task collision derivative digest",
             "exact Isaac Sim image digest",
             "exact PhysX version and settings",
             "exact live topology revalidation",

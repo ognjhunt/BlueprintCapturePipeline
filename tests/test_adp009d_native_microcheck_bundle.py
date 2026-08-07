@@ -18,6 +18,7 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     TASK_COLLISION_MANIFEST_FILENAME,
     TASK_COLLISION_MAX_EDGE_M,
     TARGET_COLLIDER_PRIM,
+    _clip_triangle_to_aabb,
     _refine_triangle_to_edge_limit,
     _inspect_sage_collision_source,
     build_native_microcheck_bundle,
@@ -69,7 +70,7 @@ def Xform "canned_beverage"
     )
     {{
         uniform token physics:approximation = "convexDecomposition"
-        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        point3f[] points = [(3, -3, 0.3), (4, -3, 0.3), (3, -2, 0.3)]
         int[] faceVertexCounts = [3]
         int[] faceVertexIndices = [0, 1, 2]
     }}
@@ -78,7 +79,7 @@ def Xform "canned_beverage"
     )
     {{
         uniform token physics:approximation = "convexDecomposition"
-        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        point3f[] points = [(3, -3, 0.3), (4, -3, 0.3), (3, -2, 0.3)]
         int[] faceVertexCounts = [3]
         int[] faceVertexIndices = [0, 1, 2]
     }}
@@ -212,6 +213,27 @@ def test_task_collision_retriangulation_preserves_area_and_limits_edges() -> Non
         for value in leaves
         for edge in range(3)
     ) <= 0.5 + 1.0e-9
+
+
+def test_task_collision_aabb_clip_preserves_only_exact_coplanar_surface() -> None:
+    triangle = ((-2.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 2.0, 0.0))
+
+    clipped = _clip_triangle_to_aabb(
+        triangle,
+        roi_min=(-1.0, -1.0, -1.0),
+        roi_max=(1.0, 1.0, 1.0),
+    )
+
+    assert clipped
+    assert all(-1.0 <= coordinate <= 1.0 for face in clipped for point in face for coordinate in point)
+    assert sum(
+        abs(
+            (face[1][0] - face[0][0]) * (face[2][1] - face[0][1])
+            - (face[1][1] - face[0][1]) * (face[2][0] - face[0][0])
+        )
+        * 0.5
+        for face in clipped
+    ) == pytest.approx(2.0)
 
 
 def test_bundle_passes_existing_arena_transport_preflight(tmp_path: Path) -> None:

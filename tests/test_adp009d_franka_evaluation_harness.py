@@ -73,7 +73,9 @@ def test_checked_in_harness_binds_static_sage_triangle_override() -> None:
     assert sage["source_rigid_body_count"] == 0
     assert sage["runtime_active_triangle_mesh_count"] == 15
     assert sage["runtime_source_face_count"] == 47359
-    assert sage["runtime_derived_face_count"] == 99228
+    assert sage["runtime_clipped_source_face_count"] == 24248
+    assert sage["runtime_derived_face_count"] == 26828
+    assert sage["runtime_derived_point_count"] == 80484
     assert sage["runtime_maximum_edge_m"] == 0.5
     assert sage["runtime_approximation"] == "none"
     assert sage["geometry_mutation_allowed"] is False

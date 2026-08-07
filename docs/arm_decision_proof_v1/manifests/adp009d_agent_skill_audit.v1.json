@@ -5,7 +5,7 @@
   "audit_status": "official_source_audit_complete_implementation_bound",
   "audit_window": {
     "started_at": "2026-08-06T18:20:39Z",
-    "completed_at": "2026-08-07T00:09:16Z",
+    "completed_at": "2026-08-07T01:09:38Z",
     "retrieval_methods": [
       "GitHub REST branch commit and recursive tree APIs",
       "GitHub immutable blob content at exact revisions",
@@ -623,7 +623,10 @@
         "The static-triangle measurement subsequently hit the frozen 30-minute no-log-progress watchdog during environment build, cost 0.495256 USD, reached neither reset nor camera proof, and tore down with provider-zero observed.",
         "Apply the smallest measured exception after that baseline: retain the full sealed SAGE bytes, but materialize a deterministic collision derivative for the preregistered Franka swept envelope only.",
         "Select source meshes by exact world-space AABB intersection with the frozen task ROI, always include the registered support, exclude the replaced source can, and deactivate all out-of-envelope collision meshes.",
-        "Use coplanar longest-edge midpoint retriangulation with a 0.5 meter edge ceiling; fail closed on source/derived face counts, source-prim mapping, surface-area error above 1e-6, edge-limit failure, digest mismatch, or any live PhysX collision warning.",
+        "The first mesh-level task-envelope derivative retained 99228 faces because any intersecting source mesh was kept whole; it removed the explicit triangle-size warning but remained inside environment build until the five-minute no-log-progress watchdog, cost 0.253793 USD, reached neither reset nor camera proof, and tore down with provider-zero observed.",
+        "Correct the measured mesh-level envelope bug by clipping every source triangle against the exact frozen task AABB, triangulating only the coplanar source-surface polygon inside the box, and then applying longest-edge midpoint refinement with a 0.5 meter edge ceiling.",
+        "Fail closed on selected/clipped/derived face counts, source-prim mapping, clipped/derived surface-area error above 1e-6, edge-limit failure, digest mismatch, or any live PhysX collision warning.",
+        "The corrected derivative binds 47359 selected source faces, 24248 exact clipped source faces, 26828 derived faces, 80484 points, 26.28230143 square meters of in-envelope source surface, and 9.22785062228535e-8 relative surface-area error.",
         "Use canonical USDA text for the collision derivative because two semantically identical USDC Crate files built at different paths had different byte digests; byte-deterministic artifact identity takes precedence over the smaller binary encoding.",
         "Limit claims from this derivative to the preregistered Franka task envelope; it is not whole-scene navigation or general SAGE collision proof.",
         "Preserve scientific identity and digest bindings across any later optimization."
@@ -676,5 +679,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:8cfb41e25f2423533e6ebc80645a830f79c696feece797b74c99bd1338937c11"
+  "audit_digest": "sha256:c4f884310bcd4934844ed13cdb828afbaa71c6cdff7898f821c10032cb8fbe73"
 }

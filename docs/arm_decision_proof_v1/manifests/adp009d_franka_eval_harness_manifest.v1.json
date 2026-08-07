@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 33231,
-      "sha256": "sha256:d74d62322424c047714820dd8a32a967196fa0b4bc75add3ac45baea01d65d64"
+      "size_bytes": 34069,
+      "sha256": "sha256:effccaf8af175a1504c7d4310f580dc036cc7313eb76e809a6f5c3b6accd44ec"
     },
     {
       "role": "approved_can",
@@ -438,12 +438,15 @@
         "runtime_candidate_source_mesh_count": 16,
         "runtime_active_triangle_mesh_count": 15,
         "runtime_source_face_count": 47359,
-        "runtime_derived_face_count": 99228,
-        "runtime_derived_point_count": 297684,
+        "runtime_clipped_source_face_count": 24248,
+        "runtime_derived_face_count": 26828,
+        "runtime_derived_point_count": 80484,
+        "runtime_selected_source_surface_area_m2": 774.974830891,
+        "runtime_clipped_source_surface_area_m2": 26.28230143,
         "runtime_maximum_edge_m": 0.5,
         "runtime_approximation": "none",
         "runtime_approximation_semantics": "static_triangle_mesh",
-        "runtime_surface_operation": "coplanar_longest_edge_midpoint_retriangulation",
+        "runtime_surface_operation": "aabb_clip_then_coplanar_longest_edge_midpoint_retriangulation",
         "runtime_surface_area_relative_error_maximum": 1e-06,
         "runtime_derivative_claim_ceiling": "preregistered_franka_task_envelope_only",
         "source_target_collider_active": false,
@@ -458,7 +461,7 @@
         "cold_cooking_is_startup_evidence_only": true,
         "warm_start_cache_requirements": [
           "exact sealed SAGE source digest",
-          "exact composed overlay digest",
+          "exact task collision derivative digest",
           "exact Isaac Sim image digest",
           "exact PhysX version and settings",
           "exact live topology revalidation",
@@ -568,5 +571,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:a9827efb59dcc43db275dd7d5a1e9de0ecbc1868e51d05d2b1b9f5bd7dee2c0e"
+  "harness_digest": "sha256:41995b4f453ac38cee07ea9b10a7788d6da823ae54cdf72f7de4c07a5ea27256"
 }

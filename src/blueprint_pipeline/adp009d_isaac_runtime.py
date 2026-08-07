@@ -35,8 +35,8 @@ SAGE_TARGET_COLLIDER_NAME = "ZHQYGJJVAJYEYPTUKY888888"
 SAGE_SUPPORT_COLLIDER_NAME = "_LTFTHJVAZ3VMPTUJU888888"
 SAGE_RUNTIME_PROFILE = {
     "active_mesh_count": 15,
-    "active_point_count": 297_684,
-    "active_face_count": 99_228,
+    "active_point_count": 80_484,
+    "active_face_count": 26_828,
     "rigid_body_count": 0,
     "triangle_mesh_count": 15,
 }

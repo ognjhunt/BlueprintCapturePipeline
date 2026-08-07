@@ -56,8 +56,9 @@ SEALED_TASK_COLLISION_PROFILE = {
     "candidate_source_prim_count": 16,
     "active_source_prim_count": 15,
     "source_face_count": 47_359,
-    "derived_face_count": 99_228,
-    "derived_point_count": 297_684,
+    "clipped_source_face_count": 24_248,
+    "derived_face_count": 26_828,
+    "derived_point_count": 80_484,
 }
 ENTRYPOINT = """#!/usr/bin/env bash
 set +e
@@ -277,6 +278,74 @@ def _ranges_intersect(
     return all(upper[index] >= roi_min[index] and lower[index] <= roi_max[index] for index in range(3))
 
 
+def _clip_polygon_to_axis_plane(
+    polygon: list[tuple[float, float, float]],
+    *,
+    axis: int,
+    boundary: float,
+    keep_greater: bool,
+) -> list[tuple[float, float, float]]:
+    """Clip a coplanar polygon against one axis-aligned half-space."""
+
+    if not polygon:
+        return []
+
+    def inside(point: tuple[float, float, float]) -> bool:
+        return point[axis] >= boundary if keep_greater else point[axis] <= boundary
+
+    output: list[tuple[float, float, float]] = []
+    previous = polygon[-1]
+    previous_inside = inside(previous)
+    for current in polygon:
+        current_inside = inside(current)
+        if current_inside != previous_inside:
+            denominator = current[axis] - previous[axis]
+            if abs(denominator) <= 1.0e-15:
+                raise ValueError("adp009d_task_collision_clip_intersection_invalid")
+            fraction = (boundary - previous[axis]) / denominator
+            intersection = tuple(
+                previous[index] + fraction * (current[index] - previous[index])
+                for index in range(3)
+            )
+            output.append(intersection)
+        if current_inside:
+            output.append(current)
+        previous = current
+        previous_inside = current_inside
+    return output
+
+
+def _clip_triangle_to_aabb(
+    triangle: tuple[tuple[float, float, float], ...],
+    *,
+    roi_min: tuple[float, float, float],
+    roi_max: tuple[float, float, float],
+) -> list[tuple[tuple[float, float, float], ...]]:
+    """Return the exact coplanar portion of a triangle inside an AABB."""
+
+    polygon = list(triangle)
+    for axis in range(3):
+        polygon = _clip_polygon_to_axis_plane(
+            polygon,
+            axis=axis,
+            boundary=roi_min[axis],
+            keep_greater=True,
+        )
+        polygon = _clip_polygon_to_axis_plane(
+            polygon,
+            axis=axis,
+            boundary=roi_max[axis],
+            keep_greater=False,
+        )
+    if len(polygon) < 3:
+        return []
+    triangles = [
+        (polygon[0], polygon[index], polygon[index + 1])
+        for index in range(1, len(polygon) - 1)
+    ]
+    return [value for value in triangles if _triangle_area(*value) > 1.0e-12]
+
+
 def _build_sage_task_collision_derivative(
     source_path: Path,
     destination: Path,
@@ -327,9 +396,11 @@ def _build_sage_task_collision_derivative(
 
     rows: list[dict[str, Any]] = []
     total_source_faces = 0
+    total_clipped_faces = 0
     total_derived_faces = 0
     total_derived_points = 0
-    source_area_m2 = 0.0
+    selected_source_area_m2 = 0.0
+    clipped_source_area_m2 = 0.0
     derived_area_m2 = 0.0
     observed_max_edge_m = 0.0
     for source_prim in sorted(selected, key=lambda value: str(value.GetPath())):
@@ -343,13 +414,24 @@ def _build_sage_task_collision_derivative(
             tuple(float(value) for value in transform.Transform(Gf.Vec3d(point)))
             for point in source_mesh.GetPointsAttr().Get() or []
         ]
-        leaves: list[tuple[tuple[float, float, float], ...]] = []
+        total_source_faces += len(counts)
+        clipped: list[tuple[tuple[float, float, float], ...]] = []
         for offset in range(0, len(indices), 3):
             triangle = tuple(world_points[int(index)] for index in indices[offset : offset + 3])
-            source_area_m2 += _triangle_area(*triangle)
-            leaves.extend(
-                _refine_triangle_to_edge_limit(triangle, max_edge_m=max_edge_m)
+            selected_source_area_m2 += _triangle_area(*triangle)
+            clipped.extend(
+                _clip_triangle_to_aabb(
+                    triangle,
+                    roi_min=roi_min_m,
+                    roi_max=roi_max_m,
+                )
             )
+        if not clipped:
+            continue
+        leaves: list[tuple[tuple[float, float, float], ...]] = []
+        for triangle in clipped:
+            clipped_source_area_m2 += _triangle_area(*triangle)
+            leaves.extend(_refine_triangle_to_edge_limit(triangle, max_edge_m=max_edge_m))
 
         points: list[Any] = []
         derived_indices: list[int] = []
@@ -390,7 +472,7 @@ def _build_sage_task_collision_derivative(
         mesh_collision.CreateApproximationAttr(UsdPhysics.Tokens.none)
         output_mesh.GetPrim().SetCustomDataByKey("blueprint:sourcePrim", path)
 
-        total_source_faces += len(counts)
+        total_clipped_faces += len(clipped)
         total_derived_faces += len(leaves)
         total_derived_points += len(points)
         derived_area_m2 += mesh_area_m2
@@ -399,6 +481,7 @@ def _build_sage_task_collision_derivative(
             {
                 "source_prim": path,
                 "source_face_count": len(counts),
+                "clipped_face_count": len(clipped),
                 "derived_face_count": len(leaves),
                 "derived_point_count": len(points),
                 "derived_surface_area_m2": round(mesh_area_m2, 9),
@@ -406,7 +489,9 @@ def _build_sage_task_collision_derivative(
             }
         )
 
-    relative_area_error = abs(derived_area_m2 - source_area_m2) / max(source_area_m2, 1.0e-12)
+    relative_area_error = abs(derived_area_m2 - clipped_source_area_m2) / max(
+        clipped_source_area_m2, 1.0e-12
+    )
     if relative_area_error > 1.0e-6:
         raise ValueError("adp009d_task_collision_surface_area_changed")
     if observed_max_edge_m > max_edge_m * (1.0 + 1.0e-6):
@@ -431,12 +516,14 @@ def _build_sage_task_collision_derivative(
         "source_target_prim_excluded": TARGET_COLLIDER_PRIM,
         "support_prim_included": SUPPORT_COLLIDER_PRIM,
         "source_face_count": total_source_faces,
+        "clipped_source_face_count": total_clipped_faces,
         "derived_face_count": total_derived_faces,
         "derived_point_count": total_derived_points,
-        "source_surface_area_m2": round(source_area_m2, 9),
+        "selected_source_surface_area_m2": round(selected_source_area_m2, 9),
+        "clipped_source_surface_area_m2": round(clipped_source_area_m2, 9),
         "derived_surface_area_m2": round(derived_area_m2, 9),
         "relative_surface_area_error": relative_area_error,
-        "surface_operation": "coplanar_longest_edge_midpoint_retriangulation",
+        "surface_operation": "aabb_clip_then_coplanar_longest_edge_midpoint_retriangulation",
         "source_prim_rows": rows,
         "claim_ceiling": "preregistered_franka_task_envelope_only",
     }
