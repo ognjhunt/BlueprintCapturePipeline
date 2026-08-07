@@ -685,6 +685,10 @@ def build_native_microcheck_bundle(
     source_dir = Path(__file__).resolve().parent
     shutil.copy2(source_dir / "adp009d_native_microcheck_worker.py", runtime / "adp_arena_provider_runner.py")
     shutil.copy2(source_dir / "adp009d_isaac_runtime.py", runtime / "adp009d_isaac_runtime.py")
+    shutil.copy2(
+        source_dir / "adp009d_approach_capture.py",
+        runtime / "adp009d_approach_capture.py",
+    )
     harness_source = Path(harness_manifest_path).expanduser().resolve()
     shutil.copy2(harness_source, runtime / "adp009d_franka_eval_harness_manifest.v1.json")
     _write_executable(runtime / "run_adp_arena_provider_runtime.sh", ENTRYPOINT)

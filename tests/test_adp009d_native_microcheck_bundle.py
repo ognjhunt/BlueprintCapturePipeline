@@ -845,3 +845,13 @@ def test_semantic_override_layer_is_digest_bound_and_used_at_every_spawn_site() 
     assert "spawn.semantic_tags = _semantic_tags(\"robot\")" in source
     assert '[("class", "robot")]' not in source
     assert '[("class", "approved_can")]' not in source
+
+
+def test_bundle_ships_the_approach_helper_next_to_the_runtime() -> None:
+    """The runtime imports the helper as a flat sibling inside the bundle."""
+
+    from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle_module
+
+    source = Path(bundle_module.__file__).read_text(encoding="utf-8")
+    assert 'runtime / "adp009d_approach_capture.py"' in source
+    assert 'runtime / "adp009d_isaac_runtime.py"' in source

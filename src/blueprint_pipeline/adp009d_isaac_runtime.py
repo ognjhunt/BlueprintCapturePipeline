@@ -17,6 +17,19 @@ from pathlib import Path
 from typing import Any
 
 
+try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_approach_capture import (
+        approach_waypoints_world,
+        pose_world_to_base,
+        summarize_wrist_approach_capture,
+    )
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_approach_capture import (
+        approach_waypoints_world,
+        pose_world_to_base,
+        summarize_wrist_approach_capture,
+    )
+
 RESULT_NAME = "adp009d_native_microcheck.json"
 EXPECTED_ASSETS = {
     "approved_can.usda": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
@@ -928,6 +941,118 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         timings_seconds["camera_retention"] = round(
             time.monotonic() - phase_started, 6
         )
+
+        # --- preregistered wrist approach -------------------------------------
+        # At the canonical reset pose the wrist camera cannot see the approved
+        # can (63.8 deg off axis against a 28.4 deg vertical half FOV), so wrist
+        # observability is established by servoing the end effector toward the
+        # object and capturing along the way.  A failure here is recorded, never
+        # fatal: the hold-phase evidence above must survive regardless.
+        phase_started = time.monotonic()
+        approach_frames: list[dict[str, Any]] = []
+        approach_ik_succeeded = True
+        approach_error: str | None = None
+        try:
+            from isaaclab.controllers import (  # noqa: PLC0415
+                DifferentialIKController,
+                DifferentialIKControllerCfg,
+            )
+            from isaaclab.utils.math import (  # noqa: PLC0415
+                matrix_from_quat,
+                quat_inv,
+                subtract_frame_transforms,
+            )
+
+            controller = DifferentialIKController(
+                DifferentialIKControllerCfg(
+                    command_type="pose", use_relative_mode=False, ik_method="dls"
+                ),
+                num_envs=1,
+                device=env.unwrapped.device,
+            )
+            body_names = list(robot.data.body_names)
+            end_effector_name = next(
+                (
+                    name
+                    for name in (
+                        "panda_hand",
+                        "robotiq_base_link",
+                        "panda_link7",
+                    )
+                    if name in body_names
+                ),
+                body_names[-1],
+            )
+            body_index = body_names.index(end_effector_name)
+            arm_joint_ids = list(range(7))
+            base_pose = _to_torch(robot.data.root_state_w)[0, :7]
+            for waypoint in approach_waypoints_world():
+                position_base, quaternion_base = pose_world_to_base(
+                    position_world=waypoint["position_world_m"],
+                    quaternion_world_wxyz=waypoint["quaternion_wxyz"],
+                    base_position_world=[float(v) for v in base_pose[:3]],
+                    base_quaternion_world_wxyz=[float(v) for v in base_pose[3:7]],
+                )
+                command = torch.tensor(
+                    [position_base + quaternion_base],
+                    device=env.unwrapped.device,
+                    dtype=torch.float32,
+                )
+                controller.reset()
+                controller.set_command(command)
+                for _ in range(int(waypoint["steps"])):
+                    jacobian = _to_torch(robot.data.body_link_jacobian_w)[
+                        :, body_index, :, arm_joint_ids
+                    ]
+                    root_quat = _to_torch(robot.data.root_quat_w)
+                    rotation = matrix_from_quat(quat_inv(root_quat))
+                    jacobian = jacobian.clone()
+                    jacobian[:, :3, :] = torch.bmm(rotation, jacobian[:, :3, :])
+                    jacobian[:, 3:, :] = torch.bmm(rotation, jacobian[:, 3:, :])
+                    body_pose_w = _to_torch(robot.data.body_link_pose_w)[:, body_index]
+                    ee_pos_b, ee_quat_b = subtract_frame_transforms(
+                        _to_torch(robot.data.root_pos_w),
+                        root_quat,
+                        body_pose_w[:, :3],
+                        body_pose_w[:, 3:7],
+                    )
+                    joint_target = controller.compute(
+                        ee_pos_b,
+                        ee_quat_b,
+                        jacobian,
+                        _to_torch(robot.data.joint_pos)[:, arm_joint_ids],
+                    )
+                    approach_action = torch.zeros_like(action)
+                    approach_action[:, :7] = joint_target
+                    env.step(approach_action)
+                for camera_name in ("external_camera", "wrist_camera"):
+                    approach_frames.append(
+                        _save_camera(
+                            output,
+                            camera_name,
+                            env.unwrapped.scene[camera_name],
+                            frame_index=int(waypoint["capture_frame_index"]),
+                            sim_time=float(
+                                env.unwrapped.episode_length_buf[0].item()
+                                * cfg.sim.dt
+                                * cfg.decimation
+                            ),
+                        )
+                    )
+                _phase(
+                    f"wrist_approach_waypoint_{waypoint['waypoint_index']}", "completed"
+                )
+        except Exception as exc:  # noqa: BLE001 - recorded, never fatal
+            approach_ik_succeeded = False
+            approach_error = f"{type(exc).__name__}: {exc}"
+            _phase("wrist_approach", "blocked")
+        wrist_approach_capture = summarize_wrist_approach_capture(
+            captured_frames=approach_frames, ik_succeeded=approach_ik_succeeded
+        )
+        wrist_approach_capture["error"] = approach_error
+        camera_rows.extend(approach_frames)
+        timings_seconds["wrist_approach"] = round(time.monotonic() - phase_started, 6)
+
         robot = env.unwrapped.scene["robot"]
         approved_can = env.unwrapped.scene["approved_can"]
         can_pose = _to_torch(approved_can.data.root_pose_w)[0]
@@ -974,6 +1099,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "camera_warmup_frames": 40,
             "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": True,
+            "wrist_approach_capture": wrist_approach_capture,
             "semantic_override_layer": SEMANTIC_OVERRIDE_LAYER,
             "semantic_override_layer_digest": _canonical_digest(
                 SEMANTIC_OVERRIDE_LAYER
