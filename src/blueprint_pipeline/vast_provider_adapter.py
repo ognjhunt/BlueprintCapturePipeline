@@ -12,6 +12,7 @@ import argparse
 import base64
 import fcntl
 import hashlib
+import io
 import ipaddress
 import json
 import logging
@@ -1617,8 +1618,15 @@ def _vast_stale_offer_create_retry_attempts() -> int:
         return 2
 
 
-def _is_stale_offer_create_http_error(exc: urllib.error.HTTPError) -> bool:
-    return int(getattr(exc, "code", 0) or 0) in {404, 409, 410}
+def _is_stale_offer_create_http_error(
+    exc: urllib.error.HTTPError,
+    error_text: str = "",
+) -> bool:
+    code = int(getattr(exc, "code", 0) or 0)
+    if code in {404, 409, 410}:
+        return True
+    normalized = error_text.lower()
+    return code == 400 and "no_such_ask" in normalized
 
 
 def _offer_selection_manifest(
@@ -5931,12 +5939,15 @@ def run_vast_provider_adapter(
                 )
                 break
             except urllib.error.HTTPError as exc:
+                error_text = exc.read().decode("utf-8", errors="replace")
+                # Preserve the response for the outer fail-closed HTTP error
+                # receipt when this is not the documented stale-offer race.
+                exc.fp = io.BytesIO(error_text.encode("utf-8"))
                 if (
-                    not _is_stale_offer_create_http_error(exc)
+                    not _is_stale_offer_create_http_error(exc, error_text)
                     or create_attempt_index >= max_stale_offer_retries
                 ):
                     raise
-                error_text = exc.read().decode("utf-8", errors="replace")
                 selected_machine_id = _number(selected_offer.get("machine_id"))
                 if selected_machine_id is not None:
                     excluded_machine_ids.add(int(selected_machine_id))

@@ -2197,10 +2197,13 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
             created_paths.append(path)
             raise urllib.error.HTTPError(
                 "https://vast.invalid/api/v0/asks/301/",
-                410,
-                "gone",
+                400,
+                "bad request",
                 {},
-                BytesIO(b"offer no longer available"),
+                BytesIO(
+                    b'{"success":false,"error":"invalid_args",'
+                    b'"msg":"error 404/3603: no_such_ask Instance type is not available"}'
+                ),
             )
         if method == "PUT" and path == "/asks/302/":
             created_paths.append(path)
@@ -2241,12 +2244,23 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
     assert result["excluded_machine_ids"] == [9301]
     offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
     assert offer["selected_offer"]["ask_contract_id"] == 302
-    assert offer["create_retry_attempts"][0]["http_status_code"] == 410
+    assert offer["create_retry_attempts"][0]["http_status_code"] == 400
     assert offer["create_retry_attempts"][0]["machine_id"] == 9301
-    assert "offer no longer available" in offer["create_retry_attempts"][0]["error_preview"]
+    assert "no_such_ask" in offer["create_retry_attempts"][0]["error_preview"]
     teardown = _read_json(tmp_path / "vast_teardown_manifest.json")
     assert teardown["status"] == "completed"
     assert teardown["continuing_spend_from_this_run"] is False
+
+
+def test_vast_adapter_does_not_retry_unrelated_create_http_400() -> None:
+    error = urllib.error.HTTPError(
+        "https://vast.invalid/api/v0/asks/301/",
+        400,
+        "bad request",
+        {},
+        BytesIO(b'{"error":"invalid_args","msg":"invalid image"}'),
+    )
+    assert vpa._is_stale_offer_create_http_error(error, "invalid image") is False
 
 
 def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
