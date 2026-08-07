@@ -65,6 +65,7 @@ set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 export BLUEPRINT_ADP009D_OUTPUT_DIR="$OUT_DIR"
+export BLUEPRINT_ADP009D_POLICY_CANDIDATE="${BLUEPRINT_ADP009D_POLICY_CANDIDATE:-}"
 mkdir -p "$OUT_DIR"
 
 # Environment facts the policy-server design could not verify from off-worker:
@@ -749,6 +750,33 @@ def build_native_microcheck_bundle(
         source_dir / "adp009d_provisioning_preflight.py",
         runtime / "adp009d_provisioning_preflight.py",
     )
+    for module_name in (
+        "adp009d_droid_observation.py",
+        "adp009d_droid_action_execution.py",
+        "adp009d_policy_episode.py",
+        "adp009d_isaac_episode_adapter.py",
+        "adp009d_task_scoring.py",
+        "adp009d_policy_server_worker.py",
+    ):
+        shutil.copy2(source_dir / module_name, runtime / module_name)
+    if policy_candidate_id:
+        # The destination is frozen before any outcome exists; ship the receipt
+        # itself rather than recomputing it on the worker, so the episode is
+        # scored against exactly the value that was sealed.
+        from .adp009d_task_destination import DESTINATION_SCHEMA_VERSION
+
+        destination_receipt = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "docs/arm_decision_proof_v1/adp009d_task_destination.v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        if destination_receipt.get("schema_version") != DESTINATION_SCHEMA_VERSION:
+            raise ValueError("adp009d_task_destination_schema_unexpected")
+        (runtime / "adp009d_task_destination.v1.json").write_text(
+            json.dumps(destination_receipt, indent=1, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     if policy_candidate_id:
         from .adp009d_policy_provisioning import build_provisioning_script
 

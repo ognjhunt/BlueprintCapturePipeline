@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import time
 import traceback
 from pathlib import Path
@@ -1314,6 +1315,67 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             approach_ik_succeeded = False
             approach_error = f"{type(exc).__name__}: {exc}"
             _phase("wrist_approach", "blocked")
+
+        # --- learned policy episode --------------------------------------------
+        # Everything this needs is now measured rather than assumed: the gripper
+        # convention came from the probe above, the destination was frozen from
+        # the sealed support triangles before any outcome existed, and the
+        # observation and action adapters are pinned by their own tests.
+        #
+        # Recorded, never fatal.  The micro-check's own evidence must survive a
+        # policy that is absent, unreachable, or wrong, and a run that produced
+        # no episode must say so rather than look like a policy that scored zero.
+        policy_episode: dict[str, Any] | None = None
+        policy_episode_error: str | None = None
+        candidate_id = os.environ.get("BLUEPRINT_ADP009D_POLICY_CANDIDATE") or ""
+        if candidate_id and gripper_probe.get("status") == "measured":
+            _phase("policy_episode")
+            phase_started = time.monotonic()
+            try:
+                from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
+                from adp009d_droid_action_execution import GripperConvention
+                from adp009d_policy_episode import run_policy_episode
+                from openpi_client import websocket_client_policy
+
+                destination_path = Path(
+                    runtime / "adp009d_task_destination.v1.json"
+                )
+                destination = json.loads(destination_path.read_text(encoding="utf-8"))
+
+                adapter = IsaacEpisodeAdapter(
+                    env=env,
+                    robot=robot,
+                    approved_can=approved_can,
+                    action_dim=int(env.unwrapped.action_manager.total_action_dim),
+                    reset_seed=20260806,
+                    to_torch=_to_torch,
+                )
+                convention = GripperConvention(
+                    closed_command=float(gripper_probe["closed_command"]),
+                    open_command=float(gripper_probe["open_command"]),
+                    measured_by_probe=True,
+                )
+                client = websocket_client_policy.WebsocketClientPolicy(
+                    host="127.0.0.1", port=8000
+                )
+                policy_episode = run_policy_episode(
+                    environment=adapter,
+                    policy=client,
+                    candidate_id=candidate_id,
+                    destination_position_world_m=destination["position_world_m"],
+                    prompt=(
+                        "pick up the can and place it on the counter"
+                    ),
+                    gripper=convention,
+                )
+                _phase("policy_episode", "completed")
+            except Exception as exc:  # noqa: BLE001 - recorded, never fatal
+                policy_episode_error = f"{type(exc).__name__}: {exc}"
+                _phase("policy_episode", "blocked")
+            timings_seconds["policy_episode"] = round(
+                time.monotonic() - phase_started, 6
+            )
+
         wrist_approach_capture = summarize_wrist_approach_capture(
             captured_frames=approach_frames,
             ik_succeeded=approach_ik_succeeded,
@@ -1367,6 +1429,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": True,
             "gripper_convention_probe": gripper_probe,
+            "policy_episode": policy_episode,
+            "policy_episode_error": policy_episode_error,
             "wrist_approach_capture": wrist_approach_capture,
             "semantic_override_layer": SEMANTIC_OVERRIDE_LAYER,
             "semantic_override_layer_digest": _canonical_digest(

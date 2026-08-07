@@ -205,7 +205,19 @@ unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true
 {fetch}
 
 # Readiness is a completed inference round trip, not a listening socket: one
-# shipped server writes "model_loaded_ready_to_serve" before it serves at all.
+# shipped server writes "model_loaded_ready_to_serve" before it serves at all,
+# and loading 12.4 GB of weights takes far longer than binding a port.  The
+# worker starts the server, waits for a real inference returning a well-formed
+# chunk, and leaves it running for the episode.
+"{POLICY_VENV_ROOT}/bin/python" "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
+  --candidate-id "{candidate_id}" \
+  --source-root "{POLICY_SOURCE_ROOT}/{candidate_id}" \
+  --checkpoint-root "{CHECKPOINT_ROOT}/{candidate_id}" \
+  --python "{POLICY_VENV_ROOT}/bin/python" \
+  --host {POLICY_HOST} --port {POLICY_PORT} \
+  --log "$OUT_DIR/adp009d_policy_server.log" \
+  --receipt "$OUT_DIR/adp009d_policy_server_receipt.json"
+
 echo "BLUEPRINT_ADP009D_POLICY_PROVISIONED:{candidate_id}"
 """
 

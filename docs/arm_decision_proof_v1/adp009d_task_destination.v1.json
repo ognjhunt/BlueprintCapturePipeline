@@ -1,0 +1,28 @@
+{
+ "admissible_candidate_count": 15,
+ "constraints": {
+  "approved_can_radius_m": 0.033,
+  "maximum_horizontal_reach_m": 0.7176992095200349,
+  "minimum_distance_from_can_start_m": 0.15,
+  "place_radius_m": 0.05,
+  "reach_safety_margin_m": 0.05,
+  "required_edge_clearance_m": 0.083,
+  "support_plane_z_m": 0.5264650138348479
+ },
+ "derived_from": "sage_support_top_surface_triangle_centroids",
+ "distance_from_can_start_m": 0.2983281527646879,
+ "distance_from_robot_base_m": 0.6606117518875904,
+ "edge_clearance_m": 0.16147009999999984,
+ "limiting_margin_m": 0.057087457632444494,
+ "policy_outcome_consulted": false,
+ "position_world_m": [
+  3.750152333333333,
+  -3.4074919,
+  0.5264650138348479
+ ],
+ "receipt_digest": "sha256:d9f4a32dbc58adfb5e8e1112e30b8b490f7a928b5ade2c3fd1ae8b84bc7aaf79",
+ "schema_version": "adp009d_task_destination.v1",
+ "selection_rule": "maximise the smallest constraint margin; ties break on x then y so the result cannot depend on triangle order",
+ "status": "frozen",
+ "top_surface_triangle_count": 63
+}
