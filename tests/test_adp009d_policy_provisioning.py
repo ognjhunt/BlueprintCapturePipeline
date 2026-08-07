@@ -181,3 +181,32 @@ def test_every_candidate_installs_its_own_pinned_source() -> None:
         script = build_provisioning_script(candidate_id)
         assert str(expected["source_repository"]) in script
         assert str(expected["source_revision"]) in script
+
+
+def test_the_venv_survives_an_image_without_ensurepip() -> None:
+    """A live run measured this image's /usr/bin/python3 as lacking ensurepip.
+
+    A plain venv fails outright there, which is how the first install attempt
+    ended.  The script installs the system venv package and falls back to uv,
+    which needs no ensurepip and is what the shipped groot_oscar image already
+    uses to build venvs beside Isaac in this container family.
+    """
+
+    script = build_provisioning_script("pi05_droid")
+
+    assert "python3-venv" in script
+    assert "falling back to uv" in script
+    assert '/uv" venv --python' in script
+    # The fallback must not inherit a half-built venv.
+    assert 'rm -rf "/opt/adp009d-policy-venv"' in script
+
+
+def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
+    """Installing into a venv that silently is Isaac's is the failure to avoid."""
+
+    script = build_provisioning_script("pi05_droid")
+
+    assert 'test -x "/opt/adp009d-policy-venv/bin/python"' in script
+    assert "'isaac-sim' not in sys.prefix" in script
+    # And the proof precedes any install.
+    assert script.index("not in sys.prefix") < script.index("pip install --upgrade pip")

@@ -141,7 +141,26 @@ set -euo pipefail
 # The policy environment is built BESIDE Isaac's interpreter, never by mutating
 # it: a pip resolve against Isaac's own CPython is how you get an Isaac that no
 # longer starts, and the shipped image's build gate already forbids merging them.
-"{SYSTEM_INTERPRETER}" -m venv "{POLICY_VENV_ROOT}"
+#
+# A live run measured that this image's /usr/bin/python3 has no ensurepip, so a
+# plain venv fails outright.  Install the system venv package first, and fall
+# back to uv -- which needs no ensurepip and is what the shipped groot_oscar
+# image already uses to build venvs beside Isaac in this container family.
+apt-get update -qq >/dev/null 2>&1 || true
+apt-get install -y -qq python3-venv python3.12-venv >/dev/null 2>&1 || true
+
+if ! "{SYSTEM_INTERPRETER}" -m venv "{POLICY_VENV_ROOT}"; then
+  echo "venv unavailable; falling back to uv"
+  rm -rf "{POLICY_VENV_ROOT}"
+  export UV_INSTALL_DIR=/opt/adp009d-uv
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  "$UV_INSTALL_DIR/uv" venv --python "{SYSTEM_INTERPRETER}" "{POLICY_VENV_ROOT}"
+fi
+
+# Prove the venv is real and is not Isaac's interpreter before anything installs.
+test -x "{POLICY_VENV_ROOT}/bin/python"
+"{POLICY_VENV_ROOT}/bin/python" -c "import sys; assert 'isaac-sim' not in sys.prefix, sys.prefix"
+"{POLICY_VENV_ROOT}/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || true
 "{POLICY_VENV_ROOT}/bin/python" -m pip install --upgrade pip
 
 # JAX would otherwise preallocate most of the device and take the card out from
