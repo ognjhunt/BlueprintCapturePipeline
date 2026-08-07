@@ -27,10 +27,16 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .adp009d_droid_observation import (
-    DROID_EXTERIOR_VIEW_1,
-    DROID_WRIST_VIEW,
-)
+try:  # flat provider-bundle layout
+    from adp009d_droid_observation import (
+        DROID_EXTERIOR_VIEW_1,
+        DROID_WRIST_VIEW,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_droid_observation import (
+        DROID_EXTERIOR_VIEW_1,
+        DROID_WRIST_VIEW,
+    )
 
 ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v1"
 
@@ -133,9 +139,7 @@ class IsaacEpisodeAdapter:
             camera = self._env.unwrapped.scene[camera_name]
             output = camera.data.output
             if "rgb" not in output:
-                raise IsaacEpisodeAdapterError(
-                    [f"isaac_episode_camera_rgb_missing:{camera_name}"]
-                )
+                raise IsaacEpisodeAdapterError([f"isaac_episode_camera_rgb_missing:{camera_name}"])
             frame = _as_array(self._to_torch(output["rgb"]))[0]
             inputs[view] = rgb_from_camera_output(frame)
         joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]
@@ -151,9 +155,7 @@ class IsaacEpisodeAdapter:
             raise IsaacEpisodeAdapterError(
                 [f"isaac_episode_action_dim_mismatch:{len(values)}!={self._action_dim}"]
             )
-        tensor = torch.tensor(
-            [values], device=self._env.unwrapped.device, dtype=torch.float32
-        )
+        tensor = torch.tensor([values], device=self._env.unwrapped.device, dtype=torch.float32)
         self._env.step(tensor)
 
     def read_object_sample(self) -> dict[str, Any]:

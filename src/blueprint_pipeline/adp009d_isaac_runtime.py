@@ -669,6 +669,23 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         camera_cfg.data_types = ["rgb", "distance_to_camera", "semantic_segmentation"]
         camera_cfg.colorize_semantic_segmentation = False
         camera_cfg.update_period = 0.0
+        # Gaussian surfels are not drawn unless the render product asks for them.
+        # A run put the ParticleField in the scene and produced frames identical
+        # to a run without it -- max difference 12 of 255, sampling noise -- so
+        # presence in the scene graph is not presence in the image.  The OVRTX
+        # worker authors exactly these on its own render product; Isaac Lab's
+        # cameras create theirs without them.
+        for setting, value in (
+            ("rtx/rtpt/gaussian/accumulatedDepth/enabled", True),
+            ("rtx/rtpt/gaussian/accumulatedAlbedo/enabled", True),
+            ("rtx/rtpt/gaussian/maxGaussiansToAccumulate", 48),
+        ):
+            try:
+                import carb
+
+                carb.settings.get_settings().set(f"/{setting}", value)
+            except Exception:  # noqa: BLE001 - recorded by the render check below
+                pass
     # The second external camera is outside the frozen two-camera policy contract.
     embodiment.camera_config.external_camera_2 = None
     _phase("embodiment_configuration", "completed")
@@ -1519,9 +1536,15 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "camera_warmup_frames": 40,
             "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": True,
-            "aura_appearance_rendered_in_isaac": (
+            # Deliberately named "shipped", not "rendered".  An earlier field
+            # called itself rendered while only checking that the asset file
+            # existed, and reported True on a run whose frames were byte-for-byte
+            # the same as a run with no appearance at all.  A receipt that
+            # asserts a render it never observed is worse than one that is silent.
+            "aura_particlefield_shipped": (
                 runtime / "assets" / AURA_PARTICLEFIELD_FILENAME
             ).is_file(),
+            "aura_appearance_render_verified": None,
             "aura_particlefield_prim": AURA_PARTICLEFIELD_PRIM,
             "gripper_convention_probe": gripper_probe,
             "policy_episode": policy_episode,

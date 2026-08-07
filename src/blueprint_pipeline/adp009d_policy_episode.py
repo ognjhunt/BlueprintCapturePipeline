@@ -27,26 +27,54 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
-from .adp009d_droid_action_execution import (
-    DROID_CONTROL_HZ,
-    DROID_OPEN_LOOP_HORIZON,
-    DroidActionExecutionError,
-    GripperConvention,
-    plan_chunk_execution,
-)
-from .adp009d_droid_observation import (
-    CANDIDATE_REQUIRED_VIEWS,
-    DROID_OBSERVATION_SCHEMA_VERSION,
-    DroidObservationError,
-    build_droid_observation,
-    describe_observation_conversion,
-)
-from .adp009d_task_scoring import (
-    SETTLE_WINDOW_SAMPLES,
-    TaskScoringError,
-    score_task_episode,
-)
-from .decision_evidence_contracts import canonical_digest
+try:  # flat provider-bundle layout
+    from adp009d_droid_action_execution import (
+        DROID_CONTROL_HZ,
+        DROID_OPEN_LOOP_HORIZON,
+        DroidActionExecutionError,
+        GripperConvention,
+        plan_chunk_execution,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_droid_action_execution import (
+        DROID_CONTROL_HZ,
+        DROID_OPEN_LOOP_HORIZON,
+        DroidActionExecutionError,
+        GripperConvention,
+        plan_chunk_execution,
+    )
+try:  # flat provider-bundle layout
+    from adp009d_droid_observation import (
+        CANDIDATE_REQUIRED_VIEWS,
+        DROID_OBSERVATION_SCHEMA_VERSION,
+        DroidObservationError,
+        build_droid_observation,
+        describe_observation_conversion,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_droid_observation import (
+        CANDIDATE_REQUIRED_VIEWS,
+        DROID_OBSERVATION_SCHEMA_VERSION,
+        DroidObservationError,
+        build_droid_observation,
+        describe_observation_conversion,
+    )
+try:  # flat provider-bundle layout
+    from adp009d_task_scoring import (
+        SETTLE_WINDOW_SAMPLES,
+        TaskScoringError,
+        score_task_episode,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_task_scoring import (
+        SETTLE_WINDOW_SAMPLES,
+        TaskScoringError,
+        score_task_episode,
+    )
+try:  # flat provider-bundle layout
+    from decision_evidence_contracts import canonical_digest
+except ModuleNotFoundError:  # repository package
+    from .decision_evidence_contracts import canonical_digest
 
 EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v1"
 
@@ -106,9 +134,7 @@ def _sample_with_index(
     sample = dict(raw)
     sample["step_index"] = step_index
     if "can_pose_world" not in sample:
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:can_pose_world_missing"]
-        )
+        raise PolicyEpisodeError([f"{BLOCKER_ENVIRONMENT_CONTRACT}:can_pose_world_missing"])
     return sample
 
 
@@ -150,9 +176,7 @@ def run_policy_episode(
     samples: list[dict[str, Any]] = []
     previous_index: int | None = None
     step_index = 0
-    samples.append(
-        _sample_with_index(environment.read_object_sample(), step_index, previous_index)
-    )
+    samples.append(_sample_with_index(environment.read_object_sample(), step_index, previous_index))
     previous_index = step_index
 
     queries: list[dict[str, Any]] = []
@@ -161,9 +185,7 @@ def run_policy_episode(
     for query_index in range(int(max_policy_queries)):
         inputs = environment.read_policy_inputs()
         camera_rgb = {
-            view: inputs[view]
-            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-            if view in inputs
+            view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
         }
         try:
             observation = build_droid_observation(
@@ -194,9 +216,7 @@ def run_policy_episode(
             environment.step(action["isaac_action"])
             step_index += 1
             samples.append(
-                _sample_with_index(
-                    environment.read_object_sample(), step_index, previous_index
-                )
+                _sample_with_index(environment.read_object_sample(), step_index, previous_index)
             )
             previous_index = step_index
             last_action = list(action["isaac_action"])
@@ -226,9 +246,7 @@ def run_policy_episode(
         environment.step(release_action)
         step_index += 1
         samples.append(
-            _sample_with_index(
-                environment.read_object_sample(), step_index, previous_index
-            )
+            _sample_with_index(environment.read_object_sample(), step_index, previous_index)
         )
         previous_index = step_index
 
@@ -253,9 +271,7 @@ def run_policy_episode(
         "control_hz": DROID_CONTROL_HZ,
         "observation_adapter_schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
         "observation_conversion": describe_observation_conversion(candidate_id),
-        "destination_position_world_m": [
-            float(v) for v in destination_position_world_m
-        ],
+        "destination_position_world_m": [float(v) for v in destination_position_world_m],
         "queries": queries,
         "score": score,
         "candidate_policy_queried": True,

@@ -1012,3 +1012,68 @@ def test_a_bundle_without_the_appearance_still_builds() -> None:
     # Presence is checked, not assumed, so an appearance-free bundle runs.
     assert "if aura_particlefield_path.is_file():" in source
     assert "aura_appearance = None" in source
+
+
+
+def test_the_receipt_never_claims_a_render_it_did_not_observe() -> None:
+    """An earlier field said "rendered" while only checking a file existed.
+
+    It reported True on a run whose frames were byte-for-byte comparable to a
+    run with no appearance at all -- max difference 12 of 255, sampling noise.
+    A receipt asserting a render it never saw is worse than one that is silent.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert '"aura_particlefield_shipped"' in source
+    assert '"aura_appearance_rendered_in_isaac"' not in source
+    # The render claim exists but is explicitly unproven rather than assumed.
+    assert '"aura_appearance_render_verified": None' in source
+
+
+def test_gaussian_accumulation_is_requested_on_the_camera_render_products() -> None:
+    """Surfels in the scene graph are not surfels in the image.
+
+    The standalone OVRTX worker authors these settings on its own render
+    product; Isaac Lab's cameras create theirs without them, which is why the
+    ParticleField was present and invisible.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    for setting in (
+        "rtx/rtpt/gaussian/accumulatedDepth/enabled",
+        "rtx/rtpt/gaussian/accumulatedAlbedo/enabled",
+        "rtx/rtpt/gaussian/maxGaussiansToAccumulate",
+    ):
+        assert setting in source
+    # Applied to the policy cameras, before the scene is built.
+    assert source.index("accumulatedDepth") < source.index("sealed_scene_configuration")
+
+
+def test_shipped_modules_import_in_the_flat_provider_layout() -> None:
+    """They land flat in provider_runtime; a relative import fails there.
+
+    A live run reached the episode and died on "attempted relative import with
+    no known parent package" -- the same dual-layout problem already solved for
+    the approach helper and not carried to the newer modules.
+    """
+
+    from pathlib import Path as _Path
+
+    import blueprint_pipeline
+
+    root = _Path(blueprint_pipeline.__file__).parent
+    for name in (
+        "adp009d_policy_episode",
+        "adp009d_isaac_episode_adapter",
+    ):
+        source = (root / f"{name}.py").read_text(encoding="utf-8")
+        assert "try:  # flat provider-bundle layout" in source
+        assert "except ModuleNotFoundError:" in source
