@@ -245,3 +245,103 @@ def test_stale_wrist_pose_is_blocked_when_the_arm_moved() -> None:
         arm_moved=False,
     )
     assert BLOCKER_WRIST_POSE_STALE not in stationary["blockers"]
+
+
+def test_usd_transform_separates_a_stale_buffer_from_a_detached_prim() -> None:
+    """The two causes of a frozen wrist pose need opposite repairs.
+
+    Either the sensor pose buffer lags while the prim does follow the hand, or
+    the prim is not parented to the hand at all.  Only the stage transform for
+    the same prim distinguishes them.
+    """
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        WRIST_POSE_CAUSE_HEALTHY,
+        WRIST_POSE_CAUSE_PRIM_DETACHED,
+        WRIST_POSE_CAUSE_STALE_BUFFER,
+        WRIST_POSE_CAUSE_UNDETERMINED,
+        classify_wrist_pose_discrepancy,
+    )
+
+    frozen = [(3.437, -3.096, 0.737)] * 3
+    moved = [(3.437, -3.096, 0.737), (3.450, -3.150, 0.700), (3.468, -3.250, 0.660)]
+
+    # Stage says the prim moved, sensor reported a constant pose -> stale buffer.
+    stale = classify_wrist_pose_discrepancy(
+        reported_positions=frozen, usd_positions=moved
+    )
+    assert stale["cause"] == WRIST_POSE_CAUSE_STALE_BUFFER
+    assert stale["usd_pose_travel_m"] > 0.1
+    assert stale["reported_pose_travel_m"] == pytest.approx(0.0, abs=1e-12)
+
+    # Stage agrees nothing moved -> the camera is not attached to the hand.
+    detached = classify_wrist_pose_discrepancy(
+        reported_positions=frozen, usd_positions=frozen
+    )
+    assert detached["cause"] == WRIST_POSE_CAUSE_PRIM_DETACHED
+
+    # Both move -> healthy.
+    healthy = classify_wrist_pose_discrepancy(
+        reported_positions=moved, usd_positions=moved
+    )
+    assert healthy["cause"] == WRIST_POSE_CAUSE_HEALTHY
+
+    # No usable stage samples -> refuse to guess.
+    for unusable in ([], [[]], [[], []], [(1.0, 2.0, 3.0)]):
+        undetermined = classify_wrist_pose_discrepancy(
+            reported_positions=frozen, usd_positions=unusable
+        )
+        assert undetermined["cause"] == WRIST_POSE_CAUSE_UNDETERMINED
+
+
+def test_summary_carries_the_pose_cause_through_from_frame_diagnostics() -> None:
+    """The classification must reach the report without a separate call."""
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        BLOCKER_WRIST_POSE_STALE,
+        WRIST_POSE_CAUSE_STALE_BUFFER,
+    )
+
+    frames = []
+    for index, usd_position in enumerate(
+        [(3.437, -3.096, 0.737), (3.450, -3.150, 0.700), (3.468, -3.250, 0.660)]
+    ):
+        frame = _wrist_frame_at(100 + index, 5200, (3.437, -3.096, 0.737))
+        frame["prim_diagnostics"] = {
+            "resolved_prim_path": "/World/envs/env_0/Robot/wrist_cam",
+            "prim_exists": True,
+            "usd_world_translation_m": list(usd_position),
+        }
+        frames.append(frame)
+
+    report = summarize_wrist_approach_capture(captured_frames=frames)
+    assert BLOCKER_WRIST_POSE_STALE in report["blockers"]
+    assert report["wrist_pose_discrepancy"]["cause"] == WRIST_POSE_CAUSE_STALE_BUFFER
+    # The digest must cover the new field.
+    from blueprint_pipeline.adp009d_approach_capture import canonical_digest
+
+    assert report["report_digest"] == canonical_digest(
+        report, digest_field="report_digest"
+    )
+
+
+def test_runtime_records_stage_transform_on_every_capture() -> None:
+    """The diagnostic must be unconditional, and must never fail a capture."""
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    assert '"prim_diagnostics": _camera_prim_diagnostics(camera)' in source
+    assert "ComputeLocalToWorldTransform" in source
+    # Established stage accessor for this runtime.
+    assert "omni.usd.get_context().get_stage()" in source
+    # Collected for every capture, so a healthy run proves the diagnostic works.
+    diagnostics_body = source[source.index("def _camera_prim_diagnostics(") :]
+    diagnostics_body = diagnostics_body[: diagnostics_body.index("def _save_camera(")]
+    assert "except Exception" in diagnostics_body
+    raising = [
+        line for line in diagnostics_body.splitlines() if line.strip().startswith("raise")
+    ]
+    assert raising == [], f"diagnostics must not raise: {raising}"

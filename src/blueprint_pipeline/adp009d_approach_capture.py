@@ -63,6 +63,17 @@ BLOCKER_APPROACH_DISTURBED_OBJECT = "wrist_approach_disturbed_approved_task_obje
 # against that pose would silently mis-register the whole wrist observation.
 BLOCKER_WRIST_POSE_STALE = "wrist_camera_pose_metadata_stale"
 MIN_WRIST_POSE_TRAVEL_M = 1.0e-4
+
+# A stale recorded pose has exactly two causes, and they need opposite repairs:
+# either the sensor's pose buffer is not refreshed (the prim does follow the
+# hand, the reported number lags), or the camera prim is not parented to the
+# hand at all (nothing moves, and the changing view came from the scene moving
+# past a fixed camera).  Comparing the reported pose against the USD-computed
+# world transform of the same prim separates them.
+WRIST_POSE_CAUSE_HEALTHY = "pose_tracks_hand"
+WRIST_POSE_CAUSE_STALE_BUFFER = "pose_buffer_not_refreshed"
+WRIST_POSE_CAUSE_PRIM_DETACHED = "camera_prim_not_following_hand"
+WRIST_POSE_CAUSE_UNDETERMINED = "undetermined_usd_transform_unavailable"
 # Frame indices reserved for approach captures, after the 40-frame hold capture.
 APPROACH_CAPTURE_FRAME_BASE = 100
 
@@ -153,6 +164,54 @@ def pose_world_to_base(
     return position_base, quaternion_base
 
 
+def _max_travel_m(positions: Sequence[Sequence[float]]) -> float:
+    """Largest displacement of any sample from the first sample."""
+
+    usable = [tuple(float(v) for v in p) for p in positions if p and len(p) == 3]
+    if len(usable) < 2:
+        return 0.0
+    first = usable[0]
+    return max(
+        sum((a - b) ** 2 for a, b in zip(other, first)) ** 0.5 for other in usable[1:]
+    )
+
+
+def classify_wrist_pose_discrepancy(
+    *,
+    reported_positions: Sequence[Sequence[float]],
+    usd_positions: Sequence[Sequence[float]],
+    min_travel_m: float = MIN_WRIST_POSE_TRAVEL_M,
+) -> dict[str, Any]:
+    """Separate a lagging pose buffer from a camera prim that never moves.
+
+    ``reported_positions`` are the sensor-reported world positions; ``usd_positions``
+    are the world translations computed directly from the USD stage for the same
+    prim on the same steps.  If the stage says the prim moved while the sensor
+    reported a constant pose, the buffer is stale.  If the stage agrees the prim
+    never moved, the camera is not attached to the hand.
+    """
+
+    reported_travel = _max_travel_m(reported_positions)
+    usd_travel = _max_travel_m(usd_positions)
+    usable_usd = [p for p in usd_positions if p and len(p) == 3]
+
+    if len(usable_usd) < 2:
+        cause = WRIST_POSE_CAUSE_UNDETERMINED
+    elif reported_travel >= float(min_travel_m):
+        cause = WRIST_POSE_CAUSE_HEALTHY
+    elif usd_travel >= float(min_travel_m):
+        cause = WRIST_POSE_CAUSE_STALE_BUFFER
+    else:
+        cause = WRIST_POSE_CAUSE_PRIM_DETACHED
+
+    return {
+        "cause": cause,
+        "reported_pose_travel_m": reported_travel,
+        "usd_pose_travel_m": usd_travel,
+        "usd_samples": len(usable_usd),
+    }
+
+
 def summarize_wrist_approach_capture(
     *,
     captured_frames: Sequence[Mapping[str, Any]],
@@ -183,6 +242,7 @@ def summarize_wrist_approach_capture(
                 "frame_index": frame.get("frame_index"),
                 "approved_task_object_pixel_count": observed,
                 "position_world_m": list(frame.get("position_world_m") or []),
+                "prim_diagnostics": dict(frame.get("prim_diagnostics") or {}),
             }
         )
 
@@ -204,6 +264,14 @@ def summarize_wrist_approach_capture(
     if arm_moved and positions and wrist_pose_travel_m < MIN_WRIST_POSE_TRAVEL_M:
         blockers.append(BLOCKER_WRIST_POSE_STALE)
 
+    pose_discrepancy = classify_wrist_pose_discrepancy(
+        reported_positions=[row["position_world_m"] for row in rows],
+        usd_positions=[
+            (row["prim_diagnostics"] or {}).get("usd_world_translation_m") or []
+            for row in rows
+        ],
+    )
+
     report: dict[str, Any] = {
         "schema_version": APPROACH_CAPTURE_SCHEMA_VERSION,
         "status": "observed" if not blockers else "blocked",
@@ -214,6 +282,7 @@ def summarize_wrist_approach_capture(
         "max_approved_task_object_pixel_count": best,
         "object_displacement_m": float(object_displacement_m),
         "wrist_pose_travel_m": wrist_pose_travel_m,
+        "wrist_pose_discrepancy": pose_discrepancy,
         "arm_moved": bool(arm_moved),
         "max_object_displacement_allowed_m": APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         "max_joint_step_rad": APPROACH_MAX_JOINT_STEP_RAD,
@@ -239,7 +308,13 @@ __all__ = [
     "ApproachCaptureError",
     "BLOCKER_APPROACH_IK_FAILED",
     "BLOCKER_WRIST_NEVER_SAW_OBJECT",
+    "MIN_WRIST_POSE_TRAVEL_M",
+    "WRIST_POSE_CAUSE_HEALTHY",
+    "WRIST_POSE_CAUSE_PRIM_DETACHED",
+    "WRIST_POSE_CAUSE_STALE_BUFFER",
+    "WRIST_POSE_CAUSE_UNDETERMINED",
     "approach_waypoints_world",
+    "classify_wrist_pose_discrepancy",
     "pose_world_to_base",
     "summarize_wrist_approach_capture",
 ]

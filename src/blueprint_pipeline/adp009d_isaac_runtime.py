@@ -469,6 +469,57 @@ def _inspect_sage_static_triangle_colliders(
     }
 
 
+def _camera_prim_diagnostics(camera: Any) -> dict[str, Any]:
+    """Read the camera prim's world transform straight from the live USD stage.
+
+    A recorded pose that never changes while the view does has exactly two
+    causes: the sensor's pose buffer is not refreshed, or the prim is not
+    parented to the hand.  The reported pose alone cannot tell them apart, and
+    they need opposite repairs.  The stage transform for the same prim can, so
+    it is collected on every capture rather than only after a run looks wrong.
+
+    Diagnostics must never fail a capture: any error is recorded, not raised.
+    """
+
+    diagnostics: dict[str, Any] = {
+        "configured_prim_path": None,
+        "resolved_prim_path": None,
+        "prim_exists": False,
+        "usd_world_translation_m": None,
+        "error": None,
+    }
+    try:
+        diagnostics["configured_prim_path"] = getattr(
+            getattr(camera, "cfg", None), "prim_path", None
+        )
+        resolved = None
+        prim_paths = getattr(getattr(camera, "_view", None), "prim_paths", None)
+        if prim_paths:
+            resolved = str(prim_paths[0])
+        elif diagnostics["configured_prim_path"]:
+            # Arena replicates cameras per environment; this run has exactly one.
+            resolved = str(diagnostics["configured_prim_path"]).replace("env_.*", "env_0")
+        diagnostics["resolved_prim_path"] = resolved
+        if resolved:
+            import omni.usd
+            from pxr import Usd, UsdGeom
+
+            prim = omni.usd.get_context().get_stage().GetPrimAtPath(resolved)
+            diagnostics["prim_exists"] = bool(prim and prim.IsValid())
+            if diagnostics["prim_exists"]:
+                translation = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
+                    Usd.TimeCode.Default()
+                ).ExtractTranslation()
+                diagnostics["usd_world_translation_m"] = [
+                    float(translation[0]),
+                    float(translation[1]),
+                    float(translation[2]),
+                ]
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not break a capture
+        diagnostics["error"] = f"{type(exc).__name__}:{exc}"
+    return diagnostics
+
+
 def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_time: float) -> dict[str, Any]:
     import numpy as np
     from PIL import Image
@@ -541,6 +592,7 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
         "intrinsic_matrix": _jsonable(intrinsic),
         "position_world_m": _jsonable(pos_w),
         "quaternion_world_opengl_xyzw": _jsonable(quat_w_opengl),
+        "prim_diagnostics": _camera_prim_diagnostics(camera),
         "device": str(camera.data.output["rgb"].device),
         "dlpack_ownership": "isaac_camera_tensor_read_only_copy_retained",
         "synchronization": "environment_step_completed_before_copy",
