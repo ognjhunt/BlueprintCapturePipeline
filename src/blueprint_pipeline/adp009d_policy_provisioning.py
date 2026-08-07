@@ -47,6 +47,12 @@ ISAAC_INTERPRETER = "/isaac-sim/python.sh"
 # The policy environment lives beside it, never inside it.
 POLICY_VENV_ROOT = "/opt/adp009d-policy-venv"
 CHECKPOINT_ROOT = "/opt/adp009d-checkpoints"
+POLICY_SOURCE_ROOT = "/opt/adp009d-policy-source"
+# Measured on the worker: Isaac runs /isaac-sim/kit/python/bin/python3 at
+# 3.12.12 under its own prefix, and /usr/bin/python3 at 3.12.3 exists
+# separately.  The venv is built from the system interpreter so nothing
+# resolves out of Isaac's prefix.
+SYSTEM_INTERPRETER = "/usr/bin/python3"
 POLICY_HOST = "127.0.0.1"
 POLICY_PORT = 8000
 
@@ -95,6 +101,28 @@ def _fetch_commands(candidate_id: str) -> list[str]:
     ]
 
 
+def _install_commands(candidate_id: str) -> list[str]:
+    """Install the candidate's pinned policy source into the policy venv.
+
+    Ordered before the checkpoint fetch on purpose: a dependency resolution
+    failure should surface in seconds rather than after a 12.4 GB download.
+
+    The source revision is the one the candidate contract froze, checked out
+    detached and verified, so a moved branch cannot silently change what runs.
+    """
+
+    expected = EXPECTED_CANDIDATES[candidate_id]
+    repository = str(expected["source_repository"])
+    revision = str(expected["source_revision"])
+    source = f"{POLICY_SOURCE_ROOT}/{candidate_id}"
+    return [
+        f'git clone --filter=blob:none "{repository}" "{source}"',
+        f'git -C "{source}" fetch --depth 1 origin "{revision}"',
+        f'git -C "{source}" checkout --detach FETCH_HEAD',
+        f'test "$(git -C "{source}" rev-parse HEAD)" = "{revision}"',
+        f'"{POLICY_VENV_ROOT}/bin/python" -m pip install --no-build-isolation -e "{source}"',
+    ]
+
 def build_provisioning_script(candidate_id: str) -> str:
     """Emit the worker-side provisioning script for one candidate."""
 
@@ -105,6 +133,7 @@ def build_provisioning_script(candidate_id: str) -> str:
         f'export {name}="{value}"' for name, value in sorted(JAX_ENVIRONMENT.items())
     )
     fetch = "\n".join(_fetch_commands(candidate_id))
+    install = "\n".join(_install_commands(candidate_id))
     return f"""#!/usr/bin/env bash
 # ADP-009D policy provisioning for {candidate_id}.  Generated, not hand-written.
 set -euo pipefail
@@ -112,7 +141,7 @@ set -euo pipefail
 # The policy environment is built BESIDE Isaac's interpreter, never by mutating
 # it: a pip resolve against Isaac's own CPython is how you get an Isaac that no
 # longer starts, and the shipped image's build gate already forbids merging them.
-python3 -m venv "{POLICY_VENV_ROOT}"
+"{SYSTEM_INTERPRETER}" -m venv "{POLICY_VENV_ROOT}"
 "{POLICY_VENV_ROOT}/bin/python" -m pip install --upgrade pip
 
 # JAX would otherwise preallocate most of the device and take the card out from
@@ -121,6 +150,8 @@ python3 -m venv "{POLICY_VENV_ROOT}"
 
 # Every frozen candidate is public, so no credential is forwarded to this host.
 unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true
+
+{install}
 
 {fetch}
 
@@ -192,7 +223,9 @@ __all__ = [
     "JAX_ENVIRONMENT",
     "POLICY_HOST",
     "POLICY_PORT",
+    "POLICY_SOURCE_ROOT",
     "POLICY_VENV_ROOT",
+    "SYSTEM_INTERPRETER",
     "PROVISIONING_SCHEMA_VERSION",
     "PolicyProvisioningError",
     "build_provisioning_script",

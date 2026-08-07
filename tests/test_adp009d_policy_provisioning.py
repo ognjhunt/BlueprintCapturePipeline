@@ -21,7 +21,7 @@ def test_the_policy_environment_is_built_beside_isaac_never_inside_it() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert "python3 -m venv" in script
+    assert "-m venv" in script
     # Isaac's interpreter must never be the thing pip is pointed at.
     assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
     assert "/opt/adp009d-policy-venv/bin/python" in script
@@ -134,3 +134,50 @@ def test_provisioning_agrees_with_the_standup_and_materialization_contracts() ->
         )
         assert provisioning["materialize_on"] == standup["checkpoint_materialized_on"]
         assert provisioning["isaac_interpreter"] == standup["isaac_interpreter"]
+
+
+def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
+    """A worker run measured both interpreters; use the one outside Isaac's prefix."""
+
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        ISAAC_INTERPRETER,
+        SYSTEM_INTERPRETER,
+    )
+
+    script = build_provisioning_script("pi05_droid")
+
+    assert f'"{SYSTEM_INTERPRETER}" -m venv' in script
+    assert SYSTEM_INTERPRETER == "/usr/bin/python3"
+    # Never Isaac's own interpreter, and never its measured real path either.
+    assert f'"{ISAAC_INTERPRETER}" -m venv' not in script
+    assert "/isaac-sim/kit/python/bin/python3" not in script
+
+
+def test_the_pinned_policy_source_is_verified_not_merely_cloned() -> None:
+    """A moved branch must not silently change what runs."""
+
+    script = build_provisioning_script("pi05_droid")
+    revision = EXPECTED_CANDIDATES["pi05_droid"]["source_revision"]
+
+    assert "github.com/Physical-Intelligence/openpi" in script
+    assert f'origin "{revision}"' in script
+    assert "checkout --detach FETCH_HEAD" in script
+    # The checkout is asserted, so a fetch that landed elsewhere fails the run.
+    assert f'rev-parse HEAD)" = "{revision}"' in script
+
+
+def test_the_install_precedes_the_checkpoint_fetch() -> None:
+    """A dependency failure should surface in seconds, not after 12.4 GB."""
+
+    script = build_provisioning_script("pi05_droid")
+
+    assert script.index("pip install --no-build-isolation") < script.index(
+        "gcloud storage cp"
+    )
+
+
+def test_every_candidate_installs_its_own_pinned_source() -> None:
+    for candidate_id, expected in EXPECTED_CANDIDATES.items():
+        script = build_provisioning_script(candidate_id)
+        assert str(expected["source_repository"]) in script
+        assert str(expected["source_revision"]) in script
