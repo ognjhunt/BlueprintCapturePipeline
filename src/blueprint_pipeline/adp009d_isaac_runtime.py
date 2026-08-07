@@ -83,6 +83,18 @@ RESET_ARM_TOLERANCE_RAD = 1.0e-3
 HOLD_ARM_TOLERANCE_RAD = 1.0e-2
 
 
+def _bind_canonical_joint_positions(embodiment: Any) -> None:
+    """Replace Arena's regex defaults with one exact, non-overlapping map."""
+
+    canonical_joint_positions = dict(
+        zip(RESET_JOINT_NAMES, RESET_JOINTS, strict=True)
+    )
+    robot = embodiment.scene_config.robot
+    robot.init_state = robot.init_state.replace(
+        joint_pos=canonical_joint_positions
+    )
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -412,12 +424,11 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     embodiment.get_scene_cfg()
     embodiment.scene_config.stand = None
     embodiment.initial_pose = None
-    # Arena release/0.2.1's set_initial_joint_pose updates only its reset
-    # event.  Bind the articulation state too so the first reset cannot use
-    # the stock DROID pose before that event is evaluated.
-    embodiment.scene_config.robot.init_state.joint_pos.update(
-        dict(zip(RESET_JOINT_NAMES, RESET_JOINTS, strict=True))
-    )
+    # Arena release/0.2.1's set_initial_joint_pose updates only its reset event.
+    # Replace the authored regex defaults rather than updating them: exact
+    # gripper names overlap right_outer.* / left_inner.* / right_inner.* and
+    # Isaac Lab correctly rejects such an ambiguous mapping.
+    _bind_canonical_joint_positions(embodiment)
     for camera_name in ("external_camera", "wrist_camera"):
         camera_cfg = getattr(embodiment.camera_config, camera_name)
         camera_cfg.data_types = ["rgb", "distance_to_camera", "semantic_segmentation"]

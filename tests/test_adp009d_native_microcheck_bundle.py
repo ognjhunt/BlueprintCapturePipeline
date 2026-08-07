@@ -442,11 +442,50 @@ def test_runtime_binds_and_verifies_canonical_reset_pose() -> None:
     assert isaac_runtime.RESET_JOINT_NAMES[:7] == tuple(
         f"panda_joint{index}" for index in range(1, 8)
     )
-    assert "embodiment.scene_config.robot.init_state.joint_pos.update" in source
-    assert "dict(zip(RESET_JOINT_NAMES, RESET_JOINTS, strict=True))" in source
+    assert "robot.init_state = robot.init_state.replace" in source
+    assert "joint_pos=canonical_joint_positions" in source
+    assert ".joint_pos.update(" not in source
     assert 'blocker="canonical_reset_arm_pose_mismatch"' in source
     assert 'blocker="canonical_hold_arm_pose_drift"' in source
     assert '"post_warmup_arm_maximum_error_rad"' in source
+
+
+def test_canonical_reset_replaces_overlapping_arena_regex_defaults() -> None:
+    class FakeInitialState:
+        def __init__(self, joint_pos: dict[str, float]) -> None:
+            self.joint_pos = joint_pos
+
+        def replace(self, *, joint_pos: dict[str, float]):
+            return FakeInitialState(joint_pos)
+
+    class FakeRobot:
+        init_state = FakeInitialState(
+            {
+                "panda_joint1": 0.0,
+                "right_outer.*": 0.0,
+                "left_inner.*": 0.0,
+                "right_inner.*": 0.0,
+            }
+        )
+
+    class FakeSceneConfig:
+        robot = FakeRobot()
+
+    class FakeEmbodiment:
+        scene_config = FakeSceneConfig()
+
+    embodiment = FakeEmbodiment()
+    isaac_runtime._bind_canonical_joint_positions(embodiment)
+
+    resolved = embodiment.scene_config.robot.init_state.joint_pos
+    assert resolved == dict(
+        zip(
+            isaac_runtime.RESET_JOINT_NAMES,
+            isaac_runtime.RESET_JOINTS,
+            strict=True,
+        )
+    )
+    assert not any("*" in name for name in resolved)
 
 
 def test_runtime_retains_camera_semantic_mapping_and_quality_diagnostics() -> None:
