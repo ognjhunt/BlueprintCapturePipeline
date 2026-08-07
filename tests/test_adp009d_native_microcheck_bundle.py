@@ -1343,13 +1343,16 @@ def test_camera_warmup_is_configurable_but_never_below_settling(monkeypatch) -> 
     monkeypatch.delenv(runtime.CAMERA_WARMUP_FRAMES_ENV, raising=False)
     assert runtime._camera_warmup_frames() == runtime.DEFAULT_CAMERA_WARMUP_FRAMES
 
-    monkeypatch.setenv(runtime.CAMERA_WARMUP_FRAMES_ENV, "6")
-    assert runtime._camera_warmup_frames() == 6
+    # Above the floor, honoured as asked.
+    monkeypatch.setenv(runtime.CAMERA_WARMUP_FRAMES_ENV, "60")
+    assert runtime._camera_warmup_frames() == 60
 
     # A frame saved from an unsettled camera is worse than a slow run: it
     # looks like data.
-    monkeypatch.setenv(runtime.CAMERA_WARMUP_FRAMES_ENV, "1")
+    # Below it, clamped: four frames rendered mean 0.2 / max 1.
+    monkeypatch.setenv(runtime.CAMERA_WARMUP_FRAMES_ENV, "4")
     assert runtime._camera_warmup_frames() == runtime.MIN_CAMERA_WARMUP_FRAMES
+    assert runtime.MIN_CAMERA_WARMUP_FRAMES == 40
     monkeypatch.setenv(runtime.CAMERA_WARMUP_FRAMES_ENV, "not-a-number")
     assert runtime._camera_warmup_frames() == runtime.DEFAULT_CAMERA_WARMUP_FRAMES
 
@@ -1405,3 +1408,43 @@ def test_the_tuning_vars_reach_the_worker() -> None:
     # export the literal string and read as truthy.
     assert '"@@CAMERA_WARMUP_FRAMES@@",' in source
     assert '"@@STOP_AFTER_FRAMES@@",' in source
+
+
+def test_a_sample_starved_frame_is_refused_rather_than_saved() -> None:
+    """An image that never accumulated is not a dark scene.
+
+    A run saved a frame with mean 0.2 and max 1 -- the arm faintly outlined in
+    black -- and reported success.  Saving one produces evidence that looks
+    like data.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "camera_frame_sample_starved" in source
+    assert "FRAME_DEGENERATE_MAX_VALUE" in source
+    # Checked before the frame is written, not after.
+    save = source[source.index("def _save_camera("):]
+    assert save.index("camera_frame_sample_starved") < save.index("Image.fromarray")
+    # Far below any real render: v43's blank-but-converged frame was mean 227,
+    # so this cannot reject a legitimately dim scene.
+    assert runtime.FRAME_DEGENERATE_MAX_VALUE <= 2
+
+
+def test_the_stage_probe_inspects_the_field_not_its_parent() -> None:
+    """Reading matches[0] returned the Xform holding the field.
+
+    That reported an empty applied-schema list for a prim that carried all
+    nine, which reads as a broken asset when the asset was fine.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert 'm.endswith("GaussianSurflets")' in source
+    # And it records which prim it actually read, so the answer is checkable.
+    assert '"inspected_prim_path"' in source

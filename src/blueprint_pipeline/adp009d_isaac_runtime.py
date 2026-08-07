@@ -343,6 +343,9 @@ def _phase(name: str, status: str = "started") -> None:
 
 
 STOP_AFTER_FRAMES_ENV = "BLUEPRINT_ADP009D_STOP_AFTER_FRAMES"
+# Above this, a frame has accumulated something.  At or below it the render
+# never converged, whatever the reason.
+FRAME_DEGENERATE_MAX_VALUE = 2
 CAMERA_WARMUP_FRAMES_ENV = "BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES"
 # Forty frames is right for a bare scene whose frames cost milliseconds.  With
 # the appearance composed each frame costs about sixty-five seconds, because
@@ -350,7 +353,12 @@ CAMERA_WARMUP_FRAMES_ENV = "BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES"
 # would run past the paid TTL and the run would end having saved no frame at
 # all.  A proof needs the camera settled, not forty frames of it.
 DEFAULT_CAMERA_WARMUP_FRAMES = 40
-MIN_CAMERA_WARMUP_FRAMES = 4
+# RTX accumulates samples across frames.  Four produced a frame with mean 0.2
+# and max 1 -- the arm faintly outlined in black -- because the accumulator
+# never converged, the same sample-starvation that once turned a 64spp render
+# black where 384spp was clean.  This floor is the converged value, chosen
+# from what actually renders rather than from what fits the wall clock.
+MIN_CAMERA_WARMUP_FRAMES = 40
 
 
 def _camera_warmup_frames() -> int:
@@ -625,6 +633,16 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
     if rgb.shape[-1] == 4:
         rgb = rgb[..., :3]
     rgb = np.asarray(rgb, dtype=np.uint8)
+    # A sample-starved frame is not a dark scene: it is an image that never
+    # accumulated, and saving one produces evidence that looks like data.  One
+    # run wrote a frame with mean 0.2 and max 1 and reported success.  The
+    # threshold is far below any real render -- v43's blank-but-converged frame
+    # was mean 227 -- so this cannot reject a legitimately dim scene.
+    if int(rgb.max()) <= FRAME_DEGENERATE_MAX_VALUE:
+        raise RuntimeError(
+            f"camera_frame_sample_starved:{name}:max={int(rgb.max())}:"
+            f"mean={float(rgb.mean()):.3f}"
+        )
     depth = _to_torch(camera_output["distance_to_camera"])[0].detach().cpu().numpy().astype(np.float32)
     semantic = _to_torch(camera_output["semantic_segmentation"])[0].detach().cpu().numpy()
     if semantic.ndim == 3 and semantic.shape[-1] == 1:
@@ -1035,7 +1053,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             aura_stage_probe["matching_prim_paths"] = matches[:20]
             aura_stage_probe["matching_prim_count"] = len(matches)
             if matches:
-                found = live_stage.GetPrimAtPath(matches[0])
+                # The field itself, not the Xform that holds it: reading
+                # matches[0] returned the parent and reported an empty
+                # applied-schema list for a prim that carried all nine.
+                field_paths = [m for m in matches if m.endswith("GaussianSurflets")]
+                found = live_stage.GetPrimAtPath(field_paths[0] if field_paths else matches[0])
+                aura_stage_probe["inspected_prim_path"] = str(found.GetPath())
                 aura_stage_probe["applied_schemas"] = [
                     str(v) for v in found.GetAppliedSchemas()
                 ]
