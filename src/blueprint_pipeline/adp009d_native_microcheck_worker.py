@@ -20,6 +20,17 @@ ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ISAAC_LAB_TREE = "454115265327a80acabd07cbd36e10071fc0c065"
 RESULT_NAME = "adp009d_native_microcheck.json"
 ISAAC_PYTHON = Path("/isaac-sim/python.sh")
+INSTALL_PROFILE_ID = "isaaclab_arena_physx_task_runtime.v1"
+ISAAC_LAB_INSTALL_TARGETS = ("assets", "physx", "tasks", "teleop")
+EXPECTED_RUNTIME_DISTRIBUTIONS = (
+    "isaaclab",
+    "isaaclab_assets",
+    "isaaclab_newton",
+    "isaaclab_physx",
+    "isaaclab_tasks",
+    "isaaclab_teleop",
+    "isaaclab_arena",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -124,21 +135,46 @@ def _materialize_source(source: Path, output: Path) -> dict[str, Any]:
     return {"commands": rows, **observed}
 
 
-def _install(source: Path, output: Path) -> list[dict[str, Any]]:
+def _install_commands(source: Path) -> list[list[str]]:
+    """Return the pinned minimum official Lab/Arena runtime installation plan."""
+
     lab = source / "submodules/IsaacLab"
-    commands = [
-        ["apt-get", "update"],
-        ["apt-get", "install", "-y", "git", "git-lfs", "cmake", "ffmpeg", "python3-pip"],
+    distribution_probe = (
+        "import importlib.metadata as m, json; "
+        f"names={EXPECTED_RUNTIME_DISTRIBUTIONS!r}; "
+        "print(json.dumps({name: m.version(name) for name in names}, sort_keys=True))"
+    )
+    return [
         ["ln", "-sfn", "/isaac-sim", str(lab / "_isaac_sim")],
-        [
-            "bash",
-            "-lc",
-            f'for d in "{lab}"/source/isaaclab*/; do {ISAAC_PYTHON} -m pip install --no-deps -e "$d" || exit $?; done',
-        ],
-        [str(lab / "isaaclab.sh"), "-i"],
-        [str(ISAAC_PYTHON), "-m", "pip", "install", "av", "pillow"],
-        [str(ISAAC_PYTHON), "-m", "pip", "install", "-e", f"{source}[dev]"],
+        [str(lab / "isaaclab.sh"), "-i", ",".join(ISAAC_LAB_INSTALL_TARGETS)],
+        [str(ISAAC_PYTHON), "-m", "pip", "install", "--editable", str(source)],
+        [str(ISAAC_PYTHON), "-c", distribution_probe],
     ]
+
+
+def _validate_install_commands(commands: list[list[str]]) -> None:
+    """Fail closed if the paid worker expands beyond the admitted runtime profile."""
+
+    flattened = "\n".join(" ".join(command) for command in commands)
+    expected_selector = f"-i {','.join(ISAAC_LAB_INSTALL_TARGETS)}"
+    forbidden = (
+        "[dev]",
+        "source/isaaclab*/",
+        "isaaclab_rl",
+        "isaaclab_mimic",
+        "isaaclab_visualizers",
+        "isaaclab_contrib",
+        "isaaclab_tasks_experimental",
+    )
+    if expected_selector not in flattened:
+        raise RuntimeError("adp009d_runtime_install_profile_selector_mismatch")
+    if any(marker in flattened for marker in forbidden):
+        raise RuntimeError("adp009d_runtime_install_profile_expanded")
+
+
+def _install(source: Path, output: Path) -> list[dict[str, Any]]:
+    commands = _install_commands(source)
+    _validate_install_commands(commands)
     rows: list[dict[str, Any]] = []
     for index, command in enumerate(commands):
         row = _run(command, log_path=output / f"install_{index:02d}.log", cwd=source)
@@ -171,6 +207,14 @@ def main() -> int:
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
         "provider_zero_required_after_return": True,
+        "install_profile": {
+            "profile_id": INSTALL_PROFILE_ID,
+            "isaac_lab_targets": list(ISAAC_LAB_INSTALL_TARGETS),
+            "expected_runtime_distributions": list(EXPECTED_RUNTIME_DISTRIBUTIONS),
+            "arena_development_extras_installed": False,
+            "all_isaac_lab_extensions_installed": False,
+            "fail_closed_plan_validation": True,
+        },
         "blockers": [],
     }
     try:

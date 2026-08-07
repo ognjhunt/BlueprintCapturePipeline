@@ -497,7 +497,9 @@
         "Keep the sealed can bytes immutable while applying the required PhysxSDFMeshCollisionAPI and explicit SDF cooking settings through a deterministic digest-bound composition layer.",
         "Validate both the composed and live spawned collider, subscribe to native Kit logs, and fail closed on any automatic collision-approximation fallback before an episode is admissible.",
         "Treat a static SDF-schema pass followed by collision-cooking timeout as infrastructure evidence only; it does not prove live collider, reset, or contact behavior.",
-        "Label the historical convex-hull native probe as approximation-only and prohibit it from substituting for exact-v2 SDF admission."
+        "Label the historical convex-hull native probe as approximation-only and prohibit it from substituting for exact-v2 SDF admission.",
+        "Use the pinned Isaac Lab selective installer for assets, physx, tasks, and teleop only; retain the installer-required isaaclab_newton compatibility package without selecting Newton runtime extras or the Newton backend.",
+        "Install Isaac Lab Arena runtime dependencies without its development extra and reject any worker plan that silently expands to all Isaac Lab extensions or RL frameworks."
       ],
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
@@ -671,6 +673,20 @@
     "ovphysx_candidate": "0.5.9 at 7845321d31fa3619917ebe127ab5e08e73de0bdb",
     "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX",
     "ovrtx_selected": false,
+    "runtime_install_profile": {
+      "profile_id": "isaaclab_arena_physx_task_runtime.v1",
+      "isaac_lab_selective_targets": [
+        "assets",
+        "physx",
+        "tasks",
+        "teleop"
+      ],
+      "isaaclab_newton_install_reason": "pinned_installer_required_physx_newton_package_coupling_only",
+      "newton_runtime_extras_installed": false,
+      "newton_backend_selected": false,
+      "arena_development_extras_installed": false,
+      "all_isaac_lab_extensions_installed": false
+    },
     "co_resident_runtime_status": "OVRTX and ovphysx not selected; exact Isaac reset-step-camera microcheck must pass before policy admission"
   },
   "claim_ceiling": [
@@ -679,5 +695,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:c4f884310bcd4934844ed13cdb828afbaa71c6cdff7898f821c10032cb8fbe73"
+  "audit_digest": "sha256:d934a2dfb7435ce31cfac01804d36cef2f610b5f5a2ed0773a5f95b54107fe0a"
 }

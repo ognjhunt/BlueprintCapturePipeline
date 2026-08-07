@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 34069,
-      "sha256": "sha256:effccaf8af175a1504c7d4310f580dc036cc7313eb76e809a6f5c3b6accd44ec"
+      "size_bytes": 34990,
+      "sha256": "sha256:72389a8e69c4c86ae2e7cdc4b28449991e25b3d94df07defe7b3644fa6013ac7"
     },
     {
       "role": "approved_can",
@@ -542,6 +542,23 @@
     "physx": "7845321d31fa3619917ebe127ab5e08e73de0bdb",
     "arena_claim_ceiling": "alpha_internal_rehearsal_only"
   },
+  "runtime_install_profile": {
+    "profile_id": "isaaclab_arena_physx_task_runtime.v1",
+    "isaac_lab_selective_targets": [
+      "assets",
+      "physx",
+      "tasks",
+      "teleop"
+    ],
+    "uses_official_selective_installer": true,
+    "isaaclab_newton_install_reason": "pinned_installer_required_physx_newton_package_coupling_only",
+    "newton_runtime_extras_installed": false,
+    "newton_backend_selected": false,
+    "arena_development_extras_installed": false,
+    "all_isaac_lab_extensions_installed": false,
+    "fail_closed_worker_plan_validation": true,
+    "worker_plan_source": "src/blueprint_pipeline/adp009d_native_microcheck_worker.py"
+  },
   "evaluation_admission": {
     "full_evaluation": false,
     "startup_is_not_evaluation": true,
@@ -571,5 +588,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:41995b4f453ac38cee07ea9b10a7788d6da823ae54cdf72f7de4c07a5ea27256"
+  "harness_digest": "sha256:88a8ff3e8997a06d135af26bcab63f486bbf8156099c1c5254b658db87860e75"
 }

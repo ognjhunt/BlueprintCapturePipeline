@@ -396,6 +396,36 @@ def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
     assert '"submodules/IsaacLab"' in text
 
 
+def test_worker_uses_smallest_pinned_official_physx_install_profile(tmp_path: Path) -> None:
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    source = tmp_path / "arena"
+    commands = worker._install_commands(source)
+    flattened = "\n".join(" ".join(command) for command in commands)
+
+    assert worker.INSTALL_PROFILE_ID == "isaaclab_arena_physx_task_runtime.v1"
+    assert worker.ISAAC_LAB_INSTALL_TARGETS == ("assets", "physx", "tasks", "teleop")
+    assert "isaaclab.sh -i assets,physx,tasks,teleop" in flattened
+    assert f"pip install --editable {source}" in flattened
+    assert "isaaclab_arena" in flattened
+    assert "isaaclab_newton" in flattened
+    assert "[dev]" not in flattened
+    assert "isaaclab.sh -i\n" not in flattened
+    assert "source/isaaclab*/" not in flattened
+    assert "apt-get" not in flattened
+    worker._validate_install_commands(commands)
+
+
+def test_worker_rejects_expanded_install_profile() -> None:
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    with pytest.raises(RuntimeError, match="adp009d_runtime_install_profile_expanded"):
+        worker._validate_install_commands(
+            [["/isaac-sim/python.sh", "-m", "pip", "install", "isaaclab_rl"]]
+            + [["isaaclab.sh", "-i", "assets,physx,tasks,teleop"]]
+        )
+
+
 def test_native_output_is_result_bearing_without_legacy_mp4_requirement(tmp_path: Path) -> None:
     output_zip = tmp_path / "provider-output.zip"
     with zipfile.ZipFile(output_zip, "w") as archive:
