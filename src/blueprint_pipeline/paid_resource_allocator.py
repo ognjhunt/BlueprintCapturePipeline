@@ -1089,6 +1089,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp009d-approved-can")
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
+    gpu.add_argument(
+        "--adp009d-policy-candidate",
+        default=None,
+        help=(
+            "Frozen candidate whose checkpoint and policy environment the worker "
+            "should provision.  Omit for a micro-check with no policy."
+        ),
+    )
     gpu.add_argument("--adp009d-ovrtx-probe-manifest")
     gpu.add_argument("--adp009d-aura-native-probe-manifest")
     gpu.add_argument("--adp009d-aura-source-root")
@@ -2158,6 +2166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         job_dir=Path(args.adp_job_dir) / "bundle",
                         probe_manifest_path=args.adp009d_ovrtx_probe_manifest,
                         implementation_commit=control_identity["orchestrator_source_commit"],
+                        policy_candidate_id=args.adp009d_policy_candidate,
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(

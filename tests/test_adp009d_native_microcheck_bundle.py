@@ -899,3 +899,40 @@ def test_entrypoint_signal_decoding_is_correct(tmp_path: Path) -> None:
     assert decode(2) is None
     # Out-of-range values must not raise.
     assert decode(255) is None
+
+
+def test_worker_environment_facts_are_captured_before_anything_can_fail(
+    tmp_path: Path,
+) -> None:
+    """Three questions the off-worker design could not answer, answered on-worker."""
+
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+    from blueprint_pipeline.adp009d_worker_environment_facts import collect_facts
+
+    # Captured first: a later failure must not erase them.
+    facts_index = ENTRYPOINT.index("adp009d_worker_environment_facts.py")
+    runner_index = ENTRYPOINT.index("adp_arena_provider_runner.py")
+    assert facts_index < runner_index
+    # And never allowed to fail the run itself.
+    assert "|| true" in ENTRYPOINT[facts_index : facts_index + 200]
+
+    facts = collect_facts()
+    assert facts["schema_version"] == "adp009d_worker_environment_facts.v1"
+    # The three decisions this exists to inform.
+    assert "isaac_python_executable" in facts
+    assert "torch_version" in facts or "torch_error" in facts
+    assert "system_python3_executable" in facts or "system_python3_error" in facts
+    # Environment values can carry credentials; only key names are recorded.
+    assert all(isinstance(key, str) for key in facts["isaac_environment_keys"])
+
+
+def test_provisioning_ships_only_when_a_candidate_is_bound(tmp_path: Path) -> None:
+    """An unbound run must not carry a policy script it will not use."""
+
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+
+    # Guarded on the script existing, so an unbound bundle simply skips it.
+    assert 'if [ -x "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]; then' in ENTRYPOINT
+    # Non-fatal, and the exit code is retained rather than inferred from silence.
+    assert "provisioning_exit_code" in ENTRYPOINT
+    assert "adp009d_policy_provisioning.log" in ENTRYPOINT
