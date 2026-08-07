@@ -56,7 +56,40 @@ def _write(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def probe() -> dict[str, object]:
+def evaluate_device_selection(
+    rows: list[dict[str, object]], selected_device_index: int | None
+) -> tuple[list[str], list[int]]:
+    """Decide whether the enumerated devices admit a trustworthy ray-traced render.
+
+    Passing because *some* device supports ray tracing is not the property that
+    matters.  On a mixed host the renderer's own device choice decides whether
+    frames contain pixels or nothing, and nothing here pins that choice.  A live
+    OVRTX run passed the old check on a host with one ray-tracing GPU and one
+    114-extension software rasterizer, then produced near-black RGB and zero
+    positive finite depth across both cameras.  So a mixed host fails closed
+    unless the caller pins the device the renderer will bind.
+
+    Kept free of Vulkan calls so the rule can be tested without a GPU.
+    """
+
+    incapable = [
+        int(row["device_index"])
+        for row in rows
+        if not row["required_raytracing_extensions_present"]
+    ]
+    if not rows or not incapable or len(incapable) == len(rows):
+        # No devices, all capable, or none capable: the existing checks decide.
+        return [], incapable
+    if selected_device_index is None:
+        return ["vulkan_raytracing_device_selection_ambiguous"], incapable
+    if not 0 <= int(selected_device_index) < len(rows):
+        return ["vulkan_raytracing_selected_device_out_of_range"], incapable
+    if int(selected_device_index) in incapable:
+        return ["vulkan_raytracing_selected_device_incapable"], incapable
+    return [], incapable
+
+
+def probe(selected_device_index: int | None = None) -> dict[str, object]:
     library = ctypes.CDLL("libvulkan.so.1")
     library.vkCreateInstance.argtypes = [
         ctypes.POINTER(VkInstanceCreateInfo),
@@ -161,12 +194,17 @@ def probe() -> dict[str, object]:
                     blockers.append("vulkan_raytracing_extensions_missing")
         finally:
             library.vkDestroyInstance(instance, None)
+    device_blockers, incapable = evaluate_device_selection(rows, selected_device_index)
+    blockers.extend(device_blockers)
     return {
         "schema_version": "adp009d_vulkan_raytracing_preflight.v1",
         "status": "passed" if not blockers else "blocked",
         "vk_create_instance_result": create_result,
         "physical_device_count": len(rows),
         "devices": rows,
+        "raytracing_capable_device_count": len(rows) - len(incapable),
+        "raytracing_incapable_device_indices": incapable,
+        "selected_device_index": selected_device_index,
         "required_extensions": sorted(REQUIRED_EXTENSIONS),
         "window_or_surface_created": False,
         "blockers": blockers,
@@ -176,9 +214,18 @@ def probe() -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--selected-device-index",
+        type=int,
+        default=None,
+        help=(
+            "Physical device index the renderer will bind.  Required to pass on a "
+            "host where only some devices support ray tracing."
+        ),
+    )
     args = parser.parse_args()
     try:
-        result = probe()
+        result = probe(selected_device_index=args.selected_device_index)
     except Exception as exc:  # noqa: BLE001 - preserve typed runtime evidence
         result = {
             "schema_version": "adp009d_vulkan_raytracing_preflight.v1",
