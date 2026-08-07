@@ -81,7 +81,8 @@ mkdir -p "$OUT_DIR"
 # script in the archive arrives non-executable and an -x test skips it in
 # silence.  That is exactly what happened on the first provisioning run.
 if [ -f "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]; then
-  bash "$RUNTIME_DIR/adp009d_policy_provisioning.sh" \
+  RUNTIME_DIR="$RUNTIME_DIR" OUT_DIR="$OUT_DIR" \
+    bash "$RUNTIME_DIR/adp009d_policy_provisioning.sh" \
     >"$OUT_DIR/adp009d_policy_provisioning.log" 2>&1
   provisioning_rc=$?
   printf '{"provisioning_exit_code": %d, "provisioning_ran": true}\n' \
@@ -739,6 +740,10 @@ def build_native_microcheck_bundle(
     shutil.copy2(
         source_dir / "adp009d_worker_environment_facts.py",
         runtime / "adp009d_worker_environment_facts.py",
+    )
+    shutil.copy2(
+        source_dir / "adp009d_checkpoint_fetch_worker.py",
+        runtime / "adp009d_checkpoint_fetch_worker.py",
     )
     if policy_candidate_id:
         from .adp009d_policy_provisioning import build_provisioning_script

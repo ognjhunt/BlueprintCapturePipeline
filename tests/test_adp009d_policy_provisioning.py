@@ -54,9 +54,10 @@ def test_no_credential_is_forwarded_because_every_candidate_is_public() -> None:
     script = build_provisioning_script("groot_n17_droid")
 
     assert "unset HF_TOKEN" in script
-    # The GCS fetch disables credential lookup explicitly.
+    # The GCS fetch goes over plain HTTPS with no SDK and no credential.
     gcs = build_provisioning_script("pi05_droid")
-    assert "gcloud storage cp -r -u" in gcs
+    assert "adp009d_checkpoint_fetch_worker.py" in gcs
+    assert "gcloud" not in gcs
 
     receipt = describe_provisioning("pi05_droid")
     leaked = dict(receipt)
@@ -68,11 +69,12 @@ def test_each_candidate_fetches_from_where_its_artifact_actually_lives() -> None
     gcs = build_provisioning_script("pi05_droid")
     assert "gs://openpi-assets/checkpoints/pi05_droid" in gcs
     assert "huggingface_cli" not in gcs
+    assert "gcloud" not in gcs
 
     hub = build_provisioning_script("groot_n17_droid")
     assert "nvidia/GR00T-N1.7-DROID" in hub
     assert "05e7cc97e40dbd33b0890c35cc0214fcb0547ab5" in hub
-    assert "gcloud storage" not in hub
+    assert "gcloud" not in hub
 
 
 def test_every_frozen_candidate_provisions_and_validates() -> None:
@@ -171,7 +173,9 @@ def test_the_install_precedes_the_checkpoint_fetch() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert script.index("pip install -e") < script.index("gcloud storage cp")
+    assert script.index("pip install -e") < script.index(
+        "adp009d_checkpoint_fetch_worker.py"
+    )
 
 
 def test_every_candidate_installs_its_own_pinned_source() -> None:

@@ -89,9 +89,15 @@ def _fetch_commands(candidate_id: str) -> list[str]:
     if CANDIDATE_SOURCES[candidate_id] == SOURCE_PUBLIC_GCS:
         # The bucket lists and reads anonymously; -u disables credential lookup
         # so a stray token on the host cannot silently change what is fetched.
+        # Plain HTTPS via the GCS JSON API, not gcloud: the Isaac container is
+        # not a Google Cloud image and cannot be assumed to carry the SDK.  The
+        # bucket was verified to list and read with no Authorization header, so
+        # this needs no credential and no third-party package.
         return [
             f'mkdir -p "{target}"',
-            f'gcloud storage cp -r -u "{plan["checkpoint_repository"]}/*" "{target}/"',
+            f'/isaac-sim/python.sh "$RUNTIME_DIR/adp009d_checkpoint_fetch_worker.py" '
+            f'"{plan["checkpoint_repository"]}" "{target}" '
+            f'"$OUT_DIR/adp009d_checkpoint_fetch_receipt.json"',
         ]
     repository = plan["checkpoint_repository"].removeprefix("https://huggingface.co/")
     return [
