@@ -182,7 +182,8 @@ def test_native_probe_derives_exact_camera_and_drop_inputs(tmp_path: Path) -> No
     assert manifest["status"] == "ready"
     assert manifest["ovrtx"]["camera_count"] == 8
     assert manifest["ovrtx"]["render_mode"] == "PathTracing"
-    assert manifest["ovrtx"]["quality_steps"] == OVRTX_QUALITY_STEPS
+    assert manifest["ovrtx"]["quality_steps"] == 1
+    assert manifest["ovrtx"]["path_tracing_samples_per_pixel"] == OVRTX_QUALITY_STEPS
     assert manifest["ovrtx"]["version"] == OVRTX_VERSION
     assert manifest["ovrtx"]["ovstage_version"] == OVSTAGE_VERSION
     assert manifest["ovrtx"]["modalities"] == ["rgb", "depth"]
@@ -209,7 +210,8 @@ def test_native_probe_derives_exact_camera_and_drop_inputs(tmp_path: Path) -> No
     assert config["width"] == 2048
     assert config["height"] == 1536
     assert config["camera_transform_matrix_usd"][3][:3] == [1.0, 2.0, 3.0]
-    assert config["quality_steps"] == OVRTX_QUALITY_STEPS
+    assert config["quality_steps"] == 1
+    assert config["path_tracing_samples_per_pixel"] == OVRTX_QUALITY_STEPS
     physics_config = json.loads(
         (tmp_path / "probe/ovphysx_config.json").read_text()
     )
@@ -553,10 +555,19 @@ def test_ovrtx_worker_authors_matrix_camera_and_path_tracing(tmp_path: Path) -> 
     assert "matrix4d xformOp:transform" in layer
     assert "(1.0, 2.0, 3.0, 1.0)" in layer
     assert 'token omni:rtx:rendermode = "PathTracing"' in layer
+    assert "int omni:rtx:pt:samplesPerPixel = 512" in layer
+    assert 'def RenderVar "DistanceToCameraSD"' in layer
+    assert 'def RenderVar "DepthSD"' not in layer
     assert 'def RenderVar "Normal"' in layer
     assert "OmniRtxSettingsPtAdvancedAPI_1" in layer
     parsed = Sdf.Layer.CreateAnonymous("blueprint-ovrtx-test.usda")
     assert parsed.ImportFromString(layer) is True
+
+    minimal = module._camera_layer(scene, config, ["rgb", "depth"])
+    assert 'def RenderVar "LdrColor"' in minimal
+    assert 'def RenderVar "DistanceToCameraSD"' in minimal
+    assert 'def RenderVar "Normal"' not in minimal
+    assert 'def RenderVar "SemanticSegmentation"' not in minimal
 
 
 def test_ovphysx_worker_uses_digest_bound_external_usd_inventory(tmp_path: Path) -> None:

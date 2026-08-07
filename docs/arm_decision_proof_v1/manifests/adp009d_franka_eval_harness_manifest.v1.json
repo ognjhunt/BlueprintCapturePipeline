@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 47148,
-      "sha256": "sha256:8dc39c344d90ae18c63f9a12be75efe0fd691bc75914d570a9ac1ddeb67d5842"
+      "size_bytes": 48760,
+      "sha256": "sha256:3c4f6b0413b6269515716843260b07134eed96f2e4ac033a8bfcac69ac96172c"
     },
     {
       "role": "approved_can",
@@ -510,8 +510,8 @@
     "runtime_override_policy": "resolved scenario parameters only; no scattered conditionals"
   },
   "observation_renderer": {
-    "backend_candidate": "Isaac Lab Camera over Isaac Sim RTX",
-    "backend_status": "native_isaac_camera_microcheck_passed_live_aura_composition_missing",
+    "backend_candidate": "OVRTX Aura background plus Isaac Lab Camera dynamic layer",
+    "backend_status": "native_isaac_camera_microcheck_passed_and_digest_bound_ovrtx_inputs_materialized_live_ovrtx_execution_missing",
     "composition": "live_depth_correct_aura_dynamic_geometry",
     "aura_camera_pose_source": "same live Isaac camera calibration and timestamp",
     "dynamic_geometry": [
@@ -520,7 +520,10 @@
       "approved can or admitted cousin",
       "other dynamic geometry"
     ],
-    "metric_depth_aov": "distance_to_camera",
+    "metric_depth_aov": {
+      "aura": "DistanceToCameraSD",
+      "dynamic": "distance_to_camera"
+    },
     "unitless_depth_sd_allowed": false,
     "required_aovs": [
       "rgb",
@@ -533,9 +536,20 @@
     ],
     "camera_calibration_retained_per_frame": true,
     "timestamp_retained_per_frame": true,
-    "ovrtx_used_by_selected_path": false,
-    "ovrtx_selection_status": "audited_fallback_not_selected_unless_integrated_camera_path_measures_incompatible",
-    "selected_path_reason": "same-process Isaac Lab Camera tensors share the manager-based environment camera pose, physics timestamp, and CUDA device",
+    "ovrtx_used_by_selected_path": true,
+    "ovrtx_selection_status": "selected_for_sealed_aura_background_materialized_unexecuted",
+    "selected_path_reason": "OVRTX supports the admitted planar Gaussian-surflet schema from the exact live Isaac camera pose while Isaac Lab Camera retains dynamic geometry, semantics, physics timing, and metric depth",
+    "ovrtx_particlefield": {
+      "source_sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
+      "output_sha256": "sha256:3b65027873579d29db998f863243d6613156e1c1b0267887c16c5d43f77053d5",
+      "receipt_digest": "sha256:9449652ef11ff14b1ef1a2340c3b56590361dd6948ccf7359b9b4093d2bd329f",
+      "surfel_count": 415265,
+      "learned_scale_components": 2,
+      "positive_infinite_opacity_logit_count": 262274,
+      "schema": "ParticleField+ParticleFieldKernelGaussianSurfletAPI",
+      "sealed_source_mutated": false,
+      "live_render_proven": false
+    },
     "semantic_override_layer": true,
     "dlpack_ownership_map_unmap_device_sync_explicit": true,
     "reset_and_warmup_after_camera_or_setting_change": true,
@@ -634,7 +648,7 @@
     "newton_backend_selected": false,
     "isaaclab_ov_install_reason": "Arena imports every embodiment at package import time; its Kuka Allegro module imports Isaac Lab multi-backend renderer presets, which require the isaaclab_ov configuration extension.",
     "ovrtx_extra_installed": false,
-    "ovrtx_backend_selected": false,
+    "ovrtx_backend_selected": true,
     "arena_development_extras_installed": false,
     "all_isaac_lab_extensions_installed": false,
     "supplemental_runtime_dependencies": [
@@ -713,5 +727,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:6b80d4ae561bff3133b0e0b7331254d71ac46a23d6383988584dc34239041b5f"
+  "harness_digest": "sha256:92febea1c8d28784b53e58e4732321bc69b248d7f5b3b8e88137c89c069bb37d"
 }

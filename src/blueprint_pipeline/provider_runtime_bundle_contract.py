@@ -18,6 +18,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_simpler",
     "adp_arena",
     "adp009d_isaac",
+    "adp009d_ovrtx",
     "adp_content_agents",
     "adp_aura_smoke",
     "adp_aura_interiorgs",
@@ -160,6 +161,24 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp009d_isaac_runtime_contract"
+    elif provider_bundle_kind == "adp009d_ovrtx":
+        entrypoint_valid = (
+            "adp009d_ovrtx_runner_failed_without_runtime_result" in entrypoint_text
+            and "adp009d_ovrtx_live_camera_result.json" in entrypoint_text
+            and "ovrtx==0.4.0.346409" in entrypoint_text
+            and "ovstage==0.1.0.346039" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp009d_ovrtx_live_camera_result.json",
+                "DistanceToCameraSD",
+                "rtpt_warmup_frames",
+                "candidate_policy_queried",
+                "provider_zero_required_after_return",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp009d_ovrtx_runtime_contract"
     elif provider_bundle_kind == "adp_content_agents":
         entrypoint_valid = (
             "adp_content_agents_runner_failed_without_runtime_result" in entrypoint_text

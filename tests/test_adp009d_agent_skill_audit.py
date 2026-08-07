@@ -61,9 +61,12 @@ def test_audit_separates_followed_guidance_from_pending_and_inapplicable() -> No
     assert guidance["isaaclab-building-environments"]["actually_followed"] is True
     assert guidance["isaaclab-using-presets"]["actually_followed"] is False
     assert guidance["isaaclab-using-presets"]["application_status"] == "not_applicable"
-    assert guidance["ovrtx-loading-usd"]["actually_followed"] is False
-    assert guidance["ovrtx-loading-usd"]["application_status"] == "not_applicable"
-    assert audit["runtime_compatibility_decision"]["ovrtx_selected"] is False
+    assert guidance["ovrtx-loading-usd"]["actually_followed"] is True
+    assert (
+        guidance["ovrtx-loading-usd"]["application_status"]
+        == "followed_in_implementation"
+    )
+    assert audit["runtime_compatibility_decision"]["ovrtx_selected"] is True
     assert guidance["nvidia-omniverse-usd-performance-tuning"][
         "application_status"
     ] == "followed_in_implementation"
@@ -102,7 +105,7 @@ def test_audit_rejects_false_actual_following_claim() -> None:
         for row in audit["guidance_application"]
         if row["guidance_id"] == "ovrtx-warmup"
     )
-    ovrtx["actually_followed"] = True
+    ovrtx["application_status"] = "pending_implementation"
 
     with pytest.raises(AgentSkillAuditError) as exc_info:
         validate_agent_skill_audit(_resign(audit))

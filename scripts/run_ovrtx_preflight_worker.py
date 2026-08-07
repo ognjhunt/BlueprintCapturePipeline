@@ -22,7 +22,7 @@ from typing import Any
 
 AOV_BY_KIND = {
     "rgb": "LdrColor",
-    "depth": "DepthSD",
+    "depth": "DistanceToCameraSD",
     "normal": "Normal",
     "semantic_segmentation": "SemanticSegmentation",
     "semantic_id_map": "SemanticIdMap",
@@ -49,7 +49,11 @@ def _usd_asset_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace("@", "\\@").replace("#", "\\#")
 
 
-def _camera_layer(scene: Path, config: dict[str, Any]) -> str:
+def _camera_layer(
+    scene: Path,
+    config: dict[str, Any],
+    modalities: list[str] | None = None,
+) -> str:
     width = int(config.get("width", 640))
     height = int(config.get("height", 480))
     camera_path = str(config.get("camera_prim_path") or "/BlueprintPreflight/Camera")
@@ -99,7 +103,11 @@ def _camera_layer(scene: Path, config: dict[str, Any]) -> str:
     render_mode = str(config.get("render_mode", "RealTimePathTracing"))
     if render_mode not in {"RaytracedLighting", "RealTimePathTracing", "PathTracing"}:
         raise ValueError("render_mode is not supported")
-    ordered = [AOV_BY_KIND[kind] for kind in AOV_BY_KIND]
+    requested = modalities or list(AOV_BY_KIND)
+    unknown = sorted(set(requested) - set(AOV_BY_KIND))
+    if unknown:
+        raise ValueError(f"unsupported camera modalities: {unknown}")
+    ordered = [AOV_BY_KIND[kind] for kind in AOV_BY_KIND if kind in requested]
     ordered_vars_usda = ", ".join(f"<{name}>" for name in ordered)
     vars_usda = "\n".join(
         f'''        def RenderVar "{name}"
@@ -107,6 +115,14 @@ def _camera_layer(scene: Path, config: dict[str, Any]) -> str:
             string sourceName = "{name}"
         }}'''
         for name in ordered
+    )
+    path_tracing_spp = int(config.get("path_tracing_samples_per_pixel", 512))
+    if render_mode == "PathTracing" and path_tracing_spp < 1:
+        raise ValueError("path_tracing_samples_per_pixel must be positive")
+    path_tracing_setting = (
+        f"        int omni:rtx:pt:samplesPerPixel = {path_tracing_spp}\n"
+        if render_mode == "PathTracing"
+        else ""
     )
     return f'''#usda 1.0
 (
@@ -138,6 +154,7 @@ def "Render"
         rel camera = <{camera_path}>
         int2 resolution = ({width}, {height})
         token omni:rtx:rendermode = "{render_mode}"
+{path_tracing_setting.rstrip()}
         rel orderedVars = [{ordered_vars_usda}]
 {vars_usda}
     }}
@@ -254,14 +271,32 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 )
             ovstage.population.open_usd(stage, str(scene_payload), ordinal=ordinal)
         else:
-            scene_payload = _camera_layer(args.input, config)
+            scene_payload = _camera_layer(args.input, config, camera_modalities)
             render_products = {"/Render/BlueprintCamera"}
             ovstage.population.open_usd_from_string(stage, scene_payload, ordinal=ordinal)
         stage.advance_write_floor(ordinal, ovstage.Scope.ALL).wait()
+        renderer.reset()
         checks.append(_check("usd_scene_load", True, ovstage_attached=True))
+        checks.append(
+            _check(
+                "render_product_settings_and_camera_reset",
+                True,
+                render_product_paths=sorted(render_products),
+                reset_after_load=True,
+            )
+        )
 
-        warmup = max(0, int(config.get("warmup_frames", 3)))
+        render_mode = str(config.get("render_mode", "RealTimePathTracing"))
+        default_warmup = 40 if render_mode == "RealTimePathTracing" else 0
+        warmup = max(0, int(config.get("warmup_frames", default_warmup)))
+        if render_mode == "RealTimePathTracing" and warmup < 40:
+            raise ValueError("rtpt_warmup_below_documented_40_frame_default")
         quality_steps = max(1, int(config.get("quality_steps", 1)))
+        path_tracing_spp = (
+            int(config.get("path_tracing_samples_per_pixel", 512))
+            if render_mode == "PathTracing"
+            else 0
+        )
         delta_time = float(config.get("delta_time_seconds", 1.0 / 60.0))
         for _ in range(warmup):
             renderer.step(render_products=render_products, delta_time=delta_time, ordinal=ordinal)
@@ -300,6 +335,12 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     array = _map_array(frame, name, ovrtx, np)
                     path = args.output_dir / f"{kind}.npy"
                     np.save(path, array, allow_pickle=False)
+                    lossless_png = None
+                    if kind == "rgb":
+                        from PIL import Image
+
+                        lossless_png = args.output_dir / "rgb.png"
+                        Image.fromarray(array).save(lossless_png, format="PNG", compress_level=9)
                     metadata = {
                         "shape": list(array.shape),
                         "dtype": str(array.dtype),
@@ -324,6 +365,10 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                             config.get("render_mode", "RealTimePathTracing")
                         ),
                         "quality_steps": quality_steps,
+                        "warmup_frames": warmup,
+                        "metric_depth_aov": AOV_BY_KIND["depth"],
+                        "path_tracing_samples_per_pixel": path_tracing_spp,
+                        "lossless_png": lossless_png.name if lossless_png else None,
                     }
                     outputs.append({"kind": kind, "path": path.name, "metadata": metadata})
                     nonempty = nonempty and array.size > 0
@@ -367,16 +412,33 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         source_text = ""
         if args.input.suffix.lower() in {".usd", ".usda"}:
             source_text = args.input.read_text(encoding="utf-8", errors="ignore")
-        if (
-            "particlefield_gaussian_splat_render" in required_checks
-            or "ParticleField3DGaussianSplat" in source_text
-        ):
+        particlefield_checks = {
+            "particlefield_gaussian_splat_render",
+            "particlefield_gaussian_surflet_render",
+        }
+        if required_checks & particlefield_checks or "ParticleField3DGaussianSplat" in source_text:
             rgb_path = args.output_dir / "rgb.npy"
+            depth_path = args.output_dir / "depth.npy"
             splat_pass = False
+            metric_depth_pass = False
             if rgb_path.is_file():
                 rgb = np.load(rgb_path, allow_pickle=False)
                 splat_pass = bool(rgb.size and float(np.std(rgb)) > 0.0)
-            checks.append(_check("particlefield_gaussian_splat_render", splat_pass))
+            if depth_path.is_file():
+                depth = np.load(depth_path, allow_pickle=False).astype(np.float32, copy=False)
+                metric_depth_pass = bool(
+                    depth.size and np.any(np.isfinite(depth) & (depth > 0.0))
+                )
+            for check_name in sorted(required_checks & particlefield_checks):
+                checks.append(
+                    _check(
+                        check_name,
+                        splat_pass and metric_depth_pass,
+                        nonconstant_rgb=splat_pass,
+                        positive_finite_metric_depth=metric_depth_pass,
+                        metric_depth_aov=AOV_BY_KIND["depth"],
+                    )
+                )
         if "robot_and_target_visibility" in required_checks:
             expected = [str(value) for value in config.get("expected_visible_semantic_labels", [])]
             visible = bool(expected) and all(
@@ -407,6 +469,17 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "metrics": {
             "worker_wall_seconds": time.monotonic() - started,
             "mode": args.mode,
+            "metric_depth_aov": AOV_BY_KIND["depth"],
+            "unitless_depth_sd_used": False,
+            "rtpt_warmup_frames": warmup if render_mode == "RealTimePathTracing" else None,
+            "path_tracing_samples_per_pixel": path_tracing_spp,
+            "render_settings_target": "RenderProduct",
+            "camera_or_settings_change_reset": True,
+            "attached_mode_ordinals_respected": True,
+            "write_floors_respected": True,
+            "dlpack_ownership_explicit": True,
+            "map_unmap_balanced": True,
+            "device_synchronization_explicit": True,
             "gpu_memory_baseline_bytes": next(
                 (value for value in gpu_memory_samples if value is not None), None
             ),

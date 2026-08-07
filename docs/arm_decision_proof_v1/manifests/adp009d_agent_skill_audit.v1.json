@@ -531,83 +531,111 @@
     },
     {
       "guidance_id": "ovrtx-loading-usd",
-      "application_status": "not_applicable",
-      "actually_followed": false,
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
       "decisions": [
-        "OVRTX is not the selected initial observation backend; Isaac Lab Camera over Isaac Sim RTX supplies dynamic RGB, metric depth, and semantics.",
-        "Retain this audited OVRTX guidance as a fallback gate only; never mutate sealed appearance or collision sources."
+        "OVRTX is selected for the sealed Aura background layer while Isaac Lab Camera retains dynamic RGB, metric depth, semantics, and physics timestamps.",
+        "Load the digest-bound Gaussian-surflet USDC through an attached ovstage ordinal and preserve the sealed Aura PLY unchanged."
       ],
-      "implementation_evidence": []
+      "implementation_evidence": [
+        "src/blueprint_pipeline/adp009d_ovrtx_vast.py",
+        "scripts/run_ovrtx_preflight_worker.py",
+        "tests/test_adp009d_ovrtx_vast.py"
+      ]
     },
     {
       "guidance_id": "ovrtx-renderer-creation",
-      "application_status": "not_applicable",
-      "actually_followed": false,
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
       "decisions": [
-        "The selected initial runtime does not initialize OVRTX or ovphysx.",
-        "If OVRTX later replaces the integrated camera path, initialize OVRTX before ovphysx and bind RenderProduct ordinals exactly."
+        "Create OVRTX before any possible future OvPhysX initialization; the first bounded renderer microcheck intentionally loads no OvPhysX.",
+        "Attach one ovstage, load the immutable scene at ordinal one, advance the write floor, and destroy renderer and stage explicitly."
       ],
-      "implementation_evidence": []
+      "implementation_evidence": [
+        "scripts/run_ovrtx_preflight_worker.py",
+        "src/blueprint_pipeline/adp009d_ovrtx_provider_runner.py"
+      ]
     },
     {
       "guidance_id": "ovrtx-render-settings",
-      "application_status": "not_applicable",
-      "actually_followed": false,
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
       "decisions": [
-        "No OVRTX RenderProduct exists in the selected initial runtime.",
-        "If OVRTX is later admitted, apply settings to each RenderProduct, bind path-tracing samples, then reset and warm up."
+        "Author render settings on each RenderProduct, never as unsupported renderer-global configuration.",
+        "Bind path-tracing samples per pixel for PT, reset after camera or setting changes, and use the RTPT warmup contract for the live path."
       ],
-      "implementation_evidence": []
+      "implementation_evidence": [
+        "scripts/run_ovrtx_preflight_worker.py",
+        "tests/test_public_scene_simready_native.py"
+      ]
     },
     {
       "guidance_id": "ovrtx-camera-outputs-rt2",
-      "application_status": "not_applicable",
-      "actually_followed": false,
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
       "decisions": [
-        "The selected Isaac camera path requests rgb, distance_to_camera in meters, and semantic_segmentation.",
-        "If OVRTX is later admitted, require DistanceToCameraSD or DistanceToImagePlaneSD and reject unitless DepthSD."
+        "Request only LdrColor and metric DistanceToCameraSD for the Aura background probe; dynamic semantics remain owned by the Isaac layer.",
+        "Reject unitless DepthSD in configuration, execution receipts, and hybrid composition."
       ],
-      "implementation_evidence": []
+      "implementation_evidence": [
+        "scripts/run_ovrtx_preflight_worker.py",
+        "src/blueprint_pipeline/adp009d_ovrtx_live_camera.py",
+        "tests/test_adp009d_live_hybrid_observation.py"
+      ]
     },
     {
       "guidance_id": "ovrtx-reading-render-output",
-      "application_status": "not_applicable",
-      "actually_followed": false,
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
       "decisions": [
-        "No OVRTX attached-mode buffer is read in the selected initial runtime.",
-        "If OVRTX is later admitted, respect write floors and ordinals and handle DLPack ownership, map/unmap, device, synchronization, and lifetime explicitly."
+        "Map each requested CPU output, copy the DLPack array before retention, then unmap and destroy renderer-owned resources.",
+        "Record device, synchronization, map/unmap balance, array shape, dtype, and lossless output identities."
       ],
-      "implementation_evidence": []
+      "implementation_evidence": [
+        "scripts/run_ovrtx_preflight_worker.py",
+        "src/blueprint_pipeline/adp009d_ovrtx_provider_runner.py"
+      ]
     },
     {
       "guidance_id": "ovrtx-stepping-and-rendering",
-      "application_status": "not_applicable",
-      "actually_followed": false,
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
       "decisions": [
-        "The selected runtime steps Isaac Lab and Isaac Sim RTX together and retains explicit camera timestamps.",
-        "If OVRTX is later admitted, apply its stepping contract; simulator startup, reset, or one frame remains insufficient."
+        "Advance the attached stage write floor before stepping and pass the same resolved ordinal to every warmup and capture step.",
+        "A loaded stage or single unvalidated frame cannot clear the renderer gate; both external and wrist RGB plus metric depth must pass."
       ],
-      "implementation_evidence": []
+      "implementation_evidence": [
+        "scripts/run_ovrtx_preflight_worker.py",
+        "src/blueprint_pipeline/adp009d_ovrtx_provider_runner.py"
+      ]
     },
     {
       "guidance_id": "ovrtx-warmup",
-      "application_status": "not_applicable",
-      "actually_followed": false,
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
       "decisions": [
-        "RTPT is not used by the selected initial renderer; its 40-frame documented default therefore does not apply.",
-        "If OVRTX RTPT is later admitted, start at 40 frames and record every measured change and re-warmup."
+        "Use the skill-documented 40-frame default for each RTPT camera after load and reset.",
+        "Use one PT step with an explicit RenderProduct samples-per-pixel value rather than treating repeated steps as PT sample control."
       ],
-      "implementation_evidence": []
+      "implementation_evidence": [
+        "scripts/run_ovrtx_preflight_worker.py",
+        "src/blueprint_pipeline/public_scene_simready_native.py",
+        "tests/test_public_scene_simready_native.py"
+      ]
     },
     {
       "guidance_id": "ovrtx-semantic-labels",
-      "application_status": "not_applicable",
-      "actually_followed": false,
+      "application_status": "followed_in_implementation",
+      "actually_followed": true,
       "decisions": [
-        "The selected Isaac camera path authors runtime semantic tags and uses a composed collider override layer.",
-        "If OVRTX is later admitted, use its semantic override guidance and never write labels into sealed source USD."
+        "The Aura background owns no dynamic semantic IDs; robot and task-object labels remain in a composed Isaac override layer.",
+        "Never write semantic labels into the sealed Aura, SAGE, can, or cousin source assets."
       ],
-      "implementation_evidence": []
+      "implementation_evidence": [
+        "src/blueprint_pipeline/adp009d_isaac_runtime.py",
+        "src/blueprint_pipeline/adp009d_live_hybrid_observation.py",
+        "tests/test_adp009d_live_hybrid_observation.py"
+      ]
     },
     {
       "guidance_id": "nvidia-omniverse-cad-to-simready",
@@ -687,8 +715,8 @@
     "arena_claim_ceiling": "alpha_internal_rehearsal_only",
     "ovrtx_candidate": "0.4.0 at 4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
     "ovphysx_candidate": "0.5.9 at 7845321d31fa3619917ebe127ab5e08e73de0bdb",
-    "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX",
-    "ovrtx_selected": false,
+    "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX for dynamic geometry plus OVRTX for sealed Aura Gaussian-surflet appearance",
+    "ovrtx_selected": true,
     "runtime_install_profile": {
       "profile_id": "isaaclab_arena_physx_task_runtime.v3",
       "isaac_lab_selective_targets": [
@@ -704,7 +732,7 @@
       "newton_backend_selected": false,
       "isaaclab_ov_install_reason": "Arena's unconditional embodiment import reaches Isaac Lab multi-backend renderer presets through Kuka Allegro; install the configuration-only isaaclab_ov extension to satisfy that exact closure.",
       "ovrtx_extra_installed": false,
-      "ovrtx_backend_selected": false,
+      "ovrtx_backend_selected": true,
       "arena_development_extras_installed": false,
       "all_isaac_lab_extensions_installed": false,
       "arena_import_closure_decision": "Arena asset decorators execute policy registration during embodiment import. Follow the official selective Isaac Lab rsl-rl extra and Arena Dockerfile msgpack 1.1.0 plus pyzmq 27.0.1 pins; do not rely on accidental packages from a broad development image.",
@@ -718,7 +746,7 @@
         "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
       }
     },
-    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff; OVRTX and ovphysx remain unselected, the wrist camera omits the can, and live Aura depth composition remains required before policy admission",
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff; OVRTX is selected and its exact Aura surflet plus live-camera inputs are materialized but not yet executed, OvPhysX remains unselected, the wrist camera omits the can, and live Aura depth composition remains required before policy admission",
     "native_microcheck_evidence": {
       "run_id": "native_microcheck_v18_live_event_writer_reset",
       "status": "completed_reset_infrastructure_microcheck_nominal_contact_invalid",
@@ -816,5 +844,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:98c776fb66b3ff2fb3d36964db04298924162a7ea0fd50ffd54df71d3931974c"
+  "audit_digest": "sha256:9a3c2bf14ff64dd0f449fa3fc3b4d96efb2aa2e598856ab4697185a5e655bbd7"
 }

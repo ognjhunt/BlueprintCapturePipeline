@@ -50,6 +50,29 @@ _REQUIRED_3DGS_PROPS = (
 )
 _FLOAT_PLY_TYPES = {"float", "float32"}
 
+_AURA_2DGS_PROPERTIES = (
+    "x",
+    "y",
+    "z",
+    "nx",
+    "ny",
+    "nz",
+    "f_dc_0",
+    "f_dc_1",
+    "f_dc_2",
+    *(f"f_rest_{index}" for index in range(45)),
+    "opacity",
+    "scale_0",
+    "scale_1",
+    "rot_0",
+    "rot_1",
+    "rot_2",
+    "rot_3",
+    "is_masked_0",
+    "is_masked_1",
+    "is_masked_2",
+)
+
 
 @dataclass
 class SplatData:
@@ -67,6 +90,24 @@ class SplatData:
     @property
     def opacity_sigmoid(self) -> np.ndarray:
         return 1.0 / (1.0 + np.exp(-np.clip(self.opacity, -30.0, 30.0)))
+
+    def aabb(self) -> tuple[np.ndarray, np.ndarray]:
+        return self.xyz.min(axis=0), self.xyz.max(axis=0)
+
+
+@dataclass
+class GaussianSurfelData:
+    """AuraFusion360 2D Gaussian surfels in the author model's raw PLY convention."""
+
+    count: int
+    xyz: np.ndarray  # (N, 3) float32, meters in the admitted publisher world frame
+    opacity: np.ndarray  # (N,) float32 logits
+    f_dc: np.ndarray  # (N, 3) float32, SH coefficient zero
+    scales: np.ndarray  # (N, 2) float32 learned log-scales in the surflet plane
+    quats: np.ndarray  # (N, 4) float32, raw (w, x, y, z)
+    sh_rest: np.ndarray  # (N, 45) float32, degree-3 channel-major coefficients
+    mask_logits: np.ndarray  # (N, 3) float32, author removal/inpainting state
+    properties: tuple[str, ...]
 
     def aabb(self) -> tuple[np.ndarray, np.ndarray]:
         return self.xyz.min(axis=0), self.xyz.max(axis=0)
@@ -272,6 +313,61 @@ def read_standard_3dgs_ply(path: str | Path) -> SplatData:
         quats=cols(["rot_0", "rot_1", "rot_2", "rot_3"]),
         properties=tuple(names),
         sh_rest=sh_rest,
+    )
+
+
+def read_aura_2dgs_surfel_ply(path: str | Path) -> GaussianSurfelData:
+    """Read the exact AuraFusion360 float-PLY surflet layout.
+
+    AuraFusion360 is a 2D Gaussian-surflet renderer: it learns two planar scales,
+    not the three scales used by an ellipsoidal 3DGS.  Requiring the complete,
+    ordered author layout prevents a visually plausible but semantically wrong
+    ``ParticleField3DGaussianSplat`` conversion.
+    """
+
+    path = Path(path)
+    with path.open("rb") as handle:
+        fmt, count, props, offset = _parse_ply_header(handle)
+    if fmt != "binary_little_endian":
+        raise ValueError(f"aura_2dgs_format_invalid:{fmt}")
+    if any(ptype not in _FLOAT_PLY_TYPES for ptype, _ in props):
+        raise ValueError("aura_2dgs_non_float_property")
+    names = tuple(name for _, name in props)
+    if names != _AURA_2DGS_PROPERTIES:
+        if "scale_2" in names:
+            raise ValueError("aura_2dgs_ellipsoid_scale_forbidden")
+        raise ValueError("aura_2dgs_property_layout_invalid")
+    if count < 1:
+        raise ValueError("aura_2dgs_count_invalid")
+    flat = np.fromfile(path, dtype="<f4", count=count * len(names), offset=offset)
+    if flat.size != count * len(names):
+        raise ValueError(
+            f"aura_2dgs_body_truncated:expected={count * len(names)}:observed={flat.size}"
+        )
+    table = flat.reshape(count, len(names))
+    index = {name: column for column, name in enumerate(names)}
+    nonfinite = ~np.isfinite(table)
+    opacity_column = index["opacity"]
+    allowed_positive_infinite_opacity = np.zeros_like(nonfinite)
+    allowed_positive_infinite_opacity[:, opacity_column] = np.isposinf(
+        table[:, opacity_column]
+    )
+    if np.any(nonfinite & ~allowed_positive_infinite_opacity):
+        raise ValueError("aura_2dgs_nonfinite_input")
+
+    def cols(keys: Sequence[str]) -> np.ndarray:
+        return table[:, [index[key] for key in keys]].astype(np.float32, copy=True)
+
+    return GaussianSurfelData(
+        count=count,
+        xyz=cols(("x", "y", "z")),
+        opacity=table[:, index["opacity"]].astype(np.float32, copy=True),
+        f_dc=cols(("f_dc_0", "f_dc_1", "f_dc_2")),
+        scales=cols(("scale_0", "scale_1")),
+        quats=cols(("rot_0", "rot_1", "rot_2", "rot_3")),
+        sh_rest=cols(tuple(f"f_rest_{number}" for number in range(45))),
+        mask_logits=cols(("is_masked_0", "is_masked_1", "is_masked_2")),
+        properties=names,
     )
 
 

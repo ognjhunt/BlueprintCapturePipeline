@@ -242,7 +242,7 @@ def validate_agent_skill_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
             errors.append("runtime_incompatible_develop_not_rejected")
         if runtime.get("arena_claim_ceiling") != "alpha_internal_rehearsal_only":
             errors.append("runtime_arena_claim_ceiling_invalid")
-        if runtime.get("ovrtx_selected") is not False:
+        if runtime.get("ovrtx_selected") is not True:
             errors.append("runtime_ovrtx_selection_invalid")
 
     if not _nonempty_strings(normalized.get("claim_ceiling")):

@@ -33,7 +33,7 @@ SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 
 REQUIRED_ASSET_DIGESTS = {
-    "agent_skill_audit": "sha256:8dc39c344d90ae18c63f9a12be75efe0fd691bc75914d570a9ac1ddeb67d5842",
+    "agent_skill_audit": "sha256:3c4f6b0413b6269515716843260b07134eed96f2e4ac033a8bfcac69ac96172c",
     "approved_can": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "aura_appearance": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
     "hybrid_seal_receipt": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b",
@@ -418,7 +418,13 @@ def validate_harness_manifest(
         "sealed_aura_hybrid_policy_observation_renderer_missing"
     ):
         errors.append("harness_renderer_missing_blocker_invalid")
-    if renderer.get("metric_depth_aov") not in ALLOWED_METRIC_DEPTH_AOVS:
+    metric_depth = renderer.get("metric_depth_aov")
+    metric_depth_valid = (
+        isinstance(metric_depth, Mapping)
+        and metric_depth.get("aura") in ALLOWED_METRIC_DEPTH_AOVS
+        and metric_depth.get("dynamic") in ALLOWED_METRIC_DEPTH_AOVS
+    )
+    if not metric_depth_valid:
         errors.append("harness_renderer_metric_depth_invalid")
     if renderer.get("unitless_depth_sd_allowed") is not False:
         errors.append("harness_renderer_unitless_depth_not_forbidden")

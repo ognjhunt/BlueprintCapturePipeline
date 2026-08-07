@@ -23,13 +23,24 @@ from pathlib import Path
 
 import numpy as np
 
-from .gaussian_splat_decode import SplatData, read_standard_3dgs_ply
+from .common import sha256_file, write_json
+from .decision_evidence_contracts import canonical_digest
+from .gaussian_splat_decode import (
+    GaussianSurfelData,
+    SplatData,
+    read_aura_2dgs_surfel_ply,
+    read_standard_3dgs_ply,
+)
 
 PARTICLEFIELD_SCHEMA = "ParticleField3DGaussianSplat"
+GAUSSIAN_SURFLET_SCHEMA = "ParticleField+ParticleFieldKernelGaussianSurfletAPI"
+GAUSSIAN_SURFLET_RECEIPT_SCHEMA_VERSION = "aura_ovrtx_particlefield_receipt.v1"
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
+    result = 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
+    result = np.where(np.isposinf(x), 1.0, result)
+    return np.where(np.isneginf(x), 0.0, result)
 
 
 def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None = None) -> dict:
@@ -90,6 +101,201 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         "sh_degree": degree,
         "extent": extent,
     }
+
+
+def build_gaussian_surflet_arrays(surfel: GaussianSurfelData) -> dict:
+    """Decode Aura's exact 2DGS parameters for OpenUSD Gaussian surflets."""
+
+    if isinstance(surfel.count, bool) or surfel.count < 1:
+        raise ValueError("aura_2dgs_count_invalid")
+    expected_shapes = {
+        "positions": (surfel.count, 3),
+        "scales": (surfel.count, 2),
+        "orientations": (surfel.count, 4),
+        "opacities": (surfel.count,),
+        "sh_dc": (surfel.count, 3),
+        "sh_rest": (surfel.count, 45),
+        "mask_logits": (surfel.count, 3),
+    }
+    values = {
+        "positions": surfel.xyz,
+        "scales": surfel.scales,
+        "orientations": surfel.quats,
+        "opacities": surfel.opacity,
+        "sh_dc": surfel.f_dc,
+        "sh_rest": surfel.sh_rest,
+        "mask_logits": surfel.mask_logits,
+    }
+    for name, expected in expected_shapes.items():
+        value = np.asarray(values[name])
+        if value.shape != expected:
+            raise ValueError(f"aura_2dgs_{name}_shape_invalid")
+        if name == "opacities":
+            if np.isnan(value).any() or np.isneginf(value).any():
+                raise ValueError("aura_2dgs_nonfinite_input")
+        elif not np.isfinite(value).all():
+            raise ValueError("aura_2dgs_nonfinite_input")
+
+    positions = np.ascontiguousarray(surfel.xyz, dtype=np.float32)
+    planar_scales = np.exp(np.asarray(surfel.scales, dtype=np.float32)).astype(np.float32)
+    if not np.isfinite(planar_scales).all() or (planar_scales <= 0).any():
+        raise ValueError("aura_2dgs_activated_scale_invalid")
+    # GaussianSurflet is planar in local XY. Z is a structural API component,
+    # not a learned thickness or an invented third ellipsoid scale.
+    scales = np.concatenate(
+        [planar_scales, np.ones((surfel.count, 1), dtype=np.float32)], axis=1
+    )
+
+    raw_quats = np.asarray(surfel.quats, dtype=np.float64)
+    norms = np.linalg.norm(raw_quats, axis=1, keepdims=True)
+    if (norms <= np.finfo(np.float32).eps).any():
+        raise ValueError("aura_2dgs_zero_quaternion")
+    orientations = (raw_quats / norms).astype(np.float32)
+    opacities = _sigmoid(np.asarray(surfel.opacity, dtype=np.float32)).astype(np.float32)
+
+    rest = np.asarray(surfel.sh_rest, dtype=np.float32).reshape(surfel.count, 3, 15)
+    rest = rest.transpose(0, 2, 1)
+    dc = np.asarray(surfel.f_dc, dtype=np.float32).reshape(surfel.count, 1, 3)
+    sh_coefficients = np.concatenate([dc, rest], axis=1).reshape(-1, 3)
+    extent = np.stack([positions.min(axis=0), positions.max(axis=0)]).astype(np.float32)
+    return {
+        "count": surfel.count,
+        "positions": positions,
+        "scales": np.ascontiguousarray(scales),
+        "orientations": np.ascontiguousarray(orientations),
+        "opacities": np.ascontiguousarray(opacities),
+        "sh_coefficients": np.ascontiguousarray(sh_coefficients, dtype=np.float32),
+        "sh_degree": 3,
+        "extent": extent,
+        "mask_logits": np.ascontiguousarray(surfel.mask_logits, dtype=np.float32),
+        "structural_z_scale": 1.0,
+        "positive_infinite_opacity_logit_count": int(np.isposinf(surfel.opacity).sum()),
+    }
+
+
+def write_gaussian_surflet_particlefield_usd(
+    source: str | Path | GaussianSurfelData,
+    out_path: str | Path,
+    *,
+    prim_path: str = "/World/AuraAppearance/GaussianSurflets",
+    expected_source_sha256: str | None = None,
+    receipt_path: str | Path | None = None,
+) -> dict:
+    """Author Aura 2DGS as ``ParticleField`` plus Gaussian-surflet APIs.
+
+    This never mutates the sealed PLY and intentionally does not author the
+    ellipsoidal ``ParticleField3DGaussianSplat`` schema.
+    """
+
+    out_path = Path(out_path)
+    try:
+        from pxr import Gf, Usd, UsdGeom, UsdVol, Vt
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "blocked",
+            "blockers": ["usd_core_gaussian_surflet_schema_unavailable"],
+            "error": repr(exc),
+        }
+    source_path = None if isinstance(source, GaussianSurfelData) else Path(source)
+    source_sha256 = None
+    if source_path is not None:
+        if not source_path.is_file():
+            return {"status": "blocked", "blockers": ["aura_2dgs_source_missing"]}
+        source_sha256 = f"sha256:{sha256_file(source_path)}"
+        if expected_source_sha256 is None:
+            return {
+                "status": "blocked",
+                "blockers": ["aura_2dgs_expected_source_sha256_missing"],
+                "observed_source_sha256": source_sha256,
+            }
+        if source_sha256 != expected_source_sha256:
+            return {
+                "status": "blocked",
+                "blockers": ["aura_2dgs_source_sha256_mismatch"],
+                "expected_source_sha256": expected_source_sha256,
+                "observed_source_sha256": source_sha256,
+            }
+    surfel = source if isinstance(source, GaussianSurfelData) else read_aura_2dgs_surfel_ply(source_path)
+    arrays = build_gaussian_surflet_arrays(surfel)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    stage = Usd.Stage.CreateNew(str(out_path))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.Xform.Define(stage, "/World")
+    field = UsdVol.ParticleField.Define(stage, prim_path)
+    prim = field.GetPrim()
+    api_classes = (
+        UsdVol.ParticleFieldPositionAttributeAPI,
+        UsdVol.ParticleFieldOrientationAttributeAPI,
+        UsdVol.ParticleFieldScaleAttributeAPI,
+        UsdVol.ParticleFieldOpacityAttributeAPI,
+        UsdVol.ParticleFieldKernelGaussianSurfletAPI,
+        UsdVol.ParticleFieldSphericalHarmonicsAttributeAPI,
+    )
+    if not prim or not prim.IsValid() or not all(api.CanApply(prim) for api in api_classes):
+        return {
+            "status": "blocked",
+            "blockers": ["usd_core_gaussian_surflet_schema_unavailable"],
+        }
+    position_api, orientation_api, scale_api, opacity_api, kernel_api, sh_api = (
+        api.Apply(prim) for api in api_classes
+    )
+    if not all((position_api, orientation_api, scale_api, opacity_api, kernel_api, sh_api)):
+        return {
+            "status": "blocked",
+            "blockers": ["usd_core_gaussian_surflet_api_application_failed"],
+        }
+
+    def vec3f(value: np.ndarray):
+        return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(value, dtype=np.float32))
+
+    position_api.CreatePositionsAttr().Set(vec3f(arrays["positions"]))
+    scale_api.CreateScalesAttr().Set(vec3f(arrays["scales"]))
+    opacity_api.CreateOpacitiesAttr().Set(
+        Vt.FloatArray.FromNumpy(arrays["opacities"])
+    )
+    sh_api.CreateRadianceSphericalHarmonicsCoefficientsAttr().Set(
+        vec3f(arrays["sh_coefficients"])
+    )
+    sh_api.CreateRadianceSphericalHarmonicsDegreeAttr().Set(arrays["sh_degree"])
+    field.CreateExtentAttr().Set(vec3f(arrays["extent"]))
+    quaternions = arrays["orientations"]
+    orientation_api.CreateOrientationsAttr().Set(
+        Vt.QuatfArray(
+            [
+                Gf.Quatf(float(w), float(x), float(y), float(z))
+                for w, x, y, z in quaternions
+            ]
+        )
+    )
+    stage.GetRootLayer().Save()
+    if source_path is not None and f"sha256:{sha256_file(source_path)}" != source_sha256:
+        return {"status": "blocked", "blockers": ["aura_2dgs_sealed_source_mutated"]}
+    result = {
+        "schema_version": GAUSSIAN_SURFLET_RECEIPT_SCHEMA_VERSION,
+        "status": "completed",
+        "output": str(out_path),
+        "output_bytes": out_path.stat().st_size,
+        "schema": GAUSSIAN_SURFLET_SCHEMA,
+        "prim_path": prim_path,
+        "surfel_count": arrays["count"],
+        "sh_degree": arrays["sh_degree"],
+        "source_frame": "right_handed_z_up_meters_identity_to_admitted_world",
+        "source_sha256": source_sha256,
+        "output_sha256": f"sha256:{sha256_file(out_path)}",
+        "learned_scale_components": 2,
+        "structural_z_scale": arrays["structural_z_scale"],
+        "positive_infinite_opacity_logit_count": arrays[
+            "positive_infinite_opacity_logit_count"
+        ],
+        "sealed_source_mutated": False,
+        "proof_boundary": "OpenUSD Gaussian-surflet authoring only; live OVRTX rendering remains required.",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    if receipt_path is not None:
+        write_json(Path(receipt_path), result)
+    return result
 
 
 def write_particlefield_usd(
