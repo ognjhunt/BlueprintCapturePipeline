@@ -1089,14 +1089,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp009d-approved-can")
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
-    gpu.add_argument(
-        "--adp009d-no-drive-wrist-camera",
-        action="store_true",
-        help=(
-            "Controlled-experiment arm: disable only the wrist camera pose "
-            "drive, leaving everything else byte-identical."
-        ),
-    )
     gpu.add_argument("--adp009d-ovrtx-probe-manifest")
     gpu.add_argument("--adp009d-aura-native-probe-manifest")
     gpu.add_argument("--adp009d-aura-source-root")
@@ -2432,7 +2424,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         sage_collision_path=args.adp009d_sage_collision,
                         harness_manifest_path=args.adp009d_harness_manifest,
                         implementation_commit=control_identity["orchestrator_source_commit"],
-                        drive_wrist_camera=not args.adp009d_no_drive_wrist_camera,
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(f"adp009d_bundle_preparation_failed:{type(exc).__name__}")

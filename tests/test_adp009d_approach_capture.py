@@ -510,12 +510,16 @@ def test_rigid_offset_rotates_the_camera_with_the_body() -> None:
     assert live_quat[3] == pytest.approx(half, abs=1e-9)
 
 
-def test_runtime_drives_the_wrist_camera_before_each_approach_capture() -> None:
-    """Nothing else moves this camera, so the drive must precede the readback.
+def test_the_runtime_does_not_drive_the_wrist_camera() -> None:
+    """A controlled run proved the drive was a no-op, so it must not return.
 
-    The camera hangs off the Robotiq gripper base, which is not an articulation
-    body -- PhysX writes no pose for it.  If the capture ran first, every wrist
-    frame would carry the reset pose while showing a moved view.
+    With the drive disabled and everything else byte-identical, the run
+    produced identical numbers -- displacement 0.010018832981586456, waypoint
+    error 0.1911235477432695, and the approved can still observed at 52,725
+    pixels.  The prim already tracks the hand for rendering; only the sensor's
+    reported pose buffer lags, which is why wrist_pose_travel_m reads 0.0
+    either way.  Re-adding the drive would restore dead code and re-suggest a
+    cause that was measured to be false.
     """
 
     from pathlib import Path
@@ -523,22 +527,16 @@ def test_runtime_drives_the_wrist_camera_before_each_approach_capture() -> None:
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     source = Path(runtime.__file__).read_text(encoding="utf-8")
-    approach = source[source.index("--- preregistered wrist approach") :]
+    code = [
+        line for line in source.splitlines() if not line.strip().startswith("#")
+    ]
+    assert not [line for line in code if "set_world_poses(" in line]
+    assert not [line for line in code if "apply_rigid_offset(" in line]
+    # The stale-pose gate stays: a mis-registered pose would still corrupt any
+    # appearance layer composed against it.
+    from blueprint_pipeline.adp009d_approach_capture import BLOCKER_WRIST_POSE_STALE
 
-    # The offset is measured once, at the reset pose, before any waypoint motion.
-    setup = source.index("rigid_offset_in_body_frame(")
-    assert setup < source.index("for waypoint in approach_waypoints_world():")
-
-    # Then applied and written before the captures, every waypoint.
-    drive = approach.index("wrist_camera.set_world_poses(")
-    capture = approach.index('for camera_name in ("external_camera", "wrist_camera"):')
-    assert drive < capture, "wrist pose must be driven before it is read back"
-    assert approach.index("apply_rigid_offset(") < drive
-
-    # The report must say whether the drive actually ran, so a silently skipped
-    # drive cannot be mistaken for a camera that legitimately did not move.
-    assert '"wrist_camera_driven_from_body_pose"' in source
-    assert '"articulation_body_names"' in source
+    assert BLOCKER_WRIST_POSE_STALE
 
 
 def test_one_wrist_frame_is_undetermined_not_stale() -> None:
@@ -677,8 +675,5 @@ def test_camera_refresh_never_advances_the_whole_scene() -> None:
     ]
     scene_refreshes = [line for line in code if "scene.update(" in line]
     assert scene_refreshes == [], f"scene-wide refresh perturbs physics: {scene_refreshes}"
-    assert "wrist_camera.update(" in approach
-    # The refresh must still precede the readback it exists to serve.
-    assert approach.index("wrist_camera.update(") < approach.index(
-        'for camera_name in ("external_camera", "wrist_camera"):'
-    )
+    # No camera refresh of any kind remains in the approach block.
+    assert not [line for line in code if "wrist_camera.update(" in line]

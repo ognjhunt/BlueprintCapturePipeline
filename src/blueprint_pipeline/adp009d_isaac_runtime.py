@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import math
-import os
 import time
 import traceback
 from pathlib import Path
@@ -25,10 +24,8 @@ try:  # flat provider-bundle layout, where this file runs as a script
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
         SUPPORT_HEIGHT_M,
-        apply_rigid_offset,
         approach_waypoints_world,
         pose_world_to_base,
-        rigid_offset_in_body_frame,
         summarize_wrist_approach_capture,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
@@ -38,10 +35,8 @@ except ModuleNotFoundError:  # imported as part of the repository package
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
         SUPPORT_HEIGHT_M,
-        apply_rigid_offset,
         approach_waypoints_world,
         pose_world_to_base,
-        rigid_offset_in_body_frame,
         summarize_wrist_approach_capture,
     )
 
@@ -1032,10 +1027,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         approach_arrivals: list[dict[str, Any]] = []
         approach_body_names: list[str] = []
         wrist_camera_driven = False
-        # Default on: the drive is what makes the wrist see the can at all.
-        drive_wrist_camera = os.environ.get(
-            "BLUEPRINT_ADP009D_DRIVE_WRIST_CAMERA", "1"
-        ) != "0"
         approach_ik_succeeded = True
         approach_error: str | None = None
         approach_object_displacement_m = 0.0
@@ -1078,33 +1069,22 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             )
             body_index = body_names.index(end_effector_name)
             approach_body_names = list(body_names)
-            # Arena parents the wrist camera under the Robotiq gripper base,
-            # which is not an articulation body: PhysX writes no pose for it, so
-            # the camera keeps its authored transform while the arm moves.  A
-            # live run measured the hand travelling 0.27 m while every recorded
-            # wrist pose stayed byte-identical, which would silently
-            # mis-register the entire wrist observation.
+            # The wrist camera needs no driving.  A controlled run with the
+            # drive disabled produced bit-identical results -- displacement
+            # 0.010018832981586456, error 0.1911235477432695, and the approved
+            # can still observed at 52,725 pixels -- so writing the camera pose
+            # changed nothing.  The prim already tracks the hand for rendering;
+            # only the sensor's reported pose buffer lags, which is why
+            # wrist_pose_travel_m reads 0.0 whether the drive runs or not.
             #
-            # Measure the camera's offset in the end-effector frame here, at the
-            # canonical reset pose where the authored transform is still the
-            # true one, then re-apply it from the live body pose at each
-            # capture.  This assumes the gripper base is rigidly fixed to the
-            # body it hangs from -- the fingers articulate, the base does not.
-            wrist_camera = env.unwrapped.scene["wrist_camera"]
-            reset_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
-            wrist_offset_position, wrist_offset_quaternion = rigid_offset_in_body_frame(
-                body_position_world=[float(v) for v in reset_body_pose[:3]],
-                body_quaternion_world_wxyz=[float(v) for v in reset_body_pose[3:7]],
-                child_position_world=[
-                    float(v) for v in _to_torch(wrist_camera.data.pos_w)[0]
-                ],
-                child_quaternion_world_wxyz=[
-                    float(v) for v in _to_torch(wrist_camera.data.quat_w_world)[0]
-                ],
-            )
-            wrist_camera_driven = bool(drive_wrist_camera)
+            # What made the wrist see the can was the arm trajectory: holding a
+            # feasible orientation instead of an unreachable tool-down
+            # quaternion.  The stale-pose gate stays, because a mis-registered
+            # pose would still corrupt any layer composed against it.
+            wrist_camera_driven = False
             # Feasible-by-construction orientation target: the pose the arm is
             # already in.  Recorded so the report shows what was actually held.
+            reset_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
             approach_hold_quaternion = [float(v) for v in reset_body_pose[3:7]]
             # Isaac Lab e57379c drops the root row from the jacobian stack for a
             # fixed-base articulation, so the jacobian index is offset by one.
@@ -1246,45 +1226,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         "end_effector_body": end_effector_name,
                     }
                 )
-                # Drive the wrist camera from the live body pose before capture,
-                # since nothing else moves it.
-                live_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
-                wrist_position, wrist_quaternion = apply_rigid_offset(
-                    body_position_world=[float(v) for v in live_body_pose[:3]],
-                    body_quaternion_world_wxyz=[float(v) for v in live_body_pose[3:7]],
-                    offset_position_body=wrist_offset_position,
-                    offset_quaternion_body_wxyz=wrist_offset_quaternion,
-                )
-                # Controlled-experiment switch.  The can displacement appeared
-                # in the same revision that introduced three changes at once --
-                # this camera write, base_link selection, and a feasible
-                # orientation target -- and guessing among them cost three runs.
-                # Disabling only this one, with everything else byte-identical,
-                # splits the remaining candidates in a single run.
-                if drive_wrist_camera:
-                    wrist_camera.set_world_poses(
-                        torch.tensor(
-                            [wrist_position],
-                            device=env.unwrapped.device,
-                            dtype=torch.float32,
-                        ),
-                        torch.tensor(
-                            [wrist_quaternion],
-                            device=env.unwrapped.device,
-                            dtype=torch.float32,
-                        ),
-                        convention="world",
-                    )
-                # Refresh only the camera whose pose just changed.  A previous
-                # revision called env.unwrapped.scene.update() here, and that
-                # perturbed physics: the approved can rose by 9.85 mm in z with
-                # the nearest articulation body 0.258 m away, tripping the
-                # displacement abort on three consecutive runs.  Runs without
-                # this call displaced the can by 0.00093 mm, and the two runs
-                # with it were bit-identical at 10.019 mm, so the disturbance
-                # was deterministic and came from the scene refresh rather than
-                # from any contact.
-                    wrist_camera.update(cfg.sim.dt * cfg.decimation)
                 for camera_name in ("external_camera", "wrist_camera"):
                     approach_frames.append(
                         _save_camera(
