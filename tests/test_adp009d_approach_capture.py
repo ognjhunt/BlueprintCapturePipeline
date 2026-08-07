@@ -539,3 +539,50 @@ def test_runtime_drives_the_wrist_camera_before_each_approach_capture() -> None:
     # drive cannot be mistaken for a camera that legitimately did not move.
     assert '"wrist_camera_driven_from_body_pose"' in source
     assert '"articulation_body_names"' in source
+
+
+def test_one_wrist_frame_is_undetermined_not_stale() -> None:
+    """An aborted approach captures one frame; that cannot prove a frozen camera.
+
+    A live run aborted at the first waypoint on the object-displacement guard,
+    leaving a single wrist frame that showed 49,758 pixels of the approved can.
+    Travel across one sample is trivially zero, which previously reported that
+    demonstrably working camera as stale.
+    """
+
+    from blueprint_pipeline.adp009d_approach_capture import BLOCKER_WRIST_POSE_STALE
+
+    single = summarize_wrist_approach_capture(
+        captured_frames=[_wrist_frame_at(100, 49758, (3.4372, -3.0958, 0.7374))]
+    )
+    assert BLOCKER_WRIST_POSE_STALE not in single["blockers"]
+    assert single["wrist_pose_travel_m"] == 0.0
+
+    # Two identical samples still prove staleness, so the gate is not defanged.
+    pair = summarize_wrist_approach_capture(
+        captured_frames=[
+            _wrist_frame_at(100, 49758, (3.4372, -3.0958, 0.7374)),
+            _wrist_frame_at(101, 49758, (3.4372, -3.0958, 0.7374)),
+        ]
+    )
+    assert BLOCKER_WRIST_POSE_STALE in pair["blockers"]
+
+
+def test_runtime_selects_the_gripper_base_that_actually_exists() -> None:
+    """The articulation exposes base_link, not robotiq_base_link.
+
+    A live run recorded the body list: panda_link0..8, base_link, and the
+    knuckle/finger bodies.  The old selection list looked for a name that does
+    not exist and silently fell through to panda_link7, one joint short of the
+    tool the wrist camera hangs from.
+    """
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    selection = source[source.index("end_effector_name = next(") :]
+    selection = selection[: selection.index("body_index =")]
+    assert '"base_link",' in selection
+    assert "robotiq_base_link" not in selection

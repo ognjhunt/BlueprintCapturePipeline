@@ -320,7 +320,16 @@ def summarize_wrist_approach_capture(
             sum((float(a) - float(b)) ** 2 for a, b in zip(other, first)) ** 0.5
             for other in positions[1:]
         )
-    if arm_moved and positions and wrist_pose_travel_m < MIN_WRIST_POSE_TRAVEL_M:
+    # Travel needs at least two samples to mean anything.  A run that aborted at
+    # the first waypoint captured exactly one wrist frame; travel across one
+    # sample is trivially zero, which previously read as a frozen camera even
+    # though that frame showed 49,758 pixels of the approved can.  One sample is
+    # undetermined, not stale.
+    if (
+        arm_moved
+        and len(positions) > 1
+        and wrist_pose_travel_m < MIN_WRIST_POSE_TRAVEL_M
+    ):
         blockers.append(BLOCKER_WRIST_POSE_STALE)
 
     arrivals = [dict(row) for row in (waypoint_arrivals or [])]

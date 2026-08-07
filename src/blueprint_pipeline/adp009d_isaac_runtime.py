@@ -1049,9 +1049,15 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             end_effector_name = next(
                 (
                     name
+                    # base_link is the Robotiq gripper base the wrist camera
+                    # hangs from, and it is a real articulation body -- an
+                    # earlier selection list named a body that does not exist
+                    # and silently fell through to panda_link7, one joint short
+                    # of the tool.  A live run recorded the real body list:
+                    # panda_link0..8, base_link, and the knuckle/finger bodies.
                     for name in (
                         "panda_hand",
-                        "robotiq_base_link",
+                        "base_link",
                         "panda_link7",
                     )
                     if name in body_names
@@ -1097,15 +1103,14 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 position_base, quaternion_base = pose_world_to_base(
                     position_world=waypoint["position_world_m"],
                     # The preregistered waypoint carries a tool-down quaternion
-                    # chosen for a hand frame, but this articulation exposes no
-                    # panda_hand or robotiq_base_link body, so the controlled
-                    # body is panda_link7, whose frame is different.  Commanding
-                    # that orientation asks for a pose the solver cannot satisfy,
-                    # and a damped-least-squares solver then trades position
-                    # error away chasing it: a live run diverged monotonically,
-                    # 0.069 -> 0.252 -> 0.318 m, while reporting success.
-                    # Hold the orientation the arm already has so the solve is
-                    # a pure translation, which is all wrist observability needs.
+                    # whose frame does not match the body actually controlled
+                    # here.  Commanding it asks for a pose the solver cannot
+                    # satisfy, and a damped-least-squares solver then trades
+                    # position error away chasing it: a live run diverged
+                    # monotonically, 0.069 -> 0.252 -> 0.318 m, while reporting
+                    # success.  Hold the orientation the arm already has so the
+                    # solve is a pure translation, which is all wrist
+                    # observability needs.
                     quaternion_world_wxyz=approach_hold_quaternion,
                     base_position_world=[float(v) for v in base_pose[:3]],
                     base_quaternion_world_wxyz=[float(v) for v in base_pose[3:7]],
