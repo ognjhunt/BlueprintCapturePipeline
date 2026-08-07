@@ -83,6 +83,13 @@ def test_checked_in_harness_binds_static_sage_triangle_override() -> None:
     assert sage["out_of_envelope_source_colliders_active"] is False
     assert sage["physx_triangle_stability_warning_allowed"] is False
     assert sage["cold_cooking_is_startup_evidence_only"] is True
+    settings = validated["physics"]["settings"]
+    assert settings["collision_cooking_profile"] == (
+        "legacy_cooker_after_ujitso_stall.v1"
+    )
+    assert settings["collision_cooking_backend"] == "legacy"
+    assert settings["ujitso_collision_cooking"] is False
+    assert settings["collision_geometry_or_parameters_changed"] is False
     assert validated["runtime_timing_receipt"]["fields_seconds"][0] == (
         "environment_build"
     )

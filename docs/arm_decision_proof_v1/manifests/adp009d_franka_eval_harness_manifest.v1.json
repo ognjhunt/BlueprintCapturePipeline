@@ -404,6 +404,12 @@
       "contact_offset_m": 0.005,
       "rest_offset_m": 0.0,
       "max_depenetration_velocity_m_s": 5.0,
+      "collision_cooking_profile": "legacy_cooker_after_ujitso_stall.v1",
+      "collision_cooking_backend": "legacy",
+      "ujitso_collision_cooking": false,
+      "collision_cooking_decision": "measured v14 UJITSO environment-construction stall; use NVIDIA's documented legacy-cooker diagnostic without changing collider geometry or parameters",
+      "collision_cooking_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
+      "collision_geometry_or_parameters_changed": false,
       "retry_cap": 0
     },
     "entity_overrides": {
@@ -637,5 +643,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:b446b5585b36dede951e7f10a2a80feb4b1e8deeefcc196ad9647432a94ca776"
+  "harness_digest": "sha256:cd3cccdcc9504eb34fbec8f31c98f048cc8c2b6392427502325d6f729ae9f970"
 }

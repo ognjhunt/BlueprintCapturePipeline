@@ -497,6 +497,9 @@
         "Keep the sealed can bytes immutable while applying the required PhysxSDFMeshCollisionAPI and explicit SDF cooking settings through a deterministic digest-bound composition layer.",
         "Validate both the composed and live spawned collider, subscribe to native Kit logs, and fail closed on any automatic collision-approximation fallback before an episode is admissible.",
         "Treat a static SDF-schema pass followed by collision-cooking timeout as infrastructure evidence only; it does not prove live collider, reset, or contact behavior.",
+        "After v14 passed static SAGE and the complete Arena import preflight, it remained inside environment construction for more than seventeen minutes with UJITSO stuck-build messages and a dead cooking child; preserve that as invalid infrastructure evidence, not a SAGE, can, reset, or policy result.",
+        "Apply NVIDIA's documented stuck-simulation diagnostic by disabling SETTING_UJITSO_COLLISION_COOKING before scene construction and using the legacy cooker, while keeping every collider byte, approximation token, and cooking parameter unchanged.",
+        "Require the resolved UJITSO setting and cooker identity in the native receipt; live collider validation and no-fallback checks remain mandatory, so changing the cooker cannot admit an episode by itself.",
         "Label the historical convex-hull native probe as approximation-only and prohibit it from substituting for exact-v2 SDF admission.",
         "Use the pinned Isaac Lab selective installer for assets, physx, tasks, and teleop only; retain the installer-required isaaclab_newton compatibility package without selecting Newton runtime extras or the Newton backend.",
         "Install Isaac Lab Arena runtime dependencies without its development extra and reject any worker plan that silently expands to all Isaac Lab extensions or RL frameworks."
@@ -631,6 +634,8 @@
         "The corrected derivative binds 47359 selected source faces, 24248 exact clipped source faces, 26828 derived faces, 80484 points, 26.28230143 square meters of in-envelope source surface, and 9.22785062228535e-8 relative surface-area error.",
         "Use canonical USDA text for the collision derivative because two semantically identical USDC Crate files built at different paths had different byte digests; byte-deterministic artifact identity takes precedence over the smaller binary encoding.",
         "Limit claims from this derivative to the preregistered Franka task envelope; it is not whole-scene navigation or general SAGE collision proof.",
+        "The corrected v14 run passed the complete pinned dependency probe, Kit startup, static SAGE topology, and Arena environment import closure, then stalled in manager-based environment construction under UJITSO for more than seventeen minutes; it was interrupted at 0.243828 USD and all allocator-created instances were destroyed.",
+        "Use the official legacy-cooker switch as the smallest measured performance diagnostic before considering any further geometry change; the sealed v2 can, its original 65516-face SDF collider, and the task-area SAGE derivative remain byte-identical.",
         "Preserve scientific identity and digest bindings across any later optimization."
       ],
       "applied_references": [
@@ -638,6 +643,7 @@
         "https://isaac-sim.github.io/IsaacLab/v2.1.1/source/how-to/simulation_performance.html#collision-geometries",
         "https://isaac-sim.github.io/IsaacLab/develop/source/api/lab_physx/isaaclab_physx.sim.schemas.html#isaaclab_physx.sim.schemas.PhysxTriangleMeshPropertiesCfg",
         "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking",
+        "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/extensions/ux/source/omni.physx.ui/docs/dev_guide/sim_management.html",
         "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.0/dev_guide/simulation_control/simulation_control.html",
         "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/106.5/extensions/runtime/source/omni.physx/docs/api/python.html#omni.physx.bindings._physx.PhysXCooking.compute_edge_length_limited_triangle_mesh"
       ],
@@ -692,7 +698,15 @@
       "arena_development_extras_installed": false,
       "all_isaac_lab_extensions_installed": false,
       "arena_import_closure_decision": "Arena asset decorators execute policy registration during embodiment import. Follow the official selective Isaac Lab rsl-rl extra and Arena Dockerfile msgpack 1.1.0 plus pyzmq 27.0.1 pins; do not rely on accidental packages from a broad development image.",
-      "runtime_import_preflight": "Import and version-check the exact Arena builder, embodiment, remote transport, and RSL-RL closure after Kit launch and before environment construction; retain exception type and full traceback on failure."
+      "runtime_import_preflight": "Import and version-check the exact Arena builder, embodiment, remote transport, and RSL-RL closure after Kit launch and before environment construction; retain exception type and full traceback on failure.",
+      "physx_collision_cooking_profile": {
+        "profile_id": "legacy_cooker_after_ujitso_stall.v1",
+        "ujitso_collision_cooking": false,
+        "cooker": "legacy",
+        "measured_trigger": "v14_manager_based_environment_construction_stalled_over_17_minutes_after_static_and_import_preflights",
+        "geometry_or_cooking_parameters_changed": false,
+        "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
+      }
     },
     "co_resident_runtime_status": "OVRTX and ovphysx not selected; exact Isaac reset-step-camera microcheck must pass before policy admission"
   },
@@ -702,5 +716,5 @@
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:bc5bc712c1c32f26848cc9f56306717cc55cd61ae65597e4a0bd1ffad48e9049"
+  "audit_digest": "sha256:3f33908fbbbc5d0ac612370590d76c0af86e6d9b895f5b180e98b2fcd01997b4"
 }

@@ -43,6 +43,7 @@ SAGE_RUNTIME_PROFILE = {
 }
 PHYSX_FALLBACK_MARKER = "falling back to convexHull approximation"
 PHYSX_TRIANGLE_STABILITY_MARKER = "TriangleMesh: triangles are too big"
+PHYSX_COLLISION_COOKING_PROFILE = "legacy_cooker_after_ujitso_stall.v1"
 ARENA_REVISION = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
 ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ROBOT_BASE_POSITION_M = (3.4681748, -2.9100837, 0.2766791)
@@ -103,6 +104,30 @@ def _jsonable(value: Any) -> Any:
 
 def _phase(name: str, status: str = "started") -> None:
     print(f"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d_native:{name}:{status}", flush=True)
+
+
+def _configure_physx_collision_cooking() -> dict[str, Any]:
+    """Apply the documented UJITSO-stall diagnostic before scene construction."""
+
+    import carb
+    import omni.physx.bindings._physx as physx_bindings
+
+    settings = carb.settings.get_settings()
+    key = physx_bindings.SETTING_UJITSO_COLLISION_COOKING
+    default_enabled = settings.get_as_bool(key)
+    settings.set_bool(key, False)
+    resolved_enabled = settings.get_as_bool(key)
+    if resolved_enabled:
+        raise RuntimeError("physx_legacy_collision_cooker_not_applied")
+    return {
+        "profile_id": PHYSX_COLLISION_COOKING_PROFILE,
+        "setting_path": key,
+        "ujitso_default_enabled": bool(default_enabled),
+        "ujitso_resolved_enabled": bool(resolved_enabled),
+        "cooker": "legacy",
+        "reason": "measured_ujitso_environment_construction_stall_v14",
+        "collider_geometry_or_parameters_changed": False,
+    }
 
 
 def _fail_on_physx_collision_fallback(messages: list[str]) -> None:
@@ -526,6 +551,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     )
     _phase("static_collider_validation", "completed")
 
+    _phase("physx_collision_cooking_configuration")
+    collision_cooking = _configure_physx_collision_cooking()
+    _phase("physx_collision_cooking_configuration", "completed")
+
     import omni.log
 
     fallback_messages: list[str] = []
@@ -672,6 +701,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "embodiment": "official_arena_droid_abs_joint_pos_franka_robotiq_2f_85",
             "physics": {
                 "backend": "PhysX",
+                "collision_cooking": collision_cooking,
                 "dt_seconds": cfg.sim.dt,
                 "decimation": cfg.decimation,
                 "solver": "TGS",

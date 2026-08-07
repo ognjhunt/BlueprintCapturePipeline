@@ -337,6 +337,28 @@ def validate_harness_manifest(
         errors.append("harness_physx_configuration_not_centralized")
     if physics.get("backend") != "physx":
         errors.append("harness_physics_backend_invalid")
+    physics_settings = _mapping(physics.get("settings"))
+    required_cooking_settings = {
+        "collision_cooking_profile": "legacy_cooker_after_ujitso_stall.v1",
+        "collision_cooking_backend": "legacy",
+        "ujitso_collision_cooking": False,
+        "collision_cooking_decision": (
+            "measured v14 UJITSO environment-construction stall; use NVIDIA's "
+            "documented legacy-cooker diagnostic without changing collider geometry "
+            "or parameters"
+        ),
+        "collision_cooking_reference": (
+            "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/"
+            "dev_guide/rigid_bodies_articulations/collision.html"
+            "#generate-mesh-colliders-cooking"
+        ),
+        "collision_geometry_or_parameters_changed": False,
+    }
+    if any(
+        physics_settings.get(key) != value
+        for key, value in required_cooking_settings.items()
+    ):
+        errors.append("harness_physx_collision_cooking_configuration_invalid")
     sage_override = _mapping(_mapping(physics.get("entity_overrides")).get("sealed_sage_static_collision"))
     required_sage_override = {
         "source_sha256": REQUIRED_ASSET_DIGESTS["sage_collision"],

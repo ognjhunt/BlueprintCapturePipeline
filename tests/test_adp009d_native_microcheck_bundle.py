@@ -380,6 +380,24 @@ def test_runtime_rejects_physx_triangle_stability_warning() -> None:
         isaac_runtime._fail_on_physx_collision_stability([message])
 
 
+def test_runtime_uses_documented_legacy_cooker_after_measured_ujitso_stall() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+
+    assert (
+        isaac_runtime.PHYSX_COLLISION_COOKING_PROFILE
+        == "legacy_cooker_after_ujitso_stall.v1"
+    )
+    assert "SETTING_UJITSO_COLLISION_COOKING" in source
+    assert "settings.set_bool(key, False)" in source
+    assert '"ujitso_resolved_enabled": bool(resolved_enabled)' in source
+    assert '"collider_geometry_or_parameters_changed": False' in source
+    assert '"measured_ujitso_environment_construction_stall_v14"' in source
+    assert '_phase("physx_collision_cooking_configuration")' in source
+    assert (
+        '_phase("physx_collision_cooking_configuration", "completed")' in source
+    )
+
+
 def test_runtime_does_not_import_unneeded_arena_asset_registry() -> None:
     source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
 
