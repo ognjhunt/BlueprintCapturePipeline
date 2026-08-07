@@ -158,6 +158,40 @@ def test_ovrtx_bundle_rejects_changed_camera_config(tmp_path: Path) -> None:
         )
 
 
+def test_ovrtx_bundle_accepts_two_safe_exact_camera_ids(tmp_path: Path) -> None:
+    probe_path = _probe(tmp_path)
+    probe = json.loads(probe_path.read_text())
+    for row, camera_id in zip(
+        probe["camera_configs"], ("approach_close", "right_translate"), strict=True
+    ):
+        source = Path(row["configuration_path"])
+        source.write_text(
+            json.dumps(
+                {
+                    "camera_id": camera_id,
+                    "metric_depth_aov": "DistanceToCameraSD",
+                    "warmup_frames": 40,
+                }
+            ),
+            encoding="utf-8",
+        )
+        row["camera_id"] = camera_id
+        row["configuration_sha256"] = _sha(source)
+    probe["manifest_digest"] = canonical_digest(probe, digest_field="manifest_digest")
+    probe_path.write_text(json.dumps(probe), encoding="utf-8")
+
+    result = build_ovrtx_live_camera_bundle(
+        job_dir=tmp_path / "exact",
+        probe_manifest_path=probe_path,
+        implementation_commit="a" * 40,
+    )
+
+    assert [row["camera_id"] for row in result["camera_configs"]] == [
+        "approach_close",
+        "right_translate",
+    ]
+
+
 def test_ovrtx_runner_preserves_virtualenv_python_symlink(tmp_path: Path) -> None:
     base_python = tmp_path / "base-python"
     base_python.write_text("python", encoding="utf-8")

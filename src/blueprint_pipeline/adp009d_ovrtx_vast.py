@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import stat
 import zipfile
@@ -140,10 +141,15 @@ def build_ovrtx_live_camera_bundle(
         raise ValueError("adp009d_ovrtx_particlefield_digest_mismatch")
     shutil.copy2(particlefield, assets / "aura_gaussian_surflets.usdc")
     config_rows = []
+    camera_ids: set[str] = set()
     for row in probe.get("camera_configs", []):
         camera_id = str(row.get("camera_id"))
-        if camera_id not in {"external", "wrist"}:
+        if (
+            not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", camera_id)
+            or camera_id in camera_ids
+        ):
             raise ValueError("adp009d_ovrtx_camera_id_invalid")
+        camera_ids.add(camera_id)
         source = Path(row["configuration_path"]).resolve()
         if _sha256(source) != row.get("configuration_sha256"):
             raise ValueError("adp009d_ovrtx_camera_config_digest_mismatch")
@@ -155,7 +161,7 @@ def build_ovrtx_live_camera_bundle(
                 "configuration_sha256": _sha256(destination),
             }
         )
-    if {row["camera_id"] for row in config_rows} != {"external", "wrist"}:
+    if len(config_rows) < 2 or len(config_rows) > 8:
         raise ValueError("adp009d_ovrtx_camera_set_invalid")
     source_dir = Path(__file__).resolve().parent
     repo_root = source_dir.parents[1]

@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -74,16 +75,19 @@ def run(*, runtime_dir: Path, output_dir: Path, ovrtx_python: Path) -> dict[str,
                 blockers.append("ovrtx_vulkan_preflight_invalid")
     if _sha256(asset) != manifest.get("particlefield_sha256"):
         blockers.append("ovrtx_particlefield_runtime_digest_mismatch")
-    for camera_id in ("external", "wrist"):
+    camera_configs = manifest.get("camera_configs")
+    if not isinstance(camera_configs, list) or not 2 <= len(camera_configs) <= 8:
+        blockers.append("ovrtx_camera_config_set_invalid")
+        camera_configs = []
+    for expected_config in camera_configs:
+        camera_id = str(expected_config.get("camera_id") or "")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", camera_id):
+            blockers.append("ovrtx_camera_id_invalid")
+            continue
         camera_output = output_dir / camera_id
         camera_output.mkdir(parents=True, exist_ok=True)
         report_path = camera_output / "ovrtx_result.json"
         config_path = runtime_dir / f"configs/{camera_id}.ovrtx.json"
-        expected_config = next(
-            row
-            for row in manifest.get("camera_configs", [])
-            if row.get("camera_id") == camera_id
-        )
         if _sha256(config_path) != expected_config.get("configuration_sha256"):
             blockers.append(f"ovrtx_camera_config_digest_mismatch:{camera_id}")
             continue
@@ -154,7 +158,11 @@ def run(*, runtime_dir: Path, output_dir: Path, ovrtx_python: Path) -> dict[str,
         )
     return {
         "schema_version": "adp009d_ovrtx_live_camera_result.v1",
-        "status": "completed" if not blockers and len(rows) == 2 else "blocked",
+        "status": (
+            "completed"
+            if not blockers and len(rows) == len(camera_configs) and len(rows) >= 2
+            else "blocked"
+        ),
         "blockers": sorted(set(blockers)),
         "implementation_commit": manifest.get("implementation_commit"),
         "input_digest": manifest.get("input_digest"),
