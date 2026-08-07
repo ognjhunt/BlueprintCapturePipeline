@@ -287,6 +287,7 @@ def run_arena_native_control_vast(
     min_gpu_ram_mb: int = 24_000,
     min_compute_cap: int = 0,
     minimum_driver_version: str = "",
+    require_known_supported_isaac_driver: bool = True,
     preferred_gpu_keywords: tuple[str, ...] = (
         "RTX 4090",
         "RTX A6000",
@@ -413,7 +414,9 @@ def run_arena_native_control_vast(
                 heartbeat_no_progress_seconds=1800,
                 session_budget_ledger_path=job / "adp_arena_vast_session_budget.json",
                 verify_staging_urls=True,
-                require_known_supported_isaac_driver=True,
+                require_known_supported_isaac_driver=(
+                    require_known_supported_isaac_driver
+                ),
                 minimum_driver_version=minimum_driver_version,
                 preferred_gpu_keywords=preferred_gpu_keywords,
                 prefer_isaac_rt=True,

@@ -386,7 +386,8 @@ def run_aura_native_live_camera_vast(
         blocker_prefix="adp009d_aura_native",
         min_gpu_ram_mb=46_000,
         min_compute_cap=860,
-        minimum_driver_version="580.95.05",
+        minimum_driver_version="550.54.14",
+        require_known_supported_isaac_driver=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
     )
 
