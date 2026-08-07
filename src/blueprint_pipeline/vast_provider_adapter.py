@@ -3287,7 +3287,7 @@ def _probe_shell_script(
                 common_start + "RUNTIME_PY=''; "
                 "if command -v apt-get >/dev/null 2>&1; then "
                 "apt-get update >/tmp/blueprint_adp009d_ovrtx_apt_update.log 2>&1 && "
-                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip libgl1 libglib2.0-0 libopengl0 libvulkan1 >/tmp/blueprint_adp009d_ovrtx_apt_install.log 2>&1; "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip libgl1 libglib2.0-0 libopengl0 libvulkan1 vulkan-tools xserver-xorg-core xvfb >/tmp/blueprint_adp009d_ovrtx_apt_install.log 2>&1; "
                 "fi; "
                 "if [ -x /usr/bin/python3 ]; then RUNTIME_PY=/usr/bin/python3; "
                 "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); fi; "

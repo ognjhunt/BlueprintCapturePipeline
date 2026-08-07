@@ -65,7 +65,18 @@ if [ $? -ne 0 ]; then write_missing_result "adp009d_ovrtx_venv_failed"; exit 2; 
 if [ $? -ne 0 ]; then write_missing_result "adp009d_ovrtx_dependency_install_failed"; exit 2; fi
 "${OVRTX_ENV}/bin/python" -c 'import importlib.metadata as m; import ovrtx, ovstage; assert m.version("ovrtx") == "0.4.0.346409" and m.version("ovstage") == "0.1.0.346039"'
 if [ $? -ne 0 ]; then write_missing_result "adp009d_ovrtx_dependency_identity_failed"; exit 2; fi
-python3 "${RUNTIME_DIR}/adp009d_ovrtx_provider_runner.py" \
+if ! ldconfig -p | grep -q 'libGLX_nvidia.so.0'; then
+  write_missing_result "adp009d_ovrtx_libglx_nvidia_missing"
+  exit 2
+fi
+if ! command -v xvfb-run >/dev/null 2>&1 || ! command -v vulkaninfo >/dev/null 2>&1; then
+  write_missing_result "adp009d_ovrtx_headless_graphics_tools_missing"
+  exit 2
+fi
+xvfb-run -a -s '-screen 0 1280x720x24' sh -c \
+  'vulkaninfo --summary >"$1/ovrtx_vulkan_preflight.log" 2>&1' sh "${OUTPUT_DIR}"
+if [ $? -ne 0 ]; then write_missing_result "adp009d_ovrtx_vulkan_preflight_failed"; exit 2; fi
+xvfb-run -a -s '-screen 0 1280x720x24' python3 "${RUNTIME_DIR}/adp009d_ovrtx_provider_runner.py" \
   --runtime-dir "${RUNTIME_DIR}" --output-dir "${OUTPUT_DIR}" \
   --ovrtx-python "${OVRTX_ENV}/bin/python"
 runner_rc=$?
@@ -167,6 +178,8 @@ def build_ovrtx_live_camera_bundle(
         "camera_configs": sorted(config_rows, key=lambda row: row["camera_id"]),
         "metric_depth_aov": "DistanceToCameraSD",
         "rtpt_warmup_frames": 40,
+        "headless_graphics_backend": "xvfb",
+        "vulkan_preflight_required": True,
         "retry_cap": 0,
         "candidate_policy_queried": False,
         "private_data_uploaded": False,

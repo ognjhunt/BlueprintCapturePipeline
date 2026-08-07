@@ -114,6 +114,10 @@ def test_ovrtx_bundle_is_deterministic_and_contract_complete(tmp_path: Path) -> 
     )
     assert "run_adp009d_ovrtx_provider_runtime.sh" in launch
     assert "adp009d_ovrtx_provider_runtime_output.zip" in launch
+    assert "xserver-xorg-core xvfb" in launch
+    assert "libGLX_nvidia.so.0" in entrypoint
+    assert "vulkaninfo --summary" in entrypoint
+    assert "xvfb-run" in entrypoint
 
 
 def test_ovrtx_bundle_is_deterministic_without_generated_at(tmp_path: Path) -> None:

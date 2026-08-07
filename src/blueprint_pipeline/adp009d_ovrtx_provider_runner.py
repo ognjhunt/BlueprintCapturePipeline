@@ -53,6 +53,14 @@ def run(*, runtime_dir: Path, output_dir: Path, ovrtx_python: Path) -> dict[str,
     rows: list[dict[str, Any]] = []
     worker = runtime_dir / "run_ovrtx_preflight_worker.py"
     asset = runtime_dir / "assets/aura_gaussian_surflets.usdc"
+    vulkan_preflight = output_dir / "ovrtx_vulkan_preflight.log"
+    if (
+        manifest.get("headless_graphics_backend") != "xvfb"
+        or manifest.get("vulkan_preflight_required") is not True
+    ):
+        blockers.append("ovrtx_headless_graphics_manifest_invalid")
+    if not vulkan_preflight.is_file() or vulkan_preflight.stat().st_size <= 0:
+        blockers.append("ovrtx_vulkan_preflight_evidence_missing")
     if _sha256(asset) != manifest.get("particlefield_sha256"):
         blockers.append("ovrtx_particlefield_runtime_digest_mismatch")
     for camera_id in ("external", "wrist"):
@@ -149,6 +157,12 @@ def run(*, runtime_dir: Path, output_dir: Path, ovrtx_python: Path) -> dict[str,
         "metric_depth_aov": "DistanceToCameraSD",
         "unitless_depth_sd_used": False,
         "rtpt_warmup_frames": 40,
+        "headless_graphics_backend": "xvfb",
+        "vulkan_preflight": (
+            _artifact(vulkan_preflight, output_dir)
+            if vulkan_preflight.is_file()
+            else None
+        ),
         "render_settings_target": "RenderProduct",
         "attached_mode_ordinals_respected": True,
         "write_floors_respected": True,
