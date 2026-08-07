@@ -146,6 +146,14 @@ def test_aura_file_conversion_is_digest_bound_and_uses_surflet_api(tmp_path: Pat
     assert result["source_sha256"] == expected
     assert result["sealed_source_mutated"] is False
     assert result["learned_scale_components"] == 2
+    assert result["material"] == {
+        "path": "/World/AuraAppearance/Looks/ParticleFieldEmissive",
+        "shader": "ParticleFieldEmissive.mdl",
+        "sub_identifier": "ParticleFieldEmissive",
+        "apply_inverse_tonemap": False,
+        "apply_srgb_linear": False,
+        "basis": "official_isaac_lab_gaussian_camera_test_asset",
+    }
     assert receipt_path.is_file()
     assert result["receipt_digest"] == canonical_digest(result, digest_field="receipt_digest")
 
@@ -156,5 +164,14 @@ def test_aura_file_conversion_is_digest_bound_and_uses_surflet_api(tmp_path: Pat
     assert prim.GetTypeName() == "ParticleField"
     assert "ParticleFieldKernelGaussianSurfletAPI" in prim.GetAppliedSchemas()
     assert "ParticleField3DGaussianSplat" not in str(prim.GetTypeName())
+    assert prim.GetRelationship("material:binding").GetTargets() == [
+        stage.GetPrimAtPath("/World/AuraAppearance/Looks/ParticleFieldEmissive").GetPath()
+    ]
+    shader = stage.GetPrimAtPath(
+        "/World/AuraAppearance/Looks/ParticleFieldEmissive/Shader"
+    )
+    assert shader.GetAttribute("info:mdl:sourceAsset").Get().path == "ParticleFieldEmissive.mdl"
+    assert shader.GetAttribute("inputs:apply_inverse_tonemap").Get() is False
+    assert shader.GetAttribute("inputs:apply_srgb_linear").Get() is False
     assert UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z
     assert UsdGeom.GetStageMetersPerUnit(stage) == 1.0

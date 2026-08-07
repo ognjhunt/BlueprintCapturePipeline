@@ -5,7 +5,7 @@
   "audit_status": "official_source_audit_complete_implementation_bound",
   "audit_window": {
     "started_at": "2026-08-06T18:20:39Z",
-    "completed_at": "2026-08-07T05:42:19Z",
+    "completed_at": "2026-08-07T09:31:54Z",
     "retrieval_methods": [
       "GitHub REST branch commit and recursive tree APIs",
       "GitHub immutable blob content at exact revisions",
@@ -69,10 +69,11 @@
       "source_id": "isaac_lab",
       "repository_url": "https://github.com/isaac-sim/IsaacLab",
       "ref": "refs/heads/develop",
-      "revision": "3ea6f7bbf6c7d515aa1f8e8c54bfdfffda2d4857",
-      "tree": "e188a36c7538ed84e7e0918f143f82890cbe98cb",
+      "revision": "01eb210728ae6a1bd3cba854f31d21c614cbe4b0",
+      "tree": "d1bf0139e9fa4a6f42ae2c74701d87c7015f8367",
       "ref_verified_at_retrieval": true,
-      "retrieved_at": "2026-08-06T18:45:59Z",
+      "retrieved_at": "2026-08-07T09:31:54Z",
+      "starting_observation_revision": "3ea6f7bbf6c7d515aa1f8e8c54bfdfffda2d4857",
       "submodules": [],
       "path_identities": [
         {
@@ -140,6 +141,10 @@
         {
           "path": "skills/user/use-presets/SKILL.md",
           "blob": "91f3a8e81c55733f92938581d945ca883c7b6f9d"
+        },
+        {
+          "path": "source/isaaclab/test/sensors/generate_synthetic_gaussian_asset.py",
+          "blob": "9c92a9cae7fdcb983a11da737e8970f382a76f76"
         }
       ],
       "version_compatibility": {
@@ -155,8 +160,9 @@
         "isaac_sim_dependency": "NVIDIA proprietary runtime terms"
       },
       "official_source_urls": [
-        "https://github.com/isaac-sim/IsaacLab/tree/3ea6f7bbf6c7d515aa1f8e8c54bfdfffda2d4857",
-        "https://isaac-sim.github.io/IsaacLab/main/source/tutorials/03_envs/create_manager_base_env.html"
+        "https://github.com/isaac-sim/IsaacLab/tree/01eb210728ae6a1bd3cba854f31d21c614cbe4b0",
+        "https://isaac-sim.github.io/IsaacLab/develop/source/tutorials/03_envs/create_manager_base_env.html",
+        "https://isaac-sim.github.io/IsaacLab/develop/source/overview/core-concepts/sensors/camera.html"
       ]
     },
     {
@@ -480,11 +486,13 @@
       "decisions": [
         "Bind Franka and Robotiq actuator limits and camera contracts in the embodiment layer.",
         "Validate observation shape, device, timing, calibration, camera memory, and exact lossless retention before policy admission.",
-        "Convert simulator-native Warp arrays explicitly at the policy and receipt adapter boundary before indexing or Torch operations."
+        "Convert simulator-native Warp arrays explicitly at the policy and receipt adapter boundary before indexing or Torch operations.",
+        "Follow the exact official Gaussian camera test asset at current develop revision 01eb210728ae6a1bd3cba854f31d21c614cbe4b0 by binding ParticleFieldEmissive.mdl with inverse tonemap and sRGB linearization disabled; retain Aura's sealed raw model and reject the converted layer until exact-camera visual conformance passes."
       ],
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_isaac_runtime.py",
-        "src/blueprint_pipeline/episode_visual_evidence.py"
+        "src/blueprint_pipeline/episode_visual_evidence.py",
+        "src/blueprint_pipeline/particlefield_usd.py"
       ]
     },
     {
@@ -562,7 +570,8 @@
       "actually_followed": true,
       "decisions": [
         "Author render settings on each RenderProduct, never as unsupported renderer-global configuration.",
-        "Bind path-tracing samples per pixel for PT, reset after camera or setting changes, and use the RTPT warmup contract for the live path."
+        "Bind path-tracing samples per pixel for PT, reset after camera or setting changes, and use the RTPT warmup contract for the live path.",
+        "Apply OmniRtxSettingsParticleFieldAPI_1 to the RenderProduct and bind accumulated Gaussian depth, accumulated albedo, and the documented 48-Gaussian accumulation default explicitly."
       ],
       "implementation_evidence": [
         "scripts/run_ovrtx_preflight_worker.py",
@@ -746,7 +755,35 @@
         "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
       }
     },
-    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff; OVRTX is selected and its exact Aura surflet plus live-camera inputs are materialized but not yet executed, OvPhysX remains unselected, the wrist camera omits the can, and live Aura depth composition remains required before policy admission",
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff. The first exact OVRTX live-camera execution loaded all 415265 Aura surflets and returned lossless nonconstant external and wrist RGB, but failed closed because both metric DistanceToCameraSD outputs were entirely nonfinite and the color frames were not visually conformant. OvPhysX remains unselected, the wrist camera omits the can, and live Aura depth composition remains required before policy admission.",
+    "ovrtx_live_camera_evidence": {
+      "run_id": "aura_ovrtx_live_camera_v6",
+      "status": "blocked_metric_depth_and_visual_conformance",
+      "completed_at": "2026-08-07T09:19:40Z",
+      "evidence_relative_path": "adp009d_franka_public_scene_sim_20260806/aura_ovrtx_live_camera_v6/attempts/attempt_001/immutable_execution/adp009d_ovrtx_live_camera_result.json",
+      "result_sha256": "sha256:a288e8cece0bef2912e24a6551a743369c561d23a97e087895aeb35c2d21cf36",
+      "allocator_result_sha256": "sha256:99c671464725a9b587c7b6c65b8b56a1de654092403f3d87bb609e8529bccf82",
+      "teardown_manifest_sha256": "sha256:d0ba4fad917060cb34cea669b434782fa064f9248c60db931c8495e4653cbf0e",
+      "ovrtx_revision": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
+      "ovrtx_version": "0.4.0.346409",
+      "ovstage_version": "0.1.0.346039",
+      "gpu": "NVIDIA RTX 6000 Ada Generation",
+      "surfel_count": 415265,
+      "rtpt_warmup_frames": 40,
+      "external_rgb_sha256": "sha256:299d09d9593dbec4bb1653c0037caccbf4b7e95ebd39fe5a670ab431012a21f2",
+      "wrist_rgb_sha256": "sha256:85da69083a75119d6da836360787fd46a813202b892789aa5cc16b997fe940bc",
+      "external_positive_finite_metric_depth": false,
+      "wrist_positive_finite_metric_depth": false,
+      "estimated_cost_usd": 0.205431,
+      "run_owned_provider_zero_observed": true,
+      "global_provider_zero_claimed": false,
+      "candidate_policy_queried": false,
+      "smallest_exact_blockers": [
+        "RenderProduct omitted OmniRtxSettingsParticleFieldAPI_1 Gaussian accumulated-depth settings.",
+        "Generic Aura ParticleField omitted the official ParticleFieldEmissive.mdl binding and therefore did not bind the SH radiance interpretation explicitly.",
+        "Exact-camera visual conformance against Aura native reference frames remains unproven."
+      ]
+    },
     "native_microcheck_evidence": {
       "run_id": "native_microcheck_v18_live_event_writer_reset",
       "status": "completed_reset_infrastructure_microcheck_nominal_contact_invalid",
@@ -840,9 +877,9 @@
     "The audit proves exact official-source observations and binding implementation decisions at the recorded retrieval time.",
     "The v22 receipt proves that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, exact reset, zero-action step, strict can stability, and two-camera tensor retention together at the sealed-SAGE-validated 0.50 meter base standoff.",
     "The v19 and v21 receipts show that both the all-zero and measured-open Robotiq resets left the prior 0.40 meter base standoff in near contact; v22 validates only the 0.50 meter reset and physics-step condition, not task solvability.",
-    "The evidence does not yet prove live Aura depth composition, useful wrist-camera framing, scripted task success, OVRTX or ovphysx execution, or either learned policy.",
+    "The evidence proves one OVRTX execution but does not yet prove valid live Aura metric depth, visual conformance, hybrid composition, useful wrist-camera framing, scripted task success, ovphysx execution, or either learned policy.",
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:9a3c2bf14ff64dd0f449fa3fc3b4d96efb2aa2e598856ab4697185a5e655bbd7"
+  "audit_digest": "sha256:ecbf07a2dc8774678c225db59b13274880488b27d280a81798261f22bbfd43ae"
 }

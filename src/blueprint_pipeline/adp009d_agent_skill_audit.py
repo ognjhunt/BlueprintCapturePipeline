@@ -27,8 +27,8 @@ EXPECTED_REPOSITORIES = {
     },
     "isaac_lab": {
         "repository_url": "https://github.com/isaac-sim/IsaacLab",
-        "revision": "3ea6f7bbf6c7d515aa1f8e8c54bfdfffda2d4857",
-        "tree": "e188a36c7538ed84e7e0918f143f82890cbe98cb",
+        "revision": "01eb210728ae6a1bd3cba854f31d21c614cbe4b0",
+        "tree": "d1bf0139e9fa4a6f42ae2c74701d87c7015f8367",
     },
     "isaac_lab_arena": {
         "repository_url": "https://github.com/isaac-sim/IsaacLab-Arena",

@@ -189,7 +189,7 @@ def write_gaussian_surflet_particlefield_usd(
 
     out_path = Path(out_path)
     try:
-        from pxr import Gf, Usd, UsdGeom, UsdVol, Vt
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdVol, Vt
     except Exception as exc:  # noqa: BLE001
         return {
             "status": "blocked",
@@ -269,6 +269,36 @@ def write_gaussian_surflet_particlefield_usd(
             ]
         )
     )
+
+    # Bind the same ParticleField emissive material used by Isaac Lab's
+    # official Gaussian camera test asset. A generic ParticleField does not
+    # inherit the concrete ParticleField3DGaussianSplat material contract, so
+    # leaving this implicit makes SH radiance interpretation renderer-dependent.
+    material_path = "/World/AuraAppearance/Looks/ParticleFieldEmissive"
+    shader_path = f"{material_path}/Shader"
+    material = stage.DefinePrim(material_path, "Material")
+    shader = stage.DefinePrim(shader_path, "Shader")
+    shader.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set(
+        "sourceAsset"
+    )
+    shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
+        "ParticleFieldEmissive.mdl"
+    )
+    shader.CreateAttribute(
+        "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
+    ).Set("ParticleFieldEmissive")
+    shader.CreateAttribute(
+        "inputs:apply_inverse_tonemap", Sdf.ValueTypeNames.Bool, custom=True
+    ).Set(False)
+    shader.CreateAttribute(
+        "inputs:apply_srgb_linear", Sdf.ValueTypeNames.Bool, custom=True
+    ).Set(False)
+    shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
+    for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
+        material.CreateAttribute(f"outputs:{output_name}", Sdf.ValueTypeNames.Token).AddConnection(
+            shader.GetPath().AppendProperty("outputs:out")
+        )
+    prim.CreateRelationship("material:binding").SetTargets([material.GetPath()])
     stage.GetRootLayer().Save()
     if source_path is not None and f"sha256:{sha256_file(source_path)}" != source_sha256:
         return {"status": "blocked", "blockers": ["aura_2dgs_sealed_source_mutated"]}
@@ -289,6 +319,14 @@ def write_gaussian_surflet_particlefield_usd(
         "positive_infinite_opacity_logit_count": arrays[
             "positive_infinite_opacity_logit_count"
         ],
+        "material": {
+            "path": material_path,
+            "shader": "ParticleFieldEmissive.mdl",
+            "sub_identifier": "ParticleFieldEmissive",
+            "apply_inverse_tonemap": False,
+            "apply_srgb_linear": False,
+            "basis": "official_isaac_lab_gaussian_camera_test_asset",
+        },
         "sealed_source_mutated": False,
         "proof_boundary": "OpenUSD Gaussian-surflet authoring only; live OVRTX rendering remains required.",
     }
