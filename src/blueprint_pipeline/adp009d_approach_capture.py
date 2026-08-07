@@ -42,10 +42,35 @@ APPROACH_CAPTURE_SCHEMA_VERSION = "adp009d_wrist_approach_capture.v1"
 CAN_AXIS_XY_M = (3.4681748, -3.3100837)
 SUPPORT_HEIGHT_M = 0.5264650138348479
 
-# End-effector standoff heights above the support plane, descending.  They stay
-# well clear of the can (observed top at ~0.169 m above support) so the approach
-# cannot knock it over before the wrist has seen it.
-APPROACH_STANDOFF_HEIGHTS_M = (0.34, 0.28, 0.24)
+# End-effector standoff heights above the support plane, descending.
+#
+# These are measured against the *controlled body*, which is the gripper base --
+# but the fingers hang well below it, and the can top is only 0.169 m above the
+# support.  A run at 0.34 m displaced the can by 10.3 mm and tripped the
+# displacement abort at the very first waypoint, so the old heights did not
+# actually clear the tool.  They are raised until a run reports the real
+# clearance: gripper_clearance_over_can_m is recorded per waypoint from the
+# lowest APPROACH_GRIPPER_BODY_NAMES body, so the next run measures what these
+# should be rather than leaving it to inference.
+#
+# Descending further buys nothing for this gate in any case: the same run
+# observed 49,758 pixels of the approved can at the first waypoint, far above
+# the 200-pixel threshold, so the remaining waypoints only add contact risk.
+APPROACH_STANDOFF_HEIGHTS_M = (0.45, 0.42, 0.40)
+# Gripper bodies whose lowest world z gives the true clearance over the can.
+APPROACH_GRIPPER_BODY_NAMES = (
+    "base_link",
+    "left_outer_knuckle",
+    "right_outer_knuckle",
+    "left_outer_finger",
+    "right_outer_finger",
+    "left_inner_finger",
+    "right_inner_finger",
+    "left_inner_knuckle",
+    "right_inner_knuckle",
+)
+# Observed top of the approved can above the support plane.
+APPROVED_CAN_TOP_ABOVE_SUPPORT_M = 0.169
 # Tool pointing straight down, in Isaac Lab (w, x, y, z) order.
 APPROACH_TOOL_QUAT_WXYZ = (0.0, 1.0, 0.0, 0.0)
 APPROACH_STEPS_PER_WAYPOINT = 40
@@ -390,7 +415,9 @@ __all__ = [
     "APPROACH_STEPS_PER_WAYPOINT",
     "APPROACH_TOOL_QUAT_WXYZ",
     "ApproachCaptureError",
+    "APPROACH_GRIPPER_BODY_NAMES",
     "APPROACH_WAYPOINT_TOLERANCE_M",
+    "APPROVED_CAN_TOP_ABOVE_SUPPORT_M",
     "BLOCKER_APPROACH_DID_NOT_REACH",
     "BLOCKER_APPROACH_IK_FAILED",
     "BLOCKER_WRIST_NEVER_SAW_OBJECT",

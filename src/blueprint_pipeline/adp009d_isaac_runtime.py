@@ -19,8 +19,11 @@ from typing import Any
 
 try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_approach_capture import (
+        APPROACH_GRIPPER_BODY_NAMES,
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
+        APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
+        SUPPORT_HEIGHT_M,
         apply_rigid_offset,
         approach_waypoints_world,
         pose_world_to_base,
@@ -29,8 +32,11 @@ try:  # flat provider-bundle layout, where this file runs as a script
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_approach_capture import (
+        APPROACH_GRIPPER_BODY_NAMES,
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
+        APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
+        SUPPORT_HEIGHT_M,
         apply_rigid_offset,
         approach_waypoints_world,
         pose_world_to_base,
@@ -1170,9 +1176,32 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 # wrist that never got there.
                 achieved_world = _to_torch(robot.data.body_pose_w)[0, body_index, :3]
                 target_world = waypoint["position_world_m"]
+                # Measure the tool's true clearance over the can rather than
+                # inferring it from published gripper geometry: the lowest
+                # gripper body is what actually collides.
+                gripper_indices = [
+                    body_names.index(name)
+                    for name in APPROACH_GRIPPER_BODY_NAMES
+                    if name in body_names
+                ]
+                lowest_gripper_z = (
+                    float(
+                        _to_torch(robot.data.body_pose_w)[0, gripper_indices, 2].min()
+                    )
+                    if gripper_indices
+                    else None
+                )
+                can_top_z = SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M
                 approach_arrivals.append(
                     {
                         "waypoint_index": waypoint["waypoint_index"],
+                        "lowest_gripper_body_z_m": lowest_gripper_z,
+                        "approved_can_top_z_m": can_top_z,
+                        "gripper_clearance_over_can_m": (
+                            None
+                            if lowest_gripper_z is None
+                            else lowest_gripper_z - can_top_z
+                        ),
                         "target_position_world_m": [float(v) for v in target_world],
                         "achieved_position_world_m": [float(v) for v in achieved_world],
                         "position_error_m": float(

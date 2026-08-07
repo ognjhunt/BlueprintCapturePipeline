@@ -586,3 +586,44 @@ def test_runtime_selects_the_gripper_base_that_actually_exists() -> None:
     selection = selection[: selection.index("body_index =")]
     assert '"base_link",' in selection
     assert "robotiq_base_link" not in selection
+
+
+def test_standoffs_clear_the_can_and_the_runtime_measures_real_clearance() -> None:
+    """Standoff heights were inferred and wrong; the next run must measure them.
+
+    A run at 0.34 m displaced the approved can by 10.3 mm and aborted at the
+    first waypoint, so the tool did not clear the can even though the controlled
+    body was well above it -- the fingers hang below.  Rather than guess at
+    gripper geometry again, the runtime records the lowest gripper body.
+    """
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_approach_capture import (
+        APPROACH_GRIPPER_BODY_NAMES,
+        APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
+    )
+
+    # Every standoff must clear the can top by a real margin at the controlled
+    # body, which is the necessary condition; the measured clearance is what
+    # establishes the sufficient one.
+    for standoff in APPROACH_STANDOFF_HEIGHTS_M:
+        assert standoff > APPROVED_CAN_TOP_ABOVE_SUPPORT_M + 0.2
+
+    # The observation gate was already satisfied at the first waypoint, so the
+    # sequence must not descend below the height that produced it.
+    assert APPROACH_STANDOFF_HEIGHTS_M == tuple(
+        sorted(APPROACH_STANDOFF_HEIGHTS_M, reverse=True)
+    )
+    assert min(APPROACH_STANDOFF_HEIGHTS_M) >= 0.40
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    assert '"gripper_clearance_over_can_m"' in source
+    assert '"lowest_gripper_body_z_m"' in source
+    # Clearance must come from the simulator's body poses, not from a constant.
+    assert "APPROACH_GRIPPER_BODY_NAMES" in source
+    assert "body_pose_w)[0, gripper_indices, 2].min()" in source
+    # The gripper body list must name bodies the articulation actually has.
+    assert "base_link" in APPROACH_GRIPPER_BODY_NAMES
+    assert "left_inner_finger" in APPROACH_GRIPPER_BODY_NAMES
