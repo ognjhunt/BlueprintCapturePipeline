@@ -262,6 +262,7 @@ def _runtime_receipt() -> dict:
         "frame_receipt_digests": ["sha256:" + "b" * 64],
         "policy_frames_retained_losslessly": True,
         "aura_renderer_conformance_receipt": conformance,
+        "aura_appearance_provenance": {"asset": "sealed_aurafusion360_final_ply", "task_volume_exclusion_applied": False},
         "camera_motion_occlusion_probe_passed": True,
         "static_occlusion_probe_passed": True,
         "moving_occlusion_probe_passed": True,
@@ -373,3 +374,37 @@ def test_live_runtime_receipt_accepts_selected_isaac_camera_evidence() -> None:
         ),
     ):
         validate_live_hybrid_runtime_receipt(mutated)
+
+
+def test_runtime_receipt_requires_chained_appearance_provenance() -> None:
+    """A derivative appearance layer must be declared and chained to the seal."""
+
+    receipt = _runtime_receipt()
+    receipt.pop("aura_appearance_provenance")
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    with pytest.raises(
+        LiveHybridObservationError,
+        match="hybrid_runtime_aura_appearance_provenance_missing",
+    ):
+        validate_live_hybrid_runtime_receipt(receipt)
+
+    # Declaring an exclusion without chaining it to the sealed asset fails closed.
+    receipt = _runtime_receipt()
+    receipt["aura_appearance_provenance"] = {"task_volume_exclusion_applied": True}
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    with pytest.raises(
+        LiveHybridObservationError, match="hybrid_runtime_appearance_derivative_unchained"
+    ):
+        validate_live_hybrid_runtime_receipt(receipt)
+
+    # A fully chained derivative is admissible.
+    receipt = _runtime_receipt()
+    receipt["aura_appearance_provenance"] = {
+        "asset": "blueprint_task_volume_exclusion_derivative_of_sealed_ply",
+        "task_volume_exclusion_applied": True,
+        "sealed_source_ply_sha256": "sha256:" + "1" * 64,
+        "exclusion_receipt_digest": "sha256:" + "2" * 64,
+        "claim_ceiling": "blueprint authored removal inside the can task volume",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    assert validate_live_hybrid_runtime_receipt(receipt) == receipt

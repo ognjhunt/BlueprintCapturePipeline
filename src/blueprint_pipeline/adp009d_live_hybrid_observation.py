@@ -385,6 +385,27 @@ def validate_live_hybrid_runtime_receipt(value: Mapping[str, Any]) -> dict[str, 
             pass
     if not conformance_valid:
         errors.append("hybrid_runtime_aura_exact_camera_conformance_missing")
+    # Any run whose appearance layer is not the sealed asset must say so, and
+    # must chain that derivative back to the sealed asset.  Without this a future
+    # run could quietly render a modified appearance and still look admissible.
+    provenance = receipt.get("aura_appearance_provenance")
+    if not isinstance(provenance, Mapping):
+        errors.append("hybrid_runtime_aura_appearance_provenance_missing")
+    else:
+        exclusion_applied = provenance.get("task_volume_exclusion_applied")
+        if exclusion_applied not in {True, False}:
+            errors.append("hybrid_runtime_aura_appearance_provenance_missing")
+        elif exclusion_applied is True:
+            if not str(provenance.get("sealed_source_ply_sha256") or "").startswith(
+                "sha256:"
+            ):
+                errors.append("hybrid_runtime_appearance_derivative_unchained")
+            if not str(provenance.get("exclusion_receipt_digest") or "").startswith(
+                "sha256:"
+            ):
+                errors.append("hybrid_runtime_appearance_derivative_unchained")
+            if not str(provenance.get("claim_ceiling") or "").strip():
+                errors.append("hybrid_runtime_appearance_derivative_claim_missing")
     if receipt.get("camera_motion_occlusion_probe_passed") is not True:
         errors.append("hybrid_runtime_camera_motion_occlusion_probe_failed")
     if receipt.get("static_occlusion_probe_passed") is not True:
