@@ -5,7 +5,7 @@
   "audit_status": "official_source_audit_complete_implementation_bound",
   "audit_window": {
     "started_at": "2026-08-06T18:20:39Z",
-    "completed_at": "2026-08-07T02:21:30Z",
+    "completed_at": "2026-08-07T05:42:19Z",
     "retrieval_methods": [
       "GitHub REST branch commit and recursive tree APIs",
       "GitHub immutable blob content at exact revisions",
@@ -500,6 +500,8 @@
         "After v14 passed static SAGE and the complete Arena import preflight, it remained inside environment construction for more than seventeen minutes with UJITSO stuck-build messages and a dead cooking child; preserve that as invalid infrastructure evidence, not a SAGE, can, reset, or policy result.",
         "Apply NVIDIA's documented stuck-simulation diagnostic by disabling SETTING_UJITSO_COLLISION_COOKING before scene construction and using the legacy cooker, while keeping every collider byte, approximation token, and cooking parameter unchanged.",
         "Require the resolved UJITSO setting and cooker identity in the native receipt; live collider validation and no-fallback checks remain mandatory, so changing the cooker cannot admit an episode by itself.",
+        "The v15 native microcheck resolved UJITSO false, built the same manager-based environment in 41.396117 seconds, validated the exact-v2 SDF can and 15 static SAGE triangle meshes live, completed two resets, one zero-action step, and two-camera retention, then tore down at 0.309049 USD with provider-zero observed.",
+        "Treat v15 as infrastructure reachability only: its receipt exposed that Arena release/0.2.1 did not reach the requested canonical joint pose and the wrist frame omitted the can, so bind the articulation initial state explicitly and fail closed on reset or hold-pose error before policy admission.",
         "Label the historical convex-hull native probe as approximation-only and prohibit it from substituting for exact-v2 SDF admission.",
         "Use the pinned Isaac Lab selective installer for assets, physx, tasks, and teleop only; retain the installer-required isaaclab_newton compatibility package without selecting Newton runtime extras or the Newton backend.",
         "Install Isaac Lab Arena runtime dependencies without its development extra and reject any worker plan that silently expands to all Isaac Lab extensions or RL frameworks."
@@ -636,6 +638,7 @@
         "Limit claims from this derivative to the preregistered Franka task envelope; it is not whole-scene navigation or general SAGE collision proof.",
         "The corrected v14 run passed the complete pinned dependency probe, Kit startup, static SAGE topology, and Arena environment import closure, then stalled in manager-based environment construction under UJITSO for more than seventeen minutes; it was interrupted at 0.243828 USD and all allocator-created instances were destroyed.",
         "Use the official legacy-cooker switch as the smallest measured performance diagnostic before considering any further geometry change; the sealed v2 can, its original 65516-face SDF collider, and the task-area SAGE derivative remain byte-identical.",
+        "The v15 legacy-cooker run completed manager-based construction in 41.396117 seconds without collision fallback or triangle-stability warnings; preserve its exact receipt as the measured basis for keeping this centralized PhysX setting.",
         "Preserve scientific identity and digest bindings across any later optimization."
       ],
       "applied_references": [
@@ -708,13 +711,39 @@
         "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
       }
     },
-    "co_resident_runtime_status": "OVRTX and ovphysx not selected; exact Isaac reset-step-camera microcheck must pass before policy admission"
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native microcheck passed in v15; OVRTX and ovphysx remain unselected; live Aura depth composition and corrected canonical reset-camera reprobe remain required before policy admission",
+    "native_microcheck_evidence": {
+      "run_id": "native_microcheck_v15_legacy_cooker",
+      "status": "completed_infrastructure_microcheck_only",
+      "completed_at": "2026-08-07T05:42:19Z",
+      "result_sha256": "sha256:c1be9dae8f687d37b8f934fec6268c73a4745231b59936063f162be40f1ca9e8",
+      "allocator_result_sha256": "sha256:14c78fbdfc70c35c5779abd2517748f067fb355d989ca50b93a3978a33b2b31e",
+      "environment_build_seconds": 41.396117,
+      "ujitso_default_enabled": true,
+      "ujitso_resolved_enabled": false,
+      "live_can_approximation": "sdf",
+      "live_sage_triangle_mesh_count": 15,
+      "reset_count": 2,
+      "zero_action_step_completed": true,
+      "camera_warmup_frames": 40,
+      "lossless_camera_count": 2,
+      "estimated_cost_usd": 0.309049,
+      "provider_zero_observed": true,
+      "policy_queried": false,
+      "scientific_limitations": [
+        "the requested canonical joint pose was not reached because Arena release/0.2.1 bound it only through a reset event",
+        "the retained wrist frame did not contain the approved can",
+        "the physics-only frames did not contain live Aura appearance",
+        "no scripted positive control or learned policy executed"
+      ]
+    }
   },
   "claim_ceiling": [
     "The audit proves exact official-source observations and binding implementation decisions at the recorded retrieval time.",
-    "It does not prove that OVRTX, ovphysx, Isaac Sim, Isaac Lab, Arena, the robot asset, or either learned policy executes together.",
+    "The v15 receipt proves only that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, reset, step, and two-camera tensor retention together.",
+    "It does not prove live Aura depth composition, corrected canonical reset-camera calibration, scripted task success, OVRTX or ovphysx execution, or either learned policy.",
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:3f33908fbbbc5d0ac612370590d76c0af86e6d9b895f5b180e98b2fcd01997b4"
+  "audit_digest": "sha256:e3c57ee869cbef4e6afc6b8764fdadbf12284da5baeeef9d64f95fb1cefca9c1"
 }

@@ -64,6 +64,23 @@ RESET_JOINTS = (
     0.0,
     0.0,
 )
+RESET_JOINT_NAMES = (
+    "panda_joint1",
+    "panda_joint2",
+    "panda_joint3",
+    "panda_joint4",
+    "panda_joint5",
+    "panda_joint6",
+    "panda_joint7",
+    "finger_joint",
+    "right_outer_knuckle_joint",
+    "right_inner_finger_joint",
+    "right_inner_finger_knuckle_joint",
+    "left_inner_finger_knuckle_joint",
+    "left_inner_finger_joint",
+)
+RESET_ARM_TOLERANCE_RAD = 1.0e-3
+HOLD_ARM_TOLERANCE_RAD = 1.0e-2
 
 
 def _sha256(path: Path) -> str:
@@ -100,6 +117,33 @@ def _jsonable(value: Any) -> Any:
     if hasattr(value, "tolist"):
         return value.tolist()
     return value
+
+
+def _json_safe(value: Any) -> Any:
+    """Return simulator metadata in a deterministic JSON-compatible form."""
+
+    return json.loads(json.dumps(_jsonable(value), default=str, sort_keys=True))
+
+
+def _assert_arm_pose(
+    actual: Any,
+    expected: tuple[float, ...],
+    *,
+    tolerance_rad: float,
+    blocker: str,
+) -> float:
+    """Fail closed when the canonical seven-joint arm pose is not reached."""
+
+    import torch
+
+    actual_arm = _to_torch(actual)[:7]
+    expected_arm = torch.tensor(
+        expected[:7], device=actual_arm.device, dtype=actual_arm.dtype
+    )
+    maximum_error = float(torch.max(torch.abs(actual_arm - expected_arm)).item())
+    if not math.isfinite(maximum_error) or maximum_error > tolerance_rad:
+        raise RuntimeError(f"{blocker}:maximum_error_rad={maximum_error:.9f}")
+    return maximum_error
 
 
 def _phase(name: str, status: str = "started") -> None:
@@ -271,6 +315,14 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
     finite_depth = np.isfinite(depth)
     if not finite_depth.any() or (depth[finite_depth] < 0.0).any():
         raise RuntimeError(f"camera_metric_depth_invalid:{name}")
+    semantic_ids, semantic_counts = np.unique(semantic, return_counts=True)
+    semantic_pixel_counts = {
+        str(int(label)): int(count)
+        for label, count in zip(semantic_ids, semantic_counts, strict=True)
+    }
+    semantic_info = _json_safe(
+        (camera.data.info or {}).get("semantic_segmentation")
+    )
     camera_dir = output / "camera_frames" / name
     camera_dir.mkdir(parents=True, exist_ok=True)
     rgb_path = camera_dir / f"{frame_index:06d}.png"
@@ -299,6 +351,15 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
             "path": str(semantic_path.relative_to(output)),
             "sha256": _sha256(semantic_path),
             "dtype": str(semantic.dtype),
+            "id_to_labels": semantic_info,
+            "pixel_counts_by_id": semantic_pixel_counts,
+        },
+        "quality_diagnostics": {
+            "finite_metric_depth_fraction": float(finite_depth.mean()),
+            "rgb_min": int(rgb.min()),
+            "rgb_max": int(rgb.max()),
+            "rgb_mean": float(rgb.mean()),
+            "foreground_semantic_pixel_fraction": float((semantic > 1).mean()),
         },
         "intrinsic_matrix": _jsonable(intrinsic),
         "position_world_m": _jsonable(pos_w),
@@ -351,6 +412,12 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     embodiment.get_scene_cfg()
     embodiment.scene_config.stand = None
     embodiment.initial_pose = None
+    # Arena release/0.2.1's set_initial_joint_pose updates only its reset
+    # event.  Bind the articulation state too so the first reset cannot use
+    # the stock DROID pose before that event is evaluated.
+    embodiment.scene_config.robot.init_state.joint_pos.update(
+        dict(zip(RESET_JOINT_NAMES, RESET_JOINTS, strict=True))
+    )
     for camera_name in ("external_camera", "wrist_camera"):
         camera_cfg = getattr(embodiment.camera_config, camera_name)
         camera_cfg.data_types = ["rgb", "distance_to_camera", "semantic_segmentation"]
@@ -609,6 +676,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             )
             robot = env.unwrapped.scene["robot"]
             approved_can = env.unwrapped.scene["approved_can"]
+            reset_arm_maximum_error_rad = _assert_arm_pose(
+                _to_torch(robot.data.joint_pos)[0],
+                RESET_JOINTS,
+                tolerance_rad=RESET_ARM_TOLERANCE_RAD,
+                blocker="canonical_reset_arm_pose_mismatch",
+            )
             reset_rows.append(
                 {
                     "index": index,
@@ -618,6 +691,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     ),
                     "observation_keys": sorted(str(key) for key in observation),
                     "info_keys": sorted(str(key) for key in (info or {})),
+                    "arm_maximum_error_rad": reset_arm_maximum_error_rad,
                 }
             )
             log.flush()
@@ -668,6 +742,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 _phase(f"camera_warmup_{warmup_index + 1}", "completed")
         timings_seconds["camera_warmup_40_frames"] = round(
             time.monotonic() - phase_started, 6
+        )
+        hold_arm_maximum_error_rad = _assert_arm_pose(
+            _to_torch(env.unwrapped.scene["robot"].data.joint_pos)[0],
+            RESET_JOINTS,
+            tolerance_rad=HOLD_ARM_TOLERANCE_RAD,
+            blocker="canonical_hold_arm_pose_drift",
         )
         phase_started = time.monotonic()
         camera_rows = []
@@ -721,6 +801,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "post_warmup_robot_joint_pos": _jsonable(
                 _to_torch(robot.data.joint_pos)[0]
             ),
+            "post_warmup_arm_maximum_error_rad": hold_arm_maximum_error_rad,
             "post_warmup_approved_can_root_pose_world": _jsonable(can_pose),
             "camera_frames": camera_rows,
             "camera_warmup_frames": 40,

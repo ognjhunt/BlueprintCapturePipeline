@@ -435,6 +435,30 @@ def test_runtime_emits_granular_environment_construction_phases() -> None:
         assert f'_phase("{phase}", "completed")' in source
 
 
+def test_runtime_binds_and_verifies_canonical_reset_pose() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+
+    assert len(isaac_runtime.RESET_JOINT_NAMES) == len(isaac_runtime.RESET_JOINTS)
+    assert isaac_runtime.RESET_JOINT_NAMES[:7] == tuple(
+        f"panda_joint{index}" for index in range(1, 8)
+    )
+    assert "embodiment.scene_config.robot.init_state.joint_pos.update" in source
+    assert "dict(zip(RESET_JOINT_NAMES, RESET_JOINTS, strict=True))" in source
+    assert 'blocker="canonical_reset_arm_pose_mismatch"' in source
+    assert 'blocker="canonical_hold_arm_pose_drift"' in source
+    assert '"post_warmup_arm_maximum_error_rad"' in source
+
+
+def test_runtime_retains_camera_semantic_mapping_and_quality_diagnostics() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+
+    assert '(camera.data.info or {}).get("semantic_segmentation")' in source
+    assert '"id_to_labels": semantic_info' in source
+    assert '"pixel_counts_by_id": semantic_pixel_counts' in source
+    assert '"finite_metric_depth_fraction"' in source
+    assert '"foreground_semantic_pixel_fraction"' in source
+
+
 def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
     source = Path(isaac_runtime.__file__).with_name("adp009d_native_microcheck_worker.py")
     text = source.read_text(encoding="utf-8")

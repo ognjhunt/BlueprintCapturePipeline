@@ -95,6 +95,26 @@ def test_checked_in_harness_binds_static_sage_triangle_override() -> None:
     )
 
 
+def test_harness_rejects_forged_native_timing_or_provider_zero() -> None:
+    harness = _load("adp009d_franka_eval_harness_manifest.v1.json")
+    measurement = harness["runtime_timing_receipt"]["latest_measurement"]
+    measurement["result_sha256"] = "sha256:" + "0" * 64
+    measurement["provider_zero_observed"] = False
+    harness["harness_digest"] = canonical_digest(
+        harness, digest_field="harness_digest"
+    )
+
+    with pytest.raises(Adp009dHarnessError) as exc_info:
+        validate_harness_manifest(
+            harness,
+            repo_root=REPO_ROOT,
+            evidence_root=REPO_ROOT,
+            verify_files=False,
+        )
+
+    assert "harness_runtime_timing_measurement_invalid" in exc_info.value.errors
+
+
 def test_harness_rejects_sage_geometry_or_approximation_mutation() -> None:
     harness = _load("adp009d_franka_eval_harness_manifest.v1.json")
     sage = harness["physics"]["entity_overrides"]["sealed_sage_static_collision"]

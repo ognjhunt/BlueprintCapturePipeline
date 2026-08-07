@@ -2,7 +2,7 @@
   "schema_version": "adp009d_franka_eval_harness_manifest.v1",
   "program_id": "arm-decision-proof-v1",
   "harness_id": "blueprint-isaac-lab-franka-task-evaluation-v1",
-  "status": "pre_runtime_contract",
+  "status": "native_physics_microcheck_passed_policy_observation_blocked",
   "reusable_harness": true,
   "workflow": "isaac_lab_manager_based",
   "implementation_base_commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 34995,
-      "sha256": "sha256:9e2b4b1dacb70e45057918d3b850d42b7373f4adb34d24ac15d778171d75b98b"
+    "size_bytes": 40411,
+    "sha256": "sha256:5f132f0aa57ca56282b935b2e374b7ecc00e28908e79fdcf60d555b3e33f5a74"
     },
     {
       "role": "approved_can",
@@ -250,7 +250,7 @@
       "object_radius_m": 0.031094726014345042,
       "object_height_m": 0.1694279937744141
     },
-    "camera_calibration_status": "requires_native_renderer_probe_before_protocol_freeze",
+    "camera_calibration_status": "native_tensors_retained_v15_canonical_reset_and_policy_frame_quality_reprobe_required",
     "lighting_status": "requires_native_renderer_probe_before_protocol_freeze",
     "robot_base_status": "analytic_candidate_frozen_requires_native_reachability_probe_before_protocol_freeze"
   },
@@ -479,7 +479,7 @@
   },
   "observation_renderer": {
     "backend_candidate": "Isaac Lab Camera over Isaac Sim RTX",
-    "backend_status": "must_pass_live_microcheck",
+    "backend_status": "native_isaac_camera_microcheck_passed_live_aura_composition_missing",
     "composition": "live_depth_correct_aura_dynamic_geometry",
     "aura_camera_pose_source": "same live Isaac camera calibration and timestamp",
     "dynamic_geometry": [
@@ -537,7 +537,26 @@
       "camera_retention"
     ],
     "warm_start_claim_requires_measured_result": true,
-    "cold_install_time_reported_separately": true
+    "cold_install_time_reported_separately": true,
+    "latest_measurement": {
+      "run_id": "native_microcheck_v15_legacy_cooker",
+      "result_sha256": "sha256:c1be9dae8f687d37b8f934fec6268c73a4745231b59936063f162be40f1ca9e8",
+      "status": "completed_infrastructure_microcheck_only",
+      "environment_build": 41.396117,
+      "reset_0": 0.02218,
+      "reset_1": 0.014677,
+      "zero_action_step": 0.287443,
+      "camera_warmup_40_frames": 11.851656,
+      "camera_retention": 0.360694,
+      "estimated_cost_usd": 0.309049,
+      "provider_zero_observed": true,
+      "policy_queried": false,
+      "limitations": [
+        "canonical_reset_arm_pose_mismatch_discovered",
+        "wrist_camera_approved_can_absent",
+        "sealed_aura_hybrid_policy_observation_renderer_missing"
+      ]
+    }
   },
   "runtime_pins": {
     "isaac_sim_family": "6.0.x",
@@ -633,7 +652,7 @@
   "blockers": [
     "sealed_aura_hybrid_policy_observation_renderer_missing",
     "franka_robotiq_native_reset_contact_reachability_missing",
-    "robot_base_and_camera_calibration_native_probe_missing",
+    "canonical_reset_pose_and_camera_quality_reprobe_missing",
     "cousin_native_control_validation_missing"
   ],
   "claim_ceiling": [
@@ -643,5 +662,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:cd3cccdcc9504eb34fbec8f31c98f048cc8c2b6392427502325d6f729ae9f970"
+  "harness_digest": "sha256:36517203e334735c469d65c2604d482f0cd0a78ada67ff8a388d83f8e175d532"
 }
