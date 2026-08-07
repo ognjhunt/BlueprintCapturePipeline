@@ -49,6 +49,14 @@ EXPECTED_ASSETS = {
 APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
 TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usda"
 TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
+# Aura authored as an Omniverse ParticleField of Gaussian surfels.  Rendered
+# by the same omni.rtx that the standalone OVRTX lane wraps -- the v11 worker
+# log shows omni.rtx mapping /rtx/rtpt/gaussian/* onto
+# OmniRtxSettingsParticleFieldAPI and rtx.scenedb loading the surfel prim --
+# so Isaac can render it directly rather than a second process rendering it
+# and the two being composited afterward.
+AURA_PARTICLEFIELD_FILENAME = "aura_ghost_removed_surflets.usd"
+AURA_PARTICLEFIELD_PRIM = "/World/AuraAppearance/GaussianSurflets"
 APPROVED_CAN_ADAPTER_SHA256 = (
     "sha256:5db5bc33b72983065bd47e30db0c5945ab3cba8fb3caeb6290bf07edc7337adc"
 )
@@ -673,6 +681,23 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         initial_pose=Pose.identity(),
         spawn_cfg_addon={"visible": False},
     )
+    # The sealed appearance, rendered in the same pass as the robot.  Visual
+    # only: SAGE remains the sole collision authority, so adding the appearance
+    # cannot change a single contact.  Without this the policy cameras see the
+    # arm and the can against nothing, which the goal prompt rules invalid --
+    # a learned result needs coherent views of the Aura background, the moving
+    # Franka, the moving can and their occlusions, in one time-synchronised
+    # frame rather than two renders glued together afterward.
+    aura_particlefield_path = runtime / "assets" / AURA_PARTICLEFIELD_FILENAME
+    aura_appearance = None
+    if aura_particlefield_path.is_file():
+        aura_appearance = Object(
+            name="aura_appearance",
+            object_type=ObjectType.BASE,
+            usd_path=str(aura_particlefield_path),
+            initial_pose=Pose.identity(),
+            spawn_cfg_addon={"visible": True},
+        )
     approved_can = Object(
         name="approved_can",
         object_type=ObjectType.RIGID,
@@ -696,7 +721,10 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             intensity=1500.0,
         )
     )
-    scene = Scene(assets=[sage, approved_can, light])
+    scene = Scene(
+        assets=[sage, approved_can, light]
+        + ([aura_appearance] if aura_appearance is not None else [])
+    )
     _phase("sealed_scene_configuration", "completed")
 
     def configure(cfg):
@@ -1428,6 +1456,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "camera_warmup_frames": 40,
             "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": True,
+            "aura_appearance_rendered_in_isaac": (
+                runtime / "assets" / AURA_PARTICLEFIELD_FILENAME
+            ).is_file(),
+            "aura_particlefield_prim": AURA_PARTICLEFIELD_PRIM,
             "gripper_convention_probe": gripper_probe,
             "policy_episode": policy_episode,
             "policy_episode_error": policy_episode_error,

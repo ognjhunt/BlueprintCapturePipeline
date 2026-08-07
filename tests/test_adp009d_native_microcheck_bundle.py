@@ -954,3 +954,61 @@ def test_provisioning_never_depends_on_a_preserved_execute_bit() -> None:
     # A bound candidate whose script is missing must be visible, not silent.
     assert '"provisioning_ran": false' in ENTRYPOINT
     assert '"provisioning_ran": true' in ENTRYPOINT
+
+
+def test_aura_is_rendered_by_isaac_not_composited_afterward() -> None:
+    """A 15 Hz closed loop cannot call a second renderer between steps.
+
+    Post-compositing works for a static frame -- that is how the review montage
+    was made -- but an episode queries the policy every 1/15 s, and the goal
+    prompt rules a learned result invalid unless both cameras see the Aura
+    background together with the moving arm and can in one time-synchronised
+    frame.  So the appearance is a scene asset that Isaac's own RTX renders,
+    the same omni.rtx the standalone OVRTX lane wraps.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+
+    assert 'AURA_PARTICLEFIELD_FILENAME = "aura_ghost_removed_surflets.usd"' in source
+    assert "aura_appearance" in source
+    # Added to the rendered scene, not to a separate compositing step.
+    assert "assets=[sage, approved_can, light]" in source
+    assert "[aura_appearance] if aura_appearance is not None else []" in source
+
+
+def test_the_appearance_is_visual_only_and_never_a_collider() -> None:
+    """SAGE stays the sole collision authority; appearance cannot change contact."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    # Only the appearance's own construction: the approved can nearby is a
+    # rigid body with real physics, and sweeping it in would prove nothing.
+    block = source[source.index("aura_appearance = Object(") :]
+    block = block[: block.index(")", block.index('"visible": True')) + 1]
+
+    assert "ObjectType.BASE" in block
+    assert '"visible": True' in block
+    # Never rigid, never a collider, no physics API of any kind.
+    assert "ObjectType.RIGID" not in block
+    assert "collision" not in block.lower()
+    assert "physics" not in block.lower()
+
+
+def test_a_bundle_without_the_appearance_still_builds() -> None:
+    """The micro-check must remain runnable without a policy or an appearance."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    # Presence is checked, not assumed, so an appearance-free bundle runs.
+    assert "if aura_particlefield_path.is_file():" in source
+    assert "aura_appearance = None" in source

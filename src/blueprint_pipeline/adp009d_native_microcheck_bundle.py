@@ -639,6 +639,7 @@ def build_native_microcheck_bundle(
     harness_manifest_path: str | Path,
     implementation_commit: str,
     policy_candidate_id: str | None = None,
+    aura_particlefield_path: str | Path | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -736,6 +737,17 @@ def build_native_microcheck_bundle(
         source_dir / "adp009d_approach_capture.py",
         runtime / "adp009d_approach_capture.py",
     )
+    if aura_particlefield_path is not None:
+        # The sealed appearance, rendered by Isaac in the same pass as the
+        # robot.  Shipped as a scene asset rather than rendered separately and
+        # composited: a 15 Hz closed loop cannot call out to a second renderer
+        # between steps, and the goal prompt rules a policy result invalid
+        # unless both cameras see the Aura background together with the moving
+        # arm and can in one time-synchronised frame.
+        aura_source = Path(aura_particlefield_path).expanduser().resolve()
+        if not aura_source.is_file():
+            raise ValueError("adp009d_aura_particlefield_missing")
+        shutil.copy2(aura_source, assets / "aura_ghost_removed_surflets.usd")
     harness_source = Path(harness_manifest_path).expanduser().resolve()
     shutil.copy2(harness_source, runtime / "adp009d_franka_eval_harness_manifest.v1.json")
     shutil.copy2(
@@ -849,6 +861,7 @@ def build_native_microcheck_bundle_isolated(
     harness_manifest_path: str | Path,
     implementation_commit: str,
     policy_candidate_id: str | None = None,
+    aura_particlefield_path: str | Path | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
