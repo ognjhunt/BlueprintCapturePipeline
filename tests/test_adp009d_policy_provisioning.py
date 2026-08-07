@@ -221,3 +221,26 @@ def test_build_isolation_is_left_enabled() -> None:
         script = build_provisioning_script(candidate_id)
         assert "--no-build-isolation" not in script
         assert '"$UV" pip install -e' in script
+
+
+def test_native_build_dependencies_are_installed_before_the_policy() -> None:
+    """uv resolved openpi, then evdev failed to compile for want of kernel headers.
+
+    The chain the failure named is openpi -> lerobot -> pynput -> evdev, pulled
+    in for input-device handling inference never uses but which the graph still
+    requires to build.
+    """
+
+    script = build_provisioning_script("pi05_droid")
+
+    assert "linux-libc-dev" in script
+    assert "build-essential" in script
+    # Headers must be present before uv is asked to build anything.
+    assert script.index("linux-libc-dev") < script.index("pip install -e")
+    # And never fatal on their own: the apt step is best-effort.
+    apt_lines = [
+        ln
+        for ln in script.splitlines()
+        if "linux-libc-dev" in ln and not ln.lstrip().startswith("#")
+    ]
+    assert apt_lines and all(ln.rstrip().endswith("|| true") for ln in apt_lines)

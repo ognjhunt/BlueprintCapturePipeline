@@ -152,6 +152,14 @@ set -euo pipefail
 # cannot resolve openpi at all, failing with "resolution-too-deep" after
 # backtracking through tensorstore releases.  openpi is itself a uv project, so
 # using uv means installing it the way it is packaged rather than fighting it.
+# Native build dependencies.  A live run resolved openpi cleanly with uv and
+# then failed compiling evdev, which needs linux/input.h: the chain is
+# openpi -> lerobot -> pynput -> evdev, pulled in for input-device handling that
+# inference never uses but that the dependency graph still requires to build.
+# linux-libc-dev supplies those headers; build-essential supplies the compiler.
+apt-get update -qq >/dev/null 2>&1 || true
+apt-get install -y -qq linux-libc-dev build-essential >/dev/null 2>&1 || true
+
 export UV_INSTALL_DIR={uv_root}
 curl -LsSf https://astral.sh/uv/install.sh | sh
 UV="$UV_INSTALL_DIR/uv"
