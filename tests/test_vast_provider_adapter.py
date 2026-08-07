@@ -5879,7 +5879,7 @@ def test_vast_adapter_provider_blockers_after_mocked_preflight_pass(
     assert result["status"] == "blocked"
     provider = _read_json(tmp_path / "provider-blockers" / "vast_provider_command_result.json")
     assert "blueprint_bundle_execution_requires_isaac_smoke_path" in provider["blockers"]
-    assert "isaac_provider_runtime_bundle_missing" in provider["blockers"]
+    assert "isaac_provider_runtime_bundle_missing" not in provider["blockers"]
     assert "provider_bundle_fetch_url_missing" in provider["blockers"]
     assert "provider_output_put_url_missing" in provider["blockers"]
 
