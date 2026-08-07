@@ -1266,3 +1266,26 @@ def test_the_exit_is_named_rather_than_blamed_on_absent_log_progress() -> None:
     assert '"vast_heartbeat_instance_exited",' in source
     blockers = source[source.index("startup_control_plane_blocked = any("):]
     assert "vast_heartbeat_instance_exited" in blockers[:600]
+
+
+def test_the_first_render_step_is_visible_in_the_phase_log() -> None:
+    """It pays the whole cost of composing the scene's appearance.
+
+    Without a marker of its own, a live run stuck there reported
+    ``reset_1:completed`` -- several phases earlier -- leaving "stuck in the
+    first render" indistinguishable from "stuck comparing two tensors".
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert '_phase("zero_action_step")' in source
+    assert '_phase("zero_action_step", "completed")' in source
+    # Emitted before the step, or it cannot report a hang inside it.
+    assert source.index('_phase("zero_action_step")') < source.index(
+        "observation, reward, terminated, truncated, info = env.step(action)"
+    )
+    # And the warmup loop announces itself before its first tenth-frame marker.
+    assert '_phase("camera_warmup")' in source

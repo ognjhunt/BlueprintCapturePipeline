@@ -1021,11 +1021,18 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             (1, env.unwrapped.action_manager.total_action_dim),
             device=env.unwrapped.device,
         )
+        # The first step is the first time anything is actually rendered, so it
+        # pays the whole cost of composing the scene's appearance.  It had no
+        # marker of its own, which left a live run unable to tell "stuck in the
+        # first render" from "stuck comparing two joint tensors" -- the last
+        # thing it had said was reset_1:completed, several phases earlier.
+        _phase("zero_action_step")
         phase_started = time.monotonic()
         observation, reward, terminated, truncated, info = env.step(action)
         timings_seconds["zero_action_step"] = round(
             time.monotonic() - phase_started, 6
         )
+        _phase("zero_action_step", "completed")
         log.flush()
         _fail_on_physx_collision_fallback(fallback_messages)
         _fail_on_physx_collision_stability(stability_messages)
@@ -1049,6 +1056,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         hold_start_can_pose = _to_torch(approved_can.data.root_pose_w)[0].clone()
         hold_action = torch.zeros_like(action)
         hold_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
+        _phase("camera_warmup")
         phase_started = time.monotonic()
         for warmup_index in range(40):
             observation, reward, terminated, truncated, info = env.step(hold_action)
