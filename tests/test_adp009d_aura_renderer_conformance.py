@@ -18,6 +18,7 @@ from blueprint_pipeline.adp009d_aura_renderer_conformance import (
     AuraRendererConformanceError,
     evaluate_aura_renderer_conformance,
     materialize_aura_renderer_conformance_request,
+    materialize_aura_ovrtx_failure_diagnostic,
     validate_aura_renderer_conformance_receipt,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -233,3 +234,52 @@ def test_conformance_request_materializer_joins_prospective_probe_to_real_bytes(
     assert request["threshold_definition_commit"] == THRESHOLD_DEFINITION_COMMIT
     assert request["ovrtx_outcomes_observed_before_threshold_freeze"] is False
     assert (tmp_path / "request.json").is_file()
+
+
+def test_failure_diagnostic_rejects_alpha_only_rgb_and_nonfinite_depth(
+    tmp_path: Path,
+) -> None:
+    camera = tmp_path / "exact_0"
+    camera.mkdir()
+    rgb = np.zeros((16, 16, 4), dtype=np.uint8)
+    rgb[..., 3] = 255
+    depth = np.full((16, 16, 1), np.inf, dtype=np.float32)
+    np.save(camera / "rgb.npy", rgb, allow_pickle=False)
+    np.save(camera / "depth.npy", depth, allow_pickle=False)
+    result = {
+        "schema_version": "adp009d_ovrtx_live_camera_result.v1",
+        "status": "blocked",
+        "implementation_commit": "a" * 40,
+        "input_digest": "sha256:" + "b" * 64,
+        "particlefield_sha256": "sha256:" + "c" * 64,
+        "metric_depth_aov": "DistanceToCameraSD",
+        "camera_rows": [
+            {
+                "camera_id": "exact_0",
+                "artifacts": [
+                    {
+                        "path": "exact_0/rgb.npy",
+                        "sha256": _sha256(camera / "rgb.npy"),
+                    },
+                    {
+                        "path": "exact_0/depth.npy",
+                        "sha256": _sha256(camera / "depth.npy"),
+                    },
+                ],
+            }
+        ],
+    }
+    result_path = tmp_path / "result.json"
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    receipt = materialize_aura_ovrtx_failure_diagnostic(
+        ovrtx_result_path=result_path,
+        output_path=tmp_path / "diagnostic.json",
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["rows"][0]["rgb_color_signal_passed"] is False
+    assert receipt["rows"][0]["positive_finite_depth_count"] == 0
+    assert receipt["smallest_exact_blocker"] == (
+        "sealed_aura_hybrid_policy_observation_renderer_missing"
+    )

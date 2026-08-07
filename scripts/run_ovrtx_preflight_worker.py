@@ -315,7 +315,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 _check("dynamic_transform_update", True, usd_time_seconds=usd_time, ordinal=ordinal)
             )
 
-        products = {}
+        products = None
         for _ in range(quality_steps):
             products = renderer.step(
                 render_products=render_products,
@@ -336,7 +336,13 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     if name not in frame.render_vars:
                         nonempty = False
                         continue
-                    array = _map_array(frame, name, ovrtx, np)
+                    raw_array = _map_array(frame, name, ovrtx, np)
+                    array = raw_array
+                    raw_aov_path = None
+                    if kind == "rgb" and raw_array.ndim == 3 and raw_array.shape[-1] == 4:
+                        raw_aov_path = args.output_dir / "ldr_color_rgba.npy"
+                        np.save(raw_aov_path, raw_array, allow_pickle=False)
+                        array = raw_array[..., :3].copy()
                     path = args.output_dir / f"{kind}.npy"
                     np.save(path, array, allow_pickle=False)
                     lossless_png = None
@@ -373,6 +379,8 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         "metric_depth_aov": AOV_BY_KIND["depth"],
                         "path_tracing_samples_per_pixel": path_tracing_spp,
                         "lossless_png": lossless_png.name if lossless_png else None,
+                        "raw_aov_path": raw_aov_path.name if raw_aov_path else None,
+                        "raw_aov_shape": list(raw_array.shape),
                     }
                     outputs.append({"kind": kind, "path": path.name, "metadata": metadata})
                     nonempty = nonempty and array.size > 0
@@ -407,7 +415,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         # teardown. Mapped outputs have already been copied and unmapped above.
         frame = None
         product = None
-        products.clear()
+        products = None
 
         checks.append(
             _check("requested_sensor_outputs_nonempty", nonempty, output_count=len(outputs))
@@ -433,7 +441,12 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             metric_depth_pass = False
             if rgb_path.is_file():
                 rgb = np.load(rgb_path, allow_pickle=False)
-                splat_pass = bool(rgb.size and float(np.std(rgb)) > 0.0)
+                color = rgb[..., :3] if rgb.ndim == 3 and rgb.shape[-1] >= 3 else rgb
+                splat_pass = bool(
+                    color.size
+                    and float(np.std(color)) > 0.5
+                    and float(np.max(color) - np.min(color)) > 2.0
+                )
             if depth_path.is_file():
                 depth = np.load(depth_path, allow_pickle=False).astype(np.float32, copy=False)
                 metric_depth_pass = bool(

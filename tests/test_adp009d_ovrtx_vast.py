@@ -93,6 +93,9 @@ def test_ovrtx_bundle_is_deterministic_and_contract_complete(tmp_path: Path) -> 
         vulkan_probe = archive.read(
             "provider_runtime/run_vulkan_raytracing_preflight.py"
         ).decode()
+        worker = archive.read(
+            "provider_runtime/run_ovrtx_preflight_worker.py"
+        ).decode()
     assert provider_runtime_contract_blockers(
         provider_bundle_kind="adp009d_ovrtx",
         entrypoint_text=entrypoint,
@@ -127,6 +130,10 @@ def test_ovrtx_bundle_is_deterministic_and_contract_complete(tmp_path: Path) -> 
     assert "xvfb-run" in entrypoint
     assert "except subprocess.TimeoutExpired" in runner
     assert "ovrtx_live_camera_timeout" in runner
+    assert "ldr_color_rgba.npy" in worker
+    assert "products = None" in worker
+    assert "products.clear()" not in worker
+    assert "float(np.std(color)) > 0.5" in worker
     compile(vulkan_probe, "run_vulkan_raytracing_preflight.py", "exec")
     assert "VK_KHR_acceleration_structure" in vulkan_probe
     assert "VK_KHR_ray_tracing_pipeline" in vulkan_probe

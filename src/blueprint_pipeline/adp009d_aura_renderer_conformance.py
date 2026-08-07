@@ -344,6 +344,116 @@ def materialize_aura_renderer_conformance_request(
     return validated
 
 
+def materialize_aura_ovrtx_failure_diagnostic(
+    *, ovrtx_result_path: str | Path, output_path: str | Path
+) -> dict[str, Any]:
+    """Measure retained RGB/depth arrays even when the worker failed afterward."""
+
+    result_path = Path(ovrtx_result_path).resolve()
+    if not result_path.is_file():
+        raise AuraRendererConformanceError(
+            ["aura_ovrtx_failure_diagnostic_result_missing"]
+        )
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if result.get("schema_version") != "adp009d_ovrtx_live_camera_result.v1":
+        raise AuraRendererConformanceError(
+            ["aura_ovrtx_failure_diagnostic_result_invalid"]
+        )
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for raw_row in result.get("camera_rows", []):
+        if not isinstance(raw_row, Mapping):
+            continue
+        camera_id = str(raw_row.get("camera_id") or "")
+        artifacts = {
+            str(item.get("path") or ""): item
+            for item in raw_row.get("artifacts", [])
+            if isinstance(item, Mapping)
+        }
+        paths: dict[str, Path] = {}
+        for kind in ("rgb", "depth"):
+            matches = [
+                (relative, artifact)
+                for relative, artifact in artifacts.items()
+                if relative.endswith(f"{camera_id}/{kind}.npy")
+            ]
+            if len(matches) != 1:
+                raise AuraRendererConformanceError(
+                    [f"aura_ovrtx_failure_diagnostic_{kind}_missing:{camera_id}"]
+                )
+            relative, artifact = matches[0]
+            path = (result_path.parent / relative).resolve()
+            try:
+                path.relative_to(result_path.parent)
+            except ValueError as exc:
+                raise AuraRendererConformanceError(
+                    [f"aura_ovrtx_failure_diagnostic_{kind}_path_escape:{camera_id}"]
+                ) from exc
+            if not path.is_file() or _sha256(path) != artifact.get("sha256"):
+                raise AuraRendererConformanceError(
+                    [f"aura_ovrtx_failure_diagnostic_{kind}_digest_mismatch:{camera_id}"]
+                )
+            paths[kind] = path
+        rgb = np.load(paths["rgb"], allow_pickle=False)
+        depth = np.load(paths["depth"], allow_pickle=False).astype(
+            np.float32, copy=False
+        )
+        color = rgb[..., :3] if rgb.ndim == 3 and rgb.shape[-1] >= 3 else rgb
+        color_std = float(np.std(color))
+        color_range = float(np.max(color) - np.min(color)) if color.size else 0.0
+        color_signal = bool(color.size and color_std > 0.5 and color_range > 2.0)
+        finite_depth = np.isfinite(depth) & (depth > 0)
+        if not color_signal:
+            blockers.append(f"aura_ovrtx_rgb_color_signal_missing:{camera_id}")
+        if not finite_depth.any():
+            blockers.append(
+                f"aura_ovrtx_positive_finite_metric_depth_missing:{camera_id}"
+            )
+        rows.append(
+            {
+                "camera_id": camera_id,
+                "rgb_sha256": _sha256(paths["rgb"]),
+                "rgb_shape": list(rgb.shape),
+                "rgb_color_std": round(color_std, 8),
+                "rgb_color_range": color_range,
+                "rgb_color_signal_passed": color_signal,
+                "depth_sha256": _sha256(paths["depth"]),
+                "depth_shape": list(depth.shape),
+                "positive_finite_depth_count": int(finite_depth.sum()),
+                "positive_finite_depth_fraction": round(
+                    float(finite_depth.mean()), 10
+                ),
+            }
+        )
+    if not rows:
+        raise AuraRendererConformanceError(
+            ["aura_ovrtx_failure_diagnostic_camera_rows_missing"]
+        )
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009d_aura_ovrtx_failure_diagnostic.v1",
+        "status": "blocked" if blockers else "arrays_passed_basic_signal_checks",
+        "materializer_source_sha256": _sha256(Path(__file__).resolve()),
+        "source_result_sha256": _sha256(result_path),
+        "source_result_status": result.get("status"),
+        "implementation_commit": result.get("implementation_commit"),
+        "input_digest": result.get("input_digest"),
+        "particlefield_sha256": result.get("particlefield_sha256"),
+        "metric_depth_aov": result.get("metric_depth_aov"),
+        "rows": rows,
+        "blockers": sorted(set(blockers)),
+        "smallest_exact_blocker": (
+            "sealed_aura_hybrid_policy_observation_renderer_missing"
+            if blockers
+            else None
+        ),
+        "candidate_policy_queried": False,
+        "policy_observation_admitted": False,
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(Path(output_path).resolve(), receipt)
+    return receipt
+
+
 def evaluate_aura_renderer_conformance(value: Mapping[str, Any]) -> dict[str, Any]:
     """Measure OVRTX against Aura-native frames at byte-bound exact cameras."""
 
@@ -491,5 +601,6 @@ __all__ = [
     "THRESHOLD_DEFINITION_COMMIT",
     "evaluate_aura_renderer_conformance",
     "materialize_aura_renderer_conformance_request",
+    "materialize_aura_ovrtx_failure_diagnostic",
     "validate_aura_renderer_conformance_receipt",
 ]
