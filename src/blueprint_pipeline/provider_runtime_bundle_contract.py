@@ -19,6 +19,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_arena",
     "adp009d_isaac",
     "adp009d_ovrtx",
+    "adp009d_aura_native",
     "adp_content_agents",
     "adp_aura_smoke",
     "adp_aura_interiorgs",
@@ -179,6 +180,24 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp009d_ovrtx_runtime_contract"
+    elif provider_bundle_kind == "adp009d_aura_native":
+        entrypoint_valid = (
+            "aura_native_runner_failed_without_result" in entrypoint_text
+            and "adp009d_aura_native_live_camera_result.json" in entrypoint_text
+            and "torch==2.5.1" in entrypoint_text
+            and "--no-build-isolation" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp009d_aura_native_live_camera_result.json",
+                "surf_depth_expected_camera_z_m",
+                "source_modified",
+                "candidate_policy_queried",
+                "provider_zero_required_after_return",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp009d_aura_native_runtime_contract"
     elif provider_bundle_kind == "adp_content_agents":
         entrypoint_valid = (
             "adp_content_agents_runner_failed_without_runtime_result" in entrypoint_text

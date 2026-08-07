@@ -5,7 +5,7 @@
   "audit_status": "official_source_audit_complete_implementation_bound",
   "audit_window": {
     "started_at": "2026-08-06T18:20:39Z",
-    "completed_at": "2026-08-07T09:31:54Z",
+    "completed_at": "2026-08-07T10:59:33Z",
     "retrieval_methods": [
       "GitHub REST branch commit and recursive tree APIs",
       "GitHub immutable blob content at exact revisions",
@@ -297,6 +297,83 @@
       ]
     },
     {
+      "source_id": "aurafusion360",
+      "repository_url": "https://github.com/kkennethwu/AuraFusion360_official",
+      "ref": "refs/heads/main",
+      "revision": "f23b26c44ba84608306ba952510533ebf4c7877d",
+      "tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
+      "ref_verified_at_retrieval": true,
+      "retrieved_at": "2026-08-07T10:59:33Z",
+      "submodules": [
+        {
+          "path": "submodules/diff-surfel-rasterization",
+          "revision": "e0ed0207b3e0669960cfad70852200a4a5847f61"
+        },
+        {
+          "path": "submodules/diff-surfel-rasterization/third_party/glm",
+          "revision": "5c46b9c07008ae65cb81ab79cd677ecc1934b903"
+        },
+        {
+          "path": "submodules/simple-knn",
+          "revision": "86710c2d4b46680c02301765dd79e465819c8f19"
+        }
+      ],
+      "path_identities": [
+        {
+          "path": "README.md",
+          "blob": "56873abdee02336b82eabf437df50e422cb90f20"
+        },
+        {
+          "path": "LICENSE",
+          "blob": "f49a4e16e68b128803cc2dcea614603632b04eac"
+        },
+        {
+          "path": "install.sh",
+          "blob": "7a1a539d574bcd63a320219f9193432a89e98440"
+        },
+        {
+          "path": "gaussian_renderer/__init__.py",
+          "blob": "6d8dac4c5e471cd66dc019caca33bffd351e3f5a"
+        },
+        {
+          "path": "scene/cameras.py",
+          "blob": "ed0b9fc00a62dc04a07ccbb43978943f5f19258b"
+        },
+        {
+          "path": "scene/gaussian_model.py",
+          "blob": "20c35bb09e0d0a014b52b9c988e235d5ed47ff83"
+        },
+        {
+          "path": "submodules/diff-surfel-rasterization/LICENSE.md",
+          "blob": "c869e695fa63bfde6f887d63a24a2a71f03480ac"
+        },
+        {
+          "path": "submodules/diff-surfel-rasterization/cuda_rasterizer/forward.cu",
+          "blob": "6ba9e33c06de309482502758b72d6efbaf28c5e5"
+        }
+      ],
+      "version_compatibility": {
+        "python": "3.10 in publisher install flow",
+        "cuda": "12.4 in publisher install flow",
+        "torch": "2.5.1+cu124 in the previously executed exact-source Blueprint runtime",
+        "representation": "2D Gaussian surflets with two learned scale components",
+        "camera_contract": "ideal centered pinhole cameras; arbitrary live poses are accepted through the publisher Camera and rasterizer interfaces",
+        "depth_contract": "publisher rasterizer returns expected and median camera-space depth; ADP selects expected depth with depth_ratio 0.0 for this unbounded scene",
+        "runtime_decision": "Use the exact publisher rasterizer for sealed Aura RGB and metric camera-space depth, then depth-compose it with Isaac dynamic RGB depth and segmentation at identical live calibration and timestamp."
+      },
+      "license": {
+        "top_level": "Apache-2.0",
+        "nested_diff_surfel_rasterization": "Gaussian-Splatting research-and-evaluation-only license",
+        "use_ceiling": "internal noncommercial research and evaluation",
+        "redistribution_boundary": "Retain both top-level and nested licenses; do not treat the nested rasterizer as unrestricted Apache-2.0 code."
+      },
+      "official_source_urls": [
+        "https://github.com/kkennethwu/AuraFusion360_official/tree/f23b26c44ba84608306ba952510533ebf4c7877d",
+        "https://arxiv.org/abs/2502.05176",
+        "https://github.com/hbb1/2d-gaussian-splatting"
+      ]
+    },
+    {
       "source_id": "ovrtx",
       "repository_url": "https://github.com/NVIDIA-Omniverse/ovrtx",
       "ref": "refs/heads/main",
@@ -542,8 +619,8 @@
       "application_status": "followed_in_implementation",
       "actually_followed": true,
       "decisions": [
-        "OVRTX is selected for the sealed Aura background layer while Isaac Lab Camera retains dynamic RGB, metric depth, semantics, and physics timestamps.",
-        "Load the digest-bound Gaussian-surflet USDC through an attached ovstage ordinal and preserve the sealed Aura PLY unchanged."
+        "OVRTX guidance was followed for the bounded preregistered exact-camera diagnostic, but OVRTX is rejected for the sealed Aura background after it returned black RGB and no positive finite metric depth for the exact Gaussian-surflet asset.",
+        "The failed diagnostic loaded the digest-bound Gaussian-surflet USDC through an attached ovstage ordinal and preserved the sealed Aura PLY unchanged; future OVRTX use remains representation-specific and cannot override this observed blocker."
       ],
       "implementation_evidence": [
         "src/blueprint_pipeline/adp009d_ovrtx_vast.py",
@@ -724,8 +801,10 @@
     "arena_claim_ceiling": "alpha_internal_rehearsal_only",
     "ovrtx_candidate": "0.4.0 at 4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
     "ovphysx_candidate": "0.5.9 at 7845321d31fa3619917ebe127ab5e08e73de0bdb",
-    "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX for dynamic geometry plus OVRTX for sealed Aura Gaussian-surflet appearance",
-    "ovrtx_selected": true,
+    "selected_dynamic_renderer": "Isaac Lab Camera over Isaac Sim RTX for dynamic geometry plus AuraFusion360 official native 2D-surfel rasterizer for sealed Aura appearance and metric camera-space depth",
+    "sealed_aura_renderer_backend": "AuraFusion360_official_native_2D_surfel_rasterizer",
+    "native_aura_renderer_execution_status": "materialized_unexecuted",
+    "ovrtx_selected": false,
     "runtime_install_profile": {
       "profile_id": "isaaclab_arena_physx_task_runtime.v3",
       "isaac_lab_selective_targets": [
@@ -741,7 +820,7 @@
       "newton_backend_selected": false,
       "isaaclab_ov_install_reason": "Arena's unconditional embodiment import reaches Isaac Lab multi-backend renderer presets through Kuka Allegro; install the configuration-only isaaclab_ov extension to satisfy that exact closure.",
       "ovrtx_extra_installed": false,
-      "ovrtx_backend_selected": true,
+      "ovrtx_backend_selected": false,
       "arena_development_extras_installed": false,
       "all_isaac_lab_extensions_installed": false,
       "arena_import_closure_decision": "Arena asset decorators execute policy registration during embodiment import. Follow the official selective Isaac Lab rsl-rl extra and Arena Dockerfile msgpack 1.1.0 plus pyzmq 27.0.1 pins; do not rely on accidental packages from a broad development image.",
@@ -755,7 +834,7 @@
         "official_reference": "https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/collision.html#generate-mesh-colliders-cooking"
       }
     },
-    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff. OVRTX loaded all 415265 sealed Aura surflets, but the fully preregistered exact-camera v10 execution returned black color and no positive finite metric depth for either camera after the official ParticleFieldEmissive material and Gaussian accumulated-depth settings were bound. The exact Isaac Lab source uses the same material wiring but tests a concrete ParticleField3DGaussianSplat; neither the audited OVRTX skill tree nor the executed evidence establishes live support for Aura's ParticleField Gaussian-surflet kernel. SAGE remains the registered geometry, collision, and depth-reference layer and may not silently replace Aura as policy-visible appearance. OvPhysX remains unselected, the wrist camera omits the can, and live Aura depth composition remains required before policy admission.",
+    "co_resident_runtime_status": "PhysX and Isaac Sim RTX native build, exact reset, zero-action step, strict can stability, and camera tensor retention passed together at the v22 contact-clear 0.50 meter base standoff. OVRTX loaded all 415265 sealed Aura surflets, but the fully preregistered exact-camera v10 execution returned black color and no positive finite metric depth for either camera after the official ParticleFieldEmissive material and Gaussian accumulated-depth settings were bound. The audited OVRTX skill tree does not establish support for Aura's Gaussian-surflet kernel, so OVRTX is rejected for the sealed Aura layer. The exact official Aura source at f23b26c accepts arbitrary centered-pinhole camera poses and emits RGB, alpha, and expected or median camera-space depth; a bounded native exact-camera conformance canary is now the selected smallest next gate. SAGE remains registered geometry, collision, and depth-reference only and may not replace Aura as policy-visible appearance. OvPhysX remains unselected, the wrist camera omits the can, and live Aura plus Isaac depth composition remains required before policy admission.",
     "ovrtx_live_camera_evidence": {
       "run_id": "aura_ovrtx_live_camera_v6",
       "status": "blocked_metric_depth_and_visual_conformance",
@@ -820,6 +899,25 @@
         "sage_visible_appearance_substitution_allowed": false
       },
       "smallest_exact_blocker": "sealed_aura_hybrid_policy_observation_renderer_missing"
+    },
+    "native_aura_renderer_selection": {
+      "status": "materialized_unexecuted",
+      "decision_frozen_at": "2026-08-07T10:59:33Z",
+      "source_repository": "https://github.com/kkennethwu/AuraFusion360_official",
+      "source_commit": "f23b26c44ba84608306ba952510533ebf4c7877d",
+      "source_tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
+      "source_modified": false,
+      "representation": "2D Gaussian surflets",
+      "camera_interface": "publisher Camera or MiniCam with arbitrary centered-pinhole world pose",
+      "rgb_output": "render",
+      "alpha_output": "rend_alpha",
+      "metric_depth_output": "surf_depth with depth_ratio 0.0 selecting expected camera-space depth",
+      "metric_depth_source_evidence": "diff-surfel-rasterization forward.cu stores p_view.z and accumulates perspective-correct surfel depth in source scene units",
+      "sealed_source_mutated": false,
+      "policy_queried": false,
+      "selection_reason": "The selected Aura asset is natively 2D surflets; its exact publisher rasterizer preserves that representation and exposes the required RGB alpha and metric camera-space depth without converting it to a 3D Gaussian or SAGE mesh appearance.",
+      "required_next_receipt": "two frozen exact cameras must reproduce retained method-native RGB within preregistered thresholds and return positive finite metric depth before any live Isaac hybrid composition is admitted.",
+      "smallest_exact_blocker_until_execution": "sealed_aura_hybrid_policy_observation_renderer_missing"
     },
     "native_microcheck_evidence": {
       "run_id": "native_microcheck_v18_live_event_writer_reset",
@@ -914,9 +1012,10 @@
     "The audit proves exact official-source observations and binding implementation decisions at the recorded retrieval time.",
     "The v22 receipt proves that pinned Isaac Sim, Isaac Lab, Arena, the DROID Franka-Robotiq asset, PhysX, and Isaac Sim RTX reached build, exact reset, zero-action step, strict can stability, and two-camera tensor retention together at the sealed-SAGE-validated 0.50 meter base standoff.",
     "The v19 and v21 receipts show that both the all-zero and measured-open Robotiq resets left the prior 0.40 meter base standoff in near contact; v22 validates only the 0.50 meter reset and physics-step condition, not task solvability.",
-    "The evidence proves one OVRTX execution but does not yet prove valid live Aura metric depth, visual conformance, hybrid composition, useful wrist-camera framing, scripted task success, ovphysx execution, or either learned policy.",
+    "The evidence rejects OVRTX for this exact Aura Gaussian-surflet asset after the preregistered v10 run returned black RGB and no positive finite metric depth; it does not reject OVRTX for its documented supported representations.",
+    "The official native Aura renderer path is implemented and materialized but not yet executed in the new exact-camera canary, so it does not yet prove valid live Aura metric depth, visual conformance, hybrid composition, useful wrist-camera framing, scripted task success, ovphysx execution, or either learned policy.",
     "It does not establish policy validity, generalization, physical transfer, fresh partner evidence, or production readiness.",
     "Arena remains an alpha internal compositional dependency under Blueprint's existing evaluation and receipt contracts."
   ],
-  "audit_digest": "sha256:63d753f69c466f86aa3018a0069677dec3c0346e221ca015b06b452c02b7ac38"
+  "audit_digest": "sha256:df1982abfce42177f4ccc804c422213e11d6fdc3f2380f56f48ba011bb2b8f44"
 }

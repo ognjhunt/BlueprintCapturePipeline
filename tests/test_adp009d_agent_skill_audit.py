@@ -66,7 +66,14 @@ def test_audit_separates_followed_guidance_from_pending_and_inapplicable() -> No
         guidance["ovrtx-loading-usd"]["application_status"]
         == "followed_in_implementation"
     )
-    assert audit["runtime_compatibility_decision"]["ovrtx_selected"] is True
+    runtime = audit["runtime_compatibility_decision"]
+    assert runtime["ovrtx_selected"] is False
+    assert runtime["sealed_aura_renderer_backend"] == (
+        "AuraFusion360_official_native_2D_surfel_rasterizer"
+    )
+    assert runtime["native_aura_renderer_execution_status"] == (
+        "materialized_unexecuted"
+    )
     assert guidance["nvidia-omniverse-usd-performance-tuning"][
         "application_status"
     ] == "followed_in_implementation"

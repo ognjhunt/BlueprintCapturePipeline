@@ -133,6 +133,11 @@ from .adp009d_ovrtx_vast import (
     build_ovrtx_live_camera_bundle,
     run_ovrtx_live_camera_vast,
 )
+from .adp009d_aura_native_vast import (
+    PROBE_KIND as ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
+    build_aura_native_live_camera_bundle,
+    run_aura_native_live_camera_vast,
+)
 from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE as ADP_SIMREADY_ISAAC_IMAGE
 from .public_scene_simready_isaac_vast import (
     PROBE_KIND as ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1008,6 +1013,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
+            ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
             ADP_CONTENT_AGENTS_PROBE_KIND,
             ADP_AURA_SMOKE_PROBE_KIND,
@@ -1084,6 +1090,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
     gpu.add_argument("--adp009d-ovrtx-probe-manifest")
+    gpu.add_argument("--adp009d-aura-native-probe-manifest")
+    gpu.add_argument("--adp009d-aura-source-root")
     gpu.add_argument("--adp-simready-isaac-bundle-receipt")
     gpu.add_argument("--adp-job-dir")
     gpu.add_argument("--adp-max-hourly-rate-usd", type=float, default=0.80)
@@ -2228,6 +2236,144 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             else:
                 result = run_ovrtx_live_camera_vast(
+                    job_dir=args.adp_job_dir,
+                    prepared_bundle=prepared_bundle,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    machine_avoidlist_path=args.adp_machine_avoidlist,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "adp009d_aura_native_probe_manifest",
+                    "adp009d_aura_source_root",
+                    "adp_job_dir",
+                )
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            blockers = [*missing, *control_blockers]
+            if args.provider != "vast":
+                blockers.append("adp009d_aura_native_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("adp009d_aura_native_budget_invalid")
+            if not 1800 <= args.adp_hard_ttl_seconds <= 3600:
+                blockers.append("adp009d_aura_native_hard_ttl_invalid")
+            avoidlist_digest = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                if not avoidlist_path.is_file():
+                    blockers.append("adp009d_aura_native_machine_avoidlist_missing")
+                else:
+                    avoidlist_digest = (
+                        "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+                    )
+            prepared_bundle = None
+            if not blockers:
+                try:
+                    prepared_bundle = build_aura_native_live_camera_bundle(
+                        job_dir=Path(args.adp_job_dir) / "bundle",
+                        probe_manifest_path=args.adp009d_aura_native_probe_manifest,
+                        aura_root=args.adp009d_aura_source_root,
+                        implementation_commit=control_identity[
+                            "orchestrator_source_commit"
+                        ],
+                    )
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    blockers.append(
+                        "adp009d_aura_native_bundle_preparation_failed:"
+                        f"{type(exc).__name__}"
+                    )
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get(
+                    "orchestrator_source_commit"
+                ),
+                "bundle_sha256": (
+                    prepared_bundle.get("bundle_sha256") if prepared_bundle else None
+                ),
+                "input_digest": (
+                    prepared_bundle.get("input_digest") if prepared_bundle else None
+                ),
+                "aura_source_commit": (
+                    prepared_bundle.get("source_commit") if prepared_bundle else None
+                ),
+                "aura_source_tree": (
+                    prepared_bundle.get("source_tree") if prepared_bundle else None
+                ),
+                "aura_ply_sha256": (
+                    prepared_bundle.get("aura_ply_sha256") if prepared_bundle else None
+                ),
+                "candidate_policy_queried": False,
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "retry_cap": 0,
+                "machine_avoidlist_digest": avoidlist_digest,
+            }
+            allocation_binding_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(
+                        allocation_binding, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                ).hexdigest()
+            )
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=blockers
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": "user_authorized_bounded_gpu_compute_in_goal_scope",
+                    "private_data_uploaded": False,
+                    "candidate_policy_queried": False,
+                    "physical_outcome_values_uploaded": False,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if prepared_bundle is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": sorted(set(blockers)),
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_aura_native_live_camera_vast(
                     job_dir=args.adp_job_dir,
                     prepared_bundle=prepared_bundle,
                     paid_resource_admission_grant=grant,

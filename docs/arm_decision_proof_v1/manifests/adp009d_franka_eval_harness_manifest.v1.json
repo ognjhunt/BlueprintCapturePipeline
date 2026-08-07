@@ -65,8 +65,8 @@
       "role": "agent_skill_audit",
       "root": "repo",
       "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_agent_skill_audit.v1.json",
-      "size_bytes": 48760,
-      "sha256": "sha256:3c4f6b0413b6269515716843260b07134eed96f2e4ac033a8bfcac69ac96172c"
+      "size_bytes": 60075,
+      "sha256": "sha256:d187e413dc060c0f825e77cbdb6692fb96a179fb3685fba93793440f25bbea57"
     },
     {
       "role": "approved_can",
@@ -510,8 +510,8 @@
     "runtime_override_policy": "resolved scenario parameters only; no scattered conditionals"
   },
   "observation_renderer": {
-    "backend_candidate": "OVRTX Aura background plus Isaac Lab Camera dynamic layer",
-    "backend_status": "native_isaac_camera_microcheck_passed_and_digest_bound_ovrtx_inputs_materialized_live_ovrtx_execution_missing",
+    "backend_candidate": "AuraFusion360 official native 2D-surfel rasterizer plus Isaac Lab Camera dynamic layer",
+    "backend_status": "native_isaac_camera_microcheck_passed_ovrtx_exact_asset_rejected_native_aura_exact_camera_canary_materialized_unexecuted",
     "composition": "live_depth_correct_aura_dynamic_geometry",
     "aura_camera_pose_source": "same live Isaac camera calibration and timestamp",
     "dynamic_geometry": [
@@ -521,7 +521,7 @@
       "other dynamic geometry"
     ],
     "metric_depth_aov": {
-      "aura": "DistanceToCameraSD",
+      "aura": "aurafusion360_expected_camera_depth_m",
       "dynamic": "distance_to_camera"
     },
     "unitless_depth_sd_allowed": false,
@@ -536,9 +536,10 @@
     ],
     "camera_calibration_retained_per_frame": true,
     "timestamp_retained_per_frame": true,
-    "ovrtx_used_by_selected_path": true,
-    "ovrtx_selection_status": "selected_for_sealed_aura_background_materialized_unexecuted",
-    "selected_path_reason": "OVRTX supports the admitted planar Gaussian-surflet schema from the exact live Isaac camera pose while Isaac Lab Camera retains dynamic geometry, semantics, physics timing, and metric depth",
+    "ovrtx_used_by_selected_path": false,
+    "ovrtx_selection_status": "rejected_for_exact_aura_surflet_asset_after_preregistered_black_rgb_and_missing_metric_depth",
+    "native_aura_renderer_status": "materialized_unexecuted",
+    "selected_path_reason": "Aura's exact official native rasterizer preserves the sealed 2D-surflet representation and exposes RGB alpha and expected metric camera-space depth from arbitrary centered-pinhole live camera poses; Isaac Lab Camera retains dynamic geometry semantics physics timing and dynamic metric depth",
     "ovrtx_particlefield": {
       "source_sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
       "output_sha256": "sha256:3b65027873579d29db998f863243d6613156e1c1b0267887c16c5d43f77053d5",
@@ -727,5 +728,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:92febea1c8d28784b53e58e4732321bc69b248d7f5b3b8e88137c89c069bb37d"
+  "harness_digest": "sha256:ed0aba3ba1edb9a9699f3802ba201492fd22f2d568361323a02887bf5f848c32"
 }

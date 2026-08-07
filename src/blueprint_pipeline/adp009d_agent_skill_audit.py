@@ -40,6 +40,11 @@ EXPECTED_REPOSITORIES = {
         "revision": "358510a74b59120bc3d4bd183ac92734018b38f3",
         "tree": "b9c86063c7aeb40f83dd4fd8f84051ab96813eb4",
     },
+    "aurafusion360": {
+        "repository_url": "https://github.com/kkennethwu/AuraFusion360_official",
+        "revision": "f23b26c44ba84608306ba952510533ebf4c7877d",
+        "tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
+    },
     "ovrtx": {
         "repository_url": "https://github.com/NVIDIA-Omniverse/ovrtx",
         "revision": "4b9a5fe6f8becf6c5ff031e167cd4201054a96ce",
@@ -242,8 +247,18 @@ def validate_agent_skill_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
             errors.append("runtime_incompatible_develop_not_rejected")
         if runtime.get("arena_claim_ceiling") != "alpha_internal_rehearsal_only":
             errors.append("runtime_arena_claim_ceiling_invalid")
-        if runtime.get("ovrtx_selected") is not True:
-            errors.append("runtime_ovrtx_selection_invalid")
+        if runtime.get("ovrtx_selected") is not False:
+            errors.append("runtime_failed_ovrtx_path_not_rejected")
+        if runtime.get("sealed_aura_renderer_backend") != (
+            "AuraFusion360_official_native_2D_surfel_rasterizer"
+        ):
+            errors.append("runtime_native_aura_renderer_not_selected")
+        if runtime.get("native_aura_renderer_execution_status") not in {
+            "materialized_unexecuted",
+            "executed_exact_camera_conformance_passed",
+            "executed_exact_camera_conformance_blocked",
+        }:
+            errors.append("runtime_native_aura_renderer_status_invalid")
 
     if not _nonempty_strings(normalized.get("claim_ceiling")):
         errors.append("claim_ceiling_missing")

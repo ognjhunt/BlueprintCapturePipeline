@@ -1,7 +1,7 @@
 """Reusable fail-closed contracts for the ADP-009D Isaac Lab evaluation harness.
 
 The module owns deterministic validation and scenario materialization.  Isaac
-Lab, Arena, OVRTX, ovphysx, and learned policies remain runtime adapters behind
+Lab, Arena, appearance renderers, ovphysx, and learned policies remain runtime adapters behind
 the existing :mod:`evaluation_run_contract` seams.  Nothing in this module can
 turn a prepared manifest or caller-authored result into evaluation evidence.
 """
@@ -33,7 +33,7 @@ SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 
 REQUIRED_ASSET_DIGESTS = {
-    "agent_skill_audit": "sha256:3c4f6b0413b6269515716843260b07134eed96f2e4ac033a8bfcac69ac96172c",
+    "agent_skill_audit": "sha256:d187e413dc060c0f825e77cbdb6692fb96a179fb3685fba93793440f25bbea57",
     "approved_can": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
     "aura_appearance": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
     "hybrid_seal_receipt": "sha256:dbb19cd7ce3229d58e2a1fafee6ddd042b5f3002d1ab223783382171373e4b1b",
@@ -77,6 +77,7 @@ ALLOWED_SAMPLING = {"fixed", "discrete", "uniform"}
 ALLOWED_METRIC_DEPTH_AOVS = {
     "DistanceToCameraSD",
     "DistanceToImagePlaneSD",
+    "aurafusion360_expected_camera_depth_m",
     "distance_to_camera",
     "distance_to_image_plane",
 }
