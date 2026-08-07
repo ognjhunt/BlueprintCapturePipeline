@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shutil
 from collections.abc import Mapping, Sequence
@@ -43,6 +44,9 @@ DEFAULT_CAMERA_IDS = ("approach_close", "right_translate")
 EXPECTED_AURA_PLY_SHA256 = (
     "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd"
 )
+AURA_NATIVE_RENDER_MANIFEST_DIGEST = (
+    "sha256:dae559070e1df3df58a9778f11ced6295f3810fd2314d9307acfcaf4f70189ca"
+)
 
 
 def _read_mapping(path: Path, error: str) -> dict[str, Any]:
@@ -74,6 +78,188 @@ def _finite_matrix(value: Any, *, size: int, error: str) -> list[list[float]]:
     if not all(math.isfinite(item) for row in result for item in row):
         raise ValueError(error)
     return result
+
+
+def _opencv_world_from_opengl_pose(
+    *, position_world: Any, quaternion_world_opengl_xyzw: Any
+) -> list[list[float]]:
+    """Convert Isaac's documented OpenGL camera axes to OpenCV/ROS axes."""
+
+    if not (
+        isinstance(position_world, Sequence)
+        and not isinstance(position_world, (str, bytes))
+        and len(position_world) == 3
+        and isinstance(quaternion_world_opengl_xyzw, Sequence)
+        and not isinstance(quaternion_world_opengl_xyzw, (str, bytes))
+        and len(quaternion_world_opengl_xyzw) == 4
+    ):
+        raise ValueError("aura_native_isaac_camera_pose_invalid")
+    position = [float(value) for value in position_world]
+    x, y, z, w = (float(value) for value in quaternion_world_opengl_xyzw)
+    if not all(math.isfinite(value) for value in (*position, x, y, z, w)):
+        raise ValueError("aura_native_isaac_camera_pose_invalid")
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if norm <= 1.0e-12:
+        raise ValueError("aura_native_isaac_camera_pose_invalid")
+    x, y, z, w = (value / norm for value in (x, y, z, w))
+    rotation_gl = [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ]
+    # Isaac/Usd OpenGL: +X right, +Y up, -Z forward. OpenCV/ROS:
+    # +X right, +Y down, +Z forward. Flip the camera-local Y and Z axes.
+    rotation_cv = [
+        [rotation_gl[row][0], -rotation_gl[row][1], -rotation_gl[row][2]]
+        for row in range(3)
+    ]
+    return [
+        [*rotation_cv[0], position[0]],
+        [*rotation_cv[1], position[1]],
+        [*rotation_cv[2], position[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def materialize_aura_native_from_isaac_camera_probe(
+    *,
+    isaac_result_path: str | Path,
+    aura_ply_path: str | Path,
+    output_path: str | Path,
+    camera_ids: Sequence[str] = ("external_camera", "wrist_camera"),
+) -> dict[str, Any]:
+    """Freeze exact retained Isaac camera poses and input layers for Aura rendering."""
+
+    result_path = Path(isaac_result_path).expanduser().resolve()
+    result = _read_mapping(result_path, "aura_native_isaac_result_invalid")
+    ply = Path(aura_ply_path).expanduser().resolve()
+    if (
+        result.get("schema_version") != "adp009d_native_microcheck.v1"
+        or result.get("status") != "completed"
+        or result.get("blockers")
+        or result.get("workflow") != "isaac_lab_manager_based_via_arena_composition"
+        or result.get("sealed_source_mutated") is not False
+        or result.get("candidate_policy_queried") is not False
+        or result.get("candidate_outcomes_accessed") is not False
+        or result.get("arena_revision")
+        != "8b4a3a47fc53de23e8205089d71109a2e2348acd"
+        or result.get("isaac_lab_revision")
+        != "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
+    ):
+        raise ValueError("aura_native_isaac_result_invalid")
+    if not ply.is_file() or _sha256(ply) != EXPECTED_AURA_PLY_SHA256:
+        raise ValueError("aura_native_sealed_ply_digest_mismatch")
+    if len(camera_ids) != 2 or len(set(camera_ids)) != 2:
+        raise ValueError("aura_native_isaac_camera_set_invalid")
+    by_id = {
+        str(row.get("camera_id")): row
+        for row in result.get("camera_frames", [])
+        if isinstance(row, Mapping)
+    }
+    rows: list[dict[str, Any]] = []
+    for camera_id in camera_ids:
+        row = by_id.get(str(camera_id))
+        if not isinstance(row, Mapping):
+            raise ValueError("aura_native_isaac_camera_missing")
+        intrinsic = _finite_matrix(
+            row.get("intrinsic_matrix"),
+            size=3,
+            error="aura_native_isaac_intrinsic_invalid",
+        )
+        resolution_hw = row.get("resolution_hw")
+        if not (
+            isinstance(resolution_hw, Sequence)
+            and not isinstance(resolution_hw, (str, bytes))
+            and len(resolution_hw) == 2
+        ):
+            raise ValueError("aura_native_isaac_resolution_invalid")
+        height, width = (int(value) for value in resolution_hw)
+        if (
+            width <= 0
+            or height <= 0
+            or intrinsic[0][0] <= 0
+            or intrinsic[1][1] <= 0
+            or abs(intrinsic[0][2] - width / 2.0) > 1.0e-4
+            or abs(intrinsic[1][2] - height / 2.0) > 1.0e-4
+        ):
+            raise ValueError("aura_native_isaac_offcenter_pinhole_unsupported")
+        calibration = {
+            "camera_model": "pinhole",
+            "intrinsic_matrix": intrinsic,
+            "world_from_camera": _opencv_world_from_opengl_pose(
+                position_world=row.get("position_world_m"),
+                quaternion_world_opengl_xyzw=row.get(
+                    "quaternion_world_opengl_xyzw"
+                ),
+            ),
+            "resolution": [width, height],
+            "camera_coordinate_convention": "OpenCV_right_down_forward",
+        }
+        input_artifacts: dict[str, Any] = {}
+        for key, field in (
+            ("dynamic_rgb", "rgb_png"),
+            ("dynamic_depth", "metric_depth"),
+            ("dynamic_semantic", "semantic_segmentation"),
+        ):
+            binding = row.get(field)
+            if not isinstance(binding, Mapping):
+                raise ValueError("aura_native_isaac_input_binding_invalid")
+            artifact = (result_path.parent / str(binding.get("path") or "")).resolve()
+            try:
+                artifact.relative_to(result_path.parent)
+            except ValueError as exc:
+                raise ValueError("aura_native_isaac_input_path_escape") from exc
+            if not artifact.is_file() or _sha256(artifact) != binding.get("sha256"):
+                raise ValueError("aura_native_isaac_input_digest_mismatch")
+            input_artifacts[key] = {
+                "path": str(artifact),
+                "sha256": binding["sha256"],
+            }
+        rows.append(
+            {
+                "camera_id": str(camera_id),
+                "calibration": calibration,
+                "calibration_digest": canonical_digest(calibration),
+                "native_reference_path": None,
+                "native_reference_sha256": None,
+                "source_isaac_frame_index": int(row.get("frame_index")),
+                "source_isaac_sim_time_seconds": float(row.get("sim_time_seconds")),
+                "source_isaac_timestamp_ns": int(row.get("timestamp_ns")),
+                "source_isaac_input_artifacts": input_artifacts,
+                "source_isaac_semantic_labels": row.get("semantic_segmentation", {}).get(
+                    "id_to_labels"
+                ),
+            }
+        )
+    manifest: dict[str, Any] = {
+        "schema_version": PROBE_SCHEMA_VERSION,
+        "status": "materialized_unexecuted",
+        "program_id": "arm-decision-proof-v1",
+        "probe_purpose": "aura_native_from_live_isaac_camera_calibration",
+        "aura_repository": SOURCE_REPOSITORY,
+        "aura_revision": SOURCE_COMMIT,
+        "aura_tree": SOURCE_TREE,
+        "aura_submodules": SUBMODULES,
+        "aura_ply_path": str(ply),
+        "aura_ply_sha256": _sha256(ply),
+        "aura_native_render_manifest_digest": AURA_NATIVE_RENDER_MANIFEST_DIGEST,
+        "source_isaac_result_path": str(result_path),
+        "source_isaac_result_sha256": _sha256(result_path),
+        "camera_configs": sorted(rows, key=lambda value: value["camera_id"]),
+        "depth_output": "surf_depth_expected_camera_z_m",
+        "depth_ratio": 0.0,
+        "conformance_thresholds": FROZEN_THRESHOLDS,
+        "threshold_definition_commit": THRESHOLD_DEFINITION_COMMIT,
+        "thresholds_frozen_before_execution": True,
+        "renderer_outcomes_observed_before_freeze": False,
+        "candidate_policy_queried": False,
+        "retry_cap": 0,
+    }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    write_json(Path(output_path).expanduser().resolve(), manifest)
+    return manifest
 
 
 def materialize_aura_native_exact_camera_probe(
@@ -282,6 +468,17 @@ def build_aura_native_live_camera_bundle(
             "calibration": row.get("calibration"),
             "calibration_digest": row.get("calibration_digest"),
             "native_reference_sha256": row.get("native_reference_sha256"),
+            "source_isaac_frame_index": row.get("source_isaac_frame_index"),
+            "source_isaac_sim_time_seconds": row.get(
+                "source_isaac_sim_time_seconds"
+            ),
+            "source_isaac_timestamp_ns": row.get("source_isaac_timestamp_ns"),
+            "source_isaac_input_artifacts": row.get(
+                "source_isaac_input_artifacts"
+            ),
+            "source_isaac_semantic_labels": row.get(
+                "source_isaac_semantic_labels"
+            ),
         }
         if config["calibration_digest"] != canonical_digest(config["calibration"]):
             raise ValueError("adp009d_aura_native_calibration_digest_mismatch")
@@ -293,6 +490,11 @@ def build_aura_native_live_camera_bundle(
                 "configuration_sha256": _sha256(config_path),
                 "calibration_digest": config["calibration_digest"],
                 "native_reference_sha256": config["native_reference_sha256"],
+                "source_isaac_frame_index": config["source_isaac_frame_index"],
+                "source_isaac_sim_time_seconds": config[
+                    "source_isaac_sim_time_seconds"
+                ],
+                "source_isaac_timestamp_ns": config["source_isaac_timestamp_ns"],
             }
         )
     if len(camera_bindings) < 2 or len(camera_bindings) > 8:
@@ -396,6 +598,7 @@ def run_aura_native_live_camera_vast(
 __all__ = [
     "PROBE_KIND",
     "build_aura_native_live_camera_bundle",
+    "materialize_aura_native_from_isaac_camera_probe",
     "materialize_aura_native_exact_camera_probe",
     "run_aura_native_live_camera_vast",
 ]

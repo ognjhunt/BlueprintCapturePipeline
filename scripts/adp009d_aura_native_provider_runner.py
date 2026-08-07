@@ -120,6 +120,13 @@ def _render_camera(*, source: Path, ply: Path, config: dict[str, Any], output: P
         "calibration": calibration,
         "calibration_digest": config["calibration_digest"],
         "native_reference_sha256": config["native_reference_sha256"],
+        "source_isaac_frame_index": config.get("source_isaac_frame_index"),
+        "source_isaac_sim_time_seconds": config.get(
+            "source_isaac_sim_time_seconds"
+        ),
+        "source_isaac_timestamp_ns": config.get("source_isaac_timestamp_ns"),
+        "source_isaac_input_artifacts": config.get("source_isaac_input_artifacts"),
+        "source_isaac_semantic_labels": config.get("source_isaac_semantic_labels"),
         "rgb_pixel_std": float(rgb.std()),
         "positive_finite_depth_count": int(finite_depth.sum()),
         "minimum_positive_depth_m": (
