@@ -5106,7 +5106,10 @@ def test_exact_simready_isaac_bundle_forces_http1_download() -> None:
         provider_bundle_kind="adp_simready_isaac",
     )
 
-    assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
+    # Intent, not flag order: HTTP/1.1 with retries, however it is spelled.
+    # A literal pin here broke when retry flags were added between the two.
+    assert '--http1.1' in script and '--retry-all-errors' in script
+    assert '-fL "$blueprint_download_src"' in script
 
 
 def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs(

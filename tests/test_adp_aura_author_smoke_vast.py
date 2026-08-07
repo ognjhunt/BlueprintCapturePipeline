@@ -613,7 +613,10 @@ def test_vast_adapter_preflights_dedicated_aura_bundle(
         provider_bundle_kind="adp_aura_smoke",
     )
     assert "run_adp_aura_author_smoke_provider_runtime.sh" in script
-    assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
+    # Intent, not flag order: HTTP/1.1 with retries, however it is spelled.
+    # A literal pin here broke when retry flags were added between the two.
+    assert '--http1.1' in script and '--retry-all-errors' in script
+    assert '-fL "$blueprint_download_src"' in script
     assert "adp_aura_provider_runtime_output.zip" in script
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         entrypoint = archive.read(

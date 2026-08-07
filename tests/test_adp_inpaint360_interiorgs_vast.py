@@ -316,7 +316,10 @@ def test_bundle_passes_vast_preflight_and_has_fail_closed_launch_script(
         provider_bundle_kind=runtime.PROVIDER_BUNDLE_KIND,
     )
     assert "run_adp_inpaint360_interiorgs_provider_runtime.sh" in script
-    assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
+    # Intent, not flag order: HTTP/1.1 with retries, however it is spelled.
+    # A literal pin here broke when retry flags were added between the two.
+    assert '--http1.1' in script and '--retry-all-errors' in script
+    assert '-fL "$blueprint_download_src"' in script
     assert "adp_inpaint360_provider_runtime_output.zip" in script
     assert "provider_output_zip_exclusions.json" in script
     assert "BLUEPRINT_ADP_INPAINT360_RUNTIME_PROGRESS" in (
