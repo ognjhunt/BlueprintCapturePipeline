@@ -7,6 +7,7 @@ import pytest
 
 from blueprint_pipeline.adp009d_live_hybrid_observation import (
     HYBRID_RUNTIME_RECEIPT_SCHEMA_VERSION,
+    ISAAC_CAMERA_BACKEND,
     LiveHybridObservationError,
     compose_live_hybrid_observation,
     validate_live_hybrid_runtime_receipt,
@@ -155,6 +156,54 @@ def test_live_runtime_receipt_requires_executed_ovrtx_evidence() -> None:
             "hybrid_runtime_rtpt_warmup_below_documented_default.*"
             "hybrid_runtime_sealed_source_mutated.*"
             "sealed_aura_hybrid_policy_observation_renderer_missing"
+        ),
+    ):
+        validate_live_hybrid_runtime_receipt(mutated)
+
+
+def test_live_runtime_receipt_accepts_selected_isaac_camera_evidence() -> None:
+    receipt = _runtime_receipt()
+    receipt.update(
+        {
+            "backend": ISAAC_CAMERA_BACKEND,
+            "initialization_order": None,
+            "render_settings_target": None,
+            "metric_depth_aov": "distance_to_camera",
+            "attached_mode_ordinals_respected": None,
+            "write_floors_respected": None,
+            "dlpack_ownership_explicit": None,
+            "map_unmap_balanced": None,
+            "rtpt_warmup_frames": None,
+            "rtpt_warmup_change_reason": None,
+            "camera_data_types": [
+                "rgb",
+                "distance_to_camera",
+                "semantic_segmentation",
+            ],
+            "camera_calibration_retained": True,
+            "camera_timestamps_retained": True,
+            "camera_warmup_frames": 40,
+        }
+    )
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+    assert validate_live_hybrid_runtime_receipt(receipt) == receipt
+
+    mutated = copy.deepcopy(receipt)
+    mutated["camera_calibration_retained"] = False
+    mutated["camera_timestamps_retained"] = False
+    mutated["camera_data_types"] = ["rgb"]
+    mutated["receipt_digest"] = canonical_digest(
+        mutated, digest_field="receipt_digest"
+    )
+    with pytest.raises(
+        LiveHybridObservationError,
+        match=(
+            "hybrid_runtime_camera_calibration_missing.*"
+            "hybrid_runtime_camera_timestamps_missing.*"
+            "hybrid_runtime_isaac_camera_data_types_invalid"
         ),
     ):
         validate_live_hybrid_runtime_receipt(mutated)

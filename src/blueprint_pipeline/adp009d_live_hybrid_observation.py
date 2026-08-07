@@ -21,6 +21,8 @@ HYBRID_FRAME_RECEIPT_SCHEMA_VERSION = "adp009d_live_hybrid_frame_receipt.v1"
 HYBRID_RUNTIME_RECEIPT_SCHEMA_VERSION = "adp009d_live_hybrid_runtime_receipt.v1"
 MISSING_RENDERER_BLOCKER = "sealed_aura_hybrid_policy_observation_renderer_missing"
 METRIC_DEPTH_AOVS = {"DistanceToCameraSD", "DistanceToImagePlaneSD"}
+ISAAC_CAMERA_BACKEND = "Isaac Lab Camera over Isaac Sim RTX"
+ISAAC_CAMERA_METRIC_DEPTH_AOV = "distance_to_camera"
 
 
 class LiveHybridObservationError(ValueError):
@@ -238,37 +240,55 @@ def validate_live_hybrid_runtime_receipt(value: Mapping[str, Any]) -> dict[str, 
         errors.append("hybrid_runtime_schema_invalid")
     if receipt.get("status") != "executed_live_renderer_microcheck":
         errors.append(MISSING_RENDERER_BLOCKER)
-    if receipt.get("backend") != "OVRTX":
+    backend = receipt.get("backend")
+    if backend not in {"OVRTX", ISAAC_CAMERA_BACKEND}:
         errors.append("hybrid_runtime_backend_invalid")
-    if receipt.get("initialization_order") != ["OVRTX", "OvPhysX"]:
-        errors.append("hybrid_runtime_initialization_order_invalid")
-    if receipt.get("render_settings_target") != "RenderProduct":
-        errors.append("hybrid_runtime_render_settings_target_invalid")
-    if receipt.get("metric_depth_aov") not in METRIC_DEPTH_AOVS:
-        errors.append("hybrid_runtime_metric_depth_aov_invalid")
     if receipt.get("unitless_depth_sd_used") is not False:
         errors.append("hybrid_runtime_unitless_depth_forbidden")
-    if receipt.get("attached_mode_ordinals_respected") is not True:
-        errors.append("hybrid_runtime_attached_ordinals_missing")
-    if receipt.get("write_floors_respected") is not True:
-        errors.append("hybrid_runtime_write_floors_missing")
+    if backend == "OVRTX":
+        if receipt.get("initialization_order") != ["OVRTX", "OvPhysX"]:
+            errors.append("hybrid_runtime_initialization_order_invalid")
+        if receipt.get("render_settings_target") != "RenderProduct":
+            errors.append("hybrid_runtime_render_settings_target_invalid")
+        if receipt.get("metric_depth_aov") not in METRIC_DEPTH_AOVS:
+            errors.append("hybrid_runtime_metric_depth_aov_invalid")
+        if receipt.get("attached_mode_ordinals_respected") is not True:
+            errors.append("hybrid_runtime_attached_ordinals_missing")
+        if receipt.get("write_floors_respected") is not True:
+            errors.append("hybrid_runtime_write_floors_missing")
+        if receipt.get("dlpack_ownership_explicit") is not True:
+            errors.append("hybrid_runtime_dlpack_ownership_missing")
+        if receipt.get("map_unmap_balanced") is not True:
+            errors.append("hybrid_runtime_map_unmap_unbalanced")
+        warmup = receipt.get("rtpt_warmup_frames")
+        if not isinstance(warmup, int) or warmup < 40:
+            errors.append("hybrid_runtime_rtpt_warmup_below_documented_default")
+        if warmup != 40 and not str(receipt.get("rtpt_warmup_change_reason") or ""):
+            errors.append("hybrid_runtime_rtpt_warmup_change_unrecorded")
+    elif backend == ISAAC_CAMERA_BACKEND:
+        if receipt.get("metric_depth_aov") != ISAAC_CAMERA_METRIC_DEPTH_AOV:
+            errors.append("hybrid_runtime_metric_depth_aov_invalid")
+        if set(receipt.get("camera_data_types") or []) != {
+            "rgb",
+            ISAAC_CAMERA_METRIC_DEPTH_AOV,
+            "semantic_segmentation",
+        }:
+            errors.append("hybrid_runtime_isaac_camera_data_types_invalid")
+        if receipt.get("camera_calibration_retained") is not True:
+            errors.append("hybrid_runtime_camera_calibration_missing")
+        if receipt.get("camera_timestamps_retained") is not True:
+            errors.append("hybrid_runtime_camera_timestamps_missing")
+        warmup = receipt.get("camera_warmup_frames")
+        if not isinstance(warmup, int) or warmup <= 0:
+            errors.append("hybrid_runtime_camera_warmup_missing")
     if receipt.get("semantic_source_usd_mutated") is not False:
         errors.append("hybrid_runtime_sealed_source_mutated")
     if receipt.get("semantic_override_layer_composed") is not True:
         errors.append("hybrid_runtime_semantic_override_missing")
     if receipt.get("camera_or_settings_change_reset") is not True:
         errors.append("hybrid_runtime_reset_after_change_missing")
-    if receipt.get("dlpack_ownership_explicit") is not True:
-        errors.append("hybrid_runtime_dlpack_ownership_missing")
-    if receipt.get("map_unmap_balanced") is not True:
-        errors.append("hybrid_runtime_map_unmap_unbalanced")
     if receipt.get("device_synchronization_explicit") is not True:
         errors.append("hybrid_runtime_device_synchronization_missing")
-    warmup = receipt.get("rtpt_warmup_frames")
-    if not isinstance(warmup, int) or warmup < 40:
-        errors.append("hybrid_runtime_rtpt_warmup_below_documented_default")
-    if warmup != 40 and not str(receipt.get("rtpt_warmup_change_reason") or ""):
-        errors.append("hybrid_runtime_rtpt_warmup_change_unrecorded")
     if receipt.get("path_tracing_used") is True:
         spp = receipt.get("path_tracing_samples_per_pixel")
         if not isinstance(spp, int) or spp <= 0:
@@ -306,6 +326,8 @@ __all__ = [
     "HYBRID_FRAME_RECEIPT_SCHEMA_VERSION",
     "HYBRID_RUNTIME_RECEIPT_SCHEMA_VERSION",
     "LiveHybridObservationError",
+    "ISAAC_CAMERA_BACKEND",
+    "ISAAC_CAMERA_METRIC_DEPTH_AOV",
     "METRIC_DEPTH_AOVS",
     "MISSING_RENDERER_BLOCKER",
     "compose_live_hybrid_observation",
