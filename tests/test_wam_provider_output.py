@@ -60,6 +60,21 @@ def test_provider_output_inspection_is_provider_neutral(tmp_path: Path) -> None:
     assert result["video_smoke_proven"] is False
 
 
+def test_provider_output_recognizes_adp009d_ovrtx_result(tmp_path: Path) -> None:
+    output_zip = tmp_path / "ovrtx-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "adp009d_ovrtx_live_camera_result.json",
+            json.dumps({"status": "blocked", "blockers": ["render_failed"]}),
+        )
+
+    result = inspect_provider_runtime_output_zip(output_zip)
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_status"] == "blocked"
+    assert result["runtime_result"]["blockers"] == ["render_failed"]
+
+
 def test_runtime_summary_adds_evaluator_fields_only_for_attributable_result() -> None:
     summary = summarize_runtime_result(
         {

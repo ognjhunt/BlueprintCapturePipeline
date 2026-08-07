@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +37,12 @@ def _artifact(path: Path, root: Path) -> dict[str, Any]:
         "sha256": _sha256(path),
         "size_bytes": path.stat().st_size,
     }
+
+
+def _absolute_executable_without_resolving_symlinks(path: Path) -> Path:
+    """Keep virtual-environment interpreter identity while making it absolute."""
+
+    return Path(os.path.abspath(os.fspath(path)))
 
 
 def run(*, runtime_dir: Path, output_dir: Path, ovrtx_python: Path) -> dict[str, Any]:
@@ -167,7 +174,9 @@ def main() -> int:
         result = run(
             runtime_dir=args.runtime_dir.resolve(),
             output_dir=args.output_dir.resolve(),
-            ovrtx_python=args.ovrtx_python.resolve(),
+            ovrtx_python=_absolute_executable_without_resolving_symlinks(
+                args.ovrtx_python
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         result = {

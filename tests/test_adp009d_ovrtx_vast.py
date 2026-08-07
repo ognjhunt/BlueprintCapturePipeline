@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.adp009d_ovrtx_vast import build_ovrtx_live_camera_bundle
+from blueprint_pipeline.adp009d_ovrtx_provider_runner import (
+    _absolute_executable_without_resolving_symlinks,
+)
 from blueprint_pipeline.common import sha256_file
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.provider_runtime_bundle_contract import (
@@ -138,3 +141,16 @@ def test_ovrtx_bundle_rejects_changed_camera_config(tmp_path: Path) -> None:
             implementation_commit="a" * 40,
             generated_at="2026-08-06T00:00:00+00:00",
         )
+
+
+def test_ovrtx_runner_preserves_virtualenv_python_symlink(tmp_path: Path) -> None:
+    base_python = tmp_path / "base-python"
+    base_python.write_text("python", encoding="utf-8")
+    venv_python = tmp_path / "venv/bin/python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.symlink_to(base_python)
+
+    observed = _absolute_executable_without_resolving_symlinks(venv_python)
+
+    assert observed == venv_python
+    assert observed != base_python.resolve()
