@@ -967,6 +967,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         }
         env.reset(seed=20260806)
         robot = env.unwrapped.scene["robot"]
+        body_names_all = list(robot.data.body_names)
         approved_can = env.unwrapped.scene["approved_can"]
         hold_start_can_pose = _to_torch(approved_can.data.root_pose_w)[0].clone()
         hold_action = torch.zeros_like(action)
@@ -1000,6 +1001,69 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     sim_time=float(env.unwrapped.episode_length_buf[0].item() * cfg.sim.dt * cfg.decimation),
                 )
             )
+        # --- gripper convention probe -----------------------------------------
+        # DROID encodes the gripper as a scalar in [0, 1] where above 0.5 means
+        # closed.  Arena's eighth action dimension has its own convention, and
+        # an inverted one would turn every commanded grasp into a release --
+        # which would read as a policy failure rather than a harness bug.  So
+        # measure it: command each candidate, let the fingers settle, and report
+        # which one closes them.  The action executor refuses to run until this
+        # has been observed, and an ambiguous result must stay ambiguous.
+        _phase("gripper_convention_probe")
+        phase_started = time.monotonic()
+        finger_pair = ("left_inner_finger", "right_inner_finger")
+        finger_indices = [
+            body_names_all.index(name)
+            for name in finger_pair
+            if name in body_names_all
+        ]
+        gripper_probe: dict[str, Any] = {
+            "schema_version": "adp009d_gripper_convention_probe.v1",
+            "candidate_commands": [0.0, 1.0],
+            "finger_bodies": list(finger_pair),
+            "settle_steps": 30,
+        }
+        if len(finger_indices) == 2:
+            separations: dict[str, float] = {}
+            for command in (0.0, 1.0):
+                env.reset(seed=20260806)
+                probe_action = torch.zeros_like(action)
+                probe_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
+                probe_action[:, 7] = float(command)
+                for _ in range(30):
+                    env.step(probe_action)
+                poses = _to_torch(robot.data.body_pose_w)[0, finger_indices, :3]
+                separations[str(command)] = float(
+                    torch.linalg.vector_norm(poses[0] - poses[1])
+                )
+            open_gap = separations["0.0"]
+            closed_gap = separations["1.0"]
+            travel = abs(open_gap - closed_gap)
+            gripper_probe["finger_separation_m"] = separations
+            gripper_probe["separation_travel_m"] = travel
+            # Below this the two commands are indistinguishable and the
+            # convention stays unmeasured rather than being guessed from noise.
+            if travel < 1.0e-3:
+                gripper_probe["status"] = "ambiguous"
+                gripper_probe["blockers"] = ["gripper_convention_travel_below_floor"]
+            else:
+                closes_at = 1.0 if closed_gap < open_gap else 0.0
+                gripper_probe["status"] = "measured"
+                gripper_probe["blockers"] = []
+                gripper_probe["closed_command"] = closes_at
+                gripper_probe["open_command"] = 1.0 - closes_at
+        else:
+            gripper_probe["status"] = "blocked"
+            gripper_probe["blockers"] = ["gripper_convention_finger_bodies_missing"]
+        gripper_probe["probe_digest"] = _canonical_digest(gripper_probe)
+        # The probe reset the environment, so restore the canonical hold state
+        # the retained evidence above was measured under.
+        env.reset(seed=20260806)
+        _phase("gripper_convention_probe", gripper_probe["status"])
+        timings_seconds["gripper_convention_probe"] = round(
+            time.monotonic() - phase_started, 6
+        )
+
         timings_seconds["camera_retention"] = round(
             time.monotonic() - phase_started, 6
         )
@@ -1302,6 +1366,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "camera_warmup_frames": 40,
             "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": True,
+            "gripper_convention_probe": gripper_probe,
             "wrist_approach_capture": wrist_approach_capture,
             "semantic_override_layer": SEMANTIC_OVERRIDE_LAYER,
             "semantic_override_layer_digest": _canonical_digest(

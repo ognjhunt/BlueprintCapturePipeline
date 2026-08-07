@@ -168,3 +168,59 @@ def test_plan_matches_the_repository_droid_action_semantics() -> None:
     # Both read "closed" from the same scalar, even though the command differs.
     assert mine["gripper_closed"] is True
     assert theirs["gripper_position_target_m"] == 0.0
+
+
+def test_runtime_measures_the_gripper_convention_rather_than_assuming_it() -> None:
+    """The executor refuses to run without this, so the runtime must supply it."""
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+
+    # Both candidate commands are actually applied, not inferred from one.
+    assert "for command in (0.0, 1.0):" in source
+    # The decision comes from measured finger separation, not a constant.
+    assert "finger_separation_m" in source
+    assert "closes_at = 1.0 if closed_gap < open_gap else 0.0" in source
+    # An indistinguishable result stays unmeasured rather than guessed.
+    assert '"ambiguous"' in source
+    assert "gripper_convention_travel_below_floor" in source
+    # And the probe's own reset must not leave the canonical hold state altered.
+    probe = source[source.index("--- gripper convention probe") :]
+    probe = probe[: probe.index('timings_seconds["gripper_convention_probe"]')]
+    assert probe.count("env.reset(seed=20260806)") >= 2
+    assert "gripper_convention_probe" in source
+
+
+def test_a_measured_probe_result_constructs_a_usable_convention() -> None:
+    """The probe's output shape must feed GripperConvention directly."""
+
+    probe = {
+        "status": "measured",
+        "closed_command": 1.0,
+        "open_command": 0.0,
+        "separation_travel_m": 0.0412,
+    }
+    convention = GripperConvention(
+        closed_command=probe["closed_command"],
+        open_command=probe["open_command"],
+        measured_by_probe=probe["status"] == "measured",
+    )
+
+    closed = droid_row_to_isaac_action(
+        _chunk(gripper=0.9)[0], joint_limits=_LIMITS, gripper=convention
+    )
+    assert closed["isaac_action"][7] == 1.0
+
+    # An ambiguous probe must not yield a usable convention.
+    ambiguous = GripperConvention(
+        closed_command=1.0,
+        open_command=0.0,
+        measured_by_probe=("ambiguous" == "measured"),
+    )
+    with pytest.raises(DroidActionExecutionError):
+        droid_row_to_isaac_action(
+            _chunk()[0], joint_limits=_LIMITS, gripper=ambiguous
+        )
