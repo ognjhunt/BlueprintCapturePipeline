@@ -22,7 +22,18 @@ RESULT_NAME = "adp009d_native_microcheck.json"
 ISAAC_PYTHON = Path("/isaac-sim/python.sh")
 INSTALL_PROFILE_ID = "isaaclab_arena_physx_task_runtime.v1"
 ISAAC_LAB_INSTALL_TARGETS = ("assets", "physx", "tasks", "teleop")
+H5PY_VERSION = "3.16.0"
+H5PY_LINUX_CP312_WHEEL_SHA256 = (
+    "dfc21898ff025f1e8e67e194965a95a8d4754f452f83454538f98f8a3fcb207e"
+)
+H5PY_LINUX_CP312_WHEEL_URL = (
+    "https://files.pythonhosted.org/packages/9e/e9/"
+    "1a19e42cd43cc1365e127db6aae85e1c671da1d9a5d746f4d34a50edb577/"
+    f"h5py-{H5PY_VERSION}-cp312-cp312-manylinux_2_28_x86_64.whl"
+    f"#sha256={H5PY_LINUX_CP312_WHEEL_SHA256}"
+)
 EXPECTED_RUNTIME_DISTRIBUTIONS = (
+    "h5py",
     "isaaclab",
     "isaaclab_assets",
     "isaaclab_newton",
@@ -147,6 +158,7 @@ def _install_commands(source: Path) -> list[list[str]]:
     return [
         ["ln", "-sfn", "/isaac-sim", str(lab / "_isaac_sim")],
         [str(lab / "isaaclab.sh"), "-i", ",".join(ISAAC_LAB_INSTALL_TARGETS)],
+        [str(ISAAC_PYTHON), "-m", "pip", "install", H5PY_LINUX_CP312_WHEEL_URL],
         [str(ISAAC_PYTHON), "-m", "pip", "install", "--editable", str(source)],
         [str(ISAAC_PYTHON), "-c", distribution_probe],
     ]
@@ -168,6 +180,8 @@ def _validate_install_commands(commands: list[list[str]]) -> None:
     )
     if expected_selector not in flattened:
         raise RuntimeError("adp009d_runtime_install_profile_selector_mismatch")
+    if H5PY_LINUX_CP312_WHEEL_URL not in flattened:
+        raise RuntimeError("adp009d_runtime_h5py_pin_missing")
     if any(marker in flattened for marker in forbidden):
         raise RuntimeError("adp009d_runtime_install_profile_expanded")
 

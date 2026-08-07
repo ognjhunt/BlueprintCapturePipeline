@@ -406,6 +406,9 @@ def test_worker_uses_smallest_pinned_official_physx_install_profile(tmp_path: Pa
     assert worker.INSTALL_PROFILE_ID == "isaaclab_arena_physx_task_runtime.v1"
     assert worker.ISAAC_LAB_INSTALL_TARGETS == ("assets", "physx", "tasks", "teleop")
     assert "isaaclab.sh -i assets,physx,tasks,teleop" in flattened
+    assert worker.H5PY_VERSION == "3.16.0"
+    assert worker.H5PY_LINUX_CP312_WHEEL_URL in flattened
+    assert f"#sha256={worker.H5PY_LINUX_CP312_WHEEL_SHA256}" in flattened
     assert f"pip install --editable {source}" in flattened
     assert "isaaclab_arena" in flattened
     assert "isaaclab_newton" in flattened
@@ -422,8 +425,20 @@ def test_worker_rejects_expanded_install_profile() -> None:
     with pytest.raises(RuntimeError, match="adp009d_runtime_install_profile_expanded"):
         worker._validate_install_commands(
             [["/isaac-sim/python.sh", "-m", "pip", "install", "isaaclab_rl"]]
-            + [["isaaclab.sh", "-i", "assets,physx,tasks,teleop"]]
+            + worker._install_commands(Path("arena"))
         )
+
+
+def test_worker_rejects_missing_h5py_wheel_pin() -> None:
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    commands = [
+        command
+        for command in worker._install_commands(Path("arena"))
+        if worker.H5PY_LINUX_CP312_WHEEL_URL not in command
+    ]
+    with pytest.raises(RuntimeError, match="adp009d_runtime_h5py_pin_missing"):
+        worker._validate_install_commands(commands)
 
 
 def test_native_output_is_result_bearing_without_legacy_mp4_requirement(tmp_path: Path) -> None:

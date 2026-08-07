@@ -556,6 +556,15 @@
     "newton_backend_selected": false,
     "arena_development_extras_installed": false,
     "all_isaac_lab_extensions_installed": false,
+    "supplemental_runtime_dependencies": [
+      {
+        "name": "h5py",
+        "version": "3.16.0",
+        "source_url": "https://files.pythonhosted.org/packages/9e/e9/1a19e42cd43cc1365e127db6aae85e1c671da1d9a5d746f4d34a50edb577/h5py-3.16.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "sha256": "sha256:dfc21898ff025f1e8e67e194965a95a8d4754f452f83454538f98f8a3fcb207e",
+        "reason": "The pinned Isaac Lab core dataset module imports h5py, but the selected minimal assets, physx, tasks, and teleop installer profile does not install Isaac Lab mimic or RL extras that otherwise carry this dependency."
+      }
+    ],
     "fail_closed_worker_plan_validation": true,
     "worker_plan_source": "src/blueprint_pipeline/adp009d_native_microcheck_worker.py"
   },
@@ -588,5 +597,5 @@
     "no_policy_result_yet",
     "no_physical_transfer_claim"
   ],
-  "harness_digest": "sha256:597d415375c27cdcba51b78a39c80a89c3f621772f35515a936ae1a142fae271"
+  "harness_digest": "sha256:ffbe1b7502e6ef861e415c6f34eb7576a714b879c4f3dfd1f5e965ce075d4710"
 }
