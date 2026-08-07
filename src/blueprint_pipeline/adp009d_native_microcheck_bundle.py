@@ -65,6 +65,7 @@ set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 export BLUEPRINT_ADP009D_OUTPUT_DIR="$OUT_DIR"
+@@DRIVE_WRIST_CAMERA_EXPORT@@
 mkdir -p "$OUT_DIR"
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
@@ -610,6 +611,7 @@ def build_native_microcheck_bundle(
     sage_collision_path: str | Path,
     harness_manifest_path: str | Path,
     implementation_commit: str,
+    drive_wrist_camera: bool = True,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -709,7 +711,20 @@ def build_native_microcheck_bundle(
     )
     harness_source = Path(harness_manifest_path).expanduser().resolve()
     shutil.copy2(harness_source, runtime / "adp009d_franka_eval_harness_manifest.v1.json")
-    _write_executable(runtime / "run_adp_arena_provider_runtime.sh", ENTRYPOINT)
+    # A controlled-experiment switch, not a feature flag.  The can displacement
+    # appeared in the revision that introduced the wrist camera drive, base_link
+    # selection and a feasible orientation target together; disabling exactly one
+    # with everything else byte-identical is what separates them.  Default on,
+    # because the drive is what lets the wrist see the can at all.
+    drive_export = (
+        ""
+        if drive_wrist_camera
+        else 'export BLUEPRINT_ADP009D_DRIVE_WRIST_CAMERA="0"'
+    )
+    _write_executable(
+        runtime / "run_adp_arena_provider_runtime.sh",
+        ENTRYPOINT.replace("@@DRIVE_WRIST_CAMERA_EXPORT@@", drive_export),
+    )
     generated = generated_at or utc_now_iso()
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -736,6 +751,7 @@ def build_native_microcheck_bundle(
         "asset_bindings": asset_rows,
         "harness_manifest_sha256": _sha256(harness_source),
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "drive_wrist_camera": bool(drive_wrist_camera),
         "expected_output_filename": "adp009d_native_microcheck.json",
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
@@ -772,6 +788,7 @@ def build_native_microcheck_bundle_isolated(
     sage_collision_path: str | Path,
     harness_manifest_path: str | Path,
     implementation_commit: str,
+    drive_wrist_camera: bool = True,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -794,6 +811,8 @@ def build_native_microcheck_bundle_isolated(
         "--implementation-commit",
         implementation_commit,
     ]
+    if not drive_wrist_camera:
+        command.append("--no-drive-wrist-camera")
     if generated_at is not None:
         command.extend(("--generated-at", generated_at))
     if expected_asset_bindings is not None:
@@ -840,6 +859,7 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sage-collision-path", required=True)
     parser.add_argument("--harness-manifest-path", required=True)
     parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument("--no-drive-wrist-camera", action="store_true")
     parser.add_argument("--generated-at")
     parser.add_argument("--expected-asset-bindings-json")
     args = parser.parse_args(argv)
@@ -854,6 +874,7 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
         sage_collision_path=args.sage_collision_path,
         harness_manifest_path=args.harness_manifest_path,
         implementation_commit=args.implementation_commit,
+        drive_wrist_camera=not args.no_drive_wrist_camera,
         generated_at=args.generated_at,
         expected_asset_bindings=expected_bindings,
     )

@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import time
 import traceback
 from pathlib import Path
@@ -1031,6 +1032,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         approach_arrivals: list[dict[str, Any]] = []
         approach_body_names: list[str] = []
         wrist_camera_driven = False
+        # Default on: the drive is what makes the wrist see the can at all.
+        drive_wrist_camera = os.environ.get(
+            "BLUEPRINT_ADP009D_DRIVE_WRIST_CAMERA", "1"
+        ) != "0"
         approach_ik_succeeded = True
         approach_error: str | None = None
         approach_object_displacement_m = 0.0
@@ -1097,7 +1102,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     float(v) for v in _to_torch(wrist_camera.data.quat_w_world)[0]
                 ],
             )
-            wrist_camera_driven = True
+            wrist_camera_driven = bool(drive_wrist_camera)
             # Feasible-by-construction orientation target: the pose the arm is
             # already in.  Recorded so the report shows what was actually held.
             approach_hold_quaternion = [float(v) for v in reset_body_pose[3:7]]
@@ -1250,17 +1255,26 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     offset_position_body=wrist_offset_position,
                     offset_quaternion_body_wxyz=wrist_offset_quaternion,
                 )
-                wrist_camera.set_world_poses(
-                    torch.tensor(
-                        [wrist_position], device=env.unwrapped.device, dtype=torch.float32
-                    ),
-                    torch.tensor(
-                        [wrist_quaternion],
-                        device=env.unwrapped.device,
-                        dtype=torch.float32,
-                    ),
-                    convention="world",
-                )
+                # Controlled-experiment switch.  The can displacement appeared
+                # in the same revision that introduced three changes at once --
+                # this camera write, base_link selection, and a feasible
+                # orientation target -- and guessing among them cost three runs.
+                # Disabling only this one, with everything else byte-identical,
+                # splits the remaining candidates in a single run.
+                if drive_wrist_camera:
+                    wrist_camera.set_world_poses(
+                        torch.tensor(
+                            [wrist_position],
+                            device=env.unwrapped.device,
+                            dtype=torch.float32,
+                        ),
+                        torch.tensor(
+                            [wrist_quaternion],
+                            device=env.unwrapped.device,
+                            dtype=torch.float32,
+                        ),
+                        convention="world",
+                    )
                 # Refresh only the camera whose pose just changed.  A previous
                 # revision called env.unwrapped.scene.update() here, and that
                 # perturbed physics: the approved can rose by 9.85 mm in z with
@@ -1270,7 +1284,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 # with it were bit-identical at 10.019 mm, so the disturbance
                 # was deterministic and came from the scene refresh rather than
                 # from any contact.
-                wrist_camera.update(cfg.sim.dt * cfg.decimation)
+                    wrist_camera.update(cfg.sim.dt * cfg.decimation)
                 for camera_name in ("external_camera", "wrist_camera"):
                     approach_frames.append(
                         _save_camera(
