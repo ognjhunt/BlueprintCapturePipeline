@@ -1096,14 +1096,15 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         cfg.sim.dt = 1.0 / 120.0
         cfg.seed = 20260806
         cfg.decimation = 8
-        # Derived, not pinned: per-query rendering (decimation x horizon) when
-        # every bound candidate consumes only the current frame and the
-        # profile does not require per-step retention; per-step otherwise.
-        cfg.sim.render_interval = resolve_render_interval(
-            decimation=int(cfg.decimation),
-            candidate_ids=bound_candidate_ids(),
-            evidence_profile=evidence_profile(),
-        )
+        # Built at the always-safe per-step cadence: the camera warmup counts
+        # renders (forty of them settle the RTX accumulator) and the wrist
+        # approach reads diagnostic frames after individual steps -- both
+        # assume a render per environment step.  The episode section flips to
+        # the resolved cadence immediately before the policy batches, where
+        # the freshness guard refuses any stale query frame, so a cadence
+        # flip that failed to take effect fails loudly instead of silently
+        # serving eight-step-old observations.
+        cfg.sim.render_interval = int(cfg.decimation)
         cfg.episode_length_s = 5.0
         cfg.sim.physics = PhysxCfg(
             solver_type=1,
@@ -2163,6 +2164,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         candidate_ids=candidate_ids,
                         evidence_profile=run_evidence_profile,
                     )
+                    # Isaac Lab consults cfg.sim.render_interval live inside
+                    # the decimation loop, so the flip takes effect from the
+                    # next step.  Applied only now -- after warmup and the
+                    # wrist approach -- and verified per query by the
+                    # episode's exact-time freshness guard.
+                    env.unwrapped.cfg.sim.render_interval = run_render_interval
 
                     def _capture_factory(
                         episode_id: str,
