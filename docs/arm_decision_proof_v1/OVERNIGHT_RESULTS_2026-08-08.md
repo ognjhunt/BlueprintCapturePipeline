@@ -12,7 +12,7 @@ one policy is generally better.
 ## What landed
 
 The branch advanced from the overnight handoff at `54f70c8e0` to
-`04db82770`. The changes fall into six evidence-bearing groups:
+`47c83b41d`. The changes fall into six evidence-bearing groups:
 
 - **P0, interpretable action delivery:** `c9103d311`, `b9a3b30ac`,
   `7b901349a`. Episode receipts retain reset/end joints, maximum joint motion,
@@ -49,12 +49,13 @@ The branch advanced from the overnight handoff at `54f70c8e0` to
   update is no longer accepted as a camera fix.
 - **Frozen scenario matrix and fail-closed native controls:** `46e5d2e99`,
   `2086690c1`, `a350153b5`, `adee2091a`, `db9559137`, `3127e461c`,
-  `04db82770`. The policy-neutral 128-cell matrix binds identical cells and
-  seeds to both candidates and both controls. Every episode retains external,
-  wrist, and overview media. The positive control now targets the measured
-  finger-midpoint frame, gates every IK phase on arrival, and expresses the
-  raw world-aligned PhysX Jacobian in the yawed robot root before pairing it
-  with root-frame Cartesian errors.
+  `04db82770`, `47c83b41d`. The policy-neutral 128-cell matrix binds identical
+  cells and seeds to both candidates and both controls. Every episode retains
+  external, wrist, and overview media. The positive control now targets the
+  measured finger-midpoint frame, gates every IK phase on arrival, and
+  expresses the raw world-aligned PhysX Jacobian in the yawed robot root before
+  pairing it with root-frame Cartesian errors. A blocked control can now seal
+  its IK receipt without recursively including the receipt's own digest.
 
 Other supporting changes are `a78e70dde` and `f98622f67` for the frames-only
 Aura comparison, `790b95eec` for explicit concurrent-GPU authority without
@@ -67,7 +68,7 @@ PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode
 .venv/bin/ruff check src/ tests/
 ```
 
-The latest Jacobian-frame correction passed `962 passed, 1 skipped, 9052
+The latest closeout correction passed `963 passed, 1 skipped, 9052
 deselected` in the required filtered lane. Ruff was clean.
 
 ## Scientific findings through v84
@@ -184,8 +185,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v90
-ledgers add `$7.256296`, for `$18.254595` total and `$6.745405` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v91
+ledgers add `$7.362320`, for `$18.360619` total and `$6.639381` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -229,10 +230,12 @@ they are evidence that concurrency failed closed.
 | v88 canonical controls + media preflight | `$0.136833` estimated | Both controls sealed complete external/wrist/overview media. Zero-action passed as `never_moved`; scripted positive failed as `never_moved`. The arm moved up to 0.81 rad while the finger midpoint remained at least 0.39 m from the can, exposing a guessed IK-body/tool-frame transform. The stock overview also retained zero task semantic pixels. No policy verdict. |
 | v89 measured grasp frame + overview gate | `$0.234044` | The task-centered overview passed with 111 exact-can semantic pixels inside the frame margin and both controls sealed all six videos. Zero-action passed as `never_moved`; scripted positive again failed as `never_moved`. The measured tool offset reduced the descend error, but holding the camera-aimed body orientation made the pregrasp body pose unreachable. No policy verdict. |
 | v90 task orientation + phase gate | `$0.108621` | Zero-action passed. The scripted positive correctly aborted after the 80-step pregrasp instead of advancing or closing, with `scripted_control_phase_not_reached:pregrasp:error_m=0.331908` and `never_moved`. Its intended mostly world -Y motion appeared mostly as world +X, exposing a world-Jacobian/root-error frame mismatch. All six videos were retained. No candidate was provisioned or queried; no policy verdict. |
+| v91 Jacobian root-frame gate | `$0.106024` estimated | The corrected approach completed waypoints -1 and 0 and then blocked at waypoint 1, but the runtime crashed while sealing the diagnostic receipt because its local digest helper rejected `digest_field`. Four diagnostic frames per external/wrist/overview camera show the arm moving toward the exact can and the wrist reacquiring it. No control receipt or control outcome was retained, no candidate was provisioned or queried, and no policy verdict can be drawn. Commit `47c83b41d` fixes and hermetically tests the receipt closeout before any retry. |
 
 All completed paid attempts were followed by an API provider-zero check. v86,
-v87, v88, v89, and v90 were each launched from provider zero as the sole active instance;
-after each automatic teardown a fresh Vast API query returned `active: 0 []`.
+v87, v88, v89, v90, and v91 were each launched from provider zero as the sole
+active instance; after each automatic teardown a fresh Vast API query returned
+`active: 0 []`.
 
 ## Scenario-family and control-harness progress after v85
 
@@ -365,8 +368,18 @@ paths. It also fails closed unless arm action indices resolve exactly to
 bindings, adds controlled-body pose to every state sample, and retains bounded
 per-step target, error, Jacobian norm/rank, and joint-delta diagnostics. The
 hermetic -90-degree regression maps v90's world error to the expected root
-error. This is a locally proven harness correction, not yet a simulator-control
-success; one controls-only canonical canary remains required.
+error.
+
+v91 exercised that correction without provisioning or querying either learned
+candidate. The approach completed waypoints -1 and 0, the arm visibly moved
+toward the exact SimReady can, and the wrist view reacquired the can before
+waypoint 1 blocked. The runtime then lost the underlying blocker by raising
+`_canonical_digest() got an unexpected keyword argument 'digest_field'` while
+closing the new IK receipt. Consequently v91 retained no sealed control receipt
+and establishes neither control outcome. Commit `47c83b41d` makes the bundled
+runtime digest contract match the repository contract, excludes the self-digest
+field without mutating the receipt, and covers the exact blocked-control shape
+hermetically. One controls-only canonical canary remains required.
 
 ## What remains open
 
@@ -388,11 +401,12 @@ success; one controls-only canonical canary remains required.
 
 ## Single next action
 
-From provider zero, run only the checked-in canonical scenario's zero-action
-negative and deterministic scripted-positive control pair. Do not query either
-learned policy. Verify that the retained IK binding reports world-to-root
-rotation for both Jacobian row blocks and that pregrasp motion converges along
-the commanded task direction. If the scripted positive does not place the
-exact SimReady can, retain the overview/external/wrist videos and typed receipt,
-tear down to provider zero, and fix the harness locally before any
-learned-policy spend.
+From provider zero at clean immutable commit `47c83b41d`, run only the
+checked-in canonical scenario's zero-action negative and deterministic
+scripted-positive control pair. Do not query either learned policy. Verify that
+the retained IK binding reports world-to-root rotation for both Jacobian row
+blocks and that the newly sealable receipt exposes the exact waypoint/phase
+failure or proves pregrasp convergence along the commanded task direction. If
+the scripted positive does not place the exact SimReady can, retain the
+overview/external/wrist videos and typed receipt, tear down to provider zero,
+and fix the harness locally before any learned-policy spend.
