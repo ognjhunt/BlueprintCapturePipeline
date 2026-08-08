@@ -497,6 +497,23 @@ def resolve_render_interval(
     return per_step * int(DROID_OPEN_LOOP_HORIZON)
 
 
+def ensure_fresh_diagnostic_frame(env, cfg) -> None:
+    """Force a render before a diagnostic camera read under fast intervals.
+
+    With ``render_interval`` above ``decimation`` the simulator renders once
+    per policy query, so warmup accumulation, approach waypoint frames, and
+    the restore pixel gate would otherwise read frames up to seven steps
+    stale.  Per-step cadence needs nothing; rendering again would only spend
+    time.
+    """
+
+    if int(cfg.sim.render_interval) <= int(cfg.decimation):
+        return
+    unwrapped = env.unwrapped
+    unwrapped.sim.render()
+    unwrapped.scene.update(float(cfg.sim.dt))
+
+
 STOP_AFTER_FRAMES_ENV = "BLUEPRINT_ADP009D_STOP_AFTER_FRAMES"
 # Above this, a frame has accumulated something.  At or below it the render
 # never converged, whatever the reason.
@@ -1098,15 +1115,18 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         cfg.sim.dt = 1.0 / 120.0
         cfg.seed = 20260806
         cfg.decimation = 8
-        # Built at the always-safe per-step cadence: the camera warmup counts
-        # renders (forty of them settle the RTX accumulator) and the wrist
-        # approach reads diagnostic frames after individual steps -- both
-        # assume a render per environment step.  The episode section flips to
-        # the resolved cadence immediately before the policy batches, where
-        # the freshness guard refuses any stale query frame, so a cadence
-        # flip that failed to take effect fails loudly instead of silently
-        # serving eight-step-old observations.
-        cfg.sim.render_interval = int(cfg.decimation)
+        # Set at build time: the renderer latches this value at environment
+        # construction -- v79 measured a post-build flip as inert (94.5 s
+        # episodes at a claimed interval of 64, exactly the per-step render
+        # baseline).  Every pre-episode diagnostic read below forces its own
+        # render when this interval is faster than per-step, and the
+        # episode's anchored freshness guard verifies the cadence a policy
+        # actually observes.
+        cfg.sim.render_interval = resolve_render_interval(
+            decimation=int(cfg.decimation),
+            candidate_ids=bound_candidate_ids(),
+            evidence_profile=evidence_profile(),
+        )
         cfg.episode_length_s = 5.0
         cfg.sim.physics = PhysxCfg(
             solver_type=1,
@@ -1445,6 +1465,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         marker_every = max(1, warmup_frames // 4)
         for warmup_index in range(warmup_frames):
             observation, reward, terminated, truncated, info = env.step(hold_action)
+            ensure_fresh_diagnostic_frame(env, cfg)
             if (warmup_index + 1) % marker_every == 0:
                 log.flush()
                 _fail_on_physx_collision_fallback(fallback_messages)
@@ -1461,6 +1482,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         )
         camera_retention_started = time.monotonic()
         camera_rows = []
+        ensure_fresh_diagnostic_frame(env, cfg)
         for camera_name in ("external_camera", "wrist_camera"):
             camera_rows.append(
                 _save_camera(
@@ -1796,6 +1818,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     approach_object_offset_m = [
                         float(v) for v in approach_object_offset
                     ]
+                    ensure_fresh_diagnostic_frame(env, cfg)
                     wrist_object_pixels = _approved_can_pixel_count(
                         env.unwrapped.scene["wrist_camera"]
                     )
@@ -1890,6 +1913,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         "end_effector_body": end_effector_name,
                     }
                 )
+                ensure_fresh_diagnostic_frame(env, cfg)
                 for camera_name in ("external_camera", "wrist_camera"):
                     approach_frames.append(
                         _save_camera(
@@ -2027,6 +2051,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     hold_restore_action[:, 7] = float(gripper_probe["open_command"])
                     for _ in range(settle_frames):
                         env.step(hold_restore_action)
+                        ensure_fresh_diagnostic_frame(env, cfg)
 
                     restored_joints = _to_torch(robot.data.joint_pos)[0, :7]
                     restored_can_offset = (
@@ -2179,12 +2204,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         candidate_ids=candidate_ids,
                         evidence_profile=run_evidence_profile,
                     )
-                    # Isaac Lab consults cfg.sim.render_interval live inside
-                    # the decimation loop, so the flip takes effect from the
-                    # next step.  Applied only now -- after warmup and the
-                    # wrist approach -- and verified per query by the
-                    # episode's exact-time freshness guard.
-                    env.unwrapped.cfg.sim.render_interval = run_render_interval
 
                     def _capture_factory(
                         episode_id: str,
