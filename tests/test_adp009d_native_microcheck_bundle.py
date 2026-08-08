@@ -1539,6 +1539,7 @@ def test_the_tuning_vars_reach_the_worker() -> None:
 
     assert 'BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES="@@CAMERA_WARMUP_FRAMES@@"' in bundle.ENTRYPOINT
     assert 'BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"' in bundle.ENTRYPOINT
+    assert 'BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"' in bundle.ENTRYPOINT
     import inspect
 
     source = inspect.getsource(bundle)
@@ -1546,6 +1547,36 @@ def test_the_tuning_vars_reach_the_worker() -> None:
     # export the literal string and read as truthy.
     assert '"@@CAMERA_WARMUP_FRAMES@@",' in source
     assert '"@@STOP_AFTER_FRAMES@@",' in source
+    assert '"@@CAMERA_RESOLUTION@@", camera_resolution' in source
+
+
+def test_policy_bundle_binds_policy_resolution_without_host_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remote worker does not inherit an export from the launch shell."""
+
+    monkeypatch.delenv("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", raising=False)
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "policy-resolution",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="e" * 40,
+        policy_candidate_id="pi05_droid",
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        entrypoint = archive.read(
+            "provider_runtime/run_adp_arena_provider_runtime.sh"
+        ).decode()
+        manifest = json.loads(
+            archive.read("provider_runtime/adp_arena_provider_manifest.json")
+        )
+    assert 'export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="policy"' in entrypoint
+    assert manifest["camera_resolution_binding"] == "policy"
 
 
 def test_frames_only_bundle_skips_policy_provisioning() -> None:
@@ -2048,6 +2079,24 @@ def test_the_runtime_runs_a_batch_per_bound_candidate() -> None:
 
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
     assert "for bound_candidate in candidate_ids:" in source
+
+
+def test_policy_query_is_gated_on_a_replayed_wrist_observable_start() -> None:
+    """A discovery pose that reset immediately erases is not an episode start."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert 'episode_start_selection.get("status") == "ready"' in source
+    assert "def _restore_wrist_observable_episode_start()" in source
+    assert "reset_callback=_restore_wrist_observable_episode_start" in source
+    preflight = source.index("_restore_wrist_observable_episode_start()")
+    first_client = source.index("policy=_client_for(server_receipt)")
+    assert preflight < first_client
+    assert "wrist_episode_start_selection" in source
+    assert "wrist_episode_start_restore_receipts" in source
     assert "run_episode_batch(" in source
     assert "summarize_candidate_batches(" in source
     # A per-candidate receipt, or two candidates overwrite each other's.

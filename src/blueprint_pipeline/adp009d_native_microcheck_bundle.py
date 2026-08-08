@@ -75,6 +75,7 @@ export BLUEPRINT_ADP009D_OUTPUT_DIR="$OUT_DIR"
 export BLUEPRINT_ADP009D_POLICY_CANDIDATE="@@POLICY_CANDIDATE@@"
 export BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES="@@CAMERA_WARMUP_FRAMES@@"
 export BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"
+export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"
 mkdir -p "$OUT_DIR"
 
 # Environment facts the policy-server design could not verify from off-worker:
@@ -932,6 +933,15 @@ def build_native_microcheck_bundle(
     # Baked in at build time.  A passthrough of an unset variable reads as
     # empty, and the runtime then skips the episode in silence -- which is
     # exactly what a live run did: no episode, no error, nothing to read.
+    camera_resolution = str(
+        os.environ.get("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", "")
+    ).strip()
+    if policy_candidate_id and not camera_resolution:
+        # Policy runs must render at the resolution against which visibility
+        # and observation conversion are specified.  A host export is not
+        # inherited by the remote worker; v74 silently rendered 1280x720 and
+        # weakened a 200-pixel gate by 16x.  Bind the default into the bundle.
+        camera_resolution = "policy"
     _write_executable(
         runtime / "run_adp_arena_provider_runtime.sh",
         ENTRYPOINT.replace("@@POLICY_CANDIDATE@@", policy_candidate_id or "")
@@ -942,7 +952,8 @@ def build_native_microcheck_bundle(
         .replace(
             "@@STOP_AFTER_FRAMES@@",
             str(os.environ.get("BLUEPRINT_ADP009D_STOP_AFTER_FRAMES", "")),
-        ),
+        )
+        .replace("@@CAMERA_RESOLUTION@@", camera_resolution),
     )
     generated = generated_at or utc_now_iso()
     manifest: dict[str, Any] = {
@@ -971,6 +982,7 @@ def build_native_microcheck_bundle(
         "harness_manifest_sha256": _sha256(harness_source),
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "policy_candidate_id": policy_candidate_id,
+        "camera_resolution_binding": camera_resolution or None,
         "expected_output_filename": "adp009d_native_microcheck.json",
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,

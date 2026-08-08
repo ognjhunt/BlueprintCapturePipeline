@@ -24,10 +24,16 @@ try:  # flat provider-bundle layout, where this file runs as a script
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
+        EPISODE_START_JOINT_TOLERANCE_RAD,
+        EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
+        EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
         pose_world_to_base,
+        select_wrist_observable_episode_start,
+        semantic_label_pixel_count,
         summarize_wrist_approach_capture,
+        validate_wrist_observable_episode_start_restore,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_approach_capture import (
@@ -35,10 +41,16 @@ except ModuleNotFoundError:  # imported as part of the repository package
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
+        EPISODE_START_JOINT_TOLERANCE_RAD,
+        EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
+        EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
         pose_world_to_base,
+        select_wrist_observable_episode_start,
+        semantic_label_pixel_count,
         summarize_wrist_approach_capture,
+        validate_wrist_observable_episode_start_restore,
     )
 
 RESULT_NAME = "adp009d_native_microcheck.json"
@@ -828,6 +840,36 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
     }
 
 
+def _approved_can_pixel_count(camera: Any) -> int:
+    """Count approved-can pixels in the camera's current rendered semantic AOV."""
+
+    import numpy as np
+
+    output = camera.data.output
+    if "semantic_segmentation" not in output:
+        raise RuntimeError("wrist_episode_start_semantic_output_missing")
+    semantic = _to_torch(output["semantic_segmentation"])[0]
+    if hasattr(semantic, "detach"):
+        semantic = semantic.detach().cpu().numpy()
+    semantic = np.asarray(semantic)
+    if semantic.ndim == 3 and semantic.shape[-1] == 1:
+        semantic = semantic[..., 0]
+    identifiers, counts = np.unique(semantic.astype(np.int64), return_counts=True)
+    pixel_counts = {
+        str(int(identifier)): int(count)
+        for identifier, count in zip(identifiers, counts, strict=True)
+    }
+    semantic_info = _json_safe(
+        (camera.data.info or {}).get("semantic_segmentation")
+    )
+    labels = (semantic_info or {}).get("idToLabels") or {}
+    return semantic_label_pixel_count(
+        id_to_labels=labels,
+        pixel_counts_by_id=pixel_counts,
+        target_label="approved_can",
+    )
+
+
 def _build_environment(runtime: Path, args: argparse.Namespace):
     import torch
     import isaaclab.sim as sim_utils
@@ -1508,6 +1550,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         approach_object_displacement_m = 0.0
         approach_object_offset_m: list[float] = [0.0, 0.0, 0.0]
         approach_object_trace: list[dict[str, Any]] = []
+        episode_start_samples: list[dict[str, Any]] = []
+        episode_start_selection: dict[str, Any] | None = None
         approach_aborted = False
         try:
             from isaaclab.controllers import (  # noqa: PLC0415
@@ -1666,8 +1710,32 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     approach_object_offset_m = [
                         float(v) for v in approach_object_offset
                     ]
+                    wrist_object_pixels = _approved_can_pixel_count(
+                        env.unwrapped.scene["wrist_camera"]
+                    )
+                    episode_start_samples.append(
+                        {
+                            "step": len(episode_start_samples),
+                            "joint_position_rad": [
+                                float(v)
+                                for v in _to_torch(robot.data.joint_pos)[0, :7]
+                            ],
+                            "object_offset_m": list(approach_object_offset_m),
+                            "approved_task_object_pixel_count": wrist_object_pixels,
+                        }
+                    )
+                    episode_start_selection = select_wrist_observable_episode_start(
+                        episode_start_samples
+                    )
+                    if episode_start_selection["status"] == "ready":
+                        break
                     if (
-                        approach_object_displacement_m
+                        any(
+                            abs(value)
+                            > EPISODE_START_OBJECT_OFFSET_TOLERANCE_M
+                            for value in approach_object_offset_m
+                        )
+                        or approach_object_displacement_m
                         > APPROACH_MAX_OBJECT_DISPLACEMENT_M
                     ):
                         approach_aborted = True
@@ -1756,10 +1824,21 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 )
                 if approach_aborted:
                     break
+                if (
+                    episode_start_selection is not None
+                    and episode_start_selection.get("status") == "ready"
+                ):
+                    break
         except Exception as exc:  # noqa: BLE001 - recorded, never fatal
             approach_ik_succeeded = False
             approach_error = f"{type(exc).__name__}: {exc}"
             _phase("wrist_approach", "blocked")
+        # Always produce a selection receipt, including when IK raised before
+        # the first sample.  Absence is a blocker, not an implicit return to the
+        # canonical reset pose that the wrist camera cannot use.
+        episode_start_selection = select_wrist_observable_episode_start(
+            episode_start_samples
+        )
         timings_seconds["wrist_approach"] = round(
             time.monotonic() - wrist_approach_started, 6
         )
@@ -1776,6 +1855,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         policy_episode: dict[str, Any] | None = None
         policy_episode_error: str | None = None
         policy_episode_skipped_reason: str | None = None
+        episode_start_restore_receipts: list[dict[str, Any]] = []
         candidate_ids = [
             part.strip()
             for part in (os.environ.get("BLUEPRINT_ADP009D_POLICY_CANDIDATE") or "").split(",")
@@ -1788,7 +1868,15 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             policy_episode_skipped_reason = (
                 f"gripper_convention_{gripper_probe.get('status')}"
             )
-        if candidate_ids and gripper_probe.get("status") == "measured":
+        elif episode_start_selection.get("status") != "ready":
+            policy_episode_skipped_reason = (
+                "wrist_observable_episode_start_not_ready"
+            )
+        if (
+            candidate_ids
+            and gripper_probe.get("status") == "measured"
+            and episode_start_selection.get("status") == "ready"
+        ):
             _phase("policy_episode")
             phase_started = time.monotonic()
             try:
@@ -1803,6 +1891,69 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     runtime / "adp009d_task_destination.v1.json"
                 )
                 destination = json.loads(destination_path.read_text(encoding="utf-8"))
+
+                selected_episode_start = episode_start_selection["selected"]
+
+                def _restore_wrist_observable_episode_start() -> None:
+                    """Reset, replay, and verify the admitted policy start pose."""
+
+                    target = torch.tensor(
+                        [selected_episode_start["joint_position_rad"]],
+                        device=env.unwrapped.device,
+                        dtype=torch.float32,
+                    )
+                    env.reset(seed=20260806)
+                    restore_steps = 0
+                    for _ in range(EPISODE_START_RESTORE_MAX_STEPS):
+                        current = _to_torch(robot.data.joint_pos)[:, :7]
+                        restore_action = torch.zeros_like(action)
+                        restore_action[:, :7] = current + torch.clamp(
+                            target - current,
+                            -APPROACH_MAX_JOINT_STEP_RAD,
+                            APPROACH_MAX_JOINT_STEP_RAD,
+                        )
+                        restore_action[:, 7] = float(gripper_probe["open_command"])
+                        env.step(restore_action)
+                        restore_steps += 1
+                        remaining = torch.max(
+                            torch.abs(
+                                target - _to_torch(robot.data.joint_pos)[:, :7]
+                            )
+                        )
+                        if float(remaining) <= (
+                            EPISODE_START_JOINT_TOLERANCE_RAD / 3.0
+                        ):
+                            break
+
+                    restored_joints = _to_torch(robot.data.joint_pos)[0, :7]
+                    restored_can_offset = (
+                        _to_torch(approved_can.data.root_pose_w)[0, :3]
+                        - canonical_hold_can_pose[:3]
+                    )
+                    restore_receipt = (
+                        validate_wrist_observable_episode_start_restore(
+                            selected_joint_position_rad=target[0],
+                            restored_joint_position_rad=restored_joints,
+                            object_offset_m=restored_can_offset,
+                            approved_task_object_pixel_count=(
+                                _approved_can_pixel_count(
+                                    env.unwrapped.scene["wrist_camera"]
+                                )
+                            ),
+                            restore_steps=restore_steps,
+                        )
+                    )
+                    episode_start_restore_receipts.append(restore_receipt)
+                    if restore_receipt["status"] != "ready":
+                        raise RuntimeError(
+                            "wrist_observable_episode_start_restore_failed:"
+                            + ",".join(restore_receipt["blockers"])
+                        )
+
+                # Prove the callback before constructing a policy client.  A
+                # failed replay therefore cannot spend inference or masquerade
+                # as a policy that chose to do nothing.
+                _restore_wrist_observable_episode_start()
 
                 adapter = IsaacEpisodeAdapter(
                     env=env,
@@ -1821,6 +1972,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                             str(gripper_probe["open_command"])
                         ]
                     ),
+                    reset_callback=_restore_wrist_observable_episode_start,
                 )
                 convention = GripperConvention(
                     closed_command=float(gripper_probe["closed_command"]),
@@ -1930,6 +2082,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     "comparison": summarize_candidate_batches(
                         [b for b in batches if b.get("episodes_scored") is not None]
                     ),
+                    "episode_start_restore_receipts": (
+                        episode_start_restore_receipts
+                    ),
                 }
                 _phase("policy_episode", "completed")
             except Exception as exc:  # noqa: BLE001 - recorded, never fatal
@@ -1964,6 +2119,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             policy_episode=policy_episode,
             policy_episode_error=policy_episode_error,
         )
+        if candidate_ids and episode_start_selection.get("status") != "ready":
+            episode_blockers.extend(episode_start_selection.get("blockers") or [])
         return {
             "schema_version": "adp009d_native_microcheck.v1",
             "status": "completed" if not episode_blockers else "blocked",
@@ -2021,6 +2178,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "policy_episode": policy_episode,
             "policy_episode_error": policy_episode_error,
             "policy_episode_skipped_reason": policy_episode_skipped_reason,
+            "wrist_episode_start_selection": episode_start_selection,
+            "wrist_episode_start_restore_receipts": episode_start_restore_receipts,
             "policy_candidate_bound": candidate_id or None,
             "wrist_approach_capture": wrist_approach_capture,
             "semantic_override_layer": SEMANTIC_OVERRIDE_LAYER,

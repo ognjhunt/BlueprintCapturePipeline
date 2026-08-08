@@ -268,6 +268,27 @@ def test_reset_uses_the_pinned_seed() -> None:
     assert env.reset_calls == [20260806]
 
 
+def test_reset_callback_can_restore_a_wrist_observable_episode_start() -> None:
+    env = _Env()
+    calls: list[str] = []
+    adapter = IsaacEpisodeAdapter(
+        env=env,
+        robot=_Robot(),
+        approved_can=_Can(),
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
+        reset_callback=lambda: calls.append("observable_start_restored"),
+    )
+
+    adapter.reset()
+
+    assert calls == ["observable_start_restored"]
+    assert env.reset_calls == []
+
+
 def test_a_missing_finger_body_is_refused_at_construction() -> None:
     """Better to fail building the adapter than to score on a wrong width."""
 

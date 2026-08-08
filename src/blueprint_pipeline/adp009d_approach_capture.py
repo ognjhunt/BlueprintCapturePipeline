@@ -114,6 +114,25 @@ APPROACH_CAPTURE_FRAME_BASE = 100
 BLOCKER_WRIST_NEVER_SAW_OBJECT = "wrist_approach_never_observed_approved_task_object"
 BLOCKER_APPROACH_IK_FAILED = "wrist_approach_differential_ik_failed"
 MIN_WRIST_OBJECT_PIXELS = 200
+# The deterministic task scorer admits the sealed start only while every
+# position component remains within its 5 mm canonical-hold tolerance.  A
+# wrist pose discovered after moving the can farther than this cannot become an
+# episode start, regardless of how good its picture looks.
+EPISODE_START_OBJECT_OFFSET_TOLERANCE_M = 5.0e-3
+EPISODE_START_JOINT_TOLERANCE_RAD = 3.0e-2
+EPISODE_START_RESTORE_MAX_STEPS = 80
+BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START = (
+    "no_safe_wrist_observable_episode_start"
+)
+BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH = (
+    "wrist_episode_start_restore_joint_mismatch"
+)
+BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED = (
+    "wrist_episode_start_restore_object_moved"
+)
+BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE = (
+    "wrist_episode_start_restore_object_not_visible"
+)
 
 # "IK succeeded" only ever meant "no exception was raised".  The servo clamps
 # joint motion to APPROACH_MAX_JOINT_STEP_RAD over a fixed step budget, so it
@@ -130,6 +149,136 @@ class ApproachCaptureError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(e) for e in errors if str(e))))
         super().__init__(";".join(self.errors))
+
+
+def semantic_label_pixel_count(
+    *,
+    id_to_labels: Mapping[str, Any],
+    pixel_counts_by_id: Mapping[str, Any],
+    target_label: str,
+) -> int:
+    """Count exact semantic pixels for one class from an Isaac camera frame."""
+
+    observed = 0
+    for identifier, entry in id_to_labels.items():
+        label = entry.get("class") if isinstance(entry, Mapping) else entry
+        if label == target_label:
+            observed += int(pixel_counts_by_id.get(str(identifier), 0) or 0)
+    return observed
+
+
+def select_wrist_observable_episode_start(
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
+    object_offset_tolerance_m: float = EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
+) -> dict[str, Any]:
+    """Choose the first arm pose that sees the can without moving it.
+
+    Each sample comes from a rendered simulator step and binds the seven arm
+    joints, approved-can offset, and wrist semantic pixel count from that same
+    step.  Selection is prospective and monotone: the first qualifying pose is
+    used, so a later prettier frame cannot justify traversing closer to the
+    object after observability was already achieved.
+    """
+
+    selected: dict[str, Any] | None = None
+    rows: list[dict[str, Any]] = []
+    for index, sample in enumerate(samples):
+        try:
+            joints = [float(value) for value in sample["joint_position_rad"]]
+            offset = [float(value) for value in sample["object_offset_m"]]
+            pixels = int(sample["approved_task_object_pixel_count"])
+            step = int(sample["step"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ApproachCaptureError(
+                [f"wrist_episode_start_sample_invalid:{index}"]
+            ) from exc
+        if len(joints) != 7 or len(offset) != 3 or pixels < 0:
+            raise ApproachCaptureError(
+                [f"wrist_episode_start_sample_invalid:{index}"]
+            )
+        within_hold = all(
+            abs(value) <= float(object_offset_tolerance_m) for value in offset
+        )
+        row = {
+            "step": step,
+            "joint_position_rad": joints,
+            "object_offset_m": offset,
+            "approved_task_object_pixel_count": pixels,
+            "object_within_canonical_hold": within_hold,
+        }
+        rows.append(row)
+        if selected is None and within_hold and pixels >= int(min_object_pixels):
+            selected = row
+
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009d_wrist_episode_start_selection.v1",
+        "status": "ready" if selected is not None else "blocked",
+        "blockers": (
+            []
+            if selected is not None
+            else [BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START]
+        ),
+        "samples_evaluated": len(rows),
+        "samples": rows,
+        "min_approved_task_object_pixels": int(min_object_pixels),
+        "object_offset_tolerance_m": float(object_offset_tolerance_m),
+        "selected": selected,
+    }
+    receipt["selection_digest"] = canonical_digest(
+        receipt, digest_field="selection_digest"
+    )
+    return receipt
+
+
+def validate_wrist_observable_episode_start_restore(
+    *,
+    selected_joint_position_rad: Sequence[float],
+    restored_joint_position_rad: Sequence[float],
+    object_offset_m: Sequence[float],
+    approved_task_object_pixel_count: int,
+    restore_steps: int,
+    min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
+    object_offset_tolerance_m: float = EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
+    joint_tolerance_rad: float = EPISODE_START_JOINT_TOLERANCE_RAD,
+) -> dict[str, Any]:
+    """Validate a reset-time replay of a selected observable arm pose."""
+
+    selected = [float(value) for value in selected_joint_position_rad]
+    restored = [float(value) for value in restored_joint_position_rad]
+    offset = [float(value) for value in object_offset_m]
+    if len(selected) != 7 or len(restored) != 7 or len(offset) != 3:
+        raise ApproachCaptureError(["wrist_episode_start_restore_sample_invalid"])
+    joint_errors = [abs(actual - target) for target, actual in zip(selected, restored)]
+    maximum_joint_error = max(joint_errors)
+    blockers: list[str] = []
+    if maximum_joint_error > float(joint_tolerance_rad):
+        blockers.append(BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH)
+    if any(abs(value) > float(object_offset_tolerance_m) for value in offset):
+        blockers.append(BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED)
+    pixels = int(approved_task_object_pixel_count)
+    if pixels < int(min_object_pixels):
+        blockers.append(BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE)
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009d_wrist_episode_start_restore.v1",
+        "status": "ready" if not blockers else "blocked",
+        "blockers": sorted(blockers),
+        "selected_joint_position_rad": selected,
+        "restored_joint_position_rad": restored,
+        "joint_absolute_error_rad": joint_errors,
+        "maximum_joint_error_rad": maximum_joint_error,
+        "joint_tolerance_rad": float(joint_tolerance_rad),
+        "object_offset_m": offset,
+        "object_offset_tolerance_m": float(object_offset_tolerance_m),
+        "approved_task_object_pixel_count": pixels,
+        "min_approved_task_object_pixels": int(min_object_pixels),
+        "restore_steps": int(restore_steps),
+    }
+    receipt["restore_digest"] = canonical_digest(
+        receipt, digest_field="restore_digest"
+    )
+    return receipt
 
 
 def approach_waypoints_world() -> list[dict[str, Any]]:
@@ -324,11 +473,11 @@ def summarize_wrist_approach_capture(
         semantic = frame.get("semantic_segmentation") or {}
         labels = (semantic.get("id_to_labels") or {}).get("idToLabels") or {}
         counts = semantic.get("pixel_counts_by_id") or {}
-        observed = 0
-        for identifier, entry in labels.items():
-            label = entry.get("class") if isinstance(entry, Mapping) else entry
-            if label == approved_task_object_label:
-                observed += int(counts.get(str(identifier), 0) or 0)
+        observed = semantic_label_pixel_count(
+            id_to_labels=labels,
+            pixel_counts_by_id=counts,
+            target_label=approved_task_object_label,
+        )
         best = max(best, observed)
         rows.append(
             {
@@ -417,6 +566,10 @@ __all__ = [
     "APPROACH_CAPTURE_FRAME_BASE",
     "APPROACH_MAX_JOINT_STEP_RAD",
     "APPROACH_MAX_OBJECT_DISPLACEMENT_M",
+    "BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH",
+    "BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED",
+    "BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE",
+    "BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START",
     "BLOCKER_APPROACH_DISTURBED_OBJECT",
     "BLOCKER_WRIST_POSE_STALE",
     "APPROACH_CAPTURE_SCHEMA_VERSION",
@@ -430,6 +583,9 @@ __all__ = [
     "BLOCKER_APPROACH_DID_NOT_REACH",
     "BLOCKER_APPROACH_IK_FAILED",
     "BLOCKER_WRIST_NEVER_SAW_OBJECT",
+    "EPISODE_START_OBJECT_OFFSET_TOLERANCE_M",
+    "EPISODE_START_JOINT_TOLERANCE_RAD",
+    "EPISODE_START_RESTORE_MAX_STEPS",
     "MIN_WRIST_POSE_TRAVEL_M",
     "WRIST_POSE_CAUSE_HEALTHY",
     "WRIST_POSE_CAUSE_PRIM_DETACHED",
@@ -440,5 +596,8 @@ __all__ = [
     "classify_wrist_pose_discrepancy",
     "rigid_offset_in_body_frame",
     "pose_world_to_base",
+    "select_wrist_observable_episode_start",
+    "semantic_label_pixel_count",
     "summarize_wrist_approach_capture",
+    "validate_wrist_observable_episode_start_restore",
 ]

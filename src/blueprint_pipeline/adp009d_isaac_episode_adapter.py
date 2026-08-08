@@ -26,7 +26,7 @@ importable -- and testable -- off-GPU.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 try:  # flat provider-bundle layout
@@ -142,6 +142,7 @@ class IsaacEpisodeAdapter:
         to_torch: Any,
         gripper_closed_width_m: float,
         gripper_open_width_m: float,
+        reset_callback: Callable[[], None] | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -151,6 +152,7 @@ class IsaacEpisodeAdapter:
         self._to_torch = to_torch
         self._gripper_closed_width_m = float(gripper_closed_width_m)
         self._gripper_open_width_m = float(gripper_open_width_m)
+        self._reset_callback = reset_callback
         if (
             not math.isfinite(self._gripper_closed_width_m)
             or not math.isfinite(self._gripper_open_width_m)
@@ -179,7 +181,10 @@ class IsaacEpisodeAdapter:
     # -- EpisodeEnvironment -------------------------------------------------
 
     def reset(self) -> None:
-        self._env.reset(seed=self._reset_seed)
+        if self._reset_callback is not None:
+            self._reset_callback()
+        else:
+            self._env.reset(seed=self._reset_seed)
 
     def joint_limits(self) -> list[list[float]]:
         limits = self._to_torch(self._robot.data.joint_limits)[0, :ARM_JOINT_COUNT]
