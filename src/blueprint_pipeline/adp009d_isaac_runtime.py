@@ -1277,7 +1277,26 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 encoding="utf-8",
             )
             log.flush()
-            return
+            # _run is declared to return a dict and main reads result["status"];
+            # a bare return handed back None and the caller died on it after the
+            # frames were already saved, turning a successful diagnostic into an
+            # opaque 'NoneType' object has no attribute 'get'.
+            #
+            # Deliberately blocked, not completed: this run skipped every phase
+            # after the frames, so it must not exit zero or read as a passing
+            # micro-check anywhere downstream.
+            return {
+                "schema_version": "adp009d_native_microcheck.v1",
+                "status": "blocked",
+                "blockers": ["stopped_after_frames_diagnostic_mode"],
+                "mode": "frames_only",
+                "supports_microcheck_success_claim": False,
+                "camera_rows": _json_safe(camera_rows),
+                "warmup_frames": warmup_frames,
+                "aura_stage_probe": _json_safe(aura_stage_probe),
+                "max_gaussians_to_accumulate": _max_gaussians_to_accumulate(),
+                "timings_seconds": _json_safe(timings_seconds),
+            }
 
         # --- gripper convention probe -----------------------------------------
         # DROID encodes the gripper as a scalar in [0, 1] where above 0.5 means

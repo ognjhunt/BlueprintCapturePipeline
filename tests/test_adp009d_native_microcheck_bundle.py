@@ -1581,3 +1581,29 @@ def test_the_cap_is_read_at_use_not_frozen_as_a_literal() -> None:
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
     assert '"rtx/rtpt/gaussian/maxGaussiansToAccumulate", _max_gaussians_to_accumulate()' in source
     assert '"rtx/rtpt/gaussian/maxGaussiansToAccumulate", 48' not in source
+
+
+def test_frames_only_returns_a_result_rather_than_none() -> None:
+    """_run is declared to return a dict and main reads result["status"].
+
+    A bare return handed back None and the caller died on it *after* the
+    frames were already saved, turning a successful diagnostic into an opaque
+    "'NoneType' object has no attribute 'get'".
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    block = source[source.index("STOP_AFTER_FRAMES_ENV, \"\""):]
+    block = block[: block.index("--- gripper convention probe")]
+    assert "return {" in block
+    assert "\n            return\n" not in block, "bare return returns None"
+    # Blocked, never completed: it skipped every phase after the frames, so it
+    # must not exit zero or read as a passing micro-check downstream.
+    assert '"status": "blocked",' in block
+    assert '"blockers": ["stopped_after_frames_diagnostic_mode"],' in block
+    assert '"supports_microcheck_success_claim": False,' in block
+    # And it reports the swept value, or a sweep cannot be attributed.
+    assert '"max_gaussians_to_accumulate"' in block
