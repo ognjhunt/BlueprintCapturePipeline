@@ -1,6 +1,7 @@
 # Second-scene Arm Decision Proof v1 rehearsal protocol
 
-Status: articulated selection criteria being frozen; scene and task not yet selected.
+Status: candidate inspection active; `840076` and `840411` rejected, with no
+scene or task yet frozen.
 
 Backlog item: **ADP-009D**. Gate: **public-scene day 28**. The observed
 completion artifact must be one sealed, digest-bound, development-only Task
@@ -97,3 +98,43 @@ native applied-parameter receipts must be computed from retained artifacts.
 No failed control becomes a learned-policy failure. No manual mask, one-off
 scene edit, fake receipt, caller-asserted success, automatic paid retry, or
 flattering interpretation may qualify.
+
+## Retained candidate outcomes
+
+Candidate `840076` was rejected because the best SAGE door collider represents
+a much larger two-leaf assembly and reaches only `0.200712895` AABB IoU against
+the labeled target, below the frozen `0.85` exact-removal threshold.
+
+Candidate `840411` initially passed aggregate collision identity: its source
+refrigerator collider matches the InteriorGS label at AABB IoU `0.991112022`.
+It was then rejected before task freeze because exact SAGE chair colliders leave
+only about `0.203 m` between the chair row and refrigerator front, and the
+idealized zero-thickness right-door centerline intersects chair `227` before
+the frozen minimum 45-degree opening. The corresponding left leaf also
+intersects chair `226`; moving or deleting either chair would silently change
+the public scene. No Franka base pose can make a mechanically blocked door
+sweep valid, so placement and Joint Agent execution are not attempted for this
+candidate. The 223-component extracted source and fail-closed Joint Agent packet
+are retained as reusable construction evidence, not promoted to a selected
+task.
+
+## Joint Agent construction boundary
+
+NVIDIA USD Content Agents Joint Agent is bound to tag `v0.5.2`, commit
+`36dbf3f274f8e256637230a05a085853f65cc175`, and its exact Apache-2.0 release
+files. The local packet enables deterministic mesh splitting, assigns
+reconciliation capacity for all 223 source components, selects NIM
+`google/gemma-4-31b-it`, sets prediction completion retries to zero, and keeps
+`owned_core` publication disabled until the Stage 2 topology is reviewed.
+
+Remote execution would be fail-closed for two independent reasons: the
+InteriorGS rights receipt does not authorize disclosure of scene-derived bytes
+or renders to that provider, and this goal contains no fresh paid budget.
+Additionally, the exact upstream environment cannot perform its own dry-run on
+Apple Silicon macOS because release `0.5.2` pins `usd-exchange==2.3.0`, which
+publishes Linux and Windows wheels but no macOS arm64 wheel. This local platform
+gap does not authorize a substitute environment or an unpinned vendor patch;
+an eventual admitted execution must use the exact released code on a supported
+Linux environment. For `840411`, the earlier geometric rejection makes that
+execution unnecessary and prevents spending on a candidate a local gate can
+settle.

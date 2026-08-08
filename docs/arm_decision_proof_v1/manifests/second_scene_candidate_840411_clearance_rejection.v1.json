@@ -1,0 +1,97 @@
+{
+  "schema_version": "second_scene_candidate_clearance_rejection.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009D",
+  "publisher_scene_id": "840411",
+  "target_instance_id": "121",
+  "target_label": "refrigerator",
+  "status": "rejected_before_task_freeze",
+  "reason": "Both observed refrigerator-door centerlines intersect exact SAGE chair colliders before the 45-degree minimum task opening; moving or deleting chairs is forbidden scene mutation.",
+  "source_refrigerator_collision_identity_receipt_digest": "sha256:230f423aba598beb74edd216c645486c821cb316c82e516e345e5cee6c1d0b48",
+  "frontal_gap": {
+    "refrigerator_front_x_m": 4.477152212,
+    "nearest_chair_max_x_m": 4.274605183,
+    "gap_m": 0.202547029,
+    "franka_base_pose_resolved": false,
+    "reason": "The frontal gap is geometrically occupied and no base search can cure the independent door-sweep collision."
+  },
+  "right_door_sweep": {
+    "schema_version": "articulated_workspace_clearance.v1",
+    "status": "blocked_by_observed_obstacle",
+    "sweep": {
+      "hinge_origin_world_m": [4.475898768, 1.452210456, 0.0],
+      "closed_endpoint_world_m": [4.475898768, 1.9413037, 0.0],
+      "member_radius_m": 0.489093244,
+      "member_vertical_interval_m": [0.0, 1.826109993],
+      "start_angle_degrees": 0.0,
+      "end_angle_degrees": 45.0,
+      "angular_resolution_degrees": 0.25,
+      "member_half_thickness_m": 0.0,
+      "sample_count": 181
+    },
+    "obstacles": [
+      {
+        "obstacle_id": "chair:227",
+        "world_aabb_min_m": [3.697225536, 1.345660441, 0.001594507],
+        "world_aabb_max_m": [4.274605183, 1.871812323, 0.856457869],
+        "source_receipt_digest": "sha256:2c1f6d772a87100df3eb4a2f3b0a745954070f171d1e6f000c85701af4c29ecc"
+      }
+    ],
+    "first_collision": {
+      "angle_degrees": 25.75,
+      "obstacle_id": "chair:227",
+      "intersection_xy_world_m": [4.274605183, 1.86953525],
+      "rotated_endpoint_xy_world_m": [4.263414528, 1.89273588]
+    },
+    "collision_obstacle_ids": ["chair:227"],
+    "claim_boundary": {
+      "zero_thickness_centerline_collision_is_strong_rejection": true,
+      "clear_result_is_not_native_dynamic_qualification": true,
+      "franka_base_pose_resolved": false,
+      "ik_or_contact_qualified": false
+    },
+    "receipt_digest": "sha256:92bf3d420e654083697a4bf34f351fe9dff117b772872ddad6f86500bad16ba9"
+  },
+  "left_door_sweep": {
+    "schema_version": "articulated_workspace_clearance.v1",
+    "status": "blocked_by_observed_obstacle",
+    "sweep": {
+      "hinge_origin_world_m": [4.475898768, 2.430396944, 0.0],
+      "closed_endpoint_world_m": [4.475898768, 1.9413037, 0.0],
+      "member_radius_m": 0.489093244,
+      "member_vertical_interval_m": [0.0, 1.826109993],
+      "start_angle_degrees": 0.0,
+      "end_angle_degrees": -45.0,
+      "angular_resolution_degrees": 0.25,
+      "member_half_thickness_m": 0.0,
+      "sample_count": 181
+    },
+    "obstacles": [
+      {
+        "obstacle_id": "chair:226",
+        "world_aabb_min_m": [3.697225536, 1.980155103, 0.001594507],
+        "world_aabb_max_m": [4.274605183, 2.506306986, 0.856457869],
+        "source_receipt_digest": "sha256:1a3d8608766d00f5c0ce343d83ee54c763109ec9946f0ea21740db37dc3b0c5a"
+      }
+    ],
+    "first_collision": {
+      "angle_degrees": -24.5,
+      "obstacle_id": "chair:226",
+      "intersection_xy_world_m": [4.274605183, 1.988698485],
+      "rotated_endpoint_xy_world_m": [4.273075105, 1.985341034]
+    },
+    "collision_obstacle_ids": ["chair:226"],
+    "claim_boundary": {
+      "zero_thickness_centerline_collision_is_strong_rejection": true,
+      "clear_result_is_not_native_dynamic_qualification": true,
+      "franka_base_pose_resolved": false,
+      "ik_or_contact_qualified": false
+    },
+    "receipt_digest": "sha256:7c1c6b5f3b926313d986e6adc5bf2740f445858f92e862d7c36bc1f316432a2b"
+  },
+  "selection_effect": "resume_frozen_candidate_order_at_840796",
+  "learned_policy_outcomes_accessed": false,
+  "inpainting_or_joint_agent_execution_used": false,
+  "claim_ceiling": "development_only_selection_rejection",
+  "record_digest": "sha256:7e5c3574c587cd9bbf9a41bb0603e8cd98b1fd2a16810e52abb71e3636caf5a3"
+}
