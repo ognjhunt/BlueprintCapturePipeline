@@ -609,3 +609,72 @@ def test_dataset_capture_records_control_rate_streams(tmp_path) -> None:
         )
         assert (tmp_path / stream["video"]["relative_path"]).is_file()
     assert receipt["step_trace"]["total_steps"] == capture["frame_count"]
+
+
+class _StampedEnvironment(_Environment):
+    """Stamps observations with sim time; optionally serves one stale frame."""
+
+    def __init__(self, stale_from_query: int | None = None):
+        super().__init__()
+        self._stale_from_query = stale_from_query
+
+    def read_policy_inputs(self):
+        inputs = super().read_policy_inputs()
+        observation_time = self._t / 15.0
+        if (
+            self._stale_from_query is not None
+            and self._t >= self._stale_from_query * 8
+        ):
+            # A misaligned render cadence serves the previous chunk's frame.
+            observation_time -= 8 / 15.0
+        inputs["observation_sim_time"] = observation_time
+        return inputs
+
+
+def test_fresh_observation_stamps_are_recorded_and_exact() -> None:
+    receipt = _run(_StampedEnvironment(), require_observation_freshness=True)
+
+    assert receipt["observation_sim_times"] == pytest.approx(
+        [query * 8 / 15 for query in range(4)]
+    )
+    assert receipt["observation_interval_seconds"] == pytest.approx([8 / 15] * 3)
+    assert receipt["observation_freshness_required"] is True
+
+
+def test_a_stale_observation_is_refused_not_scored() -> None:
+    """A frame from the previous chunk must fail loudly, not look like a policy."""
+
+    with pytest.raises(PolicyEpisodeError, match="stale"):
+        _run(
+            _StampedEnvironment(stale_from_query=2),
+            require_observation_freshness=True,
+        )
+
+
+def test_freshness_requirement_fails_closed_without_stamps() -> None:
+    """Per-query rendering without stamps is an unverifiable saving: refuse."""
+
+    with pytest.raises(PolicyEpisodeError, match="unstamped"):
+        _run(require_observation_freshness=True)
+
+
+def test_unrequired_stamps_are_still_recorded() -> None:
+    receipt = _run(_StampedEnvironment())
+
+    assert len(receipt["observation_sim_times"]) == 4
+    assert receipt["observation_freshness_required"] is False
+
+
+def test_full_joint_vectors_are_retained_when_the_environment_exposes_them() -> None:
+    """Kinematic replay needs the exact full DOF vector, gripper included."""
+
+    class _FullDofEnvironment(_Environment):
+        def read_full_joint_positions(self):
+            return list(self._joints) + [0.02, 0.02]
+
+    receipt = _run(_FullDofEnvironment())
+
+    rows = receipt["step_trace"]["rows"]
+    assert rows[0]["observation_full_joint_position_rad"] == [0.0] * 7 + [0.02] * 2
+    assert len(rows[-1]["observation_full_joint_position_rad"]) == 9
+    assert receipt["step_trace"]["final_full_joint_position_rad"][-1] == 0.02

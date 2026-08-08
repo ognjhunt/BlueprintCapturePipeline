@@ -202,10 +202,47 @@ class IsaacEpisodeAdapter:
         inputs["joint_position"] = self.read_arm_joint_positions()
         inputs["gripper_position"] = self._droid_gripper_position()
         inputs["eef_9d"] = self._eef_9d()
+        # Stamped so the episode can tell a fresh frame from a stale one.  When
+        # rendering less often than stepping -- the point of per-query
+        # rendering -- a misaligned cadence silently serves the policy an
+        # observation from several steps ago, which presents as a plausible
+        # policy failure rather than the harness bug it is.
+        inputs["observation_sim_time"] = self.sim_time()
         return inputs
+
+    def sim_time(self) -> float:
+        """Simulated seconds since reset, from the environment's own counter."""
+
+        import numpy as np
+
+        env = self._env.unwrapped
+        counter = getattr(env, "episode_length_buf", None)
+        cfg = getattr(env, "cfg", None)
+        sim = getattr(cfg, "sim", None)
+        if (
+            counter is None
+            or sim is None
+            or not hasattr(sim, "dt")
+            or not hasattr(cfg, "decimation")
+        ):
+            # A freshness stamp that quietly disables is worse than no stamp.
+            raise IsaacEpisodeAdapterError(["isaac_episode_sim_time_counter_missing"])
+        steps = float(np.asarray(self._to_torch(counter)).reshape(-1)[0])
+        return steps * float(sim.dt) * float(cfg.decimation)
 
     def read_arm_joint_positions(self) -> list[float]:
         joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]
+        return [float(value) for value in joints]
+
+    def read_full_joint_positions(self) -> list[float]:
+        """Every DOF, arm plus gripper, in simulator order.
+
+        Retained per step so a kinematic replay can write the exact vector
+        back instead of reconstructing gripper joints from a width -- a
+        mapping that varies by gripper model and would be silently wrong.
+        """
+
+        joints = self._to_torch(self._robot.data.joint_pos)[0]
         return [float(value) for value in joints]
 
     def step(self, isaac_action: Sequence[float]) -> None:
@@ -363,3 +400,49 @@ __all__ = [
     "rotation_row_major_from_quaternion_wxyz",
     "validate_adapter_bindings",
 ]
+
+
+class IsaacKinematicReplayWriter:
+    """Scrub sealed episode states through the renderer, physics untouched.
+
+    Implements the ``ReplayStateWriter`` seam for this scene: the retained
+    full joint vector is written back verbatim, the task object's sealed pose
+    with it, and rendering advances without a single physics step.  Scenes
+    with different objects implement their own writer; the replay
+    orchestration in ``episode_replay_render`` does not change.
+    """
+
+    def __init__(self, *, adapter: IsaacEpisodeAdapter):
+        self._adapter = adapter
+
+    def write_step_state(self, state) -> None:
+        import torch
+
+        full = state.get("full_joint_position_rad")
+        if full is None:
+            # Reconstructing gripper joints from a width varies by gripper
+            # model; this writer only replays the exact retained vector.
+            raise IsaacEpisodeAdapterError(["isaac_replay_full_joint_state_missing"])
+        adapter = self._adapter
+        env = adapter._env.unwrapped
+        device = env.device
+        position = torch.tensor([list(map(float, full))], device=device, dtype=torch.float32)
+        adapter._robot.write_joint_state_to_sim(position, torch.zeros_like(position))
+        pose = (state.get("object_sample") or {}).get("can_pose_world")
+        if pose is not None:
+            adapter._can.write_root_pose_to_sim(
+                torch.tensor([list(map(float, pose))], device=device, dtype=torch.float32)
+            )
+            adapter._can.write_root_velocity_to_sim(
+                torch.zeros((1, 6), device=device, dtype=torch.float32)
+            )
+
+    def render(self) -> None:
+        env = self._adapter._env.unwrapped
+        env.sim.render()
+        # Sensor buffers refresh on scene update; without it every camera
+        # would serve the frame from before the state write.
+        env.scene.update(float(env.cfg.sim.dt))
+
+    def read_views(self):
+        return self._adapter.read_policy_inputs()

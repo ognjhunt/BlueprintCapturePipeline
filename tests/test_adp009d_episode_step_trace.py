@@ -195,3 +195,31 @@ def test_motion_quality_reports_end_effector_path() -> None:
     assert quality["end_effector_path_length_m"] == pytest.approx(0.010, abs=1e-9)
     assert quality["end_effector_net_displacement_m"] == pytest.approx(0.010, abs=1e-9)
     assert math.isfinite(quality["observed_joint_jerk_rms_rad_s3"])
+
+
+def test_full_joint_trace_travels_when_provided() -> None:
+    """Replay writes the exact full DOF vector, so the trace must carry it."""
+
+    inputs = _synthetic_episode(policy_steps=4, settle_steps=1)
+    total = 5
+    inputs["full_joint_trace"] = [
+        [0.01 * step] * 13 for step in range(total + 1)
+    ]
+    trace = build_step_trace(**inputs)
+
+    assert trace["rows"][0]["observation_full_joint_position_rad"] == [0.0] * 13
+    assert trace["rows"][3]["observation_full_joint_position_rad"] == (
+        pytest.approx([0.03] * 13)
+    )
+    assert trace["final_full_joint_position_rad"] == pytest.approx([0.05] * 13)
+
+    ragged = _synthetic_episode(policy_steps=4, settle_steps=1)
+    ragged["full_joint_trace"] = [[0.0] * 13] * 3
+    with pytest.raises(StepTraceError):
+        build_step_trace(**ragged)
+
+
+def test_full_joint_trace_is_optional() -> None:
+    trace = build_step_trace(**_synthetic_episode())
+    assert "observation_full_joint_position_rad" not in trace["rows"][0]
+    assert trace.get("final_full_joint_position_rad") is None

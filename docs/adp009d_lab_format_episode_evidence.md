@@ -62,32 +62,47 @@ Measured baseline (v62/v65, 320x180, L40-class): ~172–195 ms per rendered
 frame; 520 renders per episode; render is ~100% of the 89 s episode wall
 clock; π0.5 inference is ~91 ms/query (~6%) and not worth optimizing.
 
-The lanes, in order of leverage:
+The lanes, in order of leverage — Tiers 0, 1, and 3 are now code on this
+branch; only the paid canaries remain:
 
-- **Tier 0 — retain, don't re-render (landed here).** The runtime already
-  renders once per env step. The dataset profile records those frames;
-  15 fps output costs encoding only (~5–15 s/episode), zero extra renders.
-- **Tier 1 — render only what the policy consumes (sibling branch
-  `claude/adp009d-p3-render-interval`).** `render_interval = decimation x
-  open_loop_horizon = 64` renders once per policy query: projected
-  89.3 s → 11.7 s/episode (7.6x). Mutually exclusive with 15 fps live
-  retention; requires the stale-frame alignment assert before adoption.
+- **Tier 0 — retain, don't re-render (landed).** The dataset profile records
+  the frames the runtime already renders; 15 fps output costs encoding only
+  (~5–15 s/episode), zero extra renders.
+- **Tier 1 — render only what the policy consumes (landed, cadence-derived).**
+  `resolve_render_interval` grants `decimation x open_loop_horizon = 64`
+  (once per policy query; projected 89.3 s → 11.7 s/episode, 7.6x) only when
+  every bound candidate declares `per_query` frame cadence in
+  `CANDIDATE_OBSERVATION_FRAME_CADENCE`. Any per-step candidate (GR00T's
+  t-minus-15 history), the dataset profile, an unknown candidate, or
+  `BLUEPRINT_ADP009D_RENDER_PER_QUERY=0` forces per-step rendering — the
+  always-safe cadence. The saving is guarded, not assumed: the adapter
+  stamps each observation with its rendered sim time and the episode
+  refuses any query frame whose stamp differs from the episode's own step
+  clock (a merely-monotonic check would pass a constant misalignment).
+  Receipts record `observation_sim_times` and intervals, so a claimed
+  cadence is shown, not asserted.
 - **Tier 2 — per-frame cost knobs (bounded canary, unproven).** GPU class is
   a measured 3x (L40/RTX 6000 Ada vs A6000 at 720p; keep the avoidlist
   current). Sweep `maxGaussiansToAccumulate` {48, 256, 1024} for *time*
-  (48→1024 was already shown quality-neutral at <1e-4 frame delta). At
-  320x180 fixed per-update overhead (RTX accumulation, denoiser, app update)
-  likely dominates pixels; measure before believing any knob.
-- **Tier 3 — replay-render lane (the architectural answer; next).** Run
-  episodes at Tier-1 speed, then re-render offline by kinematically scrubbing
-  the retained step trace (joints + gripper width + can pose per step —
-  the trace's `replay_sufficiency` field states this contract) with physics
-  and policy out of the loop. Live paid time drops 7.6x while 15 fps (or
-  720p hero) video is produced by a renderer running flat out, batched
-  across episodes on the same warm process. Honesty label: replay frames are
-  derived renders of the same sealed states, not the frames the policy saw;
-  the policy-input PNGs remain authoritative. Needs one paid canary to prove
-  scrub-render parity before any claim.
+  (48→1024 was already shown quality-neutral at <1e-4 frame delta). All the
+  tuning variables now actually reach the worker — the entrypoint exports
+  camera resolution, render cadence, episode count, gaussian cap, evidence
+  profile, and replay flag at bundle-build time.
+- **Tier 3 — replay-render lane (landed; parity canary pending).** Run
+  episodes at Tier-1 speed, then `episode_replay_render` re-renders offline
+  by kinematically scrubbing the retained step trace — the exact full DOF
+  vector per step (arm plus every gripper joint, so no width-to-joint
+  mapping to get wrong) plus the sealed object pose — with physics, policy,
+  and server out of the loop. Provenance is structural: the recorder must be
+  labeled `kinematic_replay` and digest-bound to the trace it derives from,
+  and the LeRobot export carries `video_source` so derived frames can never
+  masquerade as live capture. Enabled by `EVIDENCE_PROFILE=replay` or
+  forced alongside any profile with `BLUEPRINT_ADP009D_REPLAY_RENDER=1`;
+  running it with the dataset profile makes the runtime compare live and
+  replay streams per episode (`replay_parity`, mean/max pixel deltas) —
+  the parity canary is one receipt read. Until that canary passes a
+  preregistered threshold, replay video is evidence of the lane, not a
+  claimed substitute for live capture.
 
 An Arena-level `TiledCamera` experiment (both cameras in one render product)
 is plausible but unproven against NuRec volumes; treat as a bounded
@@ -96,8 +111,11 @@ experiment, not a plan.
 ## Operating it
 
 ```bash
-# Worker-side: control-rate per-camera streams next run
-BLUEPRINT_ADP009D_EVIDENCE_PROFILE=dataset  # baked into the bundle entrypoint
+# Worker-side profiles (baked into the bundle entrypoint at build time)
+BLUEPRINT_ADP009D_EVIDENCE_PROFILE=eval     # default: fast, per-query renders when cadence allows
+BLUEPRINT_ADP009D_EVIDENCE_PROFILE=dataset  # per-step renders + live 15 fps per-camera streams
+BLUEPRINT_ADP009D_EVIDENCE_PROFILE=replay   # fast live leg + offline kinematic replay render
+BLUEPRINT_ADP009D_REPLAY_RENDER=1           # force the replay pass alongside any profile (parity canary: use with dataset)
 
 # Local: export receipts to a LeRobot v2.1 dataset
 python -c "

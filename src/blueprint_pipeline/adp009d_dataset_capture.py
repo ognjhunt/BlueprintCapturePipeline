@@ -20,6 +20,7 @@ the step trace's pre-step state semantics.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -46,14 +47,17 @@ DATASET_CAPTURE_SCHEMA_VERSION = "adp009d_dataset_capture.v1"
 # DROID's published control rate; one frame per environment step.
 DROID_CONTROL_FPS = 15.0
 
-# DROID view keys as served to policies, mapped to the bare stream ids labs
-# know from the DROID/LeRobot releases.
+# View keys as served to policies, mapped to bare stream ids.  The DROID
+# camera names are the convention labs know, but scenes and embodiments vary,
+# so any well-formed ``observation/<stream>`` key is a valid stream rather
+# than a fixed allowlist -- the candidate registry, not this recorder, decides
+# which views a policy is served.
 _DROID_VIEW_PREFIX = "observation/"
-_KNOWN_DROID_STREAMS = {
-    "exterior_image_1_left",
-    "exterior_image_2_left",
-    "wrist_image_left",
-}
+_STREAM_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+CAPTURE_SOURCE_LIVE = "live_capture"
+CAPTURE_SOURCE_REPLAY = "kinematic_replay"
+_CAPTURE_SOURCES = {CAPTURE_SOURCE_LIVE, CAPTURE_SOURCE_REPLAY}
 
 FRAME_ALIGNMENT_STATEMENT = "frame_index_i_is_the_observation_before_control_step_i"
 
@@ -72,7 +76,7 @@ def droid_stream_id_for_view(view_key: str) -> str:
     if not str(view_key).startswith(_DROID_VIEW_PREFIX):
         raise DatasetCaptureError([f"dataset_capture_view_not_droid:{view_key}"])
     stream = str(view_key)[len(_DROID_VIEW_PREFIX) :]
-    if stream not in _KNOWN_DROID_STREAMS:
+    if not _STREAM_ID_PATTERN.fullmatch(stream):
         raise DatasetCaptureError([f"dataset_capture_view_not_droid:{view_key}"])
     return stream
 
@@ -190,9 +194,19 @@ class DatasetCaptureRecorder:
         episode_id: str,
         view_keys: Sequence[str],
         frames_per_second: float = DROID_CONTROL_FPS,
+        source: str = CAPTURE_SOURCE_LIVE,
+        derived_from_step_trace_digest: str | None = None,
     ):
         if not str(episode_id):
             raise DatasetCaptureError(["dataset_capture_episode_id_missing"])
+        if str(source) not in _CAPTURE_SOURCES:
+            raise DatasetCaptureError([f"dataset_capture_source_invalid:{source}"])
+        if (str(source) == CAPTURE_SOURCE_REPLAY) != (
+            derived_from_step_trace_digest is not None
+        ):
+            # A derived render must name what it derives from; a live capture
+            # must not claim derivation.
+            raise DatasetCaptureError(["dataset_capture_provenance_binding_invalid"])
         streams = {view: droid_stream_id_for_view(view) for view in view_keys}
         if len(set(streams.values())) != len(streams):
             raise DatasetCaptureError(["dataset_capture_duplicate_stream_ids"])
@@ -203,6 +217,12 @@ class DatasetCaptureRecorder:
         self._view_to_stream = streams
         self.episode_id = self._episode_id
         self.view_keys = tuple(sorted(streams))
+        self.source = str(source)
+        self.derived_from_step_trace_digest = (
+            str(derived_from_step_trace_digest)
+            if derived_from_step_trace_digest is not None
+            else None
+        )
         self._frames_per_second = float(frames_per_second)
         self._next_step_index = 0
         self._finalized = False
@@ -281,6 +301,8 @@ class DatasetCaptureRecorder:
             "frames_per_second": self._frames_per_second,
             "frame_count": self._next_step_index,
             "terminal_frame_included": terminal_views is not None,
+            "source": self.source,
+            "derived_from_step_trace_digest": self.derived_from_step_trace_digest,
             "frame_alignment": FRAME_ALIGNMENT_STATEMENT,
             "video_is_lossy_frame_digests_are_of_raw_rgb": True,
             "streams": streams,
@@ -310,6 +332,8 @@ class DatasetCaptureRecorder:
 
 
 __all__ = [
+    "CAPTURE_SOURCE_LIVE",
+    "CAPTURE_SOURCE_REPLAY",
     "DATASET_CAPTURE_SCHEMA_VERSION",
     "DROID_CONTROL_FPS",
     "FRAME_ALIGNMENT_STATEMENT",

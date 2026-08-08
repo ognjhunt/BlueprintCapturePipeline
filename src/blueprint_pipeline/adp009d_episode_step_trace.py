@@ -81,6 +81,7 @@ def build_step_trace(
     open_loop_horizon: int,
     control_hz: int,
     joint_limits: Sequence[Sequence[float]],
+    full_joint_trace: Sequence[Sequence[float]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the retained per-step trace from the loop's collections.
 
@@ -123,6 +124,25 @@ def build_step_trace(
         _finite_vector(row, width=ARM_JOINT_COUNT, error=BLOCKER_TRACE_VALUES)
         for row in joint_trace
     ]
+    # The full joint vector (arm plus every gripper DOF) is what a kinematic
+    # replay writes back verbatim -- no width-to-joint mapping to get wrong.
+    full_observed: list[list[float]] | None = None
+    if full_joint_trace is not None:
+        if len(full_joint_trace) != len(joint_trace):
+            raise StepTraceError(
+                [
+                    f"{BLOCKER_TRACE_LENGTHS}:full_joint_trace="
+                    f"{len(full_joint_trace)}!={len(joint_trace)}"
+                ]
+            )
+        widths = {len(row) for row in full_joint_trace}
+        if len(widths) != 1 or next(iter(widths)) < ARM_JOINT_COUNT:
+            raise StepTraceError([f"{BLOCKER_TRACE_VALUES}:full_joint_trace_width"])
+        full_width = next(iter(widths))
+        full_observed = [
+            _finite_vector(row, width=full_width, error=BLOCKER_TRACE_VALUES)
+            for row in full_joint_trace
+        ]
 
     rows: list[dict[str, Any]] = []
     for step in range(total_steps):
@@ -138,6 +158,8 @@ def build_step_trace(
             "observed_after_rad": observed[step + 1],
             "object_sample": sample,
         }
+        if full_observed is not None:
+            row["observation_full_joint_position_rad"] = full_observed[step]
         if step < policy_steps:
             action = commanded_actions[step]
             before = _finite_vector(
@@ -199,6 +221,9 @@ def build_step_trace(
         "policy_steps": policy_steps,
         "settle_steps": settle_steps,
         "initial_object_sample": dict(object_samples[0]),
+        "final_full_joint_position_rad": (
+            full_observed[-1] if full_observed is not None else None
+        ),
         "joint_limits_rad": limits,
         "state_semantics": (
             "observation_joint_position_rad_is_the_pre_step_observed_state"

@@ -128,6 +128,15 @@ BLOCKER_STEP_INDEX_NOT_INCREASING = "policy_episode_step_index_not_increasing"
 BLOCKER_CLIENT_RETURNED_NOTHING = "policy_episode_client_returned_no_chunk"
 BLOCKER_QUERY_BUDGET_EXHAUSTED = "policy_episode_query_budget_exhausted"
 BLOCKER_ENVIRONMENT_CONTRACT = "policy_episode_environment_contract_violated"
+BLOCKER_STALE_OBSERVATION = "policy_episode_observation_stale"
+BLOCKER_UNSTAMPED_OBSERVATION = (
+    "policy_episode_observation_unstamped_under_freshness_requirement"
+)
+
+# A query observation is fresh when its rendered sim time equals the episode's
+# own step clock.  Half a control period of tolerance separates float noise
+# from a genuinely stale frame, whose error is at least one full period.
+OBSERVATION_FRESHNESS_TOLERANCE_S = 0.5 / DROID_CONTROL_HZ
 
 
 class PolicyEpisodeError(ValueError):
@@ -417,6 +426,7 @@ def run_policy_episode(
     media_output_dir: str | Path | None = None,
     episode_id: str | None = None,
     dataset_capture: Any | None = None,
+    require_observation_freshness: bool = False,
 ) -> dict[str, Any]:
     """Run one episode end to end and return a digest-bound receipt.
 
@@ -503,6 +513,15 @@ def run_policy_episode(
     environment.reset()
     joint_limits = environment.joint_limits()
     joint_trace = [_read_arm_joint_positions(environment)]
+    # The full DOF vector (arm plus every gripper joint) is what a kinematic
+    # replay writes back verbatim.  Environments that expose it get exact
+    # replays; those that do not still retain the seven-joint trace.
+    full_joint_reader = getattr(environment, "read_full_joint_positions", None)
+    full_joint_trace: list[list[float]] | None = (
+        [[float(v) for v in full_joint_reader()]]
+        if callable(full_joint_reader)
+        else None
+    )
 
     samples: list[dict[str, Any]] = []
     previous_index: int | None = None
@@ -512,6 +531,7 @@ def run_policy_episode(
     timings_seconds["reset_and_initial_state"] += time.monotonic() - phase_started
 
     queries: list[dict[str, Any]] = []
+    observation_sim_times: list[float] = []
     last_action: list[float] | None = None
     commanded_actions: list[dict[str, Any]] = []
     command_response_rows = 0
@@ -524,6 +544,35 @@ def run_policy_episode(
             policy_input_history, step_index=step_index, inputs=inputs
         )
         timings_seconds["policy_input_read"] += time.monotonic() - phase_started
+
+        # Rendering less often than stepping is an 88% saving, and it is only
+        # sound if the frame the policy sees was rendered *at* the step it is
+        # responding to.  A merely-monotonic check would pass a cadence that is
+        # misaligned by a constant offset, so the stamp is held to the
+        # episode's own step clock.  Stale frames present as a policy that
+        # ignores the scene -- a plausible verdict caused by the harness,
+        # which is the most expensive kind of wrong.
+        observation_time = inputs.get("observation_sim_time")
+        if observation_time is None:
+            if require_observation_freshness:
+                raise PolicyEpisodeError(
+                    [f"{BLOCKER_UNSTAMPED_OBSERVATION}:query={query_index}"]
+                )
+        else:
+            observation_time = float(observation_time)
+            expected_time = step_index / float(DROID_CONTROL_HZ)
+            if (
+                require_observation_freshness
+                and abs(observation_time - expected_time)
+                > OBSERVATION_FRESHNESS_TOLERANCE_S
+            ):
+                raise PolicyEpisodeError(
+                    [
+                        f"{BLOCKER_STALE_OBSERVATION}:query={query_index}"
+                        f":t={observation_time:.6f}:expected={expected_time:.6f}"
+                    ]
+                )
+            observation_sim_times.append(observation_time)
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
         }
@@ -627,6 +676,8 @@ def run_policy_episode(
             after = _read_arm_joint_positions(environment)
             timings_seconds["joint_state_read"] += time.monotonic() - phase_started
             joint_trace.append(after)
+            if full_joint_trace is not None:
+                full_joint_trace.append([float(v) for v in full_joint_reader()])
             target = [float(value) for value in action["joint_position_target_rad"]]
             response_observed = any(
                 abs(after[index] - before[index]) > ARM_MOTION_EPSILON_RAD
@@ -708,6 +759,8 @@ def run_policy_episode(
         phase_started = time.monotonic()
         environment.step(release_action)
         joint_trace.append(_read_arm_joint_positions(environment))
+        if full_joint_trace is not None:
+            full_joint_trace.append([float(v) for v in full_joint_reader()])
         timings_seconds["settle_steps_including_render"] += (
             time.monotonic() - phase_started
         )
@@ -751,6 +804,7 @@ def run_policy_episode(
         open_loop_horizon=int(open_loop_horizon),
         control_hz=DROID_CONTROL_HZ,
         joint_limits=joint_limits,
+        full_joint_trace=full_joint_trace,
     )
     motion_quality = derive_motion_quality(step_trace, joint_limits=joint_limits)
 
@@ -852,6 +906,16 @@ def run_policy_episode(
         "observation_conversion": describe_observation_conversion(candidate_id),
         "destination_position_world_m": [float(v) for v in destination_position_world_m],
         "queries": queries,
+        "observation_sim_times": observation_sim_times,
+        # A receipt claiming a render saving shows the cadence that actually
+        # ran, not the one intended.
+        "observation_interval_seconds": [
+            round(later - earlier, 6)
+            for earlier, later in zip(
+                observation_sim_times[:-1], observation_sim_times[1:], strict=True
+            )
+        ],
+        "observation_freshness_required": bool(require_observation_freshness),
         "motion_evidence": motion_evidence,
         "commanded_action_magnitudes": commanded_action_magnitudes,
         "step_trace": step_trace,

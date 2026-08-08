@@ -77,6 +77,14 @@ export BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES="@@CAMERA_WARMUP_FRAMES@@"
 export BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"
 export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"
 export BLUEPRINT_ADP009D_EVIDENCE_PROFILE="@@EVIDENCE_PROFILE@@"
+# A setting that does not reach the worker is not a setting: a live run
+# rendered 1280x720 for a whole session because the resolution variable was
+# read on the launch host and never exported here.
+export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"
+export BLUEPRINT_ADP009D_RENDER_PER_QUERY="@@RENDER_PER_QUERY@@"
+export BLUEPRINT_ADP009D_EPISODES="@@EPISODES@@"
+export BLUEPRINT_ADP009D_MAX_GAUSSIANS_TO_ACCUMULATE="@@MAX_GAUSSIANS@@"
+export BLUEPRINT_ADP009D_REPLAY_RENDER="@@REPLAY_RENDER@@"
 mkdir -p "$OUT_DIR"
 
 # Environment facts the policy-server design could not verify from off-worker:
@@ -893,6 +901,7 @@ def build_native_microcheck_bundle(
         # ModuleNotFoundError after provisioning has already succeeded.
         "adp009d_episode_step_trace.py",
         "adp009d_dataset_capture.py",
+        "episode_replay_render.py",
         "adp009d_policy_server_worker.py",
         "adp009d_groot_worker_identity.py",
         "adp009d_gated_backbone.py",
@@ -964,6 +973,26 @@ def build_native_microcheck_bundle(
         .replace(
             "@@EVIDENCE_PROFILE@@",
             str(os.environ.get("BLUEPRINT_ADP009D_EVIDENCE_PROFILE", "")),
+        )
+        .replace(
+            "@@CAMERA_RESOLUTION@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", "")),
+        )
+        .replace(
+            "@@RENDER_PER_QUERY@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_RENDER_PER_QUERY", "")),
+        )
+        .replace(
+            "@@EPISODES@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_EPISODES", "")),
+        )
+        .replace(
+            "@@MAX_GAUSSIANS@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_MAX_GAUSSIANS_TO_ACCUMULATE", "")),
+        )
+        .replace(
+            "@@REPLAY_RENDER@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_REPLAY_RENDER", "")),
         ),
     )
     generated = generated_at or utc_now_iso()
@@ -1069,6 +1098,17 @@ def build_native_microcheck_bundle_isolated(
                 json.dumps(dict(expected_asset_bindings), sort_keys=True, separators=(",", ":")),
             )
         )
+    # The child must import exactly this package.  A bare interpreter resolves
+    # ``blueprint_pipeline`` through whatever is installed -- an editable
+    # install pointing at a different checkout made the child build from other
+    # code than the parent, or fail outright from a worktree.  Prepending this
+    # file's own package root pins the child to the parent's code.
+    package_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(package_root)]
+        + ([child_env["PYTHONPATH"]] if child_env.get("PYTHONPATH") else [])
+    )
     try:
         completed = subprocess.run(
             command,
@@ -1076,6 +1116,7 @@ def build_native_microcheck_bundle_isolated(
             capture_output=True,
             text=True,
             timeout=600,
+            env=child_env,
         )
     except subprocess.TimeoutExpired as exc:
         raise ValueError("adp009d_bundle_subprocess_timeout") from exc

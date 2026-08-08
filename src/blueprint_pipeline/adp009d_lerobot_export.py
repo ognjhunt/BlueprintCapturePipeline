@@ -100,13 +100,16 @@ def _episode_rows(receipt: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _capture_streams(
-    receipt: Mapping[str, Any],
-) -> dict[str, Mapping[str, Any]] | None:
-    capture = receipt.get("dataset_capture")
+def _capture_record(
+    receipt: Mapping[str, Any], field: str
+) -> Mapping[str, Any] | None:
+    capture = receipt.get(field)
+    if isinstance(capture, Mapping) and "capture" in capture:
+        # A replay report wraps its capture record; unwrap to the same schema.
+        capture = capture.get("capture")
     if not isinstance(capture, Mapping) or not capture.get("streams"):
         return None
-    return dict(capture["streams"])
+    return capture
 
 
 def _video_feature(stream: Mapping[str, Any], fps: float) -> dict[str, Any]:
@@ -132,6 +135,7 @@ def export_lerobot_dataset(
     output_dir: str | Path,
     media_root: str | Path | None = None,
     robot_type: str = DEFAULT_ROBOT_TYPE,
+    capture_field: str = "dataset_capture",
 ) -> dict[str, Any]:
     """Write one LeRobot v2.1 dataset tree from episode receipts.
 
@@ -162,16 +166,24 @@ def export_lerobot_dataset(
         )
     fps = control_rates.pop()
 
-    captures = [_capture_streams(receipt) for receipt in receipts]
-    if any(capture is not None for capture in captures) and not all(
-        capture is not None for capture in captures
+    records = [_capture_record(receipt, capture_field) for receipt in receipts]
+    if any(record is not None for record in records) and not all(
+        record is not None for record in records
     ):
         raise LeRobotExportError([BLOCKER_CAPTURE_INCONSISTENT])
-    has_video = captures[0] is not None
+    has_video = records[0] is not None
+    captures = [dict(record["streams"]) if record else None for record in records]
+    video_source: str | None = None
     if has_video:
         stream_sets = {tuple(sorted(capture)) for capture in captures}
         if len(stream_sets) != 1:
             raise LeRobotExportError([BLOCKER_CAPTURE_INCONSISTENT])
+        sources = {str(record.get("source") or "live_capture") for record in records}
+        if len(sources) != 1:
+            # A dataset silently mixing live and derived frames would be the
+            # exact dishonesty the source label exists to prevent.
+            raise LeRobotExportError([BLOCKER_CAPTURE_INCONSISTENT])
+        video_source = sources.pop()
         if media_root is None:
             raise LeRobotExportError([BLOCKER_CAPTURE_MEDIA_ROOT])
 
@@ -311,6 +323,7 @@ def export_lerobot_dataset(
         "features": features,
     }
     if has_video:
+        info["video_source"] = video_source
         info["video_path"] = (
             "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
         )

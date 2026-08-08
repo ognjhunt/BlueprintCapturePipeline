@@ -61,6 +61,22 @@ CANDIDATE_REQUIRED_VIEWS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# How often a candidate's observation needs a freshly rendered frame.  The
+# render schedule is derived from this rather than from a per-run environment
+# variable someone must remember: rendering once per query is only sound for a
+# policy that consumes nothing but the current frame.  GR00T consumes a
+# t-minus-15-step image history, so per-query rendering would silently feed it
+# stale history -- a plausible-looking policy failure caused by the harness.
+FRAME_CADENCE_PER_QUERY = "per_query"
+FRAME_CADENCE_PER_STEP = "per_step"
+CANDIDATE_OBSERVATION_FRAME_CADENCE: dict[str, str] = {
+    "pi05_droid": FRAME_CADENCE_PER_QUERY,
+    "groot_n17_droid": FRAME_CADENCE_PER_STEP,
+    # Conservative until its observation contract is exercised live: per-step
+    # is always safe, per-query is an optimization that must be earned.
+    "cosmos3_edge_policy_droid": FRAME_CADENCE_PER_STEP,
+}
+
 BLOCKER_UNKNOWN_CANDIDATE = "droid_observation_unknown_candidate"
 BLOCKER_VIEW_UNAVAILABLE = "droid_observation_required_view_unavailable"
 BLOCKER_THIRD_VIEW_OUTSIDE_CONTRACT = (
@@ -222,7 +238,10 @@ def describe_observation_conversion(
 
 
 __all__ = [
+    "CANDIDATE_OBSERVATION_FRAME_CADENCE",
     "CANDIDATE_REQUIRED_VIEWS",
+    "FRAME_CADENCE_PER_QUERY",
+    "FRAME_CADENCE_PER_STEP",
     "CANDIDATE_VIEW_SHAPES",
     "DROID_EXTERIOR_VIEW_1",
     "DROID_EXTERIOR_VIEW_2",

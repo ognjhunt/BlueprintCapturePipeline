@@ -159,3 +159,63 @@ def test_export_refuses_mixed_capture_presence(tmp_path) -> None:
             output_dir=tmp_path / "lerobot",
             media_root=tmp_path / "media_root",
         )
+
+
+def test_export_can_use_replay_rendered_videos_with_source_labeling(tmp_path) -> None:
+    """Replay-derived videos export identically but never masquerade as live."""
+
+    import numpy as np
+
+    from blueprint_pipeline.adp009d_dataset_capture import (
+        CAPTURE_SOURCE_REPLAY,
+    )
+    from blueprint_pipeline.episode_replay_render import replay_render_episode
+
+    receipt = _run()
+    trace = receipt["step_trace"]
+
+    class _Writer:
+        def write_step_state(self, state):
+            self._level = int(round(state["joint_position_rad"][0] * 100)) % 256
+
+        def render(self):
+            pass
+
+        def read_views(self):
+            frame = np.full((32, 64, 3), self._level, dtype=np.uint8)
+            return {
+                DROID_EXTERIOR_VIEW_1: frame,
+                DROID_WRIST_VIEW: frame,
+            }
+
+    recorder = DatasetCaptureRecorder(
+        output_dir=tmp_path / "media_root",
+        episode_id="episode-replayed",
+        view_keys=(DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW),
+        source=CAPTURE_SOURCE_REPLAY,
+        derived_from_step_trace_digest=trace["step_trace_digest"],
+    )
+    replay = replay_render_episode(
+        step_trace=trace, state_writer=_Writer(), recorder=recorder
+    )
+    enriched = {**receipt, "replay_render": replay}
+
+    report = export_lerobot_dataset(
+        episode_receipts=[enriched],
+        output_dir=tmp_path / "lerobot",
+        media_root=tmp_path / "media_root",
+        capture_field="replay_render",
+    )
+
+    info = json.loads((tmp_path / "lerobot" / "meta" / "info.json").read_text())
+    assert info["video_source"] == "kinematic_replay"
+    assert report["video_streams_exported"] == 2
+    video = (
+        tmp_path
+        / "lerobot"
+        / "videos"
+        / "chunk-000"
+        / "observation.images.exterior_image_1_left"
+        / "episode_000000.mp4"
+    )
+    assert video.is_file()
