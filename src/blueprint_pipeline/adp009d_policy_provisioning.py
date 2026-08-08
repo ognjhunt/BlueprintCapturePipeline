@@ -37,6 +37,8 @@ from .adp009d_checkpoint_materialization import (
     SOURCE_PUBLIC_GCS,
     plan_checkpoint_materialization,
 )
+from .adp009d_gated_backbone import MODEL_ID as GATED_BACKBONE_MODEL_ID
+from .adp009d_gated_backbone import REVISION as GATED_BACKBONE_REVISION
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES, PROGRAM_ID
 from .decision_evidence_contracts import canonical_digest
 
@@ -69,6 +71,9 @@ POLICY_SOURCE_ROOT = "/opt/adp009d-policy-source"
 SYSTEM_INTERPRETER = "/usr/bin/python3"
 POLICY_HOST = "127.0.0.1"
 POLICY_PORT = 8000
+GATED_BACKBONE_AUTH_ENV = "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"
+GATED_BACKBONE_HF_HOME = "/opt/adp009d-hf-cache"
+GATED_BACKBONE_HUB_CACHE = f"{GATED_BACKBONE_HF_HOME}/hub"
 
 # Measured: sigmoid-free, this is the setting that keeps JAX from taking the
 # card out from under Isaac.  A smaller fraction narrows the race rather than
@@ -204,7 +209,26 @@ def build_provisioning_script(candidate_id: str) -> str:
     install = "\n".join(_install_commands(candidate_id))
     identity = ""
     server_identity_arg = ""
+    credential_contract = (
+        "unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true"
+    )
+    gated_backbone = ""
     if candidate_id == "groot_n17_droid":
+        credential_contract = f'''case "${{{GATED_BACKBONE_AUTH_ENV}:-false}}" in
+  1|true|TRUE|yes|YES)
+    if [ -z "${{HF_TOKEN:-${{HUGGING_FACE_HUB_TOKEN:-${{HUGGINGFACE_HUB_TOKEN:-}}}}}}" ]; then
+      echo "BLUEPRINT_ADP009D_BLOCKER:adp009d_gated_backbone_token_missing"
+      exit 86
+    fi
+    export HF_TOKEN="${{HF_TOKEN:-${{HUGGING_FACE_HUB_TOKEN:-${{HUGGINGFACE_HUB_TOKEN}}}}}}"
+    export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+    ;;
+  *)
+    unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true
+    echo "BLUEPRINT_ADP009D_BLOCKER:adp009d_gated_backbone_authority_missing"
+    exit 86
+    ;;
+esac'''
         identity = f'''# Bind the materialized source, checkpoint bytes, and policy environment before
 # the endpoint is allowed to count as this frozen candidate.  Continue only far
 # enough to let the server worker translate a blocked identity receipt into its
@@ -219,6 +243,24 @@ def build_provisioning_script(candidate_id: str) -> str:
             " \\\n  --worker-identity-receipt "
             f'"$OUT_DIR/adp009d_groot_worker_identity.{candidate_id}.json"'
         )
+        gated_backbone = f'''# NVIDIA's exact GR00T checkpoint names a separately gated Cosmos backbone.
+# Download only the frozen revision under explicit authority, verify every Git/LFS
+# object, bind unversioned lookup to that revision, then remove the credential and
+# force offline loading before the server starts.
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_gated_backbone:started"
+export HF_HOME="{GATED_BACKBONE_HF_HOME}"
+"{venv_root}/bin/python" -m huggingface_hub.commands.huggingface_cli download \
+  "{GATED_BACKBONE_MODEL_ID}" \
+  --revision "{GATED_BACKBONE_REVISION}" \
+  --cache-dir "{GATED_BACKBONE_HUB_CACHE}"
+"{venv_root}/bin/python" "$RUNTIME_DIR/adp009d_gated_backbone.py" \
+  --cache-dir "{GATED_BACKBONE_HUB_CACHE}" \
+  --output "$OUT_DIR/adp009d_gated_backbone_identity.{candidate_id}.json"
+unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_gated_backbone:completed"
+'''
     return f"""#!/usr/bin/env bash
 # ADP-009D policy provisioning for {candidate_id}.  Generated, not hand-written.
 set -euo pipefail
@@ -272,8 +314,10 @@ test -x "{venv_root}/bin/python"
 # under Isaac as an uncatchable native abort, after the scene is already built.
 {jax_exports}
 
-# Every frozen candidate is public, so no credential is forwarded to this host.
-unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true
+# Public candidates strip credentials.  GR00T N1.7 may retain a Hugging Face
+# credential only behind the explicit gated-backbone authority contract below;
+# the credential is removed before policy-server start.
+{credential_contract}
 
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_install:started"
 {install}
@@ -287,6 +331,7 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_checkpoint:st
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_checkpoint:completed"
 
 {identity}
+{gated_backbone}
 # Readiness is a completed inference round trip, not a listening socket: one
 # shipped server writes "model_loaded_ready_to_serve" before it serves at all,
 # and loading 12.4 GB of weights takes far longer than binding a port.  The
@@ -327,6 +372,18 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "endpoint_host": POLICY_HOST,
         "endpoint_port": POLICY_PORT,
         "credentials_forwarded": False,
+        "credentials_retained_for_server": False,
+        "gated_backbone": (
+            {
+                "model_id": GATED_BACKBONE_MODEL_ID,
+                "revision": GATED_BACKBONE_REVISION,
+                "authorization_mode": "explicit_runtime_opt_in",
+                "authorization_env": GATED_BACKBONE_AUTH_ENV,
+                "offline_after_materialization": True,
+            }
+            if candidate_id == "groot_n17_droid"
+            else None
+        ),
         "jax_environment": dict(JAX_ENVIRONMENT),
         "materialize_on": "gpu_worker",
     }
@@ -366,6 +423,9 @@ __all__ = [
     "CHECKPOINT_ROOT",
     "ISAAC_INTERPRETER",
     "JAX_ENVIRONMENT",
+    "GATED_BACKBONE_AUTH_ENV",
+    "GATED_BACKBONE_HF_HOME",
+    "GATED_BACKBONE_HUB_CACHE",
     "POLICY_HOST",
     "POLICY_PORT",
     "POLICY_SOURCE_ROOT",

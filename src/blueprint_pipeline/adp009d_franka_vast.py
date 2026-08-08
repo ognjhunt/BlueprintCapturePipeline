@@ -24,6 +24,7 @@ def run_adp009d_native_microcheck_vast(
     max_hourly_rate_usd: float = 1.00,
     hard_cap_usd: float = 4.00,
     hard_ttl_seconds: int = 14_400,
+    authorize_gated_backbone: bool = False,
 ) -> dict[str, Any]:
     """Run one zero-retry native infrastructure check through the shared transport."""
 
@@ -45,6 +46,7 @@ def run_adp009d_native_microcheck_vast(
         instance_label_prefix="blueprint-adp009d-",
         blocker_prefix="adp009d",
         min_gpu_ram_mb=46_000,
+        forward_hf_token=authorize_gated_backbone,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
     )
 

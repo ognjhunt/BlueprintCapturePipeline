@@ -58,10 +58,20 @@ def test_jax_preallocation_is_disabled_outright() -> None:
     assert BLOCKER_JAX_PREALLOCATION in validate_provisioning(enabled)
 
 
-def test_no_credential_is_forwarded_because_every_candidate_is_public() -> None:
+def test_groot_uses_credential_only_for_explicit_pinned_backbone_materialization() -> None:
     script = build_provisioning_script("groot_n17_droid")
 
+    assert "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED" in script
+    assert "adp009d_gated_backbone_authority_missing" in script
+    assert "nvidia/Cosmos-Reason2-2B" in script
+    assert "9ce19a195e423419c349abfc86fd07178b230561" in script
+    assert "adp009d_gated_backbone.py" in script
+    assert "HF_HUB_OFFLINE=1" in script
+    assert "TRANSFORMERS_OFFLINE=1" in script
     assert "unset HF_TOKEN" in script
+    assert script.index("adp009d_gated_backbone.py") < script.rindex(
+        "unset HF_TOKEN"
+    ) < script.index("adp009d_policy_server_worker.py")
     # The GCS fetch goes over plain HTTPS with no SDK and no credential.
     gcs = build_provisioning_script("pi05_droid")
     assert "adp009d_checkpoint_fetch_worker.py" in gcs
@@ -71,6 +81,20 @@ def test_no_credential_is_forwarded_because_every_candidate_is_public() -> None:
     leaked = dict(receipt)
     leaked["credentials_forwarded"] = True
     assert BLOCKER_CREDENTIALS in validate_provisioning(leaked)
+
+
+def test_generated_groot_provisioning_script_is_valid_bash(tmp_path) -> None:
+    import subprocess
+
+    script = tmp_path / "provision.sh"
+    script.write_text(build_provisioning_script("groot_n17_droid"))
+    completed = subprocess.run(
+        ["bash", "-n", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_groot_thin_client_installs_every_frozen_wire_dependency_in_isaac() -> None:
@@ -331,6 +355,8 @@ def test_provisioning_reports_progress_at_every_long_step() -> None:
         assert f"provision_{candidate}_install" in steps
         assert f"provision_{candidate}_checkpoint" in steps
         assert f"provision_{candidate}_server" in steps
+        if candidate == "groot_n17_droid":
+            assert f"provision_{candidate}_gated_backbone" in steps
         # The checkpoint fetch is the long pole and must be marked at both
         # ends, so a stall is attributable to it rather than to provisioning
         # generally.

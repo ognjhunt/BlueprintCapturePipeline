@@ -124,10 +124,12 @@ from .adp_isaac_lab_arena_vast import (
     run_arena_native_control_vast,
 )
 from .adp009d_franka_vast import run_adp009d_native_microcheck_vast
+from .adp009d_gated_backbone import probe_gated_backbone_access
 from .adp009d_native_microcheck_bundle import (
     PROBE_KIND as ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
     build_native_microcheck_bundle_isolated as build_native_microcheck_bundle,
 )
+from .model_access_env import model_access_secret_status, normalize_model_access_env
 from .adp009d_ovrtx_vast import (
     PROBE_KIND as ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
     build_ovrtx_live_camera_bundle,
@@ -1103,6 +1105,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Frozen candidate whose checkpoint and policy environment the worker "
             "should provision.  Omit for a micro-check with no policy."
+        ),
+    )
+    gpu.add_argument(
+        "--adp009d-authorize-gated-backbone",
+        action="store_true",
+        help=(
+            "Explicitly authorize forwarding the canonical Hugging Face credential "
+            "only to materialize GR00T N1.7's pinned Cosmos-Reason2 backbone."
         ),
     )
     gpu.add_argument("--adp009d-ovrtx-probe-manifest")
@@ -2416,6 +2426,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
+            selected_candidates = {
+                item.strip()
+                for item in str(args.adp009d_policy_candidate or "").split(",")
+                if item.strip()
+            }
+            gated_backbone_selected = "groot_n17_droid" in selected_candidates
+            gated_backbone_access: dict[str, Any] | None = None
+            if gated_backbone_selected and not args.adp009d_authorize_gated_backbone:
+                blockers.append("adp009d_gated_backbone_authority_missing")
+            if args.adp009d_authorize_gated_backbone:
+                if not gated_backbone_selected:
+                    blockers.append("adp009d_gated_backbone_authority_without_candidate")
+                else:
+                    normalize_model_access_env()
+                    secret_status = model_access_secret_status()
+                    if secret_status["huggingface"]["auth_ready"] is not True:
+                        blockers.append("adp009d_gated_backbone_token_missing")
+                    else:
+                        gated_backbone_access = probe_gated_backbone_access()
+                        blockers.extend(gated_backbone_access.get("blockers") or [])
             if args.provider != "vast":
                 blockers.append("adp009d_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
@@ -2461,6 +2491,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                 "retry_cap": 0,
                 "machine_avoidlist_digest": avoidlist_digest,
+                "gated_backbone_authorized": bool(
+                    args.adp009d_authorize_gated_backbone
+                ),
+                "gated_backbone_access_receipt_digest": (
+                    gated_backbone_access.get("receipt_digest")
+                    if gated_backbone_access
+                    else None
+                ),
             }
             allocation_binding_digest = (
                 "sha256:"
@@ -2488,6 +2526,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "physical_outcome_values_uploaded": False,
                     "allocation_binding": allocation_binding,
                     "allocation_binding_digest": allocation_binding_digest,
+                    "gated_backbone_access": gated_backbone_access,
                 }
             )
             write_json(Path(args.admission_out), paid_admission)
@@ -2524,6 +2563,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    authorize_gated_backbone=args.adp009d_authorize_gated_backbone,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

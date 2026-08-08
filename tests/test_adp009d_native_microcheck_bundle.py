@@ -746,6 +746,16 @@ def test_native_transport_prefers_one_48gb_class_gpu(monkeypatch: pytest.MonkeyP
     assert observed["min_gpu_ram_mb"] == 46_000
     assert observed["preferred_gpu_keywords"] == ("L40S", "RTX 6000 Ada", "RTX A6000")
     assert observed["provider_bundle_kind"] == "adp009d_isaac"
+    assert observed["forward_hf_token"] is False
+
+    franka_vast.run_adp009d_native_microcheck_vast(
+        job_dir="job",
+        prepared_bundle={"status": "ready"},
+        paid_resource_admission_grant=None,
+        execute=False,
+        authorize_gated_backbone=True,
+    )
+    assert observed["forward_hf_token"] is True
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
@@ -826,6 +836,91 @@ def test_allocator_routes_microcheck_only_through_canonical_grant(
     assert admission["candidate_policy_queried"] is False
 
 
+def test_allocator_requires_and_binds_explicit_gated_backbone_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "build_native_microcheck_bundle",
+        lambda **kwargs: {
+            "status": "ready",
+            "bundle_sha256": "sha256:" + "b" * 64,
+            "input_digest": "sha256:" + "c" * 64,
+        },
+    )
+    monkeypatch.setattr(allocator, "normalize_model_access_env", lambda: None)
+    monkeypatch.setattr(
+        allocator,
+        "model_access_secret_status",
+        lambda: {"huggingface": {"auth_ready": True}},
+    )
+    access = {
+        "status": "authorized",
+        "receipt_digest": "sha256:" + "d" * 64,
+        "blockers": [],
+        "raw_secret_recorded": False,
+    }
+    monkeypatch.setattr(
+        allocator,
+        "probe_gated_backbone_access",
+        lambda: access,
+    )
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+    args = _allocator_args(tmp_path, execute=False) + [
+        "--adp009d-policy-candidate",
+        "groot_n17_droid",
+        "--adp009d-authorize-gated-backbone",
+    ]
+
+    assert allocator.main(args) == 0
+    assert observed["authorize_gated_backbone"] is True
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["gated_backbone_access"] == access
+    assert admission["allocation_binding"]["gated_backbone_authorized"] is True
+    assert (
+        admission["allocation_binding"]["gated_backbone_access_receipt_digest"]
+        == access["receipt_digest"]
+    )
+
+
+def test_allocator_abstains_before_paid_mutation_without_gated_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+    args = _allocator_args(tmp_path, execute=False) + [
+        "--adp009d-policy-candidate",
+        "groot_n17_droid",
+    ]
+
+    assert allocator.main(args) == 2
+    assert called is False
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert result["blockers"] == ["adp009d_gated_backbone_authority_missing"]
+
+
 def test_semantic_override_layer_is_digest_bound_and_used_at_every_spawn_site() -> None:
     """Semantics must come from one digest-bound runtime override, not literals."""
 
@@ -855,6 +950,7 @@ def test_bundle_ships_the_approach_helper_next_to_the_runtime() -> None:
     source = Path(bundle_module.__file__).read_text(encoding="utf-8")
     assert 'runtime / "adp009d_approach_capture.py"' in source
     assert 'runtime / "adp009d_isaac_runtime.py"' in source
+    assert '"adp009d_gated_backbone.py"' in source
 
 
 def test_entrypoint_records_how_the_worker_died(tmp_path: Path) -> None:

@@ -307,6 +307,7 @@ def run_arena_native_control_vast(
     minimum_driver_version: str = "",
     require_known_supported_isaac_driver: bool = True,
     enable_isaac_smoke: bool = True,
+    forward_hf_token: bool = False,
     preferred_gpu_keywords: tuple[str, ...] = (
         "RTX 4090",
         "RTX A6000",
@@ -439,7 +440,7 @@ def run_arena_native_control_vast(
                 prefer_isaac_rt=True,
                 machine_avoidlist_path=local_avoidlist,
                 instance_label_prefix=instance_label_prefix,
-                forward_hf_token=False,
+                forward_hf_token=forward_hf_token,
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     finally:
