@@ -19,19 +19,91 @@ GPU proof). All failures are fail-closed blockers, never a fabricated pass.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from .gaussian_splat_decode import find_splat_transform_cli, read_standard_3dgs_ply
+from .decision_evidence_contracts import canonical_digest
 from .splat_scene_analysis import DEFAULT_CAMERA_IDS, analyze_scene, derive_eval_cameras
 
 RENDER_HARNESS_REL = "tools/splat_render/render_splat.mjs"
 RENDERED_BY = "reference_spark_renderer"
 SCHEMA_VERSION = "splat_scene_render.v1"
 _SPLAT_SUFFIXES = {".ply", ".spz", ".splat", ".ksplat"}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _normalize_camera_specs(
+    camera_specs: Sequence[Mapping[str, Any]] | None,
+) -> tuple[list[dict[str, Any]] | None, list[str]]:
+    """Validate native Spark camera rows before decoding or rendering.
+
+    The room-survey planner and the renderer intentionally share this small
+    scene-neutral contract: ``[{id, spec:{pos,target,fov,up}}]``.  A malformed
+    or duplicate camera set fails closed before any expensive source decode.
+    """
+
+    if camera_specs is None:
+        return None, []
+    if not camera_specs:
+        return None, ["camera_specs_missing"]
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    errors: list[str] = []
+    for row in camera_specs:
+        if not isinstance(row, Mapping):
+            errors.append("camera_spec_row_invalid")
+            continue
+        camera_id = str(row.get("id") or "")
+        spec = row.get("spec")
+        if (
+            not camera_id
+            or camera_id in seen
+            or "/" in camera_id
+            or ".." in camera_id
+            or not isinstance(spec, Mapping)
+        ):
+            errors.append("camera_spec_id_or_payload_invalid")
+            continue
+        seen.add(camera_id)
+        try:
+            pos = [float(value) for value in spec["pos"]]
+            target = [float(value) for value in spec["target"]]
+            up = [float(value) for value in spec.get("up", [0.0, 1.0, 0.0])]
+            fov = float(spec["fov"])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"camera_spec_geometry_invalid:{camera_id}")
+            continue
+        values = [*pos, *target, *up, fov]
+        if (
+            len(pos) != 3
+            or len(target) != 3
+            or len(up) != 3
+            or not all(math.isfinite(value) for value in values)
+            or not 0.0 < fov < 180.0
+            or math.dist(pos, target) <= 1e-9
+            or math.sqrt(sum(value * value for value in up)) <= 1e-9
+        ):
+            errors.append(f"camera_spec_geometry_invalid:{camera_id}")
+            continue
+        normalized.append(
+            {
+                "id": camera_id,
+                "spec": {"pos": pos, "target": target, "fov": fov, "up": up},
+            }
+        )
+    return (normalized if not errors else None), sorted(set(errors))
 
 
 def _repo_root(repo_root: str | Path | None) -> Path:
@@ -123,6 +195,7 @@ def render_splat_scene(
     out_dir: str | Path,
     *,
     camera_ids: Sequence[str] = DEFAULT_CAMERA_IDS,
+    camera_specs: Sequence[Mapping[str, Any]] | None = None,
     width: int = 1280,
     height: int = 960,
     decimate: int = 0,
@@ -170,6 +243,11 @@ def render_splat_scene(
     if not source.is_file() or source.suffix.lower() not in _SPLAT_SUFFIXES:
         manifest["blockers"].append("splat_source_missing_or_unsupported")
         return manifest
+    manifest["source_digest"] = _sha256_file(source)
+    normalized_camera_specs, camera_errors = _normalize_camera_specs(camera_specs)
+    if camera_errors:
+        manifest["blockers"].extend(camera_errors)
+        return manifest
     normalized_graphics_backend = str(graphics_backend).strip().lower()
     if normalized_graphics_backend not in {"swiftshader", "metal"}:
         manifest["blockers"].append("unsupported_graphics_backend")
@@ -191,6 +269,10 @@ def render_splat_scene(
         manifest["decode"] = dec
         return manifest
     manifest["decode"] = dec
+    if not std_ply.is_file():
+        manifest["blockers"].append("standard_ply_missing_after_decode")
+        return manifest
+    manifest["standard_ply_digest"] = _sha256_file(std_ply)
 
     # 2) analyze geometry
     try:
@@ -222,8 +304,18 @@ def render_splat_scene(
             ),
         }
     )
-    cameras = derive_eval_cameras(geom, camera_ids, focus_point=normalized_focus)
+    cameras = (
+        normalized_camera_specs
+        if normalized_camera_specs is not None
+        else derive_eval_cameras(geom, camera_ids, focus_point=normalized_focus)
+    )
     manifest["camera_focus_point"] = normalized_focus
+    manifest["camera_set_origin"] = (
+        "caller_supplied_native_spark_specs"
+        if normalized_camera_specs is not None
+        else "derived_eval_cameras"
+    )
+    manifest["camera_set_digest"] = canonical_digest({"cameras": cameras})
     cameras_json = out_dir / "cameras.json"
     cameras_json.write_text(json.dumps(cameras), encoding="utf-8")
     harness = root / RENDER_HARNESS_REL
@@ -287,6 +379,11 @@ def render_splat_scene(
             "path": cam.get("path"),
             "bytes": cam.get("bytes"),
             "nonblank": is_real,
+            "digest": (
+                _sha256_file(Path(cam["path"]))
+                if cam.get("path") and Path(cam["path"]).is_file()
+                else None
+            ),
         })
     manifest["cameras"] = cams_out
     manifest["nonblank_camera_count"] = nonblank
@@ -313,6 +410,9 @@ def render_splat_scene(
         else False
     )
     manifest["robot_start_pose"] = geom.suggested_start
+    manifest["render_manifest_digest"] = canonical_digest(
+        manifest, digest_field="render_manifest_digest"
+    )
     return manifest
 
 
@@ -408,8 +508,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="site-coordinate task focus used for wrist and task-focus framing",
     )
     ap.add_argument("--overlay", help="optional JSON box/cylinder preview overlay")
+    ap.add_argument(
+        "--cameras-json",
+        help="optional native Spark camera list [{id,spec:{pos,target,fov,up}}]",
+    )
     ap.add_argument("--no-mp4", action="store_true")
     args = ap.parse_args(argv)
+    camera_specs = None
+    if args.cameras_json:
+        camera_specs = json.loads(Path(args.cameras_json).read_text(encoding="utf-8"))
     manifest = render_splat_scene(
         args.splat,
         args.out,
@@ -421,6 +528,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         graphics_backend=args.graphics_backend,
         up_axis=args.up_axis,
         focus_point=args.focus_point,
+        camera_specs=camera_specs,
         overlay_json=args.overlay,
         encode_mp4=not args.no_mp4,
     )

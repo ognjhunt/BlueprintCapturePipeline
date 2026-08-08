@@ -14,6 +14,7 @@ from blueprint_pipeline.splat_scene_render import (
     RENDERED_BY,
     _decimate_to_standard_ply,
     _encode_mp4,
+    _normalize_camera_specs,
     render_splat_scene,
 )
 
@@ -84,9 +85,15 @@ def test_blocked_when_cli_missing(tmp_path: Path) -> None:
 def test_invalid_focus_point_fails_closed_after_decode(tmp_path: Path, monkeypatch) -> None:
     src = tmp_path / "scene.ply"
     src.write_bytes(b"placeholder")
+
+    def completed_decode(_source, destination, *args, **kwargs):
+        Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        Path(destination).write_bytes(b"standard")
+        return {"status": "completed"}
+
     monkeypatch.setattr(
         "blueprint_pipeline.splat_scene_render._decimate_to_standard_ply",
-        lambda *args, **kwargs: {"status": "completed"},
+        completed_decode,
     )
     monkeypatch.setattr(
         "blueprint_pipeline.splat_scene_render.read_standard_3dgs_ply",
@@ -99,6 +106,83 @@ def test_invalid_focus_point_fails_closed_after_decode(tmp_path: Path, monkeypat
     result = render_splat_scene(src, tmp_path / "out", focus_point=[1.0, float("nan"), 2.0])
     assert result["status"] == "blocked"
     assert result["blockers"] == ["invalid_focus_point"]
+
+
+def test_decoder_success_without_output_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "scene.ply"
+    src.write_bytes(b"placeholder")
+    monkeypatch.setattr(
+        "blueprint_pipeline.splat_scene_render._decimate_to_standard_ply",
+        lambda *args, **kwargs: {"status": "completed"},
+    )
+
+    result = render_splat_scene(src, tmp_path / "out")
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["standard_ply_missing_after_decode"]
+
+
+def test_caller_camera_specs_are_normalized_and_digestable() -> None:
+    observed, errors = _normalize_camera_specs(
+        [
+            {
+                "id": "room_00_yaw_000",
+                "spec": {
+                    "pos": [0, 0, 1.35],
+                    "target": [2, 0, 1.05],
+                    "fov": 70,
+                    "up": [0, 0, 1],
+                },
+            }
+        ]
+    )
+
+    assert errors == []
+    assert observed == [
+        {
+            "id": "room_00_yaw_000",
+            "spec": {
+                "pos": [0.0, 0.0, 1.35],
+                "target": [2.0, 0.0, 1.05],
+                "fov": 70.0,
+                "up": [0.0, 0.0, 1.0],
+            },
+        }
+    ]
+
+
+def test_invalid_caller_camera_specs_fail_before_decode(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "scene.ply"
+    src.write_bytes(b"placeholder")
+    decode_called = False
+
+    def unexpected_decode(*args, **kwargs):
+        nonlocal decode_called
+        decode_called = True
+        raise AssertionError("decode must not run")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.splat_scene_render._decimate_to_standard_ply",
+        unexpected_decode,
+    )
+    result = render_splat_scene(
+        src,
+        tmp_path / "out",
+        camera_specs=[
+            {
+                "id": "duplicate",
+                "spec": {"pos": [0, 0, 0], "target": [1, 0, 0], "fov": 70},
+            },
+            {
+                "id": "duplicate",
+                "spec": {"pos": [0, 0, 0], "target": [1, 0, 0], "fov": 70},
+            },
+        ],
+    )
+
+    assert result["status"] == "blocked"
+    assert "camera_spec_id_or_payload_invalid" in result["blockers"]
+    assert decode_called is False
 
 
 def test_encode_mp4_no_frames(tmp_path: Path) -> None:
