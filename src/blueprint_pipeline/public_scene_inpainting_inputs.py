@@ -167,6 +167,13 @@ def build_public_scene_inpainting_input_request(value: Mapping[str, Any]) -> dic
         dilation = mask.get("dilation_pixels")
         if not isinstance(dilation, int) or isinstance(dilation, bool) or not 0 <= dilation <= 64:
             errors.append("edit_input_mask_dilation_invalid")
+        maximum_fraction = mask.get("maximum_image_fraction", 0.2)
+        if (
+            isinstance(maximum_fraction, bool)
+            or not isinstance(maximum_fraction, (int, float))
+            or not 0.01 <= float(maximum_fraction) <= 0.85
+        ):
+            errors.append("edit_input_mask_maximum_image_fraction_invalid")
     if errors:
         raise PublicSceneInpaintingInputError(errors)
     expected = canonical_digest(request, digest_field="request_digest")
@@ -534,7 +541,8 @@ def materialize_public_scene_inpainting_inputs(
         final_pixels = np.asarray(final) > 0
         support_binary = np.asarray(support_mask) > 0
         coverage = float(final_pixels.mean())
-        if not 0.00001 < coverage < 0.2 or int(support_binary.sum()) == 0:
+        maximum_fraction = float(request["mask_policy"].get("maximum_image_fraction", 0.2))
+        if not 0.00001 < coverage < maximum_fraction or int(support_binary.sum()) == 0:
             raise PublicSceneInpaintingInputError([f"edit_input_mask_invalid:{camera_id}"])
         support_inside = float((support_binary & final_pixels).sum() / support_binary.sum())
         if support_inside < float(request["mask_policy"]["minimum_support_inside_final_fraction"]):
@@ -584,6 +592,13 @@ def materialize_public_scene_inpainting_inputs(
                 round(float(np.linalg.norm(np.asarray(row["T_world_camera_opencv"])[:3, 3] - target_center)), 6)
                 for row in cameras
             ],
+        },
+        "mask_policy": {
+            "authority": request["mask_policy"]["authority"],
+            "dilation_pixels": dilation,
+            "maximum_image_fraction": float(
+                request["mask_policy"].get("maximum_image_fraction", 0.2)
+            ),
         },
         "renderer": renderer,
         "executed_commands": {

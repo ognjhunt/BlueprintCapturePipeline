@@ -191,6 +191,22 @@ def test_request_forbids_caller_outcomes_and_orbit_only_camera_set() -> None:
         build_public_scene_inpainting_input_request(request)
 
 
+def test_mask_fraction_is_frozen_per_object_scale_with_legacy_default() -> None:
+    legacy = build_public_scene_inpainting_input_request(_request())
+    assert "maximum_image_fraction" not in legacy["mask_policy"]
+
+    articulated = _request()
+    articulated["mask_policy"]["maximum_image_fraction"] = 0.65
+    built = build_public_scene_inpainting_input_request(articulated)
+    assert built["mask_policy"]["maximum_image_fraction"] == 0.65
+
+    invalid = _request()
+    invalid["mask_policy"]["maximum_image_fraction"] = 0.95
+    with pytest.raises(PublicSceneInpaintingInputError) as caught:
+        build_public_scene_inpainting_input_request(invalid)
+    assert "edit_input_mask_maximum_image_fraction_invalid" in caught.value.codes
+
+
 def test_oriented_box_membership_does_not_collapse_to_aabb() -> None:
     angle = np.deg2rad(45.0)
     rotation = np.asarray([[np.cos(angle), -np.sin(angle), 0], [np.sin(angle), np.cos(angle), 0], [0, 0, 1]])
