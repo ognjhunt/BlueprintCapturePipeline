@@ -71,6 +71,8 @@ EXPECTED_ASSETS = {
 APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
 TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usda"
 TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
+OVERVIEW_TASK_CAMERA_DISTANCE_M = 1.25
+MIN_OVERVIEW_TASK_OBJECT_PIXELS = 80
 # Aura authored as an Omniverse ParticleField of Gaussian surfels.  Rendered
 # by the same omni.rtx that the standalone OVRTX lane wraps -- the v11 worker
 # log shows omni.rtx mapping /rtx/rtpt/gaussian/* onto
@@ -1007,13 +1009,45 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             "intrinsics_unchanged": True,
         }
     )
-    # Arena's second fixed exterior view is the review-only overview camera.
-    # It never enters either candidate's observation mapping or the scorer.
+    # Arena's stock second exterior view faces away from this task: v88
+    # measured zero robot/can semantic pixels in every retained frame.  Reuse
+    # the proven task-camera orientation, move farther back on the ray through
+    # the midpoint of the start/destination envelope, and apply it at the
+    # render-authoritative CameraCfg seam before spawn.  This remains
+    # review-only and can never enter policy input or scoring.
+    destination = json.loads(
+        (runtime / "adp009d_task_destination.v1.json").read_text(encoding="utf-8")
+    )["position_world_m"]
+    task_envelope_center = [
+        (CAN_AXIS_XY_M[0] + float(destination[0])) / 2.0,
+        (CAN_AXIS_XY_M[1] + float(destination[1])) / 2.0,
+        SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0,
+    ]
+    overview_camera_cfg = embodiment.camera_config.external_camera_2
+    overview_offset_plan = external_task_camera_offset_plan(
+        robot_position_world=robot_pose.position_xyz,
+        robot_quaternion_world_xyzw=robot_pose.rotation_xyzw,
+        current_camera_offset_position_robot=external_camera_cfg.offset.pos,
+        target_position_world=task_envelope_center,
+        distance_m=OVERVIEW_TASK_CAMERA_DISTANCE_M,
+    )
+    overview_camera_cfg.offset.pos = tuple(
+        overview_offset_plan["resolved_offset_position_robot_m"]
+    )
+    overview_camera_cfg.offset.rot = external_camera_cfg.offset.rot
+    overview_camera_cfg.offset.convention = external_camera_cfg.offset.convention
     overview_camera_plan = {
         "schema_version": "blueprint_episode_overview_camera_plan.v1",
         "runtime_camera_name": "external_camera_2",
         "evidence_camera_id": "overview",
-        "pose_source": "official_arena_droid_second_external_camera",
+        "pose_source": "task_centered_wide_view_from_proven_external_orientation",
+        "task_envelope_center_world_m": task_envelope_center,
+        "target_distance_m": OVERVIEW_TASK_CAMERA_DISTANCE_M,
+        "resolved_eye_position_world_m": overview_offset_plan[
+            "resolved_eye_position_world_m"
+        ],
+        "render_authoritative_seam": "Arena CameraCfg.offset before prim spawn",
+        "minimum_start_object_semantic_pixels": MIN_OVERVIEW_TASK_OBJECT_PIXELS,
         "role": "review_only_full_task_motion",
         "policy_input": False,
         "grader_input": False,
@@ -1429,6 +1463,26 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     ),
                     require_metric_depth=(camera_name != "external_camera_2"),
                 )
+            )
+        overview_observability = _approved_can_observability(
+            env.unwrapped.scene["external_camera_2"]
+        )
+        overview_camera_plan["start_object_observability"] = overview_observability
+        overview_camera_plan["start_object_observability_status"] = (
+            "ready"
+            if overview_observability["approved_task_object_pixel_count"]
+            >= MIN_OVERVIEW_TASK_OBJECT_PIXELS
+            and overview_observability[
+                "approved_task_object_within_frame_margin"
+            ]
+            else "blocked"
+        )
+        if overview_camera_plan["start_object_observability_status"] != "ready":
+            raise RuntimeError(
+                "overview_camera_task_object_not_observable:"
+                f"pixels={overview_observability['approved_task_object_pixel_count']}:"
+                "within_margin="
+                f"{overview_observability['approved_task_object_within_frame_margin']}"
             )
         timings_seconds["camera_retention"] = round(time.monotonic() - camera_retention_started, 6)
         # A frame is the only thing that answers whether the appearance actually
@@ -1923,6 +1977,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             phase_started = time.monotonic()
             try:
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
+                from adp009d_isaac_episode_adapter import (
+                    controlled_body_pose_for_grasp_frame_target,
+                )
                 from adp009d_droid_action_execution import GripperConvention
                 from adp009d_control_episode import run_required_controls
                 from adp009d_episode_batch import (
@@ -2040,10 +2097,40 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 ):
                     """One bounded native differential-IK action for a control phase."""
 
+                    if target_quaternion_world_xyzw is not None:
+                        raise RuntimeError(
+                            "scripted_control_requires_live_body_orientation"
+                        )
+                    body_poses = _to_torch(robot.data.body_pose_w)[0]
+                    body_pose = body_poses[body_index, :7]
+                    finger_indices = [
+                        body_names.index("left_inner_finger"),
+                        body_names.index("right_inner_finger"),
+                    ]
+                    finger_midpoint = (
+                        body_poses[finger_indices[0], :3]
+                        + body_poses[finger_indices[1], :3]
+                    ) / 2.0
+                    target_body_position_world, held_body_quaternion_world = (
+                        controlled_body_pose_for_grasp_frame_target(
+                            current_body_position_world_m=[
+                                float(value) for value in body_pose[:3]
+                            ],
+                            current_body_quaternion_world_xyzw=[
+                                float(value) for value in body_pose[3:7]
+                            ],
+                            current_grasp_frame_position_world_m=[
+                                float(value) for value in finger_midpoint
+                            ],
+                            target_grasp_frame_position_world_m=(
+                                target_position_world_m
+                            ),
+                        )
+                    )
                     base_pose = _to_torch(robot.data.root_pose_w)[0, :7]
                     position_base, quaternion_base = pose_world_to_base(
-                        position_world=target_position_world_m,
-                        quaternion_world_xyzw=target_quaternion_world_xyzw,
+                        position_world=target_body_position_world,
+                        quaternion_world_xyzw=held_body_quaternion_world,
                         base_position_world=[float(v) for v in base_pose[:3]],
                         base_quaternion_world_xyzw=[float(v) for v in base_pose[3:7]],
                     )
@@ -2174,7 +2261,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         scenario_instance = json.loads(
                             scenario_instance_path.read_text(encoding="utf-8")
                         )
-                        control_plan_path = runtime / "adp009d_control_plan.v1.json"
+                        control_plan_path = runtime / "adp009d_control_plan.v2.json"
                         if not control_plan_path.is_file():
                             raise RuntimeError("adp009d_control_plan_missing")
                         expected_control_plan = json.loads(

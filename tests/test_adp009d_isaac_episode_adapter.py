@@ -13,11 +13,37 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     GRIPPER_PHYSICAL_FULL_OPENING_M,
     IsaacEpisodeAdapter,
     IsaacEpisodeAdapterError,
+    controlled_body_pose_for_grasp_frame_target,
     describe_adapter,
     rgb_from_camera_output,
     rotation_row_major_from_quaternion_xyzw,
     validate_adapter_bindings,
 )
+
+
+def test_grasp_frame_target_retains_the_measured_full_tool_offset() -> None:
+    target_body, target_quaternion = controlled_body_pose_for_grasp_frame_target(
+        current_body_position_world_m=[1.0, 2.0, 3.0],
+        current_body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        current_grasp_frame_position_world_m=[1.2, 1.9, 2.7],
+        target_grasp_frame_position_world_m=[4.0, 5.0, 6.0],
+    )
+
+    assert target_body == pytest.approx([3.8, 5.1, 6.3])
+    assert target_quaternion == [0.0, 0.0, 0.0, 1.0]
+
+
+def test_grasp_frame_target_rejects_a_nonrigid_orientation() -> None:
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_grasp_frame_transform_invalid",
+    ):
+        controlled_body_pose_for_grasp_frame_target(
+            current_body_position_world_m=[1.0, 2.0, 3.0],
+            current_body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 2.0],
+            current_grasp_frame_position_world_m=[1.2, 1.9, 2.7],
+            target_grasp_frame_position_world_m=[4.0, 5.0, 6.0],
+        )
 
 
 class _Tensor(list):
@@ -427,6 +453,19 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted["gripper_width_source"] = "raw_link_origin_distance"
     assert "isaac_episode_adapter_gripper_width_source_drifted" in (
         validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["scripted_control_target_frame"] = "panda_hand_origin"
+    assert "isaac_episode_adapter_scripted_control_target_frame_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["scripted_control_body_pose_resolution"] = "guessed_z_offset"
+    assert (
+        "isaac_episode_adapter_scripted_control_body_pose_resolution_drifted"
+        in validate_adapter_bindings(drifted)
     )
 
     drifted = dict(bindings)

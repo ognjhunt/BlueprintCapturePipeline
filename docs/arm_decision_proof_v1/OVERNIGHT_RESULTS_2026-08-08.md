@@ -176,8 +176,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v87
-ledgers add `$6.776798`, for `$17.775097` total and `$7.224903` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v88
+ledgers add `$6.913631`, for `$17.911930` total and `$7.088070` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -218,9 +218,10 @@ they are evidence that concurrency failed closed.
 | v85 two-policy dual camera | `$0.433506` estimated | Completed six interpretable episodes with complete media: both candidates `never_moved` x3; tied canonical-cell null, no winner. |
 | v86 canonical controls + overview | `$0.100146` estimated | Blocked before both controls: the review-only overview camera had no valid metric-depth AOV. No policy/control outcome; encoded review-camera depth fix followed. |
 | v87 canonical controls + overview retry | `$0.194701` estimated | All three camera warmups passed and the controls runner started, but the first control could not seal its required review video because the controls-only image lacked `ffmpeg`/`ffprobe`. No sealed control receipt or control outcome; encoded base media-toolchain preflight followed. |
+| v88 canonical controls + media preflight | `$0.136833` estimated | Both controls sealed complete external/wrist/overview media. Zero-action passed as `never_moved`; scripted positive failed as `never_moved`. The arm moved up to 0.81 rad while the finger midpoint remained at least 0.39 m from the can, exposing a guessed IK-body/tool-frame transform. The stock overview also retained zero task semantic pixels. No policy verdict. |
 
-All completed paid attempts were followed by an API provider-zero check. v86
-and v87 were each launched from provider zero as the sole active instance;
+All completed paid attempts were followed by an API provider-zero check. v86,
+v87, and v88 were each launched from provider zero as the sole active instance;
 after each automatic teardown a fresh Vast API query returned `active: 0 []`.
 
 ## Scenario-family and control-harness progress after v85
@@ -273,11 +274,36 @@ tools an explicit base episode-media dependency, checks or installs them before
 any policy provisioning or simulator startup, writes a typed toolchain status,
 and fails closed before paid task execution if either remains unavailable.
 
-No paid control outcome exists yet: neither v86 nor v87 produced a sealed
-zero-action receipt, and neither reached a sealed scripted-positive receipt.
-Their combined `$0.294847` is retained harness-null evidence, not a simulator
-task result. A local fake-environment positive remains test evidence for
-orchestration only and is not a simulator task success.
+v88 passed the base media preflight and sealed both control episodes with all
+six videos decode-validated. The zero-action negative passed as `never_moved`.
+The scripted positive failed as `never_moved`, so the canonical cell remains
+blocked and no learned-policy result may be interpreted. Its joint trace
+proves this was not a dead action seam: the arm changed by as much as 0.81 rad,
+but the finger midpoint stayed at least 0.39 m from the can and the can's
+maximum horizontal displacement was only 2.3 micrometres. The control plan had
+commanded the `panda_hand` body as though it were the finger midpoint, using a
+guessed scalar vertical offset and a hard-coded world quaternion.
+
+The retained overview stream exposed a separate evidence defect: Arena's stock
+second external camera faced mostly away from the task and measured zero robot
+or can semantic pixels. It is a valid RGB stream but not a valid overview of
+the manipulation. The encoded corrections therefore:
+
+- express every pick/place waypoint in the probe-calibrated finger-midpoint
+  grasp frame, including can-centre grasp/place heights;
+- resolve each IK body target from the live full three-dimensional
+  body-to-finger-midpoint transform while holding the current controlled-body
+  orientation, eliminating asset-specific guessed offsets;
+- version that changed plan as `adp009d_control_plan.v2`; and
+- place the review camera farther back on the proven task-camera ray centered
+  on the start/destination envelope, copy the proven orientation at the
+  render-authoritative pre-spawn seam, and fail closed before controls unless
+  the exact can has at least 80 semantic pixels inside the frame margin.
+
+v88 is the first interpretable paid control pair, but its positive result is a
+task/control-harness failure rather than simulator task success. The six videos
+and lossless manifests are retained under its immutable execution output. No
+learned policy was queried.
 
 ## What remains open
 
@@ -299,7 +325,8 @@ orchestration only and is not a simulator task success.
 
 ## Single next action
 
-After landing the controls-only base media-toolchain fix, from provider zero run only the
+After landing the measured grasp-frame IK and task-centered overview fixes,
+from provider zero run only the
 checked-in canonical scenario's zero-action
 negative and deterministic scripted-positive control pair. Do not query either
 learned policy. If the scripted positive does not place the exact SimReady can,

@@ -204,7 +204,7 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
         ).decode()
     assert "provider_runtime/adp009d_control_episode.py" in names
     assert "provider_runtime/adp009d_scenario_instance.v1.json" in names
-    assert "provider_runtime/adp009d_control_plan.v1.json" in names
+    assert "provider_runtime/adp009d_control_plan.v2.json" in names
     assert 'BLUEPRINT_ADP009D_CONTROLS="1"' in entrypoint
     assert "adp009d_policy_provisioning.pi05_droid.sh" not in names
     media_preflight = entrypoint.index(
@@ -639,6 +639,26 @@ def test_runtime_retains_camera_semantic_mapping_and_quality_diagnostics() -> No
     assert '"pixel_counts_by_id": semantic_pixel_counts' in source
     assert '"finite_metric_depth_fraction"' in source
     assert '"foreground_semantic_pixel_fraction"' in source
+
+
+def test_overview_camera_is_task_centered_and_fails_closed_when_object_is_absent() -> None:
+    """The stock second Arena view faced backward and showed no task pixels."""
+
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+    configure = source[source.index("overview_camera_cfg =") :]
+    gate = configure.index("overview_camera_task_object_not_observable")
+    controls = configure.index('os.environ.get("BLUEPRINT_ADP009D_CONTROLS")')
+    assert "task_envelope_center" in configure[:gate]
+    assert "distance_m=OVERVIEW_TASK_CAMERA_DISTANCE_M" in configure[:gate]
+    assert (
+        "overview_camera_cfg.offset.rot = external_camera_cfg.offset.rot"
+        in configure[:gate]
+    )
+    assert (
+        "overview_camera_cfg.offset.convention = external_camera_cfg.offset.convention"
+        in configure[:gate]
+    )
+    assert gate < controls
 
 
 def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:

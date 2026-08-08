@@ -165,7 +165,7 @@ class _ControlEnvironment:
         gripper_command,
         max_joint_delta_rad,
     ):
-        assert target_quaternion_world_xyzw == [1.0, 0.0, 0.0, 0.0]
+        assert target_quaternion_world_xyzw is None
         assert max_joint_delta_rad == 0.03
         self.pending_target = [float(value) for value in target_position_world_m]
         self.pending_gripper = float(gripper_command)
@@ -205,6 +205,24 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
     assert first == second
     assert first["instance_digest"] == instance["instance_digest"]
     assert first["resolved_destination_position_world_m"] == TARGET
+    assert first["grasp_target_frame"] == "probe_calibrated_finger_midpoint"
+    assert first["controlled_body_orientation_strategy"] == (
+        "hold_live_controlled_body_orientation"
+    )
+    grasp = next(
+        phase for phase in first["scripted_positive_phases"]
+        if phase["phase_id"] == "grasp"
+    )
+    assert grasp["target_position_world_m"] == pytest.approx(
+        [
+            START[0],
+            START[1],
+            START[2]
+            + instance["resolved_parameters"]["object_height_m"] / 2.0,
+        ]
+    )
+    assert grasp["target_frame"] == "probe_calibrated_finger_midpoint"
+    assert grasp["target_quaternion_world_xyzw"] is None
     assert [phase["phase_id"] for phase in first["scripted_positive_phases"]] == [
         "pregrasp",
         "descend",

@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v1"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v2"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v1"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -57,13 +57,16 @@ ZERO_ACTION_NEGATIVE = "zero_action_negative"
 SCRIPTED_POSITIVE = "deterministic_scripted_positive"
 REQUIRED_CONTROLS = (ZERO_ACTION_NEGATIVE, SCRIPTED_POSITIVE)
 
-# The controlled body is the Robotiq base.  v84's approach receipt measured the
-# lowest gripper body about 0.185 m below it.  Adding half the sealed can height
-# centers the fingers on the can; the value remains explicit in every plan.
-GRIPPER_BODY_TO_FINGER_CENTER_Z_M = 0.1855
+# IK controls an articulation body while the task is grasped at the midpoint
+# between the finger bodies.  Those frames are not coincident: v88 proved that
+# treating them as one left the fingers 0.39 m from the can while the arm moved
+# by 0.81 rad.  The plan therefore targets the semantic grasp frame and the
+# live adapter measures the body-to-grasp transform; no asset-specific scalar
+# tool offset is allowed here.
+GRASP_TARGET_FRAME = "probe_calibrated_finger_midpoint"
+CONTROLLED_BODY_ORIENTATION_STRATEGY = "hold_live_controlled_body_orientation"
 PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
-TOOL_QUATERNION_WORLD_XYZW = (1.0, 0.0, 0.0, 0.0)
 ZERO_ACTION_STEPS = 80
 # Retain a calibrated overview sequence throughout motion, not only at phase
 # boundaries.  Arena advances at roughly 30 Hz, so eight native steps yields a
@@ -106,7 +109,7 @@ class ControlEnvironment(Protocol):
         self,
         *,
         target_position_world_m: Sequence[float],
-        target_quaternion_world_xyzw: Sequence[float],
+        target_quaternion_world_xyzw: Sequence[float] | None,
         gripper_command: float,
         max_joint_delta_rad: float,
     ) -> Sequence[float]: ...
@@ -160,12 +163,8 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
     object_height = _finite(parameters.get("object_height_m"))
     if object_height <= 0.0:
         raise ControlEpisodeError(["control_plan_object_height_invalid"])
-    grasp_body_z = (
-        start[2] + GRIPPER_BODY_TO_FINGER_CENTER_Z_M + object_height / 2.0
-    )
-    place_body_z = (
-        target[2] + GRIPPER_BODY_TO_FINGER_CENTER_Z_M + object_height / 2.0
-    )
+    grasp_frame_z = start[2] + object_height / 2.0
+    place_frame_z = target[2] + object_height / 2.0
     phases = [
         {
             "phase_id": "pregrasp",
@@ -181,14 +180,14 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         {
             "phase_id": "descend",
             "mode": "ik_pose",
-            "target_position_world_m": [start[0], start[1], grasp_body_z],
+            "target_position_world_m": [start[0], start[1], grasp_frame_z],
             "gripper": "open",
             "steps": 80,
         },
         {
             "phase_id": "grasp",
             "mode": "ik_pose",
-            "target_position_world_m": [start[0], start[1], grasp_body_z],
+            "target_position_world_m": [start[0], start[1], grasp_frame_z],
             "gripper": "closed",
             "steps": 30,
         },
@@ -217,14 +216,14 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         {
             "phase_id": "place",
             "mode": "ik_pose",
-            "target_position_world_m": [target[0], target[1], place_body_z],
+            "target_position_world_m": [target[0], target[1], place_frame_z],
             "gripper": "closed",
             "steps": 80,
         },
         {
             "phase_id": "release",
             "mode": "ik_pose",
-            "target_position_world_m": [target[0], target[1], place_body_z],
+            "target_position_world_m": [target[0], target[1], place_frame_z],
             "gripper": "open",
             "steps": 30,
         },
@@ -249,9 +248,9 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
     ]
     for phase in phases:
         if phase["target_position_world_m"] is not None:
-            phase["target_quaternion_world_xyzw"] = list(
-                TOOL_QUATERNION_WORLD_XYZW
-            )
+            phase["target_frame"] = GRASP_TARGET_FRAME
+            phase["orientation_strategy"] = CONTROLLED_BODY_ORIENTATION_STRATEGY
+            phase["target_quaternion_world_xyzw"] = None
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
 
     plan: dict[str, Any] = {
@@ -265,8 +264,8 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_start_position_world_m": start,
         "resolved_destination_position_world_m": target,
         "object_height_m": object_height,
-        "gripper_body_to_finger_center_z_m": GRIPPER_BODY_TO_FINGER_CENTER_Z_M,
-        "tool_quaternion_world_xyzw": list(TOOL_QUATERNION_WORLD_XYZW),
+        "grasp_target_frame": GRASP_TARGET_FRAME,
+        "controlled_body_orientation_strategy": CONTROLLED_BODY_ORIENTATION_STRATEGY,
         "zero_action": {
             "semantics": (
                 "zero_joint_velocity_realized_as_hold_current_absolute_joint_positions"
@@ -580,7 +579,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v1.json", plan)
+    _write_json(output / "adp009d_control_plan.v2.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(
