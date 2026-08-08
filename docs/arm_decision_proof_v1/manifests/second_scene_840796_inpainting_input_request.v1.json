@@ -28,8 +28,8 @@
     "selection_basis": "frozen full-room survey then nonblank front-side translated coverage of the observed refrigerator",
     "views": [
       {
-        "camera_id": "front_context",
-        "position_offset_m": [0.0, 2.6, 0.8],
+        "camera_id": "front_medium",
+        "position_offset_m": [0.0, 1.5, 0.25],
         "target_offset_m": [0.0, 0.0, 0.0]
       },
       {
@@ -39,33 +39,33 @@
       },
       {
         "camera_id": "left_translate",
-        "position_offset_m": [-0.8, 2.2, 0.55],
+        "position_offset_m": [-0.8, 2.0, 0.55],
         "target_offset_m": [-0.05, 0.0, 0.02]
       },
       {
         "camera_id": "right_translate",
-        "position_offset_m": [0.8, 2.2, 0.6],
+        "position_offset_m": [0.8, 2.0, 0.6],
         "target_offset_m": [0.05, 0.0, 0.02]
       },
       {
+        "camera_id": "far_left",
+        "position_offset_m": [-1.2, 1.2, 0.75],
+        "target_offset_m": [-0.06, 0.0, 0.04]
+      },
+      {
+        "camera_id": "far_right",
+        "position_offset_m": [1.15, 1.15, 0.75],
+        "target_offset_m": [0.06, 0.0, 0.04]
+      },
+      {
         "camera_id": "raised_left",
-        "position_offset_m": [-0.6, 2.4, 1.35],
+        "position_offset_m": [-0.6, 2.1, 1.1],
         "target_offset_m": [0.0, 0.0, 0.18]
       },
       {
-        "camera_id": "raised_right",
-        "position_offset_m": [0.65, 2.5, 1.15],
-        "target_offset_m": [0.0, 0.0, 0.15]
-      },
-      {
-        "camera_id": "low_approach",
-        "position_offset_m": [-0.25, 2.1, 0.05],
+        "camera_id": "low_right",
+        "position_offset_m": [0.25, 1.8, 0.05],
         "target_offset_m": [0.0, 0.0, -0.12]
-      },
-      {
-        "camera_id": "right_context",
-        "position_offset_m": [1.25, 2.8, 0.85],
-        "target_offset_m": [0.08, 0.0, 0.0]
       }
     ]
   },
@@ -79,5 +79,5 @@
     "visual_contribution_threshold_8bit": 8,
     "minimum_visible_target_fraction": 0.05
   },
-  "request_digest": "sha256:9bde6bad61d764f244b315eb83a4050c318db40e01219e3474a4e3447e66d8a1"
+  "request_digest": "sha256:bf10d656e0bdf4573eb88c27a2558da85ff3dc9a7692f016853c458bd225b343"
 }
