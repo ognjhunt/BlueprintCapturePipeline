@@ -117,9 +117,9 @@ def Xform "{default_prim}"
             custom token fieldName = "emissiveColor"
             custom token fieldRole = "emissiveColor"
             custom asset filePath = @./{payload_name}@
-            custom float4 omni:nurec:ccmB = (0, 0, 1, 0)
-            custom float4 omni:nurec:ccmG = (0, 1, 0, 0)
-            custom float4 omni:nurec:ccmR = (1, 0, 0, 0)
+            custom float4 omni:nurec:ccmB = (0, 0, {exposure}, 0)
+            custom float4 omni:nurec:ccmG = (0, {exposure}, 0, 0)
+            custom float4 omni:nurec:ccmR = ({exposure}, 0, 0, 0)
         }}
     }}
 }}
@@ -151,8 +151,16 @@ def write_aura_nurec_usdz(
     out_path: str | Path,
     *,
     payload_name: str = "aura_appearance.nurec",
+    exposure_scale: float = 1.0,
 ) -> dict[str, Any]:
-    """Package a NuRec container document as a referenceable USDZ."""
+    """Package a NuRec container document as a referenceable USDZ.
+
+    ``exposure_scale`` scales the emissive field's colour-correction matrix,
+    which the shipped package leaves as identity.  It is the format's own
+    exposure control and it applies **at render**, so the sealed learned
+    coefficients are never touched -- rescaling those would change the
+    appearance the capture actually recorded rather than how it is displayed.
+    """
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -180,6 +188,7 @@ def write_aura_nurec_usdz(
         payload_name=payload_name,
         x0=float(low[0]), y0=float(low[1]), z0=float(low[2]),
         x1=float(high[0]), y1=float(high[1]), z1=float(high[2]),
+        exposure=float(exposure_scale),
     )
     root_layer = _ROOT_LAYER.format(
         render_settings=render_settings, default_prim=DEFAULT_PRIM
@@ -209,6 +218,7 @@ def write_aura_nurec_usdz(
         # that would rotate the room while looking entirely plausible.
         "world_transform": "translation_only" if any(centre) else "identity",
         "world_translation_m": [float(v) for v in centre],
+        "exposure_scale": float(exposure_scale),
         "render_settings": "shipped_interiorgs_verbatim",
         "authoring": dict(document.get("_blueprint_authoring") or {}),
     }

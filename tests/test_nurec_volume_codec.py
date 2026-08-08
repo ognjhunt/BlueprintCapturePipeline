@@ -636,3 +636,44 @@ def test_the_offset_is_carried_as_a_translation_on_the_volume(tmp_path) -> None:
     for r in range(3):
         for c in range(3):
             assert matrix[r][c] == (1.0 if r == c else 0.0)
+
+
+def test_exposure_is_applied_at_render_not_baked_into_the_coefficients(tmp_path) -> None:
+    """The learned coefficients are sealed capture data.
+
+    17.6 percent of this field's DC terms decode above the display ceiling,
+    peaking at 4.6x.  Scaling the emissive colour-correction matrix -- which
+    the shipped package leaves as identity -- changes how that is displayed.
+    Rescaling the coefficients would change what the capture recorded.
+    """
+
+    from pxr import Usd
+
+    from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
+
+    document = _authored()
+    before = gaussian_arrays(document)["features_albedo"].copy()
+    receipt = write_aura_nurec_usdz(
+        document, tmp_path / "aura.usdz", exposure_scale=0.689
+    )
+    assert receipt["exposure_scale"] == 0.689
+    # The payload is untouched.
+    np.testing.assert_array_equal(gaussian_arrays(document)["features_albedo"], before)
+    stage = Usd.Stage.Open(str(tmp_path / "aura.usdz"))
+    field = stage.GetPrimAtPath("/World/gauss/gauss/emissive_color_field")
+    assert abs(field.GetAttribute("omni:nurec:ccmR").Get()[0] - 0.689) < 1e-5
+    assert abs(field.GetAttribute("omni:nurec:ccmG").Get()[1] - 0.689) < 1e-5
+    assert abs(field.GetAttribute("omni:nurec:ccmB").Get()[2] - 0.689) < 1e-5
+
+
+def test_the_default_exposure_matches_the_shipped_identity(tmp_path) -> None:
+    """Unscaled unless asked, so the default stays the reference behaviour."""
+
+    from pxr import Usd
+
+    from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
+
+    write_aura_nurec_usdz(_authored(), tmp_path / "aura.usdz")
+    stage = Usd.Stage.Open(str(tmp_path / "aura.usdz"))
+    field = stage.GetPrimAtPath("/World/gauss/gauss/emissive_color_field")
+    assert field.GetAttribute("omni:nurec:ccmR").Get()[0] == 1.0
