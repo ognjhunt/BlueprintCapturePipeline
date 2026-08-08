@@ -2005,3 +2005,44 @@ def test_a_hanging_candidate_cannot_consume_the_whole_run() -> None:
     abandoned = ENTRYPOINT.index('provision_${candidate}:abandoned')
     assert "break" in ENTRYPOINT[abandoned : abandoned + 400]
     assert "done" in ENTRYPOINT[abandoned:]
+
+
+def test_no_shipped_module_uses_an_unguarded_top_level_relative_import() -> None:
+    """The bundle ships modules flat, with no package for a relative import.
+
+    Three separate runs reached the episode and died here -- twice on
+    "attempted relative import with no known parent package", once on a
+    module that was not shipped at all -- and no run has ever issued a policy
+    query as a result.  Every one of those was a packaging defect, not a
+    defect in the episode.
+
+    Function-level relative imports are deliberately not flagged: they are
+    lazy, and a shipped module can carry one on a path the worker never
+    reaches.  A top-level one always executes.
+    """
+
+    import ast
+    import inspect
+    import re
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
+
+    shipped = set(re.findall(r'"(adp009d_[a-z0-9_]+\.py)"', inspect.getsource(bundle)))
+    shipped |= {"decision_evidence_contracts.py"}
+    root = _Path(bundle.__file__).parent
+    offenders = []
+    for name in sorted(shipped):
+        path = root / name
+        if not path.is_file():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:  # top level only
+            if isinstance(node, ast.Try):
+                continue  # a guarded dual-layout import
+            if isinstance(node, ast.ImportFrom) and node.level:
+                offenders.append(f"{name}:{node.lineno}")
+    assert not offenders, (
+        "shipped modules with unguarded top-level relative imports, which "
+        f"cannot resolve in the flat bundle: {offenders}"
+    )

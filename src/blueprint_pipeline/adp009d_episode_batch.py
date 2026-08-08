@@ -23,8 +23,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .adp009d_policy_episode import PolicyEpisodeError, run_policy_episode
-from .decision_evidence_contracts import canonical_digest
+try:  # flat provider-bundle layout
+    from adp009d_policy_episode import PolicyEpisodeError, run_policy_episode
+except ModuleNotFoundError:  # repository package
+    from .adp009d_policy_episode import PolicyEpisodeError, run_policy_episode
+try:  # flat provider-bundle layout
+    from decision_evidence_contracts import canonical_digest
+except ModuleNotFoundError:  # repository package
+    from .decision_evidence_contracts import canonical_digest
 
 BATCH_SCHEMA_VERSION = "adp009d_episode_batch.v1"
 
