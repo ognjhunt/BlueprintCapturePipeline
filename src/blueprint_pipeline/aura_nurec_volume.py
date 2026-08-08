@@ -125,6 +125,7 @@ def build_aura_nurec_document(
     template: bytes | Mapping[str, Any],
     planar: bool = True,
     z_order: bool = False,
+    precision: int | None = None,
 ) -> dict[str, Any]:
     """Lay Aura's learned 2DGS parameters into a NuRec container document.
 
@@ -186,7 +187,15 @@ def build_aura_nurec_document(
         FINITE_LOGIT_CLAMP,
     )
 
-    precision = int(gaussians.get("precision") or 16)
+    # float16 costs this field more than it costs the template's.  Rounding
+    # displaces an Aura surfel by 0.93mm at p95 against a median surfel width
+    # of 0.81mm -- more than its own size -- so the field is smeared onto a
+    # grid coarser than its own detail.  InteriorGS is unharmed by the same
+    # grid because its gaussians are 6.1mm, three times coarser than the
+    # spacing.  The precision is a config field rather than a constant, so it
+    # can be raised for a finer field; the payload doubles in size.
+    precision = int(precision or gaussians.get("precision") or 16)
+    gaussians["precision"] = precision
     state = build_state_dict(
         {
             "positions": positions,
@@ -230,6 +239,7 @@ def build_aura_nurec_document(
         "finite_logit_clamp": FINITE_LOGIT_CLAMP,
         "values_written": "pre_activation_learned_parameters",
         "z_ordered": bool(z_order),
+        "precision_source": "explicit" if precision != 16 else "template_default",
         "z_order_bits": MORTON_BITS,
     }
     return built

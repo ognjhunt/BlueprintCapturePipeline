@@ -525,3 +525,41 @@ def test_a_degenerate_axis_does_not_divide_by_zero() -> None:
     flat = np.zeros((5, 3), dtype=np.float32)
     flat[:, 0] = np.arange(5)
     assert morton_order(flat).shape == (5,)
+
+
+def test_precision_can_be_raised_for_a_finer_field() -> None:
+    """float16 displaces an Aura surfel by more than its own width.
+
+    Rounding error is 0.93mm at p95 against a 0.81mm median surfel, so the
+    field is smeared onto a grid coarser than its detail.  InteriorGS is
+    unharmed by the same grid because its gaussians are 6.1mm.
+    """
+
+    from blueprint_pipeline.aura_nurec_volume import build_aura_nurec_document
+
+    surfels = _aura_surfels()
+    doc16 = build_aura_nurec_document(surfels, template=_shipped_payload())
+    doc32 = build_aura_nurec_document(
+        surfels, template=_shipped_payload(), precision=32
+    )
+    assert doc16["config"]["layers"]["gaussians"]["precision"] == 16
+    assert doc32["config"]["layers"]["gaussians"]["precision"] == 32
+    # And the declared precision must match how the bytes were actually laid
+    # out, or the decoder reads the array at the wrong stride.
+    a16 = gaussian_arrays(decode_nurec_bytes(encode_nurec_bytes(doc16)))
+    a32 = gaussian_arrays(decode_nurec_bytes(encode_nurec_bytes(doc32)))
+    assert a16["positions"].dtype == np.float16
+    assert a32["positions"].dtype == np.float32
+    assert a32["positions"].shape == a16["positions"].shape
+
+
+def test_float32_preserves_positions_that_float16_rounds_away() -> None:
+    from blueprint_pipeline.aura_nurec_volume import build_aura_nurec_document
+
+    surfels = _aura_surfels()
+    exact = np.asarray(surfels.xyz, dtype=np.float32)
+    doc32 = build_aura_nurec_document(
+        surfels, template=_shipped_payload(), precision=32
+    )
+    stored = gaussian_arrays(doc32)["positions"]
+    np.testing.assert_array_equal(stored, exact)
