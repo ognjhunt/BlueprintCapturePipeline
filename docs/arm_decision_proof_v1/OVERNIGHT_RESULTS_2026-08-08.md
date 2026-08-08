@@ -176,8 +176,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v85
-ledgers add `$6.481951`, for `$17.480250` total and `$7.519750` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v86
+ledgers add `$6.582097`, for `$17.580396` total and `$7.419604` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -216,10 +216,11 @@ they are evidence that concurrency failed closed.
 | v83 dual-camera gate | `$0.318888` | Failed before inference: external camera metadata moved but render-authoritative prim did not. |
 | v84 spawned dual camera | `$0.236308` | Completed three interpretable GR00T `never_moved` episodes with both views gated and exact can visible. |
 | v85 two-policy dual camera | `$0.433506` estimated | Completed six interpretable episodes with complete media: both candidates `never_moved` x3; tied canonical-cell null, no winner. |
+| v86 canonical controls + overview | `$0.100146` estimated | Blocked before both controls: the review-only overview camera had no valid metric-depth AOV. No policy/control outcome; encoded review-camera depth fix followed. |
 
-All completed paid attempts were followed by an API provider-zero check. v85
-was launched from provider zero as the sole active instance; after teardown a
-fresh Vast API query returned `active: 0 []`.
+All completed paid attempts were followed by an API provider-zero check. v86
+was launched from provider zero as the sole active instance; after its automatic
+teardown a fresh Vast API query returned `active: 0 []`.
 
 ## Scenario-family and control-harness progress after v85
 
@@ -232,7 +233,7 @@ and `groot_n17_droid`. The suite discloses the earlier canonical canaries rather
 than pretending they occurred after the freeze. Its maximum is 512 episodes
 and 19 GPU-hours; this is an upper bound, not authority to launch all cells.
 
-The reusable control execution path is now implemented locally through the
+Commit `2086690c1` added the reusable control execution path through the
 same native eight-dimensional action seam as the learned candidates. It:
 
 - realizes zero joint velocity as a hold of the observed absolute joints;
@@ -252,9 +253,20 @@ three calibrated lossless streams are sampled throughout motion, while the
 manifest separately counts exact policy-input frames and review samples. This
 is a reusable episode-evidence contract, not a one-off screenshot workaround.
 
-No paid control result exists yet. Cost for this implementation/freeze stage is
-`$0`; a local fake-environment positive is test evidence for orchestration only
-and is not a simulator task success.
+v86 was the first controls-only paid canary. It failed before the controls at
+the new overview camera's `camera_metric_depth_invalid:external_camera_2` gate.
+The rendered RGB had already passed the degenerate-frame check, but Arena's
+second exterior review camera does not provide a valid metric-depth AOV. Metric
+depth is required for the external/wrist policy views, not for a review-only
+camera that cannot reach policy input or scoring. The encoded fix therefore
+keeps the overview's RGB, semantics, calibration, timestamps, lossless frames,
+and video mandatory while representing metric depth as explicitly not required.
+It does not relax either policy camera's depth gate.
+
+No paid control outcome exists yet: v86 reached neither the zero-action nor
+scripted-positive episode. Its `$0.100146` result is a retained harness null,
+not a simulator task result. A local fake-environment positive remains test
+evidence for orchestration only and is not a simulator task success.
 
 ## What remains open
 
@@ -276,7 +288,8 @@ and is not a simulator task success.
 
 ## Single next action
 
-From provider zero, run only the checked-in canonical scenario's zero-action
+After landing the review-only depth fix, from provider zero run only the
+checked-in canonical scenario's zero-action
 negative and deterministic scripted-positive control pair. Do not query either
 learned policy. If the scripted positive does not place the exact SimReady can,
 retain the overview/external/wrist videos and typed receipt, tear down to

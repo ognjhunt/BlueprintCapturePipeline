@@ -1741,6 +1741,76 @@ def test_a_degenerate_frame_is_refused_rather_than_saved() -> None:
     assert runtime.FRAME_DEGENERATE_MAX_VALUE <= 2
 
 
+def test_review_only_overview_retains_rgb_without_claiming_metric_depth(
+    tmp_path: Path,
+) -> None:
+    import numpy as np
+
+    class _Tensor:
+        def __init__(self, value):
+            self.value = np.asarray(value)
+            self.device = "cpu"
+
+        def __getitem__(self, item):
+            return _Tensor(self.value[item])
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self.value
+
+        def tolist(self):
+            return self.value.tolist()
+
+    class _Data:
+        output = {
+            "rgb": _Tensor(np.full((1, 4, 5, 4), 80, dtype=np.uint8)),
+            "semantic_segmentation": _Tensor(
+                np.zeros((1, 4, 5, 1), dtype=np.int32)
+            ),
+        }
+        info = {"semantic_segmentation": {"idToLabels": {}}}
+        intrinsic_matrices = _Tensor(np.eye(3, dtype=np.float32)[None, ...])
+        pos_w = _Tensor(np.zeros((1, 3), dtype=np.float32))
+        quat_w_opengl = _Tensor(
+            np.asarray([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+        )
+
+    class _Camera:
+        data = _Data()
+
+    row = isaac_runtime._save_camera(
+        tmp_path,
+        "external_camera_2",
+        _Camera(),
+        frame_index=40,
+        sim_time=1.0,
+        require_metric_depth=False,
+    )
+
+    assert row["metric_depth"] == {
+        "status": "not_required_for_review_only_camera",
+        "aov": None,
+        "units": None,
+        "path": None,
+        "sha256": None,
+    }
+    assert row["quality_diagnostics"]["metric_depth_required"] is False
+    assert (tmp_path / row["rgb_png"]["path"]).is_file()
+    with pytest.raises(RuntimeError, match="camera_outputs_missing:external_camera_2"):
+        isaac_runtime._save_camera(
+            tmp_path,
+            "external_camera_2",
+            _Camera(),
+            frame_index=41,
+            sim_time=1.1,
+        )
+
+
 def test_the_stage_probe_inspects_the_field_not_its_parent() -> None:
     """Reading matches[0] returned the Xform holding the field.
 

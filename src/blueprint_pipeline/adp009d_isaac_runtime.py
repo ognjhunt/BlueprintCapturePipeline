@@ -745,13 +745,21 @@ def _camera_prim_diagnostics(camera: Any) -> dict[str, Any]:
 
 
 def _save_camera(
-    output: Path, name: str, camera: Any, *, frame_index: int, sim_time: float
+    output: Path,
+    name: str,
+    camera: Any,
+    *,
+    frame_index: int,
+    sim_time: float,
+    require_metric_depth: bool = True,
 ) -> dict[str, Any]:
     import numpy as np
     from PIL import Image
 
     camera_output = camera.data.output
-    required = {"rgb", "distance_to_camera", "semantic_segmentation"}
+    required = {"rgb", "semantic_segmentation"}
+    if require_metric_depth:
+        required.add("distance_to_camera")
     missing = sorted(required - set(camera_output))
     if missing:
         raise RuntimeError(f"camera_outputs_missing:{name}:{','.join(missing)}")
@@ -771,17 +779,30 @@ def _save_camera(
         raise RuntimeError(
             f"camera_frame_degenerate:{name}:max={int(rgb.max())}:mean={float(rgb.mean()):.3f}"
         )
-    depth = (
-        _to_torch(camera_output["distance_to_camera"])[0].detach().cpu().numpy().astype(np.float32)
-    )
+    depth = None
+    if "distance_to_camera" in camera_output:
+        depth = (
+            _to_torch(camera_output["distance_to_camera"])[0]
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
     semantic = _to_torch(camera_output["semantic_segmentation"])[0].detach().cpu().numpy()
     if semantic.ndim == 3 and semantic.shape[-1] == 1:
         semantic = semantic[..., 0]
     semantic = semantic.astype(np.int32)
-    if rgb.shape[:2] != depth.shape[:2] or rgb.shape[:2] != semantic.shape[:2]:
+    if rgb.shape[:2] != semantic.shape[:2] or (
+        depth is not None and rgb.shape[:2] != depth.shape[:2]
+    ):
         raise RuntimeError(f"camera_output_shape_mismatch:{name}")
-    finite_depth = np.isfinite(depth)
-    if not finite_depth.any() or (depth[finite_depth] < 0.0).any():
+    finite_depth = np.isfinite(depth) if depth is not None else None
+    metric_depth_valid = bool(
+        finite_depth is not None
+        and finite_depth.any()
+        and not (depth[finite_depth] < 0.0).any()
+    )
+    if require_metric_depth and not metric_depth_valid:
         raise RuntimeError(f"camera_metric_depth_invalid:{name}")
     semantic_ids, semantic_counts = np.unique(semantic, return_counts=True)
     semantic_pixel_counts = {
@@ -795,7 +816,8 @@ def _save_camera(
     depth_path = camera_dir / f"{frame_index:06d}.distance_to_camera.npy"
     semantic_path = camera_dir / f"{frame_index:06d}.semantic.npy"
     Image.fromarray(rgb, mode="RGB").save(rgb_path, format="PNG", compress_level=9)
-    np.save(depth_path, depth, allow_pickle=False)
+    if metric_depth_valid and depth is not None:
+        np.save(depth_path, depth, allow_pickle=False)
     np.save(semantic_path, semantic, allow_pickle=False)
     intrinsic = _to_torch(camera.data.intrinsic_matrices)[0]
     pos_w = _to_torch(camera.data.pos_w)[0]
@@ -807,12 +829,23 @@ def _save_camera(
         "timestamp_ns": time.time_ns(),
         "resolution_hw": [int(rgb.shape[0]), int(rgb.shape[1])],
         "rgb_png": {"path": str(rgb_path.relative_to(output)), "sha256": _sha256(rgb_path)},
-        "metric_depth": {
-            "aov": "distance_to_camera",
-            "units": "meter",
-            "path": str(depth_path.relative_to(output)),
-            "sha256": _sha256(depth_path),
-        },
+        "metric_depth": (
+            {
+                "status": "valid",
+                "aov": "distance_to_camera",
+                "units": "meter",
+                "path": str(depth_path.relative_to(output)),
+                "sha256": _sha256(depth_path),
+            }
+            if metric_depth_valid and depth is not None
+            else {
+                "status": "not_required_for_review_only_camera",
+                "aov": None,
+                "units": None,
+                "path": None,
+                "sha256": None,
+            }
+        ),
         "semantic_segmentation": {
             "path": str(semantic_path.relative_to(output)),
             "sha256": _sha256(semantic_path),
@@ -821,7 +854,10 @@ def _save_camera(
             "pixel_counts_by_id": semantic_pixel_counts,
         },
         "quality_diagnostics": {
-            "finite_metric_depth_fraction": float(finite_depth.mean()),
+            "finite_metric_depth_fraction": (
+                float(finite_depth.mean()) if finite_depth is not None else None
+            ),
+            "metric_depth_required": bool(require_metric_depth),
             "rgb_min": int(rgb.min()),
             "rgb_max": int(rgb.max()),
             "rgb_mean": float(rgb.mean()),
@@ -911,7 +947,9 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         camera_cfg = getattr(embodiment.camera_config, camera_name)
         if camera_cfg is None:
             raise RuntimeError(f"required_evaluation_camera_config_missing:{camera_name}")
-        camera_cfg.data_types = ["rgb", "distance_to_camera", "semantic_segmentation"]
+        camera_cfg.data_types = ["rgb", "semantic_segmentation"]
+        if camera_name != "external_camera_2":
+            camera_cfg.data_types.insert(1, "distance_to_camera")
         camera_cfg.colorize_semantic_segmentation = False
         camera_cfg.update_period = 0.0
         # Arena leaves this false, which makes camera.data.pos_w/quat_w_* stay
@@ -1389,6 +1427,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     sim_time=float(
                         env.unwrapped.episode_length_buf[0].item() * cfg.sim.dt * cfg.decimation
                     ),
+                    require_metric_depth=(camera_name != "external_camera_2"),
                 )
             )
         timings_seconds["camera_retention"] = round(time.monotonic() - camera_retention_started, 6)
@@ -1821,6 +1860,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 * cfg.sim.dt
                                 * cfg.decimation
                             ),
+                            require_metric_depth=(camera_name != "external_camera_2"),
                         )
                     )
                 _phase(
