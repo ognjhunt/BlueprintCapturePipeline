@@ -150,7 +150,12 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
         # the torch conflict this design exists to avoid.
         return [
             f'"{ISAAC_INTERPRETER}" -m pip install --no-deps -e "{source}"',
-            f'"{ISAAC_INTERPRETER}" -m pip install "pyzmq" "msgpack"',
+            # Exact thin-client dependencies from the frozen GR00T pyproject.
+            # ``server_client.py`` imports msgpack_numpy at module import, so
+            # omitting it fails only after the server and Isaac have both paid
+            # their startup cost.
+            f'"{ISAAC_INTERPRETER}" -m pip install '
+            '"pyzmq==27.0.1" "msgpack==1.1.0" "msgpack-numpy==0.4.8"',
         ]
     return [
         f'"{ISAAC_INTERPRETER}" -m pip install -e "{source}/{subpackage}"',

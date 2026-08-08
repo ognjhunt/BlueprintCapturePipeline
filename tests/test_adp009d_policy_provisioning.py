@@ -73,6 +73,17 @@ def test_no_credential_is_forwarded_because_every_candidate_is_public() -> None:
     assert BLOCKER_CREDENTIALS in validate_provisioning(leaked)
 
 
+def test_groot_thin_client_installs_every_frozen_wire_dependency_in_isaac() -> None:
+    script = build_provisioning_script("groot_n17_droid")
+
+    assert '"pyzmq==27.0.1"' in script
+    assert '"msgpack==1.1.0"' in script
+    assert '"msgpack-numpy==0.4.8"' in script
+    assert script.index("pip install --no-deps -e") < script.index(
+        '"msgpack-numpy==0.4.8"'
+    )
+
+
 def test_each_candidate_fetches_from_where_its_artifact_actually_lives() -> None:
     gcs = build_provisioning_script("pi05_droid")
     assert "gs://openpi-assets/checkpoints/pi05_droid" in gcs
