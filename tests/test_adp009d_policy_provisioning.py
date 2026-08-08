@@ -85,6 +85,24 @@ def test_each_candidate_fetches_from_where_its_artifact_actually_lives() -> None
     assert "gcloud" not in hub
 
 
+def test_groot_observes_worker_identity_after_fetch_and_before_server_launch() -> None:
+    script = build_provisioning_script("groot_n17_droid")
+
+    identity = "adp009d_groot_worker_identity.py"
+    server = "adp009d_policy_server_worker.py"
+    assert script.index("huggingface_cli") < script.index(identity) < script.index(server)
+    assert "--worker-identity-receipt" in script
+    assert "\n+  --worker-identity-receipt" not in script
+    assert "adp009d_groot_worker_identity.groot_n17_droid.json" in script
+    # The identity helper may report blocked, but the server worker runs only
+    # to preserve that typed receipt and refuses to launch invalid bytes.
+    assert f'{identity}" \\' in script
+
+    pi05 = build_provisioning_script("pi05_droid")
+    assert identity not in pi05
+    assert "--worker-identity-receipt" not in pi05
+
+
 def test_every_frozen_candidate_provisions_and_validates() -> None:
     for candidate_id in EXPECTED_CANDIDATES:
         script = build_provisioning_script(candidate_id)

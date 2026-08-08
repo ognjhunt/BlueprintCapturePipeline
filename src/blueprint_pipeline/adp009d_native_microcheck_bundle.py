@@ -844,6 +844,8 @@ def build_native_microcheck_bundle(
         "adp009d_task_scoring.py",
         "episode_visual_evidence.py",
         "adp009d_policy_server_worker.py",
+        "adp009d_groot_worker_identity.py",
+        "groot_n17_droid_policy_runtime.py",
         # Imported by the episode for its digest helper.  It has no intra-package
         # imports of its own, so it ships flat without dragging anything with it.
         # Omitting it made both arms of the dual-layout import fail: the flat one

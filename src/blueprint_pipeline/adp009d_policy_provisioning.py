@@ -197,6 +197,23 @@ def build_provisioning_script(candidate_id: str) -> str:
     )
     fetch = "\n".join(_fetch_commands(candidate_id))
     install = "\n".join(_install_commands(candidate_id))
+    identity = ""
+    server_identity_arg = ""
+    if candidate_id == "groot_n17_droid":
+        identity = f'''# Bind the materialized source, checkpoint bytes, and policy environment before
+# the endpoint is allowed to count as this frozen candidate.  Continue only far
+# enough to let the server worker translate a blocked identity receipt into its
+# own typed readiness receipt; it will never launch a server for invalid bytes.
+"{venv_root}/bin/python" "$RUNTIME_DIR/adp009d_groot_worker_identity.py" \\
+  --source-root "{POLICY_SOURCE_ROOT}/{candidate_id}" \\
+  --checkpoint-root "{CHECKPOINT_ROOT}/{candidate_id}" \\
+  --python "{venv_root}/bin/python" \\
+  --output "$OUT_DIR/adp009d_groot_worker_identity.{candidate_id}.json" || true
+'''
+        server_identity_arg = (
+            " \\\n  --worker-identity-receipt "
+            f'"$OUT_DIR/adp009d_groot_worker_identity.{candidate_id}.json"'
+        )
     return f"""#!/usr/bin/env bash
 # ADP-009D policy provisioning for {candidate_id}.  Generated, not hand-written.
 set -euo pipefail
@@ -264,6 +281,7 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_checkpoint:st
 {fetch}
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_checkpoint:completed"
 
+{identity}
 # Readiness is a completed inference round trip, not a listening socket: one
 # shipped server writes "model_loaded_ready_to_serve" before it serves at all,
 # and loading 12.4 GB of weights takes far longer than binding a port.  The
@@ -277,7 +295,7 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_server:starte
   --python "{venv_root}/bin/python" \
   --host {POLICY_HOST} \
   --log "$OUT_DIR/adp009d_policy_server.{candidate_id}.log" \
-  --receipt "$OUT_DIR/adp009d_policy_server_receipt.{candidate_id}.json"
+  --receipt "$OUT_DIR/adp009d_policy_server_receipt.{candidate_id}.json"{server_identity_arg}
 
 echo "BLUEPRINT_ADP009D_POLICY_PROVISIONED:{candidate_id}"
 """

@@ -1811,6 +1811,16 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     action_dim=int(env.unwrapped.action_manager.total_action_dim),
                     reset_seed=20260806,
                     to_torch=_to_torch,
+                    gripper_closed_width_m=float(
+                        gripper_probe["finger_separation_m"][
+                            str(gripper_probe["closed_command"])
+                        ]
+                    ),
+                    gripper_open_width_m=float(
+                        gripper_probe["finger_separation_m"][
+                            str(gripper_probe["open_command"])
+                        ]
+                    ),
                 )
                 convention = GripperConvention(
                     closed_command=float(gripper_probe["closed_command"]),
@@ -1825,23 +1835,28 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     """
 
                     if receipt.get("transport") == "groot_zmq":
-                        from gr00t.policy.server_client import PolicyClient
+                        try:  # flat provider bundle
+                            from groot_n17_droid_policy_runtime import (
+                                GrootN17DroidPolicyClient,
+                                GrootN17DroidPolicySpec,
+                            )
+                        except ModuleNotFoundError:  # repository package
+                            from .groot_n17_droid_policy_runtime import (
+                                GrootN17DroidPolicyClient,
+                                GrootN17DroidPolicySpec,
+                            )
 
-                        class _GrootEpisodeClient:
-                            """Adapt GR00T's get_action to the loop's infer seam."""
-
-                            def __init__(self, host: str, port: int) -> None:
-                                self._client = PolicyClient(
-                                    host=host, port=port, timeout_ms=15000, strict=False
-                                )
-
-                            def infer(self, observation):
-                                response = self._client.get_action(observation)
-                                if isinstance(response, dict):
-                                    return response.get("actions", response)
-                                return response
-
-                        return _GrootEpisodeClient("127.0.0.1", int(receipt["port"]))
+                        worker_identity = receipt.get("worker_identity_receipt")
+                        if not isinstance(worker_identity, dict):
+                            raise RuntimeError(
+                                "groot_worker_identity_receipt_missing_from_server"
+                            )
+                        return GrootN17DroidPolicyClient(
+                            spec=GrootN17DroidPolicySpec(),
+                            worker_identity_receipt=worker_identity,
+                            host="127.0.0.1",
+                            port=int(receipt["port"]),
+                        )
                     from openpi_client import websocket_client_policy
 
                     class _OpenPiEpisodeClient:

@@ -59,6 +59,7 @@ class _Environment:
             DROID_WRIST_VIEW: frame,
             "joint_position": list(self._joints),
             "gripper_position": 0.04,
+            "eef_9d": [0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0],
         }
 
     def step(self, isaac_action):
@@ -173,6 +174,86 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
 
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
+    )
+
+
+def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
+    class _AbsolutePolicy(_Policy):
+        action_space = "joint_position"
+
+        def infer(self, observation):
+            self.observations.append(observation)
+            chunk = np.zeros((40, 8), dtype=float)
+            chunk[:, :7] = [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
+            chunk[:, 7] = 1.0
+            return chunk
+
+        def last_inference_evidence(self):
+            return {
+                "native_action_chunk_shape": [40, 17],
+                "native_action_chunk_sha256": "a" * 64,
+            }
+
+    environment = _Environment()
+    policy = _AbsolutePolicy()
+    receipt = _run(
+        environment,
+        policy,
+        candidate_id="groot_n17_droid",
+        max_policy_queries=1,
+        settle_window_samples=1,
+    )
+
+    assert environment.steps[0][:7] == pytest.approx(
+        [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
+    )
+    assert receipt["action_space"] == (
+        "groot_decoded_absolute_joint_position_plus_absolute_gripper"
+    )
+    assert receipt["queries"][0]["position_adapter"] == (
+        "decoded_absolute_joint_position_direct_with_limit_clamp"
+    )
+    assert receipt["queries"][0]["policy_inference_evidence"] == {
+        "native_action_chunk_shape": [40, 17],
+        "native_action_chunk_sha256": "a" * 64,
+    }
+    assert receipt["commanded_action_magnitudes"][
+        "joint_velocity_command_max_abs_rad_s"
+    ] == 0.0
+    assert "observation/eef_9d" in policy.observations[0]
+
+
+def test_groot_history_is_exactly_fifteen_simulator_steps_not_policy_queries() -> None:
+    class _TemporalEnvironment(_Environment):
+        def read_policy_inputs(self):
+            inputs = super().read_policy_inputs()
+            for view in (DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW):
+                inputs[view] = np.full(
+                    (720, 1280, 3), self._t, dtype=np.uint8
+                )
+            return inputs
+
+    class _AbsolutePolicy(_Policy):
+        action_space = "joint_position"
+
+        def infer(self, observation):
+            self.observations.append(observation)
+            return np.zeros((40, 8), dtype=float)
+
+    policy = _AbsolutePolicy()
+    _run(
+        _TemporalEnvironment(),
+        policy,
+        candidate_id="groot_n17_droid",
+        max_policy_queries=3,
+        settle_window_samples=1,
+    )
+
+    third = policy.observations[2]  # query steps are 0, 8, 16
+    assert third[DROID_EXTERIOR_VIEW_1][0, 0, 0] == 16
+    assert (
+        third["observation_history/exterior_image_1_left_t_minus_15"][0, 0, 0]
+        == 1
     )
 
 

@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 SCHEMA_VERSION = "adp009d_policy_server_worker.v1"
@@ -130,22 +131,59 @@ def _probe_observation() -> dict:
         "observation/wrist_image_left": frame,
         "observation/joint_position": np.zeros(7, dtype=float),
         "observation/gripper_position": np.zeros(1, dtype=float),
+        # Identity pose after NVIDIA's documented DROID frame correction.
+        "observation/eef_9d": np.asarray(
+            [0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0],
+            dtype=float,
+        ),
+        "observation_history/exterior_image_1_left_t_minus_15": frame,
+        "observation_history/wrist_image_left_t_minus_15": frame,
         "prompt": "pick up the can",
     }
 
 
-def attempt_round_trip(host: str, port: int, transport: str = TRANSPORT_OPENPI_WEBSOCKET) -> dict:
+def _groot_adapter_types():
+    try:  # flat provider bundle
+        from groot_n17_droid_policy_runtime import (
+            GrootN17DroidPolicyClient,
+            GrootN17DroidPolicySpec,
+            validate_worker_identity_receipt,
+        )
+    except ModuleNotFoundError:  # repository package
+        from .groot_n17_droid_policy_runtime import (
+            GrootN17DroidPolicyClient,
+            GrootN17DroidPolicySpec,
+            validate_worker_identity_receipt,
+        )
+    return (
+        GrootN17DroidPolicyClient,
+        GrootN17DroidPolicySpec,
+        validate_worker_identity_receipt,
+    )
+
+
+def attempt_round_trip(
+    host: str,
+    port: int,
+    transport: str = TRANSPORT_OPENPI_WEBSOCKET,
+    worker_identity_receipt: Mapping[str, Any] | None = None,
+) -> dict:
     """One real inference over this candidate's transport, or raises."""
 
     import numpy as np
 
     if transport == TRANSPORT_GROOT_ZMQ:
-        from gr00t.policy.server_client import PolicyClient
-
-        client = PolicyClient(host=host, port=int(port), timeout_ms=15000, strict=False)
-        if client.ping() is not True:
-            raise RuntimeError("policy_server_ping_failed")
-        response = client.get_action(_probe_observation())
+        if worker_identity_receipt is None:
+            raise RuntimeError("groot_worker_identity_receipt_missing")
+        client_type, spec_type, _ = _groot_adapter_types()
+        client = client_type(
+            spec=spec_type(),
+            worker_identity_receipt=worker_identity_receipt,
+            host=host,
+            port=int(port),
+        )
+        chunk = np.asarray(client.infer(_probe_observation()), dtype=float)
+        adapter_evidence = client.evidence_summary()
     else:
         from openpi_client import websocket_client_policy
 
@@ -153,15 +191,16 @@ def attempt_round_trip(host: str, port: int, transport: str = TRANSPORT_OPENPI_W
             host=host, port=int(port)
         )
         response = client.infer(_probe_observation())
-    actions = response["actions"] if isinstance(response, dict) else response
-    chunk = np.asarray(actions, dtype=float)
+        actions = response["actions"] if isinstance(response, dict) else response
+        chunk = np.asarray(actions, dtype=float)
+        adapter_evidence = None
     if chunk.ndim != 2 or chunk.shape[1] != DROID_ACTION_WIDTH:
         raise RuntimeError(f"policy_round_trip_chunk_shape_invalid:{chunk.shape}")
     if chunk.shape[0] < DROID_OPEN_LOOP_HORIZON:
         raise RuntimeError(f"policy_round_trip_chunk_too_short:{chunk.shape[0]}")
     if not np.isfinite(chunk).all():
         raise RuntimeError("policy_round_trip_chunk_nonfinite")
-    return {
+    result = {
         "action_chunk_rows": int(chunk.shape[0]),
         "action_chunk_width": int(chunk.shape[1]),
         "server_metadata": (
@@ -170,6 +209,9 @@ def attempt_round_trip(host: str, port: int, transport: str = TRANSPORT_OPENPI_W
             else None
         ),
     }
+    if adapter_evidence is not None:
+        result["policy_adapter_evidence"] = adapter_evidence
+    return result
 
 
 def _attempt_round_trip_with_timeout(
@@ -178,6 +220,7 @@ def _attempt_round_trip_with_timeout(
     port: int,
     transport: str,
     timeout_seconds: float,
+    worker_identity_receipt: Mapping[str, Any] | None = None,
 ) -> dict:
     """Run one vendor attempt in a daemon thread with a real wall deadline.
 
@@ -195,7 +238,13 @@ def _attempt_round_trip_with_timeout(
 
     def _run() -> None:
         try:
-            result_queue.put((True, attempt_round_trip(host, port, transport)))
+            if worker_identity_receipt is None:
+                payload = attempt_round_trip(host, port, transport)
+            else:
+                payload = attempt_round_trip(
+                    host, port, transport, worker_identity_receipt
+                )
+            result_queue.put((True, payload))
         except BaseException as exc:  # noqa: BLE001 - re-raised on the polling thread
             result_queue.put((False, exc))
 
@@ -272,6 +321,7 @@ def wait_for_round_trip(
     timeout_seconds: float,
     process: subprocess.Popen | None,
     transport: str = TRANSPORT_OPENPI_WEBSOCKET,
+    worker_identity_receipt: Mapping[str, Any] | None = None,
 ) -> dict:
     """Poll until one inference succeeds, the process dies, or time runs out."""
 
@@ -292,6 +342,7 @@ def wait_for_round_trip(
                 port=port,
                 transport=transport,
                 timeout_seconds=attempt_timeout,
+                worker_identity_receipt=worker_identity_receipt,
             )
             result["readiness_attempts"] = attempts
             result["readiness_seconds"] = round(time.monotonic() - started, 3)
@@ -320,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--log", required=True)
     parser.add_argument("--receipt", required=True)
+    parser.add_argument("--worker-identity-receipt")
     parser.add_argument(
         "--timeout-seconds", type=float, default=READINESS_TIMEOUT_SECONDS
     )
@@ -353,6 +405,21 @@ def main(argv: list[str] | None = None) -> int:
 
     process: subprocess.Popen | None = None
     try:
+        worker_identity_receipt = None
+        if transport == TRANSPORT_GROOT_ZMQ:
+            if not args.worker_identity_receipt:
+                raise RuntimeError("groot_worker_identity_receipt_missing")
+            identity_path = Path(args.worker_identity_receipt)
+            if not identity_path.is_file():
+                raise RuntimeError("groot_worker_identity_receipt_file_missing")
+            worker_identity_receipt = json.loads(
+                identity_path.read_text(encoding="utf-8")
+            )
+            _, spec_type, validate_identity = _groot_adapter_types()
+            worker_identity_receipt = validate_identity(
+                worker_identity_receipt, expected=spec_type()
+            )
+            receipt["worker_identity_receipt"] = worker_identity_receipt
         with log_path.open("wb") as log_handle:
             process = subprocess.Popen(  # noqa: S603
                 command, stdout=log_handle, stderr=subprocess.STDOUT
@@ -363,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout_seconds=float(args.timeout_seconds),
                 process=process,
                 transport=transport,
+                worker_identity_receipt=worker_identity_receipt,
             )
         receipt.update(
             {

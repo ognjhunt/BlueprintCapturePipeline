@@ -39,6 +39,7 @@ class _FakePolicyClient:
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
         self.requests = []
+        self.reset_calls = 0
 
     def ping(self) -> bool:
         return True
@@ -58,6 +59,10 @@ class _FakePolicyClient:
         eef = np.zeros((1, 40, 9), dtype=float)
         return {"joint_position": joints, "gripper_position": gripper, "eef_9d": eef}, {}
 
+    def reset(self):
+        self.reset_calls += 1
+        return {}
+
 
 def _observation() -> dict:
     return {
@@ -66,6 +71,12 @@ def _observation() -> dict:
         "observation/joint_position": np.arange(7, dtype=float),
         "observation/gripper_position": np.asarray([0.25]),
         "observation/eef_9d": np.arange(9, dtype=float),
+        "observation_history/exterior_image_1_left_t_minus_15": np.full(
+            (224, 224, 3), 3, dtype=np.uint8
+        ),
+        "observation_history/wrist_image_left_t_minus_15": np.full(
+            (224, 224, 3), 4, dtype=np.uint8
+        ),
         "prompt": "Pick up the spray can and place it inside the marked tray.",
     }
 
@@ -97,6 +108,27 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
     assert request["state"]["eef_9d"].shape == (1, 1, 9)
     assert request["language"] == {LANGUAGE_KEY: [[_observation()["prompt"]]]}
     assert client.evidence_summary()["identity_verified"] is True
+    native = client.last_inference_evidence()
+    assert native["native_action_chunk_shape"] == [40, 17]
+    assert len(native["native_action_components"]["eef_9d"]) == 40
+    assert len(native["native_action_chunk_sha256"]) == 64
+    assert native["execution_projection"].endswith("eef_9d_retained_not_executed")
+
+    client.reset()
+    assert fake.reset_calls == 1
+    client.infer(_observation())
+    reset_request = fake.requests[-1]
+    assert reset_request["video"]["exterior_image_1_left"].shape == (
+        1,
+        2,
+        180,
+        320,
+        3,
+    )
+    assert not np.array_equal(
+        reset_request["video"]["exterior_image_1_left"][:, 0],
+        reset_request["video"]["exterior_image_1_left"][:, 1],
+    )
 
 
 def test_client_rejects_unverified_or_mismatched_worker_identity() -> None:

@@ -40,6 +40,11 @@ CANDIDATE_VIEW_SHAPES: dict[str, tuple[int, int]] = {
 DROID_WRIST_VIEW = "observation/wrist_image_left"
 DROID_EXTERIOR_VIEW_1 = "observation/exterior_image_1_left"
 DROID_EXTERIOR_VIEW_2 = "observation/exterior_image_2_left"
+GROOT_HISTORY_STEPS = 15
+GROOT_HISTORICAL_VIEW_KEYS = {
+    DROID_EXTERIOR_VIEW_1: "observation_history/exterior_image_1_left_t_minus_15",
+    DROID_WRIST_VIEW: "observation_history/wrist_image_left_t_minus_15",
+}
 
 # The ADP-009D scene deliberately drops the second exterior camera: the runtime
 # sets ``embodiment.camera_config.external_camera_2 = None`` because it is
@@ -108,6 +113,8 @@ def build_droid_observation(
     joint_position: Sequence[float],
     gripper_position: float,
     prompt: str,
+    eef_9d: Sequence[float] | None = None,
+    historical_camera_rgb: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble one candidate's DROID observation from Isaac camera frames.
 
@@ -146,12 +153,26 @@ def build_droid_observation(
         errors.append("droid_observation_gripper_position_invalid")
     if not str(prompt or "").strip():
         errors.append("droid_observation_prompt_missing")
+    eef = None
+    if candidate_id == "groot_n17_droid":
+        eef = np.asarray(eef_9d, dtype=float) if eef_9d is not None else None
+        if eef is None or eef.shape != (9,) or not np.isfinite(eef).all():
+            errors.append("droid_observation_eef_9d_invalid")
+        for view, history_key in GROOT_HISTORICAL_VIEW_KEYS.items():
+            if historical_camera_rgb is None or view not in historical_camera_rgb:
+                errors.append(f"droid_observation_history_view_unavailable:{view}")
+                continue
+            views[history_key] = resize_with_pad(
+                historical_camera_rgb[view], height=height, width=width
+            )
     if errors:
         raise DroidObservationError(errors)
 
     observation: dict[str, Any] = dict(views)
     observation["observation/joint_position"] = joints
     observation["observation/gripper_position"] = gripper
+    if eef is not None:
+        observation["observation/eef_9d"] = eef
     observation["prompt"] = str(prompt)
     return observation
 
@@ -177,7 +198,7 @@ def describe_observation_conversion(
     scale = min(width / source_width, height / source_height)
     content_width = max(1, round(source_width * scale))
     content_height = max(1, round(source_height * scale))
-    return {
+    result = {
         "schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
         "candidate_id": candidate_id,
         "source_resolution_hw": [source_height, source_width],
@@ -189,6 +210,15 @@ def describe_observation_conversion(
         "padded_columns": width - content_width,
         "scene_content_cropped": False,
     }
+    if candidate_id == "groot_n17_droid":
+        result.update(
+            {
+                "video_delta_indices": [-GROOT_HISTORY_STEPS, 0],
+                "historical_views": dict(GROOT_HISTORICAL_VIEW_KEYS),
+                "history_sampling": "exact_simulator_control_steps",
+            }
+        )
+    return result
 
 
 __all__ = [
@@ -198,6 +228,8 @@ __all__ = [
     "DROID_EXTERIOR_VIEW_2",
     "DROID_OBSERVATION_SCHEMA_VERSION",
     "DROID_WRIST_VIEW",
+    "GROOT_HISTORICAL_VIEW_KEYS",
+    "GROOT_HISTORY_STEPS",
     "DroidObservationError",
     "build_droid_observation",
     "describe_observation_conversion",

@@ -2102,6 +2102,7 @@ def test_no_shipped_module_uses_an_unguarded_top_level_relative_import() -> None
         "decision_evidence_contracts.py",
         "droid_policy_bridge.py",
         "episode_visual_evidence.py",
+        "groot_n17_droid_policy_runtime.py",
     }
     root = _Path(bundle.__file__).parent
     offenders = []
@@ -2121,7 +2122,7 @@ def test_no_shipped_module_uses_an_unguarded_top_level_relative_import() -> None
     )
 
 
-def test_the_episode_clients_unwrap_the_response_like_the_readiness_probe() -> None:
+def test_the_episode_clients_share_the_same_candidate_adapters_as_readiness() -> None:
     """The probe unwrapped it; the episode did not.
 
     openpi returns {"actions": ...} and the episode passed whatever it got
@@ -2137,10 +2138,12 @@ def test_the_episode_clients_unwrap_the_response_like_the_readiness_probe() -> N
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
     block = source[source.index("def _client_for(") :]
     block = block[: block.index("out_dir = Path(")]
-    # Both transports, because both vendors wrap their chunk.
-    assert block.count("isinstance(response, dict)") == 2
+    # OpenPI is unwrapped locally.  GR00T uses the same identity-bound adapter
+    # as readiness, which translates its nested response and checks modalities.
+    assert block.count("isinstance(response, dict)") == 1
     assert 'response["actions"]' in block
-    assert 'response.get("actions", response)' in block
+    assert "GrootN17DroidPolicyClient" in block
+    assert "worker_identity_receipt" in block
 
 
 def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> None:

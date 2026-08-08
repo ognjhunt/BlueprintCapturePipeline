@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
 try:  # flat provider-bundle layout
     from adp009d_droid_action_execution import (
+        ACTION_SPACE_JOINT_VELOCITY,
         ARM_JOINT_COUNT,
         DROID_CONTROL_HZ,
         DROID_OPEN_LOOP_HORIZON,
@@ -42,6 +44,7 @@ try:  # flat provider-bundle layout
     )
 except ModuleNotFoundError:  # repository package
     from .adp009d_droid_action_execution import (
+        ACTION_SPACE_JOINT_VELOCITY,
         ARM_JOINT_COUNT,
         DROID_CONTROL_HZ,
         DROID_OPEN_LOOP_HORIZON,
@@ -54,6 +57,8 @@ try:  # flat provider-bundle layout
     from adp009d_droid_observation import (
         CANDIDATE_REQUIRED_VIEWS,
         DROID_OBSERVATION_SCHEMA_VERSION,
+        GROOT_HISTORICAL_VIEW_KEYS,
+        GROOT_HISTORY_STEPS,
         DroidObservationError,
         build_droid_observation,
         describe_observation_conversion,
@@ -62,6 +67,8 @@ except ModuleNotFoundError:  # repository package
     from .adp009d_droid_observation import (
         CANDIDATE_REQUIRED_VIEWS,
         DROID_OBSERVATION_SCHEMA_VERSION,
+        GROOT_HISTORICAL_VIEW_KEYS,
+        GROOT_HISTORY_STEPS,
         DroidObservationError,
         build_droid_observation,
         describe_observation_conversion,
@@ -170,7 +177,13 @@ def _policy_view_composite(
 
     import numpy as np
 
-    views = [np.asarray(observation[name]) for name in CANDIDATE_REQUIRED_VIEWS[candidate_id]]
+    view_order = list(CANDIDATE_REQUIRED_VIEWS[candidate_id])
+    if candidate_id == "groot_n17_droid":
+        view_order = [
+            GROOT_HISTORICAL_VIEW_KEYS[view]
+            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+        ] + view_order
+    views = [np.asarray(observation[name]) for name in view_order]
     if not views or any(
         view.dtype != np.uint8 or view.ndim != 3 or view.shape[2] != 3
         for view in views
@@ -183,6 +196,41 @@ def _policy_view_composite(
             [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_height_mismatch"]
         )
     return np.ascontiguousarray(np.concatenate(views, axis=1))
+
+
+def _retain_policy_input_sample(
+    history: deque[tuple[int, Mapping[str, Any]]],
+    *,
+    step_index: int,
+    inputs: Mapping[str, Any],
+) -> None:
+    if history and history[-1][0] == int(step_index):
+        history.pop()
+    history.append((int(step_index), dict(inputs)))
+
+
+def _historical_camera_rgb(
+    history: deque[tuple[int, Mapping[str, Any]]],
+    *,
+    candidate_id: str,
+    step_index: int,
+) -> dict[str, Any] | None:
+    if candidate_id != "groot_n17_droid":
+        return None
+    target_index = max(0, int(step_index) - GROOT_HISTORY_STEPS)
+    sample = next(
+        (inputs for index, inputs in history if index == target_index),
+        None,
+    )
+    if sample is None:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:groot_history_step_missing:{target_index}"]
+        )
+    return {
+        view: sample[view]
+        for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+        if view in sample
+    }
 
 
 def _read_arm_joint_positions(environment: EpisodeEnvironment) -> list[float]:
@@ -236,7 +284,19 @@ def _motion_and_command_evidence(
         float(value)
         for action in commanded_actions
         for value in action["clipped_droid_action"][:ARM_JOINT_COUNT]
+        if action["joint_velocity_command_rad_s"]
     ]
+    source_arm_commands = [
+        float(value)
+        for action in commanded_actions
+        for value in action["source_arm_command"]
+    ]
+    source_action_spaces = {
+        str(action["source_action_space"]) for action in commanded_actions
+    }
+    if len(source_action_spaces) != 1:
+        raise PolicyEpisodeError(["policy_episode_source_action_space_inconsistent"])
+    source_action_space = next(iter(source_action_spaces))
     target_deltas = [
         abs(float(target) - float(observed))
         for action in commanded_actions
@@ -279,7 +339,15 @@ def _motion_and_command_evidence(
 
     action_summary = {
         "policy_action_rows_submitted": len(commanded_actions),
-        "source_action_space": "droid_joint_velocity_plus_absolute_gripper",
+        "source_action_space": source_action_space,
+        "source_arm_command_max_abs": max(
+            (abs(value) for value in source_arm_commands), default=0.0
+        ),
+        "source_arm_command_mean_abs": (
+            sum(abs(value) for value in source_arm_commands) / len(source_arm_commands)
+            if source_arm_commands
+            else 0.0
+        ),
         "joint_velocity_command_max_abs_rad_s": max(
             (abs(value) for value in velocity_commands), default=0.0
         ),
@@ -361,6 +429,9 @@ def run_policy_episode(
         raise PolicyEpisodeError(
             [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_binding_incomplete"]
         )
+    policy_action_space = str(
+        getattr(policy, "action_space", ACTION_SPACE_JOINT_VELOCITY)
+    )
 
     media_root = (
         Path(media_output_dir).expanduser().resolve()
@@ -368,6 +439,9 @@ def run_policy_episode(
         else None
     )
     retained_policy_frames: list[dict[str, Any]] = []
+    policy_input_history: deque[tuple[int, Mapping[str, Any]]] = deque(
+        maxlen=GROOT_HISTORY_STEPS + 1
+    )
 
     episode_started = time.monotonic()
     timings_seconds = {
@@ -403,6 +477,9 @@ def run_policy_episode(
     for query_index in range(int(max_policy_queries)):
         phase_started = time.monotonic()
         inputs = environment.read_policy_inputs()
+        _retain_policy_input_sample(
+            policy_input_history, step_index=step_index, inputs=inputs
+        )
         timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
@@ -415,6 +492,12 @@ def run_policy_episode(
                 joint_position=inputs["joint_position"],
                 gripper_position=inputs["gripper_position"],
                 prompt=prompt,
+                eef_9d=inputs.get("eef_9d"),
+                historical_camera_rgb=_historical_camera_rgb(
+                    policy_input_history,
+                    candidate_id=candidate_id,
+                    step_index=step_index,
+                ),
             )
         except KeyError as exc:
             raise PolicyEpisodeError(
@@ -444,9 +527,19 @@ def run_policy_episode(
         timings_seconds["policy_inference"] += time.monotonic() - phase_started
         if chunk is None:
             raise PolicyEpisodeError([BLOCKER_CLIENT_RETURNED_NOTHING])
+        inference_evidence_reader = getattr(policy, "last_inference_evidence", None)
+        policy_inference_evidence = (
+            inference_evidence_reader()
+            if callable(inference_evidence_reader)
+            else None
+        )
 
         phase_started = time.monotonic()
-        plan = plan_chunk_execution(chunk, horizon=int(open_loop_horizon))
+        plan = plan_chunk_execution(
+            chunk,
+            horizon=int(open_loop_horizon),
+            action_space=policy_action_space,
+        )
         timings_seconds["action_planning"] += time.monotonic() - phase_started
         query_clamped_rows = 0
         for planned_action in plan["actions"]:
@@ -456,6 +549,7 @@ def run_policy_episode(
                 current_joint_position=before,
                 joint_limits=joint_limits,
                 gripper=gripper,
+                action_space=policy_action_space,
             )
             query_clamped_rows += int(action["joint_limit_clamped"])
             phase_started = time.monotonic()
@@ -480,12 +574,25 @@ def run_policy_episode(
                     "joint_velocity_command_rad_s": list(
                         action["joint_velocity_command_rad_s"]
                     ),
+                    "source_arm_command": list(action["source_arm_command"]),
+                    "source_action_space": action["source_action_space"],
                     "clipped_droid_action": list(action["clipped_droid_action"]),
                     "observed_before_rad": before,
                     "isaac_action": [float(value) for value in action["isaac_action"]],
                 }
             )
             step_index += 1
+            if candidate_id == "groot_n17_droid":
+                phase_started = time.monotonic()
+                post_step_inputs = environment.read_policy_inputs()
+                _retain_policy_input_sample(
+                    policy_input_history,
+                    step_index=step_index,
+                    inputs=post_step_inputs,
+                )
+                timings_seconds["policy_input_read"] += (
+                    time.monotonic() - phase_started
+                )
             phase_started = time.monotonic()
             samples.append(
                 _sample_with_index(environment.read_object_sample(), step_index, previous_index)
@@ -510,6 +617,7 @@ def run_policy_episode(
                 "any_joint_limit_clamped": query_clamped_rows > 0,
                 "joint_limit_clamped_rows": query_clamped_rows,
                 "final_step_index": step_index,
+                "policy_inference_evidence": policy_inference_evidence,
             }
         )
 
@@ -531,6 +639,15 @@ def run_policy_episode(
             time.monotonic() - phase_started
         )
         step_index += 1
+        if candidate_id == "groot_n17_droid":
+            phase_started = time.monotonic()
+            post_step_inputs = environment.read_policy_inputs()
+            _retain_policy_input_sample(
+                policy_input_history,
+                step_index=step_index,
+                inputs=post_step_inputs,
+            )
+            timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         phase_started = time.monotonic()
         samples.append(
             _sample_with_index(environment.read_object_sample(), step_index, previous_index)
@@ -559,6 +676,9 @@ def run_policy_episode(
     if media_root is not None and episode_id is not None:
         phase_started = time.monotonic()
         terminal_inputs = environment.read_policy_inputs()
+        _retain_policy_input_sample(
+            policy_input_history, step_index=step_index, inputs=terminal_inputs
+        )
         terminal_camera_rgb = {
             view: terminal_inputs[view]
             for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
@@ -571,6 +691,12 @@ def run_policy_episode(
                 joint_position=terminal_inputs["joint_position"],
                 gripper_position=terminal_inputs["gripper_position"],
                 prompt=prompt,
+                eef_9d=terminal_inputs.get("eef_9d"),
+                historical_camera_rgb=_historical_camera_rgb(
+                    policy_input_history,
+                    candidate_id=candidate_id,
+                    step_index=step_index,
+                ),
             )
         except KeyError as exc:
             raise PolicyEpisodeError(
@@ -591,9 +717,15 @@ def run_policy_episode(
             identity={
                 "candidate_id": candidate_id,
                 "prompt": str(prompt),
-                "policy_input_view_order": list(
-                    CANDIDATE_REQUIRED_VIEWS[candidate_id]
-                ),
+                "policy_input_view_order": (
+                    [
+                        GROOT_HISTORICAL_VIEW_KEYS[view]
+                        for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                    ]
+                    if candidate_id == "groot_n17_droid"
+                    else []
+                )
+                + list(CANDIDATE_REQUIRED_VIEWS[candidate_id]),
             },
             policy_input_frames=retained_policy_frames,
             terminal_observation=terminal_frame,
@@ -616,7 +748,7 @@ def run_policy_episode(
         "open_loop_horizon": int(open_loop_horizon),
         "control_hz": DROID_CONTROL_HZ,
         "observation_adapter_schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
-        "action_space": "droid_joint_velocity_plus_absolute_gripper",
+        "action_space": commanded_action_magnitudes["source_action_space"],
         "observation_conversion": describe_observation_conversion(candidate_id),
         "destination_position_world_m": [float(v) for v in destination_position_world_m],
         "queries": queries,

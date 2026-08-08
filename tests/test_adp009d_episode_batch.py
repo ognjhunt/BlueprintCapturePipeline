@@ -60,6 +60,22 @@ def test_a_few_episodes_run_independently_and_are_reported_each() -> None:
     assert row["performance_diagnostics"]["timings_seconds"]["total"] >= 0.0
 
 
+def test_temporal_policy_state_is_reset_before_every_episode() -> None:
+    class _TemporalPolicy(_Policy):
+        def __init__(self):
+            super().__init__()
+            self.reset_count = 0
+
+        def reset(self):
+            self.reset_count += 1
+
+    policy = _TemporalPolicy()
+    batch = _batch(policy=policy)
+
+    assert batch["episodes_scored"] == 3
+    assert policy.reset_count == 3
+
+
 def test_the_batch_refuses_to_support_a_ranking() -> None:
     """The easiest way to discredit a proof is to let it look like a decision."""
 

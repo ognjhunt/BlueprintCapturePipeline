@@ -14,6 +14,7 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     IsaacEpisodeAdapterError,
     describe_adapter,
     rgb_from_camera_output,
+    rotation_row_major_from_quaternion_wxyz,
     validate_adapter_bindings,
 )
 
@@ -51,6 +52,7 @@ class _Robot:
         ]
         # Fingers 0.06 m apart in x, so separation is exactly 0.06.
         poses = np.zeros((1, len(bodies), 7), dtype=float)
+        poses[0, bodies.index("base_link"), :7] = [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
         poses[0, bodies.index("left_inner_finger"), :3] = [0.0, 0.0, 1.0]
         poses[0, bodies.index("right_inner_finger"), :3] = [0.06, 0.0, 1.0]
         self.data = _Data(
@@ -106,6 +108,8 @@ def _adapter(env=None):
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
     )
 
 
@@ -139,7 +143,20 @@ def test_policy_inputs_carry_both_views_as_uint8_rgb() -> None:
         assert inputs[view].shape == (720, 1280, 3)
         assert inputs[view].dtype == np.uint8
     assert len(inputs["joint_position"]) == 7
-    assert inputs["gripper_position"] == pytest.approx(0.06, abs=1e-9)
+    assert inputs["gripper_position"] == pytest.approx(0.0, abs=1e-9)
+    assert inputs["eef_9d"] == pytest.approx(
+        [1.0, 2.0, 3.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0]
+    )
+
+
+def test_isaac_wxyz_quaternion_is_converted_before_nvidia_frame_correction() -> None:
+    half_sqrt = 2**-0.5
+
+    rotation = rotation_row_major_from_quaternion_wxyz(
+        [half_sqrt, 0.0, 0.0, half_sqrt]
+    )
+
+    assert rotation == pytest.approx([0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
 
 
 def test_gripper_width_is_measured_finger_separation() -> None:
@@ -154,6 +171,28 @@ def test_gripper_width_is_measured_finger_separation() -> None:
     assert sample["grasp_frame_position_world_m"] == pytest.approx(
         [0.03, 0.0, 1.0], abs=1e-9
     )
+
+
+def test_droid_gripper_state_is_closed_fraction_from_the_measured_probe_span() -> None:
+    robot = _Robot()
+    bodies = robot.data.body_names
+    robot.data.body_pose_w[0, bodies.index("right_inner_finger"), :3] = [
+        0.03,
+        0.0,
+        1.0,
+    ]
+    adapter = IsaacEpisodeAdapter(
+        env=_Env(),
+        robot=robot,
+        approved_can=_Can(),
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
+    )
+
+    assert adapter.read_policy_inputs()["gripper_position"] == pytest.approx(0.5)
 
 
 def test_object_sample_matches_the_scorer_schema() -> None:
@@ -202,6 +241,22 @@ def test_a_missing_finger_body_is_refused_at_construction() -> None:
             action_dim=8,
             reset_seed=1,
             to_torch=_to_torch,
+            gripper_closed_width_m=0.0,
+            gripper_open_width_m=0.06,
+        )
+
+
+def test_unmeasured_gripper_width_span_is_refused() -> None:
+    with pytest.raises(IsaacEpisodeAdapterError, match="width_calibration_invalid"):
+        IsaacEpisodeAdapter(
+            env=_Env(),
+            robot=_Robot(),
+            approved_can=_Can(),
+            action_dim=8,
+            reset_seed=1,
+            to_torch=_to_torch,
+            gripper_closed_width_m=0.04,
+            gripper_open_width_m=0.04,
         )
 
 

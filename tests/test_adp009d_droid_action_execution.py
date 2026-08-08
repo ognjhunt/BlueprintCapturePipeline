@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from blueprint_pipeline.adp009d_droid_action_execution import (
+    ACTION_SPACE_JOINT_POSITION,
     BLOCKER_GRIPPER_CONVENTION_UNMEASURED,
     DROID_OPEN_LOOP_HORIZON,
     DroidActionExecutionError,
@@ -118,6 +119,36 @@ def test_joint_targets_are_clamped_to_limits_and_the_clamp_is_reported() -> None
         gripper=_MEASURED,
     )
     assert within["joint_limit_clamped"] is False
+
+
+def test_groot_decoded_absolute_joints_are_not_integrated_as_velocities() -> None:
+    """NVIDIA decodes RELATIVE model values back to raw absolute actions."""
+
+    row = np.asarray([0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2, 1.0])
+    result = droid_row_to_isaac_action(
+        row,
+        current_joint_position=[0.1] * 7,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
+        action_space=ACTION_SPACE_JOINT_POSITION,
+    )
+
+    assert result["joint_position_target_rad"] == pytest.approx(row[:7])
+    assert result["joint_velocity_command_rad_s"] == []
+    assert result["source_action_space"] == (
+        "groot_decoded_absolute_joint_position_plus_absolute_gripper"
+    )
+    assert result["position_adapter"] == (
+        "decoded_absolute_joint_position_direct_with_limit_clamp"
+    )
+    assert result["position_adapter_max_joint_delta_rad"] is None
+
+    plan = plan_chunk_execution(
+        np.repeat(row[None, :], 40, axis=0),
+        action_space=ACTION_SPACE_JOINT_POSITION,
+    )
+    assert plan["source_action_space"] == result["source_action_space"]
+    assert plan["position_adapter_max_joint_delta_rad"] is None
 
 
 def test_only_the_open_loop_horizon_executes_and_the_tail_is_reported() -> None:

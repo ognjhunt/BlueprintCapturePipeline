@@ -76,6 +76,12 @@ def run_episode_batch(
     rows: list[dict[str, Any]] = []
     for index in range(int(episodes)):
         try:
+            # A temporal policy's history is episode state.  Reset it before
+            # the simulator reset so frame -15 of episode N can never come
+            # from episode N-1.  Stateless clients need not implement this.
+            policy_reset = getattr(policy, "reset", None)
+            if callable(policy_reset):
+                policy_reset()
             receipt = run_policy_episode(
                 environment=environment,
                 policy=policy,

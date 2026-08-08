@@ -44,6 +44,10 @@ except ModuleNotFoundError:  # repository package
     )
 
 ACTION_EXECUTION_SCHEMA_VERSION = "adp009d_droid_action_execution.v2"
+ACTION_SPACE_JOINT_VELOCITY = "joint_velocity"
+ACTION_SPACE_JOINT_POSITION = "joint_position"
+SOURCE_DROID_VELOCITY = "droid_joint_velocity_plus_absolute_gripper"
+SOURCE_GROOT_POSITION = "groot_decoded_absolute_joint_position_plus_absolute_gripper"
 
 # DROID's published control contract.
 DROID_CONTROL_HZ = 15
@@ -139,8 +143,15 @@ def droid_row_to_isaac_action(
     current_joint_position: Sequence[float],
     joint_limits: Sequence[Sequence[float]],
     gripper: GripperConvention,
+    action_space: str = ACTION_SPACE_JOINT_VELOCITY,
 ) -> dict[str, Any]:
-    """Convert one DROID joint-velocity row into an Arena position target."""
+    """Convert one candidate row into an Arena absolute-position target.
+
+    OpenPI exposes the released DROID velocity action.  GR00T's processor
+    decodes its configured relative representation back to raw *absolute*
+    joint positions before returning from ``get_action``.  Treating both as
+    velocities would be another silent action-space harness fault.
+    """
 
     import numpy as np
 
@@ -156,28 +167,53 @@ def droid_row_to_isaac_action(
     if limits.shape != (ARM_JOINT_COUNT, 2) or not np.isfinite(limits).all():
         raise DroidActionExecutionError(["isaac_joint_limits_invalid"])
 
-    try:
-        mapped = droid_action_to_mujoco_targets(
-            values,
-            current_joint_position=current_joint_position,
-            joint_limits=limits,
+    if action_space == ACTION_SPACE_JOINT_VELOCITY:
+        try:
+            mapped = droid_action_to_mujoco_targets(
+                values,
+                current_joint_position=current_joint_position,
+                joint_limits=limits,
+            )
+        except ValueError as exc:
+            raise DroidActionExecutionError([f"droid_velocity_mapping_invalid:{exc}"]) from exc
+        target = np.asarray(mapped["joint_position_target_rad"], dtype=float)
+        clipped_source = list(mapped["clipped_action"])
+        velocity_command = [float(v) for v in values[:ARM_JOINT_COUNT]]
+        joint_limit_clamped = bool(mapped["joint_limit_clamped"])
+        source_action_space = SOURCE_DROID_VELOCITY
+        position_adapter = "observed_joint_plus_clipped_velocity_delta"
+        adapter_max_delta: float | None = DROID_MAX_JOINT_DELTA_RAD
+    elif action_space == ACTION_SPACE_JOINT_POSITION:
+        current = np.asarray(current_joint_position, dtype=float)
+        if current.shape != (ARM_JOINT_COUNT,) or not np.isfinite(current).all():
+            raise DroidActionExecutionError(["isaac_current_joint_position_invalid"])
+        raw_target = values[:ARM_JOINT_COUNT]
+        target = np.clip(raw_target, limits[:, 0], limits[:, 1])
+        clipped_source = [*target.tolist(), float(values[ARM_JOINT_COUNT])]
+        velocity_command = []
+        joint_limit_clamped = bool(np.any(np.abs(target - raw_target) > 1e-12))
+        source_action_space = SOURCE_GROOT_POSITION
+        position_adapter = "decoded_absolute_joint_position_direct_with_limit_clamp"
+        adapter_max_delta = None
+    else:
+        raise DroidActionExecutionError(
+            [f"droid_action_space_unsupported:{action_space}"]
         )
-    except ValueError as exc:
-        raise DroidActionExecutionError([f"droid_velocity_mapping_invalid:{exc}"]) from exc
-    target = np.asarray(mapped["joint_position_target_rad"], dtype=float)
     action = np.zeros(ISAAC_ACTION_DIM, dtype=float)
     action[:ARM_JOINT_COUNT] = target
     action[ARM_JOINT_COUNT] = gripper.command_for(values[ARM_JOINT_COUNT])
     return {
         "isaac_action": [float(v) for v in action],
         "joint_position_target_rad": [float(v) for v in target],
-        "joint_velocity_command_rad_s": [float(v) for v in values[:ARM_JOINT_COUNT]],
-        "clipped_droid_action": list(mapped["clipped_action"]),
-        "joint_limit_clamped": bool(mapped["joint_limit_clamped"]),
+        "joint_velocity_command_rad_s": velocity_command,
+        "source_arm_command": [float(v) for v in values[:ARM_JOINT_COUNT]],
+        "clipped_droid_action": clipped_source,
+        "joint_limit_clamped": joint_limit_clamped,
         "droid_gripper_scalar": float(values[ARM_JOINT_COUNT]),
         "gripper_closed": bool(float(values[ARM_JOINT_COUNT]) > 0.5),
-        "source_action_space": "droid_joint_velocity_plus_absolute_gripper",
-        "position_adapter_max_joint_delta_rad": DROID_MAX_JOINT_DELTA_RAD,
+        "source_action_space": source_action_space,
+        "position_adapter": position_adapter,
+        "position_adapter_max_joint_delta_rad": adapter_max_delta,
     }
 
 
@@ -185,6 +221,7 @@ def plan_chunk_execution(
     chunk: Any,
     *,
     horizon: int = DROID_OPEN_LOOP_HORIZON,
+    action_space: str = ACTION_SPACE_JOINT_VELOCITY,
 ) -> dict[str, Any]:
     """Validate a chunk and retain the exact raw rows selected for execution.
 
@@ -194,6 +231,18 @@ def plan_chunk_execution(
     """
 
     values = validate_action_chunk(chunk, horizon=horizon)
+    if action_space == ACTION_SPACE_JOINT_VELOCITY:
+        source_action_space = SOURCE_DROID_VELOCITY
+        position_adapter = "observed_joint_plus_clipped_velocity_delta"
+        adapter_max_delta: float | None = DROID_MAX_JOINT_DELTA_RAD
+    elif action_space == ACTION_SPACE_JOINT_POSITION:
+        source_action_space = SOURCE_GROOT_POSITION
+        position_adapter = "decoded_absolute_joint_position_direct_with_limit_clamp"
+        adapter_max_delta = None
+    else:
+        raise DroidActionExecutionError(
+            [f"droid_action_space_unsupported:{action_space}"]
+        )
     steps_per_action = isaac_steps_per_droid_action()
     rows = [
         {"droid_action": [float(value) for value in values[index]]}
@@ -208,9 +257,9 @@ def plan_chunk_execution(
         "control_hz": DROID_CONTROL_HZ,
         "environment_step_seconds": ISAAC_SIM_DT_SECONDS * ISAAC_DECIMATION,
         "actions": rows,
-        "source_action_space": "droid_joint_velocity_plus_absolute_gripper",
-        "position_adapter": "observed_joint_plus_clipped_velocity_delta",
-        "position_adapter_max_joint_delta_rad": DROID_MAX_JOINT_DELTA_RAD,
+        "source_action_space": source_action_space,
+        "position_adapter": position_adapter,
+        "position_adapter_max_joint_delta_rad": adapter_max_delta,
         "droid_source_revision": DROID_SOURCE_REVISION,
         "openpi_source_revision": OPENPI_SOURCE_REVISION,
         "candidate_policy_queried": True,
@@ -249,6 +298,8 @@ def build_gripper_convention_probe_request() -> dict[str, Any]:
 
 __all__ = [
     "ACTION_EXECUTION_SCHEMA_VERSION",
+    "ACTION_SPACE_JOINT_POSITION",
+    "ACTION_SPACE_JOINT_VELOCITY",
     "ARM_JOINT_COUNT",
     "DROID_ACTION_WIDTH",
     "DROID_CONTROL_HZ",

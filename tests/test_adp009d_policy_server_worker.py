@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import json
 
 import numpy as np
 import pytest
@@ -176,6 +177,80 @@ def test_a_malformed_chunk_is_not_readiness(monkeypatch) -> None:
     assert result["action_chunk_width"] == 8
 
 
+def test_groot_readiness_uses_the_identity_bound_nested_droid_adapter(monkeypatch) -> None:
+    observed = {}
+
+    class _Spec:
+        pass
+
+    class _Client:
+        def __init__(self, **kwargs):
+            observed.update(kwargs)
+
+        def infer(self, observation):
+            observed["observation"] = observation
+            return np.zeros((40, 8), dtype=float)
+
+        def evidence_summary(self):
+            return {"identity_verified": True, "transport": "groot"}
+
+    monkeypatch.setattr(
+        worker,
+        "_groot_adapter_types",
+        lambda: (_Client, _Spec, lambda receipt, expected: dict(receipt)),
+    )
+    identity_receipt = {"status": "verified", "checkpoint_files_sha256": "a" * 64}
+
+    result = worker.attempt_round_trip(
+        "127.0.0.1",
+        5555,
+        worker.TRANSPORT_GROOT_ZMQ,
+        identity_receipt,
+    )
+
+    assert observed["worker_identity_receipt"] is identity_receipt
+    assert observed["observation"]["observation/eef_9d"].shape == (9,)
+    assert result["action_chunk_rows"] == 40
+    assert result["policy_adapter_evidence"]["identity_verified"] is True
+
+
+def test_invalid_groot_identity_never_launches_a_server(tmp_path, monkeypatch) -> None:
+    identity_path = tmp_path / "identity.json"
+    identity_path.write_text(json.dumps({"status": "blocked"}), encoding="utf-8")
+    receipt_path = tmp_path / "server-receipt.json"
+
+    monkeypatch.setattr(
+        worker.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("invalid identity must not launch"),
+    )
+
+    exit_code = worker.main(
+        [
+            "--candidate-id",
+            "groot_n17_droid",
+            "--source-root",
+            str(tmp_path / "source"),
+            "--checkpoint-root",
+            str(tmp_path / "checkpoint"),
+            "--python",
+            "/venv/bin/python",
+            "--log",
+            str(tmp_path / "server.log"),
+            "--receipt",
+            str(receipt_path),
+            "--worker-identity-receipt",
+            str(identity_path),
+        ]
+    )
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert receipt["status"] == "blocked"
+    assert "worker_receipt_not_verified" in receipt["error"]
+    assert receipt["server_pid"] is None
+
+
 def test_the_probe_observation_matches_what_the_episode_will_send() -> None:
     """A shape mismatch must surface at startup, not mid-episode."""
 
@@ -338,6 +413,7 @@ def test_the_episode_connects_to_the_port_that_actually_started() -> None:
     # Read from the receipt the worker wrote, not a default: the episode
     # must connect to the port that actually started.
     assert 'int(receipt["port"])' in source
-    # And it speaks GR00T's own client rather than assuming a websocket.
-    assert "_GrootEpisodeClient" in source
-    assert "get_action(observation)" in source
+    # And it uses the identity-bound DROID modality adapter rather than sending
+    # Blueprint's flat observation directly to GR00T's nested API.
+    assert "GrootN17DroidPolicyClient" in source
+    assert "worker_identity_receipt" in source

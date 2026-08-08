@@ -9,14 +9,11 @@ Franka runner.
 
 from __future__ import annotations
 
-from collections import deque
+import hashlib
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-
-from .droid_policy_bridge import DROID_OPEN_LOOP_HORIZON
-from .policy_ranking_thesis import canonical_sha256
-
 
 MODEL_ID = "nvidia/GR00T-N1.7-DROID"
 EMBODIMENT_TAG = "OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT"
@@ -26,6 +23,21 @@ LANGUAGE_KEY = "annotation.language.language_instruction"
 VIDEO_KEYS = ("exterior_image_1_left", "wrist_image_left")
 STATE_KEYS = ("eef_9d", "gripper_position", "joint_position")
 ACTION_KEYS = ("gripper_position", "joint_position")
+HISTORICAL_EXTERIOR_KEY = (
+    "observation_history/exterior_image_1_left_t_minus_15"
+)
+HISTORICAL_WRIST_KEY = "observation_history/wrist_image_left_t_minus_15"
+# The released DROID bridge executes eight rows from every policy chunk.  Keep
+# this module flat-bundle safe: it is copied beside the worker scripts rather
+# than imported as part of ``blueprint_pipeline`` on the rented host.
+DROID_OPEN_LOOP_HORIZON = 8
+
+
+def _canonical_sha256(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        dict(value), sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _is_git_sha1(value: str) -> bool:
@@ -99,7 +111,7 @@ class GrootN17DroidPolicySpec:
             "checkpoint_revision": self.checkpoint_revision,
             "open_loop_horizon": self.open_loop_horizon,
         }
-        result["identity_sha256"] = canonical_sha256(result)
+        result["identity_sha256"] = _canonical_sha256(result)
         return result
 
 
@@ -216,29 +228,27 @@ class GrootN17DroidPolicyClient:
         self.action_chunk_rows = len(_delta_indices(modality["action"]))
         if self.action_chunk_rows < DROID_OPEN_LOOP_HORIZON:
             raise ValueError("groot_droid_action_chunk_too_short")
-        self._frames: deque[dict[str, Any]] = deque(
-            maxlen=max(-min(self._video_delta_indices), 0) + 1
-        )
+        self._last_inference_evidence: dict[str, Any] | None = None
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
         import numpy as np
 
         exterior = _resize_with_pad(observation.get("observation/exterior_image_1_left"))
         wrist = _resize_with_pad(observation.get("observation/wrist_image_left"))
+        historical_exterior = _resize_with_pad(observation.get(HISTORICAL_EXTERIOR_KEY))
+        historical_wrist = _resize_with_pad(observation.get(HISTORICAL_WRIST_KEY))
         joints = np.asarray(observation.get("observation/joint_position"), dtype=np.float32)
         gripper = np.asarray(observation.get("observation/gripper_position"), dtype=np.float32)
         eef = np.asarray(observation.get("observation/eef_9d"), dtype=np.float32)
         prompt = str(observation.get("prompt") or "").strip()
         if joints.shape != (7,) or gripper.shape != (1,) or eef.shape != (9,) or not prompt:
             raise ValueError("groot_droid_observation_state_invalid")
-        self._frames.append({"exterior": exterior, "wrist": wrist})
         if self._video_delta_indices == (0,):
             exterior_video = exterior[None, None, ...]
             wrist_video = wrist[None, None, ...]
         else:
-            historical = self._frames[0]
-            exterior_video = np.stack((historical["exterior"], exterior))[None, ...]
-            wrist_video = np.stack((historical["wrist"], wrist))[None, ...]
+            exterior_video = np.stack((historical_exterior, exterior))[None, ...]
+            wrist_video = np.stack((historical_wrist, wrist))[None, ...]
         request = {
             "video": {
                 VIDEO_KEYS[0]: exterior_video,
@@ -259,18 +269,58 @@ class GrootN17DroidPolicyClient:
             raise ValueError("groot_policy_actions_invalid")
         joint_chunk = np.asarray(actions.get("joint_position"), dtype=float)
         gripper_chunk = np.asarray(actions.get("gripper_position"), dtype=float)
+        eef_chunk = np.asarray(actions.get("eef_9d"), dtype=float)
         expected_joint_shape = (1, self.action_chunk_rows, 7)
         expected_gripper_shape = (1, self.action_chunk_rows, 1)
+        expected_eef_shape = (1, self.action_chunk_rows, 9)
         if (
             joint_chunk.shape != expected_joint_shape
             or gripper_chunk.shape != expected_gripper_shape
+            or eef_chunk.shape != expected_eef_shape
         ):
             raise ValueError("groot_policy_action_shape_mismatch")
+        native_chunk = np.concatenate(
+            (eef_chunk[0], gripper_chunk[0], joint_chunk[0]), axis=1
+        )
         chunk = np.concatenate((joint_chunk[0], gripper_chunk[0]), axis=1)
-        if not np.isfinite(chunk).all():
+        if not np.isfinite(native_chunk).all():
             raise ValueError("groot_policy_action_nonfinite")
+        native_components = {
+            "eef_9d": eef_chunk[0].tolist(),
+            "gripper_position": gripper_chunk[0].tolist(),
+            "joint_position": joint_chunk[0].tolist(),
+        }
+        self._last_inference_evidence = {
+            "native_action_chunk_shape": [self.action_chunk_rows, 17],
+            "native_action_component_order": [
+                "eef_9d",
+                "gripper_position",
+                "joint_position",
+            ],
+            "native_action_components": native_components,
+            "native_action_chunk_sha256": _canonical_sha256(native_components),
+            "execution_projection": (
+                "joint_position_plus_binarized_gripper_first_8_rows;"
+                "eef_9d_retained_not_executed"
+            ),
+            "joint_position_server_output": (
+                "absolute_after_checkpoint_relative_action_decode"
+            ),
+        }
         chunk[:, 7] = (chunk[:, 7] > 0.5).astype(float)
         return chunk
+
+    def last_inference_evidence(self) -> dict[str, Any]:
+        if self._last_inference_evidence is None:
+            raise ValueError("groot_policy_inference_evidence_missing")
+        return json.loads(json.dumps(self._last_inference_evidence, allow_nan=False))
+
+    def reset(self) -> None:
+        """Clear cross-episode image history and reset the remote policy."""
+
+        response = self._client.reset()
+        if not isinstance(response, Mapping):
+            raise ValueError("groot_policy_reset_response_invalid")
 
     def evidence_summary(self) -> dict[str, Any]:
         return {
@@ -279,7 +329,13 @@ class GrootN17DroidPolicyClient:
             "policy_identity": self._spec.identity(),
             "worker_identity_receipt": self._worker_receipt,
             "video_delta_indices": list(self._video_delta_indices),
+            "video_history_source": "caller_supplied_exact_simulator_control_steps",
             "action_chunk_rows": self.action_chunk_rows,
+            "last_inference_evidence": (
+                self.last_inference_evidence()
+                if self._last_inference_evidence is not None
+                else None
+            ),
         }
 
 
