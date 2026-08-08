@@ -1614,9 +1614,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     # success.  Hold the orientation the arm already has so the
                     # solve is a pure translation, which is all wrist
                     # observability needs.
-                    quaternion_world_wxyz=approach_hold_quaternion,
+                    quaternion_world_xyzw=approach_hold_quaternion,
                     base_position_world=[float(v) for v in base_pose[:3]],
-                    base_quaternion_world_wxyz=[float(v) for v in base_pose[3:7]],
+                    base_quaternion_world_xyzw=[float(v) for v in base_pose[3:7]],
                 )
                 command = torch.tensor(
                     [position_base + quaternion_base],
@@ -2122,6 +2122,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         wrist_approach_capture["approved_can_per_step_trace"] = approach_object_trace
         wrist_approach_capture["articulation_body_names"] = approach_body_names
         wrist_approach_capture["wrist_camera_driven_from_body_pose"] = wrist_camera_driven
+        wrist_approach_capture["isaaclab_quaternion_order"] = "xyzw"
         camera_rows.extend(approach_frames)
         robot = env.unwrapped.scene["robot"]
         # A run that was asked for episodes and produced none is not completed.

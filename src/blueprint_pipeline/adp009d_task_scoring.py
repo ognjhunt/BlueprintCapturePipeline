@@ -29,12 +29,11 @@ Three properties are load-bearing:
 
 Quaternion convention
 ---------------------
-Every quaternion in this module is ``(w, x, y, z)``, matching Isaac Lab's
-documented ``root_pose_w`` layout and :mod:`adp009d_approach_capture`'s
-``APPROACH_TOOL_QUAT_WXYZ``.  Getting this wrong is not hypothetical: the same
-four numbers describe different rotations under ``(x, y, z, w)``, and tilt is
-computed from the two middle components, so a shifted payload measures a
-phantom topple on a perfectly upright can.
+The exact pinned IsaacLab revision represents ``root_pose_w`` as
+``(x, y, z, w)``.  This scorer therefore defaults to explicit ``xyzw`` while
+retaining a named ``wxyz`` compatibility path.  Getting this wrong is not
+hypothetical: the same four numbers describe different rotations, and a
+shifted payload can turn a real topple into a phantom upright can.
 
 A settled can on a flat support is upright, so :func:`normalize_object_samples`
 rejects a start pose whose tilt exceeds the canonical hold tolerance.  Be
@@ -376,7 +375,7 @@ def normalize_object_samples(
     """Validate an episode's extracted state and raise on anything malformed.
 
     Each sample carries ``step_index`` and ``can_pose_world`` -- seven numbers,
-    ``(x, y, z, qw, qx, qy, qz)``, exactly Isaac Lab's ``root_pose_w`` row -- and
+    ``(x, y, z, qx, qy, qz, qw)``, exactly Isaac Lab's ``root_pose_w`` row -- and
     optionally ``gripper_width_m``, ``grasp_frame_position_world_m``, and
     ``finger_contact_forces_n``.
 

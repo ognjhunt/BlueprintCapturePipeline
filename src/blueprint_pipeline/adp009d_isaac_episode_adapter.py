@@ -40,7 +40,7 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v2"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v3"
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -105,8 +105,8 @@ def rgb_from_camera_output(frame: Any) -> Any:
     return np.ascontiguousarray(array)
 
 
-def rotation_row_major_from_quaternion_wxyz(quaternion: Sequence[float]) -> list[float]:
-    """Convert Isaac Lab's normalized ``(w, x, y, z)`` body quaternion."""
+def rotation_row_major_from_quaternion_xyzw(quaternion: Sequence[float]) -> list[float]:
+    """Convert exact pinned IsaacLab's normalized ``(x, y, z, w)`` quaternion."""
 
     values = [float(value) for value in quaternion]
     if len(values) != 4 or not all(math.isfinite(value) for value in values):
@@ -114,7 +114,7 @@ def rotation_row_major_from_quaternion_wxyz(quaternion: Sequence[float]) -> list
     norm = math.sqrt(sum(value * value for value in values))
     if norm <= 1e-12:
         raise IsaacEpisodeAdapterError(["isaac_episode_end_effector_quaternion_invalid"])
-    w, x, y, z = (value / norm for value in values)
+    x, y, z, w = (value / norm for value in values)
     return [
         1.0 - 2.0 * (y * y + z * z),
         2.0 * (x * y - z * w),
@@ -298,7 +298,7 @@ class IsaacEpisodeAdapter:
             from .groot_n17_droid_policy_runtime import droid_eef_9d
         return droid_eef_9d(
             position_m=values[:3],
-            rotation_row_major=rotation_row_major_from_quaternion_wxyz(values[3:7]),
+            rotation_row_major=rotation_row_major_from_quaternion_xyzw(values[3:7]),
         )
 
 
@@ -316,6 +316,7 @@ def describe_adapter() -> dict[str, Any]:
         "gripper_width_calibration_clamp_retained": True,
         "camera_alpha_dropped_at_boundary": True,
         "arm_joint_count": ARM_JOINT_COUNT,
+        "isaaclab_pose_quaternion_order": "xyzw",
     }
 
 
@@ -346,6 +347,8 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_gripper_clamp_not_retained")
     if bindings.get("camera_alpha_dropped_at_boundary") is not True:
         errors.append("isaac_episode_adapter_alpha_not_dropped")
+    if bindings.get("isaaclab_pose_quaternion_order") != "xyzw":
+        errors.append("isaac_episode_adapter_quaternion_order_drifted")
     return sorted(set(errors))
 
 
@@ -360,6 +363,6 @@ __all__ = [
     "IsaacEpisodeAdapterError",
     "describe_adapter",
     "rgb_from_camera_output",
-    "rotation_row_major_from_quaternion_wxyz",
+    "rotation_row_major_from_quaternion_xyzw",
     "validate_adapter_bindings",
 ]

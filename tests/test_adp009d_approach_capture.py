@@ -43,23 +43,37 @@ def test_waypoints_descend_over_the_can_axis_and_clear_its_top() -> None:
 def test_world_to_base_conversion_matches_a_rotated_translated_base() -> None:
     """A pose expressed in the base frame must round-trip through the base pose."""
 
-    # Base yawed 90 degrees about z at (1, 2, 0): quaternion (w, x, y, z).
+    # Base yawed 90 degrees about z at (1, 2, 0): quaternion (x, y, z, w).
     half = np.sqrt(0.5)
     base_position = [1.0, 2.0, 0.0]
-    base_quaternion = [half, 0.0, 0.0, half]
+    base_quaternion = [0.0, 0.0, half, half]
     # A point 1 m along world +x from the base should read as 1 m along base -y.
     position_base, quaternion_base = pose_world_to_base(
         position_world=[2.0, 2.0, 0.0],
-        quaternion_world_wxyz=[1.0, 0.0, 0.0, 0.0],
+        quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
         base_position_world=base_position,
-        base_quaternion_world_wxyz=base_quaternion,
+        base_quaternion_world_xyzw=base_quaternion,
     )
     assert position_base[0] == pytest.approx(0.0, abs=1e-9)
     assert position_base[1] == pytest.approx(-1.0, abs=1e-9)
     assert position_base[2] == pytest.approx(0.0, abs=1e-9)
     # Orientation is the base rotation inverted.
-    assert quaternion_base[0] == pytest.approx(half, abs=1e-9)
-    assert quaternion_base[3] == pytest.approx(-half, abs=1e-9)
+    assert quaternion_base[2] == pytest.approx(-half, abs=1e-9)
+    assert quaternion_base[3] == pytest.approx(half, abs=1e-9)
+
+
+def test_sealed_can_axis_maps_forward_of_the_minus_90_degree_robot_base() -> None:
+    """Regression for treating IsaacLab xyzw quaternions as wxyz."""
+
+    half = np.sqrt(0.5)
+    position_base, _ = pose_world_to_base(
+        position_world=[3.4681748, -3.3100837, 0.75],
+        quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        base_position_world=[3.4681748, -2.8100837, 0.2766791],
+        base_quaternion_world_xyzw=[0.0, 0.0, -half, half],
+    )
+
+    assert position_base == pytest.approx([0.5, 0.0, 0.4733209], abs=1e-7)
 
 
 def _wrist_frame(frame_index: int, can_pixels: int) -> dict:
@@ -608,23 +622,23 @@ def test_rigid_offset_round_trips_a_camera_through_a_moving_body() -> None:
     half = np.sqrt(0.5)
     # Reset: body yawed -90 deg, camera offset ahead of and above it.
     body_reset_pos = [3.4107, -3.2714, 0.8660]
-    body_reset_quat = [half, 0.0, 0.0, -half]
+    body_reset_quat = [0.0, 0.0, -half, half]
     camera_reset_pos = [3.4372, -3.0958, 0.7374]
     camera_reset_quat = [0.0, 1.0, 0.0, 0.0]
 
     offset_pos, offset_quat = rigid_offset_in_body_frame(
         body_position_world=body_reset_pos,
-        body_quaternion_world_wxyz=body_reset_quat,
+        body_quaternion_world_xyzw=body_reset_quat,
         child_position_world=camera_reset_pos,
-        child_quaternion_world_wxyz=camera_reset_quat,
+        child_quaternion_world_xyzw=camera_reset_quat,
     )
 
     # Re-applying at the reset pose must reproduce the authored camera exactly.
     back_pos, back_quat = apply_rigid_offset(
         body_position_world=body_reset_pos,
-        body_quaternion_world_wxyz=body_reset_quat,
+        body_quaternion_world_xyzw=body_reset_quat,
         offset_position_body=offset_pos,
-        offset_quaternion_body_wxyz=offset_quat,
+        offset_quaternion_body_xyzw=offset_quat,
     )
     for index in range(3):
         assert back_pos[index] == pytest.approx(camera_reset_pos[index], abs=1e-9)
@@ -635,9 +649,9 @@ def test_rigid_offset_round_trips_a_camera_through_a_moving_body() -> None:
     moved_pos = [3.1578, -3.3789, 0.7823]
     live_pos, _ = apply_rigid_offset(
         body_position_world=moved_pos,
-        body_quaternion_world_wxyz=body_reset_quat,
+        body_quaternion_world_xyzw=body_reset_quat,
         offset_position_body=offset_pos,
-        offset_quaternion_body_wxyz=offset_quat,
+        offset_quaternion_body_xyzw=offset_quat,
     )
     for index in range(3):
         expected = camera_reset_pos[index] + (moved_pos[index] - body_reset_pos[index])
@@ -657,29 +671,29 @@ def test_rigid_offset_rotates_the_camera_with_the_body() -> None:
 
     half = np.sqrt(0.5)
     body_pos = [0.0, 0.0, 0.0]
-    identity = [1.0, 0.0, 0.0, 0.0]
+    identity = [0.0, 0.0, 0.0, 1.0]
     camera_pos = [1.0, 0.0, 0.0]
 
     offset_pos, offset_quat = rigid_offset_in_body_frame(
         body_position_world=body_pos,
-        body_quaternion_world_wxyz=identity,
+        body_quaternion_world_xyzw=identity,
         child_position_world=camera_pos,
-        child_quaternion_world_wxyz=identity,
+        child_quaternion_world_xyzw=identity,
     )
     assert offset_pos[0] == pytest.approx(1.0, abs=1e-9)
 
     # Yaw the body +90 deg about z: the camera should swing to world +y.
-    yawed = [half, 0.0, 0.0, half]
+    yawed = [0.0, 0.0, half, half]
     live_pos, live_quat = apply_rigid_offset(
         body_position_world=body_pos,
-        body_quaternion_world_wxyz=yawed,
+        body_quaternion_world_xyzw=yawed,
         offset_position_body=offset_pos,
-        offset_quaternion_body_wxyz=offset_quat,
+        offset_quaternion_body_xyzw=offset_quat,
     )
     assert live_pos[0] == pytest.approx(0.0, abs=1e-9)
     assert live_pos[1] == pytest.approx(1.0, abs=1e-9)
     assert live_pos[2] == pytest.approx(0.0, abs=1e-9)
-    assert live_quat[0] == pytest.approx(half, abs=1e-9)
+    assert live_quat[2] == pytest.approx(half, abs=1e-9)
     assert live_quat[3] == pytest.approx(half, abs=1e-9)
 
 

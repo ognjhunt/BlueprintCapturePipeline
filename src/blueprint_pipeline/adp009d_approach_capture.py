@@ -72,8 +72,8 @@ APPROACH_GRIPPER_BODY_NAMES = (
 )
 # Observed top of the approved can above the support plane.
 APPROVED_CAN_TOP_ABOVE_SUPPORT_M = 0.169
-# Tool pointing straight down, in Isaac Lab (w, x, y, z) order.
-APPROACH_TOOL_QUAT_WXYZ = (0.0, 1.0, 0.0, 0.0)
+# Tool pointing straight down, in exact pinned Isaac Lab (x, y, z, w) order.
+APPROACH_TOOL_QUAT_XYZW = (1.0, 0.0, 0.0, 0.0)
 APPROACH_STEPS_PER_WAYPOINT = 40
 # Differential IK solves for the whole remaining error each step.  Commanding
 # that directly as an absolute joint target lets the arm swing through the
@@ -429,7 +429,7 @@ def approach_waypoints_world() -> list[dict[str, Any]]:
                     CAN_AXIS_XY_M[1],
                     SUPPORT_HEIGHT_M + float(standoff),
                 ],
-                "quaternion_wxyz": list(APPROACH_TOOL_QUAT_WXYZ),
+                "quaternion_xyzw": list(APPROACH_TOOL_QUAT_XYZW),
                 "standoff_above_support_m": float(standoff),
                 "capture_frame_index": APPROACH_CAPTURE_FRAME_BASE + index,
                 "steps": APPROACH_STEPS_PER_WAYPOINT,
@@ -439,27 +439,30 @@ def approach_waypoints_world() -> list[dict[str, Any]]:
 
 
 def _quat_conjugate(quaternion: Sequence[float]) -> tuple[float, float, float, float]:
-    w, x, y, z = (float(v) for v in quaternion)
-    return (w, -x, -y, -z)
+    # Exact pinned IsaacLab e57379c represents root/body poses and the
+    # DifferentialIKController command as (x, y, z, w).  Treating these bytes as
+    # wxyz mapped the sealed can 0.5 m along base -Y instead of base +X.
+    x, y, z, w = (float(v) for v in quaternion)
+    return (-x, -y, -z, w)
 
 
 def _quat_multiply(
     left: Sequence[float], right: Sequence[float]
 ) -> tuple[float, float, float, float]:
-    lw, lx, ly, lz = (float(v) for v in left)
-    rw, rx, ry, rz = (float(v) for v in right)
+    lx, ly, lz, lw = (float(v) for v in left)
+    rx, ry, rz, rw = (float(v) for v in right)
     return (
-        lw * rw - lx * rx - ly * ry - lz * rz,
         lw * rx + lx * rw + ly * rz - lz * ry,
         lw * ry - lx * rz + ly * rw + lz * rx,
         lw * rz + lx * ry - ly * rx + lz * rw,
+        lw * rw - lx * rx - ly * ry - lz * rz,
     )
 
 
 def _quat_rotate(
     quaternion: Sequence[float], vector: Sequence[float]
 ) -> tuple[float, float, float]:
-    w, x, y, z = (float(v) for v in quaternion)
+    x, y, z, w = (float(v) for v in quaternion)
     vx, vy, vz = (float(v) for v in vector)
     tx = 2.0 * (y * vz - z * vy)
     ty = 2.0 * (z * vx - x * vz)
@@ -474,28 +477,28 @@ def _quat_rotate(
 def pose_world_to_base(
     *,
     position_world: Sequence[float],
-    quaternion_world_wxyz: Sequence[float],
+    quaternion_world_xyzw: Sequence[float],
     base_position_world: Sequence[float],
-    base_quaternion_world_wxyz: Sequence[float],
+    base_quaternion_world_xyzw: Sequence[float],
 ) -> tuple[list[float], list[float]]:
     """Express a world pose in the robot base frame, as the IK controller expects."""
 
-    base_inverse = _quat_conjugate(base_quaternion_world_wxyz)
+    base_inverse = _quat_conjugate(base_quaternion_world_xyzw)
     delta = [
         float(position_world[index]) - float(base_position_world[index])
         for index in range(3)
     ]
     position_base = list(_quat_rotate(base_inverse, delta))
-    quaternion_base = list(_quat_multiply(base_inverse, quaternion_world_wxyz))
+    quaternion_base = list(_quat_multiply(base_inverse, quaternion_world_xyzw))
     return position_base, quaternion_base
 
 
 def rigid_offset_in_body_frame(
     *,
     body_position_world: Sequence[float],
-    body_quaternion_world_wxyz: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
     child_position_world: Sequence[float],
-    child_quaternion_world_wxyz: Sequence[float],
+    child_quaternion_world_xyzw: Sequence[float],
 ) -> tuple[list[float], list[float]]:
     """Express a child's world pose as a constant offset in a body's frame.
 
@@ -511,31 +514,31 @@ def rigid_offset_in_body_frame(
     base does not.
     """
 
-    body_inverse = _quat_conjugate(body_quaternion_world_wxyz)
+    body_inverse = _quat_conjugate(body_quaternion_world_xyzw)
     delta = [
         float(child_position_world[index]) - float(body_position_world[index])
         for index in range(3)
     ]
     position_body = list(_quat_rotate(body_inverse, delta))
-    quaternion_body = list(_quat_multiply(body_inverse, child_quaternion_world_wxyz))
+    quaternion_body = list(_quat_multiply(body_inverse, child_quaternion_world_xyzw))
     return position_body, quaternion_body
 
 
 def apply_rigid_offset(
     *,
     body_position_world: Sequence[float],
-    body_quaternion_world_wxyz: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
     offset_position_body: Sequence[float],
-    offset_quaternion_body_wxyz: Sequence[float],
+    offset_quaternion_body_xyzw: Sequence[float],
 ) -> tuple[list[float], list[float]]:
     """Rebuild a child's world pose from a live body pose and a constant offset."""
 
-    rotated = _quat_rotate(body_quaternion_world_wxyz, offset_position_body)
+    rotated = _quat_rotate(body_quaternion_world_xyzw, offset_position_body)
     position_world = [
         float(body_position_world[index]) + rotated[index] for index in range(3)
     ]
     quaternion_world = list(
-        _quat_multiply(body_quaternion_world_wxyz, offset_quaternion_body_wxyz)
+        _quat_multiply(body_quaternion_world_xyzw, offset_quaternion_body_xyzw)
     )
     return position_world, quaternion_world
 
@@ -710,7 +713,7 @@ __all__ = [
     "APPROACH_CAPTURE_SCHEMA_VERSION",
     "APPROACH_STANDOFF_HEIGHTS_M",
     "APPROACH_STEPS_PER_WAYPOINT",
-    "APPROACH_TOOL_QUAT_WXYZ",
+    "APPROACH_TOOL_QUAT_XYZW",
     "ApproachCaptureError",
     "APPROACH_GRIPPER_BODY_NAMES",
     "APPROACH_WAYPOINT_TOLERANCE_M",

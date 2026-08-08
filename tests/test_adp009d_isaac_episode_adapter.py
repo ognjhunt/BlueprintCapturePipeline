@@ -15,7 +15,7 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     IsaacEpisodeAdapterError,
     describe_adapter,
     rgb_from_camera_output,
-    rotation_row_major_from_quaternion_wxyz,
+    rotation_row_major_from_quaternion_xyzw,
     validate_adapter_bindings,
 )
 
@@ -53,7 +53,7 @@ class _Robot:
         ]
         # Fingers 0.06 m apart in x, so separation is exactly 0.06.
         poses = np.zeros((1, len(bodies), 7), dtype=float)
-        poses[0, bodies.index("base_link"), :7] = [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
+        poses[0, bodies.index("base_link"), :7] = [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
         poses[0, bodies.index("left_inner_finger"), :3] = [0.0, 0.0, 1.0]
         poses[0, bodies.index("right_inner_finger"), :3] = [0.06, 0.0, 1.0]
         self.data = _Data(
@@ -150,11 +150,13 @@ def test_policy_inputs_carry_both_views_as_uint8_rgb() -> None:
     )
 
 
-def test_isaac_wxyz_quaternion_is_converted_before_nvidia_frame_correction() -> None:
+def test_isaac_xyzw_quaternion_is_converted_before_nvidia_frame_correction() -> None:
+    """Regression for decoding pinned IsaacLab body poses in the wrong order."""
+
     half_sqrt = 2**-0.5
 
-    rotation = rotation_row_major_from_quaternion_wxyz(
-        [half_sqrt, 0.0, 0.0, half_sqrt]
+    rotation = rotation_row_major_from_quaternion_xyzw(
+        [0.0, 0.0, half_sqrt, half_sqrt]
     )
 
     assert rotation == pytest.approx([0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
@@ -341,6 +343,7 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["finger_bodies"] == list(FINGER_BODIES)
     assert bindings["gripper_physical_full_opening_m"] == pytest.approx(0.085)
     assert bindings["raw_gripper_body_separation_retained"] is True
+    assert bindings["isaaclab_pose_quaternion_order"] == "xyzw"
 
     drifted = dict(bindings)
     drifted["camera_view_binding"] = {"external_camera": DROID_WRIST_VIEW}
@@ -351,6 +354,12 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted = dict(bindings)
     drifted["gripper_width_source"] = "raw_link_origin_distance"
     assert "isaac_episode_adapter_gripper_width_source_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["isaaclab_pose_quaternion_order"] = "wxyz"
+    assert "isaac_episode_adapter_quaternion_order_drifted" in (
         validate_adapter_bindings(drifted)
     )
 
