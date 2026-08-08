@@ -92,7 +92,20 @@ mkdir -p "$OUT_DIR"
 # silence.  That is exactly what happened on the first provisioning run.
 provisioned_any=0
 provisioning_worst_rc=0
-for candidate in $(printf '%s' "$BLUEPRINT_ADP009D_POLICY_CANDIDATE" | tr ',' ' '); do
+provisioning_candidates="$BLUEPRINT_ADP009D_POLICY_CANDIDATE"
+frames_only_provisioning_skip=0
+case "$BLUEPRINT_ADP009D_STOP_AFTER_FRAMES" in
+  ""|0|false) ;;
+  *)
+    # A frames-only diagnostic exits immediately after retaining the two camera
+    # observations.  No policy query can occur, so fetching a 6-12 GB checkpoint
+    # and starting a policy server would add cost without changing its evidence.
+    provisioning_candidates=""
+    frames_only_provisioning_skip=1
+    echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:policy_provisioning_skipped_frames_only:completed"
+    ;;
+esac
+for candidate in $(printf '%s' "$provisioning_candidates" | tr ',' ' '); do
   script="$RUNTIME_DIR/adp009d_policy_provisioning.$candidate.sh"
   [ -f "$script" ] || continue
   provisioned_any=1
@@ -144,7 +157,10 @@ for candidate in $(printf '%s' "$BLUEPRINT_ADP009D_POLICY_CANDIDATE" | tr ',' ' 
   printf '{"candidate_id": "%s", "provisioning_exit_code": %d}\n' \
     "$candidate" "$rc" >"$OUT_DIR/adp009d_policy_provisioning_status.$candidate.json"
 done
-if [ $provisioned_any -eq 1 ]; then
+if [ $frames_only_provisioning_skip -eq 1 ]; then
+  printf '{"provisioning_exit_code": null, "provisioning_ran": false, "skip_reason": "frames_only_diagnostic"}\n' \
+    >"$OUT_DIR/adp009d_policy_provisioning_status.json"
+elif [ $provisioned_any -eq 1 ]; then
   printf '{"provisioning_exit_code": %d, "provisioning_ran": true}\n' \
     "$provisioning_worst_rc" >"$OUT_DIR/adp009d_policy_provisioning_status.json"
 else

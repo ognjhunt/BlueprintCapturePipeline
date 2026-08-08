@@ -1419,6 +1419,24 @@ def test_the_tuning_vars_reach_the_worker() -> None:
     assert '"@@STOP_AFTER_FRAMES@@",' in source
 
 
+def test_frames_only_bundle_skips_policy_provisioning() -> None:
+    """A frame diagnostic cannot consume or score policy output."""
+
+    from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
+
+    entrypoint = bundle.ENTRYPOINT
+    skip = entrypoint.index("policy_provisioning_skipped_frames_only")
+    provision_loop = entrypoint.index(
+        'for candidate in $(printf \'%s\' "$provisioning_candidates"'
+    )
+    runner = entrypoint.index(
+        '/isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"'
+    )
+    assert skip < provision_loop < runner
+    assert 'provisioning_candidates=""' in entrypoint[:provision_loop]
+    assert '"skip_reason": "frames_only_diagnostic"' in entrypoint
+
+
 def test_a_degenerate_frame_is_refused_rather_than_saved() -> None:
     """A frame this dark is not a dark scene.
 
