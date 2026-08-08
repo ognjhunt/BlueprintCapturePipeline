@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -114,12 +115,17 @@ APPROACH_CAPTURE_FRAME_BASE = 100
 BLOCKER_WRIST_NEVER_SAW_OBJECT = "wrist_approach_never_observed_approved_task_object"
 BLOCKER_APPROACH_IK_FAILED = "wrist_approach_differential_ik_failed"
 MIN_WRIST_OBJECT_PIXELS = 200
+# A fixed pixel floor alone admitted a 219-pixel sliver clipped by the top edge
+# of a 320x180 policy frame.  Require enough of the *current* resolution to be
+# useful and keep the target comfortably away from the image boundary.
+MIN_WRIST_OBJECT_PIXEL_FRACTION = 0.02
+WRIST_OBJECT_FRAME_MARGIN_FRACTION = 0.05
 # The deterministic task scorer admits the sealed start only while every
 # position component remains within its 5 mm canonical-hold tolerance.  A
 # wrist pose discovered after moving the can farther than this cannot become an
 # episode start, regardless of how good its picture looks.
 EPISODE_START_OBJECT_OFFSET_TOLERANCE_M = 5.0e-3
-EPISODE_START_JOINT_TOLERANCE_RAD = 3.0e-2
+EPISODE_START_JOINT_TOLERANCE_RAD = 3.0e-3
 EPISODE_START_RESTORE_MAX_STEPS = 80
 BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START = (
     "no_safe_wrist_observable_episode_start"
@@ -167,10 +173,72 @@ def semantic_label_pixel_count(
     return observed
 
 
+def semantic_target_observability(
+    *,
+    semantic_ids: Any,
+    id_to_labels: Mapping[str, Any],
+    target_label: str,
+    frame_margin_fraction: float = WRIST_OBJECT_FRAME_MARGIN_FRACTION,
+) -> dict[str, Any]:
+    """Measure target area and framing from one exact semantic AOV."""
+
+    import numpy as np
+
+    semantic = np.asarray(semantic_ids)
+    if semantic.ndim == 3 and semantic.shape[-1] == 1:
+        semantic = semantic[..., 0]
+    if semantic.ndim != 2 or not semantic.size:
+        raise ApproachCaptureError(["wrist_semantic_frame_shape_invalid"])
+    target_ids: list[int] = []
+    for identifier, entry in id_to_labels.items():
+        label = entry.get("class") if isinstance(entry, Mapping) else entry
+        if label == target_label:
+            try:
+                target_ids.append(int(identifier))
+            except (TypeError, ValueError) as exc:
+                raise ApproachCaptureError(
+                    ["wrist_semantic_target_identifier_invalid"]
+                ) from exc
+    mask = np.isin(semantic.astype(np.int64), target_ids)
+    count = int(mask.sum())
+    height, width = (int(value) for value in mask.shape)
+    fraction = count / float(height * width)
+    bbox_xyxy: list[int] | None = None
+    centroid_xy_fraction: list[float] | None = None
+    within_frame_margin = False
+    if count:
+        ys, xs = np.nonzero(mask)
+        x_min, x_max = int(xs.min()), int(xs.max())
+        y_min, y_max = int(ys.min()), int(ys.max())
+        bbox_xyxy = [x_min, y_min, x_max, y_max]
+        centroid_xy_fraction = [
+            float(xs.mean() / max(1, width - 1)),
+            float(ys.mean() / max(1, height - 1)),
+        ]
+        x_margin = int(math.ceil(width * float(frame_margin_fraction)))
+        y_margin = int(math.ceil(height * float(frame_margin_fraction)))
+        within_frame_margin = (
+            x_min >= x_margin
+            and x_max < width - x_margin
+            and y_min >= y_margin
+            and y_max < height - y_margin
+        )
+    return {
+        "approved_task_object_pixel_count": count,
+        "approved_task_object_pixel_fraction": fraction,
+        "approved_task_object_bbox_xyxy": bbox_xyxy,
+        "approved_task_object_centroid_xy_fraction": centroid_xy_fraction,
+        "approved_task_object_within_frame_margin": within_frame_margin,
+        "frame_resolution_hw": [height, width],
+        "frame_margin_fraction": float(frame_margin_fraction),
+    }
+
+
 def select_wrist_observable_episode_start(
     samples: Sequence[Mapping[str, Any]],
     *,
     min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
+    min_object_pixel_fraction: float = MIN_WRIST_OBJECT_PIXEL_FRACTION,
     object_offset_tolerance_m: float = EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
 ) -> dict[str, Any]:
     """Choose the first arm pose that sees the can without moving it.
@@ -189,12 +257,24 @@ def select_wrist_observable_episode_start(
             joints = [float(value) for value in sample["joint_position_rad"]]
             offset = [float(value) for value in sample["object_offset_m"]]
             pixels = int(sample["approved_task_object_pixel_count"])
+            pixel_fraction = float(
+                sample["approved_task_object_pixel_fraction"]
+            )
+            within_frame_margin = sample[
+                "approved_task_object_within_frame_margin"
+            ]
             step = int(sample["step"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ApproachCaptureError(
                 [f"wrist_episode_start_sample_invalid:{index}"]
             ) from exc
-        if len(joints) != 7 or len(offset) != 3 or pixels < 0:
+        if (
+            len(joints) != 7
+            or len(offset) != 3
+            or pixels < 0
+            or not 0.0 <= pixel_fraction <= 1.0
+            or not isinstance(within_frame_margin, bool)
+        ):
             raise ApproachCaptureError(
                 [f"wrist_episode_start_sample_invalid:{index}"]
             )
@@ -206,14 +286,30 @@ def select_wrist_observable_episode_start(
             "joint_position_rad": joints,
             "object_offset_m": offset,
             "approved_task_object_pixel_count": pixels,
+            "approved_task_object_pixel_fraction": pixel_fraction,
+            "approved_task_object_bbox_xyxy": sample.get(
+                "approved_task_object_bbox_xyxy"
+            ),
+            "approved_task_object_centroid_xy_fraction": sample.get(
+                "approved_task_object_centroid_xy_fraction"
+            ),
+            "approved_task_object_within_frame_margin": within_frame_margin,
+            "frame_resolution_hw": sample.get("frame_resolution_hw"),
+            "frame_margin_fraction": sample.get("frame_margin_fraction"),
             "object_within_canonical_hold": within_hold,
         }
         rows.append(row)
-        if selected is None and within_hold and pixels >= int(min_object_pixels):
+        if (
+            selected is None
+            and within_hold
+            and pixels >= int(min_object_pixels)
+            and pixel_fraction >= float(min_object_pixel_fraction)
+            and within_frame_margin
+        ):
             selected = row
 
     receipt: dict[str, Any] = {
-        "schema_version": "adp009d_wrist_episode_start_selection.v1",
+        "schema_version": "adp009d_wrist_episode_start_selection.v2",
         "status": "ready" if selected is not None else "blocked",
         "blockers": (
             []
@@ -223,6 +319,10 @@ def select_wrist_observable_episode_start(
         "samples_evaluated": len(rows),
         "samples": rows,
         "min_approved_task_object_pixels": int(min_object_pixels),
+        "min_approved_task_object_pixel_fraction": float(
+            min_object_pixel_fraction
+        ),
+        "required_within_frame_margin": True,
         "object_offset_tolerance_m": float(object_offset_tolerance_m),
         "selected": selected,
     }
@@ -238,8 +338,14 @@ def validate_wrist_observable_episode_start_restore(
     restored_joint_position_rad: Sequence[float],
     object_offset_m: Sequence[float],
     approved_task_object_pixel_count: int,
+    approved_task_object_pixel_fraction: float,
+    approved_task_object_within_frame_margin: bool,
     restore_steps: int,
+    approved_task_object_bbox_xyxy: Sequence[int] | None = None,
+    approved_task_object_centroid_xy_fraction: Sequence[float] | None = None,
+    frame_resolution_hw: Sequence[int] | None = None,
     min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
+    min_object_pixel_fraction: float = MIN_WRIST_OBJECT_PIXEL_FRACTION,
     object_offset_tolerance_m: float = EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
     joint_tolerance_rad: float = EPISODE_START_JOINT_TOLERANCE_RAD,
 ) -> dict[str, Any]:
@@ -258,10 +364,16 @@ def validate_wrist_observable_episode_start_restore(
     if any(abs(value) > float(object_offset_tolerance_m) for value in offset):
         blockers.append(BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED)
     pixels = int(approved_task_object_pixel_count)
-    if pixels < int(min_object_pixels):
+    pixel_fraction = float(approved_task_object_pixel_fraction)
+    within_frame_margin = bool(approved_task_object_within_frame_margin)
+    if (
+        pixels < int(min_object_pixels)
+        or pixel_fraction < float(min_object_pixel_fraction)
+        or not within_frame_margin
+    ):
         blockers.append(BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE)
     receipt: dict[str, Any] = {
-        "schema_version": "adp009d_wrist_episode_start_restore.v1",
+        "schema_version": "adp009d_wrist_episode_start_restore.v2",
         "status": "ready" if not blockers else "blocked",
         "blockers": sorted(blockers),
         "selected_joint_position_rad": selected,
@@ -272,7 +384,30 @@ def validate_wrist_observable_episode_start_restore(
         "object_offset_m": offset,
         "object_offset_tolerance_m": float(object_offset_tolerance_m),
         "approved_task_object_pixel_count": pixels,
+        "approved_task_object_pixel_fraction": pixel_fraction,
+        "approved_task_object_within_frame_margin": within_frame_margin,
+        "approved_task_object_bbox_xyxy": (
+            None
+            if approved_task_object_bbox_xyxy is None
+            else [int(value) for value in approved_task_object_bbox_xyxy]
+        ),
+        "approved_task_object_centroid_xy_fraction": (
+            None
+            if approved_task_object_centroid_xy_fraction is None
+            else [
+                float(value)
+                for value in approved_task_object_centroid_xy_fraction
+            ]
+        ),
+        "frame_resolution_hw": (
+            None
+            if frame_resolution_hw is None
+            else [int(value) for value in frame_resolution_hw]
+        ),
         "min_approved_task_object_pixels": int(min_object_pixels),
+        "min_approved_task_object_pixel_fraction": float(
+            min_object_pixel_fraction
+        ),
         "restore_steps": int(restore_steps),
     }
     receipt["restore_digest"] = canonical_digest(
@@ -586,6 +721,7 @@ __all__ = [
     "EPISODE_START_OBJECT_OFFSET_TOLERANCE_M",
     "EPISODE_START_JOINT_TOLERANCE_RAD",
     "EPISODE_START_RESTORE_MAX_STEPS",
+    "MIN_WRIST_OBJECT_PIXEL_FRACTION",
     "MIN_WRIST_POSE_TRAVEL_M",
     "WRIST_POSE_CAUSE_HEALTHY",
     "WRIST_POSE_CAUSE_PRIM_DETACHED",
@@ -598,6 +734,8 @@ __all__ = [
     "pose_world_to_base",
     "select_wrist_observable_episode_start",
     "semantic_label_pixel_count",
+    "semantic_target_observability",
     "summarize_wrist_approach_capture",
     "validate_wrist_observable_episode_start_restore",
+    "WRIST_OBJECT_FRAME_MARGIN_FRACTION",
 ]

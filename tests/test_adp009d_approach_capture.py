@@ -18,6 +18,7 @@ from blueprint_pipeline.adp009d_approach_capture import (
     pose_world_to_base,
     select_wrist_observable_episode_start,
     semantic_label_pixel_count,
+    semantic_target_observability,
     summarize_wrist_approach_capture,
     validate_wrist_observable_episode_start_restore,
 )
@@ -104,6 +105,30 @@ def test_semantic_pixel_count_uses_only_the_exact_target_class() -> None:
     ) == 200
 
 
+def test_semantic_observability_rejects_a_border_sliver() -> None:
+    centered = np.zeros((100, 100), dtype=np.int32)
+    centered[35:65, 40:60] = 7
+    edge = np.zeros((100, 100), dtype=np.int32)
+    edge[:30, 40:60] = 7
+    labels = {"7": {"class": "approved_can"}}
+
+    centered_receipt = semantic_target_observability(
+        semantic_ids=centered,
+        id_to_labels=labels,
+        target_label="approved_can",
+    )
+    edge_receipt = semantic_target_observability(
+        semantic_ids=edge,
+        id_to_labels=labels,
+        target_label="approved_can",
+    )
+
+    assert centered_receipt["approved_task_object_pixel_fraction"] == 0.06
+    assert centered_receipt["approved_task_object_within_frame_margin"] is True
+    assert edge_receipt["approved_task_object_pixel_fraction"] == 0.06
+    assert edge_receipt["approved_task_object_within_frame_margin"] is False
+
+
 def test_episode_start_selects_first_visible_pose_inside_canonical_hold() -> None:
     samples = [
         {
@@ -111,18 +136,24 @@ def test_episode_start_selects_first_visible_pose_inside_canonical_hold() -> Non
             "joint_position_rad": [0.0] * 7,
             "object_offset_m": [0.0, 0.0, 0.0],
             "approved_task_object_pixel_count": 0,
+            "approved_task_object_pixel_fraction": 0.0,
+            "approved_task_object_within_frame_margin": False,
         },
         {
             "step": 1,
             "joint_position_rad": [0.1] * 7,
             "object_offset_m": [0.001, -0.002, 0.003],
             "approved_task_object_pixel_count": 250,
+            "approved_task_object_pixel_fraction": 0.03,
+            "approved_task_object_within_frame_margin": True,
         },
         {
             "step": 2,
             "joint_position_rad": [0.2] * 7,
             "object_offset_m": [0.0, 0.0, 0.0],
             "approved_task_object_pixel_count": 5000,
+            "approved_task_object_pixel_fraction": 0.1,
+            "approved_task_object_within_frame_margin": True,
         },
     ]
 
@@ -143,6 +174,8 @@ def test_episode_start_rejects_visible_pose_after_object_was_disturbed() -> None
                 "joint_position_rad": [0.0] * 7,
                 "object_offset_m": [0.0, 0.0, 0.006],
                 "approved_task_object_pixel_count": 52000,
+                "approved_task_object_pixel_fraction": 0.1,
+                "approved_task_object_within_frame_margin": True,
             }
         ]
     )
@@ -154,12 +187,52 @@ def test_episode_start_rejects_visible_pose_after_object_was_disturbed() -> None
     ]
 
 
+def test_episode_start_rejects_a_large_but_border_clipped_target() -> None:
+    receipt = select_wrist_observable_episode_start(
+        [
+            {
+                "step": 0,
+                "joint_position_rad": [0.0] * 7,
+                "object_offset_m": [0.0, 0.0, 0.0],
+                "approved_task_object_pixel_count": 5000,
+                "approved_task_object_pixel_fraction": 0.08,
+                "approved_task_object_within_frame_margin": False,
+            }
+        ]
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["blockers"] == [
+        BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START
+    ]
+
+
+def test_episode_start_rejects_v75_scale_border_sliver() -> None:
+    receipt = select_wrist_observable_episode_start(
+        [
+            {
+                "step": 11,
+                "joint_position_rad": [0.1] * 7,
+                "object_offset_m": [0.0, 0.0, 4.9e-6],
+                "approved_task_object_pixel_count": 219,
+                "approved_task_object_pixel_fraction": 219 / (320 * 180),
+                "approved_task_object_within_frame_margin": False,
+            }
+        ]
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["selected"] is None
+
+
 def test_episode_start_restore_requires_pose_object_hold_and_visibility() -> None:
     ready = validate_wrist_observable_episode_start_restore(
         selected_joint_position_rad=[0.1] * 7,
-        restored_joint_position_rad=[0.11] * 7,
+        restored_joint_position_rad=[0.101] * 7,
         object_offset_m=[0.001, -0.002, 0.003],
         approved_task_object_pixel_count=250,
+        approved_task_object_pixel_fraction=0.03,
+        approved_task_object_within_frame_margin=True,
         restore_steps=12,
     )
     assert ready["status"] == "ready"
@@ -168,9 +241,11 @@ def test_episode_start_restore_requires_pose_object_hold_and_visibility() -> Non
 
     blocked = validate_wrist_observable_episode_start_restore(
         selected_joint_position_rad=[0.1] * 7,
-        restored_joint_position_rad=[0.14] * 7,
+        restored_joint_position_rad=[0.109] * 7,
         object_offset_m=[0.0, 0.006, 0.0],
         approved_task_object_pixel_count=199,
+        approved_task_object_pixel_fraction=0.001,
+        approved_task_object_within_frame_margin=False,
         restore_steps=80,
     )
     assert blocked["status"] == "blocked"

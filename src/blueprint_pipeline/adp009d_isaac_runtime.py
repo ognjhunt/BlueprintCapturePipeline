@@ -31,7 +31,7 @@ try:  # flat provider-bundle layout, where this file runs as a script
         approach_waypoints_world,
         pose_world_to_base,
         select_wrist_observable_episode_start,
-        semantic_label_pixel_count,
+        semantic_target_observability,
         summarize_wrist_approach_capture,
         validate_wrist_observable_episode_start_restore,
     )
@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # imported as part of the repository package
         approach_waypoints_world,
         pose_world_to_base,
         select_wrist_observable_episode_start,
-        semantic_label_pixel_count,
+        semantic_target_observability,
         summarize_wrist_approach_capture,
         validate_wrist_observable_episode_start_restore,
     )
@@ -840,10 +840,8 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
     }
 
 
-def _approved_can_pixel_count(camera: Any) -> int:
-    """Count approved-can pixels in the camera's current rendered semantic AOV."""
-
-    import numpy as np
+def _approved_can_observability(camera: Any) -> dict[str, Any]:
+    """Measure approved-can area and framing in the current semantic AOV."""
 
     output = camera.data.output
     if "semantic_segmentation" not in output:
@@ -851,21 +849,13 @@ def _approved_can_pixel_count(camera: Any) -> int:
     semantic = _to_torch(output["semantic_segmentation"])[0]
     if hasattr(semantic, "detach"):
         semantic = semantic.detach().cpu().numpy()
-    semantic = np.asarray(semantic)
-    if semantic.ndim == 3 and semantic.shape[-1] == 1:
-        semantic = semantic[..., 0]
-    identifiers, counts = np.unique(semantic.astype(np.int64), return_counts=True)
-    pixel_counts = {
-        str(int(identifier)): int(count)
-        for identifier, count in zip(identifiers, counts, strict=True)
-    }
     semantic_info = _json_safe(
         (camera.data.info or {}).get("semantic_segmentation")
     )
     labels = (semantic_info or {}).get("idToLabels") or {}
-    return semantic_label_pixel_count(
+    return semantic_target_observability(
+        semantic_ids=semantic,
         id_to_labels=labels,
-        pixel_counts_by_id=pixel_counts,
         target_label="approved_can",
     )
 
@@ -1710,7 +1700,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     approach_object_offset_m = [
                         float(v) for v in approach_object_offset
                     ]
-                    wrist_object_pixels = _approved_can_pixel_count(
+                    wrist_observability = _approved_can_observability(
                         env.unwrapped.scene["wrist_camera"]
                     )
                     episode_start_samples.append(
@@ -1721,7 +1711,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 for v in _to_torch(robot.data.joint_pos)[0, :7]
                             ],
                             "object_offset_m": list(approach_object_offset_m),
-                            "approved_task_object_pixel_count": wrist_object_pixels,
+                            **wrist_observability,
                         }
                     )
                     episode_start_selection = select_wrist_observable_episode_start(
@@ -1930,16 +1920,42 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         _to_torch(approved_can.data.root_pose_w)[0, :3]
                         - canonical_hold_can_pose[:3]
                     )
+                    restored_observability = _approved_can_observability(
+                        env.unwrapped.scene["wrist_camera"]
+                    )
                     restore_receipt = (
                         validate_wrist_observable_episode_start_restore(
                             selected_joint_position_rad=target[0],
                             restored_joint_position_rad=restored_joints,
                             object_offset_m=restored_can_offset,
                             approved_task_object_pixel_count=(
-                                _approved_can_pixel_count(
-                                    env.unwrapped.scene["wrist_camera"]
-                                )
+                                restored_observability[
+                                    "approved_task_object_pixel_count"
+                                ]
                             ),
+                            approved_task_object_pixel_fraction=(
+                                restored_observability[
+                                    "approved_task_object_pixel_fraction"
+                                ]
+                            ),
+                            approved_task_object_within_frame_margin=(
+                                restored_observability[
+                                    "approved_task_object_within_frame_margin"
+                                ]
+                            ),
+                            approved_task_object_bbox_xyxy=(
+                                restored_observability[
+                                    "approved_task_object_bbox_xyxy"
+                                ]
+                            ),
+                            approved_task_object_centroid_xy_fraction=(
+                                restored_observability[
+                                    "approved_task_object_centroid_xy_fraction"
+                                ]
+                            ),
+                            frame_resolution_hw=restored_observability[
+                                "frame_resolution_hw"
+                            ],
                             restore_steps=restore_steps,
                         )
                     )
