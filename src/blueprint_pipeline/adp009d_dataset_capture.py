@@ -33,13 +33,19 @@ try:  # flat provider-bundle layout
     from episode_visual_evidence import (
         REVIEW_VIDEO_CODEC,
         REVIEW_VIDEO_CONTAINER,
+        REVIEW_VIDEO_ENCODER,
         REVIEW_VIDEO_FOURCC,
+        _ffmpeg_encode_command,
+        _ffprobe_command,
     )
 except ModuleNotFoundError:  # repository package
     from .episode_visual_evidence import (
         REVIEW_VIDEO_CODEC,
         REVIEW_VIDEO_CONTAINER,
+        REVIEW_VIDEO_ENCODER,
         REVIEW_VIDEO_FOURCC,
+        _ffmpeg_encode_command,
+        _ffprobe_command,
     )
 
 DATASET_CAPTURE_SCHEMA_VERSION = "adp009d_dataset_capture.v1"
@@ -90,17 +96,23 @@ def _file_sha256(path: Path) -> str:
 
 
 class _StreamWriter:
-    """One camera's incremental encoder plus its per-frame digest ledger."""
+    """One camera's frame buffer plus its per-frame digest ledger.
+
+    Encoding happens once at close through the same portable ffmpeg/libx264
+    path the review videos use -- cv2's own H.264 writer is a host lottery
+    the review contract already lost once.  Frames are buffered as raw BGR
+    bytes: a 520-step episode at 320x180 holds ~90 MB per camera, well inside
+    worker memory, in exchange for a single deterministic encode.
+    """
 
     def __init__(self, *, video_path: Path, frames_per_second: float):
         self._video_path = video_path
         self._frames_per_second = float(frames_per_second)
-        self._writer: Any = None
         self.shape: tuple[int, int] | None = None
         self.frame_raw_rgb_sha256: list[str] = []
+        self._bgr_frames: list[bytes] = []
 
     def write(self, frame: Any) -> None:
-        import cv2
         import numpy as np
 
         array = np.asarray(frame)
@@ -111,22 +123,10 @@ class _StreamWriter:
         height, width = int(array.shape[0]), int(array.shape[1])
         if self.shape is None:
             self.shape = (height, width)
-            self._video_path.parent.mkdir(parents=True, exist_ok=True)
             if self._video_path.exists() or self._video_path.is_symlink():
                 raise DatasetCaptureError(
                     [f"dataset_capture_video_overwrite_forbidden:{self._video_path.name}"]
                 )
-            writer = cv2.VideoWriter(
-                str(self._video_path),
-                cv2.VideoWriter_fourcc(*REVIEW_VIDEO_FOURCC),
-                self._frames_per_second,
-                (width, height),
-            )
-            if not writer.isOpened():
-                raise DatasetCaptureError(
-                    [f"dataset_capture_encoder_unavailable:{REVIEW_VIDEO_FOURCC}"]
-                )
-            self._writer = writer
         elif self.shape != (height, width):
             raise DatasetCaptureError(
                 [
@@ -138,17 +138,67 @@ class _StreamWriter:
         self.frame_raw_rgb_sha256.append(
             "sha256:" + hashlib.sha256(contiguous.tobytes()).hexdigest()
         )
-        self._writer.write(cv2.cvtColor(contiguous, cv2.COLOR_RGB2BGR))
+        self._bgr_frames.append(
+            np.ascontiguousarray(contiguous[..., ::-1]).tobytes()
+        )
 
     def close(self) -> dict[str, Any]:
+        import json as _json
+        import shutil as _shutil
+        import subprocess as _subprocess
+
         import cv2
 
-        if self._writer is None or self.shape is None:
+        if self.shape is None or not self._bgr_frames:
             raise DatasetCaptureError(["dataset_capture_stream_never_wrote"])
-        self._writer.release()
-        self._writer = None
+        height, width = self.shape
+        ffmpeg = _shutil.which("ffmpeg")
+        ffprobe = _shutil.which("ffprobe")
+        if not ffmpeg or not ffprobe:
+            raise DatasetCaptureError(
+                ["dataset_capture_ffmpeg_toolchain_unavailable"]
+            )
+        self._video_path.parent.mkdir(parents=True, exist_ok=True)
+        encode = _subprocess.run(  # noqa: S603 - absolute discovered binary, fixed argv
+            _ffmpeg_encode_command(
+                executable=ffmpeg,
+                video_path=self._video_path,
+                width=width,
+                height=height,
+                frames_per_second=self._frames_per_second,
+                frame_count=len(self._bgr_frames),
+            ),
+            input=b"".join(self._bgr_frames),
+            capture_output=True,
+            check=False,
+        )
+        self._bgr_frames = []
+        if encode.returncode != 0:
+            error = encode.stderr[-2048:].decode("utf-8", errors="replace").strip()
+            raise DatasetCaptureError([f"dataset_capture_ffmpeg_failed:{error}"])
         if not self._video_path.is_file() or self._video_path.stat().st_size <= 0:
             raise DatasetCaptureError(["dataset_capture_video_not_written"])
+
+        probe = _subprocess.run(  # noqa: S603 - absolute discovered binary, fixed argv
+            _ffprobe_command(executable=ffprobe, video_path=self._video_path),
+            capture_output=True,
+            check=False,
+        )
+        if probe.returncode != 0:
+            raise DatasetCaptureError(["dataset_capture_ffprobe_failed"])
+        try:
+            stream = _json.loads(probe.stdout)["streams"][0]
+        except (IndexError, KeyError, TypeError, ValueError) as exc:
+            raise DatasetCaptureError(
+                ["dataset_capture_ffprobe_output_invalid"]
+            ) from exc
+        if (
+            stream.get("codec_name") != REVIEW_VIDEO_CODEC
+            or stream.get("codec_tag_string") != REVIEW_VIDEO_FOURCC
+            or [stream.get("width"), stream.get("height")] != [width, height]
+        ):
+            raise DatasetCaptureError(["dataset_capture_ffprobe_contract_mismatch"])
+
         capture = cv2.VideoCapture(str(self._video_path))
         if not capture.isOpened():
             raise DatasetCaptureError(["dataset_capture_decode_round_trip_unavailable"])
@@ -176,9 +226,11 @@ class _StreamWriter:
             "container": REVIEW_VIDEO_CONTAINER,
             "codec": REVIEW_VIDEO_CODEC,
             "fourcc": REVIEW_VIDEO_FOURCC,
+            "encoder": REVIEW_VIDEO_ENCODER,
             "frames_per_second": self._frames_per_second,
             "decoded_frame_count": decoded_count,
             "decode_round_trip_passed": True,
+            "ffprobe_passed": True,
             "sha256": _file_sha256(self._video_path),
             "size_bytes": self._video_path.stat().st_size,
         }
