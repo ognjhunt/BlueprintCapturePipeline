@@ -1870,9 +1870,31 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         timings_seconds["wrist_approach"] = round(time.monotonic() - phase_started, 6)
 
         robot = env.unwrapped.scene["robot"]
+        # A run that was asked for episodes and produced none is not completed.
+        # This reported completed with an empty blocker list while carrying a
+        # ModuleNotFoundError in policy_episode_error, which is precisely the
+        # shape of a success claim that outruns its evidence: the micro-check's
+        # own checks had passed, so nothing contradicted it.  Episodes were a
+        # bonus when that was written; they are the deliverable now.
+        episode_blockers: list[str] = []
+        if candidate_ids:
+            scored_batches = [
+                b
+                for b in ((policy_episode or {}).get("batches") or [])
+                if int(b.get("episodes_scored") or 0) > 0
+            ]
+            if not scored_batches:
+                episode_blockers.append("policy_episodes_requested_but_none_scored")
+            elif len(scored_batches) < len(candidate_ids):
+                # Not a blocker: one arm missing still ranks what did run, and
+                # the summary says which candidates are in it.
+                pass
+            if policy_episode_error:
+                episode_blockers.append(f"policy_episode_error:{policy_episode_error[:120]}")
         return {
             "schema_version": "adp009d_native_microcheck.v1",
-            "status": "completed",
+            "status": "completed" if not episode_blockers else "blocked",
+            "blockers": sorted(set(episode_blockers)),
             "arena_revision": ARENA_REVISION,
             "isaac_lab_revision": ISAAC_LAB_REVISION,
             "workflow": "isaac_lab_manager_based_via_arena_composition",
@@ -1935,9 +1957,15 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "semantic_override_layer_composed": True,
             "semantic_source_usd_mutated": False,
             "sealed_source_mutated": False,
-            "candidate_policy_queried": False,
-            "candidate_outcomes_accessed": False,
-            "blockers": [],
+            # Both follow the episodes rather than asserting their absence: a
+            # run that queried two policies and read their outcomes must not
+            # keep reporting that it did neither.
+            "candidate_policy_queried": bool(
+                (policy_episode or {}).get("batches")
+            ),
+            "candidate_outcomes_accessed": bool(
+                (policy_episode or {}).get("comparison", {}).get("ranking")
+            ),
         }
     finally:
         log.remove_message_consumer(consumer)

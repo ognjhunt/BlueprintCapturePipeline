@@ -1897,3 +1897,63 @@ def test_the_bundle_ships_every_module_the_runtime_imports() -> None:
     imported = set(re.findall(r"^\s*from (adp009d_[a-z0-9_]+) import", source, re.M))
     missing = {f"{name}.py" for name in imported} - shipped
     assert not missing, f"runtime imports modules the bundle never ships: {sorted(missing)}"
+
+
+def test_a_run_asked_for_episodes_that_scored_none_is_not_completed() -> None:
+    """It reported completed with an empty blocker list.
+
+    A live run carried a ModuleNotFoundError in policy_episode_error and still
+    said completed, because the micro-check's own checks had passed and
+    nothing contradicted it.  That is a success claim outrunning its evidence.
+    Episodes were a bonus when that was written; they are the deliverable now.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert '"policy_episodes_requested_but_none_scored"' in source
+    assert '"status": "completed" if not episode_blockers else "blocked",' in source
+    # The error itself must reach the blockers, not only a private field.
+    assert 'f"policy_episode_error:{policy_episode_error[:120]}"' in source
+    # And a candidate binding is what makes episodes required at all: a
+    # diagnostic run with none bound must still be able to complete.
+    assert "if candidate_ids:" in source[source.index("episode_blockers: list[str] = []") :]
+
+
+def test_the_blocker_list_is_not_overwritten_by_a_later_literal() -> None:
+    """A hardcoded empty list appeared after the computed one in the same dict.
+
+    Python keeps the last, so every blocker the run computed was discarded on
+    the way out -- which is why a failed episode reported completed with
+    nothing to read.
+    """
+
+    import re
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    # The success-path return specifically.  Earlier returns and the outer
+    # exception handler legitimately carry their own blocker lists.
+    start = source.index('"status": "completed" if not episode_blockers')
+    body = source[start : source.index("    finally:", start)]
+    assert len(re.findall(r'^\s+"blockers":', body, re.M)) == 1
+    assert '"blockers": []' not in body
+
+
+def test_the_claim_fields_follow_the_episodes() -> None:
+    """They were hardcoded False beside a run that had queried two policies."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    start = source.index('"status": "completed" if not episode_blockers')
+    body = source[start : source.index("    finally:", start)]
+    assert '"candidate_policy_queried": bool(' in body
+    assert '"candidate_outcomes_accessed": bool(' in body
+    assert '"candidate_policy_queried": False' not in body
