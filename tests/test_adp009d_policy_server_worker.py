@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import numpy as np
 import pytest
 
@@ -50,6 +53,46 @@ def test_a_server_that_exits_is_reported_immediately_not_waited_out(
             host="127.0.0.1", port=8000, timeout_seconds=30.0, process=_Dead()
         )
     assert "exited_before_ready" in str(excinfo.value)
+
+
+def test_one_blocked_attempt_cannot_starve_the_readiness_deadline(
+    monkeypatch,
+) -> None:
+    """The GR00T client constructor hung past the worker's whole deadline."""
+
+    never = threading.Event()
+
+    def _blocked(host, port, transport=None):
+        never.wait(60.0)
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(worker, "attempt_round_trip", _blocked)
+    monkeypatch.setattr(worker, "ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS", 0.02)
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError) as excinfo:
+        worker.wait_for_round_trip(
+            host="127.0.0.1",
+            port=5555,
+            timeout_seconds=1.0,
+            process=None,
+            transport=worker.TRANSPORT_GROOT_ZMQ,
+        )
+
+    assert time.monotonic() - started < 0.5
+    assert "round_trip_attempt_timed_out" in str(excinfo.value)
+
+
+def test_failed_server_log_is_digest_bound_and_embedded_in_receipt(tmp_path) -> None:
+    log = tmp_path / "adp009d_policy_server.groot_n17_droid.log"
+    log.write_text("import ok\nconstructor blocked\n", encoding="utf-8")
+
+    summary = worker._server_log_summary(log)
+
+    assert summary["present"] is True
+    assert summary["size_bytes"] == log.stat().st_size
+    assert summary["sha256"].startswith("sha256:")
+    assert "constructor blocked" in summary["tail"]
 
 
 def test_a_malformed_chunk_is_not_readiness(monkeypatch) -> None:

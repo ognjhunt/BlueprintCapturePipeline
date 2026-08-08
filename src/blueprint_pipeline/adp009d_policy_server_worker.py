@@ -16,11 +16,15 @@ Runs under the policy venv's interpreter, never Isaac's.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+from typing import Any
 
 SCHEMA_VERSION = "adp009d_policy_server_worker.v1"
 
@@ -29,6 +33,12 @@ DEFAULT_PORT = 8000
 # Loading 12.4 GB of weights dominates this; a port appears long before.
 READINESS_TIMEOUT_SECONDS = 900.0
 READINESS_POLL_SECONDS = 10.0
+# A readiness deadline is meaningless if one import, client constructor, ping,
+# or inference can occupy the polling thread forever.  This bound is shorter
+# than the overall model-load allowance and leaves the outer loop free to
+# observe process exit and its own deadline.
+ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS = 30.0
+SERVER_LOG_TAIL_BYTES = 32_768
 DROID_ACTION_WIDTH = 8
 DROID_OPEN_LOOP_HORIZON = 8
 
@@ -50,6 +60,10 @@ CANDIDATE_DEFAULT_PORTS = {
     TRANSPORT_OPENPI_WEBSOCKET: 8000,
     TRANSPORT_GROOT_ZMQ: 5555,
 }
+
+
+class RoundTripAttemptTimeout(TimeoutError):
+    """One readiness attempt starved the poll loop past its own bound."""
 
 
 def transport_for(candidate_id: str) -> str:
@@ -145,6 +159,75 @@ def attempt_round_trip(host: str, port: int, transport: str = TRANSPORT_OPENPI_W
     }
 
 
+def _attempt_round_trip_with_timeout(
+    *,
+    host: str,
+    port: int,
+    transport: str,
+    timeout_seconds: float,
+) -> dict:
+    """Run one vendor attempt in a daemon thread with a real wall deadline.
+
+    Python cannot safely kill a blocked import or third-party constructor.  A
+    daemon thread lets the worker emit its failure receipt and exit instead of
+    joining the stuck call during interpreter shutdown.  After a timeout the
+    caller fails immediately; it never accumulates more abandoned attempts.
+    """
+
+    timeout = float(timeout_seconds)
+    if timeout <= 0:
+        raise RoundTripAttemptTimeout("policy_server_round_trip_attempt_timeout_invalid")
+
+    result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def _run() -> None:
+        try:
+            result_queue.put((True, attempt_round_trip(host, port, transport)))
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the polling thread
+            result_queue.put((False, exc))
+
+    thread = threading.Thread(
+        target=_run,
+        name=f"policy-round-trip-{transport}",
+        daemon=True,
+    )
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise RoundTripAttemptTimeout(
+            f"policy_server_round_trip_attempt_timed_out:{timeout:.3f}s"
+        )
+
+    succeeded, payload = result_queue.get_nowait()
+    if succeeded:
+        return dict(payload)
+    if isinstance(payload, BaseException):
+        raise payload
+    raise RuntimeError("policy_server_round_trip_attempt_returned_invalid_result")
+
+
+def _server_log_summary(path: Path) -> dict[str, Any]:
+    """Retain bounded diagnostics in the receipt as well as the output file."""
+
+    if not path.is_file():
+        return {
+            "path": str(path),
+            "present": False,
+            "size_bytes": 0,
+            "sha256": None,
+            "tail": None,
+        }
+    data = path.read_bytes()
+    return {
+        "path": str(path),
+        "present": True,
+        "size_bytes": len(data),
+        "sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+        "tail": data[-SERVER_LOG_TAIL_BYTES:].decode("utf-8", errors="replace"),
+        "tail_bytes_limit": SERVER_LOG_TAIL_BYTES,
+    }
+
+
 def wait_for_round_trip(
     *,
     host: str,
@@ -164,14 +247,27 @@ def wait_for_round_trip(
                 f"policy_server_exited_before_ready:{process.returncode}"
             )
         attempts += 1
+        remaining = float(timeout_seconds) - (time.monotonic() - started)
+        attempt_timeout = min(ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS, remaining)
         try:
-            result = attempt_round_trip(host, port, transport)
+            result = _attempt_round_trip_with_timeout(
+                host=host,
+                port=port,
+                transport=transport,
+                timeout_seconds=attempt_timeout,
+            )
             result["readiness_attempts"] = attempts
             result["readiness_seconds"] = round(time.monotonic() - started, 3)
             return result
+        except RoundTripAttemptTimeout as exc:
+            # Do not start another vendor call while the timed-out daemon may
+            # still be blocked.  Preserve this exact diagnosis immediately.
+            raise RuntimeError(str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - not-yet-ready is the normal case
             last_error = f"{type(exc).__name__}: {exc}"
-            time.sleep(READINESS_POLL_SECONDS)
+            remaining = float(timeout_seconds) - (time.monotonic() - started)
+            if remaining > 0:
+                time.sleep(min(READINESS_POLL_SECONDS, remaining))
     raise RuntimeError(f"policy_server_never_answered:{last_error}")
 
 
@@ -251,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
         exit_code = 1
+
+    # The provider output zipper retains every bounded file in OUT_DIR, so the
+    # log itself survives.  Embed its digest and tail in the receipt too: even
+    # a future packaging regression cannot erase the diagnosis silently.
+    receipt["server_log"] = _server_log_summary(log_path)
 
     Path(args.receipt).parent.mkdir(parents=True, exist_ok=True)
     Path(args.receipt).write_text(
