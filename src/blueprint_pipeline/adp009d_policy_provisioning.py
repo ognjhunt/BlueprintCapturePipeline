@@ -121,6 +121,42 @@ def _fetch_commands(candidate_id: str) -> list[str]:
     ]
 
 
+# The client library has to be importable from *Isaac*, not from the policy
+# venv.  The separate-interpreter design keeps the server's dependency tree
+# away from Isaac -- which is the whole point, since JAX or a mismatched torch
+# will take the card out from under it -- but the episode runs inside Isaac and
+# has to speak to that server.  A live run reached the episode, with the server
+# ready and the gripper measured, and died on ModuleNotFoundError:
+# openpi_client.
+#
+# Only the thin client goes in.  openpi ships it as a separate subpackage for
+# exactly this purpose, at the same pinned revision as the server, so client
+# and server cannot drift apart.
+CANDIDATE_ISAAC_CLIENT_SUBPACKAGE = {
+    "pi05_droid": "packages/openpi-client",
+    "cosmos3_edge_policy_droid": "packages/openpi-client",
+}
+
+
+def _isaac_client_commands(candidate_id: str) -> list[str]:
+    """Install this candidate's client into Isaac's interpreter."""
+
+    source = f"{POLICY_SOURCE_ROOT}/{candidate_id}"
+    subpackage = CANDIDATE_ISAAC_CLIENT_SUBPACKAGE.get(candidate_id)
+    if subpackage is None:
+        # GR00T's client lives inside its main package rather than a thin one,
+        # so it is installed without dependencies: the episode needs the ZMQ
+        # client class, and pulling GR00T's full tree into Isaac would risk
+        # the torch conflict this design exists to avoid.
+        return [
+            f'"{ISAAC_INTERPRETER}" -m pip install --no-deps -e "{source}"',
+            f'"{ISAAC_INTERPRETER}" -m pip install "pyzmq" "msgpack"',
+        ]
+    return [
+        f'"{ISAAC_INTERPRETER}" -m pip install -e "{source}/{subpackage}"',
+    ]
+
+
 def _install_commands(candidate_id: str) -> list[str]:
     """Install the candidate's pinned policy source into the policy venv.
 
@@ -145,6 +181,7 @@ def _install_commands(candidate_id: str) -> list[str]:
         # on: disabling it once left pip unable to import hatchling.build, the
         # backend openpi's pyproject declares.
         f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" pip install -e "{source}"',
+        *_isaac_client_commands(candidate_id),
     ]
 
 def build_provisioning_script(candidate_id: str) -> str:

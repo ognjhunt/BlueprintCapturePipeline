@@ -293,3 +293,46 @@ def test_provisioning_reports_progress_at_every_long_step() -> None:
         assert (f"provision_{candidate}_checkpoint", "started") in markers
         assert (f"provision_{candidate}_checkpoint", "completed") in markers
         assert "{candidate_id}" not in script
+
+
+def test_the_policy_client_is_installed_into_isaacs_interpreter() -> None:
+    """The client has to be importable from Isaac, not from the policy venv.
+
+    The separate-interpreter design keeps the server's dependency tree away
+    from Isaac -- the point, since JAX or a mismatched torch takes the card
+    out from under it -- but the episode runs inside Isaac and has to speak to
+    that server.  A live run reached the episode with the server ready and the
+    gripper measured, and died on ModuleNotFoundError: openpi_client.
+    """
+
+    from blueprint_pipeline.adp009d_policy_provisioning import ISAAC_INTERPRETER
+
+    script = build_provisioning_script("pi05_droid")
+    # Only the thin client, from the same pinned revision as the server, so
+    # the two cannot drift apart.
+    assert f'"{ISAAC_INTERPRETER}" -m pip install -e' in script
+    assert "packages/openpi-client" in script
+    # And the full policy tree still goes to the policy venv, never to Isaac.
+    assert f'"{ISAAC_INTERPRETER}" -m pip install -e "/opt/adp009d-policy-source/pi05_droid"' not in script
+
+
+def test_groots_client_reaches_isaac_without_its_dependency_tree() -> None:
+    """Its client lives in the main package rather than a thin one.
+
+    Installed without dependencies: the episode needs the ZMQ client class,
+    and pulling GR00T's full tree into Isaac would risk exactly the torch
+    conflict the separate-interpreter design exists to avoid.
+    """
+
+    from blueprint_pipeline.adp009d_policy_provisioning import ISAAC_INTERPRETER
+
+    script = build_provisioning_script("groot_n17_droid")
+    assert f'"{ISAAC_INTERPRETER}" -m pip install --no-deps -e' in script
+    assert "pyzmq" in script and "msgpack" in script
+
+
+def test_the_client_install_follows_the_verified_checkout() -> None:
+    """Installing before the revision is verified would install a moved branch."""
+
+    script = build_provisioning_script("pi05_droid")
+    assert script.index("rev-parse HEAD") < script.index("packages/openpi-client")
