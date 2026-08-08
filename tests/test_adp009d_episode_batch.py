@@ -162,3 +162,19 @@ def test_receipts_are_digest_bound() -> None:
     assert summary["receipt_digest"] == canonical_digest(
         summary, digest_field="receipt_digest"
     )
+
+
+def test_batch_retains_complete_media_for_every_scored_episode(tmp_path) -> None:
+    batch = _batch(episodes=2, media_output_dir=tmp_path)
+
+    assert batch["episodes_media_complete"] == 2
+    assert batch["episodes_media_incomplete"] == 0
+    assert batch["all_scored_episode_media_complete"] is True
+    assert [row["episode_id"] for row in batch["episodes"]] == [
+        "pi05_droid-episode-000",
+        "pi05_droid-episode-001",
+    ]
+    assert all(
+        (row["visual_evidence"] or {}).get("human_review_available") is True
+        for row in batch["episodes"]
+    )

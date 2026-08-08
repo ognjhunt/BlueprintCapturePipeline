@@ -836,6 +836,7 @@ def build_native_microcheck_bundle(
         "adp009d_episode_batch.py",
         "adp009d_isaac_episode_adapter.py",
         "adp009d_task_scoring.py",
+        "episode_visual_evidence.py",
         "adp009d_policy_server_worker.py",
         # Imported by the episode for its digest helper.  It has no intra-package
         # imports of its own, so it ships flat without dragging anything with it.

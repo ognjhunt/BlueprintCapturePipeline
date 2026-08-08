@@ -1862,11 +1862,30 @@ def test_interpretable_episode_evidence_does_not_create_a_runtime_blocker() -> N
                 {
                     "episodes_scored": 3,
                     "episodes_policy_outcome_uninterpretable": 0,
+                    "episodes_media_incomplete": 0,
                 }
             ]
         },
         policy_episode_error=None,
     ) == []
+
+
+def test_missing_episode_media_blocks_the_top_level_runtime_result() -> None:
+    from blueprint_pipeline.adp009d_isaac_runtime import _policy_episode_blockers
+
+    assert _policy_episode_blockers(
+        candidate_ids=["pi05_droid"],
+        policy_episode={
+            "batches": [
+                {
+                    "episodes_scored": 3,
+                    "episodes_policy_outcome_uninterpretable": 0,
+                    "episodes_media_incomplete": 3,
+                }
+            ]
+        },
+        policy_episode_error=None,
+    ) == ["policy_episode_media_incomplete:3"]
 
 
 def test_the_runtime_runs_a_batch_per_bound_candidate() -> None:
@@ -1936,6 +1955,7 @@ def test_the_bundle_ships_every_module_the_runtime_imports() -> None:
     from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
 
     shipped = set(re.findall(r'"(adp009d_[a-z0-9_]+\.py)"', inspect.getsource(bundle)))
+    shipped |= {"episode_visual_evidence.py"}
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
     # Flat-layout imports are the ones resolved from the bundle directory.
     imported = set(re.findall(r"^\s*from (adp009d_[a-z0-9_]+) import", source, re.M))
@@ -2077,7 +2097,7 @@ def test_no_shipped_module_uses_an_unguarded_top_level_relative_import() -> None
     from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
 
     shipped = set(re.findall(r'"(adp009d_[a-z0-9_]+\.py)"', inspect.getsource(bundle)))
-    shipped |= {"decision_evidence_contracts.py"}
+    shipped |= {"decision_evidence_contracts.py", "episode_visual_evidence.py"}
     root = _Path(bundle.__file__).parent
     offenders = []
     for name in sorted(shipped):

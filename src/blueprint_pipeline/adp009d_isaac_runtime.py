@@ -102,6 +102,12 @@ def _policy_episode_blockers(
             blockers.append(
                 f"policy_episode_action_delivery_unverified:{uninterpretable}"
             )
+        media_incomplete = sum(
+            int(batch.get("episodes_media_incomplete") or 0)
+            for batch in scored_batches
+        )
+        if media_incomplete:
+            blockers.append(f"policy_episode_media_incomplete:{media_incomplete}")
     if policy_episode_error:
         blockers.append(f"policy_episode_error:{policy_episode_error[:120]}")
     return sorted(set(blockers))
@@ -1897,6 +1903,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         prompt="pick up the can and place it on the counter",
                         gripper=convention,
                         episodes=int(os.environ.get("BLUEPRINT_ADP009D_EPISODES", "3")),
+                        media_output_dir=out_dir,
                     )
                     batch["transport"] = server_receipt.get("transport")
                     batches.append(batch)

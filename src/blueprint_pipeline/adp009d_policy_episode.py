@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, Protocol
 
 try:  # flat provider-bundle layout
@@ -78,6 +79,16 @@ try:  # flat provider-bundle layout
     from decision_evidence_contracts import canonical_digest
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
+try:  # flat provider-bundle layout
+    from episode_visual_evidence import (
+        finalize_visual_evidence,
+        persist_observation_frame,
+    )
+except ModuleNotFoundError:  # repository package
+    from .episode_visual_evidence import (
+        finalize_visual_evidence,
+        persist_observation_frame,
+    )
 
 EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v2"
 
@@ -147,6 +158,28 @@ def _sample_with_index(
     if "can_pose_world" not in sample:
         raise PolicyEpisodeError([f"{BLOCKER_ENVIRONMENT_CONTRACT}:can_pose_world_missing"])
     return sample
+
+
+def _policy_view_composite(
+    observation: Mapping[str, Any], *, candidate_id: str
+) -> Any:
+    """One lossless RGB canvas containing every exact image shown to a policy."""
+
+    import numpy as np
+
+    views = [np.asarray(observation[name]) for name in CANDIDATE_REQUIRED_VIEWS[candidate_id]]
+    if not views or any(
+        view.dtype != np.uint8 or view.ndim != 3 or view.shape[2] != 3
+        for view in views
+    ):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_invalid"]
+        )
+    if len({view.shape[0] for view in views}) != 1:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_height_mismatch"]
+        )
+    return np.ascontiguousarray(np.concatenate(views, axis=1))
 
 
 def _read_arm_joint_positions(environment: EpisodeEnvironment) -> list[float]:
@@ -274,6 +307,8 @@ def run_policy_episode(
     max_policy_queries: int = DEFAULT_MAX_POLICY_QUERIES,
     settle_window_samples: int = SETTLE_WINDOW_SAMPLES,
     open_loop_horizon: int = DROID_OPEN_LOOP_HORIZON,
+    media_output_dir: str | Path | None = None,
+    episode_id: str | None = None,
 ) -> dict[str, Any]:
     """Run one episode end to end and return a digest-bound receipt.
 
@@ -294,6 +329,17 @@ def run_policy_episode(
         raise PolicyEpisodeError(["policy_episode_query_budget_invalid"])
     if int(settle_window_samples) < 1:
         raise PolicyEpisodeError(["policy_episode_settle_window_invalid"])
+    if (media_output_dir is None) != (episode_id is None):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_binding_incomplete"]
+        )
+
+    media_root = (
+        Path(media_output_dir).expanduser().resolve()
+        if media_output_dir is not None
+        else None
+    )
+    retained_policy_frames: list[dict[str, Any]] = []
 
     environment.reset()
     joint_limits = environment.joint_limits()
@@ -329,6 +375,17 @@ def run_policy_episode(
             ) from exc
         except DroidObservationError:
             raise
+
+        if media_root is not None and episode_id is not None:
+            retained_policy_frames.append(
+                persist_observation_frame(
+                    _policy_view_composite(observation, candidate_id=candidate_id),
+                    output_dir=media_root,
+                    episode_id=episode_id,
+                    frame_index=query_index,
+                    kind="policy-input",
+                )
+            )
 
         chunk = policy.infer(observation)
         if chunk is None:
@@ -414,6 +471,50 @@ def run_policy_episode(
         command_response_rows=command_response_rows,
     )
 
+    visual_evidence = None
+    media_artifacts: list[dict[str, Any]] = []
+    if media_root is not None and episode_id is not None:
+        terminal_inputs = environment.read_policy_inputs()
+        terminal_camera_rgb = {
+            view: terminal_inputs[view]
+            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+            if view in terminal_inputs
+        }
+        try:
+            terminal_policy_observation = build_droid_observation(
+                candidate_id=candidate_id,
+                camera_rgb=terminal_camera_rgb,
+                joint_position=terminal_inputs["joint_position"],
+                gripper_position=terminal_inputs["gripper_position"],
+                prompt=prompt,
+            )
+        except KeyError as exc:
+            raise PolicyEpisodeError(
+                [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{exc.args[0]}_missing"]
+            ) from exc
+        terminal_frame = persist_observation_frame(
+            _policy_view_composite(
+                terminal_policy_observation, candidate_id=candidate_id
+            ),
+            output_dir=media_root,
+            episode_id=episode_id,
+            frame_index=len(retained_policy_frames),
+            kind="terminal-observation",
+        )
+        visual_evidence, media_artifacts = finalize_visual_evidence(
+            output_dir=media_root,
+            episode_id=episode_id,
+            identity={
+                "candidate_id": candidate_id,
+                "prompt": str(prompt),
+                "policy_input_view_order": list(
+                    CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                ),
+            },
+            policy_input_frames=retained_policy_frames,
+            terminal_observation=terminal_frame,
+        )
+
     receipt: dict[str, Any] = {
         "schema_version": EPISODE_SCHEMA_VERSION,
         "candidate_id": candidate_id,
@@ -432,6 +533,20 @@ def run_policy_episode(
         "commanded_action_magnitudes": commanded_action_magnitudes,
         "score": score,
         "candidate_policy_queried": True,
+        "episode_id": episode_id,
+        "visual_evidence": visual_evidence,
+        "media_artifacts": media_artifacts,
+        "observation_trace_digest": (
+            canonical_digest(
+                {
+                    "observations": [
+                        row["raw_rgb_sha256"] for row in retained_policy_frames
+                    ]
+                }
+            )
+            if retained_policy_frames
+            else None
+        ),
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     return receipt

@@ -10,7 +10,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+try:  # flat provider-bundle layout
+    from decision_evidence_contracts import canonical_digest
+except ModuleNotFoundError:  # repository package
+    from .decision_evidence_contracts import canonical_digest
 
 
 FRAME_MANIFEST_SCHEMA_VERSION = "adp_observation_frame_manifest.v1"

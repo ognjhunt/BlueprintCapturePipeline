@@ -158,6 +158,44 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     )
 
 
+def test_successful_episode_retains_exact_policy_inputs_and_review_video(
+    tmp_path,
+) -> None:
+    from PIL import Image
+
+    receipt = _run(
+        media_output_dir=tmp_path,
+        episode_id="pi05-droid-episode-000",
+    )
+
+    visual = receipt["visual_evidence"]
+    assert visual["status"] == "complete"
+    assert visual["human_review_available"] is True
+    assert visual["policy_input_frame_count"] == receipt["policy_queries"]
+    assert visual["video"]["frame_count"] == receipt["policy_queries"] + 1
+    assert visual["video"]["derived_from_frame_manifest_digest"] == visual[
+        "frame_manifest_digest"
+    ]
+    assert receipt["observation_trace_digest"].startswith("sha256:")
+    first = next(
+        row for row in receipt["media_artifacts"] if row["role"] == "policy_input_frame"
+    )
+    with Image.open(tmp_path / first["relative_path"]) as image:
+        pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    # Both post-preprocessing 224x224 views shown to the policy are retained,
+    # left-to-right in the candidate's frozen view order.
+    assert pixels.shape == (224, 448, 3)
+    assert np.array_equal(pixels[:, :224], pixels[:, 224:])
+    assert (tmp_path / visual["video"]["relative_path"]).is_file()
+
+
+def test_media_output_and_episode_identity_must_be_bound_together(tmp_path) -> None:
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(media_output_dir=tmp_path)
+
+    assert any("policy_media_binding_incomplete" in error for error in excinfo.value.errors)
+
+
 def test_the_settle_window_releases_the_gripper() -> None:
     """placed is judged on a released can; a held one must not qualify."""
 

@@ -21,6 +21,7 @@ a single long trajectory cut into pieces.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 try:  # flat provider-bundle layout
@@ -60,6 +61,7 @@ def run_episode_batch(
     prompt: str,
     gripper: Any,
     episodes: int = DEFAULT_EPISODES_PER_CANDIDATE,
+    media_output_dir: str | Path | None = None,
     **episode_kwargs: Any,
 ) -> dict[str, Any]:
     """Run ``episodes`` independent episodes and report them without ranking."""
@@ -81,6 +83,12 @@ def run_episode_batch(
                 destination_position_world_m=destination_position_world_m,
                 prompt=prompt,
                 gripper=gripper,
+                media_output_dir=media_output_dir,
+                episode_id=(
+                    f"{candidate_id}-episode-{index:03d}"
+                    if media_output_dir is not None
+                    else None
+                ),
                 **episode_kwargs,
             )
             motion_evidence = dict(receipt.get("motion_evidence") or {})
@@ -138,6 +146,12 @@ def run_episode_batch(
                         None if policy_outcome_interpretable else interpretation
                     ),
                     "receipt_digest": receipt.get("receipt_digest"),
+                    "episode_id": receipt.get("episode_id"),
+                    "visual_evidence": receipt.get("visual_evidence"),
+                    "media_artifacts": receipt.get("media_artifacts"),
+                    "observation_trace_digest": receipt.get(
+                        "observation_trace_digest"
+                    ),
                 }
             )
         except (PolicyEpisodeError, ValueError, RuntimeError) as exc:
@@ -168,6 +182,12 @@ def run_episode_batch(
     uninterpretable = [
         row for row in scored if row.get("policy_outcome_interpretable") is not True
     ]
+    media_complete = [
+        row
+        for row in scored
+        if (row.get("visual_evidence") or {}).get("status") == "complete"
+        and (row.get("visual_evidence") or {}).get("human_review_available") is True
+    ]
     distinct = {row.get("outcome") for row in scored}
     batch: dict[str, Any] = {
         "schema_version": BATCH_SCHEMA_VERSION,
@@ -193,6 +213,10 @@ def run_episode_batch(
         "sample_purpose": "pipeline_proof_not_policy_comparison",
         "supports_policy_ranking": False,
         "supports_policy_outcome_interpretation": bool(scored) and not uninterpretable,
+        "episodes_media_complete": len(media_complete),
+        "episodes_media_incomplete": len(scored) - len(media_complete),
+        "all_scored_episode_media_complete": bool(scored)
+        and len(media_complete) == len(scored),
         "ranking_requires": (
             "the frozen scenario suite and paired sample size in "
             "adp009d_franka_evaluation_harness, which this deliberately is not"
