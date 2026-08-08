@@ -215,8 +215,8 @@ unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true
   --checkpoint-root "{CHECKPOINT_ROOT}/{candidate_id}" \
   --python "{POLICY_VENV_ROOT}/bin/python" \
   --host {POLICY_HOST} \
-  --log "$OUT_DIR/adp009d_policy_server.log" \
-  --receipt "$OUT_DIR/adp009d_policy_server_receipt.json"
+  --log "$OUT_DIR/adp009d_policy_server.{candidate_id}.log" \
+  --receipt "$OUT_DIR/adp009d_policy_server_receipt.{candidate_id}.json"
 
 echo "BLUEPRINT_ADP009D_POLICY_PROVISIONED:{candidate_id}"
 """

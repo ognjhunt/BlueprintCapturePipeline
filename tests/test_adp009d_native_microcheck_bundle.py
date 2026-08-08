@@ -932,10 +932,14 @@ def test_provisioning_ships_only_when_a_candidate_is_bound(tmp_path: Path) -> No
     from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
 
     # Guarded on the script existing, so an unbound bundle simply skips it.
-    assert 'if [ -f "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]; then' in ENTRYPOINT
+    # Per candidate now: ranking two policies needs both provisioned on one host.
+    assert 'script="$RUNTIME_DIR/adp009d_policy_provisioning.$candidate.sh"' in ENTRYPOINT
     # Non-fatal, and the exit code is retained rather than inferred from silence.
     assert "provisioning_exit_code" in ENTRYPOINT
-    assert "adp009d_policy_provisioning.log" in ENTRYPOINT
+    # Per candidate, so one policy's provisioning log cannot overwrite
+    # the other's -- which would erase the evidence for one arm of the
+    # comparison.
+    assert 'adp009d_policy_provisioning.$candidate.log' in ENTRYPOINT
 
 
 def test_provisioning_never_depends_on_a_preserved_execute_bit() -> None:
@@ -948,9 +952,11 @@ def test_provisioning_never_depends_on_a_preserved_execute_bit() -> None:
 
     from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
 
-    assert '[ -f "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]' in ENTRYPOINT
-    assert '[ -x "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]' not in ENTRYPOINT
-    assert 'bash "$RUNTIME_DIR/adp009d_policy_provisioning.sh"' in ENTRYPOINT
+    # Tested with -f and invoked through bash, never relying on the execute
+    # bit: zipfile.extractall does not preserve Unix permissions.
+    assert '[ -f "$script" ] || continue' in ENTRYPOINT
+    assert '[ -x "$script" ]' not in ENTRYPOINT
+    assert 'bash "$script"' in ENTRYPOINT
     # A bound candidate whose script is missing must be visible, not silent.
     assert '"provisioning_ran": false' in ENTRYPOINT
     assert '"provisioning_ran": true' in ENTRYPOINT
@@ -1750,3 +1756,91 @@ def test_the_receipt_describes_the_conversion_that_happened() -> None:
 
     described = describe_observation_conversion("pi05_droid", source_hw=(180, 320))
     assert described["source_resolution_hw"] == [180, 320]
+
+
+def _batch(candidate: str, ranks: list[int]) -> dict:
+    ladder = ["never_moved", "moved", "grasped", "lifted", "translated", "placed"]
+    return {
+        "candidate_id": candidate,
+        "episodes_scored": len(ranks),
+        "episodes_failed": 0,
+        "outcome_counts": {},
+        "episodes": [
+            {"status": "scored", "outcome": ladder[r], "outcome_rank": r}
+            for r in ranks
+        ],
+    }
+
+
+def test_the_summary_ranks_candidates_and_names_the_leader() -> None:
+    """An ordering is reported rather than withheld.
+
+    A reader asking which policy did better on these episodes deserves the
+    answer the data gives; what it must not do is impersonate an adjudicated
+    result.
+    """
+
+    from blueprint_pipeline.adp009d_episode_batch import summarize_candidate_batches
+
+    summary = summarize_candidate_batches(
+        [_batch("groot_n17_droid", [1, 1, 2]), _batch("pi05_droid", [3, 4, 5])]
+    )
+    assert summary["ranking"] == ["pi05_droid", "groot_n17_droid"]
+    assert summary["leader"] == "pi05_droid"
+    assert summary["candidates"][0]["rank"] == 1
+    assert summary["candidates"][0]["mean_outcome_rank"] == 4.0
+    assert summary["tied"] is False
+
+
+def test_the_ranking_orders_by_progress_not_binary_success() -> None:
+    """Binary success throws away the difference between never moving the can
+    and lifting it but failing to place it."""
+
+    from blueprint_pipeline.adp009d_episode_batch import summarize_candidate_batches
+
+    # Neither ever places; one gets much further.
+    summary = summarize_candidate_batches(
+        [_batch("a", [0, 0, 0]), _batch("b", [3, 3, 4])]
+    )
+    assert summary["leader"] == "b"
+    assert summary["ranking_basis"] == "mean_outcome_rank_on_the_task_scoring_ladder"
+
+
+def test_a_tie_is_reported_as_a_tie() -> None:
+    from blueprint_pipeline.adp009d_episode_batch import summarize_candidate_batches
+
+    summary = summarize_candidate_batches([_batch("a", [2, 2]), _batch("b", [2, 2])])
+    assert summary["tied"] is True
+    assert summary["leader"] is None
+
+
+def test_the_sample_size_caveat_travels_with_the_ranking() -> None:
+    """Attached to the ordering, not offered instead of it."""
+
+    from blueprint_pipeline.adp009d_episode_batch import summarize_candidate_batches
+
+    summary = summarize_candidate_batches([_batch("a", [1]), _batch("b", [2])])
+    assert summary["ranking"] == ["b", "a"]
+    assert summary["supports_policy_ranking"] is False
+    assert "paired sample size" in summary["why_not_adjudicated"]
+
+
+def test_the_runtime_runs_a_batch_per_bound_candidate() -> None:
+    """Ranking two policies needs both in the same scene on the same host.
+
+    Two runs on two machines would pay the boot twice and compare across
+    hardware whose render speed already differs by 3x.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "for bound_candidate in candidate_ids:" in source
+    assert "run_episode_batch(" in source
+    assert "summarize_candidate_batches(" in source
+    # A per-candidate receipt, or two candidates overwrite each other's.
+    assert 'f"adp009d_policy_server_receipt.{bound_candidate}.json"' in source
+    # One candidate failing to serve must not deny the other its episodes.
+    assert '"policy_server_receipt_missing"' in source

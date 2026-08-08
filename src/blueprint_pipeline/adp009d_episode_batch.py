@@ -82,6 +82,7 @@ def run_episode_batch(
                     "episode_index": index,
                     "status": "scored",
                     "outcome": receipt["score"].get("outcome"),
+                    "outcome_rank": receipt["score"].get("outcome_rank"),
                     "score_status": receipt["score"].get("status"),
                     "environment_steps": receipt.get("environment_steps"),
                     "policy_queries": receipt.get("policy_queries"),
@@ -134,27 +135,75 @@ def run_episode_batch(
 def summarize_candidate_batches(
     batches: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Put candidates side by side without declaring a winner."""
+    """Rank candidates by how far each got, and say what the rank is worth.
 
-    rows = [
-        {
-            "candidate_id": batch.get("candidate_id"),
-            "episodes_scored": batch.get("episodes_scored"),
-            "episodes_failed": batch.get("episodes_failed"),
-            "outcome_counts": batch.get("outcome_counts"),
-        }
-        for batch in batches
-    ]
+    An ordering is reported rather than withheld: a reader asking which policy
+    did better on these episodes deserves the answer the data gives.  What the
+    ordering must not do is impersonate an adjudicated result, so the sample
+    size travels attached to it -- ``supports_policy_ranking`` stays False, and
+    ``ranking_basis`` names the statistic.
+
+    The rank is the mean outcome rung on the scoring ladder, which orders by
+    how far the task actually progressed rather than by a binary success that
+    would throw away the difference between never moving the can and lifting
+    it but failing to place it.  Ties are reported as ties.
+    """
+
+    rows = []
+    for batch in batches:
+        episodes = [
+            e for e in (batch.get("episodes") or []) if e.get("status") == "scored"
+        ]
+        ranks = [
+            int(e["outcome_rank"]) for e in episodes if e.get("outcome_rank") is not None
+        ]
+        rows.append(
+            {
+                "candidate_id": batch.get("candidate_id"),
+                "episodes_scored": batch.get("episodes_scored"),
+                "episodes_failed": batch.get("episodes_failed"),
+                "outcome_counts": batch.get("outcome_counts"),
+                "mean_outcome_rank": (sum(ranks) / len(ranks)) if ranks else None,
+                "best_outcome": max(
+                    (e.get("outcome") for e in episodes if e.get("outcome")),
+                    key=lambda o: [e["outcome_rank"] for e in episodes if e.get("outcome") == o][0],
+                    default=None,
+                ) if ranks else None,
+            }
+        )
+
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            row["mean_outcome_rank"] is None,
+            -(row["mean_outcome_rank"] or 0.0),
+            str(row["candidate_id"]),
+        ),
+    )
+    for position, row in enumerate(ranked, start=1):
+        row["rank"] = position if row["mean_outcome_rank"] is not None else None
+    scores = [r["mean_outcome_rank"] for r in ranked if r["mean_outcome_rank"] is not None]
+    tied = len(scores) > 1 and len(set(scores)) == 1
+
     summary: dict[str, Any] = {
         "schema_version": BATCH_SCHEMA_VERSION,
-        "candidates": sorted(rows, key=lambda row: str(row["candidate_id"])),
+        "candidates": ranked,
         "candidate_count": len(rows),
-        "comparison_verdict": None,
+        "ranking": [r["candidate_id"] for r in ranked if r["rank"] is not None],
+        "ranking_basis": "mean_outcome_rank_on_the_task_scoring_ladder",
+        "tied": tied,
+        "leader": (
+            None if (tied or not scores) else ranked[0]["candidate_id"]
+        ),
+        # Stated with the ordering, not instead of it.  These counts show which
+        # policy did better on these episodes; they do not establish that it is
+        # the better policy.
         "supports_policy_ranking": False,
-        "why_no_verdict": (
-            "a proof pipeline runs a handful of episodes per candidate; "
-            "ranking needs the frozen suite, its controls and a paired sample "
-            "size computed for stated power"
+        "why_not_adjudicated": (
+            "a handful of episodes per candidate orders what happened here; "
+            "a claim about which policy is better needs the frozen scenario "
+            "suite, its controls and a paired sample size computed for stated "
+            "power"
         ),
     }
     summary["receipt_digest"] = canonical_digest(

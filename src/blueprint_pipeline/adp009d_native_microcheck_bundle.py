@@ -61,6 +61,12 @@ SEALED_TASK_COLLISION_PROFILE = {
     "derived_face_count": 26_828,
     "derived_point_count": 80_484,
 }
+def _candidate_ids(value: str | None) -> list[str]:
+    """Candidates bound to a run, in order, from a comma-separated value."""
+
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
 ENTRYPOINT = """#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -84,13 +90,26 @@ mkdir -p "$OUT_DIR"
 # Python's zipfile.extractall does not preserve Unix permissions, so a 755
 # script in the archive arrives non-executable and an -x test skips it in
 # silence.  That is exactly what happened on the first provisioning run.
-if [ -f "$RUNTIME_DIR/adp009d_policy_provisioning.sh" ]; then
+provisioned_any=0
+provisioning_worst_rc=0
+for candidate in $(printf '%s' "$BLUEPRINT_ADP009D_POLICY_CANDIDATE" | tr ',' ' '); do
+  script="$RUNTIME_DIR/adp009d_policy_provisioning.$candidate.sh"
+  [ -f "$script" ] || continue
+  provisioned_any=1
+  # Each candidate's provisioning and server start is independent, and a
+  # failure in one must not deny the other its episodes: a comparison with
+  # one arm missing is still evidence, while a run that aborts on the first
+  # failure produces none.
   RUNTIME_DIR="$RUNTIME_DIR" OUT_DIR="$OUT_DIR" \
-    bash "$RUNTIME_DIR/adp009d_policy_provisioning.sh" \
-    >"$OUT_DIR/adp009d_policy_provisioning.log" 2>&1
-  provisioning_rc=$?
+    bash "$script" >"$OUT_DIR/adp009d_policy_provisioning.$candidate.log" 2>&1
+  rc=$?
+  [ $rc -ne 0 ] && provisioning_worst_rc=$rc
+  printf '{"candidate_id": "%s", "provisioning_exit_code": %d}\n' \
+    "$candidate" "$rc" >"$OUT_DIR/adp009d_policy_provisioning_status.$candidate.json"
+done
+if [ $provisioned_any -eq 1 ]; then
   printf '{"provisioning_exit_code": %d, "provisioning_ran": true}\n' \
-    "$provisioning_rc" >"$OUT_DIR/adp009d_policy_provisioning_status.json"
+    "$provisioning_worst_rc" >"$OUT_DIR/adp009d_policy_provisioning_status.json"
 else
   # A bound candidate whose script is absent must say so rather than vanish.
   printf '{"provisioning_exit_code": null, "provisioning_ran": false}\n' \
@@ -811,10 +830,16 @@ def build_native_microcheck_bundle(
     if policy_candidate_id:
         from .adp009d_policy_provisioning import build_provisioning_script
 
-        _write_executable(
-            runtime / "adp009d_policy_provisioning.sh",
-            build_provisioning_script(policy_candidate_id),
-        )
+        # One script per candidate.  Ranking two policies needs both in the
+        # same scene on the same host, and a single script could only ever
+        # provision one -- which would have made the comparison two runs on
+        # two machines, paying the twenty-minute boot twice and comparing
+        # across hardware whose render speed already differs by 3x.
+        for _candidate in _candidate_ids(policy_candidate_id):
+            _write_executable(
+                runtime / f"adp009d_policy_provisioning.{_candidate}.sh",
+                build_provisioning_script(_candidate),
+            )
     # Baked in at build time.  A passthrough of an unset variable reads as
     # empty, and the runtime then skips the episode in silence -- which is
     # exactly what a live run did: no episode, no error, nothing to read.

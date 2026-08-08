@@ -154,7 +154,8 @@ def test_the_runtime_runs_an_episode_only_with_a_measured_gripper() -> None:
 
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     assert 'gripper_probe.get("status") == "measured"' in source
-    assert "run_policy_episode(" in source
+    # A batch per candidate now, so two policies can be ranked in one run.
+    assert "run_episode_batch(" in source
     assert "measured_by_probe=True" in source
     # Recorded, never fatal: the micro-check's evidence must survive it.
     episode = source[source.index("--- learned policy episode") :]
@@ -250,9 +251,12 @@ def test_the_episode_connects_to_the_port_that_actually_started() -> None:
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
-    assert "adp009d_policy_server_receipt.json" in source
+    # Per candidate, or two candidates overwrite each other's receipt.
+    assert 'f"adp009d_policy_server_receipt.{bound_candidate}.json"' in source
     assert 'server_receipt.get("status") != "ready"' in source
-    assert 'int(server_receipt["port"])' in source
+    # Read from the receipt the worker wrote, not a default: the episode
+    # must connect to the port that actually started.
+    assert 'int(receipt["port"])' in source
     # And it speaks GR00T's own client rather than assuming a websocket.
     assert "_GrootEpisodeClient" in source
     assert "get_action(observation)" in source

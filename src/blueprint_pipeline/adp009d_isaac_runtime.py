@@ -1730,20 +1730,28 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         policy_episode: dict[str, Any] | None = None
         policy_episode_error: str | None = None
         policy_episode_skipped_reason: str | None = None
-        candidate_id = os.environ.get("BLUEPRINT_ADP009D_POLICY_CANDIDATE") or ""
-        if not candidate_id:
+        candidate_ids = [
+            part.strip()
+            for part in (os.environ.get("BLUEPRINT_ADP009D_POLICY_CANDIDATE") or "").split(",")
+            if part.strip()
+        ]
+        candidate_id = candidate_ids[0] if candidate_ids else ""
+        if not candidate_ids:
             policy_episode_skipped_reason = "no_policy_candidate_bound"
         elif gripper_probe.get("status") != "measured":
             policy_episode_skipped_reason = (
                 f"gripper_convention_{gripper_probe.get('status')}"
             )
-        if candidate_id and gripper_probe.get("status") == "measured":
+        if candidate_ids and gripper_probe.get("status") == "measured":
             _phase("policy_episode")
             phase_started = time.monotonic()
             try:
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
                 from adp009d_droid_action_execution import GripperConvention
-                from adp009d_policy_episode import run_policy_episode
+                from adp009d_episode_batch import (
+                    run_episode_batch,
+                    summarize_candidate_batches,
+                )
 
                 destination_path = Path(
                     runtime / "adp009d_task_destination.v1.json"
@@ -1763,52 +1771,81 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     open_command=float(gripper_probe["open_command"]),
                     measured_by_probe=True,
                 )
-                # Bind whichever transport this candidate speaks.  The server
-                # receipt records the port the worker actually chose, so the
-                # episode connects to what started rather than to a default.
-                server_receipt = json.loads(
-                    Path(
-                        os.environ["BLUEPRINT_ADP009D_OUTPUT_DIR"],
-                        "adp009d_policy_server_receipt.json",
-                    ).read_text(encoding="utf-8")
-                )
-                if server_receipt.get("status") != "ready":
-                    raise RuntimeError(
-                        f"policy_server_not_ready:{server_receipt.get('status')}"
-                    )
-                if server_receipt.get("transport") == "groot_zmq":
-                    from gr00t.policy.server_client import PolicyClient
+                def _client_for(receipt: dict[str, Any]):
+                    """Bind whichever transport this candidate speaks.
 
-                    class _GrootEpisodeClient:
-                        """Adapt GR00T's get_action to the loop's infer seam."""
+                    The receipt records the port the worker actually chose, so
+                    the episode connects to what started rather than a default.
+                    """
 
-                        def __init__(self, host: str, port: int) -> None:
-                            self._client = PolicyClient(
-                                host=host, port=port, timeout_ms=15000, strict=False
-                            )
+                    if receipt.get("transport") == "groot_zmq":
+                        from gr00t.policy.server_client import PolicyClient
 
-                        def infer(self, observation):
-                            return self._client.get_action(observation)
+                        class _GrootEpisodeClient:
+                            """Adapt GR00T's get_action to the loop's infer seam."""
 
-                    client = _GrootEpisodeClient(
-                        "127.0.0.1", int(server_receipt["port"])
-                    )
-                else:
+                            def __init__(self, host: str, port: int) -> None:
+                                self._client = PolicyClient(
+                                    host=host, port=port, timeout_ms=15000, strict=False
+                                )
+
+                            def infer(self, observation):
+                                return self._client.get_action(observation)
+
+                        return _GrootEpisodeClient("127.0.0.1", int(receipt["port"]))
                     from openpi_client import websocket_client_policy
 
-                    client = websocket_client_policy.WebsocketClientPolicy(
-                        host="127.0.0.1", port=int(server_receipt["port"])
+                    return websocket_client_policy.WebsocketClientPolicy(
+                        host="127.0.0.1", port=int(receipt["port"])
                     )
-                policy_episode = run_policy_episode(
-                    environment=adapter,
-                    policy=client,
-                    candidate_id=candidate_id,
-                    destination_position_world_m=destination["position_world_m"],
-                    prompt=(
-                        "pick up the can and place it on the counter"
+
+                out_dir = Path(os.environ["BLUEPRINT_ADP009D_OUTPUT_DIR"])
+                batches = []
+                for bound_candidate in candidate_ids:
+                    _phase(f"policy_batch_{bound_candidate}")
+                    receipt_path = out_dir / (
+                        f"adp009d_policy_server_receipt.{bound_candidate}.json"
+                    )
+                    if not receipt_path.is_file():
+                        batches.append({
+                            "candidate_id": bound_candidate,
+                            "status": "blocked",
+                            "blockers": ["policy_server_receipt_missing"],
+                        })
+                        _phase(f"policy_batch_{bound_candidate}", "blocked")
+                        continue
+                    server_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                    if server_receipt.get("status") != "ready":
+                        # One candidate failing to serve must not deny the other
+                        # its episodes: a comparison with one arm missing is
+                        # still evidence, a run that aborts produces none.
+                        batches.append({
+                            "candidate_id": bound_candidate,
+                            "status": "blocked",
+                            "blockers": [
+                                f"policy_server_not_ready:{server_receipt.get('status')}"
+                            ],
+                        })
+                        _phase(f"policy_batch_{bound_candidate}", "blocked")
+                        continue
+                    batch = run_episode_batch(
+                        environment=adapter,
+                        policy=_client_for(server_receipt),
+                        candidate_id=bound_candidate,
+                        destination_position_world_m=destination["position_world_m"],
+                        prompt="pick up the can and place it on the counter",
+                        gripper=convention,
+                        episodes=int(os.environ.get("BLUEPRINT_ADP009D_EPISODES", "3")),
+                    )
+                    batch["transport"] = server_receipt.get("transport")
+                    batches.append(batch)
+                    _phase(f"policy_batch_{bound_candidate}", "completed")
+                policy_episode = {
+                    "batches": batches,
+                    "comparison": summarize_candidate_batches(
+                        [b for b in batches if b.get("episodes_scored") is not None]
                     ),
-                    gripper=convention,
-                )
+                }
                 _phase("policy_episode", "completed")
             except Exception as exc:  # noqa: BLE001 - recorded, never fatal
                 policy_episode_error = f"{type(exc).__name__}: {exc}"

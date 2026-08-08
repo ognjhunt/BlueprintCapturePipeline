@@ -55,7 +55,9 @@ def test_the_batch_refuses_to_support_a_ranking() -> None:
     assert "paired sample size" in batch["ranking_requires"]
 
     summary = summarize_candidate_batches([batch])
-    assert summary["comparison_verdict"] is None
+    # It ranks now, but the sample-size caveat travels with the ordering.
+    assert summary["supports_policy_ranking"] is False
+    assert "paired sample size" in summary["why_not_adjudicated"]
     assert summary["supports_policy_ranking"] is False
 
 
@@ -98,7 +100,9 @@ def test_two_candidates_are_shown_side_by_side_without_a_winner() -> None:
         "groot_n17_droid",
         "pi05_droid",
     ]
-    assert summary["comparison_verdict"] is None
+    # It ranks now, but the sample-size caveat travels with the ordering.
+    assert summary["supports_policy_ranking"] is False
+    assert "paired sample size" in summary["why_not_adjudicated"]
 
 
 def test_receipts_are_digest_bound() -> None:
