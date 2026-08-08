@@ -1553,6 +1553,9 @@ def test_the_written_receipt_carries_the_scale_and_radiance_facts(tmp_path) -> N
     receipt = write_gaussian_surflet_particlefield_usd(
         data, tmp_path / "surflets.usd", receipt_path=tmp_path / "receipt.json"
     )
+    if receipt["status"] == "blocked":
+        assert receipt["blockers"] == ["usd_core_gaussian_surflet_schema_unavailable"]
+        return
     assert receipt["status"] == "completed", receipt
     assert receipt["structural_z_scale_fraction"] > 0
     assert receipt["structural_z_scale_median_m"] < 0.001
@@ -1766,7 +1769,12 @@ def _batch(candidate: str, ranks: list[int]) -> dict:
         "episodes_failed": 0,
         "outcome_counts": {},
         "episodes": [
-            {"status": "scored", "outcome": ladder[r], "outcome_rank": r}
+            {
+                "status": "scored",
+                "outcome": ladder[r],
+                "outcome_rank": r,
+                "policy_outcome_interpretable": True,
+            }
             for r in ranks
         ],
     }
@@ -1823,6 +1831,42 @@ def test_the_sample_size_caveat_travels_with_the_ranking() -> None:
     assert summary["ranking"] == ["b", "a"]
     assert summary["supports_policy_ranking"] is False
     assert "paired sample size" in summary["why_not_adjudicated"]
+
+
+def test_unverified_action_delivery_blocks_the_top_level_runtime_result() -> None:
+    from blueprint_pipeline.adp009d_isaac_runtime import _policy_episode_blockers
+
+    blockers = _policy_episode_blockers(
+        candidate_ids=["pi05_droid"],
+        policy_episode={
+            "batches": [
+                {
+                    "episodes_scored": 3,
+                    "episodes_policy_outcome_uninterpretable": 3,
+                }
+            ]
+        },
+        policy_episode_error=None,
+    )
+
+    assert blockers == ["policy_episode_action_delivery_unverified:3"]
+
+
+def test_interpretable_episode_evidence_does_not_create_a_runtime_blocker() -> None:
+    from blueprint_pipeline.adp009d_isaac_runtime import _policy_episode_blockers
+
+    assert _policy_episode_blockers(
+        candidate_ids=["pi05_droid"],
+        policy_episode={
+            "batches": [
+                {
+                    "episodes_scored": 3,
+                    "episodes_policy_outcome_uninterpretable": 0,
+                }
+            ]
+        },
+        policy_episode_error=None,
+    ) == []
 
 
 def test_the_runtime_runs_a_batch_per_bound_candidate() -> None:
@@ -1908,18 +1952,22 @@ def test_a_run_asked_for_episodes_that_scored_none_is_not_completed() -> None:
     Episodes were a bonus when that was written; they are the deliverable now.
     """
 
-    from pathlib import Path as _Path
+    from blueprint_pipeline.adp009d_isaac_runtime import _policy_episode_blockers
 
-    from blueprint_pipeline import adp009d_isaac_runtime as runtime
-
-    source = _Path(runtime.__file__).read_text(encoding="utf-8")
-    assert '"policy_episodes_requested_but_none_scored"' in source
-    assert '"status": "completed" if not episode_blockers else "blocked",' in source
-    # The error itself must reach the blockers, not only a private field.
-    assert 'f"policy_episode_error:{policy_episode_error[:120]}"' in source
-    # And a candidate binding is what makes episodes required at all: a
-    # diagnostic run with none bound must still be able to complete.
-    assert "if candidate_ids:" in source[source.index("episode_blockers: list[str] = []") :]
+    assert _policy_episode_blockers(
+        candidate_ids=["pi05_droid"],
+        policy_episode={"batches": []},
+        policy_episode_error="ModuleNotFoundError: adp009d_episode_batch",
+    ) == [
+        "policy_episode_error:ModuleNotFoundError: adp009d_episode_batch",
+        "policy_episodes_requested_but_none_scored",
+    ]
+    # A diagnostic run with no candidate bound still has no episode obligation.
+    assert _policy_episode_blockers(
+        candidate_ids=[],
+        policy_episode=None,
+        policy_episode_error=None,
+    ) == []
 
 
 def test_the_blocker_list_is_not_overwritten_by_a_later_literal() -> None:

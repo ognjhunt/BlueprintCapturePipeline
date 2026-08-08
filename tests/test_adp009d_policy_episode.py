@@ -39,11 +39,13 @@ class _Environment:
         self.lift_height = lift_height
         self.reset_count = 0
         self.steps: list[list[float]] = []
+        self._joints = [0.0] * 7
         self._t = 0
 
     def reset(self) -> None:
         self.reset_count += 1
         self._t = 0
+        self._joints = [0.0] * 7
         self.steps.clear()
 
     def joint_limits(self):
@@ -55,13 +57,17 @@ class _Environment:
         return {
             DROID_EXTERIOR_VIEW_1: frame,
             DROID_WRIST_VIEW: frame,
-            "joint_position": [0.0] * 7,
+            "joint_position": list(self._joints),
             "gripper_position": 0.04,
         }
 
     def step(self, isaac_action):
         self.steps.append(list(isaac_action))
+        self._joints = [float(value) for value in isaac_action[:7]]
         self._t += 1
+
+    def read_arm_joint_positions(self):
+        return list(self._joints)
 
     def _position(self):
         """Lift, translate to the destination, then rest on the support."""
@@ -98,6 +104,7 @@ class _Policy:
     def infer(self, observation):
         self.observations.append(observation)
         chunk = np.zeros((10, 8), dtype=float)
+        chunk[:, 0] = 0.25
         chunk[:, 7] = 0.9  # closed, in DROID's convention
         return chunk
 
@@ -126,6 +133,9 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     receipt = _run(environment, policy)
 
     assert receipt["candidate_policy_queried"] is True
+    assert receipt["motion_evidence"]["arm_moved"] is True
+    assert receipt["motion_evidence"]["actions_reached_robot"] is True
+    assert receipt["motion_evidence"]["policy_outcome_interpretable"] is True
     assert receipt["policy_queries"] == 4
     # 4 queries x 8 executed rows, plus the settle window.
     assert receipt["environment_steps"] == 4 * 8 + 6
@@ -288,6 +298,41 @@ def test_a_policy_that_never_moves_the_can_scores_never_moved() -> None:
 
     assert receipt["score"]["outcome"] == "never_moved"
     assert receipt["candidate_policy_queried"] is True
+    assert receipt["motion_evidence"]["arm_moved"] is True
+    assert receipt["motion_evidence"]["policy_outcome_interpretable"] is True
+
+
+def test_arm_motion_and_command_delivery_evidence_fail_closed() -> None:
+    class _DroppedActions(_Environment):
+        def step(self, isaac_action):
+            self.steps.append(list(isaac_action))
+            self._t += 1
+
+    receipt = _run(_DroppedActions(), max_policy_queries=2, settle_window_samples=2)
+
+    evidence = receipt["motion_evidence"]
+    assert evidence["joint_position_reset_rad"] == [0.0] * 7
+    assert evidence["joint_position_end_rad"] == [0.0] * 7
+    assert evidence["max_abs_joint_delta_from_reset_rad"] == [0.0] * 7
+    assert evidence["arm_moved"] is False
+    assert evidence["actions_reached_robot"] is False
+    assert evidence["policy_outcome_interpretable"] is False
+    assert evidence["interpretation"] == (
+        "nontrivial_actions_not_observed_at_robot_harness_fault"
+    )
+    magnitudes = receipt["commanded_action_magnitudes"]
+    assert magnitudes["policy_action_rows_submitted"] == 16
+    assert magnitudes["nontrivial_arm_target_rows"] == 16
+    assert magnitudes["arm_target_delta_from_observed_max_abs_rad"] == 0.25
+
+
+def test_missing_joint_observation_contract_fails_before_policy_query() -> None:
+    class _NoJointReader(_Environment):
+        read_arm_joint_positions = None
+
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(_NoJointReader())
+    assert any("read_arm_joint_positions_missing" in error for error in excinfo.value.errors)
 
 
 def test_receipt_records_the_observation_conversion_actually_applied() -> None:

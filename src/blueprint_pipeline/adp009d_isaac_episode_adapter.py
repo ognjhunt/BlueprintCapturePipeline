@@ -142,19 +142,26 @@ class IsaacEpisodeAdapter:
                 raise IsaacEpisodeAdapterError([f"isaac_episode_camera_rgb_missing:{camera_name}"])
             frame = _as_array(self._to_torch(output["rgb"]))[0]
             inputs[view] = rgb_from_camera_output(frame)
-        joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]
-        inputs["joint_position"] = [float(v) for v in joints]
+        inputs["joint_position"] = self.read_arm_joint_positions()
         inputs["gripper_position"] = self._gripper_width()
         return inputs
 
-    def step(self, isaac_action: Sequence[float]) -> None:
-        import torch
+    def read_arm_joint_positions(self) -> list[float]:
+        joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]
+        return [float(value) for value in joints]
 
+    def step(self, isaac_action: Sequence[float]) -> None:
         values = [float(v) for v in isaac_action]
         if len(values) != self._action_dim:
             raise IsaacEpisodeAdapterError(
                 [f"isaac_episode_action_dim_mismatch:{len(values)}!={self._action_dim}"]
             )
+
+        # Validate before importing the GPU runtime.  Besides producing the
+        # precise contract error first, this keeps malformed-action checks
+        # hermetic on hosts that deliberately do not install torch.
+        import torch
+
         tensor = torch.tensor([values], device=self._env.unwrapped.device, dtype=torch.float32)
         self._env.step(tensor)
 

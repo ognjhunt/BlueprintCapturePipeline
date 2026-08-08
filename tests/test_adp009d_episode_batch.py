@@ -43,6 +43,20 @@ def test_a_few_episodes_run_independently_and_are_reported_each() -> None:
     assert batch["outcome_counts"] == {"placed": 3}
     # Every episode resets, so identical outcomes mean repeatability.
     assert batch["outcomes_identical_across_episodes"] is True
+    assert batch["episodes_policy_outcome_interpretable"] == 3
+    row = batch["episodes"][0]
+    assert row["joint_position_reset_rad"] == [0.0] * 7
+    assert row["joint_position_end_rad"][0] == 0.25
+    assert row["max_abs_joint_delta_from_reset_rad"][0] == 0.25
+    assert row["arm_moved"] is True
+    assert row["actions_reached_robot"] is True
+    assert row["policy_outcome_interpretable"] is True
+    assert row["policy_outcome"] == "placed"
+    assert row["harness_finding"] is None
+    assert len(row["queries"]) == 4
+    assert row["any_joint_limit_clamped_count"] == 0
+    assert row["joint_limit_clamped_action_count"] == 0
+    assert row["commanded_action_magnitudes"]["policy_action_rows_submitted"] == 32
 
 
 def test_the_batch_refuses_to_support_a_ranking() -> None:
@@ -103,6 +117,38 @@ def test_two_candidates_are_shown_side_by_side_without_a_winner() -> None:
     # It ranks now, but the sample-size caveat travels with the ordering.
     assert summary["supports_policy_ranking"] is False
     assert "paired sample size" in summary["why_not_adjudicated"]
+
+
+def test_harness_fault_is_retained_but_excluded_from_candidate_ranking() -> None:
+    class _DroppedActions(_Environment):
+        def step(self, isaac_action):
+            self.steps.append(list(isaac_action))
+            self._t += 1
+
+    batch = _batch(environment=_DroppedActions())
+    summary = summarize_candidate_batches([batch])
+
+    assert batch["episodes_scored"] == 3
+    assert batch["episodes_policy_outcome_interpretable"] == 0
+    assert batch["episodes_policy_outcome_uninterpretable"] == 3
+    assert batch["supports_policy_outcome_interpretation"] is False
+    assert batch["outcome_counts"] == {"placed": 3}
+    assert batch["interpretable_policy_outcome_counts"] == {}
+    assert all(
+        row["policy_outcome_interpretation"]
+        == "nontrivial_actions_not_observed_at_robot_harness_fault"
+        for row in batch["episodes"]
+    )
+    assert all(row["policy_outcome"] is None for row in batch["episodes"])
+    assert all(row["harness_finding"] for row in batch["episodes"])
+    assert summary["ranking"] == []
+    assert summary["leader"] is None
+    assert summary["candidates"][0]["mean_outcome_rank"] is None
+    assert summary["candidates"][0]["outcome_counts"] == {}
+    assert summary["candidates"][0]["raw_object_state_outcome_counts"] == {
+        "placed": 3
+    }
+    assert summary["candidates"][0]["episodes_policy_outcome_uninterpretable"] == 3
 
 
 def test_receipts_are_digest_bound() -> None:

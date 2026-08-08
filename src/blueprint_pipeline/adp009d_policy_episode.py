@@ -24,11 +24,13 @@ Three properties are load-bearing and enforced rather than assumed:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 try:  # flat provider-bundle layout
     from adp009d_droid_action_execution import (
+        ARM_JOINT_COUNT,
         DROID_CONTROL_HZ,
         DROID_OPEN_LOOP_HORIZON,
         DroidActionExecutionError,
@@ -37,6 +39,7 @@ try:  # flat provider-bundle layout
     )
 except ModuleNotFoundError:  # repository package
     from .adp009d_droid_action_execution import (
+        ARM_JOINT_COUNT,
         DROID_CONTROL_HZ,
         DROID_OPEN_LOOP_HORIZON,
         DroidActionExecutionError,
@@ -76,7 +79,12 @@ try:  # flat provider-bundle layout
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
 
-EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v1"
+EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v2"
+
+# This is a numerical-motion threshold, not a task-success threshold.  It only
+# separates a changing simulator joint state from float noise so a can outcome
+# is never attributed to a policy whose commands were not observed at the arm.
+ARM_MOTION_EPSILON_RAD = 1e-6
 
 # A policy that has not moved the can within this many queries has failed the
 # episode; the cap bounds paid GPU time and is recorded rather than implicit.
@@ -107,6 +115,9 @@ class EpisodeEnvironment(Protocol):
     def read_policy_inputs(self) -> Mapping[str, Any]:
         """Camera RGB by DROID view name, plus ``joint_position`` and ``gripper_position``."""
 
+    def read_arm_joint_positions(self) -> Sequence[float]:
+        """Seven observed arm joint positions, without rendering policy cameras."""
+
     def step(self, isaac_action: Sequence[float]) -> None:
         """Apply one 8-dimensional Arena action for one environment step."""
 
@@ -136,6 +147,120 @@ def _sample_with_index(
     if "can_pose_world" not in sample:
         raise PolicyEpisodeError([f"{BLOCKER_ENVIRONMENT_CONTRACT}:can_pose_world_missing"])
     return sample
+
+
+def _read_arm_joint_positions(environment: EpisodeEnvironment) -> list[float]:
+    reader = getattr(environment, "read_arm_joint_positions", None)
+    if not callable(reader):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:read_arm_joint_positions_missing"]
+        )
+    raw = reader()
+    try:
+        values = [float(value) for value in raw]
+    except (TypeError, ValueError) as exc:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:arm_joint_positions_invalid"]
+        ) from exc
+    if len(values) != ARM_JOINT_COUNT or not all(math.isfinite(value) for value in values):
+        raise PolicyEpisodeError(
+            [
+                f"{BLOCKER_ENVIRONMENT_CONTRACT}:"
+                f"arm_joint_positions_invalid:{len(values)}"
+            ]
+        )
+    return values
+
+
+def _motion_and_command_evidence(
+    *,
+    joint_trace: Sequence[Sequence[float]],
+    commanded_actions: Sequence[Mapping[str, Any]],
+    command_response_rows: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    reset = [float(value) for value in joint_trace[0]]
+    end = [float(value) for value in joint_trace[-1]]
+    max_delta = [
+        max(abs(float(sample[index]) - reset[index]) for sample in joint_trace)
+        for index in range(ARM_JOINT_COUNT)
+    ]
+    end_delta = [end[index] - reset[index] for index in range(ARM_JOINT_COUNT)]
+
+    arm_targets = [
+        float(value)
+        for action in commanded_actions
+        for value in action["joint_position_target_rad"]
+    ]
+    target_deltas = [
+        abs(float(target) - float(observed))
+        for action in commanded_actions
+        for target, observed in zip(
+            action["joint_position_target_rad"],
+            action["observed_before_rad"],
+            strict=True,
+        )
+    ]
+    full_action_l2 = [
+        math.sqrt(sum(float(value) ** 2 for value in action["isaac_action"]))
+        for action in commanded_actions
+    ]
+    gripper_commands = [
+        abs(float(action["isaac_action"][ARM_JOINT_COUNT]))
+        for action in commanded_actions
+    ]
+    nontrivial_rows = sum(
+        any(
+            abs(float(target) - float(observed)) > ARM_MOTION_EPSILON_RAD
+            for target, observed in zip(
+                action["joint_position_target_rad"],
+                action["observed_before_rad"],
+                strict=True,
+            )
+        )
+        for action in commanded_actions
+    )
+
+    arm_moved = max(max_delta, default=0.0) > ARM_MOTION_EPSILON_RAD
+    actions_reached_robot = command_response_rows > 0
+    if actions_reached_robot:
+        interpretation = "policy_task_outcome_interpretable"
+    elif arm_moved:
+        interpretation = "arm_motion_without_command_response_harness_fault"
+    elif nontrivial_rows:
+        interpretation = "nontrivial_actions_not_observed_at_robot_harness_fault"
+    else:
+        interpretation = "no_arm_motion_and_no_nontrivial_command_harness_fault"
+
+    action_summary = {
+        "policy_action_rows_submitted": len(commanded_actions),
+        "arm_target_max_abs_rad": max((abs(value) for value in arm_targets), default=0.0),
+        "arm_target_mean_abs_rad": (
+            sum(abs(value) for value in arm_targets) / len(arm_targets)
+            if arm_targets
+            else 0.0
+        ),
+        "arm_target_delta_from_observed_max_abs_rad": max(target_deltas, default=0.0),
+        "arm_target_delta_from_observed_mean_abs_rad": (
+            sum(target_deltas) / len(target_deltas) if target_deltas else 0.0
+        ),
+        "full_action_l2_max": max(full_action_l2, default=0.0),
+        "gripper_command_max_abs": max(gripper_commands, default=0.0),
+        "nontrivial_arm_target_rows": nontrivial_rows,
+    }
+    motion_evidence = {
+        "joint_position_reset_rad": reset,
+        "joint_position_end_rad": end,
+        "joint_position_end_delta_rad": end_delta,
+        "max_abs_joint_delta_from_reset_rad": max_delta,
+        "joint_position_samples": len(joint_trace),
+        "arm_motion_epsilon_rad": ARM_MOTION_EPSILON_RAD,
+        "command_response_rows": int(command_response_rows),
+        "arm_moved": arm_moved,
+        "actions_reached_robot": actions_reached_robot,
+        "policy_outcome_interpretable": actions_reached_robot,
+        "interpretation": interpretation,
+    }
+    return motion_evidence, action_summary
 
 
 def run_policy_episode(
@@ -172,6 +297,7 @@ def run_policy_episode(
 
     environment.reset()
     joint_limits = environment.joint_limits()
+    joint_trace = [_read_arm_joint_positions(environment)]
 
     samples: list[dict[str, Any]] = []
     previous_index: int | None = None
@@ -181,6 +307,8 @@ def run_policy_episode(
 
     queries: list[dict[str, Any]] = []
     last_action: list[float] | None = None
+    commanded_actions: list[dict[str, Any]] = []
+    command_response_rows = 0
 
     for query_index in range(int(max_policy_queries)):
         inputs = environment.read_policy_inputs()
@@ -213,7 +341,24 @@ def run_policy_episode(
             horizon=int(open_loop_horizon),
         )
         for action in plan["actions"]:
+            before = list(joint_trace[-1])
             environment.step(action["isaac_action"])
+            after = _read_arm_joint_positions(environment)
+            joint_trace.append(after)
+            target = [float(value) for value in action["joint_position_target_rad"]]
+            response_observed = any(
+                abs(after[index] - before[index]) > ARM_MOTION_EPSILON_RAD
+                and (target[index] - before[index]) * (after[index] - before[index]) > 0.0
+                for index in range(ARM_JOINT_COUNT)
+            )
+            command_response_rows += int(response_observed)
+            commanded_actions.append(
+                {
+                    "joint_position_target_rad": target,
+                    "observed_before_rad": before,
+                    "isaac_action": [float(value) for value in action["isaac_action"]],
+                }
+            )
             step_index += 1
             samples.append(
                 _sample_with_index(environment.read_object_sample(), step_index, previous_index)
@@ -228,6 +373,10 @@ def run_policy_episode(
                 "executed_rows": plan["executed_rows"],
                 "discarded_rows": plan["discarded_rows"],
                 "any_joint_limit_clamped": plan["any_joint_limit_clamped"],
+                "joint_limit_clamped_rows": sum(
+                    bool(action["joint_limit_clamped"])
+                    for action in plan["actions"]
+                ),
                 "final_step_index": step_index,
             }
         )
@@ -244,6 +393,7 @@ def run_policy_episode(
     settle_start_index = step_index
     for _ in range(int(settle_window_samples)):
         environment.step(release_action)
+        joint_trace.append(_read_arm_joint_positions(environment))
         step_index += 1
         samples.append(
             _sample_with_index(environment.read_object_sample(), step_index, previous_index)
@@ -257,6 +407,11 @@ def run_policy_episode(
         samples=samples,
         destination_position_world_m=destination_position_world_m,
         settle_window_samples=int(settle_window_samples),
+    )
+    motion_evidence, commanded_action_magnitudes = _motion_and_command_evidence(
+        joint_trace=joint_trace,
+        commanded_actions=commanded_actions,
+        command_response_rows=command_response_rows,
     )
 
     receipt: dict[str, Any] = {
@@ -273,6 +428,8 @@ def run_policy_episode(
         "observation_conversion": describe_observation_conversion(candidate_id),
         "destination_position_world_m": [float(v) for v in destination_position_world_m],
         "queries": queries,
+        "motion_evidence": motion_evidence,
+        "commanded_action_magnitudes": commanded_action_magnitudes,
         "score": score,
         "candidate_policy_queried": True,
     }
@@ -281,6 +438,7 @@ def run_policy_episode(
 
 
 __all__ = [
+    "ARM_MOTION_EPSILON_RAD",
     "DEFAULT_MAX_POLICY_QUERIES",
     "EPISODE_SCHEMA_VERSION",
     "DroidActionExecutionError",

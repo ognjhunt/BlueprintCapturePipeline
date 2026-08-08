@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -18,10 +19,15 @@ from blueprint_pipeline.particlefield_usd import (
     STRUCTURAL_Z_SCALE_FRACTION,
     GAUSSIAN_SURFLET_SCHEMA,
     build_gaussian_surflet_arrays,
+    gaussian_surflet_schema_available,
     write_gaussian_surflet_particlefield_usd,
 )
 
 _HAS_PXR = importlib.util.find_spec("pxr") is not None
+
+
+def test_schema_capability_requires_every_isaac_particlefield_binding() -> None:
+    assert gaussian_surflet_schema_available(SimpleNamespace()) is False
 
 
 def _surfel(count: int = 3) -> GaussianSurfelData:
@@ -153,6 +159,13 @@ def test_aura_file_conversion_is_digest_bound_and_uses_surflet_api(tmp_path: Pat
         expected_source_sha256=expected,
         receipt_path=receipt_path,
     )
+    if not gaussian_surflet_schema_available(__import__("pxr", fromlist=["UsdVol"]).UsdVol):
+        assert result == {
+            "status": "blocked",
+            "blockers": ["usd_core_gaussian_surflet_schema_unavailable"],
+        }
+        assert not output.exists()
+        return
     assert result["status"] == "completed"
     assert result["schema"] == GAUSSIAN_SURFLET_SCHEMA
     assert result["source_sha256"] == expected

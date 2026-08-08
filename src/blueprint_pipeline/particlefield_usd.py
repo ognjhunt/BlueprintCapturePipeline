@@ -36,6 +36,16 @@ PARTICLEFIELD_SCHEMA = "ParticleField3DGaussianSplat"
 GAUSSIAN_SURFLET_SCHEMA = "ParticleField+ParticleFieldKernelGaussianSurfletAPI"
 GAUSSIAN_SURFLET_RECEIPT_SCHEMA_VERSION = "aura_ovrtx_particlefield_receipt.v1"
 
+_GAUSSIAN_SURFLET_SCHEMA_MEMBERS = (
+    "ParticleField",
+    "ParticleFieldPositionAttributeAPI",
+    "ParticleFieldOrientationAttributeAPI",
+    "ParticleFieldScaleAttributeAPI",
+    "ParticleFieldOpacityAttributeAPI",
+    "ParticleFieldKernelGaussianSurfletAPI",
+    "ParticleFieldSphericalHarmonicsAttributeAPI",
+)
+
 
 # Zeroth-order spherical-harmonic basis constant, for reading a DC coefficient
 # back as a display colour: colour = 0.5 + C0 * dc.
@@ -45,6 +55,12 @@ SH_C0 = 0.28209479177387814
 # Flat has to be relative: a constant epsilon would be thicker than wide for the
 # smallest surfels in this field, which is the bug it replaces at a new scale.
 STRUCTURAL_Z_SCALE_FRACTION = 0.01
+
+
+def gaussian_surflet_schema_available(usd_vol: object) -> bool:
+    """Whether this OpenUSD build carries every Isaac ParticleField binding."""
+
+    return all(hasattr(usd_vol, name) for name in _GAUSSIAN_SURFLET_SCHEMA_MEMBERS)
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     result = 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
@@ -255,6 +271,11 @@ def write_gaussian_surflet_particlefield_usd(
             }
     surfel = source if isinstance(source, GaussianSurfelData) else read_aura_2dgs_surfel_ply(source_path)
     arrays = build_gaussian_surflet_arrays(surfel)
+    if not gaussian_surflet_schema_available(UsdVol):
+        return {
+            "status": "blocked",
+            "blockers": ["usd_core_gaussian_surflet_schema_unavailable"],
+        }
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     stage = Usd.Stage.CreateNew(str(out_path))

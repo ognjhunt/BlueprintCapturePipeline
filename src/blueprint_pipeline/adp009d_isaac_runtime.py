@@ -69,6 +69,44 @@ AURA_APPEARANCE_FILENAMES = (
 )
 
 
+def _policy_episode_blockers(
+    *,
+    candidate_ids: list[str],
+    policy_episode: dict[str, Any] | None,
+    policy_episode_error: str | None,
+) -> list[str]:
+    """Fail closed when scored object states cannot be attributed to a policy.
+
+    The deterministic scorer may truthfully say ``never_moved`` even when the
+    robot never responded to a nontrivial command.  That is useful harness
+    evidence, but it is not an interpretable policy outcome and must prevent a
+    top-level completed result.
+    """
+
+    if not candidate_ids:
+        return []
+
+    blockers: list[str] = []
+    batches = list((policy_episode or {}).get("batches") or [])
+    scored_batches = [
+        batch for batch in batches if int(batch.get("episodes_scored") or 0) > 0
+    ]
+    if not scored_batches:
+        blockers.append("policy_episodes_requested_but_none_scored")
+    else:
+        uninterpretable = sum(
+            int(batch.get("episodes_policy_outcome_uninterpretable") or 0)
+            for batch in scored_batches
+        )
+        if uninterpretable:
+            blockers.append(
+                f"policy_episode_action_delivery_unverified:{uninterpretable}"
+            )
+    if policy_episode_error:
+        blockers.append(f"policy_episode_error:{policy_episode_error[:120]}")
+    return sorted(set(blockers))
+
+
 def _resolve_aura_appearance(runtime: Path) -> tuple[Path | None, str | None]:
     """The appearance asset that shipped, and what format it is."""
 
@@ -1899,21 +1937,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         # shape of a success claim that outruns its evidence: the micro-check's
         # own checks had passed, so nothing contradicted it.  Episodes were a
         # bonus when that was written; they are the deliverable now.
-        episode_blockers: list[str] = []
-        if candidate_ids:
-            scored_batches = [
-                b
-                for b in ((policy_episode or {}).get("batches") or [])
-                if int(b.get("episodes_scored") or 0) > 0
-            ]
-            if not scored_batches:
-                episode_blockers.append("policy_episodes_requested_but_none_scored")
-            elif len(scored_batches) < len(candidate_ids):
-                # Not a blocker: one arm missing still ranks what did run, and
-                # the summary says which candidates are in it.
-                pass
-            if policy_episode_error:
-                episode_blockers.append(f"policy_episode_error:{policy_episode_error[:120]}")
+        episode_blockers = _policy_episode_blockers(
+            candidate_ids=candidate_ids,
+            policy_episode=policy_episode,
+            policy_episode_error=policy_episode_error,
+        )
         return {
             "schema_version": "adp009d_native_microcheck.v1",
             "status": "completed" if not episode_blockers else "blocked",

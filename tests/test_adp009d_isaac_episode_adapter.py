@@ -232,8 +232,14 @@ def test_the_adapter_satisfies_the_episode_loop_seam() -> None:
     """Whatever the loop calls, the adapter must provide."""
 
     adapter = _adapter()
-    for method in ("reset", "joint_limits", "read_policy_inputs", "step",
-                   "read_object_sample"):
+    for method in (
+        "reset",
+        "joint_limits",
+        "read_policy_inputs",
+        "read_arm_joint_positions",
+        "step",
+        "read_object_sample",
+    ):
         assert callable(getattr(adapter, method))
     limits = adapter.joint_limits()
     assert len(limits) == 7
