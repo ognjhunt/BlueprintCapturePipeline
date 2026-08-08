@@ -2452,6 +2452,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp009d_budget_invalid")
             if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
                 blockers.append("adp009d_hard_ttl_invalid")
+            if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
+                blockers.append("adp009d_allowed_active_vast_instance_id_invalid")
             avoidlist_digest = None
             if args.adp_machine_avoidlist:
                 avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
@@ -2499,6 +2501,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if gated_backbone_access
                     else None
                 ),
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
             }
             allocation_binding_digest = (
                 "sha256:"
@@ -2524,6 +2529,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "private_data_uploaded": False,
                     "candidate_policy_queried": False,
                     "physical_outcome_values_uploaded": False,
+                    "explicit_concurrent_gpu_authority_bound": bool(
+                        args.adp_allowed_active_vast_instance_id
+                    ),
                     "allocation_binding": allocation_binding,
                     "allocation_binding_digest": allocation_binding_digest,
                     "gated_backbone_access": gated_backbone_access,
@@ -2564,6 +2572,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     authorize_gated_backbone=args.adp009d_authorize_gated_backbone,
+                    allowed_active_instance_ids=(
+                        args.adp_allowed_active_vast_instance_id
+                    ),
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

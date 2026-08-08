@@ -747,6 +747,7 @@ def test_native_transport_prefers_one_48gb_class_gpu(monkeypatch: pytest.MonkeyP
     assert observed["preferred_gpu_keywords"] == ("L40S", "RTX 6000 Ada", "RTX A6000")
     assert observed["provider_bundle_kind"] == "adp009d_isaac"
     assert observed["forward_hf_token"] is False
+    assert observed["allowed_active_instance_ids"] == ()
 
     franka_vast.run_adp009d_native_microcheck_vast(
         job_dir="job",
@@ -754,8 +755,10 @@ def test_native_transport_prefers_one_48gb_class_gpu(monkeypatch: pytest.MonkeyP
         paid_resource_admission_grant=None,
         execute=False,
         authorize_gated_backbone=True,
+        allowed_active_instance_ids=(47190772,),
     )
     assert observed["forward_hf_token"] is True
+    assert observed["allowed_active_instance_ids"] == (47190772,)
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
@@ -892,6 +895,44 @@ def test_allocator_requires_and_binds_explicit_gated_backbone_authority(
         admission["allocation_binding"]["gated_backbone_access_receipt_digest"]
         == access["receipt_digest"]
     )
+
+
+def test_allocator_binds_concurrent_instance_authority_through_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "build_native_microcheck_bundle",
+        lambda **kwargs: {
+            "status": "ready",
+            "bundle_sha256": "sha256:" + "b" * 64,
+            "input_digest": "sha256:" + "c" * 64,
+        },
+    )
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+    args = _allocator_args(tmp_path, execute=False) + [
+        "--adp-allowed-active-vast-instance-id",
+        "47190772",
+    ]
+
+    assert allocator.main(args) == 0
+    assert observed["allowed_active_instance_ids"] == [47190772]
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["explicit_concurrent_gpu_authority_bound"] is True
+    assert admission["allocation_binding"]["allowed_active_vast_instance_ids"] == [
+        47190772
+    ]
 
 
 def test_allocator_abstains_before_paid_mutation_without_gated_authority(

@@ -11,6 +11,7 @@ import stat
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Mapping
 
 from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
@@ -316,6 +317,7 @@ def run_arena_native_control_vast(
     require_known_supported_isaac_driver: bool = True,
     enable_isaac_smoke: bool = True,
     forward_hf_token: bool = False,
+    allowed_active_instance_ids: Sequence[int] = (),
     preferred_gpu_keywords: tuple[str, ...] = (
         "RTX 4090",
         "RTX A6000",
@@ -451,6 +453,7 @@ def run_arena_native_control_vast(
                 machine_avoidlist_path=local_avoidlist,
                 instance_label_prefix=instance_label_prefix,
                 forward_hf_token=forward_hf_token,
+                allowed_active_instance_ids=allowed_active_instance_ids,
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     finally:
