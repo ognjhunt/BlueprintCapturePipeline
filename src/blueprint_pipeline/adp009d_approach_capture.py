@@ -133,7 +133,17 @@ WRIST_OBJECT_FRAME_MARGIN_FRACTION = 0.05
 # episode start, regardless of how good its picture looks.
 EPISODE_START_OBJECT_OFFSET_TOLERANCE_M = 5.0e-3
 EPISODE_START_JOINT_TOLERANCE_RAD = 3.0e-3
-EPISODE_START_RESTORE_MAX_STEPS = 80
+# A restorable pose can be selected on the final step of the complete camera-
+# aim plus translation search.  v80 selected step 169, but the old arbitrary
+# 80-step replay cap stopped with 0.765 rad still to travel and zero can pixels.
+# Bind replay capacity to the preregistered search horizon, with a small settling
+# allowance, so every pose the gate can admit is also eligible for replay.
+EPISODE_START_RESTORE_SETTLE_STEPS = 24
+EPISODE_START_RESTORE_MAX_STEPS = (
+    CAMERA_AIM_MAX_STEPS
+    + len(APPROACH_STANDOFF_HEIGHTS_M) * APPROACH_STEPS_PER_WAYPOINT
+    + EPISODE_START_RESTORE_SETTLE_STEPS
+)
 BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START = (
     "no_safe_wrist_observable_episode_start"
 )
@@ -816,6 +826,7 @@ __all__ = [
     "EPISODE_START_OBJECT_OFFSET_TOLERANCE_M",
     "EPISODE_START_JOINT_TOLERANCE_RAD",
     "EPISODE_START_RESTORE_MAX_STEPS",
+    "EPISODE_START_RESTORE_SETTLE_STEPS",
     "MIN_WRIST_OBJECT_PIXEL_FRACTION",
     "MIN_WRIST_POSE_TRAVEL_M",
     "WRIST_POSE_CAUSE_HEALTHY",

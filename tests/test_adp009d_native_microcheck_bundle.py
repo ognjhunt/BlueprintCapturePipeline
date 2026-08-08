@@ -2133,6 +2133,8 @@ def test_policy_query_is_gated_on_a_replayed_wrist_observable_start() -> None:
     assert 'episode_start_selection.get("status") == "ready"' in source
     assert "def _restore_wrist_observable_episode_start()" in source
     assert "reset_callback=_restore_wrist_observable_episode_start" in source
+    assert "live_can_offset" in source
+    assert "EPISODE_START_OBJECT_OFFSET_TOLERANCE_M" in source
     preflight = source.index("_restore_wrist_observable_episode_start()")
     first_client = source.index("policy=_client_for(server_receipt)")
     assert preflight < first_client

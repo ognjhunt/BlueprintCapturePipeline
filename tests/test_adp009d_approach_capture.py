@@ -300,6 +300,24 @@ def test_episode_start_restore_requires_pose_object_hold_and_visibility() -> Non
     )
 
 
+def test_episode_start_restore_budget_covers_every_selectable_search_step() -> None:
+    from blueprint_pipeline.adp009d_approach_capture import (
+        APPROACH_STANDOFF_HEIGHTS_M,
+        APPROACH_STEPS_PER_WAYPOINT,
+        CAMERA_AIM_MAX_STEPS,
+        EPISODE_START_RESTORE_MAX_STEPS,
+        EPISODE_START_RESTORE_SETTLE_STEPS,
+    )
+
+    complete_search_horizon = CAMERA_AIM_MAX_STEPS + (
+        len(APPROACH_STANDOFF_HEIGHTS_M) * APPROACH_STEPS_PER_WAYPOINT
+    )
+    assert EPISODE_START_RESTORE_MAX_STEPS == (
+        complete_search_horizon + EPISODE_START_RESTORE_SETTLE_STEPS
+    )
+    assert EPISODE_START_RESTORE_SETTLE_STEPS > 0
+
+
 def test_wrist_gate_blocks_when_object_never_appears_or_ik_fails() -> None:
     never = summarize_wrist_approach_capture(
         captured_frames=[_wrist_frame(100, 0), _wrist_frame(101, 12)]

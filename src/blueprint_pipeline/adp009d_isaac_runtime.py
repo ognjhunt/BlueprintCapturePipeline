@@ -1941,6 +1941,20 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         restore_action[:, 7] = float(gripper_probe["open_command"])
                         env.step(restore_action)
                         restore_steps += 1
+                        live_can_offset = (
+                            _to_torch(approved_can.data.root_pose_w)[0, :3]
+                            - canonical_hold_can_pose[:3]
+                        )
+                        if any(
+                            abs(float(value))
+                            > EPISODE_START_OBJECT_OFFSET_TOLERANCE_M
+                            for value in live_can_offset
+                        ):
+                            # A longer replay horizon must never buy convergence
+                            # by disturbing the sealed task object.  The final
+                            # receipt retains the measured offset and typed
+                            # object-moved blocker.
+                            break
                         remaining = torch.max(
                             torch.abs(
                                 target - _to_torch(robot.data.joint_pos)[:, :7]
