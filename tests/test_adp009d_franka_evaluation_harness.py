@@ -520,3 +520,53 @@ def test_scenario_materialization_rejects_invalid_composed_cell(
             cousin_static_validation_receipts=receipts,
             output_dir=tmp_path / "invalid",
         )
+
+
+def test_cousin_authoring_is_path_independent(tmp_path: Path) -> None:
+    """The flattened cousin must not embed the checkout path.
+
+    USD's flatten writes the composed root layer's absolute path into the
+    output layer's doc string, which made the pinned materialization digest
+    verify only in the directory it was authored in -- every other checkout,
+    worktree, or CI runner failed ``cousin_materialized_usd_identity_mismatch``
+    at fixture setup.  Identity must be a property of the sealed inputs, not
+    of where the repository happens to sit on disk.
+    """
+
+    from blueprint_pipeline.adp009d_franka_evaluation_harness import (
+        _author_flattened_cousin,
+        _mapping,
+        _resolve_file_record,
+    )
+
+    manifest = _load("adp009d_visual_material_cousin_manifest.v1.json")
+    base = _resolve_file_record(
+        _mapping(manifest["base_asset"]),
+        repo_root=REPO_ROOT,
+        evidence_root=REPO_ROOT,
+        error_prefix="cousin_base",
+    )
+    overlay = _resolve_file_record(
+        _mapping(manifest["overlay_asset"]),
+        repo_root=REPO_ROOT,
+        evidence_root=REPO_ROOT,
+        error_prefix="cousin_overlay",
+    )
+
+    authored: list[bytes] = []
+    for name in ("root-a", "root-b"):
+        output = tmp_path / name / f"{manifest['cousin_id']}.usda"
+        output.parent.mkdir(parents=True)
+        _author_flattened_cousin(
+            base_path=base,
+            overlay_path=overlay,
+            output_path=output,
+            cousin_type=str(manifest["cousin_type"]),
+            dimensions=_mapping(manifest.get("dimensions_m")),
+        )
+        content = output.read_bytes()
+        assert str(REPO_ROOT).encode() not in content
+        assert str(tmp_path).encode() not in content
+        authored.append(content)
+
+    assert authored[0] == authored[1]
