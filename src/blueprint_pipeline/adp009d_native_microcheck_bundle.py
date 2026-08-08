@@ -797,6 +797,11 @@ def build_native_microcheck_bundle(
         "adp009d_droid_observation.py",
         "adp009d_droid_action_execution.py",
         "adp009d_policy_episode.py",
+        # Wired into the runtime but never shipped, so a live run reached the
+        # episode and died on ModuleNotFoundError after provisioning had
+        # already succeeded.  An import the runtime makes must be a file the
+        # bundle carries.
+        "adp009d_episode_batch.py",
         "adp009d_isaac_episode_adapter.py",
         "adp009d_task_scoring.py",
         "adp009d_policy_server_worker.py",

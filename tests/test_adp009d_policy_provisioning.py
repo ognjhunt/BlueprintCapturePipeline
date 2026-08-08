@@ -24,7 +24,9 @@ def test_the_policy_environment_is_built_beside_isaac_never_inside_it() -> None:
     assert "venv --python" in script
     # Isaac's interpreter must never be the thing pip is pointed at.
     assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
-    assert "/opt/adp009d-policy-venv/bin/python" in script
+    # Per candidate: a shared venv failed the second policy outright, and
+    # openpi and GR00T cannot share one anyway.
+    assert "/opt/adp009d-policy-venv/pi05_droid/bin/python" in script
 
     receipt = describe_provisioning("pi05_droid")
     assert receipt["policy_interpreter"] != ISAAC_INTERPRETER
@@ -212,7 +214,7 @@ def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert 'test -x "/opt/adp009d-policy-venv/bin/python"' in script
+    assert 'test -x "/opt/adp009d-policy-venv/pi05_droid/bin/python"' in script
     assert "'isaac-sim' not in sys.prefix" in script
     # And the proof precedes any install.
     assert script.index("not in sys.prefix") < script.index("pip install -e")

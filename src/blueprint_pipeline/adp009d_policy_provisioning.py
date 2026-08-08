@@ -45,7 +45,20 @@ PROVISIONING_SCHEMA_VERSION = "adp009d_policy_provisioning.v1"
 # Isaac's own interpreter, which must not be mutated to host a policy.
 ISAAC_INTERPRETER = "/isaac-sim/python.sh"
 # The policy environment lives beside it, never inside it.
-POLICY_VENV_ROOT = "/opt/adp009d-policy-venv"
+POLICY_VENV_PARENT = "/opt/adp009d-policy-venv"
+
+
+def policy_venv_root(candidate_id: str) -> str:
+    """The venv for one candidate.
+
+    Per candidate, not shared.  A live two-policy run had the second candidate
+    fail outright because the first had already created the shared path -- and
+    even had creation succeeded, openpi and GR00T cannot share an environment:
+    one pins JAX and its own torch, the other a different torch, so whichever
+    installed second would have silently broken the first.
+    """
+
+    return f"{POLICY_VENV_PARENT}/{candidate_id}"
 CHECKPOINT_ROOT = "/opt/adp009d-checkpoints"
 UV_ROOT = "/opt/adp009d-uv"
 POLICY_SOURCE_ROOT = "/opt/adp009d-policy-source"
@@ -102,7 +115,7 @@ def _fetch_commands(candidate_id: str) -> list[str]:
     repository = plan["checkpoint_repository"].removeprefix("https://huggingface.co/")
     return [
         f'mkdir -p "{target}"',
-        f'"{POLICY_VENV_ROOT}/bin/python" -m huggingface_hub.commands.huggingface_cli '
+        f'"{policy_venv_root(candidate_id)}/bin/python" -m huggingface_hub.commands.huggingface_cli '
         f'download "{repository}" --revision "{expected["checkpoint_revision"]}" '
         f'--local-dir "{target}"',
     ]
@@ -131,7 +144,7 @@ def _install_commands(candidate_id: str) -> list[str]:
         # activated shell, so the target cannot drift.  Build isolation stays
         # on: disabling it once left pip unable to import hatchling.build, the
         # backend openpi's pyproject declares.
-        f'VIRTUAL_ENV="{POLICY_VENV_ROOT}" "$UV" pip install -e "{source}"',
+        f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" pip install -e "{source}"',
     ]
 
 def build_provisioning_script(candidate_id: str) -> str:
@@ -141,6 +154,7 @@ def build_provisioning_script(candidate_id: str) -> str:
         raise PolicyProvisioningError([f"{BLOCKER_UNKNOWN_CANDIDATE}:{candidate_id}"])
 
     uv_root = UV_ROOT
+    venv_root = policy_venv_root(candidate_id)
     jax_exports = "\n".join(
         f'export {name}="{value}"' for name, value in sorted(JAX_ENVIRONMENT.items())
     )
@@ -187,11 +201,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 UV="$UV_INSTALL_DIR/uv"
 test -x "$UV"
 
-"$UV" venv --python "{SYSTEM_INTERPRETER}" "{POLICY_VENV_ROOT}"
+"$UV" venv --python "{SYSTEM_INTERPRETER}" "{venv_root}"
 
 # Prove the venv is real and is not Isaac's interpreter before anything installs.
-test -x "{POLICY_VENV_ROOT}/bin/python"
-"{POLICY_VENV_ROOT}/bin/python" -c "import sys; assert 'isaac-sim' not in sys.prefix, sys.prefix"
+test -x "{venv_root}/bin/python"
+"{venv_root}/bin/python" -c "import sys; assert 'isaac-sim' not in sys.prefix, sys.prefix"
 
 # JAX would otherwise preallocate most of the device and take the card out from
 # under Isaac as an uncatchable native abort, after the scene is already built.
@@ -209,11 +223,11 @@ unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true
 # and loading 12.4 GB of weights takes far longer than binding a port.  The
 # worker starts the server, waits for a real inference returning a well-formed
 # chunk, and leaves it running for the episode.
-"{POLICY_VENV_ROOT}/bin/python" "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
+"{venv_root}/bin/python" "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
   --candidate-id "{candidate_id}" \
   --source-root "{POLICY_SOURCE_ROOT}/{candidate_id}" \
   --checkpoint-root "{CHECKPOINT_ROOT}/{candidate_id}" \
-  --python "{POLICY_VENV_ROOT}/bin/python" \
+  --python "{venv_root}/bin/python" \
   --host {POLICY_HOST} \
   --log "$OUT_DIR/adp009d_policy_server.{candidate_id}.log" \
   --receipt "$OUT_DIR/adp009d_policy_server_receipt.{candidate_id}.json"
@@ -234,7 +248,7 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "candidate_id": candidate_id,
         "topology": "shared_worker_separate_interpreter",
         "isaac_interpreter": ISAAC_INTERPRETER,
-        "policy_interpreter": f"{POLICY_VENV_ROOT}/bin/python",
+        "policy_interpreter": f"{policy_venv_root(candidate_id)}/bin/python",
         "checkpoint_root": f"{CHECKPOINT_ROOT}/{candidate_id}",
         "checkpoint_source": CANDIDATE_SOURCES[candidate_id],
         "checkpoint_repository": plan["checkpoint_repository"],
@@ -286,7 +300,8 @@ __all__ = [
     "POLICY_PORT",
     "POLICY_SOURCE_ROOT",
     "UV_ROOT",
-    "POLICY_VENV_ROOT",
+    "POLICY_VENV_PARENT",
+    "policy_venv_root",
     "SYSTEM_INTERPRETER",
     "PROVISIONING_SCHEMA_VERSION",
     "PolicyProvisioningError",

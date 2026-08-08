@@ -1844,3 +1844,56 @@ def test_the_runtime_runs_a_batch_per_bound_candidate() -> None:
     assert 'f"adp009d_policy_server_receipt.{bound_candidate}.json"' in source
     # One candidate failing to serve must not deny the other its episodes.
     assert '"policy_server_receipt_missing"' in source
+
+
+def test_each_candidate_gets_its_own_policy_venv() -> None:
+    """A shared venv failed the second candidate outright.
+
+    uv refuses to create over an existing environment, so a live two-policy
+    run had groot_n17_droid die at "A virtual environment already exists"
+    after pi05_droid had made it.  And had creation succeeded it would still
+    be wrong: openpi pins JAX and its own torch, GR00T a different torch, so
+    whichever installed second would silently break the first.
+    """
+
+    import re
+
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        build_provisioning_script,
+        policy_venv_root,
+    )
+
+    a = build_provisioning_script("pi05_droid")
+    b = build_provisioning_script("groot_n17_droid")
+    paths_a = set(re.findall(r"/opt/adp009d-policy-venv/[a-z0-9_]+", a))
+    paths_b = set(re.findall(r"/opt/adp009d-policy-venv/[a-z0-9_]+", b))
+    assert paths_a and paths_b
+    assert not (paths_a & paths_b), (paths_a, paths_b)
+    assert policy_venv_root("pi05_droid") != policy_venv_root("groot_n17_droid")
+    # And no unresolved template placeholder reaches the worker as literal text.
+    for script in (a, b):
+        assert "{candidate_id}" not in script
+        assert "{venv_root}" not in script
+
+
+def test_the_bundle_ships_every_module_the_runtime_imports() -> None:
+    """An import the runtime makes must be a file the bundle carries.
+
+    adp009d_episode_batch was wired in and never shipped, so a live run
+    reached the episode and died on ModuleNotFoundError after provisioning
+    had already succeeded and the scene was built.
+    """
+
+    import inspect
+    import re
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
+
+    shipped = set(re.findall(r'"(adp009d_[a-z0-9_]+\.py)"', inspect.getsource(bundle)))
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    # Flat-layout imports are the ones resolved from the bundle directory.
+    imported = set(re.findall(r"^\s*from (adp009d_[a-z0-9_]+) import", source, re.M))
+    missing = {f"{name}.py" for name in imported} - shipped
+    assert not missing, f"runtime imports modules the bundle never ships: {sorted(missing)}"
