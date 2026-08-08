@@ -27,6 +27,16 @@ MULTICAMERA_VISUAL_EVIDENCE_SCHEMA_VERSION = (
 
 _CAMERA_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
+# ``mp4v`` (MPEG-4 Part 2) passed OpenCV's local existence check but rendered
+# every ADP-009D v65 review video as green/repeated columns in macOS QuickTime.
+# The lossless PNGs were intact and FFmpeg could decode the stream, so this was
+# a derived-media interoperability failure.  H.264 carried as ``avc1`` is the
+# review contract; fail closed when that encoder is unavailable rather than
+# silently emitting another video that the intended human reviewer cannot use.
+REVIEW_VIDEO_CONTAINER = "mp4"
+REVIEW_VIDEO_CODEC = "h264"
+REVIEW_VIDEO_FOURCC = "avc1"
+
 
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -309,12 +319,14 @@ def _encode_episode_video(
     video_path.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(
         str(video_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
+        cv2.VideoWriter_fourcc(*REVIEW_VIDEO_FOURCC),
         float(frames_per_second),
         (width, height),
     )
     if not writer.isOpened():
-        raise RuntimeError("episode_video_encoder_unavailable")
+        raise RuntimeError(
+            f"episode_video_encoder_unavailable:{REVIEW_VIDEO_FOURCC}"
+        )
     try:
         for path in frame_paths:
             frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
@@ -327,14 +339,39 @@ def _encode_episode_video(
         writer.release()
     if not video_path.is_file() or video_path.stat().st_size <= 0:
         raise RuntimeError("episode_video_not_written")
+
+    # A non-empty container is not review evidence.  Decode the complete output
+    # and prove the expected count and dimensions before calling it available.
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError("episode_video_decode_round_trip_unavailable")
+    decoded_count = 0
+    try:
+        while True:
+            ok, decoded = capture.read()
+            if not ok:
+                break
+            if decoded is None or decoded.shape[:2] != (height, width):
+                raise RuntimeError("episode_video_decode_round_trip_shape_mismatch")
+            decoded_count += 1
+    finally:
+        capture.release()
+    if decoded_count != len(frame_paths):
+        raise RuntimeError(
+            "episode_video_decode_round_trip_frame_count_mismatch:"
+            f"{decoded_count}!={len(frame_paths)}"
+        )
     return {
         "relative_path": video_path.as_posix(),
         "sha256": _file_sha256(video_path),
         "size_bytes": video_path.stat().st_size,
-        "container": "mp4",
-        "codec": "mp4v",
+        "container": REVIEW_VIDEO_CONTAINER,
+        "codec": REVIEW_VIDEO_CODEC,
+        "fourcc": REVIEW_VIDEO_FOURCC,
         "frames_per_second": float(frames_per_second),
         "frame_count": len(frame_paths),
+        "decoded_frame_count": decoded_count,
+        "decode_round_trip_passed": True,
     }
 
 

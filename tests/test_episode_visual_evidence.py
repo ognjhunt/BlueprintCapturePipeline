@@ -56,6 +56,10 @@ def test_media_seal_retains_lossless_inputs_terminal_manifest_and_review_video(
     assert manifest["frame_manifest_digest"] == visual["frame_manifest_digest"]
     assert len(manifest["policy_input_frames"]) == 2
     assert (tmp_path / video["relative_path"]).read_bytes()[4:8] == b"ftyp"
+    assert visual["video"]["codec"] == "h264"
+    assert visual["video"]["fourcc"] == "avc1"
+    assert visual["video"]["decoded_frame_count"] == 3
+    assert visual["video"]["decode_round_trip_passed"] is True
     episode = {
         "episode_id": episode_id,
         "status": "completed",
