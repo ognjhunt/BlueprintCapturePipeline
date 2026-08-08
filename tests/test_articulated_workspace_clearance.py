@@ -8,6 +8,10 @@ import pytest
 from blueprint_pipeline.articulated_workspace_clearance import (
     ArticulatedWorkspaceClearanceError,
     evaluate_revolute_member_sweep,
+    evaluate_revolute_member_sweep_against_sage_meshes,
+    inventory_sage_sweep_obstacles,
+    obstacles_from_sage_sweep_inventory,
+    validate_sage_mesh_sweep,
     validate_articulated_workspace_clearance,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -132,6 +136,137 @@ def test_checked_rejection_binds_both_chairs_and_resumes_candidate_order() -> No
     assert rejection["status"] == "rejected_before_task_freeze"
     assert rejection["selection_effect"] == "resume_frozen_candidate_order_at_840796"
     assert rejection["learned_policy_outcomes_accessed"] is False
+    exact = rejection["right_door_exact_sage_mesh_sweep"]
+    assert exact["bound_interiorgs_obstacle_instance_id"] == "227"
+    assert exact["first_collision_angle_degrees"] == 26.75
+    assert exact["first_collision_angle_degrees"] < exact[
+        "required_open_angle_degrees"
+    ]
+    assert exact["triangle_prism_intersection_tested"] is True
     assert rejection["record_digest"] == canonical_digest(
         rejection, digest_field="record_digest"
     )
+
+
+def _mesh(stage, path: str, minimum, maximum, *, collision: bool = True) -> None:
+    from pxr import UsdGeom, UsdPhysics
+
+    x0, y0, z0 = minimum
+    x1, y1, z1 = maximum
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr(
+        [
+            (x0, y0, z0),
+            (x1, y0, z0),
+            (x1, y1, z0),
+            (x0, y1, z0),
+            (x0, y0, z1),
+            (x1, y0, z1),
+            (x1, y1, z1),
+            (x0, y1, z1),
+        ]
+    )
+    mesh.CreateFaceVertexCountsAttr([4, 4, 4, 4, 4, 4])
+    mesh.CreateFaceVertexIndicesAttr(
+        [0, 1, 2, 3, 4, 7, 6, 5, 0, 4, 5, 1, 1, 5, 6, 2, 2, 6, 7, 3, 4, 0, 3, 7]
+    )
+    if collision:
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+
+
+def test_full_sage_stage_inventory_excludes_only_target_and_binds_sweep(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    from pxr import Usd, UsdGeom
+
+    collision = tmp_path / "collision.usda"
+    stage = Usd.Stage.CreateNew(str(collision))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    _mesh(stage, "/Root/Fridge", (-0.1, -0.1, 0.0), (0.1, 0.1, 1.5))
+    _mesh(stage, "/Root/Cabinet", (0.6, 0.4, 0.0), (0.9, 0.7, 1.5))
+    _mesh(stage, "/Root/Far", (4.0, 4.0, 0.0), (5.0, 5.0, 1.5))
+    _mesh(stage, "/Root/VisualOnly", (0.2, 0.2, 0.0), (0.3, 0.3, 1.0), collision=False)
+    stage.GetRootLayer().Save()
+    source_sha = "sha256:" + hashlib.sha256(collision.read_bytes()).hexdigest()
+    identity = {
+        "schema_version": "interiorgs_sage_collision_identity.v1",
+        "source_files": {"sage_collision_usd": {"sha256": source_sha}},
+        "target": {"interiorgs_instance_id": "123", "semantic_label": "refrigerator"},
+        "whole_object_matches": [{"prim_path": "/Root/Fridge"}],
+        "receipt_digest": "",
+    }
+    identity["receipt_digest"] = canonical_digest(identity, digest_field="receipt_digest")
+    identity_path = tmp_path / "identity.json"
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    inventory = inventory_sage_sweep_obstacles(
+        sage_collision_usd_path=collision,
+        target_collision_identity_receipt_path=identity_path,
+        hinge_origin_world_m=[0.0, 0.0, 0.5],
+        closed_endpoint_world_m=[1.0, 0.0, 0.5],
+        member_vertical_interval_m=[0.0, 1.5],
+    )
+
+    assert inventory["traversed_mesh_count"] == 4
+    assert inventory["collision_mesh_count"] == 3
+    assert inventory["excluded_target_prim_paths"] == ["/Root/Fridge"]
+    assert [row["source_prim_path"] for row in inventory["obstacles"]] == [
+        "/Root/Cabinet"
+    ]
+    obstacles = obstacles_from_sage_sweep_inventory(inventory)
+    assert obstacles[0]["source_receipt_digest"] == inventory["receipt_digest"]
+
+    sweep = evaluate_revolute_member_sweep(
+        hinge_origin_world_m=[0.0, 0.0, 0.5],
+        closed_endpoint_world_m=[1.0, 0.0, 0.5],
+        member_vertical_interval_m=[0.0, 1.5],
+        start_angle_degrees=0.0,
+        end_angle_degrees=45.0,
+        obstacles=obstacles,
+    )
+    assert sweep["status"] == "blocked_by_observed_obstacle"
+
+    exact = evaluate_revolute_member_sweep_against_sage_meshes(
+        sage_collision_usd_path=collision,
+        obstacle_inventory=inventory,
+        hinge_origin_world_m=[0.0, 0.0, 0.5],
+        closed_endpoint_world_m=[1.0, 0.0, 0.5],
+        member_vertical_interval_m=[0.0, 1.5],
+        start_angle_degrees=0.0,
+        end_angle_degrees=45.0,
+        member_half_thickness_m=0.05,
+    )
+    assert exact["status"] == "blocked_by_exact_sage_mesh_contact"
+    assert exact["first_collision"]["source_prim_path"] == "/Root/Cabinet"
+    assert exact["mesh_geometry"][0]["triangle_count"] == 12
+    assert exact["claim_boundary"]["triangle_prism_intersection_tested"]
+    assert validate_sage_mesh_sweep(exact) == exact
+
+
+def test_sage_inventory_rejects_collision_source_substitution(tmp_path: Path) -> None:
+    identity = {
+        "schema_version": "interiorgs_sage_collision_identity.v1",
+        "source_files": {"sage_collision_usd": {"sha256": "sha256:not-the-source"}},
+        "whole_object_matches": [{"prim_path": "/Root/Fridge"}],
+        "receipt_digest": "",
+    }
+    identity["receipt_digest"] = canonical_digest(identity, digest_field="receipt_digest")
+    identity_path = tmp_path / "identity.json"
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+    collision = tmp_path / "collision.usda"
+    collision.write_text("#usda 1.0\n", encoding="utf-8")
+
+    with pytest.raises(
+        ArticulatedWorkspaceClearanceError,
+        match="sage_sweep_collision_source_digest_mismatch",
+    ):
+        inventory_sage_sweep_obstacles(
+            sage_collision_usd_path=collision,
+            target_collision_identity_receipt_path=identity_path,
+            hinge_origin_world_m=[0.0, 0.0, 0.5],
+            closed_endpoint_world_m=[1.0, 0.0, 0.5],
+            member_vertical_interval_m=[0.0, 1.5],
+        )

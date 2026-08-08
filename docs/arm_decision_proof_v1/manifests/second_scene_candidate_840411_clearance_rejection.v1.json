@@ -6,8 +6,20 @@
   "target_instance_id": "121",
   "target_label": "refrigerator",
   "status": "rejected_before_task_freeze",
-  "reason": "Both observed refrigerator-door centerlines intersect exact SAGE chair colliders before the 45-degree minimum task opening; moving or deleting chairs is forbidden scene mutation.",
+  "reason": "The right refrigerator door's 5 cm half-thickness prism intersects the exact SAGE triangle mesh bound to chair 227 at 26.75 degrees, before the 45-degree minimum task opening; moving or deleting chairs is forbidden scene mutation.",
   "source_refrigerator_collision_identity_receipt_digest": "sha256:230f423aba598beb74edd216c645486c821cb316c82e516e345e5cee6c1d0b48",
+  "right_door_exact_sage_mesh_sweep": {
+    "manifest_path": "second_scene_candidate_840411_right_door_exact_sage_mesh_sweep.v1.json",
+    "manifest_sha256": "sha256:74967f45f66de89a5277e1b29b25767d3709c69f2a77e1a5a28e594c3bf71d16",
+    "manifest_size_bytes": 2761,
+    "receipt_digest": "sha256:9c8ec87d11ebf492fa6e14affccb939c79e61212570a5f66ca832d04d5ae52e8",
+    "obstacle_inventory_receipt_digest": "sha256:3c96009d21d6843a5dea25a10b9b4af2ecb97a0f3ff725fec7f1fe4ae8fad2bb",
+    "first_collision_angle_degrees": 26.75,
+    "required_open_angle_degrees": 45.0,
+    "source_prim_path": "/Root/ZTMAS3RVAUVREPTUKQ888888_005",
+    "bound_interiorgs_obstacle_instance_id": "227",
+    "triangle_prism_intersection_tested": true
+  },
   "frontal_gap": {
     "refrigerator_front_x_m": 4.477152212,
     "nearest_chair_max_x_m": 4.274605183,
@@ -93,5 +105,5 @@
   "learned_policy_outcomes_accessed": false,
   "inpainting_or_joint_agent_execution_used": false,
   "claim_ceiling": "development_only_selection_rejection",
-  "record_digest": "sha256:7e5c3574c587cd9bbf9a41bb0603e8cd98b1fd2a16810e52abb71e3636caf5a3"
+  "record_digest": "sha256:9dcc0e92fafb9fcc0d9e71ca80e5cff6b991d4eac5a6eb62deba9aae57f77cf2"
 }

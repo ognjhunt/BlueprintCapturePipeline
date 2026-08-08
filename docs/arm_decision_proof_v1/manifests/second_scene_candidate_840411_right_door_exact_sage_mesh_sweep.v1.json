@@ -1,0 +1,80 @@
+{
+  "broadphase_rejected_triangle_poses": 3181812,
+  "claim_boundary": {
+    "clear_result_is_not_native_dynamic_qualification": true,
+    "franka_base_pose_resolved": false,
+    "full_stage_inventory_is_bound_broadphase": true,
+    "ik_or_contact_qualified": false,
+    "triangle_prism_intersection_tested": true
+  },
+  "collision_prim_paths": [
+    "/Root/ZTMAS3RVAUVREPTUKQ888888_005"
+  ],
+  "first_collision": {
+    "angle_degrees": 26.75,
+    "source_prim_path": "/Root/ZTMAS3RVAUVREPTUKQ888888_005",
+    "triangle_index": 1289
+  },
+  "mesh_geometry": [
+    {
+      "source_prim_path": "/Root/SM_floorplan",
+      "triangle_count": 6548,
+      "world_point_count": 7370,
+      "world_triangle_geometry_digest": "sha256:f30f875802a99483a2ffe7f62a3a30494d6cdc73a294b69c824864b9dfc0a79a"
+    },
+    {
+      "source_prim_path": "/Root/Wardrobe_A17e68105Bd7b4d90B0409893a9dd6f41",
+      "triangle_count": 2524,
+      "world_point_count": 1672,
+      "world_triangle_geometry_digest": "sha256:af39afcce2f8b64576d5d882d5e596634eb5f8df1fff6b773ba07a6b7174d409"
+    },
+    {
+      "source_prim_path": "/Root/ZTMAS3RVAUVREPTUKQ888888_003",
+      "triangle_count": 3300,
+      "world_point_count": 1812,
+      "world_triangle_geometry_digest": "sha256:e3d531955df790f125247e98721fa47e213897cc487f3399d9ca66fc0dcece35"
+    },
+    {
+      "source_prim_path": "/Root/ZTMAS3RVAUVREPTUKQ888888_004",
+      "triangle_count": 3300,
+      "world_point_count": 1812,
+      "world_triangle_geometry_digest": "sha256:f30e226c2e2e3d6c2dc8df2a9d5590b1f2c24f7e60107792919d1d1b2aa91158"
+    },
+    {
+      "source_prim_path": "/Root/ZTMAS3RVAUVREPTUKQ888888_005",
+      "triangle_count": 3300,
+      "world_point_count": 1812,
+      "world_triangle_geometry_digest": "sha256:09b86e0715f64f9ad04970ca796417b8e51df824b0dd42b4107db515d202eae6"
+    }
+  ],
+  "receipt_digest": "sha256:9c8ec87d11ebf492fa6e14affccb939c79e61212570a5f66ca832d04d5ae52e8",
+  "schema_version": "articulated_sage_mesh_sweep.v1",
+  "source": {
+    "obstacle_inventory_receipt_digest": "sha256:3c96009d21d6843a5dea25a10b9b4af2ecb97a0f3ff725fec7f1fe4ae8fad2bb",
+    "sage_collision_usd_sha256": "sha256:1c5434754c990cbe9cf97ff41515e86a7160df39019f1a6910befea2f63be37e"
+  },
+  "status": "blocked_by_exact_sage_mesh_contact",
+  "sweep": {
+    "angular_resolution_degrees": 0.25,
+    "closed_endpoint_world_m": [
+      4.475898768,
+      1.9413037,
+      0.95
+    ],
+    "end_angle_degrees": 45.0,
+    "hinge_origin_world_m": [
+      4.475898768,
+      1.452210456,
+      0.95
+    ],
+    "member_half_thickness_m": 0.05,
+    "member_radius_m": 0.489093244,
+    "member_vertical_interval_m": [
+      0.1,
+      1.8
+    ],
+    "sample_count": 181,
+    "start_angle_degrees": 0.0
+  },
+  "tested_triangle_poses": 9941
+}

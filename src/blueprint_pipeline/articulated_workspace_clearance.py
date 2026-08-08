@@ -20,6 +20,8 @@ from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "articulated_workspace_clearance.v1"
+SAGE_OBSTACLE_INVENTORY_SCHEMA_VERSION = "sage_sweep_obstacle_inventory.v1"
+SAGE_MESH_SWEEP_SCHEMA_VERSION = "articulated_sage_mesh_sweep.v1"
 
 
 class ArticulatedWorkspaceClearanceError(ValueError):
@@ -229,6 +231,483 @@ def load_bound_collision_obstacle(path: str | Path) -> dict[str, Any]:
     }
 
 
+def inventory_sage_sweep_obstacles(
+    *,
+    sage_collision_usd_path: str | Path,
+    target_collision_identity_receipt_path: str | Path,
+    hinge_origin_world_m: Sequence[float],
+    closed_endpoint_world_m: Sequence[float],
+    member_vertical_interval_m: Sequence[float],
+    broadphase_padding_m: float = 0.05,
+) -> dict[str, Any]:
+    """Survey every SAGE collision mesh intersecting a member-sweep broadphase.
+
+    The broadphase is the complete horizontal disk swept by the member radius,
+    conservatively represented as an AABB.  Only the uniquely identity-bound
+    target mesh is excluded.  The resulting obstacle list is exhaustive for
+    the source stage and broadphase, but its AABBs remain an early rejection
+    approximation rather than native dynamic-contact proof.
+    """
+
+    try:
+        from pxr import Usd, UsdGeom, UsdPhysics
+    except ImportError as exc:
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_sweep_openusd_runtime_missing"]
+        ) from exc
+
+    collision = Path(sage_collision_usd_path).expanduser().resolve()
+    identity_path = Path(target_collision_identity_receipt_path).expanduser().resolve()
+    if not collision.is_file() or collision.is_symlink():
+        raise ArticulatedWorkspaceClearanceError(["sage_sweep_collision_usd_missing"])
+    try:
+        identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_sweep_target_identity_invalid"]
+        ) from exc
+    if (
+        not isinstance(identity, Mapping)
+        or identity.get("schema_version") != "interiorgs_sage_collision_identity.v1"
+        or identity.get("receipt_digest")
+        != canonical_digest(identity, digest_field="receipt_digest")
+    ):
+        raise ArticulatedWorkspaceClearanceError(["sage_sweep_target_identity_invalid"])
+    whole_matches = identity.get("whole_object_matches")
+    if not isinstance(whole_matches, list) or len(whole_matches) != 1:
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_sweep_target_unique_collision_match_missing"]
+        )
+    collision_digest = _sha256(collision)
+    if (
+        (identity.get("source_files") or {})
+        .get("sage_collision_usd", {})
+        .get("sha256")
+        != collision_digest
+    ):
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_sweep_collision_source_digest_mismatch"]
+        )
+
+    hinge = _finite_vector(hinge_origin_world_m, 3, "sweep_hinge_invalid")
+    endpoint = _finite_vector(closed_endpoint_world_m, 3, "sweep_endpoint_invalid")
+    vertical = _finite_vector(
+        member_vertical_interval_m, 2, "sweep_vertical_interval_invalid"
+    )
+    if vertical[0] >= vertical[1]:
+        raise ArticulatedWorkspaceClearanceError(["sweep_vertical_interval_invalid"])
+    try:
+        padding = float(broadphase_padding_m)
+    except (TypeError, ValueError) as exc:
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_sweep_broadphase_padding_invalid"]
+        ) from exc
+    if not math.isfinite(padding) or padding < 0.0:
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_sweep_broadphase_padding_invalid"]
+        )
+    radius = math.hypot(endpoint[0] - hinge[0], endpoint[1] - hinge[1])
+    if radius <= 0.0:
+        raise ArticulatedWorkspaceClearanceError(["sweep_member_radius_invalid"])
+    broadphase_min = [
+        hinge[0] - radius - padding,
+        hinge[1] - radius - padding,
+        vertical[0] - padding,
+    ]
+    broadphase_max = [
+        hinge[0] + radius + padding,
+        hinge[1] + radius + padding,
+        vertical[1] + padding,
+    ]
+
+    stage = Usd.Stage.Open(str(collision), load=Usd.Stage.LoadAll)
+    if stage is None:
+        raise ArticulatedWorkspaceClearanceError(["sage_sweep_collision_usd_open_failed"])
+    if UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z:
+        raise ArticulatedWorkspaceClearanceError(["sage_sweep_stage_not_z_up"])
+    meters_per_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+    if abs(meters_per_unit - 1.0) > 1e-12:
+        raise ArticulatedWorkspaceClearanceError(["sage_sweep_stage_not_meter_units"])
+    excluded_paths = sorted(str(row["prim_path"]) for row in whole_matches)
+    cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+        useExtentsHint=False,
+    )
+    traversed_mesh_count = 0
+    collision_mesh_count = 0
+    obstacles: list[dict[str, Any]] = []
+    for prim in stage.Traverse():
+        if not prim.IsActive() or not prim.IsA(UsdGeom.Mesh):
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        points = mesh.GetPointsAttr().Get(Usd.TimeCode.Default()) or []
+        counts = mesh.GetFaceVertexCountsAttr().Get(Usd.TimeCode.Default()) or []
+        if not points or not counts:
+            continue
+        traversed_mesh_count += 1
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        collision_mesh_count += 1
+        prim_path = str(prim.GetPath())
+        if prim_path in excluded_paths:
+            continue
+        aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        raw_minimum = aligned.GetMin()
+        raw_maximum = aligned.GetMax()
+        minimum = [float(raw_minimum[index]) for index in range(3)]
+        maximum = [float(raw_maximum[index]) for index in range(3)]
+        intersects = all(
+            min(maximum[axis], broadphase_max[axis])
+            > max(minimum[axis], broadphase_min[axis])
+            for axis in range(3)
+        )
+        if not intersects:
+            continue
+        obstacles.append(
+            {
+                "obstacle_id": f"sage_prim:{prim_path}",
+                "source_prim_path": prim_path,
+                "world_aabb_min_m": [round(value, 9) for value in minimum],
+                "world_aabb_max_m": [round(value, 9) for value in maximum],
+                "point_count": len(points),
+                "face_count": len(counts),
+            }
+        )
+    obstacles.sort(key=lambda row: row["source_prim_path"])
+    result: dict[str, Any] = {
+        "schema_version": SAGE_OBSTACLE_INVENTORY_SCHEMA_VERSION,
+        "status": "completed",
+        "source": {
+            "sage_collision_usd_path": collision.name,
+            "sage_collision_usd_sha256": collision_digest,
+            "target_collision_identity_receipt_sha256": _sha256(identity_path),
+            "target_collision_identity_receipt_digest": identity["receipt_digest"],
+        },
+        "coordinate_frame": {
+            "up_axis": "Z",
+            "meters_per_unit": meters_per_unit,
+            "transform_applied": "identity",
+        },
+        "broadphase": {
+            "hinge_origin_world_m": hinge,
+            "closed_endpoint_world_m": endpoint,
+            "member_radius_m": radius,
+            "member_vertical_interval_m": vertical,
+            "padding_m": padding,
+            "world_aabb_min_m": broadphase_min,
+            "world_aabb_max_m": broadphase_max,
+        },
+        "excluded_target_prim_paths": excluded_paths,
+        "traversed_mesh_count": traversed_mesh_count,
+        "collision_mesh_count": collision_mesh_count,
+        "obstacles": obstacles,
+        "obstacle_count": len(obstacles),
+        "claim_boundary": {
+            "full_sage_stage_surveyed": True,
+            "only_bound_target_collision_excluded": True,
+            "obstacle_aabbs_are_conservative": True,
+            "clear_inventory_is_not_native_dynamic_qualification": True,
+        },
+        "receipt_digest": "",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    return result
+
+
+def obstacles_from_sage_sweep_inventory(
+    value: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Validate an inventory and return sweep-compatible, digest-bound rows."""
+
+    payload = json.loads(json.dumps(value))
+    errors: list[str] = []
+    if payload.get("schema_version") != SAGE_OBSTACLE_INVENTORY_SCHEMA_VERSION:
+        errors.append("sage_sweep_inventory_schema_invalid")
+    if payload.get("status") != "completed":
+        errors.append("sage_sweep_inventory_status_invalid")
+    if payload.get("receipt_digest") != canonical_digest(
+        payload, digest_field="receipt_digest"
+    ):
+        errors.append("sage_sweep_inventory_digest_invalid")
+    obstacles = payload.get("obstacles")
+    if not isinstance(obstacles, list) or payload.get("obstacle_count") != len(obstacles):
+        errors.append("sage_sweep_inventory_obstacles_invalid")
+    if errors:
+        raise ArticulatedWorkspaceClearanceError(errors)
+    return [
+        {
+            "obstacle_id": row["obstacle_id"],
+            "world_aabb_min_m": row["world_aabb_min_m"],
+            "world_aabb_max_m": row["world_aabb_max_m"],
+            "source_receipt_digest": payload["receipt_digest"],
+        }
+        for row in obstacles
+    ]
+
+
+def _cross(left: Sequence[float], right: Sequence[float]) -> list[float]:
+    return [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+
+
+def _dot(left: Sequence[float], right: Sequence[float]) -> float:
+    return sum(float(left[index]) * float(right[index]) for index in range(3))
+
+
+def _triangle_intersects_axis_aligned_box(
+    triangle: Sequence[Sequence[float]], half_extents: Sequence[float]
+) -> bool:
+    """Exact convex SAT test for one triangle and a box centered at the origin."""
+
+    edges = [
+        [triangle[1][axis] - triangle[0][axis] for axis in range(3)],
+        [triangle[2][axis] - triangle[1][axis] for axis in range(3)],
+        [triangle[0][axis] - triangle[2][axis] for axis in range(3)],
+    ]
+    box_axes = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
+    axes: list[Sequence[float]] = [*box_axes, _cross(edges[0], edges[1])]
+    axes.extend(_cross(edge, axis) for edge in edges for axis in box_axes)
+    for axis in axes:
+        norm_sq = _dot(axis, axis)
+        if norm_sq <= 1e-24:
+            continue
+        projections = [_dot(vertex, axis) for vertex in triangle]
+        radius = sum(abs(float(axis[index])) * float(half_extents[index]) for index in range(3))
+        if min(projections) > radius + 1e-12 or max(projections) < -radius - 1e-12:
+            return False
+    return True
+
+
+def evaluate_revolute_member_sweep_against_sage_meshes(
+    *,
+    sage_collision_usd_path: str | Path,
+    obstacle_inventory: Mapping[str, Any],
+    hinge_origin_world_m: Sequence[float],
+    closed_endpoint_world_m: Sequence[float],
+    member_vertical_interval_m: Sequence[float],
+    start_angle_degrees: float,
+    end_angle_degrees: float,
+    member_half_thickness_m: float,
+    angular_resolution_degrees: float = 0.25,
+) -> dict[str, Any]:
+    """Narrow an exhaustive SAGE AABB inventory using exact mesh triangles.
+
+    At each preregistered angle the moving member is a rectangular prism.  The
+    test transforms every inventoried SAGE triangle into that prism's frame and
+    applies the complete triangle/box separating-axis test.  This removes AABB
+    false positives while retaining the full-stage inventory as the broadphase.
+    """
+
+    try:
+        from pxr import Usd, UsdGeom, UsdPhysics
+    except ImportError as exc:
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_mesh_sweep_openusd_runtime_missing"]
+        ) from exc
+    inventory = json.loads(json.dumps(obstacle_inventory))
+    obstacles_from_sage_sweep_inventory(inventory)
+    collision = Path(sage_collision_usd_path).expanduser().resolve()
+    if not collision.is_file() or collision.is_symlink():
+        raise ArticulatedWorkspaceClearanceError(["sage_mesh_sweep_collision_usd_missing"])
+    if inventory["source"]["sage_collision_usd_sha256"] != _sha256(collision):
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_mesh_sweep_collision_source_digest_mismatch"]
+        )
+    hinge = _finite_vector(hinge_origin_world_m, 3, "sweep_hinge_invalid")
+    endpoint = _finite_vector(closed_endpoint_world_m, 3, "sweep_endpoint_invalid")
+    vertical = _finite_vector(
+        member_vertical_interval_m, 2, "sweep_vertical_interval_invalid"
+    )
+    try:
+        start_angle = float(start_angle_degrees)
+        end_angle = float(end_angle_degrees)
+        resolution = float(angular_resolution_degrees)
+        half_thickness = float(member_half_thickness_m)
+    except (TypeError, ValueError) as exc:
+        raise ArticulatedWorkspaceClearanceError(["sweep_parameter_invalid"]) from exc
+    if (
+        vertical[0] >= vertical[1]
+        or not all(
+            math.isfinite(value)
+            for value in (start_angle, end_angle, resolution, half_thickness)
+        )
+        or end_angle == start_angle
+        or resolution <= 0.0
+        or half_thickness <= 0.0
+    ):
+        raise ArticulatedWorkspaceClearanceError(["sweep_parameter_invalid"])
+    radius = math.hypot(endpoint[0] - hinge[0], endpoint[1] - hinge[1])
+    if radius <= 0.0:
+        raise ArticulatedWorkspaceClearanceError(["sweep_member_radius_invalid"])
+    source_angle = math.atan2(endpoint[1] - hinge[1], endpoint[0] - hinge[0])
+    direction = 1.0 if end_angle > start_angle else -1.0
+    step_count = int(math.ceil(abs(end_angle - start_angle) / resolution))
+    angles = [
+        start_angle + index * direction * resolution for index in range(step_count)
+    ] + [end_angle]
+
+    stage = Usd.Stage.Open(str(collision), load=Usd.Stage.LoadAll)
+    if stage is None:
+        raise ArticulatedWorkspaceClearanceError(["sage_mesh_sweep_collision_usd_open_failed"])
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    mesh_rows: list[dict[str, Any]] = []
+    mesh_triangles: list[
+        tuple[str, list[tuple[list[list[float]], list[float], list[float]]]]
+    ] = []
+    for row in inventory["obstacles"]:
+        prim_path = str(row["source_prim_path"])
+        prim = stage.GetPrimAtPath(prim_path)
+        if (
+            not prim.IsValid()
+            or not prim.IsA(UsdGeom.Mesh)
+            or not prim.HasAPI(UsdPhysics.CollisionAPI)
+        ):
+            raise ArticulatedWorkspaceClearanceError(
+                [f"sage_mesh_sweep_obstacle_prim_invalid:{prim_path}"]
+            )
+        mesh = UsdGeom.Mesh(prim)
+        local_points = mesh.GetPointsAttr().Get(Usd.TimeCode.Default()) or []
+        counts = [int(value) for value in (mesh.GetFaceVertexCountsAttr().Get() or [])]
+        indices = [int(value) for value in (mesh.GetFaceVertexIndicesAttr().Get() or [])]
+        transform = xform_cache.GetLocalToWorldTransform(prim)
+        world_points = [
+            [float(value) for value in transform.Transform(point)] for point in local_points
+        ]
+        triangles: list[list[list[float]]] = []
+        cursor = 0
+        for count in counts:
+            face = indices[cursor : cursor + count]
+            cursor += count
+            if count < 3:
+                continue
+            for offset in range(1, count - 1):
+                triangles.append(
+                    [world_points[face[0]], world_points[face[offset]], world_points[face[offset + 1]]]
+                )
+        geometry_digest = canonical_digest(
+            {"world_points": world_points, "triangles": triangles}
+        )
+        mesh_rows.append(
+            {
+                "source_prim_path": prim_path,
+                "world_point_count": len(world_points),
+                "triangle_count": len(triangles),
+                "world_triangle_geometry_digest": geometry_digest,
+            }
+        )
+        mesh_triangles.append(
+            (
+                prim_path,
+                [
+                    (
+                        triangle,
+                        [min(point[axis] for point in triangle) for axis in range(3)],
+                        [max(point[axis] for point in triangle) for axis in range(3)],
+                    )
+                    for triangle in triangles
+                ],
+            )
+        )
+
+    z_center = 0.5 * (vertical[0] + vertical[1])
+    half_extents = [0.5 * radius, half_thickness, 0.5 * (vertical[1] - vertical[0])]
+    first_collision: dict[str, Any] | None = None
+    collision_prim_paths: set[str] = set()
+    tested_triangle_poses = 0
+    broadphase_rejected_triangle_poses = 0
+    for angle_degrees in angles:
+        angle = source_angle + math.radians(angle_degrees)
+        radial = [math.cos(angle), math.sin(angle), 0.0]
+        tangent = [-math.sin(angle), math.cos(angle), 0.0]
+        center = [
+            hinge[0] + 0.5 * radius * radial[0],
+            hinge[1] + 0.5 * radius * radial[1],
+            z_center,
+        ]
+        door_world_half_extents = [
+            abs(radial[0]) * half_extents[0] + abs(tangent[0]) * half_extents[1],
+            abs(radial[1]) * half_extents[0] + abs(tangent[1]) * half_extents[1],
+            half_extents[2],
+        ]
+        door_minimum = [
+            center[axis] - door_world_half_extents[axis] for axis in range(3)
+        ]
+        door_maximum = [
+            center[axis] + door_world_half_extents[axis] for axis in range(3)
+        ]
+        for prim_path, triangles in mesh_triangles:
+            for triangle_index, (triangle, triangle_minimum, triangle_maximum) in enumerate(
+                triangles
+            ):
+                if any(
+                    min(door_maximum[axis], triangle_maximum[axis])
+                    < max(door_minimum[axis], triangle_minimum[axis])
+                    for axis in range(3)
+                ):
+                    broadphase_rejected_triangle_poses += 1
+                    continue
+                local_triangle = []
+                for point in triangle:
+                    relative = [point[index] - center[index] for index in range(3)]
+                    local_triangle.append(
+                        [_dot(relative, radial), _dot(relative, tangent), relative[2]]
+                    )
+                tested_triangle_poses += 1
+                if not _triangle_intersects_axis_aligned_box(local_triangle, half_extents):
+                    continue
+                collision_prim_paths.add(prim_path)
+                if first_collision is None:
+                    first_collision = {
+                        "angle_degrees": round(angle_degrees, 9),
+                        "source_prim_path": prim_path,
+                        "triangle_index": triangle_index,
+                    }
+                break
+
+    result: dict[str, Any] = {
+        "schema_version": SAGE_MESH_SWEEP_SCHEMA_VERSION,
+        "status": (
+            "blocked_by_exact_sage_mesh_contact"
+            if first_collision
+            else "exact_sage_mesh_clearance_candidate_only"
+        ),
+        "source": {
+            "sage_collision_usd_sha256": _sha256(collision),
+            "obstacle_inventory_receipt_digest": inventory["receipt_digest"],
+        },
+        "sweep": {
+            "hinge_origin_world_m": hinge,
+            "closed_endpoint_world_m": endpoint,
+            "member_vertical_interval_m": vertical,
+            "member_radius_m": radius,
+            "member_half_thickness_m": half_thickness,
+            "start_angle_degrees": start_angle,
+            "end_angle_degrees": end_angle,
+            "angular_resolution_degrees": resolution,
+            "sample_count": len(angles),
+        },
+        "mesh_geometry": mesh_rows,
+        "first_collision": first_collision,
+        "collision_prim_paths": sorted(collision_prim_paths),
+        "tested_triangle_poses": tested_triangle_poses,
+        "broadphase_rejected_triangle_poses": broadphase_rejected_triangle_poses,
+        "claim_boundary": {
+            "triangle_prism_intersection_tested": True,
+            "full_stage_inventory_is_bound_broadphase": True,
+            "clear_result_is_not_native_dynamic_qualification": True,
+            "franka_base_pose_resolved": False,
+            "ik_or_contact_qualified": False,
+        },
+        "receipt_digest": "",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    return result
+
+
 def validate_articulated_workspace_clearance(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate a retained clearance receipt without rerunning geometry."""
 
@@ -257,10 +736,54 @@ def validate_articulated_workspace_clearance(value: Mapping[str, Any]) -> dict[s
     return payload
 
 
+def validate_sage_mesh_sweep(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate an exact SAGE triangle sweep before harness admission."""
+
+    payload = json.loads(json.dumps(value))
+    errors: list[str] = []
+    if payload.get("schema_version") != SAGE_MESH_SWEEP_SCHEMA_VERSION:
+        errors.append("sage_mesh_sweep_schema_invalid")
+    status = payload.get("status")
+    if status not in {
+        "blocked_by_exact_sage_mesh_contact",
+        "exact_sage_mesh_clearance_candidate_only",
+    }:
+        errors.append("sage_mesh_sweep_status_invalid")
+    collision = payload.get("first_collision")
+    paths = payload.get("collision_prim_paths")
+    if status == "blocked_by_exact_sage_mesh_contact" and (
+        not isinstance(collision, Mapping) or not isinstance(paths, list) or not paths
+    ):
+        errors.append("sage_mesh_sweep_collision_missing")
+    if status == "exact_sage_mesh_clearance_candidate_only" and (
+        collision is not None or paths != []
+    ):
+        errors.append("sage_mesh_sweep_unexpected_collision")
+    boundary = payload.get("claim_boundary")
+    if not isinstance(boundary, Mapping) or (
+        boundary.get("triangle_prism_intersection_tested") is not True
+        or boundary.get("full_stage_inventory_is_bound_broadphase") is not True
+    ):
+        errors.append("sage_mesh_sweep_exact_evidence_missing")
+    if payload.get("receipt_digest") != canonical_digest(
+        payload, digest_field="receipt_digest"
+    ):
+        errors.append("sage_mesh_sweep_digest_invalid")
+    if errors:
+        raise ArticulatedWorkspaceClearanceError(errors)
+    return payload
+
+
 __all__ = [
     "ArticulatedWorkspaceClearanceError",
     "SCHEMA_VERSION",
+    "SAGE_OBSTACLE_INVENTORY_SCHEMA_VERSION",
+    "SAGE_MESH_SWEEP_SCHEMA_VERSION",
     "evaluate_revolute_member_sweep",
+    "evaluate_revolute_member_sweep_against_sage_meshes",
+    "inventory_sage_sweep_obstacles",
     "load_bound_collision_obstacle",
+    "obstacles_from_sage_sweep_inventory",
     "validate_articulated_workspace_clearance",
+    "validate_sage_mesh_sweep",
 ]

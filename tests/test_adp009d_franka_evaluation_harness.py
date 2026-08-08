@@ -152,7 +152,9 @@ def test_harness_rejects_sage_geometry_or_approximation_mutation() -> None:
 def test_articulated_sweep_rejection_is_a_harness_materialization_decision(
     tmp_path: Path,
 ) -> None:
-    rejection = _load("second_scene_candidate_840411_clearance_rejection.v1.json")
+    rejection = _load(
+        "second_scene_candidate_840411_right_door_exact_sage_mesh_sweep.v1.json"
+    )
     task_contract = {
         "schema_version": "adp_task_spec.v1",
         "task_kind": "articulated_open_close",
@@ -160,14 +162,16 @@ def test_articulated_sweep_rejection_is_a_harness_materialization_decision(
     }
     admission = admit_task_construction(
         task_contract=task_contract,
-        member_sweep_clearance=rejection["right_door_sweep"],
+        member_sweep_clearance=rejection,
     )
 
     assert admission["scenario_materialization_authorized"] is False
     assert admission["placement_search_authorized"] is False
-    assert admission["blockers"] == [
-        "articulated_member_sweep_obstructed:chair:227"
-    ]
+    exact_blocker = (
+        "articulated_member_sweep_obstructed:"
+        "/Root/ZTMAS3RVAUVREPTUKQ888888_005"
+    )
+    assert admission["blockers"] == [exact_blocker]
     assert validate_task_construction_admission(
         admission, task_contract=task_contract
     ) == admission
@@ -185,7 +189,7 @@ def test_articulated_sweep_rejection_is_a_harness_materialization_decision(
         )
 
     assert caught.value.errors == (
-        "scenario_task_construction_not_admitted:articulated_member_sweep_obstructed:chair:227",
+        f"scenario_task_construction_not_admitted:{exact_blocker}",
     )
     assert not (tmp_path / "blocked").exists()
 

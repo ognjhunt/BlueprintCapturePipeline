@@ -21,7 +21,7 @@ from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.articulated_workspace_clearance import (
     ArticulatedWorkspaceClearanceError,
-    validate_articulated_workspace_clearance,
+    validate_sage_mesh_sweep,
 )
 
 
@@ -240,9 +240,7 @@ def admit_task_construction(
     if not str(contract.get("target_joint_id") or ""):
         errors.append("task_construction_target_joint_missing")
     try:
-        clearance = validate_articulated_workspace_clearance(
-            member_sweep_clearance
-        )
+        clearance = validate_sage_mesh_sweep(member_sweep_clearance)
     except ArticulatedWorkspaceClearanceError as exc:
         errors.extend(exc.errors)
         clearance = {}
@@ -251,8 +249,8 @@ def admit_task_construction(
 
     blockers: list[str] = []
     gate_bindings: list[dict[str, Any]] = []
-    if clearance.get("status") == "blocked_by_observed_obstacle":
-        obstacle_ids = _strings(clearance.get("collision_obstacle_ids"))
+    if clearance.get("status") == "blocked_by_exact_sage_mesh_contact":
+        obstacle_ids = _strings(clearance.get("collision_prim_paths"))
         blockers.extend(
             f"articulated_member_sweep_obstructed:{obstacle_id}"
             for obstacle_id in obstacle_ids
@@ -307,7 +305,7 @@ def admit_task_construction(
         "status": "admitted" if authorized else "rejected_or_blocked",
         "scenario_materialization_authorized": authorized,
         "placement_search_authorized": clearance.get("status")
-        == "clearance_candidate_only",
+        == "exact_sage_mesh_clearance_candidate_only",
         "blockers": sorted(blockers),
         "learned_policy_outcomes_consulted": False,
         "caller_asserted_success_accepted": False,
