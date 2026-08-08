@@ -239,3 +239,19 @@ def test_batch_rows_retain_step_trace_motion_quality_and_dataset_capture(
 def test_dataset_capture_factory_requires_media_retention() -> None:
     with pytest.raises(EpisodeBatchError):
         _batch(dataset_capture_factory=lambda episode_id: None)
+
+
+def test_batch_rows_carry_prompt_and_observation_stamps() -> None:
+    """The persisted batch row is the export's input: a receipt field the
+    projection drops is a field the run never had.  v77's export refused on a
+    missing prompt, and its freshness stamps were invisible, for exactly this."""
+
+    from tests.test_adp009d_policy_episode import _StampedEnvironment
+
+    batch = _batch(environment=_StampedEnvironment(), episodes=1)
+
+    row = batch["episodes"][0]
+    assert row["prompt"] == "pick up the can and place it on the counter"
+    assert len(row["observation_sim_times"]) == 4
+    assert len(row["observation_interval_seconds"]) == 3
+    assert row["observation_freshness_required"] is False

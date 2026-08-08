@@ -169,6 +169,14 @@ def run_episode_batch(
                     ),
                     "receipt_digest": receipt.get("receipt_digest"),
                     "episode_id": receipt.get("episode_id"),
+                    "prompt": receipt.get("prompt"),
+                    "observation_sim_times": receipt.get("observation_sim_times"),
+                    "observation_interval_seconds": receipt.get(
+                        "observation_interval_seconds"
+                    ),
+                    "observation_freshness_required": receipt.get(
+                        "observation_freshness_required"
+                    ),
                     "visual_evidence": receipt.get("visual_evidence"),
                     "media_artifacts": receipt.get("media_artifacts"),
                     "step_trace": receipt.get("step_trace"),
