@@ -750,7 +750,16 @@ def build_native_microcheck_bundle(
         aura_source = Path(aura_particlefield_path).expanduser().resolve()
         if not aura_source.is_file():
             raise ValueError("adp009d_aura_particlefield_missing")
-        shutil.copy2(aura_source, assets / "aura_ghost_removed_surflets.usd")
+        # Staged under its own extension.  A fixed .usd name would rename a
+        # NuRec .usdz into something Isaac opens as a flat layer, and the
+        # appearance format is the whole question this lane is deciding: a
+        # ParticleField that Omniverse has never rendered correctly, against a
+        # NuRec volume it demonstrably has.
+        if aura_source.suffix not in {".usd", ".usda", ".usdz"}:
+            raise ValueError(f"adp009d_aura_appearance_extension_unsupported:{aura_source.suffix}")
+        shutil.copy2(
+            aura_source, assets / f"aura_ghost_removed_appearance{aura_source.suffix}"
+        )
     harness_source = Path(harness_manifest_path).expanduser().resolve()
     shutil.copy2(harness_source, runtime / "adp009d_franka_eval_harness_manifest.v1.json")
     shutil.copy2(

@@ -1010,7 +1010,10 @@ def test_a_bundle_without_the_appearance_still_builds() -> None:
 
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
     # Presence is checked, not assumed, so an appearance-free bundle runs.
-    assert "if aura_particlefield_path.is_file():" in source
+    # Resolved rather than name-matched, so a NuRec .usdz and a
+    # ParticleField .usd are both admissible on the same code path.
+    assert "aura_particlefield_path, aura_appearance_format = _resolve_aura_appearance" in source
+    assert "if aura_particlefield_path is not None:" in source
     assert "aura_appearance = None" in source
 
 
@@ -1028,7 +1031,7 @@ def test_the_receipt_never_claims_a_render_it_did_not_observe() -> None:
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
-    assert '"aura_particlefield_shipped"' in source
+    assert '"aura_appearance_shipped"' in source
     assert '"aura_appearance_rendered_in_isaac"' not in source
     # The render claim exists but is explicitly unproven rather than assumed.
     assert '"aura_appearance_render_verified": None' in source
@@ -1607,3 +1610,54 @@ def test_frames_only_returns_a_result_rather_than_none() -> None:
     assert '"supports_microcheck_success_claim": False,' in block
     # And it reports the swept value, or a sweep cannot be attributed.
     assert '"max_gaussians_to_accumulate"' in block
+
+
+def test_the_appearance_format_is_resolved_not_assumed(tmp_path) -> None:
+    """NuRec first: Isaac renders that format natively; ParticleField never has.
+
+    A fixed .usd filename would rename a NuRec .usdz into something Isaac
+    opens as a flat layer, and the appearance format is the whole question
+    this lane is deciding.
+    """
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    assert runtime._resolve_aura_appearance(tmp_path) == (None, None)
+
+    surflets = assets / "aura_ghost_removed_appearance.usd"
+    surflets.write_text("#usda 1.0\n")
+    path, kind = runtime._resolve_aura_appearance(tmp_path)
+    assert path == surflets and kind == "particlefield_gaussian_surflet"
+
+    nurec = assets / "aura_ghost_removed_appearance.usdz"
+    nurec.write_bytes(b"PK\x03\x04")
+    path, kind = runtime._resolve_aura_appearance(tmp_path)
+    assert path == nurec and kind == "nurec_volume", "NuRec must win the tie"
+
+
+def test_the_receipt_names_the_appearance_format() -> None:
+    """A render result that does not say which authoring was in the scene
+    cannot settle between two authorings of the same field."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert '"aura_appearance_format":' in source
+    # The old name asserted a format rather than reporting one.
+    assert '"aura_particlefield_shipped"' not in source
+    assert '"aura_appearance_shipped":' in source
+
+
+def test_the_bundle_keeps_the_appearance_extension() -> None:
+    import inspect
+
+    from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
+
+    source = inspect.getsource(bundle)
+    assert 'aura_ghost_removed_appearance{aura_source.suffix}' in source
+    assert 'assets / "aura_ghost_removed_surflets.usd")' not in source
+    assert "adp009d_aura_appearance_extension_unsupported" in source

@@ -56,6 +56,27 @@ TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
 # so Isaac can render it directly rather than a second process rendering it
 # and the two being composited afterward.
 AURA_PARTICLEFIELD_FILENAME = "aura_ghost_removed_surflets.usd"
+# Accepted appearance assets, in preference order.  NuRec first: Isaac renders
+# that format natively -- an InteriorGS scene in it has been rendered with a
+# full-size robot composited inside -- while the ParticleField authoring of the
+# same field has never rendered correctly.  Both are kept so the two can be
+# compared on one scene rather than by memory of separate runs.
+AURA_APPEARANCE_FILENAMES = (
+    ("aura_ghost_removed_appearance.usdz", "nurec_volume"),
+    ("aura_ghost_removed_appearance.usd", "particlefield_gaussian_surflet"),
+    ("aura_ghost_removed_appearance.usda", "particlefield_gaussian_surflet"),
+    (AURA_PARTICLEFIELD_FILENAME, "particlefield_gaussian_surflet"),
+)
+
+
+def _resolve_aura_appearance(runtime: Path) -> tuple[Path | None, str | None]:
+    """The appearance asset that shipped, and what format it is."""
+
+    for filename, kind in AURA_APPEARANCE_FILENAMES:
+        candidate = runtime / "assets" / filename
+        if candidate.is_file():
+            return candidate, kind
+    return None, None
 AURA_PARTICLEFIELD_PRIM = "/World/AuraAppearance/GaussianSurflets"
 APPROVED_CAN_ADAPTER_SHA256 = (
     "sha256:5db5bc33b72983065bd47e30db0c5945ab3cba8fb3caeb6290bf07edc7337adc"
@@ -830,9 +851,9 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     # a learned result needs coherent views of the Aura background, the moving
     # Franka, the moving can and their occlusions, in one time-synchronised
     # frame rather than two renders glued together afterward.
-    aura_particlefield_path = runtime / "assets" / AURA_PARTICLEFIELD_FILENAME
+    aura_particlefield_path, aura_appearance_format = _resolve_aura_appearance(runtime)
     aura_appearance = None
-    if aura_particlefield_path.is_file():
+    if aura_particlefield_path is not None:
         aura_appearance = Object(
             name="aura_appearance",
             object_type=ObjectType.BASE,
@@ -1163,9 +1184,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             phase_name="zero_action_step",
             diagnostics={
                 "aura_stage_probe": aura_stage_probe,
-                "aura_particlefield_shipped": (
-                    runtime / "assets" / AURA_PARTICLEFIELD_FILENAME
-                ).is_file(),
+                "aura_appearance_shipped": _resolve_aura_appearance(runtime)[0] is not None,
+                "aura_appearance_format": _resolve_aura_appearance(runtime)[1],
                 "note": (
                     "first step is the first render; a budget overrun here means "
                     "the scene composed but cannot be drawn in bounded time"
@@ -1804,9 +1824,13 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             # the same as a run with no appearance at all.  A receipt that
             # asserts a render it never observed is worse than one that is silent.
             "aura_stage_probe": aura_stage_probe,
-            "aura_particlefield_shipped": (
-                runtime / "assets" / AURA_PARTICLEFIELD_FILENAME
-            ).is_file(),
+            "aura_appearance_shipped": _resolve_aura_appearance(runtime)[0] is not None,
+            # Which format actually shipped, so a render result is attributable
+            # to it.  Two authorings of the same field are in play -- a
+            # ParticleField Omniverse has never rendered correctly, and a NuRec
+            # volume it demonstrably has -- and a receipt that does not say
+            # which one was in the scene cannot settle between them.
+            "aura_appearance_format": _resolve_aura_appearance(runtime)[1],
             "aura_appearance_render_verified": None,
             "aura_particlefield_prim": AURA_PARTICLEFIELD_PRIM,
             "gripper_convention_probe": gripper_probe,
