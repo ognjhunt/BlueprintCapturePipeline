@@ -174,6 +174,20 @@ def build_public_scene_inpainting_input_request(value: Mapping[str, Any]) -> dic
             or not 0.01 <= float(maximum_fraction) <= 0.85
         ):
             errors.append("edit_input_mask_maximum_image_fraction_invalid")
+        contribution_threshold = mask.get("visual_contribution_threshold_8bit", 8)
+        if (
+            isinstance(contribution_threshold, bool)
+            or not isinstance(contribution_threshold, int)
+            or not 1 <= contribution_threshold <= 64
+        ):
+            errors.append("edit_input_visual_contribution_threshold_invalid")
+        minimum_visible_fraction = mask.get("minimum_visible_target_fraction", 0.01)
+        if (
+            isinstance(minimum_visible_fraction, bool)
+            or not isinstance(minimum_visible_fraction, (int, float))
+            or not 0.001 <= float(minimum_visible_fraction) <= 0.9
+        ):
+            errors.append("edit_input_minimum_visible_target_fraction_invalid")
     if errors:
         raise PublicSceneInpaintingInputError(errors)
     expected = canonical_digest(request, digest_field="request_digest")
@@ -493,6 +507,20 @@ def materialize_public_scene_inpainting_inputs(
         sh_rest=None,
     )
     target_ply = write_standard_3dgs_ply(target_splat, output / "target_obb_gaussians.ply")
+    retained = ~selected
+    background_splat = SplatData(
+        count=int(retained.sum()),
+        xyz=splat.xyz[retained].copy(),
+        opacity=splat.opacity[retained].copy(),
+        f_dc=splat.f_dc[retained].copy(),
+        scales=splat.scales[retained].copy(),
+        quats=splat.quats[retained].copy(),
+        properties=splat.properties,
+        sh_rest=splat.sh_rest[retained].copy() if splat.sh_rest is not None else None,
+    )
+    background_ply = write_standard_3dgs_ply(
+        background_splat, output / "scene_without_target_obb_gaussians.ply"
+    )
     target_center = corners.mean(axis=0)
     cameras = _camera_rows(request, target_center)
     camera_file = output / "cameras.v1.json"
@@ -508,6 +536,9 @@ def materialize_public_scene_inpainting_inputs(
     }
     rgb_run = _render_harness(splat=standard_ply, output=output / "images", **common)
     support_run = _render_harness(splat=target_ply, output=output / "target_support", **common)
+    background_run = _render_harness(
+        splat=background_ply, output=output / "scene_without_target", **common
+    )
     width, height = int(rendering["width"]), int(rendering["height"])
     dilation = int(request["mask_policy"]["dilation_pixels"])
     mask_rows = []
@@ -516,11 +547,17 @@ def materialize_public_scene_inpainting_inputs(
         camera_id = camera["camera_id"]
         rgb = output / "images" / f"{camera_id}.png"
         support = output / "target_support" / f"{camera_id}.png"
-        if not rgb.is_file() or not support.is_file():
+        background = output / "scene_without_target" / f"{camera_id}.png"
+        if not rgb.is_file() or not support.is_file() or not background.is_file():
             raise PublicSceneInpaintingInputError([f"edit_input_render_missing:{camera_id}"])
         rgb_pixels = np.asarray(Image.open(rgb).convert("RGB"))
         support_pixels = np.asarray(Image.open(support).convert("RGB"))
-        if rgb_pixels.shape[:2] != (height, width) or support_pixels.shape[:2] != (height, width):
+        background_pixels = np.asarray(Image.open(background).convert("RGB"))
+        if (
+            rgb_pixels.shape[:2] != (height, width)
+            or support_pixels.shape[:2] != (height, width)
+            or background_pixels.shape[:2] != (height, width)
+        ):
             raise PublicSceneInpaintingInputError([f"edit_input_render_size_mismatch:{camera_id}"])
         if float(rgb_pixels.std()) < 1.0:
             raise PublicSceneInpaintingInputError([f"edit_input_rgb_blank:{camera_id}"])
@@ -547,11 +584,25 @@ def materialize_public_scene_inpainting_inputs(
         support_inside = float((support_binary & final_pixels).sum() / support_binary.sum())
         if support_inside < float(request["mask_policy"]["minimum_support_inside_final_fraction"]):
             raise PublicSceneInpaintingInputError([f"edit_input_mask_support_mismatch:{camera_id}"])
+        contribution = np.max(
+            np.abs(rgb_pixels.astype(np.int16) - background_pixels.astype(np.int16)), axis=2
+        ) >= int(request["mask_policy"].get("visual_contribution_threshold_8bit", 8))
+        visible_pixels = int((contribution & final_pixels).sum())
+        visible_fraction = float(visible_pixels / final_pixels.sum())
+        if visible_fraction < float(
+            request["mask_policy"].get("minimum_visible_target_fraction", 0.01)
+        ):
+            raise PublicSceneInpaintingInputError(
+                [f"edit_input_target_occluded_or_unrenderable:{camera_id}"]
+            )
         image_rows.append({"camera_id": camera_id, **_record(rgb, output)})
         mask_rows.append(
             {"camera_id": camera_id, **_record(mask_path, output),
              "masked_pixel_count": int(final_pixels.sum()), "image_fraction": round(coverage, 9),
-             "gaussian_support_inside_fraction": round(support_inside, 9)}
+             "gaussian_support_inside_fraction": round(support_inside, 9),
+             "visible_target_contribution_pixel_count": visible_pixels,
+             "visible_target_contribution_fraction": round(visible_fraction, 9),
+             "scene_without_target_render": _record(background, output)}
         )
     renderer = {
         "name": "reference_spark_renderer_exact_camera",
@@ -583,6 +634,7 @@ def materialize_public_scene_inpainting_inputs(
         "derived_artifacts": {
             "standard_splat": _record(standard_ply, output),
             "target_gaussian_support": _record(target_ply, output),
+            "scene_without_target_obb_gaussians": _record(background_ply, output),
             "cameras": _record(camera_file, output), "images": image_rows, "masks": mask_rows,
         },
         "camera_policy": {
@@ -599,11 +651,18 @@ def materialize_public_scene_inpainting_inputs(
             "maximum_image_fraction": float(
                 request["mask_policy"].get("maximum_image_fraction", 0.2)
             ),
+            "visual_contribution_threshold_8bit": int(
+                request["mask_policy"].get("visual_contribution_threshold_8bit", 8)
+            ),
+            "minimum_visible_target_fraction": float(
+                request["mask_policy"].get("minimum_visible_target_fraction", 0.01)
+            ),
         },
         "renderer": renderer,
         "executed_commands": {
             "decode": conversion.get("command") or decode_command, "rgb_render": rgb_run["command"],
             "target_support_render": support_run["command"],
+            "scene_without_target_render": background_run["command"],
         },
         "method_execution": {
             "inpaint360gs_executed": False, "infusion_executed": False,
@@ -612,6 +671,7 @@ def materialize_public_scene_inpainting_inputs(
         "proof_boundaries": {
             "uses_original_capture_frames": False, "uses_rendered_scene_consistent_rgb": True,
             "hidden_background_truth_available": False,
+            "source_target_obb_visual_contribution_measured": True,
             "source_object_removed_from_appearance": False, "source_collider_removed": False,
             "simready_replacement_inserted": False, "inpainting_result": False,
         },

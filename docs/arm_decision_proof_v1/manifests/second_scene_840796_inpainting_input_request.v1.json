@@ -75,7 +75,9 @@
     "dilation_pixels": 12,
     "support_threshold_8bit": 24,
     "minimum_support_inside_final_fraction": 0.99,
-    "maximum_image_fraction": 0.65
+    "maximum_image_fraction": 0.65,
+    "visual_contribution_threshold_8bit": 8,
+    "minimum_visible_target_fraction": 0.05
   },
-  "request_digest": "sha256:90a463b2cad96a67f352d7f99680081a3e6dedad18f3b40a92f0875616407c79"
+  "request_digest": "sha256:9bde6bad61d764f244b315eb83a4050c318db40e01219e3474a4e3447e66d8a1"
 }

@@ -167,9 +167,11 @@ def _fake_render(**kwargs) -> dict:
     for row in cameras:
         size = (row["intrinsics"]["width"], row["intrinsics"]["height"])
         pixels = np.zeros((size[1], size[0], 3), dtype=np.uint8)
-        if output.name == "images":
+        if output.name in {"images", "scene_without_target"}:
             pixels[:, :, 0] = np.arange(size[0], dtype=np.uint16)[None, :] % 255
             pixels[:, :, 1] = 80
+            if output.name == "scene_without_target":
+                pixels[:, :, 1] = 48
         else:
             pixels[size[1] // 2 - 8 : size[1] // 2 + 8, size[0] // 2 - 8 : size[0] // 2 + 8] = 255
         Image.fromarray(pixels, mode="RGB").save(output / f"{row['camera_id']}.png")
@@ -207,6 +209,23 @@ def test_mask_fraction_is_frozen_per_object_scale_with_legacy_default() -> None:
     assert "edit_input_mask_maximum_image_fraction_invalid" in caught.value.codes
 
 
+def test_request_validates_occlusion_aware_contribution_gate() -> None:
+    request = _request()
+    request["mask_policy"].update(
+        {
+            "visual_contribution_threshold_8bit": 12,
+            "minimum_visible_target_fraction": 0.05,
+        }
+    )
+    built = build_public_scene_inpainting_input_request(request)
+    assert built["mask_policy"]["minimum_visible_target_fraction"] == 0.05
+
+    request["mask_policy"]["minimum_visible_target_fraction"] = 0.0
+    with pytest.raises(PublicSceneInpaintingInputError) as caught:
+        build_public_scene_inpainting_input_request(request)
+    assert "edit_input_minimum_visible_target_fraction_invalid" in caught.value.codes
+
+
 def test_oriented_box_membership_does_not_collapse_to_aabb() -> None:
     angle = np.deg2rad(45.0)
     rotation = np.asarray([[np.cos(angle), -np.sin(angle), 0], [np.sin(angle), np.cos(angle), 0], [0, 0, 1]])
@@ -239,6 +258,11 @@ def test_materializer_hashes_real_inputs_and_emits_truthful_packet(
     assert receipt["camera_policy"]["orbit_only"] is False
     assert len(receipt["derived_artifacts"]["images"]) == 6
     assert len(receipt["derived_artifacts"]["masks"]) == 6
+    assert receipt["proof_boundaries"]["source_target_obb_visual_contribution_measured"] is True
+    assert all(
+        row["visible_target_contribution_fraction"] == 1.0
+        for row in receipt["derived_artifacts"]["masks"]
+    )
     assert receipt["method_execution"]["inpaint360gs_executed"] is False
     assert receipt["proof_boundaries"]["hidden_background_truth_available"] is False
     assert receipt["repository"]["tracked_files_clean"] is True
@@ -248,6 +272,42 @@ def test_materializer_hashes_real_inputs_and_emits_truthful_packet(
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
 
 
+def test_materializer_rejects_target_only_projection_hidden_by_scene_occluder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _write_fixture(tmp_path)
+
+    def fake_convert(src, dst, **_kwargs):
+        shutil.copy2(src, dst)
+        return {"status": "completed", "command": ["copy-fixture"]}
+
+    def occluded_render(**kwargs):
+        result = _fake_render(**kwargs)
+        if kwargs["output"].name == "scene_without_target":
+            for camera in kwargs["cameras"]:
+                shutil.copy2(
+                    kwargs["output"].parent / "images" / f"{camera['camera_id']}.png",
+                    kwargs["output"] / f"{camera['camera_id']}.png",
+                )
+        return result
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpainting_inputs.convert_to_standard_ply",
+        fake_convert,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpainting_inputs._render_harness",
+        occluded_render,
+    )
+    with pytest.raises(
+        PublicSceneInpaintingInputError, match="target_occluded_or_unrenderable"
+    ):
+        materialize_public_scene_inpainting_inputs(
+            request_path=paths["repo"] / "request.json",
+            repo_root=paths["repo"],
+            data_root=paths["data"],
+            output_root=paths["output"],
+        )
 def test_materializer_rejects_changed_source_bytes(tmp_path: Path) -> None:
     paths = _write_fixture(tmp_path)
     paths["source"].write_bytes(paths["source"].read_bytes() + b"changed")
