@@ -15,6 +15,7 @@ from blueprint_pipeline.adp009d_approach_capture import (
     CAN_AXIS_XY_M,
     SUPPORT_HEIGHT_M,
     approach_waypoints_world,
+    camera_aim_body_quaternion_xyzw,
     pose_world_to_base,
     select_wrist_observable_episode_start,
     semantic_label_pixel_count,
@@ -74,6 +75,33 @@ def test_sealed_can_axis_maps_forward_of_the_minus_90_degree_robot_base() -> Non
     )
 
     assert position_base == pytest.approx([0.5, 0.0, 0.4733209], abs=1e-7)
+
+
+def test_camera_aim_rotates_opengl_forward_axis_to_target() -> None:
+    """The official mount stays rigid while the body supplies the aim rotation."""
+
+    aimed = camera_aim_body_quaternion_xyzw(
+        body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        camera_position_world=[0.0, 0.0, 0.0],
+        camera_quaternion_world_opengl_xyzw=[0.0, 0.0, 0.0, 1.0],
+        target_position_world=[1.0, 0.0, 0.0],
+    )
+
+    half = np.sqrt(0.5)
+    # Shortest rotation maps camera-local OpenGL -Z onto world +X.
+    assert aimed == pytest.approx([0.0, -half, 0.0, half], abs=1e-9)
+
+
+def test_camera_aim_refuses_a_target_at_the_camera_origin() -> None:
+    from blueprint_pipeline.adp009d_approach_capture import ApproachCaptureError
+
+    with pytest.raises(ApproachCaptureError, match="wrist_camera_aim_pose_invalid"):
+        camera_aim_body_quaternion_xyzw(
+            body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+            camera_position_world=[1.0, 2.0, 3.0],
+            camera_quaternion_world_opengl_xyzw=[0.0, 0.0, 0.0, 1.0],
+            target_position_world=[1.0, 2.0, 3.0],
+        )
 
 
 def _wrist_frame(frame_index: int, can_pixels: int) -> dict:
@@ -697,17 +725,8 @@ def test_rigid_offset_rotates_the_camera_with_the_body() -> None:
     assert live_quat[3] == pytest.approx(half, abs=1e-9)
 
 
-def test_the_runtime_does_not_drive_the_wrist_camera() -> None:
-    """A controlled run proved the drive was a no-op, so it must not return.
-
-    With the drive disabled and everything else byte-identical, the run
-    produced identical numbers -- displacement 0.010018832981586456, waypoint
-    error 0.1911235477432695, and the approved can still observed at 52,725
-    pixels.  The prim already tracks the hand for rendering; only the sensor's
-    reported pose buffer lags, which is why wrist_pose_travel_m reads 0.0
-    either way.  Re-adding the drive would restore dead code and re-suggest a
-    cause that was measured to be false.
-    """
+def test_runtime_refreshes_pose_metadata_without_reauthoring_the_mount() -> None:
+    """v79 rendered motion but retained the initialization pose for every frame."""
 
     from pathlib import Path
 
@@ -719,8 +738,11 @@ def test_the_runtime_does_not_drive_the_wrist_camera() -> None:
     ]
     assert not [line for line in code if "set_world_poses(" in line]
     assert not [line for line in code if "apply_rigid_offset(" in line]
-    # The stale-pose gate stays: a mis-registered pose would still corrupt any
-    # appearance layer composed against it.
+    assert "camera_cfg.update_latest_camera_pose = True" in source
+    assert "camera_aim_body_quaternion_xyzw(" in source
+    assert '"purpose": "camera_aim_in_place"' in source
+    # The stale-pose gate remains fail closed if the configured refresh ever
+    # regresses or the reported pose still does not move.
     from blueprint_pipeline.adp009d_approach_capture import BLOCKER_WRIST_POSE_STALE
 
     assert BLOCKER_WRIST_POSE_STALE

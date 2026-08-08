@@ -4,7 +4,8 @@ At the canonical reset pose the wrist camera does not see the approved can: the
 can sits 63.8 degrees off the optical axis and projects roughly 925 pixels above
 the frame, against a 28.4 degree vertical half field of view.  No small
 perturbation reaches it, so wrist observability can only be established by
-moving the arm toward the object.
+aiming the mounted camera at the object and, only if needed, translating the
+arm toward it.
 
 This module owns the parts of that motion that do not require Isaac: the
 preregistered end-effector waypoints, the world-to-base frame conversion the
@@ -75,6 +76,14 @@ APPROVED_CAN_TOP_ABOVE_SUPPORT_M = 0.169
 # Tool pointing straight down, in exact pinned Isaac Lab (x, y, z, w) order.
 APPROACH_TOOL_QUAT_XYZW = (1.0, 0.0, 0.0, 0.0)
 APPROACH_STEPS_PER_WAYPOINT = 40
+# Frame indices reserved for approach captures, after the 40-frame hold capture.
+APPROACH_CAPTURE_FRAME_BASE = 100
+# First rotate the mounted camera toward the sealed can while holding the
+# gripper base position.  v79 translated for 120 steps with a fixed camera
+# direction and never saw one can pixel.  Aiming in place addresses the angular
+# error before any translation, while the per-step object guard stays active.
+CAMERA_AIM_MAX_STEPS = 120
+CAMERA_AIM_CAPTURE_FRAME_INDEX = APPROACH_CAPTURE_FRAME_BASE - 1
 # Differential IK solves for the whole remaining error each step.  Commanding
 # that directly as an absolute joint target lets the arm swing through the
 # object: an unclamped run displaced the approved can by 3.42 m and tilted it
@@ -109,8 +118,6 @@ WRIST_POSE_CAUSE_HEALTHY = "pose_tracks_hand"
 WRIST_POSE_CAUSE_STALE_BUFFER = "pose_buffer_not_refreshed"
 WRIST_POSE_CAUSE_PRIM_DETACHED = "camera_prim_not_following_hand"
 WRIST_POSE_CAUSE_UNDETERMINED = "undetermined_usd_transform_unavailable"
-# Frame indices reserved for approach captures, after the 40-frame hold capture.
-APPROACH_CAPTURE_FRAME_BASE = 100
 
 BLOCKER_WRIST_NEVER_SAW_OBJECT = "wrist_approach_never_observed_approved_task_object"
 BLOCKER_APPROACH_IK_FAILED = "wrist_approach_differential_ik_failed"
@@ -474,6 +481,89 @@ def _quat_rotate(
     )
 
 
+def camera_aim_body_quaternion_xyzw(
+    *,
+    body_quaternion_world_xyzw: Sequence[float],
+    camera_position_world: Sequence[float],
+    camera_quaternion_world_opengl_xyzw: Sequence[float],
+    target_position_world: Sequence[float],
+) -> list[float]:
+    """Rotate a rigid camera/body pair so OpenGL ``-Z`` points at a target.
+
+    The official Arena camera mount remains unchanged.  This returns the body
+    orientation obtained by applying the shortest world-frame rotation from
+    the camera's current optical axis to the target direction.  Roll is
+    preserved because only that minimal rotation is applied.
+    """
+
+    try:
+        body = tuple(float(v) for v in body_quaternion_world_xyzw)
+        camera_quaternion = tuple(
+            float(v) for v in camera_quaternion_world_opengl_xyzw
+        )
+        camera_position = tuple(float(v) for v in camera_position_world)
+        target_position = tuple(float(v) for v in target_position_world)
+    except (TypeError, ValueError) as exc:
+        raise ApproachCaptureError(["wrist_camera_aim_pose_invalid"]) from exc
+    if (
+        len(body) != 4
+        or len(camera_quaternion) != 4
+        or len(camera_position) != 3
+        or len(target_position) != 3
+        or not all(
+            math.isfinite(value)
+            for value in (*body, *camera_quaternion, *camera_position, *target_position)
+        )
+    ):
+        raise ApproachCaptureError(["wrist_camera_aim_pose_invalid"])
+
+    body_norm = math.sqrt(sum(value * value for value in body))
+    camera_norm = math.sqrt(sum(value * value for value in camera_quaternion))
+    direction = tuple(
+        target_position[index] - camera_position[index] for index in range(3)
+    )
+    direction_norm = math.sqrt(sum(value * value for value in direction))
+    if min(body_norm, camera_norm, direction_norm) <= 1.0e-12:
+        raise ApproachCaptureError(["wrist_camera_aim_pose_invalid"])
+    body = tuple(value / body_norm for value in body)
+    camera_quaternion = tuple(value / camera_norm for value in camera_quaternion)
+    target_direction = tuple(value / direction_norm for value in direction)
+    current_forward = _quat_rotate(camera_quaternion, (0.0, 0.0, -1.0))
+    forward_norm = math.sqrt(sum(value * value for value in current_forward))
+    current_forward = tuple(value / forward_norm for value in current_forward)
+    dot = max(
+        -1.0,
+        min(1.0, sum(a * b for a, b in zip(current_forward, target_direction))),
+    )
+    if dot < -1.0 + 1.0e-9:
+        # The shortest rotation is ambiguous at 180 degrees.  Choose a stable
+        # axis orthogonal to the current forward vector.
+        reference = (1.0, 0.0, 0.0) if abs(current_forward[0]) < 0.9 else (0.0, 1.0, 0.0)
+        axis = (
+            current_forward[1] * reference[2] - current_forward[2] * reference[1],
+            current_forward[2] * reference[0] - current_forward[0] * reference[2],
+            current_forward[0] * reference[1] - current_forward[1] * reference[0],
+        )
+        axis_norm = math.sqrt(sum(value * value for value in axis))
+        delta = tuple(value / axis_norm for value in axis) + (0.0,)
+    else:
+        cross = (
+            current_forward[1] * target_direction[2]
+            - current_forward[2] * target_direction[1],
+            current_forward[2] * target_direction[0]
+            - current_forward[0] * target_direction[2],
+            current_forward[0] * target_direction[1]
+            - current_forward[1] * target_direction[0],
+        )
+        delta = (*cross, 1.0 + dot)
+        delta_norm = math.sqrt(sum(value * value for value in delta))
+        delta = tuple(value / delta_norm for value in delta)
+
+    aimed_body = _quat_multiply(delta, body)
+    aimed_norm = math.sqrt(sum(value * value for value in aimed_body))
+    return [value / aimed_norm for value in aimed_body]
+
+
 def pose_world_to_base(
     *,
     position_world: Sequence[float],
@@ -702,6 +792,8 @@ def summarize_wrist_approach_capture(
 
 __all__ = [
     "APPROACH_CAPTURE_FRAME_BASE",
+    "CAMERA_AIM_CAPTURE_FRAME_INDEX",
+    "CAMERA_AIM_MAX_STEPS",
     "APPROACH_MAX_JOINT_STEP_RAD",
     "APPROACH_MAX_OBJECT_DISPLACEMENT_M",
     "BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH",
@@ -732,6 +824,7 @@ __all__ = [
     "WRIST_POSE_CAUSE_UNDETERMINED",
     "apply_rigid_offset",
     "approach_waypoints_world",
+    "camera_aim_body_quaternion_xyzw",
     "classify_wrist_pose_discrepancy",
     "rigid_offset_in_body_frame",
     "pose_world_to_base",

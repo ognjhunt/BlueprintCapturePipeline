@@ -24,11 +24,14 @@ try:  # flat provider-bundle layout, where this file runs as a script
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
+        CAMERA_AIM_CAPTURE_FRAME_INDEX,
+        CAMERA_AIM_MAX_STEPS,
         EPISODE_START_JOINT_TOLERANCE_RAD,
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
+        camera_aim_body_quaternion_xyzw,
         pose_world_to_base,
         select_wrist_observable_episode_start,
         semantic_target_observability,
@@ -41,11 +44,14 @@ except ModuleNotFoundError:  # imported as part of the repository package
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
+        CAMERA_AIM_CAPTURE_FRAME_INDEX,
+        CAMERA_AIM_MAX_STEPS,
         EPISODE_START_JOINT_TOLERANCE_RAD,
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
+        camera_aim_body_quaternion_xyzw,
         pose_world_to_base,
         select_wrist_observable_episode_start,
         semantic_target_observability,
@@ -919,6 +925,10 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         camera_cfg.data_types = ["rgb", "distance_to_camera", "semantic_segmentation"]
         camera_cfg.colorize_semantic_segmentation = False
         camera_cfg.update_period = 0.0
+        # Arena leaves this false, which makes camera.data.pos_w/quat_w_* stay
+        # frozen at initialization even while the parented render view moves.
+        # Exact pose metadata is part of the policy-input evidence contract.
+        camera_cfg.update_latest_camera_pose = True
         camera_cfg.width = render_width
         camera_cfg.height = render_height
         # Gaussian surfels are not drawn unless the render product asks for them.
@@ -1542,6 +1552,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         approach_object_trace: list[dict[str, Any]] = []
         episode_start_samples: list[dict[str, Any]] = []
         episode_start_selection: dict[str, Any] | None = None
+        camera_aim_plan: dict[str, Any] = {}
         approach_aborted = False
         try:
             from isaaclab.controllers import (  # noqa: PLC0415
@@ -1580,41 +1591,66 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             )
             body_index = body_names.index(end_effector_name)
             approach_body_names = list(body_names)
-            # The wrist camera needs no driving.  A controlled run with the
-            # drive disabled produced bit-identical results -- displacement
-            # 0.010018832981586456, error 0.1911235477432695, and the approved
-            # can still observed at 52,725 pixels -- so writing the camera pose
-            # changed nothing.  The prim already tracks the hand for rendering;
-            # only the sensor's reported pose buffer lags, which is why
-            # wrist_pose_travel_m reads 0.0 whether the drive runs or not.
-            #
-            # What made the wrist see the can was the arm trajectory: holding a
-            # feasible orientation instead of an unreachable tool-down
-            # quaternion.  The stale-pose gate stays, because a mis-registered
-            # pose would still corrupt any layer composed against it.
+            # The official Arena mount already follows the hand for rendering;
+            # never rewrite its world pose.  v79 proved that translation while
+            # holding the reset orientation leaves the can outside the view for
+            # every step.  Aim the rigid mount by rotating the controlled body
+            # in place first while the per-step object guard stays active.
             wrist_camera_driven = False
-            # Feasible-by-construction orientation target: the pose the arm is
-            # already in.  Recorded so the report shows what was actually held.
             reset_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
-            approach_hold_quaternion = [float(v) for v in reset_body_pose[3:7]]
+            wrist_camera = env.unwrapped.scene["wrist_camera"]
+            reset_camera_position = [
+                float(v) for v in _to_torch(wrist_camera.data.pos_w)[0]
+            ]
+            reset_camera_quaternion = [
+                float(v) for v in _to_torch(wrist_camera.data.quat_w_opengl)[0]
+            ]
+            camera_aim_quaternion = camera_aim_body_quaternion_xyzw(
+                body_quaternion_world_xyzw=[float(v) for v in reset_body_pose[3:7]],
+                camera_position_world=reset_camera_position,
+                camera_quaternion_world_opengl_xyzw=reset_camera_quaternion,
+                target_position_world=[float(v) for v in canonical_hold_can_pose[:3]],
+            )
+            camera_aim_plan = {
+                "strategy": "rotate_mounted_opengl_optical_axis_to_can_center",
+                "camera_position_world_m": reset_camera_position,
+                "camera_quaternion_world_opengl_xyzw": reset_camera_quaternion,
+                "target_position_world_m": [
+                    float(v) for v in canonical_hold_can_pose[:3]
+                ],
+                "target_body_quaternion_world_xyzw": camera_aim_quaternion,
+                "max_steps": CAMERA_AIM_MAX_STEPS,
+                "camera_mount_reauthored": False,
+            }
             # Isaac Lab e57379c drops the root row from the jacobian stack for a
             # fixed-base articulation, so the jacobian index is offset by one.
             jacobian_index = body_index - 1 if robot.is_fixed_base else body_index
             arm_joint_ids = list(range(7))
             base_pose = _to_torch(robot.data.root_pose_w)[0, :7]
-            for waypoint in approach_waypoints_world():
+            resolved_waypoints = [
+                {
+                    "waypoint_index": -1,
+                    "position_world_m": [float(v) for v in reset_body_pose[:3]],
+                    "quaternion_xyzw": camera_aim_quaternion,
+                    "standoff_above_support_m": None,
+                    "capture_frame_index": CAMERA_AIM_CAPTURE_FRAME_INDEX,
+                    "steps": CAMERA_AIM_MAX_STEPS,
+                    "purpose": "camera_aim_in_place",
+                },
+                *[
+                    {
+                        **waypoint,
+                        "quaternion_xyzw": camera_aim_quaternion,
+                        "purpose": "camera_aimed_translation_fallback",
+                    }
+                    for waypoint in approach_waypoints_world()
+                ],
+            ]
+            camera_aim_plan["resolved_waypoints"] = resolved_waypoints
+            for waypoint in resolved_waypoints:
                 position_base, quaternion_base = pose_world_to_base(
                     position_world=waypoint["position_world_m"],
-                    # The preregistered waypoint carries a tool-down quaternion
-                    # whose frame does not match the body actually controlled
-                    # here.  Commanding it asks for a pose the solver cannot
-                    # satisfy, and a damped-least-squares solver then trades
-                    # position error away chasing it: a live run diverged
-                    # monotonically, 0.069 -> 0.252 -> 0.318 m, while reporting
-                    # success.  Hold the orientation the arm already has so the
-                    # solve is a pure translation, which is all wrist
-                    # observability needs.
-                    quaternion_world_xyzw=approach_hold_quaternion,
+                    quaternion_world_xyzw=waypoint["quaternion_xyzw"],
                     base_position_world=[float(v) for v in base_pose[:3]],
                     base_quaternion_world_xyzw=[float(v) for v in base_pose[3:7]],
                 )
@@ -2122,6 +2158,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         wrist_approach_capture["approved_can_per_step_trace"] = approach_object_trace
         wrist_approach_capture["articulation_body_names"] = approach_body_names
         wrist_approach_capture["wrist_camera_driven_from_body_pose"] = wrist_camera_driven
+        wrist_approach_capture["camera_pose_metadata_refresh_enabled"] = True
+        wrist_approach_capture["camera_aim_plan"] = camera_aim_plan
         wrist_approach_capture["isaaclab_quaternion_order"] = "xyzw"
         camera_rows.extend(approach_frames)
         robot = env.unwrapped.scene["robot"]
