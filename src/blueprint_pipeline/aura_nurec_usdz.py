@@ -100,7 +100,7 @@ def Xform "{default_prim}"
         custom float3 omni:nurec:offset = (0, 0, 0)
         custom bool omni:nurec:useProxyTransform = 0
         custom rel proxy
-        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), ({tx}, {ty}, {tz}, 1) )
         uniform token[] xformOpOrder = ["xformOp:transform"]
 
         def OmniNuRecFieldAsset "density_field"
@@ -159,13 +159,24 @@ def write_aura_nurec_usdz(
     payload = encode_nurec_bytes(document)
 
     positions = gaussian_arrays(document)["positions"].astype(np.float32)
+    _centre = np.asarray(
+        (document.get("_blueprint_authoring") or {}).get("centre_offset_m") or [0.0, 0.0, 0.0],
+        dtype=np.float32,
+    )
+    # Declared in the volume's own local space, matching the shipped package,
+    # whose extent equals its raw positions rather than its world placement.
     low = positions.min(axis=0)
     high = positions.max(axis=0)
 
     render_settings = _RENDER_SETTINGS.replace("{default_prim}", DEFAULT_PRIM)
+    # The translation that puts a recentred payload back where it belongs.
+    # Omitting it would render the room correctly, sharply, and several metres
+    # from the arm.
+    centre = (document.get("_blueprint_authoring") or {}).get("centre_offset_m") or [0.0, 0.0, 0.0]
     volume_layer = _VOLUME_LAYER.format(
         default_prim=DEFAULT_PRIM,
         render_settings=render_settings,
+        tx=float(centre[0]), ty=float(centre[1]), tz=float(centre[2]),
         payload_name=payload_name,
         x0=float(low[0]), y0=float(low[1]), z0=float(low[2]),
         x1=float(high[0]), y1=float(high[1]), z1=float(high[2]),
@@ -196,7 +207,8 @@ def write_aura_nurec_usdz(
         # Identity, because Aura's positions are already in the admitted world
         # frame.  The shipped InteriorGS package mirrors instead, and copying
         # that would rotate the room while looking entirely plausible.
-        "world_transform": "identity",
+        "world_transform": "translation_only" if any(centre) else "identity",
+        "world_translation_m": [float(v) for v in centre],
         "render_settings": "shipped_interiorgs_verbatim",
         "authoring": dict(document.get("_blueprint_authoring") or {}),
     }

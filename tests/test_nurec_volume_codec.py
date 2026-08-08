@@ -376,19 +376,26 @@ def test_the_packaged_usdz_is_a_nurec_volume(tmp_path) -> None:
         assert field.GetAttribute("filePath").Get() is not None
 
 
-def test_the_world_transform_is_identity_not_the_shipped_mirror(tmp_path) -> None:
+def test_the_world_rotation_is_identity_not_the_shipped_mirror(tmp_path) -> None:
     """InteriorGS mirrors because its positions are in a NuRec-internal frame.
 
     Its extent matches its raw positions and the matrix maps those to world.
     Aura's positions are already in the admitted world frame, so copying that
     matrix would mirror and rotate the room while looking entirely plausible.
+
+    Only the translation may be non-trivial, and only to undo recentring.
     """
 
     from pxr import Usd
 
     from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
 
-    receipt = write_aura_nurec_usdz(_authored(), tmp_path / "aura.usdz")
+    from blueprint_pipeline.aura_nurec_volume import build_aura_nurec_document
+
+    document = build_aura_nurec_document(
+        _aura_surfels(), template=_shipped_payload(), recentre=False
+    )
+    receipt = write_aura_nurec_usdz(document, tmp_path / "aura.usdz")
     assert receipt["world_transform"] == "identity"
     stage = Usd.Stage.Open(str(tmp_path / "aura.usdz"))
     matrix = stage.GetPrimAtPath("/World/gauss/gauss").GetAttribute("xformOp:transform").Get()
@@ -562,4 +569,70 @@ def test_float32_preserves_positions_that_float16_rounds_away() -> None:
         surfels, template=_shipped_payload(), precision=32
     )
     stored = gaussian_arrays(doc32)["positions"]
-    np.testing.assert_array_equal(stored, exact)
+    # Recentred, so the stored value is the world position minus the offset the
+    # volume's translation re-applies.  Comparing without it would assert the
+    # payload is wrong precisely because it is right.
+    centre = np.asarray(
+        doc32["_blueprint_authoring"]["centre_offset_m"], dtype=np.float32
+    )
+    np.testing.assert_allclose(stored + centre, exact, rtol=0, atol=1e-6)
+
+
+def test_recentring_halves_the_quantisation_error() -> None:
+    """float16 resolution is relative to magnitude.
+
+    The grid is coarse at 8.4m and fine near zero, so centring the field more
+    than halves the rounding error -- 1.15x the median surfel width down to
+    0.53x -- and costs nothing.  It is arithmetic, not a format feature the
+    renderer might not implement.
+    """
+
+    from blueprint_pipeline.aura_nurec_volume import build_aura_nurec_document
+
+    import numpy as _np
+
+    rng = _np.random.default_rng(7)
+    from blueprint_pipeline.gaussian_splat_decode import GaussianSurfelData
+
+    n = 512
+    far = rng.uniform(low=[0.2, -6.8, -0.8], high=[8.4, -1.9, 2.2], size=(n, 3)).astype("float32")
+    surfels = GaussianSurfelData(
+        count=n, xyz=far, opacity=_np.full(n, 3.0, dtype="float32"),
+        f_dc=rng.normal(size=(n, 3)).astype("float32"),
+        scales=_np.full((n, 2), -7.1, dtype="float32"),
+        quats=_np.tile(_np.array([1, 0, 0, 0], dtype="float32"), (n, 1)),
+        sh_rest=rng.normal(size=(n, 45)).astype("float32"),
+        mask_logits=_np.zeros((n, 3), dtype="float32"), properties=(),
+    )
+
+    def p95(doc):
+        stored = gaussian_arrays(doc)["positions"].astype(_np.float32)
+        centre = _np.asarray(doc["_blueprint_authoring"]["centre_offset_m"], dtype=_np.float32)
+        return float(_np.percentile(_np.abs((stored + centre) - far), 95))
+
+    plain = build_aura_nurec_document(surfels, template=_shipped_payload(), recentre=False)
+    centred = build_aura_nurec_document(surfels, template=_shipped_payload())
+    assert p95(centred) < p95(plain) / 1.8, (p95(plain), p95(centred))
+    assert plain["_blueprint_authoring"]["centre_offset_m"] == [0.0, 0.0, 0.0]
+    assert any(centred["_blueprint_authoring"]["centre_offset_m"])
+
+
+def test_the_offset_is_carried_as_a_translation_on_the_volume(tmp_path) -> None:
+    """Or the room renders correctly, sharply, and metres from the arm."""
+
+    from pxr import Usd
+
+    from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
+
+    document = _authored()
+    receipt = write_aura_nurec_usdz(document, tmp_path / "aura.usdz")
+    centre = document["_blueprint_authoring"]["centre_offset_m"]
+    assert receipt["world_translation_m"] == centre
+    stage = Usd.Stage.Open(str(tmp_path / "aura.usdz"))
+    matrix = stage.GetPrimAtPath("/World/gauss/gauss").GetAttribute("xformOp:transform").Get()
+    for i in range(3):
+        assert abs(matrix[3][i] - centre[i]) < 1e-5, (i, matrix[3][i], centre[i])
+    # Rotation stays identity: Aura is already in the admitted world frame.
+    for r in range(3):
+        for c in range(3):
+            assert matrix[r][c] == (1.0 if r == c else 0.0)
