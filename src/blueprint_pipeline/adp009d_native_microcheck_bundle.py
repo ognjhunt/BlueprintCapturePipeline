@@ -79,6 +79,29 @@ export BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"
 export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"
 mkdir -p "$OUT_DIR"
 
+# Portable review media is an episode requirement, including controls-only
+# runs.  Policy provisioning used to install ffmpeg incidentally, so the first
+# controls-only canary reached its zero-action episode and then failed while
+# sealing evidence.  Make the toolchain a base runtime dependency and prove it
+# before any checkpoint fetch or simulator startup.
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:media_toolchain:started"
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+    >"$OUT_DIR/adp009d_media_toolchain_install.log" 2>&1 && \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg \
+    >>"$OUT_DIR/adp009d_media_toolchain_install.log" 2>&1
+fi
+if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+  printf '{"schema_version":"adp009d_media_toolchain.v1","status":"ready","ffmpeg":true,"ffprobe":true}\n' \
+    >"$OUT_DIR/adp009d_media_toolchain_status.json"
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:media_toolchain:completed"
+else
+  printf '{"schema_version":"adp009d_media_toolchain.v1","status":"blocked","ffmpeg":false,"ffprobe":false}\n' \
+    >"$OUT_DIR/adp009d_media_toolchain_status.json"
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:media_toolchain:blocked"
+  exit 86
+fi
+
 # Environment facts the policy-server design could not verify from off-worker:
 # what Isaac's own interpreter is, the torch it ships, and how much of the GPU
 # is already spoken for before a policy is co-resident.  Captured before
@@ -1014,6 +1037,8 @@ def build_native_microcheck_bundle(
         ),
         "control_plan_digest": control_plan["plan_digest"] if run_controls else None,
         "camera_resolution_binding": camera_resolution or None,
+        "media_toolchain_required": ["ffmpeg", "ffprobe"],
+        "media_toolchain_preflight_before_simulator": True,
         "expected_output_filename": "adp009d_native_microcheck.json",
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,

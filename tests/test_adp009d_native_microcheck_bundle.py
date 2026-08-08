@@ -195,6 +195,8 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
     assert receipt["policy_candidate_id"] is None
     assert receipt["scenario_instance_digest"].startswith("sha256:")
     assert receipt["control_plan_digest"].startswith("sha256:")
+    assert receipt["media_toolchain_required"] == ["ffmpeg", "ffprobe"]
+    assert receipt["media_toolchain_preflight_before_simulator"] is True
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
         entrypoint = archive.read(
@@ -205,6 +207,20 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
     assert "provider_runtime/adp009d_control_plan.v1.json" in names
     assert 'BLUEPRINT_ADP009D_CONTROLS="1"' in entrypoint
     assert "adp009d_policy_provisioning.pi05_droid.sh" not in names
+    media_preflight = entrypoint.index(
+        'echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:media_toolchain:started"'
+    )
+    provision_loop = entrypoint.index(
+        "for candidate in $(printf '%s' \"$provisioning_candidates\""
+    )
+    runner = entrypoint.index(
+        '/isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"'
+    )
+    assert media_preflight < provision_loop < runner
+    assert "command -v ffmpeg" in entrypoint
+    assert "command -v ffprobe" in entrypoint
+    assert "apt-get install -y -qq ffmpeg" in entrypoint
+    assert "adp009d_media_toolchain_status.json" in entrypoint
 
 
 def test_isolated_bundle_builder_returns_fresh_digest_bound_receipt(tmp_path: Path) -> None:

@@ -176,8 +176,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v86
-ledgers add `$6.582097`, for `$17.580396` total and `$7.419604` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v87
+ledgers add `$6.776798`, for `$17.775097` total and `$7.224903` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -217,10 +217,11 @@ they are evidence that concurrency failed closed.
 | v84 spawned dual camera | `$0.236308` | Completed three interpretable GR00T `never_moved` episodes with both views gated and exact can visible. |
 | v85 two-policy dual camera | `$0.433506` estimated | Completed six interpretable episodes with complete media: both candidates `never_moved` x3; tied canonical-cell null, no winner. |
 | v86 canonical controls + overview | `$0.100146` estimated | Blocked before both controls: the review-only overview camera had no valid metric-depth AOV. No policy/control outcome; encoded review-camera depth fix followed. |
+| v87 canonical controls + overview retry | `$0.194701` estimated | All three camera warmups passed and the controls runner started, but the first control could not seal its required review video because the controls-only image lacked `ffmpeg`/`ffprobe`. No sealed control receipt or control outcome; encoded base media-toolchain preflight followed. |
 
 All completed paid attempts were followed by an API provider-zero check. v86
-was launched from provider zero as the sole active instance; after its automatic
-teardown a fresh Vast API query returned `active: 0 []`.
+and v87 were each launched from provider zero as the sole active instance;
+after each automatic teardown a fresh Vast API query returned `active: 0 []`.
 
 ## Scenario-family and control-harness progress after v85
 
@@ -263,10 +264,20 @@ keeps the overview's RGB, semantics, calibration, timestamps, lossless frames,
 and video mandatory while representing metric depth as explicitly not required.
 It does not relax either policy camera's depth gate.
 
-No paid control outcome exists yet: v86 reached neither the zero-action nor
-scripted-positive episode. Its `$0.100146` result is a retained harness null,
-not a simulator task result. A local fake-environment positive remains test
-evidence for orchestration only and is not a simulator task success.
+v87 confirmed that fix: external, wrist, and overview RGB warmups passed and
+the canonical controls runner began. The first control then failed while
+sealing evidence because `ffmpeg` and `ffprobe` were absent. Learned-policy
+provisioning had installed ffmpeg incidentally, but a controls-only bundle
+correctly skips all policy provisioning. The encoded correction makes both
+tools an explicit base episode-media dependency, checks or installs them before
+any policy provisioning or simulator startup, writes a typed toolchain status,
+and fails closed before paid task execution if either remains unavailable.
+
+No paid control outcome exists yet: neither v86 nor v87 produced a sealed
+zero-action receipt, and neither reached a sealed scripted-positive receipt.
+Their combined `$0.294847` is retained harness-null evidence, not a simulator
+task result. A local fake-environment positive remains test evidence for
+orchestration only and is not a simulator task success.
 
 ## What remains open
 
@@ -288,7 +299,7 @@ evidence for orchestration only and is not a simulator task success.
 
 ## Single next action
 
-After landing the review-only depth fix, from provider zero run only the
+After landing the controls-only base media-toolchain fix, from provider zero run only the
 checked-in canonical scenario's zero-action
 negative and deterministic scripted-positive control pair. Do not query either
 learned policy. If the scripted positive does not place the exact SimReady can,
