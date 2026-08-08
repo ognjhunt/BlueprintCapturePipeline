@@ -156,19 +156,31 @@ def build_droid_observation(
     return observation
 
 
-def describe_observation_conversion(candidate_id: str) -> dict[str, Any]:
-    """Report the exact conversion applied, for the run receipt."""
+def describe_observation_conversion(
+    candidate_id: str,
+    *,
+    source_hw: tuple[int, int] = (ISAAC_RENDER_HEIGHT, ISAAC_RENDER_WIDTH),
+) -> dict[str, Any]:
+    """Report the exact conversion applied, for the run receipt.
+
+    ``source_hw`` is the size the cameras actually rendered, which is a run
+    decision rather than a constant: rendering at the size the candidates
+    consume draws a sixteenth of the pixels for byte-identical content, and a
+    receipt that reported a fixed 1280x720 would be describing a conversion
+    that did not happen.
+    """
 
     if candidate_id not in CANDIDATE_VIEW_SHAPES:
         raise DroidObservationError([f"{BLOCKER_UNKNOWN_CANDIDATE}:{candidate_id}"])
+    source_height, source_width = (int(v) for v in source_hw)
     height, width = CANDIDATE_VIEW_SHAPES[candidate_id]
-    scale = min(width / ISAAC_RENDER_WIDTH, height / ISAAC_RENDER_HEIGHT)
-    content_width = max(1, round(ISAAC_RENDER_WIDTH * scale))
-    content_height = max(1, round(ISAAC_RENDER_HEIGHT * scale))
+    scale = min(width / source_width, height / source_height)
+    content_width = max(1, round(source_width * scale))
+    content_height = max(1, round(source_height * scale))
     return {
         "schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
         "candidate_id": candidate_id,
-        "source_resolution_hw": [ISAAC_RENDER_HEIGHT, ISAAC_RENDER_WIDTH],
+        "source_resolution_hw": [source_height, source_width],
         "target_resolution_hw": [height, width],
         "required_views": list(CANDIDATE_REQUIRED_VIEWS[candidate_id]),
         "method": "aspect_preserving_resize_with_centred_black_pad",

@@ -366,6 +366,38 @@ def _phase(name: str, status: str = "started") -> None:
 STOP_AFTER_FRAMES_ENV = "BLUEPRINT_ADP009D_STOP_AFTER_FRAMES"
 # Above this, a frame has accumulated something.  At or below it the render
 # never converged, whatever the reason.
+CAMERA_RESOLUTION_ENV = "BLUEPRINT_ADP009D_CAMERA_RESOLUTION"
+# Both frozen candidates consume far less than the 1280x720 the cameras
+# rendered.  pi05_droid pads 1280x720 into 224x224, keeping 224x126 of content;
+# groot_n17_droid keeps 320x180.  Rendering at 320x180 reproduces *both* of
+# those exactly -- the pi05 pad from 320x180 also lands on 224x126 -- while
+# drawing one sixteenth of the pixels.  Everything above that was rendered and
+# then thrown away in the resize, and at roughly a minute per frame on a slow
+# host that waste is what makes an episode take hours.
+POLICY_CAMERA_RESOLUTION = (320, 180)
+DIAGNOSTIC_CAMERA_RESOLUTION = (1280, 720)
+
+
+def _camera_resolution() -> tuple[int, int]:
+    """Render size, as (width, height)."""
+
+    raw = os.environ.get(CAMERA_RESOLUTION_ENV, "").strip().lower()
+    if not raw:
+        return DIAGNOSTIC_CAMERA_RESOLUTION
+    if raw == "policy":
+        return POLICY_CAMERA_RESOLUTION
+    try:
+        width, height = (int(v) for v in raw.split("x", 1))
+    except ValueError:
+        return DIAGNOSTIC_CAMERA_RESOLUTION
+    # A resolution below what a candidate consumes cannot be padded back up:
+    # the policy would see a genuinely lower-detail scene than the contract
+    # says, which is a silent change to the thing being evaluated.
+    if width < POLICY_CAMERA_RESOLUTION[0] or height < POLICY_CAMERA_RESOLUTION[1]:
+        return POLICY_CAMERA_RESOLUTION
+    return (width, height)
+
+
 MAX_GAUSSIANS_TO_ACCUMULATE_ENV = "BLUEPRINT_ADP009D_MAX_GAUSSIANS_TO_ACCUMULATE"
 # Forty-eight was the shipped value and could not build a surface from a field
 # whose median surfel is 0.81mm across in a 9.9m room.  This is a sweepable
@@ -802,11 +834,17 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     # gripper names overlap right_outer.* / left_inner.* / right_inner.* and
     # Isaac Lab correctly rejects such an ambiguous mapping.
     _bind_canonical_joint_positions(embodiment)
+    render_width, render_height = _camera_resolution()
+    print(
+        f"BLUEPRINT_ADP009D_CAMERA_RESOLUTION:{render_width}x{render_height}", flush=True
+    )
     for camera_name in ("external_camera", "wrist_camera"):
         camera_cfg = getattr(embodiment.camera_config, camera_name)
         camera_cfg.data_types = ["rgb", "distance_to_camera", "semantic_segmentation"]
         camera_cfg.colorize_semantic_segmentation = False
         camera_cfg.update_period = 0.0
+        camera_cfg.width = render_width
+        camera_cfg.height = render_height
         # Gaussian surfels are not drawn unless the render product asks for them.
         # These were first added because a run put the ParticleField in the
         # scene and produced frames identical to a run without it.  That run's

@@ -1696,3 +1696,57 @@ def test_the_frames_only_receipt_names_the_appearance_format() -> None:
     block = block[: block.index("--- gripper convention probe")]
     assert '"aura_appearance_format"' in block
     assert '"aura_appearance_shipped"' in block
+
+
+def test_the_policy_resolution_reproduces_the_full_size_content_exactly() -> None:
+    """Both candidates consume far less than 1280x720 was rendering.
+
+    pi05 pads into 224x224 keeping 224x126 of content; groot keeps 320x180.
+    Rendering at 320x180 reproduces both exactly while drawing a sixteenth of
+    the pixels -- the rest was rendered and thrown away in the resize, and at
+    roughly a minute per frame on a slow host that waste is what makes an
+    episode take hours.
+    """
+
+    from blueprint_pipeline.adp009d_droid_observation import (
+        describe_observation_conversion,
+    )
+    from blueprint_pipeline.adp009d_isaac_runtime import POLICY_CAMERA_RESOLUTION
+
+    width, height = POLICY_CAMERA_RESOLUTION
+    for candidate in ("pi05_droid", "groot_n17_droid"):
+        full = describe_observation_conversion(candidate, source_hw=(720, 1280))
+        small = describe_observation_conversion(candidate, source_hw=(height, width))
+        assert full["content_resolution_hw"] == small["content_resolution_hw"], candidate
+        assert small["scene_content_cropped"] is False
+    assert (720 * 1280) / (height * width) == 16.0
+
+
+def test_the_render_resolution_never_drops_below_what_a_policy_consumes(monkeypatch) -> None:
+    """A lower resolution cannot be padded back up.
+
+    The policy would see a genuinely lower-detail scene than the contract
+    says, which is a silent change to the thing being evaluated.
+    """
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    monkeypatch.setenv(runtime.CAMERA_RESOLUTION_ENV, "64x36")
+    assert runtime._camera_resolution() == runtime.POLICY_CAMERA_RESOLUTION
+    monkeypatch.setenv(runtime.CAMERA_RESOLUTION_ENV, "policy")
+    assert runtime._camera_resolution() == runtime.POLICY_CAMERA_RESOLUTION
+    monkeypatch.setenv(runtime.CAMERA_RESOLUTION_ENV, "640x360")
+    assert runtime._camera_resolution() == (640, 360)
+    monkeypatch.delenv(runtime.CAMERA_RESOLUTION_ENV)
+    assert runtime._camera_resolution() == runtime.DIAGNOSTIC_CAMERA_RESOLUTION
+
+
+def test_the_receipt_describes_the_conversion_that_happened() -> None:
+    """A fixed 1280x720 would describe a conversion that did not occur."""
+
+    from blueprint_pipeline.adp009d_droid_observation import (
+        describe_observation_conversion,
+    )
+
+    described = describe_observation_conversion("pi05_droid", source_hw=(180, 320))
+    assert described["source_resolution_hw"] == [180, 320]
