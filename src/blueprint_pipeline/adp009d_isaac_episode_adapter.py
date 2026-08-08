@@ -13,9 +13,11 @@ than conventions:
   uint8 RGB, which the observation adapter then resizes per candidate.  Alpha
   is dropped here rather than downstream because a constant alpha channel
   silently dominated a colour-signal check once already.
-* **Gripper width.**  The scorer reads a finger separation in metres, which is
-  the same quantity the gripper-convention probe measures, so it is read from
-  the same two finger bodies rather than inferred from a joint angle.
+* **Gripper width.**  The scorer reads physical jaw opening in metres.  The
+  Robotiq link origins are not jaw tips and can dynamically travel beyond the
+  85 mm nameplate stroke, so their separation is affine-calibrated against the
+  same run's measured closed/open convention probe.  The raw separation and a
+  clamp flag remain in every object sample for audit.
 
 Isaac imports happen inside methods, never at module import, so this file stays
 importable -- and testable -- off-GPU.
@@ -38,7 +40,7 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v1"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v2"
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -52,6 +54,10 @@ FINGER_BODIES = ("left_inner_finger", "right_inner_finger")
 # the Robotiq tool body that carries the wrist camera in the live Arena asset.
 END_EFFECTOR_BODY_CANDIDATES = ("panda_hand", "base_link", "panda_link7")
 ARM_JOINT_COUNT = 7
+# Frozen by the Robotiq 2F-85 task embodiment and pinned independently by the
+# deterministic scorer.  A parity test keeps the flat-bundle duplicate honest.
+GRIPPER_PHYSICAL_FULL_OPENING_M = 0.085
+GRIPPER_WIDTH_SOURCE = "probe_calibrated_finger_body_separation"
 
 
 class IsaacEpisodeAdapterError(RuntimeError):
@@ -214,11 +220,18 @@ class IsaacEpisodeAdapter:
 
     def read_object_sample(self) -> dict[str, Any]:
         pose = self._to_torch(self._can.data.root_pose_w)[0]
+        left, right = self._finger_positions()
+        raw_separation = math.dist(left, right)
+        width, unclamped_open_fraction, calibration_clamped = (
+            self._calibrated_gripper_width(raw_separation)
+        )
         sample: dict[str, Any] = {
             "can_pose_world": [float(v) for v in pose[:7]],
-            "gripper_width_m": self._gripper_width(),
+            "gripper_width_m": width,
+            "gripper_body_separation_m": raw_separation,
+            "gripper_width_open_fraction_unclamped": unclamped_open_fraction,
+            "gripper_width_calibration_clamped": calibration_clamped,
         }
-        left, right = self._finger_positions()
         sample["grasp_frame_position_world_m"] = [
             (left[axis] + right[axis]) / 2.0 for axis in range(3)
         ]
@@ -233,19 +246,39 @@ class IsaacEpisodeAdapter:
             [float(poses[self._finger_indices[1]][axis]) for axis in range(3)],
         )
 
-    def _gripper_width(self) -> float:
+    def _raw_gripper_body_separation(self) -> float:
         # A Euclidean distance needs no tensor library, and keeping it in plain
         # arithmetic is what lets this adapter be tested without a GPU.
         left, right = self._finger_positions()
         return math.dist(left, right)
 
+    def _calibrated_gripper_width(
+        self, raw_separation_m: float
+    ) -> tuple[float, float, bool]:
+        """Map linkage separation onto the gripper's physical jaw stroke.
+
+        The convention probe supplies the run-local endpoints.  Values outside
+        them are linkage/dynamics overtravel rather than a jaw aperture wider
+        than the 2F-85 can physically achieve, so the calibrated aperture is
+        bounded while the unbounded fraction is retained for diagnosis.
+        """
+
+        span = self._gripper_open_width_m - self._gripper_closed_width_m
+        unbounded = (float(raw_separation_m) - self._gripper_closed_width_m) / span
+        bounded = min(1.0, max(0.0, unbounded))
+        return (
+            GRIPPER_PHYSICAL_FULL_OPENING_M * bounded,
+            unbounded,
+            not math.isclose(unbounded, bounded, rel_tol=0.0, abs_tol=1e-12),
+        )
+
     def _droid_gripper_position(self) -> float:
         """DROID state convention: zero=open and one=closed."""
 
-        width = self._gripper_width()
-        span = self._gripper_open_width_m - self._gripper_closed_width_m
-        closed_fraction = (self._gripper_open_width_m - width) / span
-        return min(1.0, max(0.0, closed_fraction))
+        _, open_fraction, _ = self._calibrated_gripper_width(
+            self._raw_gripper_body_separation()
+        )
+        return min(1.0, max(0.0, 1.0 - open_fraction))
 
     def _eef_9d(self) -> Any:
         pose = self._to_torch(self._robot.data.body_pose_w)[
@@ -272,7 +305,10 @@ def describe_adapter() -> dict[str, Any]:
         "camera_view_binding": dict(CAMERA_VIEW_BINDING),
         "finger_bodies": list(FINGER_BODIES),
         "end_effector_body_candidates": list(END_EFFECTOR_BODY_CANDIDATES),
-        "gripper_width_source": "finger_body_separation",
+        "gripper_width_source": GRIPPER_WIDTH_SOURCE,
+        "gripper_physical_full_opening_m": GRIPPER_PHYSICAL_FULL_OPENING_M,
+        "raw_gripper_body_separation_retained": True,
+        "gripper_width_calibration_clamp_retained": True,
         "camera_alpha_dropped_at_boundary": True,
         "arm_joint_count": ARM_JOINT_COUNT,
     }
@@ -292,6 +328,17 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         END_EFFECTOR_BODY_CANDIDATES
     ):
         errors.append("isaac_episode_adapter_end_effector_binding_drifted")
+    if bindings.get("gripper_width_source") != GRIPPER_WIDTH_SOURCE:
+        errors.append("isaac_episode_adapter_gripper_width_source_drifted")
+    if (
+        bindings.get("gripper_physical_full_opening_m")
+        != GRIPPER_PHYSICAL_FULL_OPENING_M
+    ):
+        errors.append("isaac_episode_adapter_gripper_stroke_drifted")
+    if bindings.get("raw_gripper_body_separation_retained") is not True:
+        errors.append("isaac_episode_adapter_raw_gripper_measurement_not_retained")
+    if bindings.get("gripper_width_calibration_clamp_retained") is not True:
+        errors.append("isaac_episode_adapter_gripper_clamp_not_retained")
     if bindings.get("camera_alpha_dropped_at_boundary") is not True:
         errors.append("isaac_episode_adapter_alpha_not_dropped")
     return sorted(set(errors))
@@ -302,6 +349,8 @@ __all__ = [
     "CAMERA_VIEW_BINDING",
     "END_EFFECTOR_BODY_CANDIDATES",
     "FINGER_BODIES",
+    "GRIPPER_PHYSICAL_FULL_OPENING_M",
+    "GRIPPER_WIDTH_SOURCE",
     "IsaacEpisodeAdapter",
     "IsaacEpisodeAdapterError",
     "describe_adapter",

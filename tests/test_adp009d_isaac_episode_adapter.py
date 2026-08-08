@@ -10,6 +10,7 @@ from blueprint_pipeline.adp009d_droid_observation import (
 from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     CAMERA_VIEW_BINDING,
     FINGER_BODIES,
+    GRIPPER_PHYSICAL_FULL_OPENING_M,
     IsaacEpisodeAdapter,
     IsaacEpisodeAdapterError,
     describe_adapter,
@@ -159,17 +160,59 @@ def test_isaac_wxyz_quaternion_is_converted_before_nvidia_frame_correction() -> 
     assert rotation == pytest.approx([0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
 
 
-def test_gripper_width_is_measured_finger_separation() -> None:
-    """The same physical quantity the convention probe measures, from the same bodies."""
+def test_gripper_width_is_probe_calibrated_physical_opening() -> None:
+    """Link-origin separation is calibrated onto the 2F-85 jaw stroke."""
 
     adapter = _adapter()
 
     sample = adapter.read_object_sample()
 
-    assert sample["gripper_width_m"] == pytest.approx(0.06, abs=1e-9)
+    assert sample["gripper_width_m"] == pytest.approx(
+        GRIPPER_PHYSICAL_FULL_OPENING_M, abs=1e-9
+    )
+    assert sample["gripper_body_separation_m"] == pytest.approx(0.06, abs=1e-9)
+    assert sample["gripper_width_open_fraction_unclamped"] == pytest.approx(1.0)
+    assert sample["gripper_width_calibration_clamped"] is False
     # The grasp frame is the midpoint between the fingers.
     assert sample["grasp_frame_position_world_m"] == pytest.approx(
         [0.03, 0.0, 1.0], abs=1e-9
+    )
+
+
+def test_linkage_overtravel_is_bounded_and_raw_measurement_is_retained() -> None:
+    """Regression for v74 samples whose link origins exceeded the 85 mm stroke."""
+
+    from blueprint_pipeline.adp009d_task_scoring import normalize_object_samples
+
+    robot = _Robot()
+    bodies = robot.data.body_names
+    robot.data.body_pose_w[0, bodies.index("right_inner_finger"), :3] = [
+        0.10,
+        0.0,
+        1.0,
+    ]
+    adapter = IsaacEpisodeAdapter(
+        env=_Env(),
+        robot=robot,
+        approved_can=_Can(),
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.0831756591796875,
+    )
+
+    sample = dict(adapter.read_object_sample())
+    assert sample["gripper_body_separation_m"] == pytest.approx(0.10)
+    assert sample["gripper_width_m"] == pytest.approx(
+        GRIPPER_PHYSICAL_FULL_OPENING_M
+    )
+    assert sample["gripper_width_open_fraction_unclamped"] > 1.0
+    assert sample["gripper_width_calibration_clamped"] is True
+    sample["step_index"] = 0
+    normalized = normalize_object_samples([sample], require_sealed_start_pose=False)
+    assert normalized[0]["gripper_width_m"] == pytest.approx(
+        GRIPPER_PHYSICAL_FULL_OPENING_M
     )
 
 
@@ -275,12 +318,26 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert validate_adapter_bindings(bindings) == []
     assert bindings["camera_view_binding"] == dict(CAMERA_VIEW_BINDING)
     assert bindings["finger_bodies"] == list(FINGER_BODIES)
+    assert bindings["gripper_physical_full_opening_m"] == pytest.approx(0.085)
+    assert bindings["raw_gripper_body_separation_retained"] is True
 
     drifted = dict(bindings)
     drifted["camera_view_binding"] = {"external_camera": DROID_WRIST_VIEW}
     assert "isaac_episode_adapter_camera_binding_drifted" in validate_adapter_bindings(
         drifted
     )
+
+    drifted = dict(bindings)
+    drifted["gripper_width_source"] = "raw_link_origin_distance"
+    assert "isaac_episode_adapter_gripper_width_source_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+
+def test_adapter_gripper_stroke_matches_deterministic_scorer() -> None:
+    from blueprint_pipeline.adp009d_task_scoring import GRIPPER_FULL_OPENING_M
+
+    assert GRIPPER_PHYSICAL_FULL_OPENING_M == GRIPPER_FULL_OPENING_M
 
 
 def test_the_adapter_satisfies_the_episode_loop_seam() -> None:
