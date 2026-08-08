@@ -111,13 +111,28 @@ for candidate in $(printf '%s' "$BLUEPRINT_ADP009D_POLICY_CANDIDATE" | tr ',' ' 
   # A checkpoint fetch runs for minutes with nothing to say.  Tick while it
   # works so the watchdog can tell a long download from a stalled one, and
   # carry the step the script last reached so a stall is attributable.
+  waited=0
   while kill -0 "$provisioning_pid" 2>/dev/null; do
     sleep 60
+    waited=$((waited + 60))
     step=$(grep -aoE 'BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_[a-z0-9_]+:(started|completed)' \
       "$OUT_DIR/adp009d_policy_provisioning.$candidate.log" 2>/dev/null | tail -1 | sed 's/.*adp009d://')
     echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_${candidate}_working:${step:-starting}"
+    # Bounded, because provisioning blocks the runtime.  A candidate whose
+    # server never answers would otherwise consume the whole TTL and the run
+    # would end with no episodes at all -- not even from the candidate that
+    # provisioned fine, which defeats the point of tolerating one bad arm.
+    # Observed: a server start ran forty-six minutes against its own
+    # fifteen-minute readiness timeout.
+    if [ $waited -ge ${BLUEPRINT_ADP009D_PROVISION_TIMEOUT_SECONDS:-1500} ]; then
+      echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_${candidate}:abandoned"
+      kill -TERM "$provisioning_pid" 2>/dev/null || true
+      sleep 10
+      kill -KILL "$provisioning_pid" 2>/dev/null || true
+      break
+    fi
   done
-  wait "$provisioning_pid"
+  wait "$provisioning_pid" 2>/dev/null
   rc=$?
   echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_${candidate}:completed:rc=$rc"
   [ $rc -ne 0 ] && provisioning_worst_rc=$rc

@@ -1979,3 +1979,29 @@ def test_provisioning_progress_reaches_the_container_log() -> None:
     # The exit code must still be the script's, not the loop's.
     assert 'wait "$provisioning_pid"' in ENTRYPOINT
     assert ENTRYPOINT.index('wait "$provisioning_pid"') < ENTRYPOINT.index("rc=$?\n  echo")
+
+
+def test_a_hanging_candidate_cannot_consume_the_whole_run() -> None:
+    """Provisioning blocks the runtime, so an unbounded wait costs everything.
+
+    A candidate whose server never answers would consume the entire TTL and
+    the run would end with no episodes at all -- not even from the candidate
+    that provisioned fine, which defeats the point of tolerating one bad arm.
+    Observed: a server start ran forty-six minutes against its own
+    fifteen-minute readiness timeout.
+    """
+
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+
+    assert "BLUEPRINT_ADP009D_PROVISION_TIMEOUT_SECONDS" in ENTRYPOINT
+    assert 'provision_${candidate}:abandoned' in ENTRYPOINT
+    # Terminated, then killed: a process ignoring TERM must not survive.
+    assert 'kill -TERM "$provisioning_pid"' in ENTRYPOINT
+    assert 'kill -KILL "$provisioning_pid"' in ENTRYPOINT
+    assert ENTRYPOINT.index('kill -TERM "$provisioning_pid"') < ENTRYPOINT.index(
+        'kill -KILL "$provisioning_pid"'
+    )
+    # The loop still runs the remaining candidates after abandoning one.
+    abandoned = ENTRYPOINT.index('provision_${candidate}:abandoned')
+    assert "break" in ENTRYPOINT[abandoned : abandoned + 400]
+    assert "done" in ENTRYPOINT[abandoned:]
