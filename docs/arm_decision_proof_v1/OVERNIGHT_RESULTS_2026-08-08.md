@@ -1,89 +1,240 @@
 # ADP-009D overnight results — 2026-08-08
 
-Status: in progress
+Status: overnight P0-P4 backlog completed; broader ADP qualification remains
+open.
 
-Scope: ADP-009D, public-scene day-28 Franka rehearsal gate.  Every result in
-this document remains `development_only`; none is physical evidence or a
-partner-policy verdict.
+Scope: ADP-009D, public-scene day-28 Franka construction rehearsal. Every
+result in this document remains `development_only`. Simulator state is the
+task-scoring source; review media is derived evidence for human inspection.
+Nothing here is physical evidence, partner-site qualification, or a claim that
+one policy is generally better.
 
-## Landed changes
+## What landed
 
-- `c9103d311` — P0 action-delivery-aware episode evidence.  Each episode now
-  retains reset/end arm joint positions, maximum per-joint motion, query and
-  joint-limit-clamp counts, commanded-action magnitudes, observed command
-  response, and an explicit harness finding when a deterministic object-state
-  score cannot be attributed to a policy.  Uninterpretable cells are excluded
-  from policy-outcome counts and ordering, and any such cell blocks a top-level
-  completed runtime result.
-- `dca08f185` — P1 bounded policy readiness attempts and retained failure
-  diagnostics.  A single blocked vendor import/client constructor can no
-  longer starve the worker's readiness deadline.  The server-log digest and a
-  bounded tail are embedded in the receipt while the original log remains in
-  the provider output directory.
-- `c061fc1b9` — fail-closed episode media.  Every newly scored ADP-009D
-  policy episode now retains the exact post-preprocessing external and wrist
-  image bytes shown to the policy, a digest-bound lossless PNG manifest, a
-  terminal observation, and a derived human-review MP4.  Missing media blocks
-  the top-level runtime rather than allowing a run to look evaluation-ready.
-- `5e01b5d38` — cycle-time instrumentation.  Each episode now separates policy
-  inference, policy-input acquisition, observation preprocessing, simulator
-  steps (explicitly including render when enabled), settle, scoring, and media
-  persistence.  These are operational diagnostics, not task metrics.
-- `b9a3b30ac` — correct DROID velocity-to-position control mapping.  The
-  released π0.5-DROID checkpoint emits seven joint-velocity dimensions plus
-  absolute gripper position at 15 Hz; the harness had incorrectly treated the
-  first seven values as absolute joint positions.  The replacement reuses the
-  repository's pinned DROID mapping, clips the released action as the public
-  runtime does, and forms each Arena position target from the currently
-  observed joints.  The raw velocity, clipped action, mapping revisions, and
-  resulting target are retained per query.
+The branch advanced from the overnight handoff at `54f70c8e0` to
+`51fd02555`. The changes fall into five evidence-bearing groups:
 
-For both commits the required pre-commit gates passed:
+- **P0, interpretable action delivery:** `c9103d311`, `b9a3b30ac`,
+  `7b901349a`. Episode receipts retain reset/end joints, maximum joint motion,
+  command magnitudes, executed/clamped rows, `arm_moved`, and
+  `actions_reached_robot`. DROID joint velocities are clipped and integrated
+  against observed joint state rather than misread as absolute positions.
+  Outcomes without action-delivery evidence cannot enter the ordering.
+- **P1, bounded and identity-bound official GR00T:** `dca08f185`,
+  `85a4facc2`, `6d2a5ba49`, `9fcfdd4a2`, `11219f4a0`, `e2db2fa1d`,
+  `5c45d73c2`, `81b8c8c9d`, `b6406923a`, `475290824`, `17697f72c`,
+  `3fc6a25b7`. One blocking readiness attempt can no longer starve its
+  deadline; failed server logs survive; the exact official source,
+  checkpoint, embodiment, separately gated Cosmos backbone, offline alias,
+  processor, client wire dependencies, and portable H.264 media path are
+  digest-bound. Gated-backbone authority is explicit and fail-closed.
+- **Complete, reviewable episodes and cycle-time evidence:** `c061fc1b9`,
+  `5e01b5d38`, `d163ea63d`, `2196412e5`, `03d314fc3`. Every scored episode
+  retains exact lossless policy-input frames, their manifest, a terminal
+  observation, and a macOS-compatible review video. Timings distinguish
+  environment construction, camera/observation work, inference, simulator
+  stepping/render, scoring, and media persistence. A completed evaluation
+  query is distinguished from a readiness query.
+- **Reproducible admissible episode starts:** `4f4bbdfbf`, `4231d9315`,
+  `7400ae233`, `cf0562a32`, `a5d05fa5d`, `3dcb3bc73`. The gripper command is
+  calibrated to its physical stroke; the approach is expressed with the
+  pinned IsaacLab XYZW convention; starts fail closed unless the can is
+  visible, not border-clipped, and the arm/can state can be replayed within
+  tolerance before every episode.
+- **Both policy views now prove the sealed can is observable:** `589f798d0`,
+  `51fd02555`. Selection and restore gates require semantic evidence in both
+  wrist and external views. The external task camera is authored in the Arena
+  DROID `CameraCfg.offset` before prim spawn, so its sensor buffer and
+  render-authoritative USD transform agree. A post-spawn metadata-only pose
+  update is no longer accepted as a camera fix.
+
+Other supporting changes are `a78e70dde` and `f98622f67` for the frames-only
+Aura comparison, `790b95eec` for explicit concurrent-GPU authority without
+weakening provider inventory checks, and `3dcb3bc73` for restore replay.
+
+The required pre-commit gates passed before every landed change:
 
 ```text
 PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode or nurec or aura"
 .venv/bin/ruff check src/ tests/
 ```
 
-P0: `876 passed, 1 skipped, 9050 deselected`; Ruff passed.
-P1: `878 passed, 1 skipped, 9050 deselected`; Ruff passed.
-Media and cycle-time commits: `882 passed, 1 skipped, 9050 deselected`; Ruff
-passed before each commit.
-Velocity-mapping commit: `882 passed, 1 skipped, 9050 deselected`; Ruff passed.
+The most recent code commit passed `941 passed, 1 skipped`; Ruff was clean.
+
+## Scientific findings through v84
+
+### P0 — closed as a harness ambiguity
+
+The original `never_moved` x3 did not support a policy verdict. v63 proved
+that actions reached the arm but also exposed that the released DROID joint
+velocities were being interpreted as absolute positions. After the mapping
+fix, v65 completed three π0.5 episodes with interpretable delivery and
+deterministic outcomes `moved`, `grasped`, `moved`. This proves the episode
+path can deliver a learned policy's actions and affect the task object. It does
+not establish task completion: none of the three episodes placed the can in
+the destination, and the later camera correction means v65 must not be treated
+as directly paired with v84/v85.
+
+### P1 — closed as a runnable official-runtime path
+
+The exact NVIDIA GR00T N1.7 DROID runtime now provisions and serves from the
+pinned official source and checkpoint with the exact DROID embodiment. The
+separately gated `nvidia/Cosmos-Reason2-2B` dependency is materialized only
+under explicit authority and used offline by the worker. v82 and v84 each
+completed three GR00T episodes with 60 policy queries and 520 environment
+steps per episode. This closes the old startup hang; it is not a performance
+claim.
+
+### P2 — float32 Aura is an operational null, not a quality result
+
+v70 exercised the float32 NuRec candidate under a held-constant frames-only
+diagnostic. The candidate appearance was absent in both cameras while depth and
+semantic digests remained equal, so the receipt explicitly records
+`quality_winner: null` and rejects v4 only as a drop-in. It does not establish
+that float32 is visually worse. The 42.5 MB v3 asset remains the working
+candidate instead of spending more runs to qualify the 87.3 MB v4 payload; no
+additional CCM sweep was justified.
+
+### P3 — the dominant time is runtime construction and stepping/render
+
+The v84 timing receipt records 39.44 s for environment build, 7.86 s camera
+warmup, 9.19 s gripper probe, 28.68 s approach, and 419.70 s across the three
+GR00T policy episodes. Provisioning and cold environment construction still
+dominate wall clock outside the episode loop; within episodes, simulator
+stepping/render is materially larger than inference. Same-instance
+comma-separated candidates are therefore the supported P4 optimization.
+Persistent reuse across nominal runs was not adopted because each paid run
+still requires a provider-zero teardown proof.
+
+### Camera-evidence correction
+
+v82 produced three scored GR00T episodes, but the external view contained only
+about 315 semantic can pixels (`0.55%` of the image). That was too weak for a
+two-policy comparison and matches the human observation that the v2 SimReady
+can appeared absent. v83 added a dual-view gate and correctly failed before
+policy inference with `external_task_camera_object_not_visible`. Its diagnostic
+showed the sensor buffer reporting the requested new camera pose while the USD
+camera prim and render remained at the old pose.
+
+v84 authored the camera before spawn and closed that harness fault. The buffer
+and USD world positions agree within floating-point tolerance. At the selected
+step 169, the exact can occupies 3,052 wrist pixels (`5.30%`) and 806 external
+pixels (`1.40%`), with both bounding boxes inside the required margin. Four
+restore receipts (preflight plus three episodes) replayed 177 steps each with
+maximum arm error `0.000907 rad` and object-position error about `5.54 um`.
+
+v84 then completed three GR00T episodes. All delivered actions, all moved the
+arm, and all scored `never_moved`; none moved the can. Per-episode maximum
+absolute joint deltas were approximately `[2.672, 1.481, 1.117, 0.290, 1.196,
+0.630, 0.573]`, `[0.810, 0.691, 0.241, 0.373, 1.091, 1.535, 1.814]`, and
+`[0.866, 0.990, 0.411, 0.370, 0.461, 1.858, 2.037]` rad. Joint-limit clamping
+occurred in 32, 1, and 5 action rows respectively. The result is an
+interpretable canonical-cell null, not evidence of harness non-delivery.
+
+### P4 — completed as a tied canonical-cell null
+
+v85 ran π0.5 and GR00T together on one L40S from the same immutable bundle and
+the same dual-view-admissible selected state. Seven restore operations
+(preflight plus six episodes) produced one identical restore digest. Every
+restore replayed 177 steps, held maximum arm error to `0.000907 rad`, held
+object-position error below `5.59 um`, and retained 3,049 wrist / 806 external
+semantic can pixels.
+
+Both candidates completed three scored episodes with no failures, 60 policy
+queries and 520 environment steps per episode, interpretable action delivery,
+observed arm motion, and complete policy-input media. The deterministic result
+was:
+
+| Candidate | Outcomes | Mean rung | Interpretation |
+| --- | --- | ---: | --- |
+| `pi05_droid` | `never_moved` x3 | `0.0` | Actions reached the robot and the arm moved; the can did not move. |
+| `groot_n17_droid` | `never_moved` x3 | `0.0` | Actions reached the robot and the arm moved; the can did not move. |
+
+The comparison is a tie (`leader: null`, `tied: true`) with receipt digest
+`sha256:15385d341dbedf49f75e1b2bd52e52290b1ad841f93ebf9723b2aea14b8e24fc`.
+The serialized `ranking` array is only a stable ordering of tied rows; it must
+not be read as GR00T beating π0.5. The receipt correctly records
+`supports_policy_ranking: false`.
+
+π0.5 maximum per-joint motion across the three episodes was approximately
+`[0.721, 2.401, 0.645, 3.002, 1.187, 1.512, 1.315]`,
+`[0.800, 2.571, 1.010, 3.002, 1.588, 1.512, 0.959]`, and
+`[0.680, 2.296, 0.579, 2.849, 1.526, 1.512, 0.713]` rad; 18, 27, and 14
+action rows contained a joint-limit clamp. GR00T's corresponding motion was
+`[2.013, 1.834, 1.209, 0.192, 1.181, 1.519, 0.661]`,
+`[2.127, 1.464, 0.994, 0.406, 0.835, 1.127, 1.016]`, and
+`[1.421, 1.701, 0.631, 0.117, 1.174, 1.457, 2.341]` rad; 26, 27, and 31
+action rows contained a clamp. These are retained diagnostics, not a smoothness
+or safety verdict.
+
+Episode totals were 117.83, 120.35, and 126.03 s for π0.5 and 121.80,
+122.74, and 128.70 s for GR00T. Policy inference was only 5.27-5.53 s for π0.5
+and 6.33-6.54 s for GR00T; environment stepping/render consumed 74.23-83.04 s.
+This confirms that reducing inference latency would not materially solve the
+current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The handoff estimated approximately `$6` spent before this continuation.  A
-conservative sum of all retained v1-v62 top-level adapter receipts under the
-shared evidence directory is `$10.998299`; with v63 it is `$11.365784`.  That
-directory includes a broader
-history than the overnight window.  The `$25` overnight cap is enforced using
-the more conservative total when deciding whether another launch is allowed.
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v85
+ledgers add `$6.481951`, for `$17.480250` total and `$7.519750` unspent under
+the `$25` cap. v85's provider API did not expose a final billed value, so its
+ledger uses the adapter's conservative observed-runtime estimate of
+`$0.433506`. Zero-cost inventory and launch-lock blocks are included because
+they are evidence that concurrency failed closed.
 
-| Run | Immutable code / variable changed | Held constant | Cost | Terminal result |
-| --- | --- | --- | ---: | --- |
-| `native_microcheck_v63_p0_action_evidence` | `c9103d311`; P0 evidence only | π0.5 DROID, three episodes, 320x180 policy render, v3 recentered/exposed NuRec, sealed can/SAGE/task manifest, provisioning timeout and run caps | `$0.367485` | Native runtime completed and queried π0.5 for 60 chunks per episode.  The arm moved, but 448/480, 462/480, and 467/480 rows were joint-limit clamped.  Primary OpenPI sources establish that these are joint velocities, while this run sent them as absolute positions.  Result: typed harness fault; `never_moved` x3 is still not a policy verdict.  Teardown completed and a live Vast API query returned `active: 0 []`. |
+| Run | Cost | Returned evidence / null |
+| --- | ---: | --- |
+| v63 P0 action evidence | `$0.367485` | Actions reached the arm; extreme clamping exposed the velocity-as-position harness fault. No policy verdict. |
+| v64 velocity mapping | `$0.183501` | No scored episodes; retained blocked null while stabilizing the corrected mapping. |
+| v65 velocity mapping retry | `$0.239484` | Completed π0.5: `moved`, `grasped`, `moved`; actions delivered, arm moved, no place success. |
+| v66 GR00T bounded | `$0.027707` | Interrupted before terminal runtime; retained provider-output gap. |
+| v67 GR00T bounded retry | `$0.439947` | Provisioned but no scored episodes; diagnostic retained. |
+| v68 GR00T identity adapter | `$0.215095` | Exact runtime identity advanced; no scored episodes. |
+| v69 GR00T pipless identity | `$0.133393` | Interrupted before terminal runtime; retained diagnostic gap. |
+| v70 Aura float32 frames | `$0.258382` | Intentional frames-only stop; v4 appearance was absent, so `quality_winner: null` and v3 retained as the working drop-in. |
+| v71 authorized backbone | `$0.238858` | Worker terminated before runtime result; gated dependency path diagnosed. |
+| v72 offline alias | `$0.158508` | Worker terminated before runtime result; offline alias advanced but not yet sufficient. |
+| v73 offline processor | `$0.259683` | Worker failed before runtime result; processor/backbone mismatch diagnosed. |
+| v74 GR00T ffmpeg media | `$0.208022` | Policy path reached; episode did not qualify, portable-media defect exposed. |
+| v75 wrist observable | `$0.194714` | Restore failed because the can was not wrist-visible; no episode scored. |
+| v76 GR00T framed wrist | `$0.162530` | No safe wrist-observable start; border framing gate worked. |
+| v76 π0.5 inventory attempt 1 | `$0` | Existing active instance blocked launch. |
+| v76 π0.5 inventory attempt 2 | `$0` | Existing active instance again blocked launch. |
+| v76 π0.5 launch-lock attempt | `$0` | Global paid-launch lock blocked concurrent mutation. |
+| v76 π0.5 CUDA stamp | `$0.246983` | Episode failed on CUDA tensor to NumPy conversion; encoded host-copy fix followed. |
+| v76 π0.5 prefix-fix attempt | `$0.049148` | Interrupted before completion; prefix handling evidence retained. |
+| v77 π0.5 evidence parity | `$0.622001` | Completed policy work but comparison remained blocked under the then-current evidence profile. |
+| v78 GR00T inventory attempt | `$0` | Existing active instance blocked launch. |
+| v78 π0.5 fast render | `$0.231701` | No scored episodes; render-interval experiment exposed stale/evaluation-path mismatch. |
+| v79 GR00T XYZW wrist | `$0.150819` | No safe wrist-observable start; pose convention alone was insufficient. |
+| v79 π0.5 fast render | `$0.321983` | Policy queried; fast-render diagnostic retained, not promoted as an evaluation. |
+| v80 GR00T camera aim | `$0.269420` | Restore joint mismatch blocked all episodes. |
+| v80 π0.5 build-time interval | `$0.234155` | Policy queried; timing evidence retained, no ranking claim. |
+| v81 GR00T restore budget | `$0` | Admission failed closed before allocation. |
+| v82 GR00T restore budget | `$0.279730` | Three scored `never_moved` episodes, but external-can visibility was inadequate for comparison. |
+| v83 dual-camera gate | `$0.318888` | Failed before inference: external camera metadata moved but render-authoritative prim did not. |
+| v84 spawned dual camera | `$0.236308` | Completed three interpretable GR00T `never_moved` episodes with both views gated and exact can visible. |
+| v85 two-policy dual camera | `$0.433506` estimated | Completed six interpretable episodes with complete media: both candidates `never_moved` x3; tied canonical-cell null, no winner. |
 
-## Open questions
+All completed paid attempts were followed by an API provider-zero check. v85
+was launched from provider zero as the sole active instance; after teardown a
+fresh Vast API query returned `active: 0 []`.
 
-- P0 remains open, but v63 resolved the original ambiguity in the important
-  direction: actions were not dropped; the robot moved by up to 2.44 rad.
-  It simultaneously falsified the harness action mapping.  OpenPI's released
-  DROID runtime identifies each response as ten or fifteen rows of seven joint
-  velocities plus gripper position, clips rows to `[-1, 1]`, and executes at
-  15 Hz.  Therefore v63's `never_moved` x3 is a harness result, not a policy
-  result.  The corrected mapping is committed; one controlled rerun is needed.
-- P1 code is landed, but GR00T has not yet been rerun with the bounded attempt
-  receipt; no cause is inferred from the prior hang.
-- P2 float32 Aura payload and P4 the two-candidate ranked run remain deferred
-  behind P0 and P1.  P3 cycle-time measurement is landed and will be populated
-  by the next run.  Warm reuse across nominally separate runs is not adopted:
-  it conflicts with the required provider-zero proof after every teardown;
-  the supported same-instance optimization is the existing comma-separated
-  multi-candidate batch used for P4.
+## What remains open
+
+- The P4 result is intentionally underpowered and single-cell. Its comparison
+  receipt remains `supports_policy_ranking: false` until the frozen
+  scenario-family matrix, deterministic zero/scripted controls, and a paired
+  sample size for stated power are run. The tied null means this rehearsal does
+  not yet change the next scarce physical-test decision.
+- The wider Arm Decision Proof still requires one fresh Raw V3.2 unseen partner
+  workcell capture; qualified metric registration, task physics, and
+  observation-domain match; prospective preregistration of exactly two frozen
+  candidates; and held-out physical adjudication of both the decision and one
+  predicted failure boundary.
 
 ## Single next action
 
-Run one π0.5-only v64 canary on `b9a3b30ac` or later, holding every non-code
-input constant, and require low/diagnosable joint-limit clamping plus observed
-arm response before interpreting its deterministic object outcome.
+Freeze the scenario-family matrix and add its zero-action and deterministic
+scripted-positive controls to the reusable ADP-009D harness before spending on
+another learned-policy episode.
