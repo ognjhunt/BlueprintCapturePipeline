@@ -64,6 +64,31 @@ def test_policy_query_blocker_does_not_invent_query_when_receipt_is_missing() ->
     )
 
 
+def test_policy_query_blocker_requires_query_for_an_evaluation_transport() -> None:
+    assert (
+        _candidate_policy_query_blocker(
+            {"candidate_policy_queried": True},
+            blocker_prefix="adp009d",
+            query_expected=True,
+        )
+        is None
+    )
+    assert (
+        _candidate_policy_query_blocker(
+            {"candidate_policy_queried": False},
+            blocker_prefix="adp009d",
+            query_expected=True,
+        )
+        == "adp009d_candidate_policy_query_required"
+    )
+    assert (
+        _candidate_policy_query_blocker(
+            {}, blocker_prefix="adp009d", query_expected=True
+        )
+        == "adp009d_candidate_policy_query_status_missing"
+    )
+
+
 def test_bundle_is_deterministic_approved_and_native_control_only(tmp_path: Path) -> None:
     approval = _approval_path(tmp_path)
     first = build_arena_native_control_bundle(

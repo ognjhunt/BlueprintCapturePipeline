@@ -281,15 +281,20 @@ def _extract_provider_output(
 
 
 def _candidate_policy_query_blocker(
-    execution: Mapping[str, Any], *, blocker_prefix: str
+    execution: Mapping[str, Any],
+    *,
+    blocker_prefix: str,
+    query_expected: bool = False,
 ) -> str | None:
-    """Distinguish an observed policy query from a missing pre-policy receipt."""
+    """Match observed query evidence to the transport's declared run mode."""
 
     queried = execution.get("candidate_policy_queried")
-    if queried is False:
+    if queried is query_expected:
         return None
     if queried is True:
         return f"{blocker_prefix}_candidate_policy_queried"
+    if queried is False:
+        return f"{blocker_prefix}_candidate_policy_query_required"
     return f"{blocker_prefix}_candidate_policy_query_status_missing"
 
 
@@ -318,6 +323,7 @@ def run_arena_native_control_vast(
     enable_isaac_smoke: bool = True,
     forward_hf_token: bool = False,
     allowed_active_instance_ids: Sequence[int] = (),
+    candidate_policy_query_expected: bool = False,
     preferred_gpu_keywords: tuple[str, ...] = (
         "RTX 4090",
         "RTX A6000",
@@ -470,7 +476,9 @@ def run_arena_native_control_vast(
     if execution.get("status") != "completed":
         blockers.extend(execution.get("blockers") or [f"{blocker_prefix}_runtime_not_completed"])
     policy_query_blocker = _candidate_policy_query_blocker(
-        execution, blocker_prefix=blocker_prefix
+        execution,
+        blocker_prefix=blocker_prefix,
+        query_expected=candidate_policy_query_expected,
     )
     if policy_query_blocker:
         blockers.append(policy_query_blocker)
@@ -494,6 +502,7 @@ def run_arena_native_control_vast(
         "hard_ttl_seconds": hard_ttl_seconds,
         "attempt_max_live_minutes": remaining_live_minutes,
         "retry_cap": 0,
+        "candidate_policy_query_expected": bool(candidate_policy_query_expected),
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
         "blockers": sorted(set(str(item) for item in blockers if str(item))),

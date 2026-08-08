@@ -748,6 +748,7 @@ def test_native_transport_prefers_one_48gb_class_gpu(monkeypatch: pytest.MonkeyP
     assert observed["provider_bundle_kind"] == "adp009d_isaac"
     assert observed["forward_hf_token"] is False
     assert observed["allowed_active_instance_ids"] == ()
+    assert observed["candidate_policy_query_expected"] is False
 
     franka_vast.run_adp009d_native_microcheck_vast(
         job_dir="job",
@@ -759,6 +760,17 @@ def test_native_transport_prefers_one_48gb_class_gpu(monkeypatch: pytest.MonkeyP
     )
     assert observed["forward_hf_token"] is True
     assert observed["allowed_active_instance_ids"] == (47190772,)
+
+    franka_vast.run_adp009d_native_microcheck_vast(
+        job_dir="job",
+        prepared_bundle={
+            "status": "ready",
+            "policy_candidate_id": "groot_n17_droid",
+        },
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+    assert observed["candidate_policy_query_expected"] is True
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
