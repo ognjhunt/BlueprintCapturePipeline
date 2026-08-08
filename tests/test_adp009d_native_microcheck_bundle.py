@@ -1661,3 +1661,38 @@ def test_the_bundle_keeps_the_appearance_extension() -> None:
     assert 'aura_ghost_removed_appearance{aura_source.suffix}' in source
     assert 'assets / "aura_ghost_removed_surflets.usd")' not in source
     assert "adp009d_aura_appearance_extension_unsupported" in source
+
+
+def test_the_stage_probe_finds_a_nurec_volume_too() -> None:
+    """It matched "Gauss" and "Aura" case-sensitively.
+
+    A NuRec volume composes at /World/gauss/gauss -- lowercase -- so the probe
+    reported zero matching prims for a scene that had visibly rendered the
+    whole room.  A probe that says "absent" about something present is worse
+    than no probe.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    probe = source[source.index("aura_stage_probe: dict") :]
+    probe = probe[: probe.index("live_collider = ")]
+    assert ".lower()" in probe
+    assert '"nurec"' in probe
+    assert 'omni:nurec:isNuRecVolume' in probe
+
+
+def test_the_frames_only_receipt_names_the_appearance_format() -> None:
+    """Omitting it read as None for a run whose appearance had rendered."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    block = source[source.index("STOP_AFTER_FRAMES_ENV, \"\""):]
+    block = block[: block.index("--- gripper convention probe")]
+    assert '"aura_appearance_format"' in block
+    assert '"aura_appearance_shipped"' in block

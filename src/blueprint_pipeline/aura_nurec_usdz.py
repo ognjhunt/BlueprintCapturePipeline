@@ -44,12 +44,35 @@ VOLUME_PRIM_PATH = "/World/gauss/gauss"
 # runtime can memory-map them in place.
 USDZ_ALIGNMENT = 64
 
-_ROOT_LAYER = """#usda 1.0
-(
+_RENDER_SETTINGS = """(
+    customLayerData = {
+        dictionary renderSettings = {
+            int "rtx:directLighting:sampledLighting:samplesPerPixel" = 8
+            bool "rtx:material:enableRefraction" = 0
+            bool "rtx:matteObject:visibility:secondaryRays" = 1
+            bool "rtx:post:histogram:enabled" = 0
+            bool "rtx:post:registeredCompositing:invertColorCorrection" = 1
+            bool "rtx:post:registeredCompositing:invertToneMap" = 1
+            int "rtx:post:tonemap:op" = 2
+            bool "rtx:raytracing:fractionalCutoutOpacity" = 0
+            string "rtx:rendermode" = "RaytracedLighting"
+        }
+    }
     defaultPrim = "{default_prim}"
     metersPerUnit = 1
     upAxis = "Z"
-)
+)"""
+"""Carried verbatim from the shipped package.
+
+Omitting these produced a render that was unmistakably the right room and
+35 percent saturated: the geometry was correct and the tone mapping was not.
+``invertToneMap`` and ``tonemap:op`` are how a NuRec volume's stored radiance
+is meant to reach display, and a splat authored without them is being asked to
+survive a tone curve its reconstruction already accounted for.
+"""
+
+_ROOT_LAYER = """#usda 1.0
+{render_settings}
 
 def Xform "{default_prim}"
 {{
@@ -62,11 +85,7 @@ def Xform "{default_prim}"
 """
 
 _VOLUME_LAYER = """#usda 1.0
-(
-    defaultPrim = "{default_prim}"
-    metersPerUnit = 1
-    upAxis = "Z"
-)
+{render_settings}
 
 def Xform "{default_prim}"
 {{
@@ -143,13 +162,17 @@ def write_aura_nurec_usdz(
     low = positions.min(axis=0)
     high = positions.max(axis=0)
 
+    render_settings = _RENDER_SETTINGS.replace("{default_prim}", DEFAULT_PRIM)
     volume_layer = _VOLUME_LAYER.format(
         default_prim=DEFAULT_PRIM,
+        render_settings=render_settings,
         payload_name=payload_name,
         x0=float(low[0]), y0=float(low[1]), z0=float(low[2]),
         x1=float(high[0]), y1=float(high[1]), z1=float(high[2]),
     )
-    root_layer = _ROOT_LAYER.format(default_prim=DEFAULT_PRIM)
+    root_layer = _ROOT_LAYER.format(
+        render_settings=render_settings, default_prim=DEFAULT_PRIM
+    )
     _write_aligned_usdz(
         out_path,
         [
@@ -174,6 +197,7 @@ def write_aura_nurec_usdz(
         # frame.  The shipped InteriorGS package mirrors instead, and copying
         # that would rotate the room while looking entirely plausible.
         "world_transform": "identity",
+        "render_settings": "shipped_interiorgs_verbatim",
         "authoring": dict(document.get("_blueprint_authoring") or {}),
     }
 

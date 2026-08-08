@@ -1096,10 +1096,19 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "expected_prim": AURA_PARTICLEFIELD_PRIM,
         }
         try:
+            # Case-insensitive, and NuRec-aware.  This matched "Gauss" and
+            # "Aura" exactly, so a NuRec volume -- which composes at
+            # /World/gauss/gauss, lowercase -- reported zero matching prims
+            # for a scene that had visibly rendered the whole room.  A probe
+            # that says "absent" about something present is worse than none.
             matches = [
                 str(prim.GetPath())
                 for prim in live_stage.Traverse()
-                if "Gauss" in str(prim.GetPath()) or "Aura" in str(prim.GetPath())
+                if any(
+                    token in str(prim.GetPath()).lower()
+                    for token in ("gauss", "aura", "nurec")
+                )
+                or bool(prim.GetAttribute("omni:nurec:isNuRecVolume").Get())
             ]
             aura_stage_probe["matching_prim_paths"] = matches[:20]
             aura_stage_probe["matching_prim_count"] = len(matches)
@@ -1314,6 +1323,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "camera_rows": _json_safe(camera_rows),
                 "warmup_frames": warmup_frames,
                 "aura_stage_probe": _json_safe(aura_stage_probe),
+                # Omitting this read as None for a run whose appearance had
+                # visibly rendered, which is exactly the attribution the
+                # NuRec-versus-ParticleField comparison depends on.
+                "aura_appearance_shipped": _resolve_aura_appearance(runtime)[0] is not None,
+                "aura_appearance_format": _resolve_aura_appearance(runtime)[1],
                 "max_gaussians_to_accumulate": _max_gaussians_to_accumulate(),
                 "timings_seconds": _json_safe(timings_seconds),
             }
