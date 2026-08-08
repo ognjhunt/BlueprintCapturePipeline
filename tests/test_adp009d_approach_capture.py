@@ -476,6 +476,34 @@ def test_standalone_digest_matches_the_repository_contract() -> None:
     assert bundled(payload, digest_field="a") == canonical_digest(payload, digest_field="a")
 
 
+def test_runtime_control_closeout_digest_matches_repository_contract() -> None:
+    """A blocked control must still seal its IK evidence without crashing."""
+
+    from blueprint_pipeline.adp009d_isaac_runtime import _canonical_digest
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    receipt = {
+        "schema_version": "adp009d_scripted_control_ik_receipt.v1",
+        "binding": {
+            "jacobian_frame": "world",
+            "pose_error_frame": "robot_root",
+            "jacobian_rotation": "world_to_robot_root_linear_and_angular_rows",
+        },
+        "step_diagnostics": [
+            {
+                "phase": "pregrasp",
+                "terminal_error_m": 0.12,
+                "status": "blocked",
+            }
+        ],
+        "receipt_digest": "stale-self-digest-must-be-ignored",
+    }
+
+    expected = canonical_digest(receipt, digest_field="receipt_digest")
+    assert _canonical_digest(receipt, digest_field="receipt_digest") == expected
+    assert receipt["receipt_digest"] == "stale-self-digest-must-be-ignored"
+
+
 def test_runtime_imports_helper_in_both_layouts() -> None:
     """The runtime resolves the helper as a package member and would as a script."""
 

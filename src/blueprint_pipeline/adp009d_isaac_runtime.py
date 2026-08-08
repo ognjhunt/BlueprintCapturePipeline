@@ -261,12 +261,17 @@ def _configure_deterministic_reset_events(embodiment: Any) -> None:
     reset_writer.params["std"] = 0.0
 
 
-def _canonical_digest(value: dict[str, Any]) -> str:
+def _canonical_digest(
+    value: dict[str, Any], *, digest_field: str | None = None
+) -> str:
     """Digest matching ``decision_evidence_contracts.canonical_digest``."""
 
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
-        "utf-8"
-    )
+    normalized = dict(value)
+    if digest_field:
+        normalized.pop(digest_field, None)
+    encoded = json.dumps(
+        normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
