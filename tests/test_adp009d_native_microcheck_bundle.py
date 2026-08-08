@@ -2046,3 +2046,40 @@ def test_no_shipped_module_uses_an_unguarded_top_level_relative_import() -> None
         "shipped modules with unguarded top-level relative imports, which "
         f"cannot resolve in the flat bundle: {offenders}"
     )
+
+
+def test_the_episode_clients_unwrap_the_response_like_the_readiness_probe() -> None:
+    """The probe unwrapped it; the episode did not.
+
+    openpi returns {"actions": ...} and the episode passed whatever it got
+    straight to the action planner, which tried to build a float out of the
+    dict.  So the readiness round trip looked healthy -- it unwrapped -- while
+    the episode could not use the very same reply.
+    """
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    block = source[source.index("def _client_for(") :]
+    block = block[: block.index("out_dir = Path(")]
+    # Both transports, because both vendors wrap their chunk.
+    assert block.count("isinstance(response, dict)") == 2
+    assert 'response["actions"]' in block
+    assert 'response.get("actions", response)' in block
+
+
+def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> None:
+    """They disagreed once, and the disagreement passed readiness."""
+
+    import inspect
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    probe = inspect.getsource(worker.attempt_round_trip)
+    episode = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert "isinstance(response, dict)" in probe
+    assert "isinstance(response, dict)" in episode

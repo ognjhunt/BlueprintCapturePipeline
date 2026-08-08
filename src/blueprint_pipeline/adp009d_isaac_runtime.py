@@ -1790,14 +1790,37 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 )
 
                             def infer(self, observation):
-                                return self._client.get_action(observation)
+                                response = self._client.get_action(observation)
+                                if isinstance(response, dict):
+                                    return response.get("actions", response)
+                                return response
 
                         return _GrootEpisodeClient("127.0.0.1", int(receipt["port"]))
                     from openpi_client import websocket_client_policy
 
-                    return websocket_client_policy.WebsocketClientPolicy(
-                        host="127.0.0.1", port=int(receipt["port"])
-                    )
+                    class _OpenPiEpisodeClient:
+                        """Unwrap the response the way the readiness probe does.
+
+                        openpi returns {"actions": ...} and the episode passes
+                        whatever it gets straight to the action planner, which
+                        tried to build a float out of the dict.  The server
+                        worker already unwrapped it when proving readiness, so
+                        the round trip looked healthy while the episode could
+                        not use the same reply.
+                        """
+
+                        def __init__(self, host: str, port: int) -> None:
+                            self._client = websocket_client_policy.WebsocketClientPolicy(
+                                host=host, port=port
+                            )
+
+                        def infer(self, observation):
+                            response = self._client.infer(observation)
+                            if isinstance(response, dict):
+                                return response["actions"]
+                            return response
+
+                    return _OpenPiEpisodeClient("127.0.0.1", int(receipt["port"]))
 
                 out_dir = Path(os.environ["BLUEPRINT_ADP009D_OUTPUT_DIR"])
                 batches = []
