@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
+import venv
 
 from blueprint_pipeline import adp009d_groot_worker_identity as identity
 
@@ -52,9 +54,19 @@ def test_identity_is_verified_only_after_source_bytes_and_environment_are_observ
     def _run(command):
         if command[0] == "git":
             return identity.GROOT_SOURCE_REVISION
-        if tuple(command[-3:]) == ("pip", "freeze", "--all"):
-            return "gr00t==1.0\npyzmq==26.0"
-        return json.dumps({"executable": "/venv/bin/python", "version": "3.12"})
+        assert command[:2] == ("/venv/bin/python", "-c")
+        return json.dumps(
+            {
+                "schema_version": "python_distribution_inventory.v1",
+                "python": {"executable": "/venv/bin/python", "version": "3.12"},
+                "distributions": [
+                    {"name": "gr00t", "version": "1.0", "direct_url": None},
+                    {"name": "pyzmq", "version": "26.0", "direct_url": None},
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     monkeypatch.setattr(identity, "_run_text", _run)
     receipt = identity.build_worker_identity(
@@ -65,6 +77,8 @@ def test_identity_is_verified_only_after_source_bytes_and_environment_are_observ
     assert receipt["blockers"] == []
     assert len(receipt["checkpoint_files_sha256"]) == 64
     assert len(receipt["environment_lock_sha256"]) == 64
+    assert receipt["environment_lock_distribution_count"] == 2
+    assert receipt["environment_lock_observer"] == "stdlib_importlib_metadata"
     assert receipt["publisher_inventory_role"] == (
         "fetch_admission_not_local_content_digest"
     )
@@ -80,9 +94,17 @@ def test_byte_count_or_source_drift_blocks_identity(tmp_path, monkeypatch) -> No
     def _run(command):
         if command[0] == "git":
             return "0" * 40
-        if tuple(command[-3:]) == ("pip", "freeze", "--all"):
-            return "gr00t==1.0"
-        return json.dumps({"executable": "/venv/bin/python", "version": "3.12"})
+        return json.dumps(
+            {
+                "schema_version": "python_distribution_inventory.v1",
+                "python": {"executable": "/venv/bin/python", "version": "3.12"},
+                "distributions": [
+                    {"name": "gr00t", "version": "1.0", "direct_url": None}
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     monkeypatch.setattr(identity, "_run_text", _run)
     receipt = identity.build_worker_identity(
@@ -110,3 +132,26 @@ def test_subprocess_failures_become_typed_blockers(tmp_path, monkeypatch) -> Non
     assert receipt["status"] == "blocked"
     assert "groot_worker_source_revision_unobserved" in receipt["blockers"]
     assert "groot_worker_environment_unobserved" in receipt["blockers"]
+
+
+def test_environment_lock_works_in_uv_style_venv_without_pip(tmp_path) -> None:
+    venv_root = tmp_path / "policy-venv"
+    venv.EnvBuilder(with_pip=False).create(venv_root)
+    python = venv_root / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+
+    inventory_text = identity._run_text(
+        (str(python), "-c", identity._ENVIRONMENT_INVENTORY_CODE)
+    )
+    inventory = json.loads(inventory_text)
+
+    assert inventory["schema_version"] == "python_distribution_inventory.v1"
+    assert inventory["python"]["executable"] == str(python)
+    assert isinstance(inventory["distributions"], list)
+    pip_probe = subprocess.run(
+        [str(python), "-m", "pip", "--version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    assert pip_probe.returncode != 0

@@ -32,6 +32,49 @@ EXPECTED_PUBLISHER_INVENTORY_SHA256 = (
     "5d1d83ab34215da2dcaa049d70e93ccec18687591ad5760c5183fc1fd6e035fd"
 )
 
+# ``uv venv`` does not seed pip unless explicitly requested.  That is a valid,
+# desirable policy environment: uv owns installation, while the venv stays
+# isolated from Isaac.  Observe installed distributions through Python's
+# standard-library metadata API so identity collection does not accidentally
+# require a package manager inside the target environment.
+_ENVIRONMENT_INVENTORY_CODE = r"""
+import importlib.metadata as metadata
+import json
+import sys
+
+rows = []
+for distribution in metadata.distributions():
+    name = distribution.metadata.get("Name")
+    if not name:
+        continue
+    direct_url = distribution.read_text("direct_url.json")
+    rows.append(
+        {
+            "name": name,
+            "version": distribution.version,
+            "direct_url": json.loads(direct_url) if direct_url else None,
+        }
+    )
+rows.sort(
+    key=lambda row: (
+        row["name"].casefold(),
+        row["version"],
+        json.dumps(row["direct_url"], sort_keys=True, separators=(",", ":")),
+    )
+)
+print(
+    json.dumps(
+        {
+            "schema_version": "python_distribution_inventory.v1",
+            "python": {"executable": sys.executable, "version": sys.version},
+            "distributions": rows,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+)
+""".strip()
+
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -121,23 +164,28 @@ def build_worker_identity(
         blockers.append("groot_worker_checkpoint_unobserved")
 
     try:
-        python_identity = _run_text(
-            (
-                python,
-                "-c",
-                "import json,sys;print(json.dumps({'executable':sys.executable,'version':sys.version}))",
-            )
+        environment_inventory_text = _run_text(
+            (python, "-c", _ENVIRONMENT_INVENTORY_CODE)
         )
-        freeze = _run_text((python, "-m", "pip", "freeze", "--all"))
-        environment_bytes = (python_identity + "\n" + freeze + "\n").encode("utf-8")
+        environment_inventory = json.loads(environment_inventory_text)
+        distributions = environment_inventory["distributions"]
+        python_identity = environment_inventory["python"]
+        environment_bytes = (environment_inventory_text + "\n").encode("utf-8")
         receipt.update(
             {
                 "environment_lock_sha256": hashlib.sha256(environment_bytes).hexdigest(),
-                "environment_lock_line_count": len(freeze.splitlines()),
-                "python_identity": json.loads(python_identity),
+                "environment_lock_distribution_count": len(distributions),
+                "environment_lock_observer": "stdlib_importlib_metadata",
+                "python_identity": python_identity,
             }
         )
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+    except (
+        KeyError,
+        OSError,
+        TypeError,
+        subprocess.SubprocessError,
+        json.JSONDecodeError,
+    ) as exc:
         receipt["environment_observation_error"] = f"{type(exc).__name__}: {exc}"
         blockers.append("groot_worker_environment_unobserved")
 
@@ -171,4 +219,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
