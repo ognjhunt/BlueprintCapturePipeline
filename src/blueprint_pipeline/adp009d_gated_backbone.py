@@ -252,6 +252,12 @@ def prepare_offline_runtime_binding(
 
     config_path = checkpoint / "config.json"
     config_bytes = config_path.read_bytes() if config_path.is_file() else b""
+    processor_config_path = checkpoint / "processor_config.json"
+    processor_config_bytes = (
+        processor_config_path.read_bytes()
+        if processor_config_path.is_file()
+        else b""
+    )
     try:
         config = json.loads(config_bytes) if config_bytes else {}
     except json.JSONDecodeError:
@@ -262,6 +268,22 @@ def prepare_offline_runtime_binding(
         blockers.append("adp009d_groot_checkpoint_config_invalid")
     if config.get("model_name") != MODEL_ID:
         blockers.append("adp009d_groot_checkpoint_backbone_identity_mismatch")
+    try:
+        processor_config = (
+            json.loads(processor_config_bytes) if processor_config_bytes else {}
+        )
+    except json.JSONDecodeError:
+        processor_config = {}
+        blockers.append("adp009d_groot_processor_config_invalid")
+    if not isinstance(processor_config, dict):
+        processor_config = {}
+        blockers.append("adp009d_groot_processor_config_invalid")
+    processor_kwargs = processor_config.get("processor_kwargs")
+    if not isinstance(processor_kwargs, dict):
+        processor_kwargs = {}
+        blockers.append("adp009d_groot_processor_kwargs_missing")
+    elif processor_kwargs.get("model_name") not in {None, MODEL_ID}:
+        blockers.append("adp009d_groot_processor_backbone_identity_mismatch")
     if not checkpoint.is_dir():
         blockers.append("adp009d_groot_checkpoint_root_missing")
     if not snapshot.is_dir():
@@ -280,6 +302,11 @@ def prepare_offline_runtime_binding(
         "checkpoint_config_sha256": (
             "sha256:" + hashlib.sha256(config_bytes).hexdigest()
             if config_bytes
+            else None
+        ),
+        "processor_config_sha256": (
+            "sha256:" + hashlib.sha256(processor_config_bytes).hexdigest()
+            if processor_config_bytes
             else None
         ),
         "backbone_model_id": MODEL_ID,
@@ -318,7 +345,7 @@ def prepare_offline_runtime_binding(
 
     runtime.mkdir(parents=True)
     for source in checkpoint.iterdir():
-        if source.name == "config.json":
+        if source.name in {"config.json", "processor_config.json"}:
             continue
         (runtime / source.name).symlink_to(
             source, target_is_directory=source.is_dir()
@@ -332,12 +359,24 @@ def prepare_offline_runtime_binding(
         json.dumps(runtime_config, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    runtime_processor_config = dict(processor_config)
+    runtime_processor_kwargs = dict(processor_kwargs)
+    runtime_processor_kwargs["model_name"] = alias_name
+    runtime_processor_config["processor_kwargs"] = runtime_processor_kwargs
+    runtime_processor_config_path = runtime / "processor_config.json"
+    runtime_processor_config_path.write_text(
+        json.dumps(runtime_processor_config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
     receipt.update(
         {
             "alias_model_name": alias_name,
             "runtime_checkpoint_config_sha256": (
                 "sha256:" + _sha256(runtime_config_path)
+            ),
+            "runtime_processor_config_sha256": (
+                "sha256:" + _sha256(runtime_processor_config_path)
             ),
             "runtime_overlay_entry_count": len(list(runtime.iterdir())),
             "original_backbone_identity_preserved": True,

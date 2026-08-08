@@ -172,7 +172,7 @@ fi
 # A single-candidate diagnostic has no policy evidence to gain from cloning and
 # installing Arena after its only policy failed provisioning.  Multi-candidate
 # runs still continue so an independently healthy candidate retains episodes.
-candidate_count=$(printf '%s' "$provisioning_candidates" | tr ',' '\n' | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+candidate_count=$(printf '%s\n' "$provisioning_candidates" | tr ',' '\n' | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
 if [ "$candidate_count" = "1" ] && [ "$provisioning_worst_rc" -ne 0 ]; then
   /isaac-sim/python.sh - "$OUT_DIR" "$provisioning_worst_rc" <<'PY'
 import json

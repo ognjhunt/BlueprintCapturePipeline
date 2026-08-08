@@ -99,8 +99,11 @@ def test_runtime_binding_preserves_checkpoint_and_offline_selector_token(
     checkpoint.mkdir()
     config = json.dumps({"model_name": backbone.MODEL_ID, "model_type": "fixture"})
     (checkpoint / "config.json").write_text(config)
+    processor_config = json.dumps({"processor_kwargs": {"fixture": True}})
+    (checkpoint / "processor_config.json").write_text(processor_config)
     (checkpoint / "weights.safetensors").write_bytes(b"sealed-policy")
     before = (checkpoint / "config.json").read_bytes()
+    processor_before = (checkpoint / "processor_config.json").read_bytes()
 
     runtime = tmp_path / "runtime-checkpoint"
     aliases = tmp_path / "aliases"
@@ -113,6 +116,9 @@ def test_runtime_binding_preserves_checkpoint_and_offline_selector_token(
     )
 
     runtime_config = json.loads((runtime / "config.json").read_text())
+    runtime_processor_config = json.loads(
+        (runtime / "processor_config.json").read_text()
+    )
     model_name = runtime_config["model_name"]
     assert "nvidia/Cosmos-Reason2-2B" in model_name
     assert Path(model_name).resolve(strict=True) == aliases.resolve()
@@ -120,6 +126,8 @@ def test_runtime_binding_preserves_checkpoint_and_offline_selector_token(
         values["config.json"]
     )
     assert (checkpoint / "config.json").read_bytes() == before
+    assert (checkpoint / "processor_config.json").read_bytes() == processor_before
+    assert runtime_processor_config["processor_kwargs"]["model_name"] == model_name
     assert (runtime / "weights.safetensors").is_symlink()
     assert (runtime / "weights.safetensors").resolve() == (
         checkpoint / "weights.safetensors"
@@ -140,6 +148,7 @@ def test_runtime_binding_rejects_changed_publisher_model_name(
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
     (checkpoint / "config.json").write_text('{"model_name":"changed/model"}')
+    (checkpoint / "processor_config.json").write_text('{"processor_kwargs":{}}')
 
     with pytest.raises(RuntimeError, match="backbone_identity_mismatch"):
         backbone.prepare_offline_runtime_binding(

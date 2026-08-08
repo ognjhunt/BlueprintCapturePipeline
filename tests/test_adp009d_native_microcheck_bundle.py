@@ -985,6 +985,26 @@ def test_entrypoint_skips_arena_after_only_policy_fails_provisioning() -> None:
     assert '"$provisioning_worst_rc" -ne 0' in ENTRYPOINT
     assert '"arena_setup_skipped": True' in ENTRYPOINT
 
+    import subprocess
+
+    count_start = ENTRYPOINT.index("candidate_count=")
+    count_end = ENTRYPOINT.index("\nif [", count_start)
+    count_command = ENTRYPOINT[count_start:count_end]
+    for value, expected in (("groot_n17_droid", "1"), ("a,b", "2"), ("", "0")):
+        completed = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'provisioning_candidates="$1"\n{count_command}\nprintf "%s" "$candidate_count"',
+                "candidate-count-test",
+                value,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.stdout == expected
+
 
 def test_entrypoint_signal_decoding_is_correct(tmp_path: Path) -> None:
     """Exercise the embedded decoder on the exit codes that actually occur."""
