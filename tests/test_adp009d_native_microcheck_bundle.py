@@ -25,6 +25,7 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     build_native_microcheck_bundle_isolated,
 )
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
@@ -178,7 +179,12 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
 def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
     tmp_path: Path,
 ) -> None:
-    approved, sage, harness, bindings = _inputs(tmp_path)
+    approved, sage, _, bindings = _inputs(tmp_path)
+    harness = (
+        Path(__file__).resolve().parents[1]
+        / "docs/arm_decision_proof_v1/manifests/"
+        "adp009d_franka_eval_harness_manifest.v1.json"
+    )
 
     receipt = build_native_microcheck_bundle(
         job_dir=tmp_path / "controls",
@@ -201,8 +207,14 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
             "provider_runtime/run_adp_arena_provider_runtime.sh"
         ).decode()
     assert "provider_runtime/adp009d_control_episode.py" in names
+    assert "provider_runtime/adp009d_scenario_application.py" in names
     assert "provider_runtime/adp009d_scenario_instance.v1.json" in names
+    assert "provider_runtime/adp009d_scenario_application_plan.v1.json" in names
+    assert "provider_runtime/adp009d_scenario_application_bindings.v1.json" in names
+    assert "provider_runtime/adp009d_scenario_materialization.v1.json" in names
+    assert "provider_runtime/adp009d_scenario_suite.v1.json" in names
     assert "provider_runtime/adp009d_control_plan.v1.json" in names
+    assert receipt["scenario_application_plan_digest"].startswith("sha256:")
     assert 'BLUEPRINT_ADP009D_CONTROLS="1"' in entrypoint
     assert "adp009d_policy_provisioning.pi05_droid.sh" not in names
 
@@ -1684,7 +1696,12 @@ def test_policy_bundle_binds_policy_resolution_without_host_env(
     """The remote worker does not inherit an export from the launch shell."""
 
     monkeypatch.delenv("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", raising=False)
-    approved, sage, harness, bindings = _inputs(tmp_path)
+    approved, sage, _, bindings = _inputs(tmp_path)
+    harness = (
+        Path(__file__).resolve().parents[1]
+        / "docs/arm_decision_proof_v1/manifests/"
+        "adp009d_franka_eval_harness_manifest.v1.json"
+    )
     receipt = build_native_microcheck_bundle(
         job_dir=tmp_path / "policy-resolution",
         approved_can_path=approved,
@@ -1701,6 +1718,7 @@ def test_policy_bundle_binds_policy_resolution_without_host_env(
         manifest = json.loads(archive.read("provider_runtime/adp_arena_provider_manifest.json"))
     assert 'export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="policy"' in entrypoint
     assert manifest["camera_resolution_binding"] == "policy"
+    assert manifest["scenario_application_plan_digest"].startswith("sha256:")
 
 
 def test_frames_only_bundle_skips_policy_provisioning() -> None:
@@ -2565,3 +2583,376 @@ def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> No
     episode = _Path(runtime.__file__).read_text(encoding="utf-8")
     assert "isinstance(response, dict)" in probe
     assert "isinstance(response, dict)" in episode
+
+
+@pytest.mark.parametrize(
+    "cousin_id,cousin_type,logical_digest",
+    [
+        (
+            "adp009d_visual_material_cousin",
+            "visual_material",
+            "sha256:" + "b" * 64,
+        ),
+        (
+            "adp009d_geometric_cousin",
+            "geometric",
+            "sha256:" + "d" * 64,
+        ),
+    ],
+)
+def test_controls_bundle_stages_each_admitted_cousin_with_exact_bytes(
+    tmp_path: Path,
+    cousin_id: str,
+    cousin_type: str,
+    logical_digest: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approved, sage, _, bindings = _inputs(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    harness = (
+        repo_root
+        / "docs/arm_decision_proof_v1/manifests/"
+        "adp009d_franka_eval_harness_manifest.v1.json"
+    )
+    instance = json.loads(
+        (
+            repo_root
+            / "docs/arm_decision_proof_v1/manifests/"
+            "adp009d_canonical_scenario_instance.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    static_receipt = {
+        "schema_version": "adp009d_cousin_static_validation_receipt.v1",
+        "program_id": "arm-decision-proof-v1",
+        "cousin_id": cousin_id,
+        "cousin_digest": logical_digest,
+        "profile_passed": True,
+        "caller_asserted_success_accepted": False,
+        "validation_receipt_digest": "",
+    }
+    static_receipt["validation_receipt_digest"] = canonical_digest(
+        static_receipt, digest_field="validation_receipt_digest"
+    )
+    receipt_digest = static_receipt["validation_receipt_digest"]
+    static_receipt_path = tmp_path / f"{cousin_id}-static-receipt.json"
+    static_receipt_path.write_text(json.dumps(static_receipt), encoding="utf-8")
+    instance.update(
+        {
+            "cell_id": f"{cousin_id}__seed_1",
+            "template_id": cousin_id,
+            "family": cousin_type + "_cousin" if cousin_type == "geometric" else cousin_type + "_cousin",
+            "seed": 1,
+            "cousin_id": cousin_id,
+            "cousin_digest": logical_digest,
+            "cousin_static_validation_receipt_digest": receipt_digest,
+            "factor_records": [],
+        }
+    )
+    instance["instance_digest"] = canonical_digest(
+        instance, digest_field="instance_digest"
+    )
+    instance_path = tmp_path / f"{cousin_id}.json"
+    instance_path.write_text(json.dumps(instance), encoding="utf-8")
+    materialization = {
+        "schema_version": "adp009d_scenario_materialization.v1",
+        "program_id": "arm-decision-proof-v1",
+        "suite_digest": instance["suite_digest"],
+        "harness_digest": instance["harness_digest"],
+        "instance_count": 1,
+        "instance_bindings": [
+            {
+                "cell_id": instance["cell_id"],
+                "instance_digest": instance["instance_digest"],
+                "relative_path": instance_path.name,
+            }
+        ],
+        "materialization_digest": "",
+    }
+    materialization["materialization_digest"] = canonical_digest(
+        materialization, digest_field="materialization_digest"
+    )
+    materialization_path = tmp_path / f"{cousin_id}-materialization.json"
+    materialization_path.write_text(json.dumps(materialization), encoding="utf-8")
+    native_asset = tmp_path / f"{cousin_id}.usda"
+    native_asset.write_text(
+        '#usda 1.0\n(defaultPrim = "canned_beverage")\ndef Xform "canned_beverage" {}\n',
+        encoding="utf-8",
+    )
+    native_sha256 = _digest(native_asset)
+    cousin_manifest = json.loads(
+        (
+            repo_root
+            / "docs/arm_decision_proof_v1/manifests/"
+            f"adp009d_{'visual_material' if cousin_type == 'visual_material' else 'geometric'}_cousin_manifest.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    logical_digest = cousin_manifest["cousin_digest"]
+    static_receipt["cousin_digest"] = logical_digest
+    static_receipt["validation_receipt_digest"] = canonical_digest(
+        static_receipt, digest_field="validation_receipt_digest"
+    )
+    receipt_digest = static_receipt["validation_receipt_digest"]
+    static_receipt_path.write_text(json.dumps(static_receipt), encoding="utf-8")
+    cousin_manifest["materialization"]["expected_self_contained_usd"] = {
+        "sha256": native_sha256,
+        "size_bytes": native_asset.stat().st_size,
+    }
+    cousin_manifest_path = tmp_path / f"{cousin_id}-manifest.json"
+    cousin_manifest_path.write_text(json.dumps(cousin_manifest), encoding="utf-8")
+    from blueprint_pipeline import adp009d_franka_evaluation_harness as harness_module
+
+    verification_calls: list[tuple[str, bool]] = []
+
+    def _validate_manifest(value, *, repo_root, verify_files):
+        verification_calls.append(("manifest", verify_files))
+        return value
+
+    def _validate_static(value, *, cousin_manifest, verify_files):
+        verification_calls.append(("static", verify_files))
+        return value
+
+    monkeypatch.setattr(harness_module, "validate_cousin_manifest", _validate_manifest)
+    monkeypatch.setattr(
+        harness_module,
+        "validate_cousin_static_validation_receipt",
+        _validate_static,
+    )
+    from blueprint_pipeline.adp009d_scenario_application import (
+        derive_frozen_scenario_instance,
+    )
+
+    checked_suite = json.loads(
+        (
+            repo_root
+            / "docs/arm_decision_proof_v1/manifests/adp009d_scenario_suite.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    checked_harness = json.loads(harness.read_text(encoding="utf-8"))
+    instance = derive_frozen_scenario_instance(
+        scenario_suite=checked_suite,
+        harness_manifest=checked_harness,
+        cell_id=f"{cousin_id.removeprefix('adp009d_')}.seed_2026080600",
+        cousin_manifest=cousin_manifest,
+        cousin_static_validation_receipt=static_receipt,
+    )
+    instance_path.write_text(json.dumps(instance), encoding="utf-8")
+    materialization["suite_digest"] = instance["suite_digest"]
+    materialization["harness_digest"] = instance["harness_digest"]
+    materialization["instance_bindings"] = [
+        {
+            "cell_id": instance["cell_id"],
+            "instance_digest": instance["instance_digest"],
+            "relative_path": instance_path.name,
+        }
+    ]
+    materialization["materialization_digest"] = canonical_digest(
+        materialization, digest_field="materialization_digest"
+    )
+    materialization_path.write_text(json.dumps(materialization), encoding="utf-8")
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / f"bundle-{cousin_id}",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        run_controls=True,
+        scenario_instance_path=instance_path,
+        scenario_materialization_receipt_path=materialization_path,
+        scenario_cousin_binding={
+            "source_cousin_manifest_path": str(cousin_manifest_path),
+            "cousin_id": cousin_id,
+            "cousin_type": cousin_type,
+            "admission_status": "admitted_for_control_execution",
+            "asset_digest": logical_digest,
+            "source_asset_path": str(native_asset),
+            "native_asset_sha256": native_sha256,
+            "source_static_validation_receipt_path": str(static_receipt_path),
+            "static_validation_receipt_digest": receipt_digest,
+        },
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    runtime = Path(receipt["bundle_path"]).parent / "provider_runtime"
+    staged = runtime / "assets/scenario_object_cousin.usda"
+    adapter = runtime / "assets/scenario_object_cousin_physx_sdf_adapter.usda"
+    binding_receipt = json.loads(
+        (runtime / "adp009d_scenario_application_bindings.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    binding = binding_receipt["admitted_cousins"][cousin_id]
+    assert _digest(staged) == native_sha256
+    assert binding["source_native_asset_sha256"] == native_sha256
+    assert binding["native_asset_sha256"] == _digest(adapter)
+    assert binding["native_asset_path"].endswith("physx_sdf_adapter.usda")
+    assert binding["asset_digest"] == logical_digest
+    assert (runtime / "adp009d_scenario_cousin_manifest.v1.json").is_file()
+    assert verification_calls == [("manifest", True), ("static", True)]
+    assert receipt["scenario_application_plan_digest"].startswith("sha256:")
+
+
+def test_runtime_revalidates_staged_scenario_plan_before_simulator_imports(
+    tmp_path: Path,
+) -> None:
+    approved, sage, _, bindings = _inputs(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    harness = (
+        repo_root
+        / "docs/arm_decision_proof_v1/manifests/"
+        "adp009d_franka_eval_harness_manifest.v1.json"
+    )
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "runtime-plan",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        run_controls=True,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+    runtime = Path(receipt["bundle_path"]).parent / "provider_runtime"
+
+    loaded = isaac_runtime._load_scenario_application(runtime)
+
+    assert loaded is not None
+    assert loaded[2]["application_plan_digest"] == receipt[
+        "scenario_application_plan_digest"
+    ]
+    suite_path = runtime / "adp009d_scenario_suite.v1.json"
+    suite = json.loads(suite_path.read_text(encoding="utf-8"))
+    suite["suite_digest"] = "sha256:" + "0" * 64
+    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="staged_suite_digest_mismatch"):
+        isaac_runtime._load_scenario_application(runtime)
+
+
+def test_bundle_rejects_resigned_instance_not_derived_from_frozen_suite(
+    tmp_path: Path,
+) -> None:
+    approved, sage, _, bindings = _inputs(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    harness = (
+        repo_root
+        / "docs/arm_decision_proof_v1/manifests/"
+        "adp009d_franka_eval_harness_manifest.v1.json"
+    )
+    instance = json.loads(
+        (
+            repo_root
+            / "docs/arm_decision_proof_v1/manifests/"
+            "adp009d_canonical_scenario_instance.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    instance["resolved_parameters"]["light_intensity_scale"] = 1.1
+    instance["instance_digest"] = canonical_digest(
+        instance, digest_field="instance_digest"
+    )
+    instance_path = tmp_path / "forged-instance.json"
+    instance_path.write_text(json.dumps(instance), encoding="utf-8")
+    materialization = {
+        "schema_version": "adp009d_scenario_materialization.v1",
+        "program_id": "arm-decision-proof-v1",
+        "suite_digest": instance["suite_digest"],
+        "harness_digest": instance["harness_digest"],
+        "instance_count": 1,
+        "instance_bindings": [
+            {
+                "cell_id": instance["cell_id"],
+                "instance_digest": instance["instance_digest"],
+                "relative_path": instance_path.name,
+            }
+        ],
+        "materialization_digest": "",
+    }
+    materialization["materialization_digest"] = canonical_digest(
+        materialization, digest_field="materialization_digest"
+    )
+    materialization_path = tmp_path / "forged-materialization.json"
+    materialization_path.write_text(json.dumps(materialization), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="adp009d_scenario_instance_frozen_derivation_mismatch",
+    ):
+        build_native_microcheck_bundle(
+            job_dir=tmp_path / "forged-bundle",
+            approved_can_path=approved,
+            sage_collision_path=sage,
+            harness_manifest_path=harness,
+            implementation_commit="a" * 40,
+            run_controls=True,
+            scenario_instance_path=instance_path,
+            scenario_materialization_receipt_path=materialization_path,
+            generated_at="fixed",
+            expected_asset_bindings=bindings,
+        )
+
+
+def test_full_materialization_binding_map_survives_bundle_and_runtime_load(
+    tmp_path: Path,
+) -> None:
+    approved, sage, _, bindings = _inputs(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    harness = (
+        repo_root
+        / "docs/arm_decision_proof_v1/manifests/"
+        "adp009d_franka_eval_harness_manifest.v1.json"
+    )
+    canonical_source = (
+        repo_root
+        / "docs/arm_decision_proof_v1/manifests/"
+        "adp009d_canonical_scenario_instance.v1.json"
+    )
+    instance = json.loads(canonical_source.read_text(encoding="utf-8"))
+    instance_path = tmp_path / "canonical-instance.json"
+    instance_path.write_text(json.dumps(instance), encoding="utf-8")
+    materialization = {
+        "schema_version": "adp009d_scenario_materialization.v1",
+        "program_id": "arm-decision-proof-v1",
+        "suite_digest": instance["suite_digest"],
+        "harness_digest": instance["harness_digest"],
+        "instance_count": 2,
+        "instance_bindings": [
+            {
+                "cell_id": instance["cell_id"],
+                "instance_digest": instance["instance_digest"],
+                "relative_path": instance_path.name,
+            },
+            {
+                "cell_id": "placement_y.seed_2026080600",
+                "instance_digest": "sha256:" + "9" * 64,
+                "relative_path": "instances/placement_y.seed_2026080600.json",
+            },
+        ],
+        "materialization_digest": "",
+    }
+    materialization["materialization_digest"] = canonical_digest(
+        materialization, digest_field="materialization_digest"
+    )
+    materialization_path = tmp_path / "full-materialization.json"
+    materialization_path.write_text(json.dumps(materialization), encoding="utf-8")
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "full-materialization-bundle",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        run_controls=True,
+        scenario_instance_path=instance_path,
+        scenario_materialization_receipt_path=materialization_path,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+    runtime = Path(receipt["bundle_path"]).parent / "provider_runtime"
+    binding_receipt = json.loads(
+        (runtime / "adp009d_scenario_application_bindings.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert len(binding_receipt["expected_instance_digests"]) == 2
+    assert isaac_runtime._load_scenario_application(runtime) is not None

@@ -15,7 +15,7 @@ import os
 import time
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 try:  # flat provider-bundle layout, where this file runs as a script
@@ -891,7 +891,446 @@ def _approved_can_observability(camera: Any) -> dict[str, Any]:
     )
 
 
-def _build_environment(runtime: Path, args: argparse.Namespace):
+def _load_scenario_application(
+    runtime: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
+    """Revalidate the staged instance and its frozen native application plan."""
+
+    instance_path = runtime / "adp009d_scenario_instance.v1.json"
+    if not instance_path.is_file():
+        return None
+    required_paths = {
+        "plan": runtime / "adp009d_scenario_application_plan.v1.json",
+        "bindings": runtime / "adp009d_scenario_application_bindings.v1.json",
+        "suite": runtime / "adp009d_scenario_suite.v1.json",
+        "harness": runtime / "adp009d_franka_eval_harness_manifest.v1.json",
+        "materialization": runtime / "adp009d_scenario_materialization.v1.json",
+    }
+    missing = [name for name, path in required_paths.items() if not path.is_file()]
+    if missing:
+        raise RuntimeError(
+            "scenario_application_staged_input_missing:" + ",".join(sorted(missing))
+        )
+    try:
+        from adp009d_scenario_application import (
+            build_scenario_application_plan,
+            derive_frozen_scenario_instance,
+        )
+        from decision_evidence_contracts import canonical_digest
+    except ModuleNotFoundError:
+        from .adp009d_scenario_application import (
+            build_scenario_application_plan,
+            derive_frozen_scenario_instance,
+        )
+        from .decision_evidence_contracts import canonical_digest
+
+    instance = json.loads(instance_path.read_text(encoding="utf-8"))
+    staged_plan = json.loads(required_paths["plan"].read_text(encoding="utf-8"))
+    binding_receipt = json.loads(
+        required_paths["bindings"].read_text(encoding="utf-8")
+    )
+    suite = json.loads(required_paths["suite"].read_text(encoding="utf-8"))
+    harness = json.loads(required_paths["harness"].read_text(encoding="utf-8"))
+    materialization = json.loads(
+        required_paths["materialization"].read_text(encoding="utf-8")
+    )
+    if binding_receipt.get("binding_digest") != canonical_digest(
+        binding_receipt, digest_field="binding_digest"
+    ):
+        raise RuntimeError("scenario_application_binding_receipt_digest_mismatch")
+    if (
+        suite.get("suite_digest") != binding_receipt.get("expected_suite_digest")
+        or suite.get("suite_digest")
+        != canonical_digest(suite, digest_field="suite_digest")
+    ):
+        raise RuntimeError("scenario_application_staged_suite_digest_mismatch")
+    if (
+        harness.get("harness_digest")
+        != binding_receipt.get("expected_harness_digest")
+        or harness.get("harness_digest")
+        != canonical_digest(harness, digest_field="harness_digest")
+    ):
+        raise RuntimeError("scenario_application_staged_harness_digest_mismatch")
+    if (
+        materialization.get("schema_version")
+        != "adp009d_scenario_materialization.v1"
+        or materialization.get("suite_digest") != suite.get("suite_digest")
+        or materialization.get("harness_digest") != harness.get("harness_digest")
+        or materialization.get("materialization_digest")
+        != binding_receipt.get("materialization_digest")
+        or materialization.get("materialization_digest")
+        != canonical_digest(
+            materialization, digest_field="materialization_digest"
+        )
+    ):
+        raise RuntimeError("scenario_application_staged_materialization_invalid")
+    expected_instance_digests = {
+        str(row.get("cell_id") or ""): str(row.get("instance_digest") or "")
+        for row in materialization.get("instance_bindings") or []
+        if isinstance(row, dict)
+    }
+    if dict(binding_receipt.get("expected_instance_digests") or {}) != expected_instance_digests:
+        raise RuntimeError("scenario_application_staged_instance_bindings_mismatch")
+    cell_id = str(instance.get("cell_id") or "")
+    regenerated_plan = build_scenario_application_plan(
+        instance,
+        admitted_cousins=dict(binding_receipt.get("admitted_cousins") or {}),
+        expected_suite_digest=str(binding_receipt["expected_suite_digest"]),
+        expected_harness_digest=str(binding_receipt["expected_harness_digest"]),
+        expected_instance_digests=expected_instance_digests,
+    )
+    if regenerated_plan != staged_plan:
+        raise RuntimeError("scenario_application_staged_plan_mismatch")
+    binding = dict(regenerated_plan["object_asset"])
+    native_path = (runtime / str(binding["native_asset_path"])).resolve()
+    if not native_path.is_file():
+        raise RuntimeError("scenario_application_staged_native_asset_missing")
+    if _sha256(native_path) != binding.get("native_asset_sha256"):
+        raise RuntimeError("scenario_application_staged_native_asset_digest_mismatch")
+    staged_cousin_manifest: dict[str, Any] | None = None
+    static_receipt: dict[str, Any] | None = None
+    if binding.get("cousin_type") != "canonical":
+        cousin_manifest_path = (
+            runtime / str(binding.get("cousin_manifest_path") or "")
+        ).resolve()
+        if (
+            not cousin_manifest_path.is_file()
+            or _sha256(cousin_manifest_path)
+            != binding.get("cousin_manifest_sha256")
+        ):
+            raise RuntimeError("scenario_application_staged_cousin_manifest_missing_or_changed")
+        source_native_path = (
+            runtime / str(binding.get("source_native_asset_path") or "")
+        ).resolve()
+        if (
+            not source_native_path.is_file()
+            or _sha256(source_native_path)
+            != binding.get("source_native_asset_sha256")
+        ):
+            raise RuntimeError("scenario_application_staged_cousin_source_missing_or_changed")
+        static_receipt_path = (
+            runtime / str(binding.get("static_validation_receipt_path") or "")
+        ).resolve()
+        if (
+            not static_receipt_path.is_file()
+            or _sha256(static_receipt_path)
+            != binding.get("static_validation_receipt_sha256")
+        ):
+            raise RuntimeError("scenario_application_staged_static_receipt_missing_or_changed")
+        static_receipt = json.loads(
+            static_receipt_path.read_text(encoding="utf-8")
+        )
+        if (
+            static_receipt.get("validation_receipt_digest")
+            != instance.get("cousin_static_validation_receipt_digest")
+            or static_receipt.get("validation_receipt_digest")
+            != canonical_digest(
+                static_receipt, digest_field="validation_receipt_digest"
+            )
+            or static_receipt.get("profile_passed") is not True
+            or static_receipt.get("caller_asserted_success_accepted") is not False
+        ):
+            raise RuntimeError("scenario_application_staged_static_receipt_invalid")
+        try:
+            from adp009d_franka_evaluation_harness import (
+                validate_cousin_manifest,
+                validate_cousin_static_validation_receipt,
+            )
+        except ModuleNotFoundError:
+            from .adp009d_franka_evaluation_harness import (
+                validate_cousin_manifest,
+                validate_cousin_static_validation_receipt,
+            )
+        staged_cousin_manifest = validate_cousin_manifest(
+            json.loads(cousin_manifest_path.read_text(encoding="utf-8")),
+            repo_root=runtime,
+            verify_files=False,
+        )
+        validate_cousin_static_validation_receipt(
+            static_receipt,
+            cousin_manifest=staged_cousin_manifest,
+            verify_files=False,
+        )
+        expected_materialized = dict(
+            dict(staged_cousin_manifest.get("materialization") or {}).get(
+                "expected_self_contained_usd"
+            )
+            or {}
+        )
+        if (
+            expected_materialized.get("sha256")
+            != binding.get("source_native_asset_sha256")
+            or expected_materialized.get("size_bytes")
+            != source_native_path.stat().st_size
+        ):
+            raise RuntimeError("scenario_application_staged_cousin_package_mismatch")
+    derived_instance = derive_frozen_scenario_instance(
+        scenario_suite=suite,
+        harness_manifest=harness,
+        cell_id=cell_id,
+        cousin_manifest=staged_cousin_manifest,
+        cousin_static_validation_receipt=static_receipt,
+    )
+    if instance != derived_instance:
+        raise RuntimeError("scenario_application_staged_instance_frozen_derivation_mismatch")
+    return instance, binding_receipt, regenerated_plan
+
+
+class _IsaacNativeScenarioBackend:
+    """Apply/read one plan through Arena configs and live PhysX object state."""
+
+    def __init__(
+        self,
+        *,
+        runtime: Path,
+        env: Any,
+        torch: Any,
+        native_configuration: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> None:
+        self._runtime = runtime
+        self._env = env
+        self._torch = torch
+        self._native = native_configuration
+        self._plan = plan
+        self._values = dict(plan["parameters"])
+        self._can = env.unwrapped.scene["approved_can"]
+        self._binding = dict(plan["object_asset"])
+        self._live_stage = native_configuration.get("live_stage")
+
+    def runtime_identity(self) -> dict[str, Any]:
+        return {
+            "backend": "isaac_lab_arena_physx",
+            "arena_revision": ARENA_REVISION,
+            "isaac_lab_revision": ISAAC_LAB_REVISION,
+            "configuration_digest": _canonical_digest(
+                {
+                    "arena_revision": ARENA_REVISION,
+                    "isaac_lab_revision": ISAAC_LAB_REVISION,
+                    "runtime_source_sha256": _sha256(Path(__file__)),
+                }
+            ),
+        }
+
+    def supported_parameter_ids(self) -> set[str]:
+        try:
+            from adp009d_scenario_application import APPLIED_PARAMETER_IDS
+        except ModuleNotFoundError:
+            from .adp009d_scenario_application import APPLIED_PARAMETER_IDS
+        return set(APPLIED_PARAMETER_IDS)
+
+    def apply_cousin(self, binding: dict[str, Any]) -> None:
+        requested = (self._runtime / str(binding["native_asset_path"])).resolve()
+        configured = Path(
+            self._native["approved_can_definition"].object_cfg.spawn.usd_path
+        ).resolve()
+        if requested != configured or not requested.is_file():
+            raise RuntimeError("scenario_application_native_cousin_not_configured")
+        if _sha256(requested) != binding.get("native_asset_sha256"):
+            raise RuntimeError("scenario_application_native_cousin_bytes_mismatch")
+        self._binding = dict(binding)
+
+    def _write_object_pose(self) -> None:
+        yaw = math.radians(self._values["object_yaw_degrees"])
+        pose = self._torch.tensor(
+            [[
+                self._values["object_start_x_m"],
+                self._values["object_start_y_m"],
+                self._values["object_start_z_m"],
+                0.0,
+                0.0,
+                math.sin(yaw / 2.0),
+                math.cos(yaw / 2.0),
+            ]],
+            device=self._env.unwrapped.device,
+            dtype=self._torch.float32,
+        )
+        self._can.write_root_pose_to_sim_index(root_pose=pose)
+
+    def apply_parameter(self, parameter_id: str, value: float) -> None:
+        self._values[parameter_id] = float(value)
+        if parameter_id.startswith("object_start_") or parameter_id == "object_yaw_degrees":
+            self._write_object_pose()
+            return
+        if parameter_id == "object_mass_kg":
+            current = _to_torch(self._can.root_view.get_masses()).clone()
+            current.fill_(float(value))
+            self._can.set_masses_index(masses=current)
+            return
+        if parameter_id == "object_dynamic_friction":
+            import warp as wp
+
+            materials = _to_torch(
+                self._can.root_view.get_material_properties()
+            ).clone()
+            materials[..., 1] = float(value)
+            env_ids = self._torch.arange(
+                materials.shape[0], dtype=self._torch.int32, device="cpu"
+            )
+            self._can.root_view.set_material_properties(
+                wp.from_torch(materials, dtype=wp.float32),
+                wp.from_torch(env_ids, dtype=wp.int32),
+            )
+            return
+        if parameter_id == "light_intensity_scale":
+            self._light_attribute("inputs:intensity").Set(1500.0 * float(value))
+            return
+        if parameter_id == "light_color_temperature_kelvin":
+            self._light_attribute("inputs:enableColorTemperature").Set(True)
+            self._light_attribute("inputs:colorTemperature").Set(float(value))
+            return
+        if parameter_id.startswith("external_camera_extrinsic_d"):
+            return  # authored in CameraCfg before the native camera prim is spawned
+        if parameter_id.startswith("wrist_camera_extrinsic_d"):
+            return  # authored in CameraCfg before the native camera prim is spawned
+        raise NotImplementedError(parameter_id)
+
+    def _light_attribute(self, name: str) -> Any:
+        if self._live_stage is None:
+            raise RuntimeError("scenario_application_live_stage_missing")
+        attribute = self._live_stage.GetPrimAtPath("/World/Light").GetAttribute(name)
+        if not attribute or not attribute.IsValid():
+            raise RuntimeError(f"scenario_application_live_light_attribute_missing:{name}")
+        return attribute
+
+    def _live_camera_local_position(self, camera_name: str) -> tuple[float, float, float]:
+        from pxr import UsdGeom
+
+        camera = self._env.unwrapped.scene[camera_name]
+        sensor_prims = getattr(camera, "_sensor_prims", None)
+        if not sensor_prims or len(sensor_prims) != 1:
+            raise RuntimeError(
+                f"scenario_application_live_camera_prim_missing:{camera_name}"
+            )
+        matrix = UsdGeom.Xformable(sensor_prims[0].GetPrim()).GetLocalTransformation()
+        if isinstance(matrix, tuple):
+            matrix = matrix[0]
+        translation = matrix.ExtractTranslation()
+        return tuple(float(translation[index]) for index in range(3))
+
+    def commit_application(self) -> None:
+        self._env.reset(seed=int(self._plan["seed"]))
+
+    def read_parameter(self, parameter_id: str) -> dict[str, Any]:
+        if parameter_id.startswith("object_start_") or parameter_id == "object_yaw_degrees":
+            pose = [float(value) for value in _to_torch(self._can.data.root_pose_w)[0]]
+            if parameter_id == "object_yaw_degrees":
+                x, y, z, w = pose[3:7]
+                value = math.degrees(
+                    math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+                )
+            else:
+                value = pose[{"object_start_x_m": 0, "object_start_y_m": 1, "object_start_z_m": 2}[parameter_id]]
+            return {
+                "value": value,
+                "source": "native_simulator_state",
+                "native_path": "scene.approved_can.data.root_pose_w",
+            }
+        if parameter_id == "object_mass_kg":
+            value = float(_to_torch(self._can.root_view.get_masses())[0, 0])
+            path = "scene.approved_can.root_view.get_masses"
+        elif parameter_id == "object_dynamic_friction":
+            value = float(
+                _to_torch(self._can.root_view.get_material_properties())[0, 0, 1]
+            )
+            path = "scene.approved_can.root_view.get_material_properties.dynamic_friction"
+        elif parameter_id == "light_intensity_scale":
+            value = float(self._light_attribute("inputs:intensity").Get()) / 1500.0
+            path = "/World/Light.inputs:intensity"
+        elif parameter_id == "light_color_temperature_kelvin":
+            if not bool(
+                self._light_attribute("inputs:enableColorTemperature").Get()
+            ):
+                raise RuntimeError("scenario_application_live_light_temperature_disabled")
+            value = float(self._light_attribute("inputs:colorTemperature").Get())
+            path = "/World/Light.inputs:colorTemperature"
+        elif parameter_id.startswith("external_camera_extrinsic_d"):
+            actual = self._live_camera_local_position("external_camera")
+            base = self._native["canonical_external_offset_robot"]
+            local = tuple(float(actual[index]) - float(base[index]) for index in range(3))
+            cosine = math.cos(ROBOT_BASE_YAW_RAD)
+            sine = math.sin(ROBOT_BASE_YAW_RAD)
+            world = (
+                cosine * local[0] - sine * local[1],
+                sine * local[0] + cosine * local[1],
+                local[2],
+            )
+            value = world["xyz".index(parameter_id[-3])]
+            path = "scene.external_camera.live_usd_local_translation"
+        elif parameter_id.startswith("wrist_camera_extrinsic_d"):
+            actual = self._live_camera_local_position("wrist_camera")
+            base = self._native["canonical_wrist_offset_robot"]
+            value = float(actual["xyz".index(parameter_id[-3])]) - float(
+                base["xyz".index(parameter_id[-3])]
+            )
+            path = "scene.wrist_camera.live_usd_local_translation"
+        else:
+            raise NotImplementedError(parameter_id)
+        return {
+            "value": value,
+            "source": "native_simulator_state",
+            "native_path": path,
+        }
+
+    def _live_object_composition_layers(self) -> list[str]:
+        if self._live_stage is None:
+            raise RuntimeError("scenario_application_live_stage_missing")
+        root_view = getattr(self._can, "root_view", None)
+        prim_paths = list(getattr(root_view, "prim_paths", []) or [])
+        prim_path = (
+            str(prim_paths[0])
+            if len(prim_paths) == 1
+            else "/World/envs/env_0/approved_can"
+        )
+        prim = self._live_stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid() or not prim.IsActive():
+            raise RuntimeError("scenario_application_live_object_prim_missing")
+        layers = sorted(
+            {
+                str(Path(spec.layer.realPath).resolve())
+                for spec in prim.GetPrimStack()
+                if str(spec.layer.realPath or "")
+            }
+        )
+        path = (self._runtime / str(self._binding["native_asset_path"])).resolve()
+        if str(path) not in layers:
+            raise RuntimeError("scenario_application_live_object_composition_mismatch")
+        return layers
+
+    def read_cousin(self) -> dict[str, Any]:
+        path = (self._runtime / str(self._binding["native_asset_path"])).resolve()
+        composition_layers = self._live_object_composition_layers()
+        return {
+            "cousin_id": self._binding["cousin_id"],
+            "asset_digest": self._binding["asset_digest"],
+            "native_asset_sha256": _sha256(path),
+            "source": "native_simulator_state",
+            "native_path": str(path),
+            "composition_layers": composition_layers,
+        }
+
+
+def _environment_flag_enabled(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def _scenario_object_center_z(parameters: Mapping[str, Any]) -> float:
+    return float(parameters.get("object_start_z_m", SUPPORT_HEIGHT_M)) + float(
+        parameters.get("object_height_m", APPROVED_CAN_TOP_ABOVE_SUPPORT_M)
+    ) / 2.0
+
+
+def _scenario_object_top_z(parameters: Mapping[str, Any]) -> float:
+    return float(parameters.get("object_start_z_m", SUPPORT_HEIGHT_M)) + float(
+        parameters.get("object_height_m", APPROVED_CAN_TOP_ABOVE_SUPPORT_M)
+    )
+
+
+def _build_environment(
+    runtime: Path,
+    args: argparse.Namespace,
+    scenario_application_plan: dict[str, Any] | None = None,
+):
     import torch
     import isaaclab.sim as sim_utils
     from isaaclab_arena.assets.object import Object
@@ -902,6 +1341,27 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     from isaaclab_arena.scene.scene import Scene
     from isaaclab_arena.tasks.no_task import NoTask
     from isaaclab_arena.utils.pose import Pose
+
+    scenario_parameters = dict(
+        (scenario_application_plan or {}).get("parameters") or {}
+    )
+    scenario_seed = int(
+        (scenario_application_plan or {}).get("seed", 20260806)
+    )
+    object_binding = dict(
+        (scenario_application_plan or {}).get("object_asset") or {}
+    )
+    selected_object_path = runtime / str(
+        object_binding.get(
+            "native_asset_path", f"assets/{APPROVED_CAN_ADAPTER_FILENAME}"
+        )
+    )
+    selected_object_path = selected_object_path.resolve()
+    if not selected_object_path.is_file():
+        raise RuntimeError("scenario_application_native_object_asset_missing")
+    expected_native_sha256 = object_binding.get("native_asset_sha256")
+    if expected_native_sha256 and _sha256(selected_object_path) != expected_native_sha256:
+        raise RuntimeError("scenario_application_native_object_asset_digest_mismatch")
 
     class SpawnerObject(Object):
         """Use Arena's composition seam without importing its full asset registry."""
@@ -989,17 +1449,52 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         robot_quaternion_world_xyzw=robot_pose.rotation_xyzw,
         current_camera_offset_position_robot=external_camera_cfg.offset.pos,
         target_position_world=(
-            CAN_AXIS_XY_M[0],
-            CAN_AXIS_XY_M[1],
-            SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0,
+            float(scenario_parameters.get("object_start_x_m", CAN_AXIS_XY_M[0])),
+            float(scenario_parameters.get("object_start_y_m", CAN_AXIS_XY_M[1])),
+            _scenario_object_center_z(scenario_parameters),
         ),
     )
-    external_camera_cfg.offset.pos = tuple(
+    canonical_external_offset_robot = tuple(
         external_task_camera_plan["resolved_offset_position_robot_m"]
+    )
+    world_delta = (
+        float(scenario_parameters.get("external_camera_extrinsic_dx_m", 0.0)),
+        float(scenario_parameters.get("external_camera_extrinsic_dy_m", 0.0)),
+        float(scenario_parameters.get("external_camera_extrinsic_dz_m", 0.0)),
+    )
+    cosine = math.cos(ROBOT_BASE_YAW_RAD)
+    sine = math.sin(ROBOT_BASE_YAW_RAD)
+    external_delta_robot = (
+        cosine * world_delta[0] + sine * world_delta[1],
+        -sine * world_delta[0] + cosine * world_delta[1],
+        world_delta[2],
+    )
+    external_camera_cfg.offset.pos = tuple(
+        canonical_external_offset_robot[index] + external_delta_robot[index]
+        for index in range(3)
+    )
+    wrist_camera_cfg = embodiment.camera_config.wrist_camera
+    canonical_wrist_offset_robot = tuple(wrist_camera_cfg.offset.pos)
+    wrist_delta_robot = (
+        float(scenario_parameters.get("wrist_camera_extrinsic_dx_m", 0.0)),
+        float(scenario_parameters.get("wrist_camera_extrinsic_dy_m", 0.0)),
+        float(scenario_parameters.get("wrist_camera_extrinsic_dz_m", 0.0)),
+    )
+    wrist_camera_cfg.offset.pos = tuple(
+        canonical_wrist_offset_robot[index] + wrist_delta_robot[index]
+        for index in range(3)
     )
     external_task_camera_plan.update(
         {
             "schema_version": "adp009d_external_task_camera_plan.v2",
+            "canonical_offset_position_robot_m": list(
+                canonical_external_offset_robot
+            ),
+            "scenario_offset_position_world_m": list(world_delta),
+            "scenario_offset_position_robot_m": list(external_delta_robot),
+            "resolved_offset_position_robot_m": list(
+                external_camera_cfg.offset.pos
+            ),
             "authoritative_seam": "Arena CameraCfg.offset before prim spawn",
             "orientation_source": "official Arena DROID external camera offset",
             "orientation_unchanged": True,
@@ -1048,13 +1543,34 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             initial_pose=Pose.identity(),
             spawn_cfg_addon={"visible": True},
         )
+    object_yaw_rad = math.radians(
+        float(scenario_parameters.get("object_yaw_degrees", 0.0))
+    )
+    object_start_position_m = tuple(
+        float(scenario_parameters.get(parameter_id, fallback))
+        for parameter_id, fallback in zip(
+            ("object_start_x_m", "object_start_y_m", "object_start_z_m"),
+            CAN_START_POSITION_M,
+            strict=True,
+        )
+    )
+    object_mass_kg = float(scenario_parameters.get("object_mass_kg", 0.355))
     approved_can = Object(
         name="approved_can",
         object_type=ObjectType.RIGID,
-        usd_path=str(runtime / "assets" / APPROVED_CAN_ADAPTER_FILENAME),
-        initial_pose=Pose(position_xyz=CAN_START_POSITION_M),
+        usd_path=str(selected_object_path),
+        initial_pose=Pose(
+            position_xyz=object_start_position_m,
+            rotation_xyzw=(
+                0.0,
+                0.0,
+                math.sin(object_yaw_rad / 2.0),
+                math.cos(object_yaw_rad / 2.0),
+            ),
+        ),
         spawn_cfg_addon={
             "semantic_tags": _semantic_tags("approved_can"),
+            "mass_props": sim_utils.MassPropertiesCfg(mass=object_mass_kg),
             "rigid_props": sim_utils.RigidBodyPropertiesCfg(
                 solver_position_iteration_count=8,
                 solver_velocity_iteration_count=2,
@@ -1068,7 +1584,12 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         prim_path="/World/Light",
         spawner_cfg=sim_utils.DomeLightCfg(
             color=(0.75, 0.75, 0.75),
-            intensity=1500.0,
+            intensity=1500.0
+            * float(scenario_parameters.get("light_intensity_scale", 1.0)),
+            enable_color_temperature=bool(scenario_application_plan),
+            color_temperature=float(
+                scenario_parameters.get("light_color_temperature_kelvin", 5000.0)
+            ),
         ),
     )
     scene = Scene(
@@ -1081,7 +1602,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         from isaaclab_physx.physics import PhysxCfg
 
         cfg.sim.dt = 1.0 / 120.0
-        cfg.seed = 20260806
+        cfg.seed = scenario_seed
         cfg.sim.render_interval = 8
         cfg.decimation = 8
         cfg.episode_length_s = 5.0
@@ -1106,7 +1627,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         num_envs=1,
         env_spacing=2.0,
         solve_relations=False,
-        placement_seed=20260806,
+        placement_seed=scenario_seed,
         mimic=False,
         device=args.device,
         disable_fabric=False,
@@ -1118,7 +1639,23 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     _phase("manager_based_environment_construction")
     env, cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
     _phase("manager_based_environment_construction", "completed")
-    return env, cfg, torch, external_task_camera_plan, overview_camera_plan
+    scenario_native_configuration = {
+        "approved_can_definition": approved_can,
+        "light_definition": light,
+        "external_camera_cfg": external_camera_cfg,
+        "wrist_camera_cfg": wrist_camera_cfg,
+        "canonical_external_offset_robot": canonical_external_offset_robot,
+        "canonical_wrist_offset_robot": canonical_wrist_offset_robot,
+        "selected_object_path": selected_object_path,
+    }
+    return (
+        env,
+        cfg,
+        torch,
+        external_task_camera_plan,
+        overview_camera_plan,
+        scenario_native_configuration,
+    )
 
 
 def _preflight_environment_imports() -> dict[str, str]:
@@ -1173,6 +1710,40 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     adapter_path = runtime / "assets" / APPROVED_CAN_ADAPTER_FILENAME
     if not adapter_path.is_file() or _sha256(adapter_path) != APPROVED_CAN_ADAPTER_SHA256:
         raise RuntimeError("sealed_asset_binding_invalid:approved_can_physx_sdf_adapter.usda")
+    scenario_application_inputs = _load_scenario_application(runtime)
+    controls_requested = _environment_flag_enabled(
+        os.environ.get("BLUEPRINT_ADP009D_CONTROLS")
+    )
+    controls_or_policy_requested = controls_requested or bool(
+        str(os.environ.get("BLUEPRINT_ADP009D_POLICY_CANDIDATE", "")).strip()
+    )
+    if controls_or_policy_requested and scenario_application_inputs is None:
+        raise RuntimeError("scenario_application_required_for_controls_or_policy")
+    scenario_application_plan = (
+        scenario_application_inputs[2]
+        if scenario_application_inputs is not None
+        else None
+    )
+    scenario_application_receipt: dict[str, Any] | None = None
+    resolved_scenario_seed = int(
+        (scenario_application_plan or {}).get("seed", 20260806)
+    )
+    resolved_scenario_parameters = dict(
+        (scenario_application_plan or {}).get("parameters") or {}
+    )
+    resolved_scenario_object_axis_xy = (
+        float(
+            resolved_scenario_parameters.get(
+                "object_start_x_m", CAN_AXIS_XY_M[0]
+            )
+        ),
+        float(
+            resolved_scenario_parameters.get(
+                "object_start_y_m", CAN_AXIS_XY_M[1]
+            )
+        ),
+    )
+
     from pxr import Usd
 
     adapter_stage = Usd.Stage.Open(str(adapter_path))
@@ -1244,6 +1815,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     env = None
     timings_seconds: dict[str, float] = {}
     external_task_camera_plan: dict[str, Any] | None = None
+    scenario_backend: _IsaacNativeScenarioBackend | None = None
     try:
         _phase("runtime_import_preflight")
         runtime_import_preflight = _preflight_environment_imports()
@@ -1256,15 +1828,70 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             torch,
             external_task_camera_plan,
             overview_camera_plan,
-        ) = _build_environment(runtime, args)
+            scenario_native_configuration,
+        ) = _build_environment(
+            runtime,
+            args,
+            scenario_application_plan=scenario_application_plan,
+        )
         timings_seconds["environment_build"] = round(time.monotonic() - phase_started, 6)
+        import omni.usd
+
+        live_stage = omni.usd.get_context().get_stage()
+        scenario_native_configuration["live_stage"] = live_stage
+        if scenario_application_inputs is not None:
+            try:
+                from adp009d_scenario_application import apply_scenario_instance
+            except ModuleNotFoundError:
+                from .adp009d_scenario_application import apply_scenario_instance
+
+            scenario_instance, binding_receipt, scenario_application_plan = (
+                scenario_application_inputs
+            )
+            scenario_backend = _IsaacNativeScenarioBackend(
+                runtime=runtime,
+                env=env,
+                torch=torch,
+                native_configuration=scenario_native_configuration,
+                plan=scenario_application_plan,
+            )
+            scenario_application_receipt = apply_scenario_instance(
+                scenario_instance,
+                backend=scenario_backend,
+                admitted_cousins=dict(binding_receipt["admitted_cousins"]),
+                expected_suite_digest=str(binding_receipt["expected_suite_digest"]),
+                expected_harness_digest=str(binding_receipt["expected_harness_digest"]),
+                expected_instance_digests=dict(
+                    binding_receipt["expected_instance_digests"]
+                ),
+                receipt_path=(
+                    output / "adp009d_scenario_application_receipt.v1.json"
+                ),
+            )
+
+        def _reset_scenario_environment():
+            result = env.reset(seed=resolved_scenario_seed)
+            if scenario_application_receipt is not None:
+                try:
+                    from adp009d_scenario_application import (
+                        verify_scenario_application_receipt,
+                    )
+                except ModuleNotFoundError:
+                    from .adp009d_scenario_application import (
+                        verify_scenario_application_receipt,
+                    )
+                if scenario_backend is None:
+                    raise RuntimeError("scenario_application_backend_missing_after_reset")
+                verify_scenario_application_receipt(
+                    scenario_application_receipt,
+                    backend=scenario_backend,
+                )
+            return result
+
         log.flush()
         _phase("environment_build", "completed")
         _fail_on_physx_collision_fallback(fallback_messages)
         _fail_on_physx_collision_stability(stability_messages)
-        import omni.usd
-
-        live_stage = omni.usd.get_context().get_stage()
         # Two explanations for the invisible appearance have now failed: the
         # OVRTX lane's crash-then-residency theory, and authoring gaussian
         # accumulation settings here.  Rather than guess a third, ask the live
@@ -1316,7 +1943,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         for index in range(2):
             _phase(f"reset_{index}")
             phase_started = time.monotonic()
-            observation, info = env.reset(seed=20260806)
+            observation, info = _reset_scenario_environment()
             timings_seconds[f"reset_{index}"] = round(time.monotonic() - phase_started, 6)
             robot = env.unwrapped.scene["robot"]
             approved_can = env.unwrapped.scene["approved_can"]
@@ -1387,7 +2014,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 _to_torch(env.unwrapped.scene["approved_can"].data.root_pose_w)[0]
             ),
         }
-        env.reset(seed=20260806)
+        _reset_scenario_environment()
         robot = env.unwrapped.scene["robot"]
         body_names_all = list(robot.data.body_names)
         approved_can = env.unwrapped.scene["approved_can"]
@@ -1525,7 +2152,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         if len(finger_indices) == 2:
             separations: dict[str, float] = {}
             for command in (0.0, 1.0):
-                env.reset(seed=20260806)
+                _reset_scenario_environment()
                 probe_action = torch.zeros_like(action)
                 probe_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
                 probe_action[:, 7] = float(command)
@@ -1555,7 +2182,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         gripper_probe["probe_digest"] = _canonical_digest(gripper_probe)
         # The probe reset the environment, so restore the canonical hold state
         # the retained evidence above was measured under.
-        env.reset(seed=20260806)
+        _reset_scenario_environment()
         _phase("gripper_convention_probe", gripper_probe["status"])
         timings_seconds["gripper_convention_probe"] = round(time.monotonic() - phase_started, 6)
 
@@ -1676,7 +2303,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         "quaternion_xyzw": camera_aim_quaternion,
                         "purpose": "camera_aimed_translation_fallback",
                     }
-                    for waypoint in approach_waypoints_world()
+                    for waypoint in approach_waypoints_world(
+                        object_axis_xy_m=resolved_scenario_object_axis_xy
+                    )
                 ],
             ]
             camera_aim_plan["resolved_waypoints"] = resolved_waypoints
@@ -1812,7 +2441,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     if gripper_indices
                     else None
                 )
-                can_top_z = SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M
+                can_top_z = _scenario_object_top_z(resolved_scenario_parameters)
                 # The gripper clearance above only watches gripper bodies, and a
                 # run measured 0.095 m of it while still displacing the can by
                 # 10.0 mm -- so whatever is pushing the can is elsewhere on the
@@ -1898,9 +2527,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         policy_episode_skipped_reason: str | None = None
         control_episode: dict[str, Any] | None = None
         control_episode_error: str | None = None
-        controls_requested = str(
-            os.environ.get("BLUEPRINT_ADP009D_CONTROLS") or ""
-        ).strip().lower() in {"1", "true", "yes"}
+        # Parsed once before the required-application gate; execution must use
+        # the identical truth table so alternate true spellings cannot bypass it.
         episode_start_restore_receipts: list[dict[str, Any]] = []
         candidate_ids = [
             part.strip()
@@ -1943,7 +2571,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         device=env.unwrapped.device,
                         dtype=torch.float32,
                     )
-                    env.reset(seed=20260806)
+                    _reset_scenario_environment()
                     restore_steps = 0
                     for _ in range(EPISODE_START_RESTORE_MAX_STEPS):
                         current = _to_torch(robot.data.joint_pos)[:, :7]
@@ -2087,7 +2715,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     robot=robot,
                     approved_can=approved_can,
                     action_dim=int(env.unwrapped.action_manager.total_action_dim),
-                    reset_seed=20260806,
+                    reset_seed=resolved_scenario_seed,
                     to_torch=_to_torch,
                     gripper_closed_width_m=float(
                         gripper_probe["finger_separation_m"][str(gripper_probe["closed_command"])]
@@ -2374,6 +3002,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "policy_episode_error": policy_episode_error,
             "policy_episode_skipped_reason": policy_episode_skipped_reason,
             "controls_requested": controls_requested,
+            "scenario_application_receipt": scenario_application_receipt,
+            "scenario_application_receipt_digest": (
+                scenario_application_receipt.get("receipt_digest")
+                if scenario_application_receipt is not None
+                else None
+            ),
             "control_episode": control_episode,
             "control_episode_error": control_episode_error,
             "wrist_episode_start_selection": episode_start_selection,

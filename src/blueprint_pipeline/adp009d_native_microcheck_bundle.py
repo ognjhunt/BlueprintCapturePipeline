@@ -685,9 +685,13 @@ def _build_sage_task_collision_derivative(
     return result
 
 
-def _approved_can_physx_sdf_adapter_text() -> str:
-    """Compose the sealed can with the PhysX schema required to consume its SDF token."""
+def _approved_can_physx_sdf_adapter_text(
+    reference_filename: str = "approved_can.usda",
+) -> str:
+    """Compose one admitted can with the PhysX schema required to consume its SDF token."""
 
+    if not reference_filename or Path(reference_filename).name != reference_filename:
+        raise ValueError("adp009d_can_adapter_reference_filename_invalid")
     collider_parts = APPROVED_CAN_COLLIDER_PATH.split("/")
     if len(collider_parts) != 2:
         raise ValueError("adp009d_approved_can_collider_path_invalid")
@@ -700,7 +704,7 @@ def _approved_can_physx_sdf_adapter_text() -> str:
 )
 
 def Xform "{APPROVED_CAN_DEFAULT_PRIM}" (
-    prepend references = @approved_can.usda@</{APPROVED_CAN_DEFAULT_PRIM}>
+    prepend references = @{reference_filename}@</{APPROVED_CAN_DEFAULT_PRIM}>
 )
 {{
     over "{scope_name}"
@@ -744,6 +748,8 @@ def build_native_microcheck_bundle(
     policy_candidate_id: str | None = None,
     run_controls: bool = False,
     scenario_instance_path: str | Path | None = None,
+    scenario_materialization_receipt_path: str | Path | None = None,
+    scenario_cousin_binding: Mapping[str, Any] | None = None,
     aura_particlefield_path: str | Path | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
@@ -752,6 +758,10 @@ def build_native_microcheck_bundle(
 
     if len(implementation_commit) != 40 or any(ch not in "0123456789abcdef" for ch in implementation_commit):
         raise ValueError("adp009d_implementation_commit_invalid")
+    if scenario_instance_path is not None and not run_controls:
+        raise ValueError("adp009d_scenario_application_controls_required")
+    if scenario_cousin_binding is not None and not run_controls:
+        raise ValueError("adp009d_scenario_cousin_controls_required")
     job = Path(job_dir).expanduser().resolve()
     if job.exists():
         shutil.rmtree(job)
@@ -882,6 +892,8 @@ def build_native_microcheck_bundle(
         "droid_policy_bridge.py",
         "adp009d_policy_episode.py",
         "adp009d_control_episode.py",
+        "adp009d_scenario_application.py",
+        "adp009d_franka_evaluation_harness.py",
         # Wired into the runtime but never shipped, so a live run reached the
         # episode and died on ModuleNotFoundError after provisioning had
         # already succeeded.  An import the runtime makes must be a file the
@@ -921,14 +933,19 @@ def build_native_microcheck_bundle(
             json.dumps(destination_receipt, indent=1, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    if run_controls:
-        from .adp009d_control_episode import materialize_control_plan
+    scenario_application_plan: dict[str, Any] | None = None
+    if policy_candidate_id or run_controls:
+        from .adp009d_scenario_application import (
+            build_scenario_application_plan,
+            derive_frozen_scenario_instance,
+        )
 
+        repo_root = Path(__file__).resolve().parents[2]
         instance_source = (
             Path(scenario_instance_path).expanduser().resolve()
             if scenario_instance_path is not None
             else (
-                Path(__file__).resolve().parents[2]
+                repo_root
                 / "docs/arm_decision_proof_v1/manifests/"
                 "adp009d_canonical_scenario_instance.v1.json"
             )
@@ -936,12 +953,241 @@ def build_native_microcheck_bundle(
         if not instance_source.is_file():
             raise ValueError("adp009d_control_scenario_instance_missing")
         scenario_instance = json.loads(instance_source.read_text(encoding="utf-8"))
-        control_plan = materialize_control_plan(scenario_instance)
-        shutil.copy2(instance_source, runtime / "adp009d_scenario_instance.v1.json")
-        (runtime / "adp009d_control_plan.v1.json").write_text(
-            json.dumps(control_plan, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        scenario_suite_source = (
+            repo_root
+            / "docs/arm_decision_proof_v1/manifests/adp009d_scenario_suite.v1.json"
         )
+        checked_suite = json.loads(
+            scenario_suite_source.read_text(encoding="utf-8")
+        )
+        checked_harness = json.loads(harness_source.read_text(encoding="utf-8"))
+        if checked_suite.get("suite_digest") != canonical_digest(
+            checked_suite, digest_field="suite_digest"
+        ):
+            raise ValueError("adp009d_scenario_suite_digest_mismatch")
+        if checked_harness.get("harness_digest") != canonical_digest(
+            checked_harness, digest_field="harness_digest"
+        ):
+            raise ValueError("adp009d_scenario_harness_digest_mismatch")
+        if scenario_instance_path is None:
+            materialization_receipt = {
+                "schema_version": "adp009d_scenario_materialization.v1",
+                "program_id": "arm-decision-proof-v1",
+                "suite_digest": checked_suite["suite_digest"],
+                "harness_digest": checked_harness["harness_digest"],
+                "instance_count": 1,
+                "instance_bindings": [
+                    {
+                        "cell_id": scenario_instance["cell_id"],
+                        "instance_digest": scenario_instance["instance_digest"],
+                        "relative_path": instance_source.name,
+                    }
+                ],
+                "canonical_checked_instance_only": True,
+                "materialization_digest": "",
+            }
+            materialization_receipt["materialization_digest"] = canonical_digest(
+                materialization_receipt, digest_field="materialization_digest"
+            )
+        else:
+            materialization_source = Path(
+                str(scenario_materialization_receipt_path or "")
+            ).expanduser().resolve()
+            if not materialization_source.is_file():
+                raise ValueError("adp009d_scenario_materialization_receipt_missing")
+            materialization_receipt = json.loads(
+                materialization_source.read_text(encoding="utf-8")
+            )
+        if (
+            materialization_receipt.get("schema_version")
+            != "adp009d_scenario_materialization.v1"
+            or materialization_receipt.get("suite_digest")
+            != checked_suite["suite_digest"]
+            or materialization_receipt.get("harness_digest")
+            != checked_harness["harness_digest"]
+            or materialization_receipt.get("materialization_digest")
+            != canonical_digest(
+                materialization_receipt, digest_field="materialization_digest"
+            )
+        ):
+            raise ValueError("adp009d_scenario_materialization_receipt_invalid")
+        expected_instance_digests = {
+            str(row.get("cell_id") or ""): str(row.get("instance_digest") or "")
+            for row in materialization_receipt.get("instance_bindings") or []
+            if isinstance(row, Mapping)
+        }
+        if expected_instance_digests.get(str(scenario_instance.get("cell_id") or "")) != scenario_instance.get("instance_digest"):
+            raise ValueError("adp009d_scenario_instance_not_in_materialization")
+        control_plan = None
+        if run_controls:
+            from .adp009d_control_episode import materialize_control_plan
+
+            control_plan = materialize_control_plan(scenario_instance)
+        cousin_id = str(scenario_instance.get("cousin_id") or "")
+        if cousin_id == "approved_can":
+            application_binding: dict[str, Any] = {
+                "cousin_id": "approved_can",
+                "cousin_type": "canonical",
+                "admission_status": "canonical_anchor",
+                "asset_digest": scenario_instance.get("cousin_digest"),
+                "native_asset_path": f"assets/{APPROVED_CAN_ADAPTER_FILENAME}",
+                "native_asset_sha256": _sha256(can_adapter_path),
+                "static_validation_receipt_digest": None,
+            }
+        else:
+            supplied_binding = dict(scenario_cousin_binding or {})
+            cousin_manifest_path = Path(
+                str(supplied_binding.get("source_cousin_manifest_path") or "")
+            ).expanduser().resolve()
+            source_asset = Path(
+                str(supplied_binding.get("source_asset_path") or "")
+            ).expanduser().resolve()
+            static_receipt_path = Path(
+                str(
+                    supplied_binding.get(
+                        "source_static_validation_receipt_path"
+                    )
+                    or ""
+                )
+            ).expanduser().resolve()
+            if not cousin_manifest_path.is_file():
+                raise ValueError("adp009d_scenario_cousin_manifest_missing")
+            if not source_asset.is_file():
+                raise ValueError("adp009d_scenario_cousin_native_asset_missing")
+            if not static_receipt_path.is_file():
+                raise ValueError("adp009d_scenario_cousin_static_receipt_missing")
+            from .adp009d_franka_evaluation_harness import (
+                validate_cousin_manifest,
+                validate_cousin_static_validation_receipt,
+            )
+
+            cousin_manifest = validate_cousin_manifest(
+                json.loads(cousin_manifest_path.read_text(encoding="utf-8")),
+                repo_root=repo_root,
+                verify_files=True,
+            )
+            static_receipt = validate_cousin_static_validation_receipt(
+                json.loads(static_receipt_path.read_text(encoding="utf-8")),
+                cousin_manifest=cousin_manifest,
+                verify_files=True,
+            )
+            expected_materialized = dict(
+                dict(cousin_manifest.get("materialization") or {}).get(
+                    "expected_self_contained_usd"
+                )
+                or {}
+            )
+            expected_native_digest = str(expected_materialized.get("sha256") or "")
+            if (
+                cousin_manifest.get("cousin_id") != cousin_id
+                or cousin_manifest.get("cousin_type")
+                not in {"visual_material", "geometric"}
+                or _sha256(source_asset) != expected_native_digest
+                or source_asset.stat().st_size
+                != expected_materialized.get("size_bytes")
+                or static_receipt.get("validation_receipt_digest")
+                != scenario_instance.get(
+                    "cousin_static_validation_receipt_digest"
+                )
+            ):
+                raise ValueError("adp009d_scenario_cousin_admission_binding_invalid")
+            application_binding = {
+                "cousin_id": cousin_id,
+                "cousin_type": cousin_manifest["cousin_type"],
+                "admission_status": "admitted_for_control_execution",
+                "asset_digest": cousin_manifest["cousin_digest"],
+                "static_validation_receipt_digest": static_receipt[
+                    "validation_receipt_digest"
+                ],
+                "cousin_manifest_digest": cousin_manifest["cousin_digest"],
+                "cousin_manifest_sha256": _sha256(cousin_manifest_path),
+            }
+            shutil.copy2(
+                cousin_manifest_path,
+                runtime / "adp009d_scenario_cousin_manifest.v1.json",
+            )
+            staged_name = f"scenario_object_cousin{source_asset.suffix}"
+            shutil.copy2(source_asset, assets / staged_name)
+            adapter_name = "scenario_object_cousin_physx_sdf_adapter.usda"
+            cousin_adapter_path = assets / adapter_name
+            cousin_adapter_path.write_text(
+                _approved_can_physx_sdf_adapter_text(staged_name),
+                encoding="utf-8",
+            )
+            staged_receipt_name = "scenario_object_cousin_static_validation_receipt.v1.json"
+            shutil.copy2(static_receipt_path, runtime / staged_receipt_name)
+            application_binding["cousin_manifest_path"] = (
+                "adp009d_scenario_cousin_manifest.v1.json"
+            )
+            application_binding["cousin_manifest_sha256"] = _sha256(
+                runtime / "adp009d_scenario_cousin_manifest.v1.json"
+            )
+            application_binding["source_native_asset_path"] = f"assets/{staged_name}"
+            application_binding["source_native_asset_sha256"] = expected_native_digest
+            application_binding["static_validation_receipt_path"] = staged_receipt_name
+            application_binding["static_validation_receipt_sha256"] = _sha256(
+                runtime / staged_receipt_name
+            )
+            application_binding["native_asset_path"] = f"assets/{adapter_name}"
+            application_binding["native_asset_sha256"] = _sha256(cousin_adapter_path)
+        derived_instance = derive_frozen_scenario_instance(
+            scenario_suite=checked_suite,
+            harness_manifest=checked_harness,
+            cell_id=str(scenario_instance.get("cell_id") or ""),
+            cousin_manifest=(cousin_manifest if cousin_id != "approved_can" else None),
+            cousin_static_validation_receipt=(
+                static_receipt if cousin_id != "approved_can" else None
+            ),
+        )
+        if scenario_instance != derived_instance:
+            raise ValueError("adp009d_scenario_instance_frozen_derivation_mismatch")
+        if expected_instance_digests.get(str(derived_instance["cell_id"])) != derived_instance[
+            "instance_digest"
+        ]:
+            raise ValueError("adp009d_scenario_instance_materialization_binding_mismatch")
+        application_bindings = {cousin_id: application_binding}
+        scenario_application_plan = build_scenario_application_plan(
+            scenario_instance,
+            admitted_cousins=application_bindings,
+            expected_suite_digest=str(checked_suite["suite_digest"]),
+            expected_harness_digest=str(checked_harness["harness_digest"]),
+            expected_instance_digests=expected_instance_digests,
+        )
+        shutil.copy2(
+            scenario_suite_source, runtime / "adp009d_scenario_suite.v1.json"
+        )
+        shutil.copy2(instance_source, runtime / "adp009d_scenario_instance.v1.json")
+        write_json(
+            runtime / "adp009d_scenario_materialization.v1.json",
+            materialization_receipt,
+        )
+        write_json(
+            runtime / "adp009d_scenario_application_plan.v1.json",
+            scenario_application_plan,
+        )
+        application_binding_receipt = {
+            "schema_version": "adp009d_scenario_application_bindings.v1",
+            "expected_suite_digest": checked_suite["suite_digest"],
+            "expected_harness_digest": checked_harness["harness_digest"],
+            "materialization_digest": materialization_receipt[
+                "materialization_digest"
+            ],
+            "expected_instance_digests": expected_instance_digests,
+            "admitted_cousins": application_bindings,
+            "binding_digest": "",
+        }
+        application_binding_receipt["binding_digest"] = canonical_digest(
+            application_binding_receipt, digest_field="binding_digest"
+        )
+        write_json(
+            runtime / "adp009d_scenario_application_bindings.v1.json",
+            application_binding_receipt,
+        )
+        if control_plan is not None:
+            (runtime / "adp009d_control_plan.v1.json").write_text(
+                json.dumps(control_plan, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
     if policy_candidate_id:
         from .adp009d_policy_provisioning import build_provisioning_script
 
@@ -1010,9 +1256,16 @@ def build_native_microcheck_bundle(
         "policy_candidate_id": policy_candidate_id,
         "controls_requested": bool(run_controls),
         "scenario_instance_digest": (
-            control_plan["instance_digest"] if run_controls else None
+            scenario_application_plan["instance_digest"]
+            if scenario_application_plan is not None
+            else None
         ),
         "control_plan_digest": control_plan["plan_digest"] if run_controls else None,
+        "scenario_application_plan_digest": (
+            scenario_application_plan["application_plan_digest"]
+            if scenario_application_plan is not None
+            else None
+        ),
         "camera_resolution_binding": camera_resolution or None,
         "expected_output_filename": "adp009d_native_microcheck.json",
         "candidate_policy_queried": False,
@@ -1053,6 +1306,8 @@ def build_native_microcheck_bundle_isolated(
     policy_candidate_id: str | None = None,
     run_controls: bool = False,
     scenario_instance_path: str | Path | None = None,
+    scenario_materialization_receipt_path: str | Path | None = None,
+    scenario_cousin_binding: Mapping[str, Any] | None = None,
     aura_particlefield_path: str | Path | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
@@ -1087,6 +1342,28 @@ def build_native_microcheck_bundle_isolated(
                 str(Path(scenario_instance_path).expanduser().resolve()),
             )
         )
+    if scenario_materialization_receipt_path is not None:
+        command.extend(
+            (
+                "--scenario-materialization-receipt-path",
+                str(
+                    Path(scenario_materialization_receipt_path)
+                    .expanduser()
+                    .resolve()
+                ),
+            )
+        )
+    if scenario_cousin_binding is not None:
+        command.extend(
+            (
+                "--scenario-cousin-binding-json",
+                json.dumps(
+                    dict(scenario_cousin_binding),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+        )
     if aura_particlefield_path is not None:
         command.extend(
             ("--aura-particlefield-path", str(Path(aura_particlefield_path).resolve()))
@@ -1100,6 +1377,13 @@ def build_native_microcheck_bundle_isolated(
                 json.dumps(dict(expected_asset_bindings), sort_keys=True, separators=(",", ":")),
             )
         )
+    child_env = os.environ.copy()
+    source_root = str(Path(__file__).resolve().parents[1])
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        value
+        for value in (source_root, child_env.get("PYTHONPATH", ""))
+        if value
+    )
     try:
         completed = subprocess.run(
             command,
@@ -1107,11 +1391,15 @@ def build_native_microcheck_bundle_isolated(
             capture_output=True,
             text=True,
             timeout=600,
+            env=child_env,
         )
     except subprocess.TimeoutExpired as exc:
         raise ValueError("adp009d_bundle_subprocess_timeout") from exc
     if completed.returncode != 0:
-        raise ValueError(f"adp009d_bundle_subprocess_failed:{completed.returncode}")
+        detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "no_stderr"
+        raise ValueError(
+            f"adp009d_bundle_subprocess_failed:{completed.returncode}:{detail}"
+        )
 
     receipt_path = job / "adp009d_native_microcheck_bundle_receipt.json"
     if not receipt_path.is_file():
@@ -1140,6 +1428,8 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--policy-candidate-id", default=None)
     parser.add_argument("--run-controls", action="store_true")
     parser.add_argument("--scenario-instance-path", default=None)
+    parser.add_argument("--scenario-materialization-receipt-path", default=None)
+    parser.add_argument("--scenario-cousin-binding-json", default=None)
     parser.add_argument("--aura-particlefield-path", default=None)
     parser.add_argument("--generated-at")
     parser.add_argument("--expected-asset-bindings-json")
@@ -1158,6 +1448,14 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
         policy_candidate_id=args.policy_candidate_id,
         run_controls=args.run_controls,
         scenario_instance_path=args.scenario_instance_path,
+        scenario_materialization_receipt_path=(
+            args.scenario_materialization_receipt_path
+        ),
+        scenario_cousin_binding=(
+            json.loads(args.scenario_cousin_binding_json)
+            if args.scenario_cousin_binding_json is not None
+            else None
+        ),
         aura_particlefield_path=args.aura_particlefield_path,
         generated_at=args.generated_at,
         expected_asset_bindings=expected_bindings,

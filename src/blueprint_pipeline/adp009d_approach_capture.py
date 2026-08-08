@@ -509,17 +509,25 @@ def validate_wrist_observable_episode_start_restore(
     return receipt
 
 
-def approach_waypoints_world() -> list[dict[str, Any]]:
-    """Preregistered end-effector waypoints above the sealed can axis."""
+def approach_waypoints_world(
+    *, object_axis_xy_m: Sequence[float] = CAN_AXIS_XY_M
+) -> list[dict[str, Any]]:
+    """Preregistered end-effector waypoints above one resolved can axis."""
 
+    if (
+        len(object_axis_xy_m) != 2
+        or not all(math.isfinite(float(value)) for value in object_axis_xy_m)
+    ):
+        raise ApproachCaptureError(["approach_object_axis_invalid"])
+    resolved_axis = tuple(float(value) for value in object_axis_xy_m)
     waypoints: list[dict[str, Any]] = []
     for index, standoff in enumerate(APPROACH_STANDOFF_HEIGHTS_M):
         waypoints.append(
             {
                 "waypoint_index": index,
                 "position_world_m": [
-                    CAN_AXIS_XY_M[0],
-                    CAN_AXIS_XY_M[1],
+                    resolved_axis[0],
+                    resolved_axis[1],
                     SUPPORT_HEIGHT_M + float(standoff),
                 ],
                 "quaternion_xyzw": list(APPROACH_TOOL_QUAT_XYZW),

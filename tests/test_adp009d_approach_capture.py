@@ -1061,3 +1061,11 @@ def test_the_approach_holds_the_gripper_open() -> None:
     # Only when the convention is measured: guessing which value opens would
     # reintroduce exactly the bug this fixes.
     assert 'gripper_probe.get("status") == "measured"' in approach
+
+
+def test_approach_waypoints_follow_resolved_scenario_object_axis() -> None:
+    waypoints = approach_waypoints_world(object_axis_xy_m=(3.47, -3.30))
+
+    assert {tuple(row["position_world_m"][:2]) for row in waypoints} == {
+        (3.47, -3.30)
+    }

@@ -17,8 +17,19 @@ from pathlib import Path
 from statistics import NormalDist
 from typing import Any, Mapping, Sequence
 
-from blueprint_pipeline.common import write_json
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+try:
+    from blueprint_pipeline.common import write_json
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+except ModuleNotFoundError:  # pragma: no cover - staged flat provider runtime
+    from decision_evidence_contracts import canonical_digest
+
+    def write_json(path: str | Path, value: Mapping[str, Any]) -> None:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(value, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 HARNESS_SCHEMA_VERSION = "adp009d_franka_eval_harness_manifest.v1"

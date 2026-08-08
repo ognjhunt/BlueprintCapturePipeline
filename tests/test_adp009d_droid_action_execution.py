@@ -249,7 +249,7 @@ def test_runtime_measures_the_gripper_convention_rather_than_assuming_it() -> No
     # And the probe's own reset must not leave the canonical hold state altered.
     probe = source[source.index("--- gripper convention probe") :]
     probe = probe[: probe.index('timings_seconds["gripper_convention_probe"]')]
-    assert probe.count("env.reset(seed=20260806)") >= 2
+    assert probe.count("_reset_scenario_environment()") >= 2
     assert "gripper_convention_probe" in source
 
 
