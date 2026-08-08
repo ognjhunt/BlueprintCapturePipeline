@@ -316,6 +316,7 @@ def run_arena_native_control_vast(
     require_known_supported_isaac_driver: bool = True,
     enable_isaac_smoke: bool = True,
     forward_hf_token: bool = False,
+    allowed_active_instance_ids: tuple[int, ...] = (),
     preferred_gpu_keywords: tuple[str, ...] = (
         "RTX 4090",
         "RTX A6000",
@@ -447,6 +448,10 @@ def run_arena_native_control_vast(
                 ),
                 minimum_driver_version=minimum_driver_version,
                 preferred_gpu_keywords=preferred_gpu_keywords,
+                # Explicitly authorized concurrent runs (a second operator's
+                # live instance) must reach the prelaunch inventory guard, or
+                # coexistence is impossible by construction.
+                allowed_active_instance_ids=allowed_active_instance_ids,
                 prefer_isaac_rt=True,
                 machine_avoidlist_path=local_avoidlist,
                 instance_label_prefix=instance_label_prefix,

@@ -318,3 +318,29 @@ def test_avoidlist_already_in_the_job_directory_does_not_abort_the_launch(
     staged.unlink()
     assert _stage_machine_avoidlist(job, None) == staged
     assert not staged.exists()
+
+
+def test_adp009d_wrapper_forwards_the_active_instance_allowlist(monkeypatch) -> None:
+    """Concurrent authorized runs need the allowlist to reach the inventory
+    guard; a flag parsed but never forwarded is not an allowlist."""
+
+    from blueprint_pipeline import adp009d_franka_vast
+
+    received: dict = {}
+
+    def _fake_transport(**kwargs):
+        received.update(kwargs)
+        return {"status": "blocked", "blockers": ["test_short_circuit"]}
+
+    monkeypatch.setattr(
+        adp009d_franka_vast, "run_arena_native_control_vast", _fake_transport
+    )
+    adp009d_franka_vast.run_adp009d_native_microcheck_vast(
+        job_dir="/tmp/unused",
+        prepared_bundle={"status": "ready"},
+        paid_resource_admission_grant=None,
+        execute=False,
+        allowed_active_instance_ids=(47187346,),
+    )
+
+    assert received["allowed_active_instance_ids"] == (47187346,)
