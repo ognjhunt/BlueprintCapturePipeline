@@ -612,15 +612,26 @@ def test_dataset_capture_records_control_rate_streams(tmp_path) -> None:
 
 
 class _StampedEnvironment(_Environment):
-    """Stamps observations with sim time; optionally serves one stale frame."""
+    """Stamps observations with sim time; optionally serves one stale frame.
 
-    def __init__(self, stale_from_query: int | None = None):
+    ``preamble_steps`` models the episode-start restore: real environment
+    steps that advance the sim clock before the episode's first query.  v78
+    failed all three episodes because the guard expected the first stamp at
+    zero; a legitimate 40-step restore preamble put it at 2.667 s.
+    """
+
+    def __init__(
+        self,
+        stale_from_query: int | None = None,
+        preamble_steps: int = 0,
+    ):
         super().__init__()
         self._stale_from_query = stale_from_query
+        self._preamble_steps = preamble_steps
 
     def read_policy_inputs(self):
         inputs = super().read_policy_inputs()
-        observation_time = self._t / 15.0
+        observation_time = (self._preamble_steps + self._t) / 15.0
         if (
             self._stale_from_query is not None
             and self._t >= self._stale_from_query * 8
@@ -639,6 +650,29 @@ def test_fresh_observation_stamps_are_recorded_and_exact() -> None:
     )
     assert receipt["observation_interval_seconds"] == pytest.approx([8 / 15] * 3)
     assert receipt["observation_freshness_required"] is True
+
+
+def test_a_restore_preamble_offsets_the_anchor_not_the_verdict() -> None:
+    """Freshness is advancement against the episode's own step clock; a
+    constant preamble offset is legitimate and must not fail episodes."""
+
+    receipt = _run(
+        _StampedEnvironment(preamble_steps=40),
+        require_observation_freshness=True,
+    )
+
+    assert receipt["observation_time_anchor_s"] == pytest.approx(40 / 15)
+    assert receipt["observation_sim_times"] == pytest.approx(
+        [40 / 15 + query * 8 / 15 for query in range(4)]
+    )
+
+
+def test_a_stale_observation_after_a_preamble_is_still_refused() -> None:
+    with pytest.raises(PolicyEpisodeError, match="stale"):
+        _run(
+            _StampedEnvironment(stale_from_query=2, preamble_steps=40),
+            require_observation_freshness=True,
+        )
 
 
 def test_a_stale_observation_is_refused_not_scored() -> None:

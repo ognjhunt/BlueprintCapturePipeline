@@ -532,6 +532,7 @@ def run_policy_episode(
 
     queries: list[dict[str, Any]] = []
     observation_sim_times: list[float] = []
+    observation_time_anchor: float | None = None
     last_action: list[float] | None = None
     commanded_actions: list[dict[str, Any]] = []
     command_response_rows = 0
@@ -547,10 +548,13 @@ def run_policy_episode(
 
         # Rendering less often than stepping is an 88% saving, and it is only
         # sound if the frame the policy sees was rendered *at* the step it is
-        # responding to.  A merely-monotonic check would pass a cadence that is
-        # misaligned by a constant offset, so the stamp is held to the
-        # episode's own step clock.  Stale frames present as a policy that
-        # ignores the scene -- a plausible verdict caused by the harness,
+        # responding to.  Freshness is advancement against the episode's own
+        # step clock, anchored at the first observation: an episode-start
+        # restore legitimately advances sim time before query zero (v78 lost
+        # three episodes to expecting zero there), while a cadence misaligned
+        # *within* the episode still fails because its stamps stop advancing
+        # with the executed steps.  Stale frames otherwise present as a policy
+        # that ignores the scene -- a plausible verdict caused by the harness,
         # which is the most expensive kind of wrong.
         observation_time = inputs.get("observation_sim_time")
         if observation_time is None:
@@ -560,7 +564,11 @@ def run_policy_episode(
                 )
         else:
             observation_time = float(observation_time)
-            expected_time = step_index / float(DROID_CONTROL_HZ)
+            if observation_time_anchor is None:
+                observation_time_anchor = observation_time
+            expected_time = observation_time_anchor + (
+                step_index / float(DROID_CONTROL_HZ)
+            )
             if (
                 require_observation_freshness
                 and abs(observation_time - expected_time)
@@ -916,6 +924,7 @@ def run_policy_episode(
             )
         ],
         "observation_freshness_required": bool(require_observation_freshness),
+        "observation_time_anchor_s": observation_time_anchor,
         "motion_evidence": motion_evidence,
         "commanded_action_magnitudes": commanded_action_magnitudes,
         "step_trace": step_trace,
