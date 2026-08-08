@@ -23,7 +23,13 @@ def test_the_policy_environment_is_built_beside_isaac_never_inside_it() -> None:
 
     assert "venv --python" in script
     # Isaac's interpreter must never be the thing pip is pointed at.
-    assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
+    # Isaac's interpreter installs only the thin client, never the policy:
+    # pip-resolving the policy against Isaac's own CPython is how Isaac stops
+    # starting, but the episode runs inside Isaac and needs a client there.
+    isaac_pip = [ln for ln in script.splitlines() if f'"{ISAAC_INTERPRETER}" -m pip' in ln]
+    for line in isaac_pip:
+        assert ("packages/openpi-client" in line or "--no-deps" in line
+                or "pyzmq" in line), line
     # Per candidate: a shared venv failed the second policy outright, and
     # openpi and GR00T cannot share one anyway.
     assert "/opt/adp009d-policy-venv/pi05_droid/bin/python" in script
@@ -157,8 +163,17 @@ def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
     # but it must never be what creates the venv or installs the policy.
     venv_lines = [ln for ln in script.splitlines() if "venv --python" in ln]
     assert venv_lines and all(ISAAC_INTERPRETER not in ln for ln in venv_lines)
+    # The policy tree goes to the policy venv.  Isaac's interpreter may appear
+    # on exactly one kind of install line -- the thin client the episode needs
+    # to reach the server -- and never on the policy itself, which is what
+    # would drag JAX or a mismatched torch into Isaac's prefix.
     install_lines = [ln for ln in script.splitlines() if "pip install -e" in ln]
-    assert install_lines and all(ISAAC_INTERPRETER not in ln for ln in install_lines)
+    assert install_lines
+    for line in install_lines:
+        if ISAAC_INTERPRETER in line:
+            assert "packages/openpi-client" in line or "--no-deps" in line, line
+        else:
+            assert "VIRTUAL_ENV=" in line, line
     assert "/isaac-sim/kit/python/bin/python3" not in script
 
 
