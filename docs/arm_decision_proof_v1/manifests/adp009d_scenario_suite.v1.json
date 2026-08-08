@@ -1,0 +1,278 @@
+{
+  "schema_version": "adp009d_scenario_suite.v1",
+  "program_id": "arm-decision-proof-v1",
+  "freeze_status": "frozen_after_canonical_canary_before_scenario_evaluation",
+  "harness_digest": "sha256:39c4631574d336aea1d1d3b2c0512f303d34a6b09e9b022844bb4dc15b3b63bc",
+  "prior_canary_disclosure": {
+    "scope": "canonical_smoke_canaries_only",
+    "retained_receipt_digests": [
+      "sha256:fc35d64d3ba255bfb086d74ea8cab327e11664b6d0bfeb6fd468bee686c0b253",
+      "sha256:ddac03ff73648f61fee28bc0093f5d4a02a83a9f51916ba50a1265d388a8a7f9",
+      "sha256:15385d341dbedf49f75e1b2bd52e52290b1ad841f93ebf9723b2aea14b8e24fc"
+    ],
+    "prior_outcomes_used_to_select_parameters": false,
+    "scenario_family_results_observed": false,
+    "next_learned_run_requires_frozen_suite_digest": true,
+    "claim_ceiling": "post_canary_preregistered_scenario_evaluation_not_prospective_from_first_learned_contact"
+  },
+  "required_controls": [
+    "zero_action_negative",
+    "deterministic_scripted_positive"
+  ],
+  "cartesian_product_allowed": false,
+  "factors": [
+    {
+      "parameter_id": "object_start_y_m",
+      "semantic_meaning": "lateral object-start displacement on the admitted support surface",
+      "unit": "m",
+      "nominal_value": -3.3100837,
+      "allowed": {"values": [-3.3200837, -3.3100837, -3.3000837]},
+      "sampling": {"kind": "discrete", "values": [-3.3200837, -3.3000837]},
+      "source": "sealed canonical start plus or minus 0.01 m within measured SAGE support bounds",
+      "reason": "bounded placement sensitivity without changing task identity",
+      "runtime_target": "EventManager.reset.object_start_position_m.y",
+      "affects": ["object_start_pose", "derived_scripted_approach"],
+      "validity": {"invalid_behavior": "reject_instance_fail_closed", "native_probe_required": true}
+    },
+    {
+      "parameter_id": "object_yaw_degrees",
+      "semantic_meaning": "object yaw at reset about the support normal",
+      "unit": "degrees",
+      "nominal_value": 0.0,
+      "allowed": {"values": [-10.0, 0.0, 10.0]},
+      "sampling": {"kind": "discrete", "values": [-10.0, 10.0]},
+      "source": "bounded symmetric reset rotation preregistered before scenario-family execution",
+      "reason": "exercise approach sensitivity while preserving the sealed can and task family",
+      "runtime_target": "EventManager.reset.object_orientation.yaw",
+      "affects": ["object_start_pose", "derived_scripted_approach"],
+      "validity": {"invalid_behavior": "reject_instance_fail_closed", "native_probe_required": true}
+    },
+    {
+      "parameter_id": "light_intensity_scale",
+      "semantic_meaning": "multiplicative scale applied to the canonical task light intensity",
+      "unit": "ratio",
+      "nominal_value": 1.0,
+      "allowed": {"values": [0.75, 1.0, 1.25]},
+      "sampling": {"kind": "discrete", "values": [0.75, 1.25]},
+      "source": "bounded photometric stress around the canonical live renderer setting",
+      "reason": "measure illumination degradation without altering geometry or physics",
+      "runtime_target": "EventManager.reset.task_light.intensity_scale",
+      "affects": ["external_rgb", "wrist_rgb"],
+      "validity": {"invalid_behavior": "reject_instance_fail_closed", "native_probe_required": true}
+    },
+    {
+      "parameter_id": "light_color_temperature_kelvin",
+      "semantic_meaning": "correlated color temperature of the canonical task light",
+      "unit": "K",
+      "nominal_value": 5000.0,
+      "allowed": {"values": [4000.0, 5000.0, 6000.0]},
+      "sampling": {"kind": "discrete", "values": [4000.0, 6000.0]},
+      "source": "bounded warm and cool endpoints around the canonical 5000 K light",
+      "reason": "measure color-domain sensitivity independently of intensity",
+      "runtime_target": "EventManager.reset.task_light.color_temperature_kelvin",
+      "affects": ["external_rgb", "wrist_rgb"],
+      "validity": {"invalid_behavior": "reject_instance_fail_closed", "native_probe_required": true}
+    },
+    {
+      "parameter_id": "external_camera_extrinsic_dx_m",
+      "semantic_meaning": "external-camera world-frame x translation from the calibrated pose",
+      "unit": "m",
+      "nominal_value": 0.0,
+      "allowed": {"values": [-0.005, 0.0, 0.005]},
+      "sampling": {"kind": "discrete", "values": [-0.005, 0.005]},
+      "source": "five-millimetre symmetric calibration tolerance around the v85 pose",
+      "reason": "measure external-view calibration sensitivity while retaining the task envelope",
+      "runtime_target": "EventManager.reset.external_camera.pose.position.x",
+      "affects": ["external_rgb", "external_depth", "external_segmentation"],
+      "validity": {"invalid_behavior": "reject_instance_fail_closed", "native_probe_required": true, "dual_view_visibility_gate_required": true}
+    },
+    {
+      "parameter_id": "wrist_camera_extrinsic_dx_m",
+      "semantic_meaning": "wrist-camera local-frame x translation from the calibrated mount",
+      "unit": "m",
+      "nominal_value": 0.0,
+      "allowed": {"values": [-0.005, 0.0, 0.005]},
+      "sampling": {"kind": "discrete", "values": [-0.005, 0.005]},
+      "source": "five-millimetre symmetric mount tolerance around the v85 pose",
+      "reason": "measure wrist-view calibration sensitivity while retaining exact can visibility",
+      "runtime_target": "EventManager.reset.wrist_camera.pose.position.x",
+      "affects": ["wrist_rgb", "wrist_depth", "wrist_segmentation"],
+      "validity": {"invalid_behavior": "reject_instance_fail_closed", "native_probe_required": true, "dual_view_visibility_gate_required": true}
+    },
+    {
+      "parameter_id": "object_mass_kg",
+      "semantic_meaning": "rigid-body mass of the admitted can object",
+      "unit": "kg",
+      "nominal_value": 0.355,
+      "allowed": {"values": [0.32, 0.355, 0.39]},
+      "sampling": {"kind": "discrete", "values": [0.32, 0.39]},
+      "source": "approximately plus or minus ten percent around the sealed can mass",
+      "reason": "measure bounded inertial sensitivity without changing collider geometry",
+      "runtime_target": "EventManager.reset.object_rigid_body.mass_kg",
+      "affects": ["object_dynamics", "contacts", "scripted_control"],
+      "validity": {"invalid_behavior": "reject_instance_fail_closed", "native_probe_required": true}
+    },
+    {
+      "parameter_id": "object_dynamic_friction",
+      "semantic_meaning": "dynamic friction coefficient of the admitted can material",
+      "unit": "coefficient",
+      "nominal_value": 0.4,
+      "allowed": {"values": [0.3, 0.4, 0.5]},
+      "sampling": {"kind": "discrete", "values": [0.3, 0.5]},
+      "source": "bounded symmetric material stress around the canonical coefficient",
+      "reason": "measure grasp and placement sensitivity independently of mass",
+      "runtime_target": "EventManager.reset.object_material.dynamic_friction",
+      "affects": ["object_contacts", "gripper_contacts", "support_contacts"],
+      "validity": {"invalid_behavior": "reject_instance_fail_closed", "native_probe_required": true}
+    }
+  ],
+  "cell_templates": [
+    {
+      "template_id": "canonical_anchor",
+      "family": "canonical",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": [],
+      "seeds": [2026080600, 2026080601, 2026080602, 2026080603, 2026080604, 2026080605, 2026080606, 2026080607, 2026080608, 2026080609, 2026080610, 2026080611, 2026080612, 2026080613, 2026080614, 2026080615],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "placement_start_y",
+      "family": "placement_approach",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": ["object_start_y_m"],
+      "seeds": [2026080600, 2026080601, 2026080602, 2026080603, 2026080604, 2026080605, 2026080606, 2026080607],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "placement_object_yaw",
+      "family": "placement_approach",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": ["object_yaw_degrees"],
+      "seeds": [2026080608, 2026080609, 2026080610, 2026080611, 2026080612, 2026080613, 2026080614, 2026080615],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "illumination_intensity",
+      "family": "illumination",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": ["light_intensity_scale"],
+      "seeds": [2026080600, 2026080601, 2026080602, 2026080603, 2026080604, 2026080605, 2026080606, 2026080607],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "illumination_temperature",
+      "family": "illumination",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": ["light_color_temperature_kelvin"],
+      "seeds": [2026080608, 2026080609, 2026080610, 2026080611, 2026080612, 2026080613, 2026080614, 2026080615],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "camera_external_dx",
+      "family": "camera_sensor",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": ["external_camera_extrinsic_dx_m"],
+      "seeds": [2026080600, 2026080601, 2026080602, 2026080603, 2026080604, 2026080605, 2026080606, 2026080607],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "camera_wrist_dx",
+      "family": "camera_sensor",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": ["wrist_camera_extrinsic_dx_m"],
+      "seeds": [2026080608, 2026080609, 2026080610, 2026080611, 2026080612, 2026080613, 2026080614, 2026080615],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "physics_mass",
+      "family": "physics",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": ["object_mass_kg"],
+      "seeds": [2026080600, 2026080601, 2026080602, 2026080603, 2026080604, 2026080605, 2026080606, 2026080607],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "physics_dynamic_friction",
+      "family": "physics",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": ["object_dynamic_friction"],
+      "seeds": [2026080608, 2026080609, 2026080610, 2026080611, 2026080612, 2026080613, 2026080614, 2026080615],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "visual_material_cousin",
+      "family": "visual_material_cousin",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": [],
+      "seeds": [2026080600, 2026080601, 2026080602, 2026080603, 2026080604, 2026080605, 2026080606, 2026080607, 2026080608, 2026080609, 2026080610, 2026080611, 2026080612, 2026080613, 2026080614, 2026080615],
+      "cousin_id": "adp009d_visual_material_cousin"
+    },
+    {
+      "template_id": "geometric_cousin",
+      "family": "geometric_cousin",
+      "partition": "qualification",
+      "scored": true,
+      "factor_ids": [],
+      "seeds": [2026080600, 2026080601, 2026080602, 2026080603, 2026080604, 2026080605, 2026080606, 2026080607, 2026080608, 2026080609, 2026080610, 2026080611, 2026080612, 2026080613, 2026080614, 2026080615],
+      "cousin_id": "adp009d_geometric_cousin"
+    },
+    {
+      "template_id": "held_out_light_mass",
+      "family": "held_out_composed",
+      "partition": "held_out",
+      "scored": true,
+      "factor_ids": ["light_intensity_scale", "object_mass_kg"],
+      "seeds": [2026080600, 2026080601, 2026080602, 2026080603, 2026080604, 2026080605, 2026080606, 2026080607],
+      "cousin_id": "approved_can"
+    },
+    {
+      "template_id": "held_out_camera_friction",
+      "family": "held_out_composed",
+      "partition": "held_out",
+      "scored": true,
+      "factor_ids": ["external_camera_extrinsic_dx_m", "object_dynamic_friction"],
+      "seeds": [2026080608, 2026080609, 2026080610, 2026080611, 2026080612, 2026080613, 2026080614, 2026080615],
+      "cousin_id": "approved_can"
+    }
+  ],
+  "invalid_combinations": [
+    {
+      "constraint_id": "placement_and_camera_not_composed",
+      "when_all_non_nominal": ["object_start_y_m", "external_camera_extrinsic_dx_m"],
+      "behavior": "reject_instance_fail_closed"
+    },
+    {
+      "constraint_id": "yaw_and_wrist_mount_not_composed",
+      "when_all_non_nominal": ["object_yaw_degrees", "wrist_camera_extrinsic_dx_m"],
+      "behavior": "reject_instance_fail_closed"
+    }
+  ],
+  "power_cost_analysis": {
+    "two_sided_alpha": 0.05,
+    "target_power": 0.8,
+    "minimum_paired_difference": 0.2,
+    "anticipated_discordance": 0.3,
+    "computed_required_paired_cells": 57,
+    "planned_paired_cells": 128,
+    "canonical_worst_case_wilson_half_width": 0.22000436389673977,
+    "canonical_half_width_max": 0.221,
+    "per_family_half_width_max": 0.221,
+    "estimated_episode_wall_seconds": 130.0,
+    "planned_episode_count": 512,
+    "estimated_total_gpu_hours": 18.488888888888887,
+    "maximum_total_gpu_hours": 19.0,
+    "analysis_frozen_before_learned_outcomes": false,
+    "analysis_frozen_before_scenario_evaluation_outcomes": true
+  },
+  "suite_digest": "sha256:b0122bcae2bde1767b26fd7876880f4245f05cbe5ff8a975c3af85cada05cdb0"
+}

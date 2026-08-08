@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,18 @@ def test_checked_in_harness_binds_static_sage_triangle_override() -> None:
     assert validated["runtime_timing_receipt"]["fields_seconds"][0] == (
         "environment_build"
     )
+    assert validated["canonical_condition"]["target_position_m"] == [
+        3.750152333333333,
+        -3.4074919,
+        0.5264650138348479,
+    ]
+    assert validated["canonical_condition"]["target_selection"]["receipt_digest"] == (
+        "sha256:d9f4a32dbc58adfb5e8e1112e30b8b490f7a928b5ade2c3fd1ae8b84bc7aaf79"
+    )
+    assert validated["candidate_pair"]["candidate_ids"] == [
+        "pi05_droid",
+        "groot_n17_droid",
+    ]
 
 
 def test_harness_rejects_forged_native_timing_or_provider_zero() -> None:
@@ -273,8 +286,23 @@ def _valid_suite(harness: dict) -> dict:
     suite = {
         "schema_version": "adp009d_scenario_suite.v1",
         "program_id": "arm-decision-proof-v1",
-        "freeze_status": "frozen_pre_learned_outcomes",
+        "freeze_status": "frozen_after_canonical_canary_before_scenario_evaluation",
         "harness_digest": harness["harness_digest"],
+        "prior_canary_disclosure": {
+            "scope": "canonical_smoke_canaries_only",
+            "retained_receipt_digests": [
+                "sha256:fc35d64d3ba255bfb086d74ea8cab327e11664b6d0bfeb6fd468bee686c0b253",
+                "sha256:ddac03ff73648f61fee28bc0093f5d4a02a83a9f51916ba50a1265d388a8a7f9",
+                "sha256:15385d341dbedf49f75e1b2bd52e52290b1ad841f93ebf9723b2aea14b8e24fc",
+            ],
+            "prior_outcomes_used_to_select_parameters": False,
+            "scenario_family_results_observed": False,
+            "next_learned_run_requires_frozen_suite_digest": True,
+            "claim_ceiling": (
+                "post_canary_preregistered_scenario_evaluation_not_prospective_"
+                "from_first_learned_contact"
+            ),
+        },
         "required_controls": [
             "zero_action_negative",
             "deterministic_scripted_positive",
@@ -306,7 +334,8 @@ def _valid_suite(harness: dict) -> dict:
             "planned_episode_count": 512,
             "estimated_total_gpu_hours": 8.533333333333333,
             "maximum_total_gpu_hours": 9.0,
-            "analysis_frozen_before_learned_outcomes": True,
+            "analysis_frozen_before_learned_outcomes": False,
+            "analysis_frozen_before_scenario_evaluation_outcomes": True,
         },
         "suite_digest": "",
     }
@@ -454,6 +483,60 @@ def test_scenario_materialization_is_stable_policy_neutral_and_canonical(
         row["required_controls"]
         == ["deterministic_scripted_positive", "zero_action_negative"]
         for row in first.instances
+    )
+
+
+def test_checked_in_scenario_suite_is_frozen_bounded_and_materializable(
+    tmp_path: Path,
+    cousin_evidence: tuple[list[dict], list[dict]],
+) -> None:
+    harness = _load("adp009d_franka_eval_harness_manifest.v1.json")
+    suite = _load("adp009d_scenario_suite.v1.json")
+    manifests, receipts = cousin_evidence
+
+    validated = validate_scenario_suite(
+        suite,
+        harness_manifest=harness,
+        cousin_manifests=manifests,
+        cousin_static_validation_receipts=receipts,
+    )
+    materialized = materialize_scenario_suite(
+        harness_manifest=harness,
+        scenario_suite=validated,
+        cousin_manifests=manifests,
+        cousin_static_validation_receipts=receipts,
+        output_dir=tmp_path / "checked-in-suite",
+    )
+
+    assert validated["freeze_status"] == (
+        "frozen_after_canonical_canary_before_scenario_evaluation"
+    )
+    assert validated["prior_canary_disclosure"][
+        "prior_outcomes_used_to_select_parameters"
+    ] is False
+    assert validated["power_cost_analysis"]["planned_episode_count"] == 512
+    assert validated["power_cost_analysis"]["estimated_total_gpu_hours"] == pytest.approx(
+        18.488888888888887
+    )
+    assert Counter(row["family"] for row in materialized.instances) == {
+        "canonical": 16,
+        "placement_approach": 16,
+        "illumination": 16,
+        "camera_sensor": 16,
+        "physics": 16,
+        "visual_material_cousin": 16,
+        "geometric_cousin": 16,
+        "held_out_composed": 16,
+    }
+    assert all(
+        factor["resolved_value"] != factor["nominal_value"]
+        for instance in materialized.instances
+        for factor in instance["factor_records"]
+    )
+    assert all(
+        instance["resolved_parameters"]["target_x_m"] == 3.750152333333333
+        and instance["resolved_parameters"]["target_y_m"] == -3.4074919
+        for instance in materialized.instances
     )
 
 

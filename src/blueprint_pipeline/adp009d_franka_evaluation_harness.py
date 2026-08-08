@@ -31,6 +31,22 @@ SCENARIO_SUITE_SCHEMA_VERSION = "adp009d_scenario_suite.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
 SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
+SCENARIO_FREEZE_STATUS = (
+    "frozen_after_canonical_canary_before_scenario_evaluation"
+)
+TASK_DESTINATION_RECEIPT_DIGEST = (
+    "sha256:d9f4a32dbc58adfb5e8e1112e30b8b490f7a928b5ade2c3fd1ae8b84bc7aaf79"
+)
+TASK_DESTINATION_POSITION_M = [
+    3.750152333333333,
+    -3.4074919,
+    0.5264650138348479,
+]
+PRIOR_CANARY_RECEIPT_DIGESTS = {
+    "sha256:fc35d64d3ba255bfb086d74ea8cab327e11664b6d0bfeb6fd468bee686c0b253",
+    "sha256:ddac03ff73648f61fee28bc0093f5d4a02a83a9f51916ba50a1265d388a8a7f9",
+    "sha256:15385d341dbedf49f75e1b2bd52e52290b1ad841f93ebf9723b2aea14b8e24fc",
+}
 
 REQUIRED_ASSET_DIGESTS = {
     "agent_skill_audit": "sha256:aa42ad117ce9885f1d741ee897bfefae2f9d3529ec76d4be9bbc5b161bbe33ec",
@@ -295,6 +311,24 @@ def validate_harness_manifest(
             errors.append("harness_canonical_target_not_same_support_height")
     if canonical.get("immutable") is not True:
         errors.append("harness_canonical_immutability_missing")
+    if target != TASK_DESTINATION_POSITION_M:
+        errors.append("harness_canonical_destination_identity_invalid")
+    target_selection = _mapping(canonical.get("target_selection"))
+    if target_selection.get("receipt_digest") != TASK_DESTINATION_RECEIPT_DIGEST:
+        errors.append("harness_canonical_destination_receipt_invalid")
+    if target_selection.get("policy_outcome_consulted") is not False:
+        errors.append("harness_canonical_destination_outcome_blindness_invalid")
+    parameters = _mapping(canonical.get("parameters"))
+    if [
+        parameters.get("target_x_m"),
+        parameters.get("target_y_m"),
+        parameters.get("target_z_m"),
+    ] != TASK_DESTINATION_POSITION_M:
+        errors.append("harness_canonical_parameter_destination_invalid")
+    if canonical.get("camera_calibration_status") != (
+        "v85_dual_view_admissible_exact_can_visible_lossless_media_retained"
+    ):
+        errors.append("harness_canonical_camera_calibration_status_invalid")
 
     task = _mapping(manifest.get("task"))
     thresholds = _mapping(task.get("success_thresholds"))
@@ -438,6 +472,35 @@ def validate_harness_manifest(
         "unrelated_frames",
     }:
         errors.append("harness_renderer_fallback_set_invalid")
+
+    controls = _mapping(manifest.get("controls"))
+    if set(_strings(controls.get("required"))) != REQUIRED_CONTROLS:
+        errors.append("harness_controls_required_set_invalid")
+    if controls.get("execution_order") != [
+        "zero_action_negative",
+        "deterministic_scripted_positive",
+    ]:
+        errors.append("harness_controls_execution_order_invalid")
+    if controls.get("same_instance_digest_required") is not True:
+        errors.append("harness_controls_instance_binding_missing")
+    if controls.get("positive_failure_effect") != "block_cell_before_policy_execution":
+        errors.append("harness_controls_positive_failure_effect_invalid")
+    if controls.get("media_contract") != (
+        "lossless_external_and_wrist_frames_manifest_and_review_video"
+    ):
+        errors.append("harness_controls_media_contract_invalid")
+    if controls.get("grader_authority") != "deterministic_simulator_state":
+        errors.append("harness_controls_grader_authority_invalid")
+
+    candidate_pair = _mapping(manifest.get("candidate_pair"))
+    if candidate_pair.get("candidate_ids") != ["pi05_droid", "groot_n17_droid"]:
+        errors.append("harness_candidate_pair_invalid")
+    if candidate_pair.get("exactly_two") is not True:
+        errors.append("harness_candidate_pair_cardinality_invalid")
+    if candidate_pair.get("same_resolved_cells_and_seeds") is not True:
+        errors.append("harness_candidate_pairing_rule_invalid")
+    if candidate_pair.get("frozen_before_scenario_evaluation") is not True:
+        errors.append("harness_candidate_pair_freeze_invalid")
 
     timing_receipt = _mapping(manifest.get("runtime_timing_receipt"))
     required_timing_contract = {
@@ -1144,7 +1207,11 @@ def _sample_factor(
     if kind == "fixed":
         value = factor.get("nominal_value")
     elif kind == "discrete":
-        values = list(_mapping(factor.get("allowed")).get("values") or [])
+        values = list(
+            sampling.get("values")
+            or _mapping(factor.get("allowed")).get("values")
+            or []
+        )
         if not values:
             raise Adp009dHarnessError([f"scenario_factor_{parameter_id}_discrete_empty"])
         value = values[rng.randrange(len(values))]
@@ -1180,8 +1247,25 @@ def validate_scenario_suite(
         errors.append("scenario_suite_schema_invalid")
     if suite.get("program_id") != PROGRAM_ID:
         errors.append("scenario_suite_program_invalid")
-    if suite.get("freeze_status") != "frozen_pre_learned_outcomes":
-        errors.append("scenario_suite_not_frozen_pre_outcome")
+    if suite.get("freeze_status") != SCENARIO_FREEZE_STATUS:
+        errors.append("scenario_suite_not_frozen_before_scenario_evaluation")
+    disclosure = _mapping(suite.get("prior_canary_disclosure"))
+    if disclosure.get("scope") != "canonical_smoke_canaries_only":
+        errors.append("scenario_suite_prior_canary_scope_invalid")
+    if set(_strings(disclosure.get("retained_receipt_digests"))) != (
+        PRIOR_CANARY_RECEIPT_DIGESTS
+    ):
+        errors.append("scenario_suite_prior_canary_receipts_invalid")
+    if disclosure.get("prior_outcomes_used_to_select_parameters") is not False:
+        errors.append("scenario_suite_prior_outcome_parameter_selection_invalid")
+    if disclosure.get("scenario_family_results_observed") is not False:
+        errors.append("scenario_suite_prior_scenario_results_invalid")
+    if disclosure.get("next_learned_run_requires_frozen_suite_digest") is not True:
+        errors.append("scenario_suite_next_run_freeze_binding_missing")
+    if disclosure.get("claim_ceiling") != (
+        "post_canary_preregistered_scenario_evaluation_not_prospective_from_first_learned_contact"
+    ):
+        errors.append("scenario_suite_prior_canary_claim_ceiling_invalid")
     if suite.get("harness_digest") != harness_manifest.get("harness_digest"):
         errors.append("scenario_suite_harness_digest_mismatch")
     if _forbidden_outcome_paths(suite):
@@ -1246,6 +1330,13 @@ def validate_scenario_suite(
             errors.append(f"scenario_factor_{factor_id}_fields_missing")
         if _mapping(factor.get("sampling")).get("kind") not in ALLOWED_SAMPLING:
             errors.append(f"scenario_factor_{factor_id}_sampling_invalid")
+        sampling = _mapping(factor.get("sampling"))
+        if sampling.get("kind") == "discrete" and "values" in sampling:
+            values = sampling.get("values")
+            if not isinstance(values, list) or not values or any(
+                not _factor_allowed(factor, item) for item in (values or [])
+            ):
+                errors.append(f"scenario_factor_{factor_id}_discrete_values_invalid")
         if not _factor_allowed(factor, factor.get("nominal_value")):
             errors.append(f"scenario_factor_{factor_id}_nominal_out_of_bounds")
         if not _strings(factor.get("affects"), nonempty=True):
@@ -1357,6 +1448,10 @@ def validate_scenario_suite(
             errors.append("scenario_cost_gpu_hours_mismatch")
         if planned_gpu_hours > float(analysis["maximum_total_gpu_hours"]):
             errors.append("scenario_cost_cap_exceeded")
+        if analysis.get("analysis_frozen_before_learned_outcomes") is not False:
+            errors.append("scenario_power_prior_learned_outcomes_not_disclosed")
+        if analysis.get("analysis_frozen_before_scenario_evaluation_outcomes") is not True:
+            errors.append("scenario_power_scenario_freeze_missing")
     except (KeyError, TypeError, ValueError, Adp009dHarnessError):
         errors.append("scenario_power_cost_analysis_invalid")
 
@@ -1368,6 +1463,11 @@ def validate_scenario_suite(
             errors.append("scenario_invalid_combination_behavior_invalid")
         if not _strings(row.get("when_all_non_nominal"), nonempty=True):
             errors.append("scenario_invalid_combination_terms_missing")
+        elif any(
+            factor_id not in factors
+            for factor_id in _strings(row.get("when_all_non_nominal"))
+        ):
+            errors.append("scenario_invalid_combination_factor_unknown")
 
     if suite.get("suite_digest") != canonical_digest(suite, digest_field="suite_digest"):
         errors.append("scenario_suite_digest_mismatch")

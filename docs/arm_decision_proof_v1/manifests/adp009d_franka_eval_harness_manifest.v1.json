@@ -52,12 +52,20 @@
   ],
   "blockers": [
     "sealed_aura_hybrid_policy_observation_renderer_missing",
-    "wrist_camera_approved_can_absent",
-    "scripted_task_control_missing",
+    "scripted_task_control_native_execution_missing",
     "cousin_native_control_validation_missing"
   ],
+  "candidate_pair": {
+    "candidate_ids": [
+      "pi05_droid",
+      "groot_n17_droid"
+    ],
+    "exactly_two": true,
+    "frozen_before_scenario_evaluation": true,
+    "same_resolved_cells_and_seeds": true
+  },
   "canonical_condition": {
-    "camera_calibration_status": "native_tensors_retained_v22_external_can_visible_wrist_can_absent_policy_frame_rework_required",
+    "camera_calibration_status": "v85_dual_view_admissible_exact_can_visible_lossless_media_retained",
     "immutable": true,
     "lighting_status": "native_aura_exact_camera_conformance_passed_live_hybrid_composition_pending",
     "object_id": "approved_can",
@@ -93,8 +101,8 @@
       "robot_base_x_m": 3.4681748,
       "robot_base_y_m": -2.8100837,
       "robot_base_yaw_degrees": -90.0,
-      "target_x_m": 3.3081748,
-      "target_y_m": -3.3100837,
+      "target_x_m": 3.750152333333333,
+      "target_y_m": -3.4074919,
       "target_z_m": 0.5264650138348479,
       "wrist_camera_extrinsic_dx_m": 0.0,
       "wrist_camera_extrinsic_dy_m": 0.0,
@@ -111,17 +119,34 @@
       "y_min_m": -3.5689620890003915
     },
     "target_position_m": [
-      3.3081748,
-      -3.3100837,
+      3.750152333333333,
+      -3.4074919,
       0.5264650138348479
     ],
     "target_selection": {
-      "measurement_authority": "materialized SAGE collision bytes",
-      "method": "SAGE support top triangles plus collision-prim AABB exclusion",
-      "native_contact_validation_status": "v22_0_50m_base_passed_strict_object_stability_gate",
-      "non_support_overlap_count": 0,
-      "translation_m": 0.16
+      "measurement_authority": "sealed SAGE support top-surface triangle centroids",
+      "method": "maximise the smallest frozen reach, translation, and edge-clearance margin; ties break on x then y",
+      "native_contact_validation_status": "v85_dual_policy_canary_used_exact_frozen_destination",
+      "policy_outcome_consulted": false,
+      "receipt_digest": "sha256:d9f4a32dbc58adfb5e8e1112e30b8b490f7a928b5ade2c3fd1ae8b84bc7aaf79",
+      "translation_m": 0.2983281527646879
     }
+  },
+  "controls": {
+    "execution_order": [
+      "zero_action_negative",
+      "deterministic_scripted_positive"
+    ],
+    "grader_authority": "deterministic_simulator_state",
+    "implementation_status": "contract_frozen_native_execution_pending",
+    "media_contract": "lossless_external_and_wrist_frames_manifest_and_review_video",
+    "positive_failure_effect": "block_cell_before_policy_execution",
+    "required": [
+      "zero_action_negative",
+      "deterministic_scripted_positive"
+    ],
+    "same_instance_digest_required": true,
+    "zero_action_semantics": "zero_joint_velocity_realized_as_hold_current_absolute_joint_positions_with_gripper_open"
   },
   "claim_ceiling": [
     "development_only",
@@ -240,7 +265,7 @@
     "single_nominal_rollout_is_not_evaluation": true,
     "startup_is_not_evaluation": true
   },
-  "harness_digest": "sha256:387fb03debf1d0101634dbb86957f95226162723b40a74d07ad2e12283bd350b",
+  "harness_digest": "sha256:39c4631574d336aea1d1d3b2c0512f303d34a6b09e9b022844bb4dc15b3b63bc",
   "harness_id": "blueprint-isaac-lab-franka-task-evaluation-v1",
   "implementation_base_commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
   "layers": {
