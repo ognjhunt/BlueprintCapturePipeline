@@ -45,6 +45,7 @@ READINESS_POLL_SECONDS = 10.0
 # hang into a typed failure.
 ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS = 120.0
 SERVER_LOG_TAIL_BYTES = 32_768
+FAILED_SERVER_TERMINATE_TIMEOUT_SECONDS = 10.0
 DROID_ACTION_WIDTH = 8
 DROID_OPEN_LOOP_HORIZON = 8
 
@@ -234,6 +235,30 @@ def _server_log_summary(path: Path) -> dict[str, Any]:
     }
 
 
+def _stop_failed_server(process: subprocess.Popen | None) -> dict[str, Any]:
+    """Ensure a server that failed readiness cannot contend with Isaac.
+
+    A readiness timeout used to return ``rc=1`` while leaving the JAX child
+    alive.  The provider runner then started Isaac beside a model process that
+    still owned the GPU, turning a useful bounded failure into another opaque
+    and billable stall.
+    """
+
+    if process is None:
+        return {"status": "not_started", "exit_code": None}
+    exit_code = process.poll()
+    if exit_code is not None:
+        return {"status": "already_exited", "exit_code": int(exit_code)}
+    process.terminate()
+    try:
+        exit_code = process.wait(timeout=FAILED_SERVER_TERMINATE_TIMEOUT_SECONDS)
+        return {"status": "terminated", "exit_code": int(exit_code)}
+    except subprocess.TimeoutExpired:
+        process.kill()
+        exit_code = process.wait(timeout=FAILED_SERVER_TERMINATE_TIMEOUT_SECONDS)
+        return {"status": "killed", "exit_code": int(exit_code)}
+
+
 def wait_for_round_trip(
     *,
     host: str,
@@ -343,13 +368,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         exit_code = 0
     except Exception as exc:  # noqa: BLE001 - the failure is the evidence
+        failed_server_cleanup = _stop_failed_server(process)
         receipt.update(
             {
                 "status": "blocked",
                 "round_trip_completed": False,
                 "error": f"{type(exc).__name__}: {exc}",
                 "server_pid": process.pid if process else None,
-                "server_exit_code": process.poll() if process else None,
+                "server_exit_code": failed_server_cleanup["exit_code"],
+                "failed_server_cleanup": failed_server_cleanup,
             }
         )
         exit_code = 1

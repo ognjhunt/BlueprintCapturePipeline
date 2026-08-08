@@ -102,6 +102,30 @@ def test_failed_server_log_is_digest_bound_and_embedded_in_receipt(tmp_path) -> 
     assert "constructor blocked" in summary["tail"]
 
 
+def test_failed_readiness_stops_the_server_before_isaac_can_start() -> None:
+    """A failed JAX server must not retain the GPU beside Isaac."""
+
+    class _RunningServer:
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout):
+            assert timeout == worker.FAILED_SERVER_TERMINATE_TIMEOUT_SECONDS
+            assert self.terminated is True
+            return -15
+
+    process = _RunningServer()
+    result = worker._stop_failed_server(process)
+
+    assert result == {"status": "terminated", "exit_code": -15}
+    assert process.terminated is True
+
+
 def test_a_malformed_chunk_is_not_readiness(monkeypatch) -> None:
     """A server answering with the wrong shape is not ready; it is broken."""
 
