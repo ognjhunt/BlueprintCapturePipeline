@@ -40,7 +40,7 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v5"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v6"
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -455,6 +455,9 @@ class IsaacEpisodeAdapter:
 
     def read_object_sample(self) -> dict[str, Any]:
         pose = self._to_torch(self._can.data.root_pose_w)[0]
+        controlled_body_pose = self._to_torch(self._robot.data.body_pose_w)[
+            0, self._end_effector_index, :7
+        ]
         left, right = self._finger_positions()
         raw_separation = math.dist(left, right)
         width, unclamped_open_fraction, calibration_clamped = (
@@ -466,6 +469,10 @@ class IsaacEpisodeAdapter:
             "gripper_body_separation_m": raw_separation,
             "gripper_width_open_fraction_unclamped": unclamped_open_fraction,
             "gripper_width_calibration_clamped": calibration_clamped,
+            "controlled_body_name": self._end_effector_name,
+            "controlled_body_pose_world": [
+                float(value) for value in controlled_body_pose
+            ],
         }
         sample["grasp_frame_position_world_m"] = [
             (left[axis] + right[axis]) / 2.0 for axis in range(3)
@@ -545,6 +552,11 @@ def describe_adapter() -> dict[str, Any]:
         "scripted_control_body_pose_resolution": (
             "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
         ),
+        "scripted_control_physx_jacobian_frame": "world",
+        "scripted_control_controller_error_frame": "robot_root",
+        "scripted_control_jacobian_frame_transform": (
+            "rotate_linear_and_angular_rows_world_to_robot_root"
+        ),
         "gripper_physical_full_opening_m": GRIPPER_PHYSICAL_FULL_OPENING_M,
         "raw_gripper_body_separation_retained": True,
         "gripper_width_calibration_clamp_retained": True,
@@ -578,6 +590,14 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
     ):
         errors.append("isaac_episode_adapter_scripted_control_body_pose_resolution_drifted")
+    if bindings.get("scripted_control_physx_jacobian_frame") != "world":
+        errors.append("isaac_episode_adapter_physx_jacobian_frame_drifted")
+    if bindings.get("scripted_control_controller_error_frame") != "robot_root":
+        errors.append("isaac_episode_adapter_controller_error_frame_drifted")
+    if bindings.get("scripted_control_jacobian_frame_transform") != (
+        "rotate_linear_and_angular_rows_world_to_robot_root"
+    ):
+        errors.append("isaac_episode_adapter_jacobian_frame_transform_drifted")
     if (
         bindings.get("gripper_physical_full_opening_m")
         != GRIPPER_PHYSICAL_FULL_OPENING_M

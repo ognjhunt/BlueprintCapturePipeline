@@ -296,6 +296,10 @@ def test_gripper_width_is_probe_calibrated_physical_opening() -> None:
     assert sample["grasp_frame_position_world_m"] == pytest.approx(
         [0.03, 0.0, 1.0], abs=1e-9
     )
+    assert sample["controlled_body_name"] == "base_link"
+    assert sample["controlled_body_pose_world"] == pytest.approx(
+        [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+    )
 
 
 def test_linkage_overtravel_is_bounded_and_raw_measurement_is_retained() -> None:
@@ -507,6 +511,11 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["gripper_physical_full_opening_m"] == pytest.approx(0.085)
     assert bindings["raw_gripper_body_separation_retained"] is True
     assert bindings["isaaclab_pose_quaternion_order"] == "xyzw"
+    assert bindings["scripted_control_physx_jacobian_frame"] == "world"
+    assert bindings["scripted_control_controller_error_frame"] == "robot_root"
+    assert bindings["scripted_control_jacobian_frame_transform"] == (
+        "rotate_linear_and_angular_rows_world_to_robot_root"
+    )
 
     drifted = dict(bindings)
     drifted["camera_view_binding"] = {"external_camera": DROID_WRIST_VIEW}
@@ -536,6 +545,18 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted = dict(bindings)
     drifted["isaaclab_pose_quaternion_order"] = "wxyz"
     assert "isaac_episode_adapter_quaternion_order_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["scripted_control_physx_jacobian_frame"] = "robot_root"
+    assert "isaac_episode_adapter_physx_jacobian_frame_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["scripted_control_jacobian_frame_transform"] = "none"
+    assert "isaac_episode_adapter_jacobian_frame_transform_drifted" in (
         validate_adapter_bindings(drifted)
     )
 

@@ -26,6 +26,7 @@ from blueprint_pipeline.adp009d_approach_capture import (
     semantic_target_observability,
     summarize_wrist_approach_capture,
     validate_wrist_observable_episode_start_restore,
+    world_to_base_rotation_row_major_xyzw,
 )
 
 
@@ -92,6 +93,28 @@ def test_world_to_base_conversion_matches_a_rotated_translated_base() -> None:
     # Orientation is the base rotation inverted.
     assert quaternion_base[2] == pytest.approx(-half, abs=1e-9)
     assert quaternion_base[3] == pytest.approx(half, abs=1e-9)
+
+
+def test_v90_world_jacobian_rows_rotate_into_the_minus_90_degree_robot_root() -> None:
+    """The raw PhysX Jacobian cannot consume a root-frame error directly."""
+
+    half = np.sqrt(0.5)
+    world_to_root = np.asarray(
+        world_to_base_rotation_row_major_xyzw([0.0, 0.0, -half, half])
+    ).reshape(3, 3)
+
+    # v90 asked for mostly world -Y motion.  In the yawed robot root that is
+    # mostly +X; pairing this error with an unrotated world Jacobian produced
+    # the observed mostly world +X response.
+    error_world = np.asarray([0.08961545, -0.32588179, 0.1530])
+    error_root = world_to_root @ error_world
+
+    np.testing.assert_allclose(
+        world_to_root,
+        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        atol=1e-8,
+    )
+    assert error_root == pytest.approx([0.32588179, 0.08961545, 0.1530])
 
 
 def test_sealed_can_axis_maps_forward_of_the_minus_90_degree_robot_base() -> None:
@@ -487,6 +510,15 @@ def test_runtime_uses_the_arena_pinned_isaac_lab_jacobian_api() -> None:
     assert "body_link_pose_w" not in source
     # Fixed-base articulations drop the root row from the jacobian stack.
     assert "robot.is_fixed_base" in source
+    # PhysX returns world-aligned rows.  The controller pose and command are in
+    # the robot root, so both linear and angular blocks must be rotated.  The
+    # pinned task-space action implementation performs these same two bmm calls.
+    assert "world_to_base_rotation_row_major_xyzw(" in source
+    assert "jacobian_world[:, :3, :]" in source
+    assert "jacobian_world[:, 3:, :]" in source
+    assert source.count("torch.bmm(") >= 2
+    assert "_, jacobian = _jacobians_world_and_root()" in source
+    assert "jacobian_world, jacobian = _jacobians_world_and_root()" in source
 
 
 def test_wrist_gate_blocks_when_the_approach_moved_the_object() -> None:

@@ -733,6 +733,37 @@ def pose_world_to_base(
     return position_base, quaternion_base
 
 
+def world_to_base_rotation_row_major_xyzw(
+    base_quaternion_world_xyzw: Sequence[float],
+) -> list[float]:
+    """Return the rotation that expresses world vectors in the robot root.
+
+    PhysX exposes articulation Jacobians in world axes.  A Cartesian pose error
+    expressed in the robot root therefore cannot be paired with the raw matrix
+    when the root is rotated.  ADP-009D's DROID base has a -90 degree yaw, which
+    made that mismatch visible in v90: the requested world -Y motion appeared
+    mostly as world +X motion.  Keep this tiny transform simulator-independent
+    so the exact frame contract has a hermetic numerical regression.
+    """
+
+    try:
+        quaternion = tuple(float(value) for value in base_quaternion_world_xyzw)
+    except (TypeError, ValueError) as exc:
+        raise ApproachCaptureError(["robot_base_quaternion_invalid"]) from exc
+    if len(quaternion) != 4 or not all(math.isfinite(value) for value in quaternion):
+        raise ApproachCaptureError(["robot_base_quaternion_invalid"])
+    norm = math.sqrt(sum(value * value for value in quaternion))
+    if norm <= 1.0e-12:
+        raise ApproachCaptureError(["robot_base_quaternion_invalid"])
+    normalized = tuple(value / norm for value in quaternion)
+    inverse = _quat_conjugate(normalized)
+    columns = [
+        _quat_rotate(inverse, basis)
+        for basis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    ]
+    return [columns[column][row] for row in range(3) for column in range(3)]
+
+
 def rigid_offset_in_body_frame(
     *,
     body_position_world: Sequence[float],
@@ -967,6 +998,7 @@ __all__ = [
     "classify_wrist_pose_discrepancy",
     "rigid_offset_in_body_frame",
     "pose_world_to_base",
+    "world_to_base_rotation_row_major_xyzw",
     "select_wrist_observable_episode_start",
     "semantic_label_pixel_count",
     "semantic_target_observability",

@@ -39,6 +39,7 @@ try:  # flat provider-bundle layout, where this file runs as a script
         semantic_target_observability,
         summarize_wrist_approach_capture,
         validate_wrist_observable_episode_start_restore,
+        world_to_base_rotation_row_major_xyzw,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_approach_capture import (
@@ -61,6 +62,7 @@ except ModuleNotFoundError:  # imported as part of the repository package
         semantic_target_observability,
         summarize_wrist_approach_capture,
         validate_wrist_observable_episode_start_restore,
+        world_to_base_rotation_row_major_xyzw,
     )
 
 RESULT_NAME = "adp009d_native_microcheck.json"
@@ -1644,6 +1646,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         episode_start_samples: list[dict[str, Any]] = []
         episode_start_selection: dict[str, Any] | None = None
         camera_aim_plan: dict[str, Any] = {}
+        control_ik_binding: dict[str, Any] | None = None
+        control_ik_step_diagnostics: list[dict[str, Any]] = []
         approach_aborted = False
         try:
             from isaaclab.controllers import (  # noqa: PLC0415
@@ -1713,7 +1717,62 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             # fixed-base articulation, so the jacobian index is offset by one.
             jacobian_index = body_index - 1 if robot.is_fixed_base else body_index
             arm_joint_ids = list(range(7))
+            arm_joint_names = [str(name) for name in list(robot.joint_names)[:7]]
+            expected_arm_joint_names = [f"panda_joint{index}" for index in range(1, 8)]
+            if arm_joint_names != expected_arm_joint_names:
+                raise RuntimeError(
+                    "scripted_control_arm_joint_binding_invalid:"
+                    + ",".join(arm_joint_names)
+                )
             base_pose = _to_torch(robot.data.root_pose_w)[0, :7]
+            world_to_base_rotation = world_to_base_rotation_row_major_xyzw(
+                [float(value) for value in base_pose[3:7]]
+            )
+            world_to_base_rotation_tensor = torch.tensor(
+                [world_to_base_rotation],
+                device=env.unwrapped.device,
+                dtype=torch.float32,
+            ).reshape(1, 3, 3)
+
+            def _jacobians_world_and_root():
+                """Read PhysX's world Jacobian and express both row blocks in root."""
+
+                jacobian_world = _to_torch(robot.root_view.get_jacobians())[
+                    :, jacobian_index, :, arm_joint_ids
+                ]
+                jacobian_root = jacobian_world.clone()
+                jacobian_root[:, :3, :] = torch.bmm(
+                    world_to_base_rotation_tensor,
+                    jacobian_world[:, :3, :],
+                )
+                jacobian_root[:, 3:, :] = torch.bmm(
+                    world_to_base_rotation_tensor,
+                    jacobian_world[:, 3:, :],
+                )
+                return jacobian_world, jacobian_root
+
+            control_ik_binding = {
+                "schema_version": "adp009d_scripted_control_ik_binding.v1",
+                "isaac_lab_revision": ISAAC_LAB_REVISION,
+                "arena_revision": ARENA_REVISION,
+                "action_semantics": "ordered_absolute_joint_position_radians_plus_binary_gripper",
+                "action_dimension": int(env.unwrapped.action_manager.total_action_dim),
+                "arm_joint_ids": arm_joint_ids,
+                "arm_joint_names": arm_joint_names,
+                "controlled_body_name": end_effector_name,
+                "controlled_body_index": body_index,
+                "jacobian_body_index": jacobian_index,
+                "fixed_base": bool(robot.is_fixed_base),
+                "root_pose_world_xyzw": [float(value) for value in base_pose],
+                "physx_jacobian_frame": "world",
+                "controller_pose_error_frame": "robot_root",
+                "world_to_root_rotation_row_major": world_to_base_rotation,
+                "linear_jacobian_rows_rotated_world_to_root": True,
+                "angular_jacobian_rows_rotated_world_to_root": True,
+                "binding_source": (
+                    "pinned_isaaclab_task_space_actions.DifferentialInverseKinematicsAction"
+                ),
+            }
             resolved_waypoints = [
                 {
                     "waypoint_index": -1,
@@ -1749,9 +1808,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 controller.reset()
                 controller.set_command(command)
                 for _ in range(int(waypoint["steps"])):
-                    jacobian = _to_torch(robot.root_view.get_jacobians())[
-                        :, jacobian_index, :, arm_joint_ids
-                    ]
+                    _, jacobian = _jacobians_world_and_root()
                     ee_pose_w = _to_torch(robot.data.body_pose_w)[:, body_index]
                     root_pose_w = _to_torch(robot.data.root_pose_w)
                     ee_pos_b, ee_quat_b = subtract_frame_transforms(
@@ -2087,6 +2144,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 # failed replay therefore cannot spend inference or masquerade
                 # as a policy that chose to do nothing.
                 _restore_wrist_observable_episode_start()
+                control_ik_call_counter = [0]
 
                 def _scripted_pose_action_callback(
                     *,
@@ -2144,9 +2202,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     )
                     controller.reset()
                     controller.set_command(command)
-                    jacobian = _to_torch(robot.root_view.get_jacobians())[
-                        :, jacobian_index, :, arm_joint_ids
-                    ]
+                    jacobian_world, jacobian = _jacobians_world_and_root()
                     ee_pose_w = _to_torch(robot.data.body_pose_w)[:, body_index]
                     root_pose_w = _to_torch(robot.data.root_pose_w)
                     ee_pos_b, ee_quat_b = subtract_frame_transforms(
@@ -2167,6 +2223,56 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         -float(max_joint_delta_rad),
                         float(max_joint_delta_rad),
                     )
+                    callback_index = control_ik_call_counter[0]
+                    control_ik_call_counter[0] += 1
+                    if len(control_ik_step_diagnostics) < 16 and (
+                        callback_index < 4 or callback_index % 20 == 0
+                    ):
+                        control_ik_step_diagnostics.append(
+                            {
+                                "callback_index": callback_index,
+                                "target_grasp_frame_position_world_m": [
+                                    float(value) for value in target_position_world_m
+                                ],
+                                "current_grasp_frame_position_world_m": [
+                                    float(value) for value in finger_midpoint
+                                ],
+                                "target_controlled_body_position_world_m": [
+                                    float(value) for value in target_body_position_world
+                                ],
+                                "current_controlled_body_position_world_m": [
+                                    float(value) for value in ee_pose_w[0, :3]
+                                ],
+                                "target_controlled_body_position_root_m": [
+                                    float(value) for value in position_base
+                                ],
+                                "current_controlled_body_position_root_m": [
+                                    float(value) for value in ee_pos_b[0]
+                                ],
+                                "position_error_root_m": [
+                                    float(position_base[index] - ee_pos_b[0, index])
+                                    for index in range(3)
+                                ],
+                                "jacobian_shape": list(jacobian.shape),
+                                "jacobian_world_frobenius_norm": float(
+                                    torch.linalg.vector_norm(jacobian_world[0])
+                                ),
+                                "jacobian_root_frobenius_norm": float(
+                                    torch.linalg.vector_norm(jacobian[0])
+                                ),
+                                "jacobian_root_rank": int(
+                                    torch.linalg.matrix_rank(jacobian[0])
+                                ),
+                                "unbounded_joint_delta_rad": [
+                                    float(value)
+                                    for value in (joint_target - current_arm)[0]
+                                ],
+                                "bounded_joint_delta_rad": [
+                                    float(value)
+                                    for value in (bounded_target - current_arm)[0]
+                                ],
+                            }
+                        )
                     scripted_action = torch.zeros_like(action)
                     scripted_action[:, :7] = bounded_target
                     scripted_action[:, 7] = float(gripper_command)
@@ -2406,6 +2512,16 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 )
             if episode_start_selection.get("status") != "ready":
                 episode_blockers.extend(episode_start_selection.get("blockers") or [])
+        scripted_control_ik = {
+            "schema_version": "adp009d_scripted_control_ik_receipt.v1",
+            "binding": control_ik_binding,
+            "step_diagnostics": control_ik_step_diagnostics,
+            "receipt_digest": "",
+        }
+        scripted_control_ik["receipt_digest"] = _canonical_digest(
+            scripted_control_ik,
+            digest_field="receipt_digest",
+        )
         return {
             "schema_version": "adp009d_native_microcheck.v1",
             "status": "completed" if not episode_blockers else "blocked",
@@ -2466,6 +2582,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "controls_requested": controls_requested,
             "control_episode": control_episode,
             "control_episode_error": control_episode_error,
+            "scripted_control_ik": scripted_control_ik,
             "wrist_episode_start_selection": episode_start_selection,
             "wrist_episode_start_restore_receipts": episode_start_restore_receipts,
             "policy_candidate_bound": candidate_id or None,
