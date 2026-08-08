@@ -227,7 +227,10 @@ class IsaacEpisodeAdapter:
         ):
             # A freshness stamp that quietly disables is worse than no stamp.
             raise IsaacEpisodeAdapterError(["isaac_episode_sim_time_counter_missing"])
-        steps = float(np.asarray(self._to_torch(counter)).reshape(-1)[0])
+        # The counter lives on the simulation device; a bare np.asarray on a
+        # CUDA tensor raises.  Same detach-then-cpu boundary as every other
+        # adapter read -- v76 died at its first policy query on this.
+        steps = float(np.asarray(_as_array(self._to_torch(counter))).reshape(-1)[0])
         return steps * float(sim.dt) * float(cfg.decimation)
 
     def read_arm_joint_positions(self) -> list[float]:

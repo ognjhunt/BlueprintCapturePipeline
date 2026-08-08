@@ -540,3 +540,35 @@ def test_kinematic_replay_writer_requires_the_full_joint_vector() -> None:
         writer.write_step_state(
             {"joint_position_rad": [0.0] * 7, "object_sample": {}}
         )
+
+
+class _CudaLikeTensor(_Tensor):
+    """Raises on direct numpy conversion until .cpu() runs, like a CUDA tensor."""
+
+    def __init__(self, values, on_device=True):
+        super().__init__(values)
+        self._on_device = on_device
+
+    def cpu(self):
+        return _CudaLikeTensor(list(self), on_device=False)
+
+    def __array__(self, *args, **kwargs):
+        if self._on_device:
+            raise TypeError(
+                "can't convert cuda:0 device type tensor to numpy. "
+                "Use Tensor.cpu() to copy the tensor to host memory first."
+            )
+        return np.asarray(list(self))
+
+
+def test_sim_time_reads_a_device_resident_counter() -> None:
+    """v76 died at the first policy query: episode_length_buf lives on cuda,
+    and a bare np.asarray on it raises.  The stamp must take the same
+    detach-then-cpu route every other adapter reader takes."""
+
+    env = _Env()
+    env.unwrapped.episode_length_buf = _CudaLikeTensor([3.0])
+    adapter = _adapter(env)
+
+    assert adapter.sim_time() == pytest.approx(0.2)
+    assert adapter.read_policy_inputs()["observation_sim_time"] == pytest.approx(0.2)
