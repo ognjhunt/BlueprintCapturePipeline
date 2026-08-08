@@ -391,3 +391,62 @@ def test_a_client_shaped_like_the_shipped_one_drives_a_full_episode() -> None:
 
     assert client.calls == receipt["policy_queries"] == 4
     assert receipt["candidate_policy_queried"] is True
+
+
+def test_a_stale_observation_fails_the_episode() -> None:
+    """Rendering once per query is only sound if the frame is fresh.
+
+    A misaligned cadence hands the policy a frame from the previous chunk,
+    which looks like a policy that ignores the scene rather than the harness
+    bug it is -- the most expensive kind of wrong, because it produces a
+    plausible policy verdict.
+    """
+
+    from blueprint_pipeline.adp009d_policy_episode import (
+        BLOCKER_STALE_OBSERVATION,
+        PolicyEpisodeError,
+    )
+
+    env = _Environment()
+    frozen = {"t": 1.0}
+
+    original = env.read_policy_inputs
+
+    def _frozen_clock():
+        inputs = original()
+        inputs["observation_sim_time"] = frozen["t"]  # never advances
+        return inputs
+
+    env.read_policy_inputs = _frozen_clock  # type: ignore[method-assign]
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(environment=env, max_policy_queries=3)
+    assert any(BLOCKER_STALE_OBSERVATION in e for e in excinfo.value.errors)
+
+
+def test_an_advancing_observation_is_accepted_and_its_cadence_recorded() -> None:
+    """A receipt claiming a render saving must show the cadence it ran at."""
+
+    env = _Environment()
+    tick = {"t": 0.0}
+    original = env.read_policy_inputs
+
+    def _advancing():
+        inputs = original()
+        tick["t"] += 0.5333
+        inputs["observation_sim_time"] = tick["t"]
+        return inputs
+
+    env.read_policy_inputs = _advancing  # type: ignore[method-assign]
+    receipt = _run(environment=env, max_policy_queries=3)
+    assert len(receipt["observation_sim_times"]) == 3
+    intervals = receipt["observation_interval_seconds"]
+    assert len(intervals) == 2
+    assert all(value > 0 for value in intervals)
+
+
+def test_an_environment_without_the_stamp_still_runs() -> None:
+    """The guard must not break a caller that predates it."""
+
+    receipt = _run(environment=_Environment(), max_policy_queries=2)
+    assert receipt["observation_sim_times"] == []
+    assert receipt["observation_interval_seconds"] == []

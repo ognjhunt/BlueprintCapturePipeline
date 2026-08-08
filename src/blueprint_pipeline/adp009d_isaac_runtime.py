@@ -404,6 +404,28 @@ def _phase(name: str, status: str = "started") -> None:
 STOP_AFTER_FRAMES_ENV = "BLUEPRINT_ADP009D_STOP_AFTER_FRAMES"
 # Above this, a frame has accumulated something.  At or below it the render
 # never converged, whatever the reason.
+RENDER_PER_QUERY_ENV = "BLUEPRINT_ADP009D_RENDER_PER_QUERY"
+# The open-loop horizon the episode executes between policy queries.  Kept here
+# rather than imported so the runtime does not depend on the episode module for
+# a scene-configuration decision made before either is loaded.
+RENDER_QUERY_HORIZON = 8
+
+
+def _render_interval(decimation: int) -> int:
+    """Physics steps between renders.
+
+    ``decimation`` renders once per environment step; ``decimation * horizon``
+    renders once per policy query.  Opt out with the environment variable when
+    a run wants a frame at every step -- a diagnostic capture does, an episode
+    does not.
+    """
+
+    raw = os.environ.get(RENDER_PER_QUERY_ENV, "").strip().lower()
+    if raw in {"0", "false", "no"}:
+        return int(decimation)
+    return int(decimation) * RENDER_QUERY_HORIZON
+
+
 CAMERA_RESOLUTION_ENV = "BLUEPRINT_ADP009D_CAMERA_RESOLUTION"
 # Both frozen candidates consume far less than the 1280x720 the cameras
 # rendered.  pi05_droid pads 1280x720 into 224x224, keeping 224x126 of content;
@@ -971,8 +993,17 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
 
         cfg.sim.dt = 1.0 / 120.0
         cfg.seed = 20260806
-        cfg.sim.render_interval = 8
         cfg.decimation = 8
+        # Render once per policy query rather than once per environment step.
+        # Measured on a live episode: rendering is ~100% of the wall clock (520
+        # steps x 195 ms = 101 s against 89 s measured) while policy inference
+        # is effectively free.  The policy consumes an observation once per
+        # query, so 460 of those 520 renders -- 88% -- were drawn and discarded.
+        #
+        # Guarded rather than assumed: the episode asserts each observation's
+        # sim time advanced, so a misaligned cadence fails loudly instead of
+        # feeding the policy a frame from eight steps ago.
+        cfg.sim.render_interval = _render_interval(int(cfg.decimation))
         cfg.episode_length_s = 5.0
         cfg.sim.physics = PhysxCfg(
             solver_type=1,

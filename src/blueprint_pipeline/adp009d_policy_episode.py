@@ -96,6 +96,7 @@ BLOCKER_STEP_INDEX_NOT_INCREASING = "policy_episode_step_index_not_increasing"
 BLOCKER_CLIENT_RETURNED_NOTHING = "policy_episode_client_returned_no_chunk"
 BLOCKER_QUERY_BUDGET_EXHAUSTED = "policy_episode_query_budget_exhausted"
 BLOCKER_ENVIRONMENT_CONTRACT = "policy_episode_environment_contract_violated"
+BLOCKER_STALE_OBSERVATION = "policy_episode_observation_did_not_advance"
 
 
 class PolicyEpisodeError(ValueError):
@@ -306,12 +307,35 @@ def run_policy_episode(
     previous_index = step_index
 
     queries: list[dict[str, Any]] = []
+    observation_times: list[float] = []
+    last_observation_time: float | None = None
     last_action: list[float] | None = None
     commanded_actions: list[dict[str, Any]] = []
     command_response_rows = 0
 
     for query_index in range(int(max_policy_queries)):
         inputs = environment.read_policy_inputs()
+        # Refuse a stale observation.  Rendering once per query rather than once
+        # per step is an 88% saving, and it is only sound if the frame the
+        # policy sees was rendered after the actions it is responding to.  A
+        # misaligned cadence would hand the policy a frame from the previous
+        # chunk, which looks like a policy that ignores the scene rather than
+        # like the harness bug it is.
+        observation_time = inputs.get("observation_sim_time")
+        if observation_time is not None:
+            observation_time = float(observation_time)
+            if last_observation_time is not None and not (
+                observation_time > last_observation_time
+            ):
+                raise PolicyEpisodeError(
+                    [
+                        f"{BLOCKER_STALE_OBSERVATION}:"
+                        f"query={query_index}:t={observation_time:.6f}"
+                        f":previous={last_observation_time:.6f}"
+                    ]
+                )
+            observation_times.append(observation_time)
+            last_observation_time = observation_time
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
         }
@@ -428,6 +452,17 @@ def run_policy_episode(
         "observation_conversion": describe_observation_conversion(candidate_id),
         "destination_position_world_m": [float(v) for v in destination_position_world_m],
         "queries": queries,
+        "observation_sim_times": observation_times,
+        # A receipt that claims a render saving should show the cadence it
+        # actually ran at rather than the one it intended.
+        "observation_interval_seconds": (
+            [
+                round(b - a, 6)
+                for a, b in zip(observation_times[:-1], observation_times[1:], strict=True)
+            ]
+            if len(observation_times) > 1
+            else []
+        ),
         "motion_evidence": motion_evidence,
         "commanded_action_magnitudes": commanded_action_magnitudes,
         "score": score,

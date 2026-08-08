@@ -144,7 +144,26 @@ class IsaacEpisodeAdapter:
             inputs[view] = rgb_from_camera_output(frame)
         inputs["joint_position"] = self.read_arm_joint_positions()
         inputs["gripper_position"] = self._gripper_width()
+        # Stamped so the episode can tell a fresh frame from a stale one.  When
+        # rendering less often than stepping -- which is the whole point of
+        # rendering once per policy query rather than once per env step -- a
+        # misaligned cadence silently serves the policy an observation from
+        # several steps ago.  That presents as a plausible policy failure, not
+        # as a harness bug, which is the most expensive kind of wrong.
+        inputs["observation_sim_time"] = self.sim_time()
         return inputs
+
+    def sim_time(self) -> float:
+        """Simulated seconds since reset, from the environment's own counter."""
+
+        import numpy as _np
+
+        env = self._env.unwrapped
+        # Tensor or scalar: the counter's container is the environment's
+        # business, not this adapter's, and asserting one shape here would make
+        # the stamp fail on a stub while working live -- or the reverse.
+        steps = float(_np.asarray(self._to_torch(env.episode_length_buf)).reshape(-1)[0])
+        return steps * float(env.cfg.sim.dt) * float(env.cfg.decimation)
 
     def read_arm_joint_positions(self) -> list[float]:
         joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]

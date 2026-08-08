@@ -89,7 +89,22 @@ class _Env:
         scene = _Scene(
             {"external_camera": _Camera(channels), "wrist_camera": _Camera(channels)}
         )
-        self.unwrapped = type("U", (), {"scene": scene, "device": "cpu"})()
+        # The adapter stamps every observation with the sim time it was
+        # rendered at, so the episode can refuse a stale frame when rendering
+        # happens once per policy query rather than once per env step.  The
+        # stub models that counter rather than letting the adapter degrade
+        # silently: a safety guard that quietly disables is worse than none.
+        cfg = type("Cfg", (), {"sim": type("S", (), {"dt": 1.0 / 120.0})(), "decimation": 8})()
+        self.unwrapped = type(
+            "U",
+            (),
+            {
+                "scene": scene,
+                "device": "cpu",
+                "episode_length_buf": _Tensor([0]),
+                "cfg": cfg,
+            },
+        )()
 
     def reset(self, seed=None):
         self.reset_calls.append(seed)
