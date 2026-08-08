@@ -24,16 +24,16 @@ try:  # flat provider-bundle layout, where this file runs as a script
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
+        CAN_AXIS_XY_M,
         CAMERA_AIM_CAPTURE_FRAME_INDEX,
         CAMERA_AIM_MAX_STEPS,
         EPISODE_START_JOINT_TOLERANCE_RAD,
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
-        EXTERNAL_TASK_CAMERA_DISTANCE_M,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
         camera_aim_body_quaternion_xyzw,
-        external_task_camera_eye_position,
+        external_task_camera_offset_plan,
         pose_world_to_base,
         select_wrist_observable_episode_start,
         semantic_target_observability,
@@ -46,16 +46,16 @@ except ModuleNotFoundError:  # imported as part of the repository package
         APPROACH_MAX_JOINT_STEP_RAD,
         APPROACH_MAX_OBJECT_DISPLACEMENT_M,
         APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
+        CAN_AXIS_XY_M,
         CAMERA_AIM_CAPTURE_FRAME_INDEX,
         CAMERA_AIM_MAX_STEPS,
         EPISODE_START_JOINT_TOLERANCE_RAD,
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
-        EXTERNAL_TASK_CAMERA_DISTANCE_M,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
         camera_aim_body_quaternion_xyzw,
-        external_task_camera_eye_position,
+        external_task_camera_offset_plan,
         pose_world_to_base,
         select_wrist_observable_episode_start,
         semantic_target_observability,
@@ -943,6 +943,30 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
                 carb.settings.get_settings().set(f"/{setting}", value)
             except Exception:  # noqa: BLE001 - recorded by the render check below
                 pass
+    external_camera_cfg = embodiment.camera_config.external_camera
+    external_task_camera_plan = external_task_camera_offset_plan(
+        robot_position_world=robot_pose.position_xyz,
+        robot_quaternion_world_xyzw=robot_pose.rotation_xyzw,
+        current_camera_offset_position_robot=external_camera_cfg.offset.pos,
+        target_position_world=(
+            CAN_AXIS_XY_M[0],
+            CAN_AXIS_XY_M[1],
+            SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0,
+        ),
+    )
+    external_camera_cfg.offset.pos = tuple(
+        external_task_camera_plan["resolved_offset_position_robot_m"]
+    )
+    external_task_camera_plan.update(
+        {
+            "schema_version": "adp009d_external_task_camera_plan.v2",
+            "authoritative_seam": "Arena CameraCfg.offset before prim spawn",
+            "orientation_source": "official Arena DROID external camera offset",
+            "orientation_unchanged": True,
+            "resolution_unchanged": True,
+            "intrinsics_unchanged": True,
+        }
+    )
     # The second external camera is outside the frozen two-camera policy contract.
     embodiment.camera_config.external_camera_2 = None
     _phase("embodiment_configuration", "completed")
@@ -1042,7 +1066,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     _phase("manager_based_environment_construction")
     env, cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
     _phase("manager_based_environment_construction", "completed")
-    return env, cfg, torch
+    return env, cfg, torch, external_task_camera_plan
 
 
 def _preflight_environment_imports() -> dict[str, str]:
@@ -1174,7 +1198,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         _phase("runtime_import_preflight", "completed")
         _phase("environment_build")
         phase_started = time.monotonic()
-        env, cfg, torch = _build_environment(runtime, args)
+        env, cfg, torch, external_task_camera_plan = _build_environment(runtime, args)
         timings_seconds["environment_build"] = round(time.monotonic() - phase_started, 6)
         log.flush()
         _phase("environment_build", "completed")
@@ -1309,43 +1333,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         robot = env.unwrapped.scene["robot"]
         body_names_all = list(robot.data.body_names)
         approved_can = env.unwrapped.scene["approved_can"]
-        external_camera = env.unwrapped.scene["external_camera"]
-        current_external_eye = _to_torch(external_camera.data.pos_w)[0, :3]
-        current_can_pose = _to_torch(approved_can.data.root_pose_w)[0]
-        external_target = [
-            float(current_can_pose[0]),
-            float(current_can_pose[1]),
-            float(current_can_pose[2]) + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0,
-        ]
-        resolved_external_eye = external_task_camera_eye_position(
-            current_position_world=[float(value) for value in current_external_eye],
-            target_position_world=external_target,
-        )
-        # Exact pinned IsaacLab e57379c owns the view-orientation convention.
-        # Supplying eyes and targets avoids hand-authoring a quaternion whose
-        # OpenGL/ROS convention could silently point the policy camera away.
-        external_camera.set_world_poses_from_view(
-            eyes=torch.tensor(
-                [resolved_external_eye],
-                device=env.unwrapped.device,
-                dtype=torch.float32,
-            ),
-            targets=torch.tensor(
-                [external_target],
-                device=env.unwrapped.device,
-                dtype=torch.float32,
-            ),
-        )
-        external_task_camera_plan = {
-            "schema_version": "adp009d_external_task_camera_plan.v1",
-            "source_api": "isaaclab.Camera.set_world_poses_from_view",
-            "original_eye_position_world_m": [float(value) for value in current_external_eye],
-            "target_position_world_m": external_target,
-            "resolved_eye_position_world_m": resolved_external_eye,
-            "target_distance_m": EXTERNAL_TASK_CAMERA_DISTANCE_M,
-            "resolution_unchanged": True,
-            "intrinsics_unchanged": True,
-        }
         hold_start_can_pose = _to_torch(approved_can.data.root_pose_w)[0].clone()
         hold_action = torch.zeros_like(action)
         hold_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]

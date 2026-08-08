@@ -19,6 +19,7 @@ from blueprint_pipeline.adp009d_approach_capture import (
     approach_waypoints_world,
     camera_aim_body_quaternion_xyzw,
     external_task_camera_eye_position,
+    external_task_camera_offset_plan,
     pose_world_to_base,
     select_wrist_observable_episode_start,
     semantic_label_pixel_count,
@@ -152,6 +153,27 @@ def test_external_task_camera_rejects_a_coincident_eye_and_target() -> None:
             current_position_world=[1.0, 2.0, 3.0],
             target_position_world=[1.0, 2.0, 3.0],
         )
+
+
+def test_external_task_camera_resolves_render_authoritative_robot_offset() -> None:
+    half = np.sqrt(0.5)
+    plan = external_task_camera_offset_plan(
+        robot_position_world=[3.4681748, -2.8100837, 0.2766791],
+        robot_quaternion_world_xyzw=[0.0, 0.0, -half, half],
+        current_camera_offset_position_robot=[0.05, 0.57, 0.66],
+        target_position_world=[3.4681748, -3.3100837, 0.6109650138348479],
+        distance_m=0.5,
+    )
+
+    assert plan["original_eye_position_world_m"] == pytest.approx(
+        [4.0381748, -2.8600837, 0.9366791], abs=1e-7
+    )
+    assert plan["resolved_eye_position_world_m"] == pytest.approx(
+        [3.8262507, -3.0273922, 0.8155797], abs=1e-6
+    )
+    assert plan["resolved_offset_position_robot_m"] == pytest.approx(
+        [0.2173085, 0.3580759, 0.5389006], abs=1e-6
+    )
 
 
 def _wrist_frame(frame_index: int, can_pixels: int) -> dict:

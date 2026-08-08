@@ -567,6 +567,80 @@ def _quat_rotate(
     )
 
 
+def external_task_camera_offset_plan(
+    *,
+    robot_position_world: Sequence[float],
+    robot_quaternion_world_xyzw: Sequence[float],
+    current_camera_offset_position_robot: Sequence[float],
+    target_position_world: Sequence[float],
+    distance_m: float = EXTERNAL_TASK_CAMERA_DISTANCE_M,
+) -> dict[str, Any]:
+    """Resolve a closer task-camera offset before Arena spawns the camera prim.
+
+    v83 proved that mutating ``Camera.data`` after spawn can update reported pose
+    metadata without moving the USD/render prim.  Arena's ``CameraCfg.offset``
+    is the render-authoritative seam.  Keep its official orientation and move
+    only its position along the existing eye-to-target ray.
+    """
+
+    try:
+        robot_position = [float(value) for value in robot_position_world]
+        robot_quaternion = [
+            float(value) for value in robot_quaternion_world_xyzw
+        ]
+        current_offset = [
+            float(value) for value in current_camera_offset_position_robot
+        ]
+        target = [float(value) for value in target_position_world]
+    except (TypeError, ValueError) as exc:
+        raise ApproachCaptureError(["external_task_camera_pose_invalid"]) from exc
+    if (
+        len(robot_position) != 3
+        or len(robot_quaternion) != 4
+        or len(current_offset) != 3
+        or len(target) != 3
+        or not all(
+            math.isfinite(value)
+            for value in (
+                *robot_position,
+                *robot_quaternion,
+                *current_offset,
+                *target,
+            )
+        )
+    ):
+        raise ApproachCaptureError(["external_task_camera_pose_invalid"])
+    quaternion_norm = math.sqrt(
+        sum(value * value for value in robot_quaternion)
+    )
+    if abs(quaternion_norm - 1.0) > 1.0e-6:
+        raise ApproachCaptureError(["external_task_camera_pose_invalid"])
+    current_offset_world = _quat_rotate(robot_quaternion, current_offset)
+    current_eye_world = [
+        robot_position[index] + current_offset_world[index]
+        for index in range(3)
+    ]
+    resolved_eye_world = external_task_camera_eye_position(
+        current_position_world=current_eye_world,
+        target_position_world=target,
+        distance_m=distance_m,
+    )
+    resolved_world_offset = [
+        resolved_eye_world[index] - robot_position[index] for index in range(3)
+    ]
+    resolved_offset_robot = _quat_rotate(
+        _quat_conjugate(robot_quaternion), resolved_world_offset
+    )
+    return {
+        "original_eye_position_world_m": current_eye_world,
+        "target_position_world_m": target,
+        "resolved_eye_position_world_m": resolved_eye_world,
+        "original_offset_position_robot_m": current_offset,
+        "resolved_offset_position_robot_m": list(resolved_offset_robot),
+        "target_distance_m": float(distance_m),
+    }
+
+
 def camera_aim_body_quaternion_xyzw(
     *,
     body_quaternion_world_xyzw: Sequence[float],

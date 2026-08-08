@@ -2126,8 +2126,12 @@ def test_policy_query_is_gated_on_a_replayed_wrist_observable_start() -> None:
     assert 'env.unwrapped.scene["external_camera"]' in source
     assert '"external_observability": external_observability' in source
     assert "restored_external_observability" in source
-    # Use the exact pinned IsaacLab view API instead of a guessed quaternion.
-    assert "external_camera.set_world_poses_from_view(" in source
+    # v83 proved that post-spawn pose mutation changed the sensor buffer but
+    # not the USD/render prim.  Author the closer eye through Arena's camera
+    # config before spawn, preserving the official DROID orientation.
+    assert "external_camera_cfg.offset.pos = tuple(" in source
+    assert '"Arena CameraCfg.offset before prim spawn"' in source
+    assert "external_camera.set_world_poses_from_view(" not in source
     assert '"external_task_camera_plan": external_task_camera_plan' in source
     # A per-candidate receipt, or two candidates overwrite each other's.
     assert 'f"adp009d_policy_server_receipt.{bound_candidate}.json"' in source
