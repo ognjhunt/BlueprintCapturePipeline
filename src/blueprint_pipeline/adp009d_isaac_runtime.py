@@ -633,14 +633,17 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
     if rgb.shape[-1] == 4:
         rgb = rgb[..., :3]
     rgb = np.asarray(rgb, dtype=np.uint8)
-    # A sample-starved frame is not a dark scene: it is an image that never
-    # accumulated, and saving one produces evidence that looks like data.  One
-    # run wrote a frame with mean 0.2 and max 1 and reported success.  The
-    # threshold is far below any real render -- v43's blank-but-converged frame
-    # was mean 227 -- so this cannot reject a legitimately dim scene.
+    # A frame this dark is not a dark scene, and saving one produces evidence
+    # that looks like data.  Deliberately named for the symptom rather than a
+    # cause: it was first called sample_starved, and then forty warmup frames
+    # produced max 1 / mean 0.167 where four had produced max 1 / mean 0.2,
+    # which disproved starvation outright.  What the two black runs share is
+    # the appearance field composing; the run before it, with the field
+    # resolving to nothing, was mean 227.  The threshold sits far below any
+    # real render, so this cannot reject a legitimately dim scene.
     if int(rgb.max()) <= FRAME_DEGENERATE_MAX_VALUE:
         raise RuntimeError(
-            f"camera_frame_sample_starved:{name}:max={int(rgb.max())}:"
+            f"camera_frame_degenerate:{name}:max={int(rgb.max())}:"
             f"mean={float(rgb.mean()):.3f}"
         )
     depth = _to_torch(camera_output["distance_to_camera"])[0].detach().cpu().numpy().astype(np.float32)

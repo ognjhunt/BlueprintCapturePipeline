@@ -1410,12 +1410,13 @@ def test_the_tuning_vars_reach_the_worker() -> None:
     assert '"@@STOP_AFTER_FRAMES@@",' in source
 
 
-def test_a_sample_starved_frame_is_refused_rather_than_saved() -> None:
-    """An image that never accumulated is not a dark scene.
+def test_a_degenerate_frame_is_refused_rather_than_saved() -> None:
+    """A frame this dark is not a dark scene.
 
-    A run saved a frame with mean 0.2 and max 1 -- the arm faintly outlined in
-    black -- and reported success.  Saving one produces evidence that looks
-    like data.
+    Named for the symptom, not a cause: forty warmup frames produced max 1 /
+    mean 0.167 where four produced max 1 / mean 0.2, which disproved the
+    starvation the guard was first named for.  A run saved one of these and
+    reported success; saving one produces evidence that looks like data.
     """
 
     from pathlib import Path as _Path
@@ -1423,11 +1424,11 @@ def test_a_sample_starved_frame_is_refused_rather_than_saved() -> None:
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
-    assert "camera_frame_sample_starved" in source
+    assert "camera_frame_degenerate" in source
     assert "FRAME_DEGENERATE_MAX_VALUE" in source
     # Checked before the frame is written, not after.
     save = source[source.index("def _save_camera("):]
-    assert save.index("camera_frame_sample_starved") < save.index("Image.fromarray")
+    assert save.index("camera_frame_degenerate") < save.index("Image.fromarray")
     # Far below any real render: v43's blank-but-converged frame was mean 227,
     # so this cannot reject a legitimately dim scene.
     assert runtime.FRAME_DEGENERATE_MAX_VALUE <= 2
