@@ -1,0 +1,153 @@
+{
+  "schema_version": "public_scene_task_selection_preregistration.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009D",
+  "day_gate": "public_scene_day_28",
+  "frozen_at": "2026-08-08T22:15:00Z",
+  "frozen_before_new_candidate_inspection": true,
+  "learned_policy_outcomes_accessed": false,
+  "new_inpainting_outcomes_accessed": false,
+  "selection_rule": "first_fully_passing_candidate_in_frozen_order",
+  "scope_amendment": "user_explicitly_replaced_rigid_pick_place_with_articulated_open_close_on_2026_08_08",
+  "task_family": "single_joint_articulated_open_or_close",
+  "usd_content_agents_joint_agent": {
+    "repository": "https://github.com/NVIDIA-Omniverse/usd-content-agents",
+    "version": "0.5.2",
+    "tag": "v0.5.2",
+    "commit": "36dbf3f274f8e256637230a05a085853f65cc175",
+    "license": "Apache-2.0",
+    "status": "research_preview",
+    "adapter": "owned_core",
+    "supported_joint_types": ["revolute", "prismatic"],
+    "does_not_author": ["rigid_bodies", "masses", "colliders", "drives", "joint_state", "mimic_schemas"],
+    "static_gate_limit": "Gate 3A and Gate 3B do not prove dynamic contact motion containment travel limits or stability",
+    "external_disclosure_status": "blocked_until_exact_scene_derived_bytes_and_render_upload_are_rights_authorized"
+  },
+  "previously_used_scene_ids": [
+    "840313"
+  ],
+  "prior_evidence_disclosure": [
+    {
+      "publisher_scene_id": "841244",
+      "status": "historically_rejected",
+      "smallest_blocker": "no_target_satisfied_identity_visibility_and_removability_criteria",
+      "record_digest": "sha256:f1cd85e2933b82057cc93d32cff75c88f060efe41e5356e499da5a8038701315"
+    },
+    {
+      "publisher_scene_id": "841757",
+      "status": "historically_rejected",
+      "smallest_blocker": "target_not_visible_in_preregistered_camera_ring",
+      "record_digest": "sha256:5164501dba68556c698f4dc9965f1ce3a1e990ba0d49fa4f2ce8254ec8505e0d"
+    }
+  ],
+  "criteria": [
+    {
+      "criterion_id": "admissible_rights_and_disclosure",
+      "required": true,
+      "evidence": "Exact dataset revisions, licenses, allowed research use, reviewer authority, local source paths, byte digests, and upload or redistribution restrictions."
+    },
+    {
+      "criterion_id": "exact_interiorgs_appearance_identity",
+      "required": true,
+      "evidence": "Nonempty publisher PLY, labels.json, and structure.json with exact revision, path, size, and SHA-256."
+    },
+    {
+      "criterion_id": "exact_sage_collision_identity",
+      "required": true,
+      "evidence": "Nonempty matching publisher collision USD with exact revision, path, size, SHA-256, resolved payloads, and collision prim inventory."
+    },
+    {
+      "criterion_id": "shared_metric_frame_or_typed_abstention",
+      "required": true,
+      "evidence": "Scene-ID join, meters, right-handed Z-up axes, explicit source-to-simulator transforms and inverses, round trip, and OBB-to-collider residuals."
+    },
+    {
+      "criterion_id": "complete_enough_observed_task_area",
+      "required": true,
+      "evidence": "Full known-room topology survey before close-ups, observed support and destination areas, and explicit unseen, uncaptured, or unrenderable regions."
+    },
+    {
+      "criterion_id": "single_joint_articulated_assembly_identity",
+      "required": true,
+      "evidence": "One observed cabinet, drawer, door, or appliance assembly whose bounded task uses exactly one revolute or prismatic joint and one articulation root."
+    },
+    {
+      "criterion_id": "fixed_and_moving_link_separation",
+      "required": true,
+      "evidence": "Observed geometry and SAGE collision support a nonoverlapping fixed frame and moving link, with an explicit joint axis, origin, signed limits, and closed/open reset state."
+    },
+    {
+      "criterion_id": "observed_handle_or_contact_region",
+      "required": true,
+      "evidence": "A visible handle or contact region is observed from multiple views, fits the Franka gripper thresholds, and is distinct from the joint axis and surrounding static geometry."
+    },
+    {
+      "criterion_id": "source_articulation_collision_removal",
+      "required": true,
+      "evidence": "Every source collider replaced by the articulated asset is exactly identified and removable without deleting neighboring cabinets, supports, floors, walls, or unrelated collision."
+    },
+    {
+      "criterion_id": "franka_reachability_envelope",
+      "required": true,
+      "evidence": "Collision-free base candidate and IK/workspace reach for precontact, grasp or push, open/close travel, release, retreat, and recovery within the frozen radius."
+    },
+    {
+      "criterion_id": "external_and_wrist_policy_observability",
+      "required": true,
+      "evidence": "At least four preregistered target views for selection, followed by native external and wrist visibility/framing gates for every scored cell."
+    },
+    {
+      "criterion_id": "review_overview_observability",
+      "required": true,
+      "evidence": "Calibrated review-only camera can frame the fixed frame, moving link, full joint travel, robot contact, and retreat without entering policy input or scoring."
+    },
+    {
+      "criterion_id": "released_code_inpainting_admissibility",
+      "required": true,
+      "evidence": "Exact released AuraFusion360 source, dependency and environment identities can remove the full articulated source appearance and complete the revealed background, or a typed smallest-capability abstention is retained."
+    },
+    {
+      "criterion_id": "usd_content_agents_joint_topology_admissibility",
+      "required": true,
+      "evidence": "Exact Joint Agent 0.5.2 owned_core inputs, model/backend, renderer, config, outputs, joint graph readback, and Gate 3A/3B receipts are digest-bound; external disclosure remains blocked without rights authority."
+    },
+    {
+      "criterion_id": "independent_dynamic_articulation_qualification",
+      "required": true,
+      "evidence": "Blueprint deterministically authors missing rigid bodies, masses, inertias, colliders, drive policy, and initial state, then native Isaac probes joint travel, limits, contact, containment, stability, reset, and gripper interaction."
+    }
+  ],
+  "thresholds": {
+    "minimum_target_visible_views": 4,
+    "minimum_collider_obb_iou": 0.85,
+    "maximum_unrelated_collider_overlap_fraction": 0.0,
+    "minimum_handle_grasp_width_m": 0.02,
+    "maximum_handle_grasp_width_m": 0.085,
+    "maximum_franka_task_radius_m": 0.75,
+    "maximum_joint_count": 1,
+    "required_articulation_root_count": 1,
+    "minimum_revolute_travel_degrees": 30.0,
+    "minimum_prismatic_travel_m": 0.1
+  },
+  "forbidden_selection_signals": [
+    "learned_policy_outcomes",
+    "inpainting_quality_outcomes",
+    "manual_mask_or_scene_edit_convenience",
+    "replacement_asset_reuse_from_prior_scene",
+    "prior_scene_geometry_or_task_coordinates"
+  ],
+  "candidate_order": [
+    {"publisher_scene_id": "840076", "interiorgs_folder": "0161_840076", "new_target_inspection_status": "pending", "method_outcomes_consulted": false},
+    {"publisher_scene_id": "840411", "interiorgs_folder": "0893_840411", "new_target_inspection_status": "pending", "method_outcomes_consulted": false},
+    {"publisher_scene_id": "840796", "interiorgs_folder": "0498_840796", "new_target_inspection_status": "pending", "method_outcomes_consulted": false},
+    {"publisher_scene_id": "840873", "interiorgs_folder": "0016_840873", "new_target_inspection_status": "pending", "method_outcomes_consulted": false},
+    {"publisher_scene_id": "840874", "interiorgs_folder": "0239_840874", "new_target_inspection_status": "pending", "method_outcomes_consulted": false},
+    {"publisher_scene_id": "840920", "interiorgs_folder": "0492_840920", "new_target_inspection_status": "pending", "method_outcomes_consulted": false},
+    {"publisher_scene_id": "841151", "interiorgs_folder": "0589_841151", "new_target_inspection_status": "pending", "method_outcomes_consulted": false},
+    {"publisher_scene_id": "841193", "interiorgs_folder": "0619_841193", "new_target_inspection_status": "pending", "method_outcomes_consulted": false},
+    {"publisher_scene_id": "841757", "interiorgs_folder": "0839_841757", "new_target_inspection_status": "pending", "method_outcomes_consulted": false}
+  ],
+  "selected_scene": null,
+  "claim_ceiling": "development_only_selection_rule",
+  "preregistration_digest": "sha256:32793a474c30b6be26a03d145dddb3b332d6beadffc525bafcca341bb7040ea0"
+}
