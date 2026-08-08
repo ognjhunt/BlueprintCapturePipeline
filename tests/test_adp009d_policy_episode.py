@@ -530,3 +530,82 @@ def test_a_client_shaped_like_the_shipped_one_drives_a_full_episode() -> None:
 
     assert client.calls == receipt["policy_queries"] == 4
     assert receipt["candidate_policy_queried"] is True
+
+
+def test_receipt_retains_step_trace_object_samples_and_motion_quality() -> None:
+    """The loop must retain what it measures: per-step state, action, object."""
+
+    from blueprint_pipeline.adp009d_episode_step_trace import (
+        STEP_TRACE_SCHEMA_VERSION,
+    )
+
+    receipt = _run()
+
+    trace = receipt["step_trace"]
+    assert trace["schema_version"] == STEP_TRACE_SCHEMA_VERSION
+    assert trace["control_hz"] == 15
+    assert trace["total_steps"] == receipt["environment_steps"]
+    assert trace["policy_steps"] == 4 * 8
+    assert trace["settle_steps"] == 6
+    rows = trace["rows"]
+    assert len(rows) == receipt["environment_steps"]
+    assert rows[0]["sim_time_s"] == 0.0
+    assert rows[8]["query_index"] == 1
+    assert rows[8]["chunk_row_index"] == 0
+    assert rows[-1]["phase"] == "settle"
+    # The executed DROID row travels with each step: the fake policy commands
+    # 0.25 rad/s on joint 0 and holds the rest.
+    assert rows[0]["action_droid"][:7] == [0.25] + [0.0] * 6
+
+    samples = receipt["object_samples"]
+    assert samples[0]["step_index"] == 0
+    assert len(samples) == receipt["environment_steps"] + 1
+
+    quality = receipt["motion_quality"]
+    assert quality["observed_joint_velocity_max_abs_rad_s"] > 0.0
+    assert quality["chunk_boundary_count"] == 3
+    assert quality["joint_limit_min_margin_rad"] > 0.0
+
+    contract = receipt["dataset_contract"]
+    assert contract["control_hz"] == 15
+    assert contract["dataset_video_fps"] == 15.0
+    assert contract["review_video_fps"] == pytest.approx(15 / 8)
+    assert receipt["schema_version"] == "adp009d_policy_episode.v3"
+
+
+def test_review_video_plays_at_true_query_cadence(tmp_path) -> None:
+    """4 fps snapshots played 2.1x fast are not review evidence of speed."""
+
+    receipt = _run(media_output_dir=tmp_path, episode_id="episode-rate")
+
+    video = receipt["visual_evidence"]["video"]
+    assert video["frames_per_second"] == pytest.approx(15 / 8)
+    assert video["playback_realtime_factor"] == pytest.approx(1.0)
+
+
+def test_dataset_capture_records_control_rate_streams(tmp_path) -> None:
+    """One frame per environment step, per camera, at 15 fps."""
+
+    from blueprint_pipeline.adp009d_dataset_capture import DatasetCaptureRecorder
+
+    recorder = DatasetCaptureRecorder(
+        output_dir=tmp_path,
+        episode_id="episode-dataset",
+        view_keys=(DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW),
+    )
+    receipt = _run(
+        media_output_dir=tmp_path,
+        episode_id="episode-dataset",
+        dataset_capture=recorder,
+    )
+
+    capture = receipt["dataset_capture"]
+    assert capture["frames_per_second"] == 15.0
+    assert capture["frame_count"] == receipt["environment_steps"]
+    assert capture["terminal_frame_included"] is True
+    for stream in capture["streams"].values():
+        assert stream["video"]["decoded_frame_count"] == (
+            receipt["environment_steps"] + 1
+        )
+        assert (tmp_path / stream["video"]["relative_path"]).is_file()
+    assert receipt["step_trace"]["total_steps"] == capture["frame_count"]

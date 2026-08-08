@@ -86,6 +86,16 @@ except ModuleNotFoundError:  # repository package
         score_task_episode,
     )
 try:  # flat provider-bundle layout
+    from adp009d_episode_step_trace import (
+        build_step_trace,
+        derive_motion_quality,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_episode_step_trace import (
+        build_step_trace,
+        derive_motion_quality,
+    )
+try:  # flat provider-bundle layout
     from decision_evidence_contracts import canonical_digest
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
@@ -100,7 +110,8 @@ except ModuleNotFoundError:  # repository package
         persist_observation_frame,
     )
 
-EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v2"
+EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v3"
+DATASET_CONTRACT_SCHEMA_VERSION = "adp009d_dataset_contract.v1"
 
 # This is a numerical-motion threshold, not a task-success threshold.  It only
 # separates a changing simulator joint state from float noise so a can outcome
@@ -405,6 +416,7 @@ def run_policy_episode(
     open_loop_horizon: int = DROID_OPEN_LOOP_HORIZON,
     media_output_dir: str | Path | None = None,
     episode_id: str | None = None,
+    dataset_capture: Any | None = None,
 ) -> dict[str, Any]:
     """Run one episode end to end and return a digest-bound receipt.
 
@@ -429,6 +441,15 @@ def run_policy_episode(
         raise PolicyEpisodeError(
             [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_binding_incomplete"]
         )
+    if dataset_capture is not None and episode_id is not None:
+        recorder_episode_id = getattr(dataset_capture, "episode_id", None)
+        if recorder_episode_id is not None and str(recorder_episode_id) != str(episode_id):
+            raise PolicyEpisodeError(
+                [
+                    f"{BLOCKER_ENVIRONMENT_CONTRACT}:dataset_capture_episode_id_mismatch:"
+                    f"{recorder_episode_id}!={episode_id}"
+                ]
+            )
     policy_action_space = str(
         getattr(policy, "action_space", ACTION_SPACE_JOINT_VELOCITY)
     )
@@ -456,7 +477,28 @@ def run_policy_episode(
         "settle_steps_including_render": 0.0,
         "deterministic_scoring": 0.0,
         "media_persistence": 0.0,
+        "dataset_capture": 0.0,
     }
+    capture_view_keys: tuple[str, ...] = (
+        tuple(getattr(dataset_capture, "view_keys", ()) or ())
+        if dataset_capture is not None
+        else ()
+    )
+    if dataset_capture is not None and not capture_view_keys:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:dataset_capture_views_undeclared"]
+        )
+
+    def _capture_views(source: Mapping[str, Any]) -> dict[str, Any]:
+        missing = [view for view in capture_view_keys if view not in source]
+        if missing:
+            raise PolicyEpisodeError(
+                [
+                    f"{BLOCKER_ENVIRONMENT_CONTRACT}:dataset_capture_view_missing:"
+                    f"{','.join(missing)}"
+                ]
+            )
+        return {view: source[view] for view in capture_view_keys}
     phase_started = time.monotonic()
     environment.reset()
     joint_limits = environment.joint_limits()
@@ -473,6 +515,7 @@ def run_policy_episode(
     last_action: list[float] | None = None
     commanded_actions: list[dict[str, Any]] = []
     command_response_rows = 0
+    camera_input_shapes: dict[str, dict[str, int]] = {}
 
     for query_index in range(int(max_policy_queries)):
         phase_started = time.monotonic()
@@ -484,6 +527,16 @@ def run_policy_episode(
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
         }
+        if not camera_input_shapes:
+            import numpy as _np
+
+            camera_input_shapes = {
+                view: {
+                    "height": int(_np.asarray(frame).shape[0]),
+                    "width": int(_np.asarray(frame).shape[1]),
+                }
+                for view, frame in camera_rgb.items()
+            }
         phase_started = time.monotonic()
         try:
             observation = build_droid_observation(
@@ -542,7 +595,7 @@ def run_policy_episode(
         )
         timings_seconds["action_planning"] += time.monotonic() - phase_started
         query_clamped_rows = 0
-        for planned_action in plan["actions"]:
+        for row_index, planned_action in enumerate(plan["actions"]):
             before = list(joint_trace[-1])
             action = droid_row_to_isaac_action(
                 planned_action["droid_action"],
@@ -552,6 +605,19 @@ def run_policy_episode(
                 action_space=policy_action_space,
             )
             query_clamped_rows += int(action["joint_limit_clamped"])
+            if dataset_capture is not None:
+                # Frame i is the observation before control step i.  Row 0 of a
+                # chunk reuses the query's own read: no step has run since, so
+                # a second render read would be the same state twice.
+                phase_started = time.monotonic()
+                capture_source = (
+                    inputs if row_index == 0 else environment.read_policy_inputs()
+                )
+                dataset_capture.record_step(
+                    step_index=step_index,
+                    views=_capture_views(capture_source),
+                )
+                timings_seconds["dataset_capture"] += time.monotonic() - phase_started
             phase_started = time.monotonic()
             environment.step(action["isaac_action"])
             timings_seconds["environment_step_including_render"] += (
@@ -632,6 +698,13 @@ def run_policy_episode(
     release_action[7] = gripper.open_command
     settle_start_index = step_index
     for _ in range(int(settle_window_samples)):
+        if dataset_capture is not None:
+            phase_started = time.monotonic()
+            dataset_capture.record_step(
+                step_index=step_index,
+                views=_capture_views(environment.read_policy_inputs()),
+            )
+            timings_seconds["dataset_capture"] += time.monotonic() - phase_started
         phase_started = time.monotonic()
         environment.step(release_action)
         joint_trace.append(_read_arm_joint_positions(environment))
@@ -670,15 +743,38 @@ def run_policy_episode(
         commanded_actions=commanded_actions,
         command_response_rows=command_response_rows,
     )
+    step_trace = build_step_trace(
+        joint_trace=joint_trace,
+        commanded_actions=commanded_actions,
+        object_samples=samples,
+        settle_isaac_action=release_action,
+        open_loop_horizon=int(open_loop_horizon),
+        control_hz=DROID_CONTROL_HZ,
+        joint_limits=joint_limits,
+    )
+    motion_quality = derive_motion_quality(step_trace, joint_limits=joint_limits)
 
     visual_evidence = None
     media_artifacts: list[dict[str, Any]] = []
-    if media_root is not None and episode_id is not None:
+    terminal_inputs: Mapping[str, Any] | None = None
+    if media_root is not None or dataset_capture is not None:
         phase_started = time.monotonic()
         terminal_inputs = environment.read_policy_inputs()
         _retain_policy_input_sample(
             policy_input_history, step_index=step_index, inputs=terminal_inputs
         )
+        timings_seconds["policy_input_read"] += time.monotonic() - phase_started
+
+    capture_record: Mapping[str, Any] | None = None
+    if dataset_capture is not None:
+        phase_started = time.monotonic()
+        capture_record = dataset_capture.finalize(
+            terminal_views=_capture_views(terminal_inputs)
+        )
+        timings_seconds["dataset_capture"] += time.monotonic() - phase_started
+
+    if media_root is not None and episode_id is not None:
+        phase_started = time.monotonic()
         terminal_camera_rgb = {
             view: terminal_inputs[view]
             for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
@@ -729,6 +825,10 @@ def run_policy_episode(
             },
             policy_input_frames=retained_policy_frames,
             terminal_observation=terminal_frame,
+            # Query-cadence frames are horizon/control_hz apart in simulated
+            # time; encoding at exactly that rate makes playback real time.
+            frames_per_second=DROID_CONTROL_HZ / float(open_loop_horizon),
+            seconds_of_sim_per_frame=float(open_loop_horizon) / DROID_CONTROL_HZ,
         )
         timings_seconds["media_persistence"] += time.monotonic() - phase_started
 
@@ -754,6 +854,27 @@ def run_policy_episode(
         "queries": queries,
         "motion_evidence": motion_evidence,
         "commanded_action_magnitudes": commanded_action_magnitudes,
+        "step_trace": step_trace,
+        "object_samples": samples,
+        "motion_quality": motion_quality,
+        "dataset_capture": capture_record,
+        "dataset_contract": {
+            "schema_version": DATASET_CONTRACT_SCHEMA_VERSION,
+            "control_hz": DROID_CONTROL_HZ,
+            "open_loop_horizon": int(open_loop_horizon),
+            "review_video_fps": DROID_CONTROL_HZ / float(open_loop_horizon),
+            "dataset_video_fps": float(DROID_CONTROL_HZ),
+            "camera_views": camera_input_shapes,
+            "state_semantics": (
+                "observation_state_is_pre_step_seven_joint_positions_rad_"
+                "plus_measured_gripper_width_m"
+            ),
+            "action_semantics": (
+                "action_is_the_clipped_executed_droid_row_seven_joint_"
+                "velocity_rad_s_plus_absolute_gripper"
+            ),
+            "gripper_semantics": "droid_scalar_zero_open_one_closed_threshold_0p5",
+        },
         "score": score,
         "candidate_policy_queried": True,
         "episode_id": episode_id,

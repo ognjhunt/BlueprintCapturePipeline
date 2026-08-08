@@ -76,6 +76,7 @@ export BLUEPRINT_ADP009D_POLICY_CANDIDATE="@@POLICY_CANDIDATE@@"
 export BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES="@@CAMERA_WARMUP_FRAMES@@"
 export BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"
 export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"
+export BLUEPRINT_ADP009D_EVIDENCE_PROFILE="@@EVIDENCE_PROFILE@@"
 mkdir -p "$OUT_DIR"
 
 # Environment facts the policy-server design could not verify from off-worker:
@@ -886,6 +887,12 @@ def build_native_microcheck_bundle(
         "adp009d_isaac_episode_adapter.py",
         "adp009d_task_scoring.py",
         "episode_visual_evidence.py",
+        # The episode imports the step trace unconditionally, and the runtime
+        # imports the dataset capture recorder when the evidence profile asks
+        # for control-rate streams.  Both must ship or a live run dies on
+        # ModuleNotFoundError after provisioning has already succeeded.
+        "adp009d_episode_step_trace.py",
+        "adp009d_dataset_capture.py",
         "adp009d_policy_server_worker.py",
         "adp009d_groot_worker_identity.py",
         "adp009d_gated_backbone.py",
@@ -953,7 +960,11 @@ def build_native_microcheck_bundle(
             "@@STOP_AFTER_FRAMES@@",
             str(os.environ.get("BLUEPRINT_ADP009D_STOP_AFTER_FRAMES", "")),
         )
-        .replace("@@CAMERA_RESOLUTION@@", camera_resolution),
+        .replace("@@CAMERA_RESOLUTION@@", camera_resolution)
+        .replace(
+            "@@EVIDENCE_PROFILE@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_EVIDENCE_PROFILE", "")),
+        ),
     )
     generated = generated_at or utc_now_iso()
     manifest: dict[str, Any] = {

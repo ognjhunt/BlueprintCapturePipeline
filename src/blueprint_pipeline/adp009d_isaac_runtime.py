@@ -1886,6 +1886,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     run_episode_batch,
                     summarize_candidate_batches,
                 )
+                from adp009d_dataset_capture import DatasetCaptureRecorder
+                from adp009d_droid_observation import CANDIDATE_REQUIRED_VIEWS
 
                 destination_path = Path(
                     runtime / "adp009d_task_destination.v1.json"
@@ -2064,6 +2066,31 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         })
                         _phase(f"policy_batch_{bound_candidate}", "blocked")
                         continue
+                    # ``dataset`` retains one H.264 stream per camera at the
+                    # true 15 Hz control rate.  The renders already happen once
+                    # per environment step, so the profile adds buffer reads
+                    # and encoding, never extra renders.  Default stays the
+                    # cheaper query-cadence evidence.
+                    evidence_profile = (
+                        os.environ.get("BLUEPRINT_ADP009D_EVIDENCE_PROFILE", "")
+                        .strip()
+                        .lower()
+                        or "eval"
+                    )
+
+                    def _capture_factory(
+                        episode_id: str,
+                        _views: tuple[str, ...] = CANDIDATE_REQUIRED_VIEWS[
+                            bound_candidate
+                        ],
+                        _out_dir: Path = out_dir,
+                    ) -> DatasetCaptureRecorder:
+                        return DatasetCaptureRecorder(
+                            output_dir=_out_dir,
+                            episode_id=episode_id,
+                            view_keys=_views,
+                        )
+
                     batch = run_episode_batch(
                         environment=adapter,
                         policy=_client_for(server_receipt),
@@ -2073,8 +2100,14 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         gripper=convention,
                         episodes=int(os.environ.get("BLUEPRINT_ADP009D_EPISODES", "3")),
                         media_output_dir=out_dir,
+                        dataset_capture_factory=(
+                            _capture_factory
+                            if evidence_profile == "dataset"
+                            else None
+                        ),
                     )
                     batch["transport"] = server_receipt.get("transport")
+                    batch["evidence_profile"] = evidence_profile
                     batches.append(batch)
                     _phase(f"policy_batch_{bound_candidate}", "completed")
                 policy_episode = {
