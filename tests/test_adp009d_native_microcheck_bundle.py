@@ -2097,7 +2097,11 @@ def test_no_shipped_module_uses_an_unguarded_top_level_relative_import() -> None
     from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
 
     shipped = set(re.findall(r'"(adp009d_[a-z0-9_]+\.py)"', inspect.getsource(bundle)))
-    shipped |= {"decision_evidence_contracts.py", "episode_visual_evidence.py"}
+    shipped |= {
+        "decision_evidence_contracts.py",
+        "droid_policy_bridge.py",
+        "episode_visual_evidence.py",
+    }
     root = _Path(bundle.__file__).parent
     offenders = []
     for name in sorted(shipped):

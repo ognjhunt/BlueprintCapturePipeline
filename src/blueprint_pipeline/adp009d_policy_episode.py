@@ -37,6 +37,7 @@ try:  # flat provider-bundle layout
         DROID_OPEN_LOOP_HORIZON,
         DroidActionExecutionError,
         GripperConvention,
+        droid_row_to_isaac_action,
         plan_chunk_execution,
     )
 except ModuleNotFoundError:  # repository package
@@ -46,6 +47,7 @@ except ModuleNotFoundError:  # repository package
         DROID_OPEN_LOOP_HORIZON,
         DroidActionExecutionError,
         GripperConvention,
+        droid_row_to_isaac_action,
         plan_chunk_execution,
     )
 try:  # flat provider-bundle layout
@@ -225,6 +227,16 @@ def _motion_and_command_evidence(
         for action in commanded_actions
         for value in action["joint_position_target_rad"]
     ]
+    velocity_commands = [
+        float(value)
+        for action in commanded_actions
+        for value in action["joint_velocity_command_rad_s"]
+    ]
+    clipped_velocity_commands = [
+        float(value)
+        for action in commanded_actions
+        for value in action["clipped_droid_action"][:ARM_JOINT_COUNT]
+    ]
     target_deltas = [
         abs(float(target) - float(observed))
         for action in commanded_actions
@@ -267,6 +279,21 @@ def _motion_and_command_evidence(
 
     action_summary = {
         "policy_action_rows_submitted": len(commanded_actions),
+        "source_action_space": "droid_joint_velocity_plus_absolute_gripper",
+        "joint_velocity_command_max_abs_rad_s": max(
+            (abs(value) for value in velocity_commands), default=0.0
+        ),
+        "joint_velocity_command_mean_abs_rad_s": (
+            sum(abs(value) for value in velocity_commands) / len(velocity_commands)
+            if velocity_commands
+            else 0.0
+        ),
+        "joint_velocity_command_clipped_value_count": sum(
+            abs(raw - clipped) > 1e-12
+            for raw, clipped in zip(
+                velocity_commands, clipped_velocity_commands, strict=True
+            )
+        ),
         "arm_target_max_abs_rad": max((abs(value) for value in arm_targets), default=0.0),
         "arm_target_mean_abs_rad": (
             sum(abs(value) for value in arm_targets) / len(arm_targets)
@@ -419,15 +446,18 @@ def run_policy_episode(
             raise PolicyEpisodeError([BLOCKER_CLIENT_RETURNED_NOTHING])
 
         phase_started = time.monotonic()
-        plan = plan_chunk_execution(
-            chunk,
-            joint_limits=joint_limits,
-            gripper=gripper,
-            horizon=int(open_loop_horizon),
-        )
+        plan = plan_chunk_execution(chunk, horizon=int(open_loop_horizon))
         timings_seconds["action_planning"] += time.monotonic() - phase_started
-        for action in plan["actions"]:
+        query_clamped_rows = 0
+        for planned_action in plan["actions"]:
             before = list(joint_trace[-1])
+            action = droid_row_to_isaac_action(
+                planned_action["droid_action"],
+                current_joint_position=before,
+                joint_limits=joint_limits,
+                gripper=gripper,
+            )
+            query_clamped_rows += int(action["joint_limit_clamped"])
             phase_started = time.monotonic()
             environment.step(action["isaac_action"])
             timings_seconds["environment_step_including_render"] += (
@@ -447,6 +477,10 @@ def run_policy_episode(
             commanded_actions.append(
                 {
                     "joint_position_target_rad": target,
+                    "joint_velocity_command_rad_s": list(
+                        action["joint_velocity_command_rad_s"]
+                    ),
+                    "clipped_droid_action": list(action["clipped_droid_action"]),
                     "observed_before_rad": before,
                     "isaac_action": [float(value) for value in action["isaac_action"]],
                 }
@@ -466,11 +500,15 @@ def run_policy_episode(
                 "chunk_shape": plan["chunk_shape"],
                 "executed_rows": plan["executed_rows"],
                 "discarded_rows": plan["discarded_rows"],
-                "any_joint_limit_clamped": plan["any_joint_limit_clamped"],
-                "joint_limit_clamped_rows": sum(
-                    bool(action["joint_limit_clamped"])
-                    for action in plan["actions"]
-                ),
+                "source_action_space": plan["source_action_space"],
+                "position_adapter": plan["position_adapter"],
+                "position_adapter_max_joint_delta_rad": plan[
+                    "position_adapter_max_joint_delta_rad"
+                ],
+                "droid_source_revision": plan["droid_source_revision"],
+                "openpi_source_revision": plan["openpi_source_revision"],
+                "any_joint_limit_clamped": query_clamped_rows > 0,
+                "joint_limit_clamped_rows": query_clamped_rows,
                 "final_step_index": step_index,
             }
         )
@@ -578,6 +616,7 @@ def run_policy_episode(
         "open_loop_horizon": int(open_loop_horizon),
         "control_hz": DROID_CONTROL_HZ,
         "observation_adapter_schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
+        "action_space": "droid_joint_velocity_plus_absolute_gripper",
         "observation_conversion": describe_observation_conversion(candidate_id),
         "destination_position_world_m": [float(v) for v in destination_position_world_m],
         "queries": queries,

@@ -46,8 +46,8 @@ def test_a_few_episodes_run_independently_and_are_reported_each() -> None:
     assert batch["episodes_policy_outcome_interpretable"] == 3
     row = batch["episodes"][0]
     assert row["joint_position_reset_rad"] == [0.0] * 7
-    assert row["joint_position_end_rad"][0] == 0.25
-    assert row["max_abs_joint_delta_from_reset_rad"][0] == 0.25
+    assert row["joint_position_end_rad"][0] == pytest.approx(1.6)
+    assert row["max_abs_joint_delta_from_reset_rad"][0] == pytest.approx(1.6)
     assert row["arm_moved"] is True
     assert row["actions_reached_robot"] is True
     assert row["policy_outcome_interpretable"] is True

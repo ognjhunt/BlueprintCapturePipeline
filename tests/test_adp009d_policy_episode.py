@@ -137,6 +137,7 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     assert receipt["motion_evidence"]["actions_reached_robot"] is True
     assert receipt["motion_evidence"]["policy_outcome_interpretable"] is True
     assert receipt["policy_queries"] == 4
+    assert receipt["action_space"] == "droid_joint_velocity_plus_absolute_gripper"
     # 4 queries x 8 executed rows, plus the settle window.
     assert receipt["environment_steps"] == 4 * 8 + 6
     assert len(environment.steps) == receipt["environment_steps"]
@@ -378,7 +379,9 @@ def test_arm_motion_and_command_delivery_evidence_fail_closed() -> None:
     magnitudes = receipt["commanded_action_magnitudes"]
     assert magnitudes["policy_action_rows_submitted"] == 16
     assert magnitudes["nontrivial_arm_target_rows"] == 16
-    assert magnitudes["arm_target_delta_from_observed_max_abs_rad"] == 0.25
+    assert magnitudes["arm_target_delta_from_observed_max_abs_rad"] == 0.05
+    assert magnitudes["joint_velocity_command_max_abs_rad_s"] == 0.25
+    assert magnitudes["joint_velocity_command_clipped_value_count"] == 0
 
 
 def test_missing_joint_observation_contract_fails_before_policy_query() -> None:

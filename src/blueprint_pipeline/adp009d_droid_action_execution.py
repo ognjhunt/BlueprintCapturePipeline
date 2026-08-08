@@ -1,11 +1,16 @@
 """Execute DROID policy action chunks in the ADP-009D Isaac environment.
 
-The interfaces line up more closely than they had any right to.  Arena's
-``droid_abs_joint_pos`` action space is 8-dimensional -- seven absolute arm
-joint positions plus one gripper command -- which is exactly a DROID action row.
-And the environment's ``sim.dt = 1/120`` with ``decimation = 8`` means one
+The released pi05-DROID checkpoint outputs the original DROID action space:
+seven joint-velocity dimensions and one absolute gripper command.  Arena's
+available DROID embodiment accepts absolute joint-position targets instead,
+so each clipped velocity row is converted to a bounded position increment from
+the *currently observed* joints.  Treating the raw row as seven positions made
+448/480 actions hit joint limits in a paid run and was a harness fault, not a
+policy result.
+
+The environment's ``sim.dt = 1/120`` with ``decimation = 8`` means one
 ``env.step()`` advances 1/15 s, exactly DROID's 15 Hz control rate.  So one
-policy action row is one environment step, with no resampling.
+policy action row is still one environment step, with no resampling.
 
 What does *not* line up for free is the gripper.  DROID encodes it as a scalar
 in [0, 1] where above 0.5 means closed; Arena's eighth action dimension has its
@@ -23,7 +28,22 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-ACTION_EXECUTION_SCHEMA_VERSION = "adp009d_droid_action_execution.v1"
+try:  # flat provider-bundle layout
+    from droid_policy_bridge import (
+        DROID_MAX_JOINT_DELTA_RAD,
+        DROID_SOURCE_REVISION,
+        OPENPI_SOURCE_REVISION,
+        droid_action_to_mujoco_targets,
+    )
+except ModuleNotFoundError:  # repository package
+    from .droid_policy_bridge import (
+        DROID_MAX_JOINT_DELTA_RAD,
+        DROID_SOURCE_REVISION,
+        OPENPI_SOURCE_REVISION,
+        droid_action_to_mujoco_targets,
+    )
+
+ACTION_EXECUTION_SCHEMA_VERSION = "adp009d_droid_action_execution.v2"
 
 # DROID's published control contract.
 DROID_CONTROL_HZ = 15
@@ -116,10 +136,11 @@ def validate_action_chunk(chunk: Any, *, horizon: int = DROID_OPEN_LOOP_HORIZON)
 def droid_row_to_isaac_action(
     row: Sequence[float],
     *,
+    current_joint_position: Sequence[float],
     joint_limits: Sequence[Sequence[float]],
     gripper: GripperConvention,
 ) -> dict[str, Any]:
-    """Convert one DROID action row into Arena's 8-dimensional action vector."""
+    """Convert one DROID joint-velocity row into an Arena position target."""
 
     import numpy as np
 
@@ -135,28 +156,37 @@ def droid_row_to_isaac_action(
     if limits.shape != (ARM_JOINT_COUNT, 2) or not np.isfinite(limits).all():
         raise DroidActionExecutionError(["isaac_joint_limits_invalid"])
 
-    target = np.clip(values[:ARM_JOINT_COUNT], limits[:, 0], limits[:, 1])
-    clamped = bool(np.any(np.abs(target - values[:ARM_JOINT_COUNT]) > 1e-12))
+    try:
+        mapped = droid_action_to_mujoco_targets(
+            values,
+            current_joint_position=current_joint_position,
+            joint_limits=limits,
+        )
+    except ValueError as exc:
+        raise DroidActionExecutionError([f"droid_velocity_mapping_invalid:{exc}"]) from exc
+    target = np.asarray(mapped["joint_position_target_rad"], dtype=float)
     action = np.zeros(ISAAC_ACTION_DIM, dtype=float)
     action[:ARM_JOINT_COUNT] = target
     action[ARM_JOINT_COUNT] = gripper.command_for(values[ARM_JOINT_COUNT])
     return {
         "isaac_action": [float(v) for v in action],
         "joint_position_target_rad": [float(v) for v in target],
-        "joint_limit_clamped": clamped,
+        "joint_velocity_command_rad_s": [float(v) for v in values[:ARM_JOINT_COUNT]],
+        "clipped_droid_action": list(mapped["clipped_action"]),
+        "joint_limit_clamped": bool(mapped["joint_limit_clamped"]),
         "droid_gripper_scalar": float(values[ARM_JOINT_COUNT]),
         "gripper_closed": bool(float(values[ARM_JOINT_COUNT]) > 0.5),
+        "source_action_space": "droid_joint_velocity_plus_absolute_gripper",
+        "position_adapter_max_joint_delta_rad": DROID_MAX_JOINT_DELTA_RAD,
     }
 
 
 def plan_chunk_execution(
     chunk: Any,
     *,
-    joint_limits: Sequence[Sequence[float]],
-    gripper: GripperConvention,
     horizon: int = DROID_OPEN_LOOP_HORIZON,
 ) -> dict[str, Any]:
-    """Turn a validated chunk into the exact per-step actions to execute.
+    """Validate a chunk and retain the exact raw rows selected for execution.
 
     Only the first ``horizon`` rows are executed; DROID's open-loop horizon is
     shorter than the chunk a policy returns, and executing the tail would run
@@ -166,9 +196,7 @@ def plan_chunk_execution(
     values = validate_action_chunk(chunk, horizon=horizon)
     steps_per_action = isaac_steps_per_droid_action()
     rows = [
-        droid_row_to_isaac_action(
-            values[index], joint_limits=joint_limits, gripper=gripper
-        )
+        {"droid_action": [float(value) for value in values[index]]}
         for index in range(int(horizon))
     ]
     return {
@@ -180,7 +208,11 @@ def plan_chunk_execution(
         "control_hz": DROID_CONTROL_HZ,
         "environment_step_seconds": ISAAC_SIM_DT_SECONDS * ISAAC_DECIMATION,
         "actions": rows,
-        "any_joint_limit_clamped": any(row["joint_limit_clamped"] for row in rows),
+        "source_action_space": "droid_joint_velocity_plus_absolute_gripper",
+        "position_adapter": "observed_joint_plus_clipped_velocity_delta",
+        "position_adapter_max_joint_delta_rad": DROID_MAX_JOINT_DELTA_RAD,
+        "droid_source_revision": DROID_SOURCE_REVISION,
+        "openpi_source_revision": OPENPI_SOURCE_REVISION,
         "candidate_policy_queried": True,
     }
 

@@ -17,6 +17,7 @@ from blueprint_pipeline.adp009d_droid_action_execution import (
 
 # Franka limits, wide enough that only deliberate tests clamp.
 _LIMITS = [[-2.9, 2.9]] * 7
+_ZERO_JOINTS = [0.0] * 7
 _MEASURED = GripperConvention(closed_command=1.0, open_command=0.0, measured_by_probe=True)
 
 
@@ -51,7 +52,10 @@ def test_gripper_convention_must_be_measured_never_defaulted() -> None:
     unmeasured = GripperConvention(closed_command=1.0, open_command=0.0)
     with pytest.raises(DroidActionExecutionError) as excinfo:
         droid_row_to_isaac_action(
-            _chunk()[0], joint_limits=_LIMITS, gripper=unmeasured
+            _chunk()[0],
+            current_joint_position=_ZERO_JOINTS,
+            joint_limits=_LIMITS,
+            gripper=unmeasured,
         )
     assert BLOCKER_GRIPPER_CONVENTION_UNMEASURED in excinfo.value.errors
 
@@ -60,13 +64,19 @@ def test_droid_gripper_scalar_maps_through_the_measured_convention() -> None:
     """DROID: scalar in [0,1], above 0.5 is closed."""
 
     closed = droid_row_to_isaac_action(
-        _chunk(gripper=0.9)[0], joint_limits=_LIMITS, gripper=_MEASURED
+        _chunk(gripper=0.9)[0],
+        current_joint_position=_ZERO_JOINTS,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
     )
     assert closed["gripper_closed"] is True
     assert closed["isaac_action"][7] == 1.0
 
     opened = droid_row_to_isaac_action(
-        _chunk(gripper=0.1)[0], joint_limits=_LIMITS, gripper=_MEASURED
+        _chunk(gripper=0.1)[0],
+        current_joint_position=_ZERO_JOINTS,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
     )
     assert opened["gripper_closed"] is False
     assert opened["isaac_action"][7] == 0.0
@@ -76,7 +86,10 @@ def test_droid_gripper_scalar_maps_through_the_measured_convention() -> None:
         closed_command=0.0, open_command=1.0, measured_by_probe=True
     )
     flipped = droid_row_to_isaac_action(
-        _chunk(gripper=0.9)[0], joint_limits=_LIMITS, gripper=inverted
+        _chunk(gripper=0.9)[0],
+        current_joint_position=_ZERO_JOINTS,
+        joint_limits=_LIMITS,
+        gripper=inverted,
     )
     assert flipped["gripper_closed"] is True
     assert flipped["isaac_action"][7] == 0.0
@@ -85,15 +98,24 @@ def test_droid_gripper_scalar_maps_through_the_measured_convention() -> None:
 def test_joint_targets_are_clamped_to_limits_and_the_clamp_is_reported() -> None:
     row = np.zeros(8)
     row[:7] = [5.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    current = [2.8, -2.8, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-    result = droid_row_to_isaac_action(row, joint_limits=_LIMITS, gripper=_MEASURED)
+    result = droid_row_to_isaac_action(
+        row,
+        current_joint_position=current,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
+    )
 
     assert result["joint_position_target_rad"][0] == pytest.approx(2.9)
     assert result["joint_position_target_rad"][1] == pytest.approx(-2.9)
     assert result["joint_limit_clamped"] is True
 
     within = droid_row_to_isaac_action(
-        _chunk()[0], joint_limits=_LIMITS, gripper=_MEASURED
+        _chunk()[0],
+        current_joint_position=_ZERO_JOINTS,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
     )
     assert within["joint_limit_clamped"] is False
 
@@ -101,9 +123,7 @@ def test_joint_targets_are_clamped_to_limits_and_the_clamp_is_reported() -> None
 def test_only_the_open_loop_horizon_executes_and_the_tail_is_reported() -> None:
     """Executing the tail runs the arm on predictions the policy expected to supersede."""
 
-    plan = plan_chunk_execution(
-        _chunk(rows=10), joint_limits=_LIMITS, gripper=_MEASURED
-    )
+    plan = plan_chunk_execution(_chunk(rows=10))
 
     assert plan["executed_rows"] == DROID_OPEN_LOOP_HORIZON == 8
     assert plan["discarded_rows"] == 2
@@ -113,9 +133,7 @@ def test_only_the_open_loop_horizon_executes_and_the_tail_is_reported() -> None:
     assert plan["candidate_policy_queried"] is True
 
     # Cosmos returns 32x8; the horizon does not change with chunk length.
-    wide = plan_chunk_execution(
-        _chunk(rows=32), joint_limits=_LIMITS, gripper=_MEASURED
-    )
+    wide = plan_chunk_execution(_chunk(rows=32))
     assert wide["executed_rows"] == 8
     assert wide["discarded_rows"] == 24
 
@@ -149,22 +167,32 @@ def test_probe_request_refuses_to_default_on_an_ambiguous_result() -> None:
     assert "fails closed" in request["decision_rule"]
 
 
-def test_plan_matches_the_repository_droid_action_semantics() -> None:
-    """Joint clamping and the 0.5 gripper threshold must agree with the bridge."""
+def test_plan_matches_the_repository_droid_velocity_action_semantics() -> None:
+    """Velocity integration and the 0.5 gripper threshold agree with the bridge."""
 
     from blueprint_pipeline.droid_policy_bridge import (
-        droid_joint_position_action_to_mujoco_targets,
+        droid_action_to_mujoco_targets,
     )
 
     row = np.zeros(8)
     row[:7] = [5.0, -5.0, 0.1, 0.2, 0.3, 0.4, 0.5]
     row[7] = 0.9
 
-    mine = droid_row_to_isaac_action(row, joint_limits=_LIMITS, gripper=_MEASURED)
-    theirs = droid_joint_position_action_to_mujoco_targets(row, joint_limits=_LIMITS)
+    mine = droid_row_to_isaac_action(
+        row,
+        current_joint_position=_ZERO_JOINTS,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
+    )
+    theirs = droid_action_to_mujoco_targets(
+        row,
+        current_joint_position=_ZERO_JOINTS,
+        joint_limits=_LIMITS,
+    )
 
     assert mine["joint_position_target_rad"] == theirs["joint_position_target_rad"]
     assert mine["joint_limit_clamped"] == theirs["joint_limit_clamped"]
+    assert mine["source_action_space"] == "droid_joint_velocity_plus_absolute_gripper"
     # Both read "closed" from the same scalar, even though the command differs.
     assert mine["gripper_closed"] is True
     assert theirs["gripper_position_target_m"] == 0.0
@@ -210,7 +238,10 @@ def test_a_measured_probe_result_constructs_a_usable_convention() -> None:
     )
 
     closed = droid_row_to_isaac_action(
-        _chunk(gripper=0.9)[0], joint_limits=_LIMITS, gripper=convention
+        _chunk(gripper=0.9)[0],
+        current_joint_position=_ZERO_JOINTS,
+        joint_limits=_LIMITS,
+        gripper=convention,
     )
     assert closed["isaac_action"][7] == 1.0
 
@@ -222,5 +253,8 @@ def test_a_measured_probe_result_constructs_a_usable_convention() -> None:
     )
     with pytest.raises(DroidActionExecutionError):
         droid_row_to_isaac_action(
-            _chunk()[0], joint_limits=_LIMITS, gripper=ambiguous
+            _chunk()[0],
+            current_joint_position=_ZERO_JOINTS,
+            joint_limits=_LIMITS,
+            gripper=ambiguous,
         )

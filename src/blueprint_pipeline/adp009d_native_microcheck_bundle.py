@@ -828,6 +828,7 @@ def build_native_microcheck_bundle(
     for module_name in (
         "adp009d_droid_observation.py",
         "adp009d_droid_action_execution.py",
+        "droid_policy_bridge.py",
         "adp009d_policy_episode.py",
         # Wired into the runtime but never shipped, so a live run reached the
         # episode and died on ModuleNotFoundError after provisioning had
