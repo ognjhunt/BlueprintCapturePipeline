@@ -78,7 +78,23 @@ class _Camera:
         frame[..., 0] = 200
         if channels == 4:
             frame[..., 3] = 255
-        self.data = type("D", (), {"output": {"rgb": _Tensor(frame)}})()
+        self.data = type(
+            "D",
+            (),
+            {
+                "output": {"rgb": _Tensor(frame)},
+                "intrinsic_matrices": np.array(
+                    [[[1000.0, 0.0, 640.0], [0.0, 1000.0, 360.0], [0.0, 0.0, 1.0]]]
+                ),
+                "pos_w": np.array([[1.0, 2.0, 3.0]]),
+                "quat_w_opengl": np.array([[0.0, 0.0, 0.0, 1.0]]),
+            },
+        )()
+        self.cfg = type(
+            "Cfg",
+            (),
+            {"spawn": type("Spawn", (), {"clipping_range": (0.01, 100.0)})()},
+        )()
 
 
 class _Scene(dict):
@@ -90,7 +106,11 @@ class _Env:
         self.reset_calls: list[int] = []
         self.stepped: list[list[float]] = []
         scene = _Scene(
-            {"external_camera": _Camera(channels), "wrist_camera": _Camera(channels)}
+            {
+                "external_camera": _Camera(channels),
+                "wrist_camera": _Camera(channels),
+                "external_camera_2": _Camera(channels),
+            }
         )
         self.unwrapped = type("U", (), {"scene": scene, "device": "cpu"})()
 
@@ -148,6 +168,12 @@ def test_policy_inputs_carry_both_views_as_uint8_rgb() -> None:
     assert inputs["eef_9d"] == pytest.approx(
         [1.0, 2.0, 3.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0]
     )
+    assert "overview" not in inputs
+    assert set(adapter.read_evaluation_camera_inputs()) == {
+        "external",
+        "wrist",
+        "overview",
+    }
 
 
 def test_isaac_xyzw_quaternion_is_converted_before_nvidia_frame_correction() -> None:
@@ -268,6 +294,52 @@ def test_reset_uses_the_pinned_seed() -> None:
     adapter.reset()
 
     assert env.reset_calls == [20260806]
+
+
+def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_seam() -> None:
+    env = _Env()
+    calls = []
+
+    def scripted(**kwargs):
+        calls.append(kwargs)
+        return [0.2] * 7 + [kwargs["gripper_command"]]
+
+    adapter = IsaacEpisodeAdapter(
+        env=env,
+        robot=_Robot(),
+        approved_can=_Can(),
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
+        simulation_step_seconds=1.0 / 15.0,
+        scripted_pose_action_callback=scripted,
+    )
+    adapter.reset()
+
+    hold = adapter.hold_action(gripper_command=1.0)
+    assert hold[:7] == adapter.read_arm_joint_positions()
+    assert hold[7] == 1.0
+    scripted_action = adapter.scripted_action_for_pose(
+        target_position_world_m=[1.0, 2.0, 3.0],
+        target_quaternion_world_xyzw=[1.0, 0.0, 0.0, 0.0],
+        gripper_command=0.0,
+        max_joint_delta_rad=0.03,
+    )
+    assert scripted_action == [0.2] * 7 + [0.0]
+    assert calls[0]["max_joint_delta_rad"] == 0.03
+    metadata = adapter.read_control_observation_metadata()
+    assert metadata["simulation_time_s"] == 0.0
+    assert metadata["timestamp_ns"] == 0
+    assert set(metadata["calibrations"]) == {"external", "wrist", "overview"}
+    assert metadata["calibrations"]["external"]["resolution"] == [1280, 720]
+    assert metadata["calibrations"]["external"]["world_from_camera"] == [
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 2.0],
+        [0.0, 0.0, 1.0, 3.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
 
 
 def test_reset_callback_can_restore_a_wrist_observable_episode_start() -> None:

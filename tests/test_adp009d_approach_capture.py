@@ -735,7 +735,7 @@ def test_runtime_records_the_achieved_end_effector_pose_per_waypoint() -> None:
     # captures from the same camera pair earlier in the file.
     approach = source[source.index("--- preregistered wrist approach") :]
     assert approach.index("approach_arrivals.append(") < approach.index(
-        'for camera_name in ("external_camera", "wrist_camera"):'
+        'for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):'
     )
 
 

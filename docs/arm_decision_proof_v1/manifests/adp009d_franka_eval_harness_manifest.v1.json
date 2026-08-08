@@ -138,7 +138,7 @@
       "deterministic_scripted_positive"
     ],
     "grader_authority": "deterministic_simulator_state",
-    "implementation_status": "contract_frozen_native_execution_pending",
+    "implementation_status": "implemented_native_execution_pending",
     "media_contract": "lossless_external_and_wrist_frames_manifest_and_review_video",
     "positive_failure_effect": "block_cell_before_policy_execution",
     "required": [
@@ -265,7 +265,7 @@
     "single_nominal_rollout_is_not_evaluation": true,
     "startup_is_not_evaluation": true
   },
-  "harness_digest": "sha256:39c4631574d336aea1d1d3b2c0512f303d34a6b09e9b022844bb4dc15b3b63bc",
+  "harness_digest": "sha256:b4640374abcb6fe8819bb193e057fbcb0e4ceb0faebd8ea25ebdc430fb321fc7",
   "harness_id": "blueprint-isaac-lab-franka-task-evaluation-v1",
   "implementation_base_commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
   "layers": {
@@ -412,6 +412,17 @@
       "external",
       "wrist"
     ],
+    "evaluation_review_cameras": [
+      "overview"
+    ],
+    "overview_camera_contract": {
+      "camera_id": "overview",
+      "grader_input": false,
+      "lossless_frames_calibration_timestamps_manifest_and_video_required": true,
+      "policy_input": false,
+      "required_for_every_new_simulator_evaluation_episode": true,
+      "review_only": true
+    },
     "metric_depth_aov": {
       "aura": "aurafusion360_expected_camera_depth_m",
       "dynamic": "distance_to_camera"

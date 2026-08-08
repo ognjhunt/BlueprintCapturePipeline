@@ -118,6 +118,8 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     assert first["candidate_policy_queried"] is False
     assert approved.read_bytes() == approved_before
     assert sage.read_bytes() == sage_before
+
+
     Usd = pytest.importorskip("pxr.Usd")
     source_stage = Usd.Stage.Open(str(sage))
     overlay_stage = Usd.Stage.Open(
@@ -171,6 +173,38 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     assert derivative_manifest["sealed_source_mutated"] is False
     assert derivative_manifest["observed_maximum_edge_m"] <= TASK_COLLISION_MAX_EDGE_M
     assert derivative_manifest["relative_surface_area_error"] <= 1.0e-6
+
+
+def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
+    tmp_path: Path,
+) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "controls",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        run_controls=True,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    assert receipt["controls_requested"] is True
+    assert receipt["policy_candidate_id"] is None
+    assert receipt["scenario_instance_digest"].startswith("sha256:")
+    assert receipt["control_plan_digest"].startswith("sha256:")
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        entrypoint = archive.read(
+            "provider_runtime/run_adp_arena_provider_runtime.sh"
+        ).decode()
+    assert "provider_runtime/adp009d_control_episode.py" in names
+    assert "provider_runtime/adp009d_scenario_instance.v1.json" in names
+    assert "provider_runtime/adp009d_control_plan.v1.json" in names
+    assert 'BLUEPRINT_ADP009D_CONTROLS="1"' in entrypoint
+    assert "adp009d_policy_provisioning.pi05_droid.sh" not in names
 
 
 def test_isolated_bundle_builder_returns_fresh_digest_bound_receipt(tmp_path: Path) -> None:
@@ -837,6 +871,74 @@ def test_allocator_routes_microcheck_only_through_canonical_grant(
     assert admission["probe_kind"] == PROBE_KIND
     assert admission["retry_cap"] == 0
     assert admission["candidate_policy_queried"] is False
+
+
+def test_allocator_controls_fail_closed_without_scenario_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "build_native_microcheck_bundle",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bundle built without a scenario instance")
+        ),
+    )
+
+    assert allocator.main(
+        _allocator_args(tmp_path, execute=False) + ["--adp009d-controls"]
+    ) == 2
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert result["provider_mutations_performed"] == 0
+    assert "adp009d_control_scenario_instance_missing" in result["blockers"]
+
+
+def test_allocator_binds_controls_and_scenario_digests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict = {}
+    instance_path = tmp_path / "instance.json"
+    instance_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+
+    def fake_build(**kwargs):
+        observed.update(kwargs)
+        return {
+            "status": "ready",
+            "bundle_sha256": "sha256:" + "b" * 64,
+            "input_digest": "sha256:" + "c" * 64,
+            "scenario_instance_digest": "sha256:" + "d" * 64,
+            "control_plan_digest": "sha256:" + "e" * 64,
+        }
+
+    monkeypatch.setattr(allocator, "build_native_microcheck_bundle", fake_build)
+    monkeypatch.setattr(
+        allocator,
+        "run_adp009d_native_microcheck_vast",
+        lambda **_kwargs: {"status": "dry_run_ready"},
+    )
+
+    args = _allocator_args(tmp_path, execute=False) + [
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(instance_path),
+    ]
+    assert allocator.main(args) == 0
+    assert observed["run_controls"] is True
+    assert observed["scenario_instance_path"] == str(instance_path)
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    binding = admission["allocation_binding"]
+    assert binding["controls_requested"] is True
+    assert binding["scenario_instance_digest"] == "sha256:" + "d" * 64
+    assert binding["control_plan_digest"] == "sha256:" + "e" * 64
 
 
 def test_allocator_requires_and_binds_explicit_gated_backbone_authority(
@@ -2255,7 +2357,8 @@ def test_the_claim_fields_follow_the_episodes() -> None:
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
     start = source.index('"status": "completed" if not episode_blockers')
     body = source[start : source.index("    finally:", start)]
-    assert '"candidate_policy_queried": bool(' in body
+    assert '"candidate_policy_queried": any(' in body
+    assert 'int(batch.get("episodes_scored") or 0) > 0' in body
     assert '"candidate_outcomes_accessed": bool(' in body
     assert '"candidate_policy_queried": False' not in body
 

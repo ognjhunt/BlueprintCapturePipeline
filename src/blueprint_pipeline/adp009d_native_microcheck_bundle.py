@@ -73,6 +73,7 @@ RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 export BLUEPRINT_ADP009D_OUTPUT_DIR="$OUT_DIR"
 export BLUEPRINT_ADP009D_POLICY_CANDIDATE="@@POLICY_CANDIDATE@@"
+export BLUEPRINT_ADP009D_CONTROLS="@@CONTROLS@@"
 export BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES="@@CAMERA_WARMUP_FRAMES@@"
 export BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"
 export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"
@@ -741,6 +742,8 @@ def build_native_microcheck_bundle(
     harness_manifest_path: str | Path,
     implementation_commit: str,
     policy_candidate_id: str | None = None,
+    run_controls: bool = False,
+    scenario_instance_path: str | Path | None = None,
     aura_particlefield_path: str | Path | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
@@ -878,6 +881,7 @@ def build_native_microcheck_bundle(
         "adp009d_droid_action_execution.py",
         "droid_policy_bridge.py",
         "adp009d_policy_episode.py",
+        "adp009d_control_episode.py",
         # Wired into the runtime but never shipped, so a live run reached the
         # episode and died on ModuleNotFoundError after provisioning had
         # already succeeded.  An import the runtime makes must be a file the
@@ -899,7 +903,7 @@ def build_native_microcheck_bundle(
         "decision_evidence_contracts.py",
     ):
         shutil.copy2(source_dir / module_name, runtime / module_name)
-    if policy_candidate_id:
+    if policy_candidate_id or run_controls:
         # The destination is frozen before any outcome exists; ship the receipt
         # itself rather than recomputing it on the worker, so the episode is
         # scored against exactly the value that was sealed.
@@ -915,6 +919,27 @@ def build_native_microcheck_bundle(
             raise ValueError("adp009d_task_destination_schema_unexpected")
         (runtime / "adp009d_task_destination.v1.json").write_text(
             json.dumps(destination_receipt, indent=1, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    if run_controls:
+        from .adp009d_control_episode import materialize_control_plan
+
+        instance_source = (
+            Path(scenario_instance_path).expanduser().resolve()
+            if scenario_instance_path is not None
+            else (
+                Path(__file__).resolve().parents[2]
+                / "docs/arm_decision_proof_v1/manifests/"
+                "adp009d_canonical_scenario_instance.v1.json"
+            )
+        )
+        if not instance_source.is_file():
+            raise ValueError("adp009d_control_scenario_instance_missing")
+        scenario_instance = json.loads(instance_source.read_text(encoding="utf-8"))
+        control_plan = materialize_control_plan(scenario_instance)
+        shutil.copy2(instance_source, runtime / "adp009d_scenario_instance.v1.json")
+        (runtime / "adp009d_control_plan.v1.json").write_text(
+            json.dumps(control_plan, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
     if policy_candidate_id:
@@ -936,7 +961,7 @@ def build_native_microcheck_bundle(
     camera_resolution = str(
         os.environ.get("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", "")
     ).strip()
-    if policy_candidate_id and not camera_resolution:
+    if (policy_candidate_id or run_controls) and not camera_resolution:
         # Policy runs must render at the resolution against which visibility
         # and observation conversion are specified.  A host export is not
         # inherited by the remote worker; v74 silently rendered 1280x720 and
@@ -945,6 +970,7 @@ def build_native_microcheck_bundle(
     _write_executable(
         runtime / "run_adp_arena_provider_runtime.sh",
         ENTRYPOINT.replace("@@POLICY_CANDIDATE@@", policy_candidate_id or "")
+        .replace("@@CONTROLS@@", "1" if run_controls else "0")
         .replace(
             "@@CAMERA_WARMUP_FRAMES@@",
             str(os.environ.get("BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES", "")),
@@ -982,6 +1008,11 @@ def build_native_microcheck_bundle(
         "harness_manifest_sha256": _sha256(harness_source),
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "policy_candidate_id": policy_candidate_id,
+        "controls_requested": bool(run_controls),
+        "scenario_instance_digest": (
+            control_plan["instance_digest"] if run_controls else None
+        ),
+        "control_plan_digest": control_plan["plan_digest"] if run_controls else None,
         "camera_resolution_binding": camera_resolution or None,
         "expected_output_filename": "adp009d_native_microcheck.json",
         "candidate_policy_queried": False,
@@ -1020,6 +1051,8 @@ def build_native_microcheck_bundle_isolated(
     harness_manifest_path: str | Path,
     implementation_commit: str,
     policy_candidate_id: str | None = None,
+    run_controls: bool = False,
+    scenario_instance_path: str | Path | None = None,
     aura_particlefield_path: str | Path | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
@@ -1045,6 +1078,15 @@ def build_native_microcheck_bundle_isolated(
     ]
     if policy_candidate_id is not None:
         command.extend(("--policy-candidate-id", policy_candidate_id))
+    if run_controls:
+        command.append("--run-controls")
+    if scenario_instance_path is not None:
+        command.extend(
+            (
+                "--scenario-instance-path",
+                str(Path(scenario_instance_path).expanduser().resolve()),
+            )
+        )
     if aura_particlefield_path is not None:
         command.extend(
             ("--aura-particlefield-path", str(Path(aura_particlefield_path).resolve()))
@@ -1096,6 +1138,8 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--harness-manifest-path", required=True)
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--policy-candidate-id", default=None)
+    parser.add_argument("--run-controls", action="store_true")
+    parser.add_argument("--scenario-instance-path", default=None)
     parser.add_argument("--aura-particlefield-path", default=None)
     parser.add_argument("--generated-at")
     parser.add_argument("--expected-asset-bindings-json")
@@ -1112,6 +1156,8 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
         harness_manifest_path=args.harness_manifest_path,
         implementation_commit=args.implementation_commit,
         policy_candidate_id=args.policy_candidate_id,
+        run_controls=args.run_controls,
+        scenario_instance_path=args.scenario_instance_path,
         aura_particlefield_path=args.aura_particlefield_path,
         generated_at=args.generated_at,
         expected_asset_bindings=expected_bindings,

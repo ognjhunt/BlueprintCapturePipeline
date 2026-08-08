@@ -465,6 +465,18 @@ def validate_harness_manifest(
         errors.append("harness_renderer_unitless_depth_not_forbidden")
     if set(_strings(renderer.get("lossless_policy_cameras"))) != {"external", "wrist"}:
         errors.append("harness_renderer_camera_set_invalid")
+    if set(_strings(renderer.get("evaluation_review_cameras"))) != {"overview"}:
+        errors.append("harness_renderer_review_camera_set_invalid")
+    overview = _mapping(renderer.get("overview_camera_contract"))
+    if overview != {
+        "camera_id": "overview",
+        "required_for_every_new_simulator_evaluation_episode": True,
+        "review_only": True,
+        "policy_input": False,
+        "grader_input": False,
+        "lossless_frames_calibration_timestamps_manifest_and_video_required": True,
+    }:
+        errors.append("harness_renderer_overview_camera_contract_invalid")
     if set(_strings(renderer.get("forbidden_fallbacks"))) != {
         "browser_render",
         "old_2d_overlay",

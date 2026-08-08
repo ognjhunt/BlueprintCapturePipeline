@@ -907,8 +907,10 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     _bind_canonical_joint_positions(embodiment)
     render_width, render_height = _camera_resolution()
     print(f"BLUEPRINT_ADP009D_CAMERA_RESOLUTION:{render_width}x{render_height}", flush=True)
-    for camera_name in ("external_camera", "wrist_camera"):
+    for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
         camera_cfg = getattr(embodiment.camera_config, camera_name)
+        if camera_cfg is None:
+            raise RuntimeError(f"required_evaluation_camera_config_missing:{camera_name}")
         camera_cfg.data_types = ["rgb", "distance_to_camera", "semantic_segmentation"]
         camera_cfg.colorize_semantic_segmentation = False
         camera_cfg.update_period = 0.0
@@ -967,8 +969,20 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             "intrinsics_unchanged": True,
         }
     )
-    # The second external camera is outside the frozen two-camera policy contract.
-    embodiment.camera_config.external_camera_2 = None
+    # Arena's second fixed exterior view is the review-only overview camera.
+    # It never enters either candidate's observation mapping or the scorer.
+    overview_camera_plan = {
+        "schema_version": "blueprint_episode_overview_camera_plan.v1",
+        "runtime_camera_name": "external_camera_2",
+        "evidence_camera_id": "overview",
+        "pose_source": "official_arena_droid_second_external_camera",
+        "role": "review_only_full_task_motion",
+        "policy_input": False,
+        "grader_input": False,
+        "lossless_frames_required": True,
+        "calibration_and_timestamps_required": True,
+        "portable_review_video_required": True,
+    }
     _phase("embodiment_configuration", "completed")
 
     _phase("sealed_scene_configuration")
@@ -1066,7 +1080,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     _phase("manager_based_environment_construction")
     env, cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
     _phase("manager_based_environment_construction", "completed")
-    return env, cfg, torch, external_task_camera_plan
+    return env, cfg, torch, external_task_camera_plan, overview_camera_plan
 
 
 def _preflight_environment_imports() -> dict[str, str]:
@@ -1198,7 +1212,13 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         _phase("runtime_import_preflight", "completed")
         _phase("environment_build")
         phase_started = time.monotonic()
-        env, cfg, torch, external_task_camera_plan = _build_environment(runtime, args)
+        (
+            env,
+            cfg,
+            torch,
+            external_task_camera_plan,
+            overview_camera_plan,
+        ) = _build_environment(runtime, args)
         timings_seconds["environment_build"] = round(time.monotonic() - phase_started, 6)
         log.flush()
         _phase("environment_build", "completed")
@@ -1359,7 +1379,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         )
         camera_retention_started = time.monotonic()
         camera_rows = []
-        for camera_name in ("external_camera", "wrist_camera"):
+        for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
             camera_rows.append(
                 _save_camera(
                     output,
@@ -1789,7 +1809,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         "end_effector_body": end_effector_name,
                     }
                 )
-                for camera_name in ("external_camera", "wrist_camera"):
+                for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
                     approach_frames.append(
                         _save_camera(
                             output,
@@ -1836,6 +1856,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         policy_episode: dict[str, Any] | None = None
         policy_episode_error: str | None = None
         policy_episode_skipped_reason: str | None = None
+        control_episode: dict[str, Any] | None = None
+        control_episode_error: str | None = None
+        controls_requested = str(
+            os.environ.get("BLUEPRINT_ADP009D_CONTROLS") or ""
+        ).strip().lower() in {"1", "true", "yes"}
         episode_start_restore_receipts: list[dict[str, Any]] = []
         candidate_ids = [
             part.strip()
@@ -1843,14 +1868,14 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             if part.strip()
         ]
         candidate_id = candidate_ids[0] if candidate_ids else ""
-        if not candidate_ids:
+        if not candidate_ids and not controls_requested:
             policy_episode_skipped_reason = "no_policy_candidate_bound"
         elif gripper_probe.get("status") != "measured":
             policy_episode_skipped_reason = f"gripper_convention_{gripper_probe.get('status')}"
         elif episode_start_selection.get("status") != "ready":
             policy_episode_skipped_reason = "wrist_observable_episode_start_not_ready"
         if (
-            candidate_ids
+            (candidate_ids or controls_requested)
             and gripper_probe.get("status") == "measured"
             and episode_start_selection.get("status") == "ready"
         ):
@@ -1859,6 +1884,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             try:
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
                 from adp009d_droid_action_execution import GripperConvention
+                from adp009d_control_episode import run_required_controls
                 from adp009d_episode_batch import (
                     run_episode_batch,
                     summarize_candidate_batches,
@@ -1965,6 +1991,57 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 # as a policy that chose to do nothing.
                 _restore_wrist_observable_episode_start()
 
+                def _scripted_pose_action_callback(
+                    *,
+                    target_position_world_m,
+                    target_quaternion_world_xyzw,
+                    gripper_command,
+                    max_joint_delta_rad,
+                ):
+                    """One bounded native differential-IK action for a control phase."""
+
+                    base_pose = _to_torch(robot.data.root_pose_w)[0, :7]
+                    position_base, quaternion_base = pose_world_to_base(
+                        position_world=target_position_world_m,
+                        quaternion_world_xyzw=target_quaternion_world_xyzw,
+                        base_position_world=[float(v) for v in base_pose[:3]],
+                        base_quaternion_world_xyzw=[float(v) for v in base_pose[3:7]],
+                    )
+                    command = torch.tensor(
+                        [position_base + quaternion_base],
+                        device=env.unwrapped.device,
+                        dtype=torch.float32,
+                    )
+                    controller.reset()
+                    controller.set_command(command)
+                    jacobian = _to_torch(robot.root_view.get_jacobians())[
+                        :, jacobian_index, :, arm_joint_ids
+                    ]
+                    ee_pose_w = _to_torch(robot.data.body_pose_w)[:, body_index]
+                    root_pose_w = _to_torch(robot.data.root_pose_w)
+                    ee_pos_b, ee_quat_b = subtract_frame_transforms(
+                        root_pose_w[:, 0:3],
+                        root_pose_w[:, 3:7],
+                        ee_pose_w[:, 0:3],
+                        ee_pose_w[:, 3:7],
+                    )
+                    current_arm = _to_torch(robot.data.joint_pos)[:, arm_joint_ids]
+                    joint_target = controller.compute(
+                        ee_pos_b,
+                        ee_quat_b,
+                        jacobian,
+                        current_arm,
+                    )
+                    bounded_target = current_arm + torch.clamp(
+                        joint_target - current_arm,
+                        -float(max_joint_delta_rad),
+                        float(max_joint_delta_rad),
+                    )
+                    scripted_action = torch.zeros_like(action)
+                    scripted_action[:, :7] = bounded_target
+                    scripted_action[:, 7] = float(gripper_command)
+                    return [float(v) for v in scripted_action[0]]
+
                 adapter = IsaacEpisodeAdapter(
                     env=env,
                     robot=robot,
@@ -1979,6 +2056,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         gripper_probe["finger_separation_m"][str(gripper_probe["open_command"])]
                     ),
                     reset_callback=_restore_wrist_observable_episode_start,
+                    simulation_step_seconds=float(cfg.sim.dt * cfg.decimation),
+                    scripted_pose_action_callback=_scripted_pose_action_callback,
                 )
                 convention = GripperConvention(
                     closed_command=float(gripper_probe["closed_command"]),
@@ -2041,9 +2120,65 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     return _OpenPiEpisodeClient("127.0.0.1", int(receipt["port"]))
 
                 out_dir = Path(os.environ["BLUEPRINT_ADP009D_OUTPUT_DIR"])
+                controls_admitted = True
+                if controls_requested:
+                    _phase("scenario_controls")
+                    try:
+                        scenario_instance_path = (
+                            runtime / "adp009d_scenario_instance.v1.json"
+                        )
+                        if not scenario_instance_path.is_file():
+                            raise RuntimeError(
+                                "adp009d_control_scenario_instance_missing"
+                            )
+                        scenario_instance = json.loads(
+                            scenario_instance_path.read_text(encoding="utf-8")
+                        )
+                        control_plan_path = runtime / "adp009d_control_plan.v1.json"
+                        if not control_plan_path.is_file():
+                            raise RuntimeError("adp009d_control_plan_missing")
+                        expected_control_plan = json.loads(
+                            control_plan_path.read_text(encoding="utf-8")
+                        )
+                        control_episode = run_required_controls(
+                            environment=adapter,
+                            scenario_instance=scenario_instance,
+                            expected_control_plan=expected_control_plan,
+                            gripper_open_command=convention.open_command,
+                            gripper_closed_command=convention.closed_command,
+                            output_dir=(
+                                out_dir
+                                / "controls"
+                                / str(scenario_instance["cell_id"])
+                            ),
+                        )
+                        controls_admitted = (
+                            control_episode.get("cell_admitted_for_policy_execution")
+                            is True
+                        )
+                        _phase(
+                            "scenario_controls",
+                            "completed" if controls_admitted else "blocked",
+                        )
+                    except Exception as exc:  # noqa: BLE001 - evidence, not policy
+                        control_episode_error = f"{type(exc).__name__}: {exc}"
+                        controls_admitted = False
+                        _phase("scenario_controls", "blocked")
                 batches = []
                 for bound_candidate in candidate_ids:
                     _phase(f"policy_batch_{bound_candidate}")
+                    if not controls_admitted:
+                        batches.append(
+                            {
+                                "candidate_id": bound_candidate,
+                                "status": "blocked",
+                                "blockers": [
+                                    "scenario_controls_not_admitted_before_policy"
+                                ],
+                            }
+                        )
+                        _phase(f"policy_batch_{bound_candidate}", "blocked")
+                        continue
                     receipt_path = out_dir / (
                         f"adp009d_policy_server_receipt.{bound_candidate}.json"
                     )
@@ -2129,6 +2264,18 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         )
         if candidate_ids and episode_start_selection.get("status") != "ready":
             episode_blockers.extend(episode_start_selection.get("blockers") or [])
+        if controls_requested:
+            if control_episode_error:
+                episode_blockers.append("scenario_controls_runtime_error")
+            elif control_episode is None:
+                episode_blockers.append("scenario_controls_receipt_missing")
+            elif control_episode.get("cell_admitted_for_policy_execution") is not True:
+                episode_blockers.extend(
+                    control_episode.get("policy_execution_blockers")
+                    or ["scenario_controls_not_admitted"]
+                )
+            if episode_start_selection.get("status") != "ready":
+                episode_blockers.extend(episode_start_selection.get("blockers") or [])
         return {
             "schema_version": "adp009d_native_microcheck.v1",
             "status": "completed" if not episode_blockers else "blocked",
@@ -2163,6 +2310,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "canonical_hold_object_stability": object_stability,
             "camera_frames": camera_rows,
             "external_task_camera_plan": external_task_camera_plan,
+            "overview_camera_plan": overview_camera_plan,
             "camera_warmup_frames": 40,
             "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": True,
@@ -2185,6 +2333,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "policy_episode": policy_episode,
             "policy_episode_error": policy_episode_error,
             "policy_episode_skipped_reason": policy_episode_skipped_reason,
+            "controls_requested": controls_requested,
+            "control_episode": control_episode,
+            "control_episode_error": control_episode_error,
             "wrist_episode_start_selection": episode_start_selection,
             "wrist_episode_start_restore_receipts": episode_start_restore_receipts,
             "policy_candidate_bound": candidate_id or None,
@@ -2197,7 +2348,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             # Both follow the episodes rather than asserting their absence: a
             # run that queried two policies and read their outcomes must not
             # keep reporting that it did neither.
-            "candidate_policy_queried": bool((policy_episode or {}).get("batches")),
+            "candidate_policy_queried": any(
+                int(batch.get("episodes_scored") or 0) > 0
+                or int(batch.get("episodes_failed") or 0) > 0
+                for batch in ((policy_episode or {}).get("batches") or [])
+            ),
             "candidate_outcomes_accessed": bool(
                 (policy_episode or {}).get("comparison", {}).get("ranking")
             ),

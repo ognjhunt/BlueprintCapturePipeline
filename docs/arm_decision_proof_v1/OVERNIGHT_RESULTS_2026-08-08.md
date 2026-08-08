@@ -59,7 +59,8 @@ PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode
 .venv/bin/ruff check src/ tests/
 ```
 
-The most recent code commit passed `941 passed, 1 skipped`; Ruff was clean.
+The previous code commit passed `941 passed, 1 skipped`. The scenario-control
+and overview-camera change passed `953 passed, 1 skipped`; Ruff was clean.
 
 ## Scientific findings through v84
 
@@ -220,13 +221,53 @@ All completed paid attempts were followed by an API provider-zero check. v85
 was launched from provider zero as the sole active instance; after teardown a
 fresh Vast API query returned `active: 0 []`.
 
+## Scenario-family and control-harness progress after v85
+
+Commit `46e5d2e99` froze a checked, policy-neutral 128-cell scenario suite:
+16 cells in each of canonical, placement/approach, illumination,
+camera/sensor, physics, visual/material cousin, geometric cousin, and held-out
+composed families. Every resolved cell binds identical seeds and parameters
+for the zero-action negative, deterministic scripted positive, `pi05_droid`,
+and `groot_n17_droid`. The suite discloses the earlier canonical canaries rather
+than pretending they occurred after the freeze. Its maximum is 512 episodes
+and 19 GPU-hours; this is an upper bound, not authority to launch all cells.
+
+The reusable control execution path is now implemented locally through the
+same native eight-dimensional action seam as the learned candidates. It:
+
+- realizes zero joint velocity as a hold of the observed absolute joints;
+- runs a fixed differential-IK pregrasp, descend, grasp, lift, transport,
+  place, release, retreat, and settle program;
+- scores both controls only from deterministic simulator state;
+- blocks candidate execution when the negative completes the task, the
+  positive fails to place, media is incomplete, or the shipped plan/instance
+  binding changes; and
+- retains action, state, contact-gap, calibration, timestamp, manifest, and
+  portable H.264 evidence without querying a learned policy.
+
+The manipulation visual-evidence profile now requires a third fixed overview
+camera for every new episode. External and wrist remain the only policy-input
+views; overview is explicitly review-only and cannot grade the episode. All
+three calibrated lossless streams are sampled throughout motion, while the
+manifest separately counts exact policy-input frames and review samples. This
+is a reusable episode-evidence contract, not a one-off screenshot workaround.
+
+No paid control result exists yet. Cost for this implementation/freeze stage is
+`$0`; a local fake-environment positive is test evidence for orchestration only
+and is not a simulator task success.
+
 ## What remains open
 
 - The P4 result is intentionally underpowered and single-cell. Its comparison
-  receipt remains `supports_policy_ranking: false` until the frozen
-  scenario-family matrix, deterministic zero/scripted controls, and a paired
-  sample size for stated power are run. The tied null means this rehearsal does
-  not yet change the next scarce physical-test decision.
+  receipt remains `supports_policy_ranking: false` until the native scripted
+  positive succeeds on the canonical cell, both controls run on every scored
+  cell, and a paired sample size for stated power is executed. The tied null
+  means this rehearsal does not yet change the next scarce physical-test
+  decision.
+- The noncanonical suite cells are digest-resolved, but their lighting, camera,
+  physics, placement, and cousin parameters still need a native scene
+  application receipt before those cells may execute. A canonical control run
+  cannot establish that broader application path.
 - The wider Arm Decision Proof still requires one fresh Raw V3.2 unseen partner
   workcell capture; qualified metric registration, task physics, and
   observation-domain match; prospective preregistration of exactly two frozen
@@ -235,6 +276,8 @@ fresh Vast API query returned `active: 0 []`.
 
 ## Single next action
 
-Freeze the scenario-family matrix and add its zero-action and deterministic
-scripted-positive controls to the reusable ADP-009D harness before spending on
-another learned-policy episode.
+From provider zero, run only the checked-in canonical scenario's zero-action
+negative and deterministic scripted-positive control pair. Do not query either
+learned policy. If the scripted positive does not place the exact SimReady can,
+retain the overview/external/wrist videos and typed receipt, tear down to
+provider zero, and fix the harness locally before any learned-policy spend.

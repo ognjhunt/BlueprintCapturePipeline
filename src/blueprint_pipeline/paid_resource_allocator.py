@@ -1108,6 +1108,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     gpu.add_argument(
+        "--adp009d-controls",
+        action="store_true",
+        help=(
+            "Run the zero-action and deterministic scripted-positive controls "
+            "before admitting policy execution."
+        ),
+    )
+    gpu.add_argument("--adp009d-scenario-instance", default=None)
+    gpu.add_argument(
         "--adp009d-authorize-gated-backbone",
         action="store_true",
         help=(
@@ -2426,6 +2435,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
+            if args.adp009d_controls and not args.adp009d_scenario_instance:
+                blockers.append("adp009d_control_scenario_instance_missing")
             selected_candidates = {
                 item.strip()
                 for item in str(args.adp009d_policy_candidate or "").split(",")
@@ -2473,6 +2484,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         harness_manifest_path=args.adp009d_harness_manifest,
                         implementation_commit=control_identity["orchestrator_source_commit"],
                         policy_candidate_id=args.adp009d_policy_candidate,
+                        run_controls=args.adp009d_controls,
+                        scenario_instance_path=args.adp009d_scenario_instance,
                         aura_particlefield_path=args.adp009d_aura_particlefield,
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -2488,6 +2501,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prepared_bundle.get("input_digest") if prepared_bundle else None
                 ),
                 "candidate_policy_queried": False,
+                "controls_requested": bool(args.adp009d_controls),
+                "scenario_instance_digest": (
+                    prepared_bundle.get("scenario_instance_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "control_plan_digest": (
+                    prepared_bundle.get("control_plan_digest")
+                    if prepared_bundle
+                    else None
+                ),
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,

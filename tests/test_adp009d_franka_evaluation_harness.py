@@ -538,6 +538,13 @@ def test_checked_in_scenario_suite_is_frozen_bounded_and_materializable(
         and instance["resolved_parameters"]["target_y_m"] == -3.4074919
         for instance in materialized.instances
     )
+    checked_canonical = _load("adp009d_canonical_scenario_instance.v1.json")
+    canonical = next(
+        instance
+        for instance in materialized.instances
+        if instance["cell_id"] == "canonical_anchor.seed_2026080600"
+    )
+    assert canonical == checked_canonical
 
 
 def test_scenario_suite_rejects_missing_cousin_receipt(

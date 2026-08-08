@@ -2,7 +2,7 @@
   "schema_version": "adp009d_scenario_suite.v1",
   "program_id": "arm-decision-proof-v1",
   "freeze_status": "frozen_after_canonical_canary_before_scenario_evaluation",
-  "harness_digest": "sha256:39c4631574d336aea1d1d3b2c0512f303d34a6b09e9b022844bb4dc15b3b63bc",
+  "harness_digest": "sha256:b4640374abcb6fe8819bb193e057fbcb0e4ceb0faebd8ea25ebdc430fb321fc7",
   "prior_canary_disclosure": {
     "scope": "canonical_smoke_canaries_only",
     "retained_receipt_digests": [
@@ -274,5 +274,5 @@
     "analysis_frozen_before_learned_outcomes": false,
     "analysis_frozen_before_scenario_evaluation_outcomes": true
   },
-  "suite_digest": "sha256:b0122bcae2bde1767b26fd7876880f4245f05cbe5ff8a975c3af85cada05cdb0"
+  "suite_digest": "sha256:de19e6b6f098ff9dc1a10facb3119eca24d05f0e37998a93e352b0e16c2fef0b"
 }

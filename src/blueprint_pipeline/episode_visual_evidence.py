@@ -26,6 +26,8 @@ MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION = (
 MULTICAMERA_VISUAL_EVIDENCE_SCHEMA_VERSION = (
     "adp_multicamera_episode_visual_evidence.v1"
 )
+MANIPULATION_EVALUATION_CAMERA_IDS = ("external", "wrist", "overview")
+MANIPULATION_REVIEW_ONLY_CAMERA_IDS = ("overview",)
 
 _CAMERA_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
@@ -74,7 +76,7 @@ def persist_observation_frame(
         raise ValueError(f"observation_frame_dtype_not_uint8:{array.dtype}")
     if array.ndim != 3 or array.shape[2] != 3:
         raise ValueError(f"observation_frame_shape_not_rgb:{array.shape}")
-    if kind not in {"policy-input", "terminal-observation"}:
+    if kind not in {"policy-input", "review-sample", "terminal-observation"}:
         raise ValueError("observation_frame_kind_invalid")
     frame_dir = output_dir / "media" / episode_id / "frames"
     frame_dir.mkdir(parents=True, exist_ok=True)
@@ -212,7 +214,7 @@ def persist_camera_observation_frame(
         raise ValueError(f"observation_frame_shape_not_rgb:{array.shape}")
     if not array.flags.c_contiguous:
         array = np.ascontiguousarray(array)
-    if kind not in {"policy-input", "terminal-observation"}:
+    if kind not in {"policy-input", "review-sample", "terminal-observation"}:
         raise ValueError("observation_frame_kind_invalid")
     checked_calibration = _validate_camera_calibration(
         calibration, width=int(array.shape[1]), height=int(array.shape[0])
@@ -587,12 +589,17 @@ def validate_multicamera_frame_manifest(
     if not isinstance(observations, list) or not observations:
         errors.append("multicamera_frame_manifest_policy_inputs_missing")
         observations = []
+    review_observations = checked.get("review_observations") or []
+    if not isinstance(review_observations, list):
+        errors.append("multicamera_frame_manifest_review_observations_invalid")
+        review_observations = []
     terminal = checked.get("terminal_observation")
-    all_observations = [*observations]
+    all_observations = [*observations, *review_observations]
     if isinstance(terminal, Mapping):
         all_observations.append(dict(terminal))
     else:
         errors.append("multicamera_frame_manifest_terminal_missing")
+    all_observations.sort(key=lambda row: int(row.get("observation_index", -1)))
 
     expected_index = 0
     previous_timestamp = -1
@@ -603,7 +610,7 @@ def validate_multicamera_frame_manifest(
         expected_index += 1
         timestamp_ns = observation.get("timestamp_ns")
         simulation_time_s = observation.get("simulation_time_s")
-        if not isinstance(timestamp_ns, int) or timestamp_ns <= previous_timestamp:
+        if not isinstance(timestamp_ns, int) or timestamp_ns < previous_timestamp:
             errors.append("multicamera_frame_manifest_timestamp_not_monotonic")
         else:
             previous_timestamp = timestamp_ns
@@ -675,8 +682,10 @@ def finalize_multicamera_visual_evidence(
     episode_id: str,
     identity: Mapping[str, Any],
     policy_input_observations: Sequence[Mapping[str, Any]],
+    review_observations: Sequence[Mapping[str, Any]] = (),
     terminal_observation: Mapping[str, Any],
     required_camera_ids: Sequence[str] = ("external", "wrist"),
+    review_only_camera_ids: Sequence[str] = (),
     frames_per_second: float = 4.0,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Seal exact multi-camera inputs and one review video per camera."""
@@ -688,18 +697,26 @@ def finalize_multicamera_visual_evidence(
         raise ValueError("multicamera_visual_evidence_external_wrist_required")
     if any(not _CAMERA_ID.fullmatch(camera_id) for camera_id in required):
         raise ValueError("multicamera_visual_evidence_camera_id_invalid")
+    review_only = sorted(set(str(camera_id) for camera_id in review_only_camera_ids))
+    if not set(review_only).issubset(required):
+        raise ValueError("multicamera_review_only_camera_not_required")
 
     inputs = [dict(row) for row in policy_input_observations]
+    review = [dict(row) for row in review_observations]
     terminal = dict(terminal_observation)
     manifest: dict[str, Any] = {
         "schema_version": MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION,
         "episode_id": episode_id,
         "identity": _json_mapping(identity, error="multicamera_identity_not_json_mapping"),
         "required_camera_ids": required,
+        "review_only_camera_ids": review_only,
         "policy_input_observations": inputs,
+        "review_observations": review,
         "terminal_observation": terminal,
         "policy_input_observation_count": len(inputs),
-        "policy_input_frame_count": len(inputs) * len(required),
+        "policy_input_frame_count": len(inputs) * len(set(required) - set(review_only)),
+        "review_observation_count": len(review),
+        "review_frame_count": len(review) * len(required),
         "lossless_policy_inputs_are_authoritative": True,
         "derived_videos_are_human_review_convenience": True,
         "camera_calibration_and_timestamps_retained_per_observation": True,
@@ -722,7 +739,9 @@ def finalize_multicamera_visual_evidence(
             "size_bytes": manifest_path.stat().st_size,
         }
     ]
-    all_observations = [*inputs, terminal]
+    all_observations = sorted(
+        [*inputs, *review, terminal], key=lambda row: int(row["observation_index"])
+    )
     for observation in all_observations:
         for camera_id, frame in observation["views"].items():
             artifacts.append(
@@ -730,6 +749,8 @@ def finalize_multicamera_visual_evidence(
                     "role": (
                         "policy_input_camera_frame"
                         if observation["kind"] == "policy-input"
+                        else "review_camera_frame"
+                        if observation["kind"] == "review-sample"
                         else "terminal_observation_camera_frame"
                     ),
                     "camera_id": camera_id,
@@ -783,8 +804,11 @@ def finalize_multicamera_visual_evidence(
         "human_review_available": True,
         "frame_manifest_digest": manifest["frame_manifest_digest"],
         "policy_input_observation_count": len(inputs),
-        "policy_input_frame_count": len(inputs) * len(required),
+        "policy_input_frame_count": len(inputs) * len(set(required) - set(review_only)),
+        "review_observation_count": len(review),
+        "review_frame_count": len(review) * len(required),
         "required_camera_ids": required,
+        "review_only_camera_ids": review_only,
         "terminal_observation_present": True,
         "videos": videos,
         "vlm_grading_used": False,
@@ -793,11 +817,39 @@ def finalize_multicamera_visual_evidence(
     return visual, artifacts
 
 
+def finalize_manipulation_evaluation_visual_evidence(
+    *,
+    output_dir: Path,
+    episode_id: str,
+    identity: Mapping[str, Any],
+    policy_input_observations: Sequence[Mapping[str, Any]],
+    review_observations: Sequence[Mapping[str, Any]] = (),
+    terminal_observation: Mapping[str, Any],
+    frames_per_second: float = 4.0,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Seal the platform manipulation profile, including its overview video."""
+
+    return finalize_multicamera_visual_evidence(
+        output_dir=output_dir,
+        episode_id=episode_id,
+        identity=identity,
+        policy_input_observations=policy_input_observations,
+        review_observations=review_observations,
+        terminal_observation=terminal_observation,
+        required_camera_ids=MANIPULATION_EVALUATION_CAMERA_IDS,
+        review_only_camera_ids=MANIPULATION_REVIEW_ONLY_CAMERA_IDS,
+        frames_per_second=frames_per_second,
+    )
+
+
 __all__ = [
     "FRAME_MANIFEST_SCHEMA_VERSION",
+    "MANIPULATION_EVALUATION_CAMERA_IDS",
+    "MANIPULATION_REVIEW_ONLY_CAMERA_IDS",
     "MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION",
     "MULTICAMERA_VISUAL_EVIDENCE_SCHEMA_VERSION",
     "VISUAL_EVIDENCE_SCHEMA_VERSION",
+    "finalize_manipulation_evaluation_visual_evidence",
     "finalize_multicamera_visual_evidence",
     "finalize_visual_evidence",
     "persist_camera_observation_frame",

@@ -91,12 +91,16 @@ except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
 try:  # flat provider-bundle layout
     from episode_visual_evidence import (
+        finalize_manipulation_evaluation_visual_evidence,
         finalize_visual_evidence,
+        persist_multicamera_observation,
         persist_observation_frame,
     )
 except ModuleNotFoundError:  # repository package
     from .episode_visual_evidence import (
+        finalize_manipulation_evaluation_visual_evidence,
         finalize_visual_evidence,
+        persist_multicamera_observation,
         persist_observation_frame,
     )
 
@@ -110,6 +114,7 @@ ARM_MOTION_EPSILON_RAD = 1e-6
 # A policy that has not moved the can within this many queries has failed the
 # episode; the cap bounds paid GPU time and is recorded rather than implicit.
 DEFAULT_MAX_POLICY_QUERIES = 60
+EVALUATION_REVIEW_FRAME_STRIDE_STEPS = 8
 
 BLOCKER_NO_SETTLE_WINDOW = "policy_episode_settle_window_not_reached"
 BLOCKER_GRIPPER_PRESENT_IN_SETTLE = "policy_episode_gripper_present_during_settle"
@@ -207,6 +212,44 @@ def _retain_policy_input_sample(
     if history and history[-1][0] == int(step_index):
         history.pop()
     history.append((int(step_index), dict(inputs)))
+
+
+def _persist_evaluation_camera_observation(
+    environment: EpisodeEnvironment,
+    *,
+    output_dir: Path,
+    episode_id: str,
+    observation_index: int,
+    kind: str,
+) -> dict[str, Any]:
+    image_reader = getattr(environment, "read_evaluation_camera_inputs", None)
+    metadata_reader = getattr(environment, "read_control_observation_metadata", None)
+    if not callable(image_reader) or not callable(metadata_reader):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:overview_camera_contract_missing"]
+        )
+    images = dict(image_reader())
+    missing = {"external", "wrist", "overview"} - set(images)
+    if missing:
+        raise PolicyEpisodeError(
+            [
+                f"{BLOCKER_ENVIRONMENT_CONTRACT}:evaluation_camera_missing:{camera_id}"
+                for camera_id in missing
+            ]
+        )
+    metadata = dict(metadata_reader())
+    return persist_multicamera_observation(
+        images,
+        output_dir=output_dir,
+        episode_id=episode_id,
+        observation_index=observation_index,
+        kind=kind,
+        timestamp_ns=int(metadata["timestamp_ns"]),
+        simulation_time_s=float(metadata["simulation_time_s"]),
+        calibrations=metadata["calibrations"],
+        source_devices=metadata["source_devices"],
+        synchronizations=metadata["synchronizations"],
+    )
 
 
 def _historical_camera_rgb(
@@ -439,6 +482,12 @@ def run_policy_episode(
         else None
     )
     retained_policy_frames: list[dict[str, Any]] = []
+    retained_multicamera_observations: list[dict[str, Any]] = []
+    retained_review_observations: list[dict[str, Any]] = []
+    media_observation_index = 0
+    multicamera_evaluation_available = callable(
+        getattr(environment, "read_evaluation_camera_inputs", None)
+    ) and callable(getattr(environment, "read_control_observation_metadata", None))
     policy_input_history: deque[tuple[int, Mapping[str, Any]]] = deque(
         maxlen=GROOT_HISTORY_STEPS + 1
     )
@@ -511,15 +560,29 @@ def run_policy_episode(
 
         if media_root is not None and episode_id is not None:
             phase_started = time.monotonic()
-            retained_policy_frames.append(
-                persist_observation_frame(
-                    _policy_view_composite(observation, candidate_id=candidate_id),
-                    output_dir=media_root,
-                    episode_id=episode_id,
-                    frame_index=query_index,
-                    kind="policy-input",
+            if multicamera_evaluation_available:
+                retained_multicamera_observations.append(
+                    _persist_evaluation_camera_observation(
+                        environment,
+                        output_dir=media_root,
+                        episode_id=episode_id,
+                        observation_index=media_observation_index,
+                        kind="policy-input",
+                    )
                 )
-            )
+                media_observation_index += 1
+            else:
+                retained_policy_frames.append(
+                    persist_observation_frame(
+                        _policy_view_composite(
+                            observation, candidate_id=candidate_id
+                        ),
+                        output_dir=media_root,
+                        episode_id=episode_id,
+                        frame_index=query_index,
+                        kind="policy-input",
+                    )
+                )
             timings_seconds["media_persistence"] += time.monotonic() - phase_started
 
         phase_started = time.monotonic()
@@ -582,6 +645,26 @@ def run_policy_episode(
                 }
             )
             step_index += 1
+            if (
+                media_root is not None
+                and episode_id is not None
+                and multicamera_evaluation_available
+                and step_index % EVALUATION_REVIEW_FRAME_STRIDE_STEPS == 0
+            ):
+                phase_started = time.monotonic()
+                retained_review_observations.append(
+                    _persist_evaluation_camera_observation(
+                        environment,
+                        output_dir=media_root,
+                        episode_id=episode_id,
+                        observation_index=media_observation_index,
+                        kind="review-sample",
+                    )
+                )
+                media_observation_index += 1
+                timings_seconds["media_persistence"] += (
+                    time.monotonic() - phase_started
+                )
             if candidate_id == "groot_n17_droid":
                 phase_started = time.monotonic()
                 post_step_inputs = environment.read_policy_inputs()
@@ -639,6 +722,26 @@ def run_policy_episode(
             time.monotonic() - phase_started
         )
         step_index += 1
+        if (
+            media_root is not None
+            and episode_id is not None
+            and multicamera_evaluation_available
+            and step_index % EVALUATION_REVIEW_FRAME_STRIDE_STEPS == 0
+        ):
+            phase_started = time.monotonic()
+            retained_review_observations.append(
+                _persist_evaluation_camera_observation(
+                    environment,
+                    output_dir=media_root,
+                    episode_id=episode_id,
+                    observation_index=media_observation_index,
+                    kind="review-sample",
+                )
+            )
+            media_observation_index += 1
+            timings_seconds["media_persistence"] += (
+                time.monotonic() - phase_started
+            )
         if candidate_id == "groot_n17_droid":
             phase_started = time.monotonic()
             post_step_inputs = environment.read_policy_inputs()
@@ -675,61 +778,88 @@ def run_policy_episode(
     media_artifacts: list[dict[str, Any]] = []
     if media_root is not None and episode_id is not None:
         phase_started = time.monotonic()
-        terminal_inputs = environment.read_policy_inputs()
-        _retain_policy_input_sample(
-            policy_input_history, step_index=step_index, inputs=terminal_inputs
-        )
-        terminal_camera_rgb = {
-            view: terminal_inputs[view]
-            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-            if view in terminal_inputs
-        }
-        try:
-            terminal_policy_observation = build_droid_observation(
-                candidate_id=candidate_id,
-                camera_rgb=terminal_camera_rgb,
-                joint_position=terminal_inputs["joint_position"],
-                gripper_position=terminal_inputs["gripper_position"],
-                prompt=prompt,
-                eef_9d=terminal_inputs.get("eef_9d"),
-                historical_camera_rgb=_historical_camera_rgb(
-                    policy_input_history,
-                    candidate_id=candidate_id,
-                    step_index=step_index,
-                ),
+        if multicamera_evaluation_available:
+            terminal_observation = _persist_evaluation_camera_observation(
+                environment,
+                output_dir=media_root,
+                episode_id=episode_id,
+                observation_index=media_observation_index,
+                kind="terminal-observation",
             )
-        except KeyError as exc:
-            raise PolicyEpisodeError(
-                [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{exc.args[0]}_missing"]
-            ) from exc
-        terminal_frame = persist_observation_frame(
-            _policy_view_composite(
-                terminal_policy_observation, candidate_id=candidate_id
-            ),
-            output_dir=media_root,
-            episode_id=episode_id,
-            frame_index=len(retained_policy_frames),
-            kind="terminal-observation",
-        )
-        visual_evidence, media_artifacts = finalize_visual_evidence(
-            output_dir=media_root,
-            episode_id=episode_id,
-            identity={
-                "candidate_id": candidate_id,
-                "prompt": str(prompt),
-                "policy_input_view_order": (
-                    [
-                        GROOT_HISTORICAL_VIEW_KEYS[view]
-                        for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-                    ]
-                    if candidate_id == "groot_n17_droid"
-                    else []
+            visual_evidence, media_artifacts = (
+                finalize_manipulation_evaluation_visual_evidence(
+                    output_dir=media_root,
+                    episode_id=episode_id,
+                    identity={
+                        "candidate_id": candidate_id,
+                        "prompt": str(prompt),
+                        "policy_input_camera_ids": ["external", "wrist"],
+                        "review_only_camera_ids": ["overview"],
+                        "overview_camera_used_by_policy": False,
+                        "overview_camera_used_by_grader": False,
+                    },
+                    policy_input_observations=retained_multicamera_observations,
+                    review_observations=retained_review_observations,
+                    terminal_observation=terminal_observation,
                 )
-                + list(CANDIDATE_REQUIRED_VIEWS[candidate_id]),
-            },
-            policy_input_frames=retained_policy_frames,
-            terminal_observation=terminal_frame,
-        )
+            )
+        else:
+            terminal_inputs = environment.read_policy_inputs()
+            _retain_policy_input_sample(
+                policy_input_history, step_index=step_index, inputs=terminal_inputs
+            )
+            terminal_camera_rgb = {
+                view: terminal_inputs[view]
+                for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                if view in terminal_inputs
+            }
+            try:
+                terminal_policy_observation = build_droid_observation(
+                    candidate_id=candidate_id,
+                    camera_rgb=terminal_camera_rgb,
+                    joint_position=terminal_inputs["joint_position"],
+                    gripper_position=terminal_inputs["gripper_position"],
+                    prompt=prompt,
+                    eef_9d=terminal_inputs.get("eef_9d"),
+                    historical_camera_rgb=_historical_camera_rgb(
+                        policy_input_history,
+                        candidate_id=candidate_id,
+                        step_index=step_index,
+                    ),
+                )
+            except KeyError as exc:
+                raise PolicyEpisodeError(
+                    [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{exc.args[0]}_missing"]
+                ) from exc
+            terminal_frame = persist_observation_frame(
+                _policy_view_composite(
+                    terminal_policy_observation, candidate_id=candidate_id
+                ),
+                output_dir=media_root,
+                episode_id=episode_id,
+                frame_index=len(retained_policy_frames),
+                kind="terminal-observation",
+            )
+            visual_evidence, media_artifacts = finalize_visual_evidence(
+                output_dir=media_root,
+                episode_id=episode_id,
+                identity={
+                    "candidate_id": candidate_id,
+                    "prompt": str(prompt),
+                    "policy_input_view_order": (
+                        [
+                            GROOT_HISTORICAL_VIEW_KEYS[view]
+                            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                        ]
+                        if candidate_id == "groot_n17_droid"
+                        else []
+                    )
+                    + list(CANDIDATE_REQUIRED_VIEWS[candidate_id]),
+                    "legacy_media_profile": True,
+                },
+                policy_input_frames=retained_policy_frames,
+                terminal_observation=terminal_frame,
+            )
         timings_seconds["media_persistence"] += time.monotonic() - phase_started
 
     timings_seconds = {

@@ -47,6 +47,14 @@ CAMERA_VIEW_BINDING = {
     "external_camera": DROID_EXTERIOR_VIEW_1,
     "wrist_camera": DROID_WRIST_VIEW,
 }
+# Review-only cameras never enter ``read_policy_inputs``.  They are retained
+# alongside the policy views so a human can understand the whole movement.
+REVIEW_CAMERA_BINDING = {"external_camera_2": "overview"}
+EVALUATION_CAMERA_BINDING = {
+    "external_camera": "external",
+    "wrist_camera": "wrist",
+    **REVIEW_CAMERA_BINDING,
+}
 # The two bodies whose separation is the gripper width, matching the
 # convention probe so both read the same physical quantity.
 FINGER_BODIES = ("left_inner_finger", "right_inner_finger")
@@ -143,6 +151,8 @@ class IsaacEpisodeAdapter:
         gripper_closed_width_m: float,
         gripper_open_width_m: float,
         reset_callback: Callable[[], None] | None = None,
+        simulation_step_seconds: float | None = None,
+        scripted_pose_action_callback: Callable[..., Sequence[float]] | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -153,6 +163,13 @@ class IsaacEpisodeAdapter:
         self._gripper_closed_width_m = float(gripper_closed_width_m)
         self._gripper_open_width_m = float(gripper_open_width_m)
         self._reset_callback = reset_callback
+        self._simulation_step_seconds = (
+            None
+            if simulation_step_seconds is None
+            else float(simulation_step_seconds)
+        )
+        self._scripted_pose_action_callback = scripted_pose_action_callback
+        self._control_step_index = 0
         if (
             not math.isfinite(self._gripper_closed_width_m)
             or not math.isfinite(self._gripper_open_width_m)
@@ -185,6 +202,7 @@ class IsaacEpisodeAdapter:
             self._reset_callback()
         else:
             self._env.reset(seed=self._reset_seed)
+        self._control_step_index = 0
 
     def joint_limits(self) -> list[list[float]]:
         limits = self._to_torch(self._robot.data.joint_limits)[0, :ARM_JOINT_COUNT]
@@ -204,6 +222,26 @@ class IsaacEpisodeAdapter:
         inputs["eef_9d"] = self._eef_9d()
         return inputs
 
+    def read_evaluation_camera_inputs(self) -> dict[str, Any]:
+        """Lossless policy views plus the review-only fixed overview stream."""
+
+        images: dict[str, Any] = {}
+        for camera_name, camera_id in EVALUATION_CAMERA_BINDING.items():
+            try:
+                camera = self._env.unwrapped.scene[camera_name]
+            except (KeyError, TypeError) as exc:
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_evaluation_camera_missing:{camera_id}"]
+                ) from exc
+            output = camera.data.output
+            if "rgb" not in output:
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_camera_rgb_missing:{camera_name}"]
+                )
+            frame = _as_array(self._to_torch(output["rgb"]))[0]
+            images[camera_id] = rgb_from_camera_output(frame)
+        return images
+
     def read_arm_joint_positions(self) -> list[float]:
         joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]
         return [float(value) for value in joints]
@@ -222,6 +260,120 @@ class IsaacEpisodeAdapter:
 
         tensor = torch.tensor([values], device=self._env.unwrapped.device, dtype=torch.float32)
         self._env.step(tensor)
+        self._control_step_index += 1
+
+    def hold_action(self, *, gripper_command: float) -> list[float]:
+        """Realize zero joint velocity in Arena's absolute-position action space."""
+
+        command = float(gripper_command)
+        if not math.isfinite(command):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_hold_gripper_command_invalid"]
+            )
+        return [*self.read_arm_joint_positions(), command]
+
+    def scripted_action_for_pose(
+        self,
+        *,
+        target_position_world_m: Sequence[float],
+        target_quaternion_world_xyzw: Sequence[float],
+        gripper_command: float,
+        max_joint_delta_rad: float,
+    ) -> list[float]:
+        """Resolve one deterministic pose-servo step through the injected native IK."""
+
+        if self._scripted_pose_action_callback is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_scripted_pose_controller_missing"]
+            )
+        values = self._scripted_pose_action_callback(
+            target_position_world_m=[float(v) for v in target_position_world_m],
+            target_quaternion_world_xyzw=[
+                float(v) for v in target_quaternion_world_xyzw
+            ],
+            gripper_command=float(gripper_command),
+            max_joint_delta_rad=float(max_joint_delta_rad),
+        )
+        action = [float(value) for value in values]
+        if len(action) != self._action_dim or not all(
+            math.isfinite(value) for value in action
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_scripted_pose_action_invalid"]
+            )
+        return action
+
+    def read_control_observation_metadata(self) -> dict[str, Any]:
+        """Exact dual-camera calibration and deterministic episode timestamp."""
+
+        if (
+            self._simulation_step_seconds is None
+            or not math.isfinite(self._simulation_step_seconds)
+            or self._simulation_step_seconds <= 0.0
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_simulation_step_seconds_missing"]
+            )
+        calibrations: dict[str, Any] = {}
+        source_devices: dict[str, str] = {}
+        synchronizations: dict[str, dict[str, Any]] = {}
+        for camera_name, camera_id in EVALUATION_CAMERA_BINDING.items():
+            camera = self._env.unwrapped.scene[camera_name]
+            output = camera.data.output
+            if "rgb" not in output:
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_camera_rgb_missing:{camera_name}"]
+                )
+            frame = _as_array(self._to_torch(output["rgb"]))[0]
+            height, width = int(frame.shape[0]), int(frame.shape[1])
+            intrinsic = _as_array(
+                self._to_torch(camera.data.intrinsic_matrices)
+            )[0]
+            position = _as_array(self._to_torch(camera.data.pos_w))[0]
+            quaternion = _as_array(
+                self._to_torch(camera.data.quat_w_opengl)
+            )[0]
+            rotation = rotation_row_major_from_quaternion_xyzw(quaternion)
+            world_from_camera = [
+                [rotation[row * 3 + column] for column in range(3)]
+                + [float(position[row])]
+                for row in range(3)
+            ]
+            world_from_camera.append([0.0, 0.0, 0.0, 1.0])
+            clipping = getattr(getattr(camera, "cfg", None), "spawn", None)
+            clipping_range = getattr(clipping, "clipping_range", None)
+            if (
+                not isinstance(clipping_range, Sequence)
+                or len(clipping_range) != 2
+            ):
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_camera_clipping_range_missing:{camera_name}"]
+                )
+            calibrations[camera_id] = {
+                "camera_model": "pinhole",
+                "intrinsic_matrix": [
+                    [float(value) for value in row] for row in intrinsic
+                ],
+                "world_from_camera": world_from_camera,
+                "resolution": [width, height],
+                "near_m": float(clipping_range[0]),
+                "far_m": float(clipping_range[1]),
+            }
+            source_devices[camera_id] = str(
+                getattr(output["rgb"], "device", self._env.unwrapped.device)
+            )
+            synchronizations[camera_id] = {
+                "host_bytes_ready": True,
+                "method": "environment_step_completed_before_read_only_host_copy",
+            }
+        simulation_time_s = self._control_step_index * self._simulation_step_seconds
+        return {
+            "timestamp_ns": int(round(simulation_time_s * 1_000_000_000)),
+            "simulation_time_s": simulation_time_s,
+            "calibrations": calibrations,
+            "source_devices": source_devices,
+            "synchronizations": synchronizations,
+        }
 
     def read_object_sample(self) -> dict[str, Any]:
         pose = self._to_torch(self._can.data.root_pose_w)[0]

@@ -288,6 +288,70 @@ def test_successful_episode_retains_exact_policy_inputs_and_review_video(
     assert (tmp_path / visual["video"]["relative_path"]).is_file()
 
 
+def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
+    tmp_path,
+) -> None:
+    class _OverviewEnvironment(_Environment):
+        def read_evaluation_camera_inputs(self):
+            return {
+                "external": np.full((24, 32, 3), 40, dtype=np.uint8),
+                "wrist": np.full((24, 32, 3), 80, dtype=np.uint8),
+                "overview": np.full((24, 32, 3), 160, dtype=np.uint8),
+            }
+
+        def read_control_observation_metadata(self):
+            calibration = {
+                "camera_model": "pinhole",
+                "intrinsic_matrix": [
+                    [20.0, 0.0, 16.0],
+                    [0.0, 20.0, 12.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                "world_from_camera": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                "resolution": [32, 24],
+                "near_m": 0.01,
+                "far_m": 10.0,
+            }
+            camera_ids = ("external", "wrist", "overview")
+            return {
+                "timestamp_ns": self._t * 1_000_000,
+                "simulation_time_s": self._t / 15.0,
+                "calibrations": {
+                    camera_id: calibration for camera_id in camera_ids
+                },
+                "source_devices": {
+                    camera_id: "cpu" for camera_id in camera_ids
+                },
+                "synchronizations": {
+                    camera_id: {"host_bytes_ready": True, "method": "test"}
+                    for camera_id in camera_ids
+                },
+            }
+
+    policy = _Policy()
+    receipt = _run(
+        _OverviewEnvironment(),
+        policy,
+        max_policy_queries=1,
+        settle_window_samples=2,
+        media_output_dir=tmp_path,
+        episode_id="overview-episode",
+    )
+
+    visual = receipt["visual_evidence"]
+    assert set(visual["videos"]) == {"external", "wrist", "overview"}
+    assert visual["review_only_camera_ids"] == ["overview"]
+    assert visual["policy_input_frame_count"] == 2
+    assert visual["review_observation_count"] == 1
+    assert visual["review_frame_count"] == 3
+    assert "overview" not in policy.observations[0]
+
+
 def test_media_output_and_episode_identity_must_be_bound_together(tmp_path) -> None:
     with pytest.raises(PolicyEpisodeError) as excinfo:
         _run(media_output_dir=tmp_path)

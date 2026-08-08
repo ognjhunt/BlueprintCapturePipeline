@@ -10,6 +10,7 @@ from blueprint_pipeline.episode_visual_evidence import (
     _encode_episode_video,
     _ffmpeg_encode_command,
     _ffprobe_command,
+    finalize_manipulation_evaluation_visual_evidence,
     finalize_multicamera_visual_evidence,
     finalize_visual_evidence,
     persist_multicamera_observation,
@@ -235,6 +236,48 @@ def test_multicamera_media_retains_exact_views_calibration_and_timestamps(
     assert [
         row["timestamp_ns"] for row in manifest["policy_input_observations"]
     ] == [100, 101]
+
+
+def test_manipulation_profile_requires_review_only_overview_video(tmp_path) -> None:
+    episode_id = "episode-overview-profile"
+    camera_ids = ("external", "wrist", "overview")
+
+    def observation(index: int, kind: str) -> dict:
+        images = {
+            camera_id: np.full((32, 64, 3), 20 + offset + index, dtype=np.uint8)
+            for offset, camera_id in enumerate(camera_ids)
+        }
+        return persist_multicamera_observation(
+            images,
+            output_dir=tmp_path,
+            episode_id=episode_id,
+            observation_index=index,
+            kind=kind,
+            timestamp_ns=100 + index,
+            simulation_time_s=index / 15.0,
+            calibrations={camera_id: _calibration() for camera_id in camera_ids},
+            source_devices={camera_id: "cuda:0" for camera_id in camera_ids},
+            synchronizations={
+                camera_id: {"host_bytes_ready": True, "method": "test"}
+                for camera_id in camera_ids
+            },
+        )
+
+    visual, _ = finalize_manipulation_evaluation_visual_evidence(
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        identity={"episode_kind": "simulator_evaluation"},
+        policy_input_observations=[observation(0, "policy-input")],
+        review_observations=[observation(1, "review-sample")],
+        terminal_observation=observation(2, "terminal-observation"),
+    )
+
+    assert visual["required_camera_ids"] == ["external", "overview", "wrist"]
+    assert visual["review_only_camera_ids"] == ["overview"]
+    assert visual["policy_input_frame_count"] == 2
+    assert visual["review_observation_count"] == 1
+    assert visual["review_frame_count"] == 3
+    assert set(visual["videos"]) == {"external", "wrist", "overview"}
 
 
 def test_multicamera_media_rejects_unsynchronized_or_changed_frame(tmp_path) -> None:
