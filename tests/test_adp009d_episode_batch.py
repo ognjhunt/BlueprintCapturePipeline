@@ -57,6 +57,7 @@ def test_a_few_episodes_run_independently_and_are_reported_each() -> None:
     assert row["any_joint_limit_clamped_count"] == 0
     assert row["joint_limit_clamped_action_count"] == 0
     assert row["commanded_action_magnitudes"]["policy_action_rows_submitted"] == 32
+    assert row["performance_diagnostics"]["timings_seconds"]["total"] >= 0.0
 
 
 def test_the_batch_refuses_to_support_a_ranking() -> None:

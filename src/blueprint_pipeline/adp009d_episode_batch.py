@@ -152,6 +152,9 @@ def run_episode_batch(
                     "observation_trace_digest": receipt.get(
                         "observation_trace_digest"
                     ),
+                    "performance_diagnostics": receipt.get(
+                        "performance_diagnostics"
+                    ),
                 }
             )
         except (PolicyEpisodeError, ValueError, RuntimeError) as exc:

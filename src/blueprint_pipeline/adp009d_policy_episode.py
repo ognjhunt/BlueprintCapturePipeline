@@ -25,6 +25,7 @@ Three properties are load-bearing and enforced rather than assumed:
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -341,6 +342,21 @@ def run_policy_episode(
     )
     retained_policy_frames: list[dict[str, Any]] = []
 
+    episode_started = time.monotonic()
+    timings_seconds = {
+        "reset_and_initial_state": 0.0,
+        "policy_input_read": 0.0,
+        "observation_preprocessing": 0.0,
+        "policy_inference": 0.0,
+        "action_planning": 0.0,
+        "environment_step_including_render": 0.0,
+        "joint_state_read": 0.0,
+        "object_state_sample": 0.0,
+        "settle_steps_including_render": 0.0,
+        "deterministic_scoring": 0.0,
+        "media_persistence": 0.0,
+    }
+    phase_started = time.monotonic()
     environment.reset()
     joint_limits = environment.joint_limits()
     joint_trace = [_read_arm_joint_positions(environment)]
@@ -350,6 +366,7 @@ def run_policy_episode(
     step_index = 0
     samples.append(_sample_with_index(environment.read_object_sample(), step_index, previous_index))
     previous_index = step_index
+    timings_seconds["reset_and_initial_state"] += time.monotonic() - phase_started
 
     queries: list[dict[str, Any]] = []
     last_action: list[float] | None = None
@@ -357,10 +374,13 @@ def run_policy_episode(
     command_response_rows = 0
 
     for query_index in range(int(max_policy_queries)):
+        phase_started = time.monotonic()
         inputs = environment.read_policy_inputs()
+        timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
         }
+        phase_started = time.monotonic()
         try:
             observation = build_droid_observation(
                 candidate_id=candidate_id,
@@ -375,8 +395,12 @@ def run_policy_episode(
             ) from exc
         except DroidObservationError:
             raise
+        timings_seconds["observation_preprocessing"] += (
+            time.monotonic() - phase_started
+        )
 
         if media_root is not None and episode_id is not None:
+            phase_started = time.monotonic()
             retained_policy_frames.append(
                 persist_observation_frame(
                     _policy_view_composite(observation, candidate_id=candidate_id),
@@ -386,21 +410,32 @@ def run_policy_episode(
                     kind="policy-input",
                 )
             )
+            timings_seconds["media_persistence"] += time.monotonic() - phase_started
 
+        phase_started = time.monotonic()
         chunk = policy.infer(observation)
+        timings_seconds["policy_inference"] += time.monotonic() - phase_started
         if chunk is None:
             raise PolicyEpisodeError([BLOCKER_CLIENT_RETURNED_NOTHING])
 
+        phase_started = time.monotonic()
         plan = plan_chunk_execution(
             chunk,
             joint_limits=joint_limits,
             gripper=gripper,
             horizon=int(open_loop_horizon),
         )
+        timings_seconds["action_planning"] += time.monotonic() - phase_started
         for action in plan["actions"]:
             before = list(joint_trace[-1])
+            phase_started = time.monotonic()
             environment.step(action["isaac_action"])
+            timings_seconds["environment_step_including_render"] += (
+                time.monotonic() - phase_started
+            )
+            phase_started = time.monotonic()
             after = _read_arm_joint_positions(environment)
+            timings_seconds["joint_state_read"] += time.monotonic() - phase_started
             joint_trace.append(after)
             target = [float(value) for value in action["joint_position_target_rad"]]
             response_observed = any(
@@ -417,9 +452,11 @@ def run_policy_episode(
                 }
             )
             step_index += 1
+            phase_started = time.monotonic()
             samples.append(
                 _sample_with_index(environment.read_object_sample(), step_index, previous_index)
             )
+            timings_seconds["object_state_sample"] += time.monotonic() - phase_started
             previous_index = step_index
             last_action = list(action["isaac_action"])
 
@@ -449,22 +486,30 @@ def run_policy_episode(
     release_action[7] = gripper.open_command
     settle_start_index = step_index
     for _ in range(int(settle_window_samples)):
+        phase_started = time.monotonic()
         environment.step(release_action)
         joint_trace.append(_read_arm_joint_positions(environment))
+        timings_seconds["settle_steps_including_render"] += (
+            time.monotonic() - phase_started
+        )
         step_index += 1
+        phase_started = time.monotonic()
         samples.append(
             _sample_with_index(environment.read_object_sample(), step_index, previous_index)
         )
+        timings_seconds["object_state_sample"] += time.monotonic() - phase_started
         previous_index = step_index
 
     if step_index - settle_start_index < int(settle_window_samples):
         raise PolicyEpisodeError([BLOCKER_NO_SETTLE_WINDOW])
 
+    phase_started = time.monotonic()
     score = score_task_episode(
         samples=samples,
         destination_position_world_m=destination_position_world_m,
         settle_window_samples=int(settle_window_samples),
     )
+    timings_seconds["deterministic_scoring"] += time.monotonic() - phase_started
     motion_evidence, commanded_action_magnitudes = _motion_and_command_evidence(
         joint_trace=joint_trace,
         commanded_actions=commanded_actions,
@@ -474,6 +519,7 @@ def run_policy_episode(
     visual_evidence = None
     media_artifacts: list[dict[str, Any]] = []
     if media_root is not None and episode_id is not None:
+        phase_started = time.monotonic()
         terminal_inputs = environment.read_policy_inputs()
         terminal_camera_rgb = {
             view: terminal_inputs[view]
@@ -514,6 +560,12 @@ def run_policy_episode(
             policy_input_frames=retained_policy_frames,
             terminal_observation=terminal_frame,
         )
+        timings_seconds["media_persistence"] += time.monotonic() - phase_started
+
+    timings_seconds = {
+        key: round(float(value), 6) for key, value in timings_seconds.items()
+    }
+    timings_seconds["total"] = round(time.monotonic() - episode_started, 6)
 
     receipt: dict[str, Any] = {
         "schema_version": EPISODE_SCHEMA_VERSION,
@@ -547,6 +599,12 @@ def run_policy_episode(
             if retained_policy_frames
             else None
         ),
+        "performance_diagnostics": {
+            "clock": "time.monotonic",
+            "claim_scope": "cycle_time_diagnostic_not_scientific_metric",
+            "environment_step_bucket_includes_renderer_when_enabled": True,
+            "timings_seconds": timings_seconds,
+        },
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     return receipt

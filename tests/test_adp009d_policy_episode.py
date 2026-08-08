@@ -150,6 +150,23 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     # And the episode scored on deterministic object state.
     assert receipt["score"]["status"] in {"scored", "undetermined"}
     assert receipt["score"]["outcome"] == "placed"
+    timings = receipt["performance_diagnostics"]["timings_seconds"]
+    assert timings["policy_inference"] >= 0.0
+    assert timings["environment_step_including_render"] >= 0.0
+    assert timings["total"] >= sum(
+        timings[key]
+        for key in (
+            "policy_inference",
+            "environment_step_including_render",
+            "settle_steps_including_render",
+        )
+    ) - 1e-5
+    assert (
+        receipt["performance_diagnostics"][
+            "environment_step_bucket_includes_renderer_when_enabled"
+        ]
+        is True
+    )
 
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
