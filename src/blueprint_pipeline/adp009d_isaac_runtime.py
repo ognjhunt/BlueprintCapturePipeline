@@ -345,6 +345,25 @@ def _phase(name: str, status: str = "started") -> None:
 STOP_AFTER_FRAMES_ENV = "BLUEPRINT_ADP009D_STOP_AFTER_FRAMES"
 # Above this, a frame has accumulated something.  At or below it the render
 # never converged, whatever the reason.
+MAX_GAUSSIANS_TO_ACCUMULATE_ENV = "BLUEPRINT_ADP009D_MAX_GAUSSIANS_TO_ACCUMULATE"
+# Forty-eight was the shipped value and could not build a surface from a field
+# whose median surfel is 0.81mm across in a 9.9m room.  This is a sweepable
+# knob, not a proven value: no Omniverse render of this asset has succeeded
+# yet, so the honest default is "far more than 48" rather than a number
+# claiming authority it has not earned.
+DEFAULT_MAX_GAUSSIANS_TO_ACCUMULATE = 1024
+
+
+def _max_gaussians_to_accumulate() -> int:
+    raw = os.environ.get(MAX_GAUSSIANS_TO_ACCUMULATE_ENV)
+    if not raw:
+        return DEFAULT_MAX_GAUSSIANS_TO_ACCUMULATE
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_GAUSSIANS_TO_ACCUMULATE
+
+
 FRAME_DEGENERATE_MAX_VALUE = 2
 CAMERA_WARMUP_FRAMES_ENV = "BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES"
 # Forty frames is right for a bare scene whose frames cost milliseconds.  With
@@ -768,15 +787,23 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         camera_cfg.colorize_semantic_segmentation = False
         camera_cfg.update_period = 0.0
         # Gaussian surfels are not drawn unless the render product asks for them.
-        # A run put the ParticleField in the scene and produced frames identical
-        # to a run without it -- max difference 12 of 255, sampling noise -- so
-        # presence in the scene graph is not presence in the image.  The OVRTX
-        # worker authors exactly these on its own render product; Isaac Lab's
-        # cameras create theirs without them.
+        # These were first added because a run put the ParticleField in the
+        # scene and produced frames identical to a run without it.  That run's
+        # asset had no default prim, so the reference resolved to nothing and
+        # the settings were never actually exercised -- the conclusion that
+        # they changed nothing was drawn against an empty scene.
+        #
+        # With the field genuinely composing, the accumulation cap is the
+        # binding constraint.  Forty-eight gaussians per ray cannot build a
+        # surface out of a field whose median surfel is 0.81mm across in a
+        # 9.9m room: the first frames to render it came back as isolated
+        # speckles at 16% pixel coverage, which is what an under-accumulated
+        # ray looks like.  The cap is raised and overridable so it can be
+        # swept without a rebuild.
         for setting, value in (
             ("rtx/rtpt/gaussian/accumulatedDepth/enabled", True),
             ("rtx/rtpt/gaussian/accumulatedAlbedo/enabled", True),
-            ("rtx/rtpt/gaussian/maxGaussiansToAccumulate", 48),
+            ("rtx/rtpt/gaussian/maxGaussiansToAccumulate", _max_gaussians_to_accumulate()),
         ):
             try:
                 import carb

@@ -1549,3 +1549,35 @@ def test_the_written_receipt_carries_the_scale_and_radiance_facts(tmp_path) -> N
     assert receipt["structural_z_scale_median_m"] < 0.001
     assert "sh_dc_out_of_display_range_fraction" in receipt
     assert receipt["default_prim"] == "/World"
+
+
+def test_the_gaussian_accumulation_cap_is_sweepable(monkeypatch) -> None:
+    """Forty-eight cannot build a surface from 0.81mm surfels in a 9.9m room.
+
+    The cap was never actually exercised: the run that "tested" these settings
+    used an asset with no default prim, so the reference resolved to nothing
+    and the conclusion that they changed nothing was drawn against an empty
+    scene.  The first frames to genuinely render the field came back as
+    isolated speckles at 16% pixel coverage.
+    """
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    monkeypatch.delenv(runtime.MAX_GAUSSIANS_TO_ACCUMULATE_ENV, raising=False)
+    assert runtime._max_gaussians_to_accumulate() > 48
+    monkeypatch.setenv(runtime.MAX_GAUSSIANS_TO_ACCUMULATE_ENV, "256")
+    assert runtime._max_gaussians_to_accumulate() == 256
+    monkeypatch.setenv(runtime.MAX_GAUSSIANS_TO_ACCUMULATE_ENV, "nonsense")
+    assert runtime._max_gaussians_to_accumulate() == runtime.DEFAULT_MAX_GAUSSIANS_TO_ACCUMULATE
+
+
+def test_the_cap_is_read_at_use_not_frozen_as_a_literal() -> None:
+    """A literal here is not sweepable, which is the whole point."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    assert '"rtx/rtpt/gaussian/maxGaussiansToAccumulate", _max_gaussians_to_accumulate()' in source
+    assert '"rtx/rtpt/gaussian/maxGaussiansToAccumulate", 48' not in source
