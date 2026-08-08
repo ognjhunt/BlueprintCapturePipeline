@@ -39,6 +39,7 @@ def canonical_digest(value: Mapping[str, Any], *, digest_field: str | None = Non
     ).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
+
 APPROACH_CAPTURE_SCHEMA_VERSION = "adp009d_wrist_approach_capture.v1"
 
 CAN_AXIS_XY_M = (3.4681748, -3.3100837)
@@ -127,6 +128,17 @@ MIN_WRIST_OBJECT_PIXELS = 200
 # useful and keep the target comfortably away from the image boundary.
 MIN_WRIST_OBJECT_PIXEL_FRACTION = 0.02
 WRIST_OBJECT_FRAME_MARGIN_FRACTION = 0.05
+# v82 proved that a wrist-only gate is insufficient: the approved can occupied
+# 5.30% of the wrist frame but only 0.55% of the external policy frame.  That
+# external view is the policy's stable task-context camera, so it must make the
+# target salient too.  These thresholds are deliberately stronger than the old
+# 200-pixel wrist floor while remaining modest for a 320x180 policy input.
+MIN_EXTERNAL_OBJECT_PIXELS = 600
+MIN_EXTERNAL_OBJECT_PIXEL_FRACTION = 0.01
+# Preserve the current viewing ray and move the nonphysical task camera closer
+# to the sealed can.  The official pinned IsaacLab view helper supplies the
+# orientation; this module only owns the testable Euclidean placement.
+EXTERNAL_TASK_CAMERA_DISTANCE_M = 0.50
 # The deterministic task scorer admits the sealed start only while every
 # position component remains within its 5 mm canonical-hold tolerance.  A
 # wrist pose discovered after moving the can farther than this cannot become an
@@ -144,17 +156,13 @@ EPISODE_START_RESTORE_MAX_STEPS = (
     + len(APPROACH_STANDOFF_HEIGHTS_M) * APPROACH_STEPS_PER_WAYPOINT
     + EPISODE_START_RESTORE_SETTLE_STEPS
 )
-BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START = (
-    "no_safe_wrist_observable_episode_start"
-)
-BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH = (
-    "wrist_episode_start_restore_joint_mismatch"
-)
-BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED = (
-    "wrist_episode_start_restore_object_moved"
-)
-BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE = (
-    "wrist_episode_start_restore_object_not_visible"
+BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START = "no_safe_wrist_observable_episode_start"
+BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH = "wrist_episode_start_restore_joint_mismatch"
+BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED = "wrist_episode_start_restore_object_moved"
+BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE = "wrist_episode_start_restore_object_not_visible"
+BLOCKER_EXTERNAL_TASK_OBJECT_NOT_VISIBLE = "external_task_camera_object_not_visible"
+BLOCKER_EPISODE_START_RESTORE_EXTERNAL_OBJECT_NOT_VISIBLE = (
+    "external_task_camera_restore_object_not_visible"
 )
 
 # "IK succeeded" only ever meant "no exception was raised".  The servo clamps
@@ -172,6 +180,34 @@ class ApproachCaptureError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(e) for e in errors if str(e))))
         super().__init__(";".join(self.errors))
+
+
+def external_task_camera_eye_position(
+    *,
+    current_position_world: Sequence[float],
+    target_position_world: Sequence[float],
+    distance_m: float = EXTERNAL_TASK_CAMERA_DISTANCE_M,
+) -> list[float]:
+    """Move a task camera along its current target ray to a fixed distance."""
+
+    try:
+        current = [float(value) for value in current_position_world]
+        target = [float(value) for value in target_position_world]
+        distance = float(distance_m)
+    except (TypeError, ValueError) as exc:
+        raise ApproachCaptureError(["external_task_camera_pose_invalid"]) from exc
+    if (
+        len(current) != 3
+        or len(target) != 3
+        or not all(math.isfinite(value) for value in (*current, *target, distance))
+        or distance <= 0.0
+    ):
+        raise ApproachCaptureError(["external_task_camera_pose_invalid"])
+    ray = [current[index] - target[index] for index in range(3)]
+    norm = math.sqrt(sum(value * value for value in ray))
+    if norm <= 1.0e-9:
+        raise ApproachCaptureError(["external_task_camera_pose_invalid"])
+    return [target[index] + distance * ray[index] / norm for index in range(3)]
 
 
 def semantic_label_pixel_count(
@@ -213,9 +249,7 @@ def semantic_target_observability(
             try:
                 target_ids.append(int(identifier))
             except (TypeError, ValueError) as exc:
-                raise ApproachCaptureError(
-                    ["wrist_semantic_target_identifier_invalid"]
-                ) from exc
+                raise ApproachCaptureError(["wrist_semantic_target_identifier_invalid"]) from exc
     mask = np.isin(semantic.astype(np.int64), target_ids)
     count = int(mask.sum())
     height, width = (int(value) for value in mask.shape)
@@ -256,15 +290,17 @@ def select_wrist_observable_episode_start(
     *,
     min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
     min_object_pixel_fraction: float = MIN_WRIST_OBJECT_PIXEL_FRACTION,
+    min_external_object_pixels: int = MIN_EXTERNAL_OBJECT_PIXELS,
+    min_external_object_pixel_fraction: float = MIN_EXTERNAL_OBJECT_PIXEL_FRACTION,
     object_offset_tolerance_m: float = EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
 ) -> dict[str, Any]:
-    """Choose the first arm pose that sees the can without moving it.
+    """Choose the first arm pose whose two policy views see the unmoved can.
 
     Each sample comes from a rendered simulator step and binds the seven arm
-    joints, approved-can offset, and wrist semantic pixel count from that same
-    step.  Selection is prospective and monotone: the first qualifying pose is
-    used, so a later prettier frame cannot justify traversing closer to the
-    object after observability was already achieved.
+    joints, approved-can offset, and wrist/external semantic evidence from that
+    same step.  Selection is prospective and monotone: the first qualifying
+    pose is used, so a later prettier frame cannot justify traversing closer to
+    the object after observability was already achieved.
     """
 
     selected: dict[str, Any] | None = None
@@ -274,45 +310,51 @@ def select_wrist_observable_episode_start(
             joints = [float(value) for value in sample["joint_position_rad"]]
             offset = [float(value) for value in sample["object_offset_m"]]
             pixels = int(sample["approved_task_object_pixel_count"])
-            pixel_fraction = float(
-                sample["approved_task_object_pixel_fraction"]
-            )
-            within_frame_margin = sample[
-                "approved_task_object_within_frame_margin"
-            ]
+            pixel_fraction = float(sample["approved_task_object_pixel_fraction"])
+            within_frame_margin = sample["approved_task_object_within_frame_margin"]
+            external = sample["external_observability"]
+            external_pixels = int(external["approved_task_object_pixel_count"])
+            external_pixel_fraction = float(external["approved_task_object_pixel_fraction"])
+            external_within_frame_margin = external["approved_task_object_within_frame_margin"]
             step = int(sample["step"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise ApproachCaptureError(
-                [f"wrist_episode_start_sample_invalid:{index}"]
-            ) from exc
+            raise ApproachCaptureError([f"wrist_episode_start_sample_invalid:{index}"]) from exc
         if (
             len(joints) != 7
             or len(offset) != 3
             or pixels < 0
             or not 0.0 <= pixel_fraction <= 1.0
             or not isinstance(within_frame_margin, bool)
+            or external_pixels < 0
+            or not 0.0 <= external_pixel_fraction <= 1.0
+            or not isinstance(external_within_frame_margin, bool)
         ):
-            raise ApproachCaptureError(
-                [f"wrist_episode_start_sample_invalid:{index}"]
-            )
-        within_hold = all(
-            abs(value) <= float(object_offset_tolerance_m) for value in offset
-        )
+            raise ApproachCaptureError([f"wrist_episode_start_sample_invalid:{index}"])
+        within_hold = all(abs(value) <= float(object_offset_tolerance_m) for value in offset)
         row = {
             "step": step,
             "joint_position_rad": joints,
             "object_offset_m": offset,
             "approved_task_object_pixel_count": pixels,
             "approved_task_object_pixel_fraction": pixel_fraction,
-            "approved_task_object_bbox_xyxy": sample.get(
-                "approved_task_object_bbox_xyxy"
-            ),
+            "approved_task_object_bbox_xyxy": sample.get("approved_task_object_bbox_xyxy"),
             "approved_task_object_centroid_xy_fraction": sample.get(
                 "approved_task_object_centroid_xy_fraction"
             ),
             "approved_task_object_within_frame_margin": within_frame_margin,
             "frame_resolution_hw": sample.get("frame_resolution_hw"),
             "frame_margin_fraction": sample.get("frame_margin_fraction"),
+            "external_observability": {
+                "approved_task_object_pixel_count": external_pixels,
+                "approved_task_object_pixel_fraction": external_pixel_fraction,
+                "approved_task_object_bbox_xyxy": external.get("approved_task_object_bbox_xyxy"),
+                "approved_task_object_centroid_xy_fraction": external.get(
+                    "approved_task_object_centroid_xy_fraction"
+                ),
+                "approved_task_object_within_frame_margin": (external_within_frame_margin),
+                "frame_resolution_hw": external.get("frame_resolution_hw"),
+                "frame_margin_fraction": external.get("frame_margin_fraction"),
+            },
             "object_within_canonical_hold": within_hold,
         }
         rows.append(row)
@@ -322,30 +364,52 @@ def select_wrist_observable_episode_start(
             and pixels >= int(min_object_pixels)
             and pixel_fraction >= float(min_object_pixel_fraction)
             and within_frame_margin
+            and external_pixels >= int(min_external_object_pixels)
+            and external_pixel_fraction >= float(min_external_object_pixel_fraction)
+            and external_within_frame_margin
         ):
             selected = row
 
+    wrist_ready = any(
+        row["object_within_canonical_hold"]
+        and row["approved_task_object_pixel_count"] >= int(min_object_pixels)
+        and row["approved_task_object_pixel_fraction"] >= float(min_object_pixel_fraction)
+        and row["approved_task_object_within_frame_margin"]
+        for row in rows
+    )
+    external_ready = any(
+        row["external_observability"]["approved_task_object_pixel_count"]
+        >= int(min_external_object_pixels)
+        and row["external_observability"]["approved_task_object_pixel_fraction"]
+        >= float(min_external_object_pixel_fraction)
+        and row["external_observability"]["approved_task_object_within_frame_margin"]
+        for row in rows
+    )
+    blockers = []
+    if selected is None:
+        if not wrist_ready:
+            blockers.append(BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START)
+        if not external_ready:
+            blockers.append(BLOCKER_EXTERNAL_TASK_OBJECT_NOT_VISIBLE)
+
     receipt: dict[str, Any] = {
-        "schema_version": "adp009d_wrist_episode_start_selection.v2",
+        "schema_version": "adp009d_dual_view_episode_start_selection.v1",
         "status": "ready" if selected is not None else "blocked",
-        "blockers": (
-            []
-            if selected is not None
-            else [BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START]
-        ),
+        "blockers": blockers,
         "samples_evaluated": len(rows),
         "samples": rows,
         "min_approved_task_object_pixels": int(min_object_pixels),
-        "min_approved_task_object_pixel_fraction": float(
-            min_object_pixel_fraction
-        ),
+        "min_approved_task_object_pixel_fraction": float(min_object_pixel_fraction),
         "required_within_frame_margin": True,
+        "min_external_approved_task_object_pixels": int(min_external_object_pixels),
+        "min_external_approved_task_object_pixel_fraction": float(
+            min_external_object_pixel_fraction
+        ),
+        "external_required_within_frame_margin": True,
         "object_offset_tolerance_m": float(object_offset_tolerance_m),
         "selected": selected,
     }
-    receipt["selection_digest"] = canonical_digest(
-        receipt, digest_field="selection_digest"
-    )
+    receipt["selection_digest"] = canonical_digest(receipt, digest_field="selection_digest")
     return receipt
 
 
@@ -357,12 +421,17 @@ def validate_wrist_observable_episode_start_restore(
     approved_task_object_pixel_count: int,
     approved_task_object_pixel_fraction: float,
     approved_task_object_within_frame_margin: bool,
+    external_approved_task_object_pixel_count: int,
+    external_approved_task_object_pixel_fraction: float,
+    external_approved_task_object_within_frame_margin: bool,
     restore_steps: int,
     approved_task_object_bbox_xyxy: Sequence[int] | None = None,
     approved_task_object_centroid_xy_fraction: Sequence[float] | None = None,
     frame_resolution_hw: Sequence[int] | None = None,
     min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
     min_object_pixel_fraction: float = MIN_WRIST_OBJECT_PIXEL_FRACTION,
+    min_external_object_pixels: int = MIN_EXTERNAL_OBJECT_PIXELS,
+    min_external_object_pixel_fraction: float = MIN_EXTERNAL_OBJECT_PIXEL_FRACTION,
     object_offset_tolerance_m: float = EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
     joint_tolerance_rad: float = EPISODE_START_JOINT_TOLERANCE_RAD,
 ) -> dict[str, Any]:
@@ -389,8 +458,17 @@ def validate_wrist_observable_episode_start_restore(
         or not within_frame_margin
     ):
         blockers.append(BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE)
+    external_pixels = int(external_approved_task_object_pixel_count)
+    external_pixel_fraction = float(external_approved_task_object_pixel_fraction)
+    external_within_frame_margin = bool(external_approved_task_object_within_frame_margin)
+    if (
+        external_pixels < int(min_external_object_pixels)
+        or external_pixel_fraction < float(min_external_object_pixel_fraction)
+        or not external_within_frame_margin
+    ):
+        blockers.append(BLOCKER_EPISODE_START_RESTORE_EXTERNAL_OBJECT_NOT_VISIBLE)
     receipt: dict[str, Any] = {
-        "schema_version": "adp009d_wrist_episode_start_restore.v2",
+        "schema_version": "adp009d_dual_view_episode_start_restore.v1",
         "status": "ready" if not blockers else "blocked",
         "blockers": sorted(blockers),
         "selected_joint_position_rad": selected,
@@ -411,25 +489,23 @@ def validate_wrist_observable_episode_start_restore(
         "approved_task_object_centroid_xy_fraction": (
             None
             if approved_task_object_centroid_xy_fraction is None
-            else [
-                float(value)
-                for value in approved_task_object_centroid_xy_fraction
-            ]
+            else [float(value) for value in approved_task_object_centroid_xy_fraction]
         ),
         "frame_resolution_hw": (
-            None
-            if frame_resolution_hw is None
-            else [int(value) for value in frame_resolution_hw]
+            None if frame_resolution_hw is None else [int(value) for value in frame_resolution_hw]
         ),
         "min_approved_task_object_pixels": int(min_object_pixels),
-        "min_approved_task_object_pixel_fraction": float(
-            min_object_pixel_fraction
+        "min_approved_task_object_pixel_fraction": float(min_object_pixel_fraction),
+        "external_approved_task_object_pixel_count": external_pixels,
+        "external_approved_task_object_pixel_fraction": external_pixel_fraction,
+        "external_approved_task_object_within_frame_margin": (external_within_frame_margin),
+        "min_external_approved_task_object_pixels": int(min_external_object_pixels),
+        "min_external_approved_task_object_pixel_fraction": float(
+            min_external_object_pixel_fraction
         ),
         "restore_steps": int(restore_steps),
     }
-    receipt["restore_digest"] = canonical_digest(
-        receipt, digest_field="restore_digest"
-    )
+    receipt["restore_digest"] = canonical_digest(receipt, digest_field="restore_digest")
     return receipt
 
 
@@ -508,9 +584,7 @@ def camera_aim_body_quaternion_xyzw(
 
     try:
         body = tuple(float(v) for v in body_quaternion_world_xyzw)
-        camera_quaternion = tuple(
-            float(v) for v in camera_quaternion_world_opengl_xyzw
-        )
+        camera_quaternion = tuple(float(v) for v in camera_quaternion_world_opengl_xyzw)
         camera_position = tuple(float(v) for v in camera_position_world)
         target_position = tuple(float(v) for v in target_position_world)
     except (TypeError, ValueError) as exc:
@@ -529,9 +603,7 @@ def camera_aim_body_quaternion_xyzw(
 
     body_norm = math.sqrt(sum(value * value for value in body))
     camera_norm = math.sqrt(sum(value * value for value in camera_quaternion))
-    direction = tuple(
-        target_position[index] - camera_position[index] for index in range(3)
-    )
+    direction = tuple(target_position[index] - camera_position[index] for index in range(3))
     direction_norm = math.sqrt(sum(value * value for value in direction))
     if min(body_norm, camera_norm, direction_norm) <= 1.0e-12:
         raise ApproachCaptureError(["wrist_camera_aim_pose_invalid"])
@@ -558,12 +630,9 @@ def camera_aim_body_quaternion_xyzw(
         delta = tuple(value / axis_norm for value in axis) + (0.0,)
     else:
         cross = (
-            current_forward[1] * target_direction[2]
-            - current_forward[2] * target_direction[1],
-            current_forward[2] * target_direction[0]
-            - current_forward[0] * target_direction[2],
-            current_forward[0] * target_direction[1]
-            - current_forward[1] * target_direction[0],
+            current_forward[1] * target_direction[2] - current_forward[2] * target_direction[1],
+            current_forward[2] * target_direction[0] - current_forward[0] * target_direction[2],
+            current_forward[0] * target_direction[1] - current_forward[1] * target_direction[0],
         )
         delta = (*cross, 1.0 + dot)
         delta_norm = math.sqrt(sum(value * value for value in delta))
@@ -584,10 +653,7 @@ def pose_world_to_base(
     """Express a world pose in the robot base frame, as the IK controller expects."""
 
     base_inverse = _quat_conjugate(base_quaternion_world_xyzw)
-    delta = [
-        float(position_world[index]) - float(base_position_world[index])
-        for index in range(3)
-    ]
+    delta = [float(position_world[index]) - float(base_position_world[index]) for index in range(3)]
     position_base = list(_quat_rotate(base_inverse, delta))
     quaternion_base = list(_quat_multiply(base_inverse, quaternion_world_xyzw))
     return position_base, quaternion_base
@@ -616,8 +682,7 @@ def rigid_offset_in_body_frame(
 
     body_inverse = _quat_conjugate(body_quaternion_world_xyzw)
     delta = [
-        float(child_position_world[index]) - float(body_position_world[index])
-        for index in range(3)
+        float(child_position_world[index]) - float(body_position_world[index]) for index in range(3)
     ]
     position_body = list(_quat_rotate(body_inverse, delta))
     quaternion_body = list(_quat_multiply(body_inverse, child_quaternion_world_xyzw))
@@ -634,12 +699,8 @@ def apply_rigid_offset(
     """Rebuild a child's world pose from a live body pose and a constant offset."""
 
     rotated = _quat_rotate(body_quaternion_world_xyzw, offset_position_body)
-    position_world = [
-        float(body_position_world[index]) + rotated[index] for index in range(3)
-    ]
-    quaternion_world = list(
-        _quat_multiply(body_quaternion_world_xyzw, offset_quaternion_body_xyzw)
-    )
+    position_world = [float(body_position_world[index]) + rotated[index] for index in range(3)]
+    quaternion_world = list(_quat_multiply(body_quaternion_world_xyzw, offset_quaternion_body_xyzw))
     return position_world, quaternion_world
 
 
@@ -650,9 +711,7 @@ def _max_travel_m(positions: Sequence[Sequence[float]]) -> float:
     if len(usable) < 2:
         return 0.0
     first = usable[0]
-    return max(
-        sum((a - b) ** 2 for a, b in zip(other, first)) ** 0.5 for other in usable[1:]
-    )
+    return max(sum((a - b) ** 2 for a, b in zip(other, first)) ** 0.5 for other in usable[1:])
 
 
 def classify_wrist_pose_discrepancy(
@@ -746,11 +805,7 @@ def summarize_wrist_approach_capture(
     # sample is trivially zero, which previously read as a frozen camera even
     # though that frame showed 49,758 pixels of the approved can.  One sample is
     # undetermined, not stale.
-    if (
-        arm_moved
-        and len(positions) > 1
-        and wrist_pose_travel_m < MIN_WRIST_POSE_TRAVEL_M
-    ):
+    if arm_moved and len(positions) > 1 and wrist_pose_travel_m < MIN_WRIST_POSE_TRAVEL_M:
         blockers.append(BLOCKER_WRIST_POSE_STALE)
 
     arrivals = [dict(row) for row in (waypoint_arrivals or [])]
@@ -769,8 +824,7 @@ def summarize_wrist_approach_capture(
     pose_discrepancy = classify_wrist_pose_discrepancy(
         reported_positions=[row["position_world_m"] for row in rows],
         usd_positions=[
-            (row["prim_diagnostics"] or {}).get("usd_world_translation_m") or []
-            for row in rows
+            (row["prim_diagnostics"] or {}).get("usd_world_translation_m") or [] for row in rows
         ],
     )
 

@@ -40,7 +40,7 @@ def _digest(path: Path) -> str:
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     approved = tmp_path / "approved.usda"
     approved.write_text(
-        '''#usda 1.0
+        """#usda 1.0
 (defaultPrim = "canned_beverage")
 def Xform "canned_beverage"
 {
@@ -54,7 +54,7 @@ def Xform "canned_beverage"
         }
     }
 }
-''',
+""",
         encoding="utf-8",
     )
     sage = tmp_path / "sage_collision.usd"
@@ -84,7 +84,7 @@ def Xform "canned_beverage"
         int[] faceVertexIndices = [0, 1, 2]
     }}
 '''
-            '}\n'
+            "}\n"
         ),
         encoding="utf-8",
     )
@@ -121,7 +121,10 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     Usd = pytest.importorskip("pxr.Usd")
     source_stage = Usd.Stage.Open(str(sage))
     overlay_stage = Usd.Stage.Open(
-        str(Path(first["bundle_path"]).parent / "provider_runtime/assets/sage_collision_overlay.usda")
+        str(
+            Path(first["bundle_path"]).parent
+            / "provider_runtime/assets/sage_collision_overlay.usda"
+        )
     )
     assert source_stage.GetPrimAtPath(TARGET_COLLIDER_PRIM).IsActive()
     assert not overlay_stage.GetPrimAtPath(TARGET_COLLIDER_PRIM).IsActive()
@@ -139,15 +142,11 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     )
     adapter_stage = Usd.Stage.Open(str(adapter_path))
     assert _digest(adapter_path) == isaac_runtime.APPROVED_CAN_ADAPTER_SHA256
-    can_collider = adapter_stage.GetPrimAtPath(
-        "/canned_beverage/colliders/body_collider"
-    )
+    can_collider = adapter_stage.GetPrimAtPath("/canned_beverage/colliders/body_collider")
     api_schemas = can_collider.GetMetadata("apiSchemas")
     assert "PhysxSDFMeshCollisionAPI" in list(api_schemas.GetAddedOrExplicitItems())
     assert can_collider.GetAttribute("physics:approximation").Get() == "sdf"
-    assert can_collider.GetAttribute(
-        "physxSDFMeshCollision:sdfResolution"
-    ).Get() == 256
+    assert can_collider.GetAttribute("physxSDFMeshCollision:sdfResolution").Get() == 256
     with zipfile.ZipFile(first["bundle_path"]) as archive:
         names = set(archive.namelist())
         overlay = archive.read("provider_runtime/assets/sage_collision_overlay.usda").decode()
@@ -198,21 +197,17 @@ def test_task_collision_retriangulation_preserves_area_and_limits_edges() -> Non
 
     def area(value):
         a, b, c = value
-        return abs(
-            (b[0] - a[0]) * (c[1] - a[1])
-            - (b[1] - a[1]) * (c[0] - a[0])
-        ) * 0.5
+        return abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
 
     assert sum(area(value) for value in leaves) == pytest.approx(6.0)
-    assert max(
-        sum(
-            (value[edge][axis] - value[(edge + 1) % 3][axis]) ** 2
-            for axis in range(3)
+    assert (
+        max(
+            sum((value[edge][axis] - value[(edge + 1) % 3][axis]) ** 2 for axis in range(3)) ** 0.5
+            for value in leaves
+            for edge in range(3)
         )
-        ** 0.5
-        for value in leaves
-        for edge in range(3)
-    ) <= 0.5 + 1.0e-9
+        <= 0.5 + 1.0e-9
+    )
 
 
 def test_task_collision_aabb_clip_preserves_only_exact_coplanar_surface() -> None:
@@ -225,7 +220,9 @@ def test_task_collision_aabb_clip_preserves_only_exact_coplanar_surface() -> Non
     )
 
     assert clipped
-    assert all(-1.0 <= coordinate <= 1.0 for face in clipped for point in face for coordinate in point)
+    assert all(
+        -1.0 <= coordinate <= 1.0 for face in clipped for point in face for coordinate in point
+    )
     assert sum(
         abs(
             (face[1][0] - face[0][0]) * (face[2][1] - face[0][1])
@@ -350,9 +347,9 @@ def test_runtime_fails_closed_on_missing_sdf_schema(tmp_path: Path) -> None:
     prim = stage.DefinePrim("/Can/collider", "Mesh")
     prim.ApplyAPI("PhysicsCollisionAPI")
     prim.ApplyAPI("PhysicsMeshCollisionAPI")
-    prim.CreateAttribute("physics:approximation", pytest.importorskip("pxr.Sdf").ValueTypeNames.Token).Set(
-        "sdf"
-    )
+    prim.CreateAttribute(
+        "physics:approximation", pytest.importorskip("pxr.Sdf").ValueTypeNames.Token
+    ).Set("sdf")
 
     with pytest.raises(RuntimeError, match="physx_sdf_schema_missing"):
         isaac_runtime._inspect_physx_sdf_collider(stage, "/Can/collider")
@@ -374,28 +371,21 @@ def test_runtime_rejects_physx_triangle_stability_warning() -> None:
         "to increase simulation stability!"
     )
 
-    with pytest.raises(
-        RuntimeError, match="physx_collision_stability_warning_detected"
-    ):
+    with pytest.raises(RuntimeError, match="physx_collision_stability_warning_detected"):
         isaac_runtime._fail_on_physx_collision_stability([message])
 
 
 def test_runtime_uses_documented_legacy_cooker_after_measured_ujitso_stall() -> None:
     source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
 
-    assert (
-        isaac_runtime.PHYSX_COLLISION_COOKING_PROFILE
-        == "legacy_cooker_after_ujitso_stall.v1"
-    )
+    assert isaac_runtime.PHYSX_COLLISION_COOKING_PROFILE == "legacy_cooker_after_ujitso_stall.v1"
     assert "SETTING_UJITSO_COLLISION_COOKING" in source
     assert "settings.set_bool(key, False)" in source
     assert '"ujitso_resolved_enabled": bool(resolved_enabled)' in source
     assert '"collider_geometry_or_parameters_changed": False' in source
     assert '"measured_ujitso_environment_construction_stall_v14"' in source
     assert '_phase("physx_collision_cooking_configuration")' in source
-    assert (
-        '_phase("physx_collision_cooking_configuration", "completed")' in source
-    )
+    assert '_phase("physx_collision_cooking_configuration", "completed")' in source
 
 
 def test_runtime_does_not_import_unneeded_arena_asset_registry() -> None:
@@ -409,7 +399,7 @@ def test_runtime_does_not_import_unneeded_arena_asset_registry() -> None:
 def test_runtime_preflights_exact_arena_environment_import_closure() -> None:
     source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
 
-    assert 'def _preflight_environment_imports() -> dict[str, str]:' in source
+    assert "def _preflight_environment_imports() -> dict[str, str]:" in source
     assert '_phase("runtime_import_preflight")' in source
     assert "from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder" in source
     assert '"hydra-core"' in source
@@ -547,9 +537,7 @@ def test_canonical_pose_failure_retains_per_joint_diagnostics() -> None:
         maximum_error=1.0,
         tolerance_rad=1.0e-3,
     )
-    error = isaac_runtime.CanonicalPoseError(
-        "canonical_reset_arm_pose_mismatch", diagnostics
-    )
+    error = isaac_runtime.CanonicalPoseError("canonical_reset_arm_pose_mismatch", diagnostics)
 
     assert diagnostics["joint_names"] == list(isaac_runtime.RESET_JOINT_NAMES[:7])
     assert diagnostics["requested_joint_positions_rad"] == [0.0] * 7
@@ -694,9 +682,7 @@ def test_worker_rejects_missing_arena_transport_pin() -> None:
         for command in worker._install_commands(Path("arena"))
         if not any(url in command for url in worker.ARENA_REMOTE_TRANSPORT_URLS)
     ]
-    with pytest.raises(
-        RuntimeError, match="adp009d_runtime_arena_transport_pin_missing"
-    ):
+    with pytest.raises(RuntimeError, match="adp009d_runtime_arena_transport_pin_missing"):
         worker._validate_install_commands(commands)
 
 
@@ -844,7 +830,9 @@ def test_allocator_routes_microcheck_only_through_canonical_grant(
 
     assert allocator.main(_allocator_args(tmp_path, execute=execute)) == 0
     assert observed["execute"] is execute
-    assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is execute
+    assert (
+        isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is execute
+    )
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["probe_kind"] == PROBE_KIND
     assert admission["retry_cap"] == 0
@@ -942,9 +930,7 @@ def test_allocator_binds_concurrent_instance_authority_through_transport(
     assert observed["allowed_active_instance_ids"] == [47190772]
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["explicit_concurrent_gpu_authority_bound"] is True
-    assert admission["allocation_binding"]["allowed_active_vast_instance_ids"] == [
-        47190772
-    ]
+    assert admission["allocation_binding"]["allowed_active_vast_instance_ids"] == [47190772]
 
 
 def test_allocator_abstains_before_paid_mutation_without_gated_authority(
@@ -990,7 +976,7 @@ def test_semantic_override_layer_is_digest_bound_and_used_at_every_spawn_site() 
     source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
     # No spawn site may reintroduce a hard-coded tag that bypasses the override.
     assert '"semantic_tags": _semantic_tags("approved_can")' in source
-    assert "spawn.semantic_tags = _semantic_tags(\"robot\")" in source
+    assert 'spawn.semantic_tags = _semantic_tags("robot")' in source
     assert '[("class", "robot")]' not in source
     assert '[("class", "approved_can")]' not in source
 
@@ -1073,9 +1059,9 @@ def test_entrypoint_signal_decoding_is_correct(tmp_path: Path) -> None:
         except ValueError:
             return None
 
-    assert decode(134) == "SIGABRT"   # CUDA abort / assertion failure
-    assert decode(139) == "SIGSEGV"   # native segfault
-    assert decode(137) == "SIGKILL"   # OOM killer
+    assert decode(134) == "SIGABRT"  # CUDA abort / assertion failure
+    assert decode(139) == "SIGSEGV"  # native segfault
+    assert decode(137) == "SIGKILL"  # OOM killer
     # An ordinary Python failure is not a signal.
     assert decode(1) is None
     assert decode(2) is None
@@ -1121,7 +1107,7 @@ def test_provisioning_ships_only_when_a_candidate_is_bound(tmp_path: Path) -> No
     # Per candidate, so one policy's provisioning log cannot overwrite
     # the other's -- which would erase the evidence for one arm of the
     # comparison.
-    assert 'adp009d_policy_provisioning.$candidate.log' in ENTRYPOINT
+    assert "adp009d_policy_provisioning.$candidate.log" in ENTRYPOINT
 
 
 def test_provisioning_never_depends_on_a_preserved_execute_bit() -> None:
@@ -1205,7 +1191,6 @@ def test_a_bundle_without_the_appearance_still_builds() -> None:
     assert "aura_appearance = None" in source
 
 
-
 def test_the_receipt_never_claims_a_render_it_did_not_observe() -> None:
     """An earlier field said "rendered" while only checking a file existed.
 
@@ -1284,9 +1269,7 @@ def test_every_module_the_episode_imports_is_shipped() -> None:
     import blueprint_pipeline
 
     root = _Path(blueprint_pipeline.__file__).parent
-    bundle_source = (root / "adp009d_native_microcheck_bundle.py").read_text(
-        encoding="utf-8"
-    )
+    bundle_source = (root / "adp009d_native_microcheck_bundle.py").read_text(encoding="utf-8")
 
     for module in ("adp009d_policy_episode", "adp009d_isaac_episode_adapter"):
         tree = ast.parse((root / f"{module}.py").read_text(encoding="utf-8"))
@@ -1373,7 +1356,7 @@ def test_a_failing_download_tool_falls_through_to_the_next_one() -> None:
     """
 
     script = _download_script("isaac")
-    assert 'curl' in script and '-o "$blueprint_download_dst" && return 0' in script
+    assert "curl" in script and '-o "$blueprint_download_dst" && return 0' in script
     assert 'wget -O "$blueprint_download_dst" "$blueprint_download_src" && return 0' in script
     assert "; return $?; fi; " not in script.split("blueprint_download_src")[1][:400]
     # And the fallthrough is visible in the log rather than silent.
@@ -1394,9 +1377,7 @@ def test_a_dead_container_is_detected_by_asking_the_provider(monkeypatch) -> Non
 
     from blueprint_pipeline import vast_provider_adapter as adapter
 
-    monkeypatch.setattr(
-        adapter, "_api_json", lambda **kw: (200, _liveness_rows("exited"))
-    )
+    monkeypatch.setattr(adapter, "_api_json", lambda **kw: (200, _liveness_rows("exited")))
     result = adapter._instance_liveness(instance_id=4711, api_key="k")
     assert result["exited"] is True
     assert result["status"] == "exited"
@@ -1420,9 +1401,7 @@ def test_a_probe_error_is_not_evidence_of_death(monkeypatch) -> None:
 def test_a_running_container_is_not_reported_dead(monkeypatch) -> None:
     from blueprint_pipeline import vast_provider_adapter as adapter
 
-    monkeypatch.setattr(
-        adapter, "_api_json", lambda **kw: (200, _liveness_rows("running"))
-    )
+    monkeypatch.setattr(adapter, "_api_json", lambda **kw: (200, _liveness_rows("running")))
     assert adapter._instance_liveness(instance_id=4711, api_key="k")["exited"] is False
 
 
@@ -1455,7 +1434,7 @@ def test_the_exit_is_named_rather_than_blamed_on_absent_log_progress() -> None:
     )
     # And it blacklists the machine, like the other startup-plane failures.
     assert '"vast_heartbeat_instance_exited",' in source
-    blockers = source[source.index("startup_control_plane_blocked = any("):]
+    blockers = source[source.index("startup_control_plane_blocked = any(") :]
     assert "vast_heartbeat_instance_exited" in blockers[:600]
 
 
@@ -1475,9 +1454,7 @@ def test_the_first_render_step_is_visible_in_the_phase_log() -> None:
     assert '_phase("zero_action_step")' in source
     assert '_phase("zero_action_step", "completed")' in source
     # Emitted before the step, or it cannot report a hang inside it.
-    assert source.index('_phase("zero_action_step")') < source.index(
-        "lambda: env.step(action)"
-    )
+    assert source.index('_phase("zero_action_step")') < source.index("lambda: env.step(action)")
     # And the warmup loop announces itself before its first tenth-frame marker.
     assert '_phase("camera_warmup")' in source
 
@@ -1517,9 +1494,7 @@ def test_the_render_budget_is_overridable_for_a_slow_scene(monkeypatch) -> None:
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     monkeypatch.setenv(runtime.FIRST_RENDER_BUDGET_SECONDS_ENV, "900")
-    assert runtime._run_under_render_budget(
-        lambda: 1, phase_name="p", diagnostics={}
-    ) == 1
+    assert runtime._run_under_render_budget(lambda: 1, phase_name="p", diagnostics={}) == 1
 
 
 def test_camera_warmup_is_configurable_but_never_below_settling(monkeypatch) -> None:
@@ -1577,10 +1552,8 @@ def test_frames_only_mode_exits_so_the_frames_actually_get_uploaded() -> None:
     assert "STOP_AFTER_FRAMES_ENV" in source
     # Placed after the camera saves and before the gripper probe, or it stops
     # before there is anything worth uploading.
-    assert source.index("STOP_AFTER_FRAMES_ENV, \"\"") > source.index("camera_rows.append(")
-    assert source.index("STOP_AFTER_FRAMES_ENV, \"\"") < source.index(
-        "--- gripper convention probe"
-    )
+    assert source.index('STOP_AFTER_FRAMES_ENV, ""') > source.index("camera_rows.append(")
+    assert source.index('STOP_AFTER_FRAMES_ENV, ""') < source.index("--- gripper convention probe")
     # And it must never read as a passing micro-check.
     assert '"supports_microcheck_success_claim": False,' in source
 
@@ -1622,12 +1595,8 @@ def test_policy_bundle_binds_policy_resolution_without_host_env(
     )
 
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
-        entrypoint = archive.read(
-            "provider_runtime/run_adp_arena_provider_runtime.sh"
-        ).decode()
-        manifest = json.loads(
-            archive.read("provider_runtime/adp_arena_provider_manifest.json")
-        )
+        entrypoint = archive.read("provider_runtime/run_adp_arena_provider_runtime.sh").decode()
+        manifest = json.loads(archive.read("provider_runtime/adp_arena_provider_manifest.json"))
     assert 'export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="policy"' in entrypoint
     assert manifest["camera_resolution_binding"] == "policy"
 
@@ -1639,12 +1608,8 @@ def test_frames_only_bundle_skips_policy_provisioning() -> None:
 
     entrypoint = bundle.ENTRYPOINT
     skip = entrypoint.index("policy_provisioning_skipped_frames_only")
-    provision_loop = entrypoint.index(
-        'for candidate in $(printf \'%s\' "$provisioning_candidates"'
-    )
-    runner = entrypoint.index(
-        '/isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"'
-    )
+    provision_loop = entrypoint.index("for candidate in $(printf '%s' \"$provisioning_candidates\"")
+    runner = entrypoint.index('/isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"')
     assert skip < provision_loop < runner
     assert 'provisioning_candidates=""' in entrypoint[:provision_loop]
     assert '"skip_reason": "frames_only_diagnostic"' in entrypoint
@@ -1667,7 +1632,7 @@ def test_a_degenerate_frame_is_refused_rather_than_saved() -> None:
     assert "camera_frame_degenerate" in source
     assert "FRAME_DEGENERATE_MAX_VALUE" in source
     # Checked before the frame is written, not after.
-    save = source[source.index("def _save_camera("):]
+    save = source[source.index("def _save_camera(") :]
     assert save.index("camera_frame_degenerate") < save.index("Image.fromarray")
     # Far below any real render: v43's blank-but-converged frame was mean 227,
     # so this cannot reject a legitimately dim scene.
@@ -1839,7 +1804,7 @@ def test_frames_only_returns_a_result_rather_than_none() -> None:
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
-    block = source[source.index("STOP_AFTER_FRAMES_ENV, \"\""):]
+    block = source[source.index('STOP_AFTER_FRAMES_ENV, ""') :]
     block = block[: block.index("--- gripper convention probe")]
     assert "return {" in block
     assert "\n            return\n" not in block, "bare return returns None"
@@ -1898,7 +1863,7 @@ def test_the_bundle_keeps_the_appearance_extension() -> None:
     from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
 
     source = inspect.getsource(bundle)
-    assert 'aura_ghost_removed_appearance{aura_source.suffix}' in source
+    assert "aura_ghost_removed_appearance{aura_source.suffix}" in source
     assert 'assets / "aura_ghost_removed_surflets.usd")' not in source
     assert "adp009d_aura_appearance_extension_unsupported" in source
 
@@ -1921,7 +1886,7 @@ def test_the_stage_probe_finds_a_nurec_volume_too() -> None:
     probe = probe[: probe.index("live_collider = ")]
     assert ".lower()" in probe
     assert '"nurec"' in probe
-    assert 'omni:nurec:isNuRecVolume' in probe
+    assert "omni:nurec:isNuRecVolume" in probe
 
 
 def test_the_frames_only_receipt_names_the_appearance_format() -> None:
@@ -1932,7 +1897,7 @@ def test_the_frames_only_receipt_names_the_appearance_format() -> None:
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
-    block = source[source.index("STOP_AFTER_FRAMES_ENV, \"\""):]
+    block = source[source.index('STOP_AFTER_FRAMES_ENV, ""') :]
     block = block[: block.index("--- gripper convention probe")]
     assert '"aura_appearance_format"' in block
     assert '"aura_appearance_shipped"' in block
@@ -2038,9 +2003,7 @@ def test_the_ranking_orders_by_progress_not_binary_success() -> None:
     from blueprint_pipeline.adp009d_episode_batch import summarize_candidate_batches
 
     # Neither ever places; one gets much further.
-    summary = summarize_candidate_batches(
-        [_batch("a", [0, 0, 0]), _batch("b", [3, 3, 4])]
-    )
+    summary = summarize_candidate_batches([_batch("a", [0, 0, 0]), _batch("b", [3, 3, 4])])
     assert summary["leader"] == "b"
     assert summary["ranking_basis"] == "mean_outcome_rank_on_the_task_scoring_ladder"
 
@@ -2086,19 +2049,22 @@ def test_unverified_action_delivery_blocks_the_top_level_runtime_result() -> Non
 def test_interpretable_episode_evidence_does_not_create_a_runtime_blocker() -> None:
     from blueprint_pipeline.adp009d_isaac_runtime import _policy_episode_blockers
 
-    assert _policy_episode_blockers(
-        candidate_ids=["pi05_droid"],
-        policy_episode={
-            "batches": [
-                {
-                    "episodes_scored": 3,
-                    "episodes_policy_outcome_uninterpretable": 0,
-                    "episodes_media_incomplete": 0,
-                }
-            ]
-        },
-        policy_episode_error=None,
-    ) == []
+    assert (
+        _policy_episode_blockers(
+            candidate_ids=["pi05_droid"],
+            policy_episode={
+                "batches": [
+                    {
+                        "episodes_scored": 3,
+                        "episodes_policy_outcome_uninterpretable": 0,
+                        "episodes_media_incomplete": 0,
+                    }
+                ]
+            },
+            policy_episode_error=None,
+        )
+        == []
+    )
 
 
 def test_missing_episode_media_blocks_the_top_level_runtime_result() -> None:
@@ -2154,6 +2120,15 @@ def test_policy_query_is_gated_on_a_replayed_wrist_observable_start() -> None:
     assert "wrist_episode_start_restore_receipts" in source
     assert "run_episode_batch(" in source
     assert "summarize_candidate_batches(" in source
+    # v82's exact SimReady can occupied only 0.55% of the stable task view.
+    # Both bound policy cameras must now pass semantic salience at selection
+    # and again after reset replay before inference can begin.
+    assert 'env.unwrapped.scene["external_camera"]' in source
+    assert '"external_observability": external_observability' in source
+    assert "restored_external_observability" in source
+    # Use the exact pinned IsaacLab view API instead of a guessed quaternion.
+    assert "external_camera.set_world_poses_from_view(" in source
+    assert '"external_task_camera_plan": external_task_camera_plan' in source
     # A per-candidate receipt, or two candidates overwrite each other's.
     assert 'f"adp009d_policy_server_receipt.{bound_candidate}.json"' in source
     # One candidate failing to serve must not deny the other its episodes.
@@ -2234,11 +2209,14 @@ def test_a_run_asked_for_episodes_that_scored_none_is_not_completed() -> None:
         "policy_episodes_requested_but_none_scored",
     ]
     # A diagnostic run with no candidate bound still has no episode obligation.
-    assert _policy_episode_blockers(
-        candidate_ids=[],
-        policy_episode=None,
-        policy_episode_error=None,
-    ) == []
+    assert (
+        _policy_episode_blockers(
+            candidate_ids=[],
+            policy_episode=None,
+            policy_episode_error=None,
+        )
+        == []
+    )
 
 
 def test_the_blocker_list_is_not_overwritten_by_a_later_literal() -> None:
@@ -2290,7 +2268,7 @@ def test_provisioning_progress_reaches_the_container_log() -> None:
 
     # Emitted by the entrypoint itself, outside the redirection.
     assert 'echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_${candidate}:started"' in ENTRYPOINT
-    assert 'provision_${candidate}:completed:rc=$rc' in ENTRYPOINT
+    assert "provision_${candidate}:completed:rc=$rc" in ENTRYPOINT
     # And a tick while the fetch runs, because a checkpoint download has
     # nothing to say for minutes at a time.
     assert "while kill -0" in ENTRYPOINT
@@ -2313,7 +2291,7 @@ def test_a_hanging_candidate_cannot_consume_the_whole_run() -> None:
     from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
 
     assert "BLUEPRINT_ADP009D_PROVISION_TIMEOUT_SECONDS" in ENTRYPOINT
-    assert 'provision_${candidate}:abandoned' in ENTRYPOINT
+    assert "provision_${candidate}:abandoned" in ENTRYPOINT
     # Terminated, then killed: a process ignoring TERM must not survive.
     assert 'setsid bash "$script"' in ENTRYPOINT
     assert 'kill -TERM -- "-$provisioning_pid"' in ENTRYPOINT
@@ -2322,7 +2300,7 @@ def test_a_hanging_candidate_cannot_consume_the_whole_run() -> None:
         'kill -KILL -- "-$provisioning_pid"'
     )
     # The loop still runs the remaining candidates after abandoning one.
-    abandoned = ENTRYPOINT.index('provision_${candidate}:abandoned')
+    abandoned = ENTRYPOINT.index("provision_${candidate}:abandoned")
     assert "break" in ENTRYPOINT[abandoned : abandoned + 400]
     assert "done" in ENTRYPOINT[abandoned:]
 

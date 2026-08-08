@@ -7,6 +7,8 @@ from blueprint_pipeline.adp009d_approach_capture import (
     APPROACH_CAPTURE_FRAME_BASE,
     APPROACH_STANDOFF_HEIGHTS_M,
     BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START,
+    BLOCKER_EXTERNAL_TASK_OBJECT_NOT_VISIBLE,
+    BLOCKER_EPISODE_START_RESTORE_EXTERNAL_OBJECT_NOT_VISIBLE,
     BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH,
     BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED,
     BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE,
@@ -16,6 +18,7 @@ from blueprint_pipeline.adp009d_approach_capture import (
     SUPPORT_HEIGHT_M,
     approach_waypoints_world,
     camera_aim_body_quaternion_xyzw,
+    external_task_camera_eye_position,
     pose_world_to_base,
     select_wrist_observable_episode_start,
     semantic_label_pixel_count,
@@ -23,6 +26,33 @@ from blueprint_pipeline.adp009d_approach_capture import (
     summarize_wrist_approach_capture,
     validate_wrist_observable_episode_start_restore,
 )
+
+
+def _episode_start_sample(
+    *,
+    step: int,
+    joints: list[float],
+    offset: list[float],
+    wrist_pixels: int,
+    wrist_fraction: float,
+    wrist_margin: bool,
+    external_pixels: int = 1000,
+    external_fraction: float = 0.02,
+    external_margin: bool = True,
+) -> dict:
+    return {
+        "step": step,
+        "joint_position_rad": joints,
+        "object_offset_m": offset,
+        "approved_task_object_pixel_count": wrist_pixels,
+        "approved_task_object_pixel_fraction": wrist_fraction,
+        "approved_task_object_within_frame_margin": wrist_margin,
+        "external_observability": {
+            "approved_task_object_pixel_count": external_pixels,
+            "approved_task_object_pixel_fraction": external_fraction,
+            "approved_task_object_within_frame_margin": external_margin,
+        },
+    }
 
 
 def test_waypoints_descend_over_the_can_axis_and_clear_its_top() -> None:
@@ -104,6 +134,26 @@ def test_camera_aim_refuses_a_target_at_the_camera_origin() -> None:
         )
 
 
+def test_external_task_camera_preserves_the_view_ray_at_fixed_distance() -> None:
+    eye = external_task_camera_eye_position(
+        current_position_world=[4.0, -2.0, 1.0],
+        target_position_world=[3.0, -2.0, 1.0],
+        distance_m=0.5,
+    )
+
+    assert eye == pytest.approx([3.5, -2.0, 1.0], abs=1e-12)
+
+
+def test_external_task_camera_rejects_a_coincident_eye_and_target() -> None:
+    from blueprint_pipeline.adp009d_approach_capture import ApproachCaptureError
+
+    with pytest.raises(ApproachCaptureError, match="external_task_camera_pose_invalid"):
+        external_task_camera_eye_position(
+            current_position_world=[1.0, 2.0, 3.0],
+            target_position_world=[1.0, 2.0, 3.0],
+        )
+
+
 def _wrist_frame(frame_index: int, can_pixels: int) -> dict:
     labels = {"0": {"class": "BACKGROUND"}, "2": {"class": "robot"}}
     counts = {"0": 900000, "2": 21600}
@@ -136,15 +186,18 @@ def test_wrist_gate_passes_once_the_object_is_substantially_visible() -> None:
 
 
 def test_semantic_pixel_count_uses_only_the_exact_target_class() -> None:
-    assert semantic_label_pixel_count(
-        id_to_labels={
-            "1": {"class": "robot"},
-            "2": {"class": "approved_can"},
-            "3": "approved_can",
-        },
-        pixel_counts_by_id={"1": 5000, "2": 120, "3": 80},
-        target_label="approved_can",
-    ) == 200
+    assert (
+        semantic_label_pixel_count(
+            id_to_labels={
+                "1": {"class": "robot"},
+                "2": {"class": "approved_can"},
+                "3": "approved_can",
+            },
+            pixel_counts_by_id={"1": 5000, "2": 120, "3": 80},
+            target_label="approved_can",
+        )
+        == 200
+    )
 
 
 def test_semantic_observability_rejects_a_border_sliver() -> None:
@@ -173,30 +226,30 @@ def test_semantic_observability_rejects_a_border_sliver() -> None:
 
 def test_episode_start_selects_first_visible_pose_inside_canonical_hold() -> None:
     samples = [
-        {
-            "step": 0,
-            "joint_position_rad": [0.0] * 7,
-            "object_offset_m": [0.0, 0.0, 0.0],
-            "approved_task_object_pixel_count": 0,
-            "approved_task_object_pixel_fraction": 0.0,
-            "approved_task_object_within_frame_margin": False,
-        },
-        {
-            "step": 1,
-            "joint_position_rad": [0.1] * 7,
-            "object_offset_m": [0.001, -0.002, 0.003],
-            "approved_task_object_pixel_count": 250,
-            "approved_task_object_pixel_fraction": 0.03,
-            "approved_task_object_within_frame_margin": True,
-        },
-        {
-            "step": 2,
-            "joint_position_rad": [0.2] * 7,
-            "object_offset_m": [0.0, 0.0, 0.0],
-            "approved_task_object_pixel_count": 5000,
-            "approved_task_object_pixel_fraction": 0.1,
-            "approved_task_object_within_frame_margin": True,
-        },
+        _episode_start_sample(
+            step=0,
+            joints=[0.0] * 7,
+            offset=[0.0] * 3,
+            wrist_pixels=0,
+            wrist_fraction=0.0,
+            wrist_margin=False,
+        ),
+        _episode_start_sample(
+            step=1,
+            joints=[0.1] * 7,
+            offset=[0.001, -0.002, 0.003],
+            wrist_pixels=250,
+            wrist_fraction=0.03,
+            wrist_margin=True,
+        ),
+        _episode_start_sample(
+            step=2,
+            joints=[0.2] * 7,
+            offset=[0.0] * 3,
+            wrist_pixels=5000,
+            wrist_fraction=0.1,
+            wrist_margin=True,
+        ),
     ]
 
     receipt = select_wrist_observable_episode_start(samples)
@@ -211,59 +264,77 @@ def test_episode_start_selects_first_visible_pose_inside_canonical_hold() -> Non
 def test_episode_start_rejects_visible_pose_after_object_was_disturbed() -> None:
     receipt = select_wrist_observable_episode_start(
         [
-            {
-                "step": 0,
-                "joint_position_rad": [0.0] * 7,
-                "object_offset_m": [0.0, 0.0, 0.006],
-                "approved_task_object_pixel_count": 52000,
-                "approved_task_object_pixel_fraction": 0.1,
-                "approved_task_object_within_frame_margin": True,
-            }
+            _episode_start_sample(
+                step=0,
+                joints=[0.0] * 7,
+                offset=[0.0, 0.0, 0.006],
+                wrist_pixels=52000,
+                wrist_fraction=0.1,
+                wrist_margin=True,
+            )
         ]
     )
 
     assert receipt["status"] == "blocked"
     assert receipt["selected"] is None
-    assert receipt["blockers"] == [
-        BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START
-    ]
+    assert receipt["blockers"] == [BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START]
 
 
 def test_episode_start_rejects_a_large_but_border_clipped_target() -> None:
     receipt = select_wrist_observable_episode_start(
         [
-            {
-                "step": 0,
-                "joint_position_rad": [0.0] * 7,
-                "object_offset_m": [0.0, 0.0, 0.0],
-                "approved_task_object_pixel_count": 5000,
-                "approved_task_object_pixel_fraction": 0.08,
-                "approved_task_object_within_frame_margin": False,
-            }
+            _episode_start_sample(
+                step=0,
+                joints=[0.0] * 7,
+                offset=[0.0] * 3,
+                wrist_pixels=5000,
+                wrist_fraction=0.08,
+                wrist_margin=False,
+            )
         ]
     )
 
     assert receipt["status"] == "blocked"
-    assert receipt["blockers"] == [
-        BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START
-    ]
+    assert receipt["blockers"] == [BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START]
 
 
 def test_episode_start_rejects_v75_scale_border_sliver() -> None:
     receipt = select_wrist_observable_episode_start(
         [
-            {
-                "step": 11,
-                "joint_position_rad": [0.1] * 7,
-                "object_offset_m": [0.0, 0.0, 4.9e-6],
-                "approved_task_object_pixel_count": 219,
-                "approved_task_object_pixel_fraction": 219 / (320 * 180),
-                "approved_task_object_within_frame_margin": False,
-            }
+            _episode_start_sample(
+                step=11,
+                joints=[0.1] * 7,
+                offset=[0.0, 0.0, 4.9e-6],
+                wrist_pixels=219,
+                wrist_fraction=219 / (320 * 180),
+                wrist_margin=False,
+            )
         ]
     )
 
     assert receipt["status"] == "blocked"
+    assert receipt["selected"] is None
+
+
+def test_episode_start_rejects_v82_tiny_external_task_object() -> None:
+    receipt = select_wrist_observable_episode_start(
+        [
+            _episode_start_sample(
+                step=177,
+                joints=[0.1] * 7,
+                offset=[0.0] * 3,
+                wrist_pixels=3052,
+                wrist_fraction=0.053,
+                wrist_margin=True,
+                external_pixels=315,
+                external_fraction=0.00547,
+                external_margin=True,
+            )
+        ]
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["blockers"] == [BLOCKER_EXTERNAL_TASK_OBJECT_NOT_VISIBLE]
     assert receipt["selected"] is None
 
 
@@ -275,6 +346,9 @@ def test_episode_start_restore_requires_pose_object_hold_and_visibility() -> Non
         approved_task_object_pixel_count=250,
         approved_task_object_pixel_fraction=0.03,
         approved_task_object_within_frame_margin=True,
+        external_approved_task_object_pixel_count=1000,
+        external_approved_task_object_pixel_fraction=0.02,
+        external_approved_task_object_within_frame_margin=True,
         restore_steps=12,
     )
     assert ready["status"] == "ready"
@@ -288,6 +362,9 @@ def test_episode_start_restore_requires_pose_object_hold_and_visibility() -> Non
         approved_task_object_pixel_count=199,
         approved_task_object_pixel_fraction=0.001,
         approved_task_object_within_frame_margin=False,
+        external_approved_task_object_pixel_count=315,
+        external_approved_task_object_pixel_fraction=0.00547,
+        external_approved_task_object_within_frame_margin=True,
         restore_steps=80,
     )
     assert blocked["status"] == "blocked"
@@ -296,6 +373,7 @@ def test_episode_start_restore_requires_pose_object_hold_and_visibility() -> Non
             BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH,
             BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED,
             BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE,
+            BLOCKER_EPISODE_START_RESTORE_EXTERNAL_OBJECT_NOT_VISIBLE,
         ]
     )
 
@@ -350,9 +428,7 @@ def test_standalone_digest_matches_the_repository_contract() -> None:
 
     payload = {"b": [1, 2, {"c": "é"}], "a": True, "d": None}
     assert bundled(payload) == canonical_digest(payload)
-    assert bundled(payload, digest_field="a") == canonical_digest(
-        payload, digest_field="a"
-    )
+    assert bundled(payload, digest_field="a") == canonical_digest(payload, digest_field="a")
 
 
 def test_runtime_imports_helper_in_both_layouts() -> None:
@@ -500,23 +576,17 @@ def test_usd_transform_separates_a_stale_buffer_from_a_detached_prim() -> None:
     moved = [(3.437, -3.096, 0.737), (3.450, -3.150, 0.700), (3.468, -3.250, 0.660)]
 
     # Stage says the prim moved, sensor reported a constant pose -> stale buffer.
-    stale = classify_wrist_pose_discrepancy(
-        reported_positions=frozen, usd_positions=moved
-    )
+    stale = classify_wrist_pose_discrepancy(reported_positions=frozen, usd_positions=moved)
     assert stale["cause"] == WRIST_POSE_CAUSE_STALE_BUFFER
     assert stale["usd_pose_travel_m"] > 0.1
     assert stale["reported_pose_travel_m"] == pytest.approx(0.0, abs=1e-12)
 
     # Stage agrees nothing moved -> the camera is not attached to the hand.
-    detached = classify_wrist_pose_discrepancy(
-        reported_positions=frozen, usd_positions=frozen
-    )
+    detached = classify_wrist_pose_discrepancy(reported_positions=frozen, usd_positions=frozen)
     assert detached["cause"] == WRIST_POSE_CAUSE_PRIM_DETACHED
 
     # Both move -> healthy.
-    healthy = classify_wrist_pose_discrepancy(
-        reported_positions=moved, usd_positions=moved
-    )
+    healthy = classify_wrist_pose_discrepancy(reported_positions=moved, usd_positions=moved)
     assert healthy["cause"] == WRIST_POSE_CAUSE_HEALTHY
 
     # No usable stage samples -> refuse to guess.
@@ -553,9 +623,7 @@ def test_summary_carries_the_pose_cause_through_from_frame_diagnostics() -> None
     # The digest must cover the new field.
     from blueprint_pipeline.adp009d_approach_capture import canonical_digest
 
-    assert report["report_digest"] == canonical_digest(
-        report, digest_field="report_digest"
-    )
+    assert report["report_digest"] == canonical_digest(report, digest_field="report_digest")
 
 
 def test_runtime_records_stage_transform_on_every_capture() -> None:
@@ -574,14 +642,12 @@ def test_runtime_records_stage_transform_on_every_capture() -> None:
     diagnostics_body = source[source.index("def _camera_prim_diagnostics(") :]
     diagnostics_body = diagnostics_body[: diagnostics_body.index("def _save_camera(")]
     assert "except Exception" in diagnostics_body
-    raising = [
-        line for line in diagnostics_body.splitlines() if line.strip().startswith("raise")
-    ]
+    raising = [line for line in diagnostics_body.splitlines() if line.strip().startswith("raise")]
     assert raising == [], f"diagnostics must not raise: {raising}"
 
 
 def test_arrival_gate_separates_never_arrived_from_arrived_and_saw_nothing() -> None:
-    """"IK succeeded" only meant "no exception"; arriving is a separate fact.
+    """ "IK succeeded" only meant "no exception"; arriving is a separate fact.
 
     The servo clamps joint motion over a fixed step budget, so it can run
     cleanly to the end and still stop far short of the waypoint.  A wrist that
@@ -751,9 +817,7 @@ def test_runtime_refreshes_pose_metadata_without_reauthoring_the_mount() -> None
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     source = Path(runtime.__file__).read_text(encoding="utf-8")
-    code = [
-        line for line in source.splitlines() if not line.strip().startswith("#")
-    ]
+    code = [line for line in source.splitlines() if not line.strip().startswith("#")]
     assert not [line for line in code if "set_world_poses(" in line]
     assert not [line for line in code if "apply_rigid_offset(" in line]
     assert "camera_cfg.update_latest_camera_pose = True" in source
@@ -838,9 +902,7 @@ def test_standoffs_clear_the_can_and_the_runtime_measures_real_clearance() -> No
 
     # The observation gate was already satisfied at the first waypoint, so the
     # sequence must not descend below the height that produced it.
-    assert APPROACH_STANDOFF_HEIGHTS_M == tuple(
-        sorted(APPROACH_STANDOFF_HEIGHTS_M, reverse=True)
-    )
+    assert APPROACH_STANDOFF_HEIGHTS_M == tuple(sorted(APPROACH_STANDOFF_HEIGHTS_M, reverse=True))
     assert min(APPROACH_STANDOFF_HEIGHTS_M) >= 0.40
 
     source = Path(runtime.__file__).read_text(encoding="utf-8")
@@ -897,14 +959,11 @@ def test_camera_refresh_never_advances_the_whole_scene() -> None:
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     approach = source[source.index("--- preregistered wrist approach") :]
 
-    code = [
-        line for line in approach.splitlines() if not line.strip().startswith("#")
-    ]
+    code = [line for line in approach.splitlines() if not line.strip().startswith("#")]
     scene_refreshes = [line for line in code if "scene.update(" in line]
     assert scene_refreshes == [], f"scene-wide refresh perturbs physics: {scene_refreshes}"
     # No camera refresh of any kind remains in the approach block.
     assert not [line for line in code if "wrist_camera.update(" in line]
-
 
 
 def test_the_displacement_guard_admits_the_unexplained_millimetric_drift() -> None:

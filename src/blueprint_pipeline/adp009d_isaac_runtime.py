@@ -29,9 +29,11 @@ try:  # flat provider-bundle layout, where this file runs as a script
         EPISODE_START_JOINT_TOLERANCE_RAD,
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
+        EXTERNAL_TASK_CAMERA_DISTANCE_M,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
         camera_aim_body_quaternion_xyzw,
+        external_task_camera_eye_position,
         pose_world_to_base,
         select_wrist_observable_episode_start,
         semantic_target_observability,
@@ -49,9 +51,11 @@ except ModuleNotFoundError:  # imported as part of the repository package
         EPISODE_START_JOINT_TOLERANCE_RAD,
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
+        EXTERNAL_TASK_CAMERA_DISTANCE_M,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
         camera_aim_body_quaternion_xyzw,
+        external_task_camera_eye_position,
         pose_world_to_base,
         select_wrist_observable_episode_start,
         semantic_target_observability,
@@ -106,9 +110,7 @@ def _policy_episode_blockers(
 
     blockers: list[str] = []
     batches = list((policy_episode or {}).get("batches") or [])
-    scored_batches = [
-        batch for batch in batches if int(batch.get("episodes_scored") or 0) > 0
-    ]
+    scored_batches = [batch for batch in batches if int(batch.get("episodes_scored") or 0) > 0]
     if not scored_batches:
         blockers.append("policy_episodes_requested_but_none_scored")
     else:
@@ -117,12 +119,9 @@ def _policy_episode_blockers(
             for batch in scored_batches
         )
         if uninterpretable:
-            blockers.append(
-                f"policy_episode_action_delivery_unverified:{uninterpretable}"
-            )
+            blockers.append(f"policy_episode_action_delivery_unverified:{uninterpretable}")
         media_incomplete = sum(
-            int(batch.get("episodes_media_incomplete") or 0)
-            for batch in scored_batches
+            int(batch.get("episodes_media_incomplete") or 0) for batch in scored_batches
         )
         if media_incomplete:
             blockers.append(f"policy_episode_media_incomplete:{media_incomplete}")
@@ -139,6 +138,8 @@ def _resolve_aura_appearance(runtime: Path) -> tuple[Path | None, str | None]:
         if candidate.is_file():
             return candidate, kind
     return None, None
+
+
 AURA_PARTICLEFIELD_PRIM = "/World/AuraAppearance/GaussianSurflets"
 APPROVED_CAN_ADAPTER_SHA256 = (
     "sha256:5db5bc33b72983065bd47e30db0c5945ab3cba8fb3caeb6290bf07edc7337adc"
@@ -218,10 +219,7 @@ class CanonicalPoseError(RuntimeError):
 
     def __init__(self, blocker: str, diagnostics: dict[str, Any]) -> None:
         self.diagnostics = diagnostics
-        super().__init__(
-            f"{blocker}:maximum_error_rad="
-            f"{diagnostics['maximum_error_rad']:.9f}"
-        )
+        super().__init__(f"{blocker}:maximum_error_rad={diagnostics['maximum_error_rad']:.9f}")
 
 
 class CanonicalObjectStabilityError(RuntimeError):
@@ -239,13 +237,9 @@ class CanonicalObjectStabilityError(RuntimeError):
 def _bind_canonical_joint_positions(embodiment: Any) -> None:
     """Replace Arena's regex defaults with one exact, non-overlapping map."""
 
-    canonical_joint_positions = dict(
-        zip(RESET_JOINT_NAMES, RESET_JOINTS, strict=True)
-    )
+    canonical_joint_positions = dict(zip(RESET_JOINT_NAMES, RESET_JOINTS, strict=True))
     robot = embodiment.scene_config.robot
-    robot.init_state = robot.init_state.replace(
-        joint_pos=canonical_joint_positions
-    )
+    robot.init_state = robot.init_state.replace(joint_pos=canonical_joint_positions)
 
 
 def _configure_deterministic_reset_events(embodiment: Any) -> None:
@@ -257,9 +251,7 @@ def _configure_deterministic_reset_events(embodiment: Any) -> None:
     settled open-gripper state retained by the contact-stable v15 native probe.
     """
 
-    embodiment.event_config.init_franka_arm_pose.params["default_pose"] = list(
-        RESET_JOINTS
-    )
+    embodiment.event_config.init_franka_arm_pose.params["default_pose"] = list(RESET_JOINTS)
     reset_writer = embodiment.event_config.randomize_franka_joint_state
     reset_writer.params["mean"] = 0.0
     reset_writer.params["std"] = 0.0
@@ -268,9 +260,9 @@ def _configure_deterministic_reset_events(embodiment: Any) -> None:
 def _canonical_digest(value: dict[str, Any]) -> str:
     """Digest matching ``decision_evidence_contracts.canonical_digest``."""
 
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
@@ -332,9 +324,7 @@ def _assert_arm_pose(
     import torch
 
     actual_arm = _to_torch(actual)[:7]
-    expected_arm = torch.tensor(
-        expected[:7], device=actual_arm.device, dtype=actual_arm.dtype
-    )
+    expected_arm = torch.tensor(expected[:7], device=actual_arm.device, dtype=actual_arm.dtype)
     absolute_error = torch.abs(actual_arm - expected_arm)
     maximum_error = float(torch.max(absolute_error).item())
     if not math.isfinite(maximum_error) or maximum_error > tolerance_rad:
@@ -413,8 +403,7 @@ def _assert_canonical_object_stability(initial_pose: Any, final_pose: Any) -> di
             }
         )
         or diagnostics["xy_displacement_m"] > thresholds["xy_displacement_m"]
-        or diagnostics["absolute_z_displacement_m"]
-        > thresholds["absolute_z_displacement_m"]
+        or diagnostics["absolute_z_displacement_m"] > thresholds["absolute_z_displacement_m"]
         or diagnostics["final_tilt_degrees"] > thresholds["tilt_degrees"]
     ):
         raise CanonicalObjectStabilityError(diagnostics)
@@ -533,8 +522,7 @@ def _run_under_render_budget(call, *, phase_name: str, diagnostics: dict[str, An
     import threading
 
     budget = float(
-        os.environ.get(FIRST_RENDER_BUDGET_SECONDS_ENV)
-        or DEFAULT_FIRST_RENDER_BUDGET_SECONDS
+        os.environ.get(FIRST_RENDER_BUDGET_SECONDS_ENV) or DEFAULT_FIRST_RENDER_BUDGET_SECONDS
     )
     finished = threading.Event()
 
@@ -587,16 +575,12 @@ def _configure_physx_collision_cooking() -> dict[str, Any]:
 
 def _fail_on_physx_collision_fallback(messages: list[str]) -> None:
     if messages:
-        raise RuntimeError(
-            "physx_collision_fallback_detected:" + " | ".join(messages)
-        )
+        raise RuntimeError("physx_collision_fallback_detected:" + " | ".join(messages))
 
 
 def _fail_on_physx_collision_stability(messages: list[str]) -> None:
     if messages:
-        raise RuntimeError(
-            "physx_collision_stability_warning_detected:" + " | ".join(messages)
-        )
+        raise RuntimeError("physx_collision_stability_warning_detected:" + " | ".join(messages))
 
 
 def _inspect_physx_sdf_collider(stage: Any, prim_path: str) -> dict[str, Any]:
@@ -677,9 +661,13 @@ def _inspect_sage_static_triangle_colliders(
         face_count += len(mesh.GetFaceVertexCountsAttr().Get() or [])
 
     if rigid_body_paths:
-        raise RuntimeError("sage_runtime_static_collision_has_rigid_body:" + ",".join(rigid_body_paths))
+        raise RuntimeError(
+            "sage_runtime_static_collision_has_rigid_body:" + ",".join(rigid_body_paths)
+        )
     if non_triangle_paths:
-        raise RuntimeError("sage_runtime_triangle_mesh_override_missing:" + ",".join(non_triangle_paths))
+        raise RuntimeError(
+            "sage_runtime_triangle_mesh_override_missing:" + ",".join(non_triangle_paths)
+        )
     observed = {
         "active_mesh_count": len(mesh_paths),
         "active_point_count": point_count,
@@ -741,9 +729,11 @@ def _camera_prim_diagnostics(camera: Any) -> dict[str, Any]:
             prim = omni.usd.get_context().get_stage().GetPrimAtPath(resolved)
             diagnostics["prim_exists"] = bool(prim and prim.IsValid())
             if diagnostics["prim_exists"]:
-                translation = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
-                    Usd.TimeCode.Default()
-                ).ExtractTranslation()
+                translation = (
+                    UsdGeom.Xformable(prim)
+                    .ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                    .ExtractTranslation()
+                )
                 diagnostics["usd_world_translation_m"] = [
                     float(translation[0]),
                     float(translation[1]),
@@ -754,7 +744,9 @@ def _camera_prim_diagnostics(camera: Any) -> dict[str, Any]:
     return diagnostics
 
 
-def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_time: float) -> dict[str, Any]:
+def _save_camera(
+    output: Path, name: str, camera: Any, *, frame_index: int, sim_time: float
+) -> dict[str, Any]:
     import numpy as np
     from PIL import Image
 
@@ -777,10 +769,11 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
     # real render, so this cannot reject a legitimately dim scene.
     if int(rgb.max()) <= FRAME_DEGENERATE_MAX_VALUE:
         raise RuntimeError(
-            f"camera_frame_degenerate:{name}:max={int(rgb.max())}:"
-            f"mean={float(rgb.mean()):.3f}"
+            f"camera_frame_degenerate:{name}:max={int(rgb.max())}:mean={float(rgb.mean()):.3f}"
         )
-    depth = _to_torch(camera_output["distance_to_camera"])[0].detach().cpu().numpy().astype(np.float32)
+    depth = (
+        _to_torch(camera_output["distance_to_camera"])[0].detach().cpu().numpy().astype(np.float32)
+    )
     semantic = _to_torch(camera_output["semantic_segmentation"])[0].detach().cpu().numpy()
     if semantic.ndim == 3 and semantic.shape[-1] == 1:
         semantic = semantic[..., 0]
@@ -795,9 +788,7 @@ def _save_camera(output: Path, name: str, camera: Any, *, frame_index: int, sim_
         str(int(label)): int(count)
         for label, count in zip(semantic_ids, semantic_counts, strict=True)
     }
-    semantic_info = _json_safe(
-        (camera.data.info or {}).get("semantic_segmentation")
-    )
+    semantic_info = _json_safe((camera.data.info or {}).get("semantic_segmentation"))
     camera_dir = output / "camera_frames" / name
     camera_dir.mkdir(parents=True, exist_ok=True)
     rgb_path = camera_dir / f"{frame_index:06d}.png"
@@ -855,9 +846,7 @@ def _approved_can_observability(camera: Any) -> dict[str, Any]:
     semantic = _to_torch(output["semantic_segmentation"])[0]
     if hasattr(semantic, "detach"):
         semantic = semantic.detach().cpu().numpy()
-    semantic_info = _json_safe(
-        (camera.data.info or {}).get("semantic_segmentation")
-    )
+    semantic_info = _json_safe((camera.data.info or {}).get("semantic_segmentation"))
     labels = (semantic_info or {}).get("idToLabels") or {}
     return semantic_target_observability(
         semantic_ids=semantic,
@@ -917,9 +906,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     # Isaac Lab correctly rejects such an ambiguous mapping.
     _bind_canonical_joint_positions(embodiment)
     render_width, render_height = _camera_resolution()
-    print(
-        f"BLUEPRINT_ADP009D_CAMERA_RESOLUTION:{render_width}x{render_height}", flush=True
-    )
+    print(f"BLUEPRINT_ADP009D_CAMERA_RESOLUTION:{render_width}x{render_height}", flush=True)
     for camera_name in ("external_camera", "wrist_camera"):
         camera_cfg = getattr(embodiment.camera_config, camera_name)
         camera_cfg.data_types = ["rgb", "distance_to_camera", "semantic_segmentation"]
@@ -1006,7 +993,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         spawner_cfg=sim_utils.DomeLightCfg(
             color=(0.75, 0.75, 0.75),
             intensity=1500.0,
-        )
+        ),
     )
     scene = Scene(
         assets=[sage, approved_can, light]
@@ -1115,28 +1102,21 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     adapter_stage = Usd.Stage.Open(str(adapter_path))
     if adapter_stage is None:
         raise RuntimeError("approved_can_physx_sdf_adapter_unreadable")
-    static_collider = _inspect_physx_sdf_collider(
-        adapter_stage, APPROVED_CAN_SOURCE_COLLIDER_PRIM
-    )
+    static_collider = _inspect_physx_sdf_collider(adapter_stage, APPROVED_CAN_SOURCE_COLLIDER_PRIM)
     task_collision_manifest_path = runtime / "assets" / TASK_COLLISION_MANIFEST_FILENAME
     if not task_collision_manifest_path.is_file():
         raise RuntimeError("sage_task_collision_manifest_missing")
-    task_collision_manifest = json.loads(
-        task_collision_manifest_path.read_text(encoding="utf-8")
-    )
+    task_collision_manifest = json.loads(task_collision_manifest_path.read_text(encoding="utf-8"))
     task_collision_path = runtime / "assets" / TASK_COLLISION_DERIVATIVE_FILENAME
     if (
         task_collision_manifest.get("status") != "ready"
         or task_collision_manifest.get("sealed_source_sha256")
         != EXPECTED_ASSETS["sage_collision.usd"]
         or task_collision_manifest.get("sealed_source_mutated") is not False
-        or task_collision_manifest.get("derivative_filename")
-        != TASK_COLLISION_DERIVATIVE_FILENAME
+        or task_collision_manifest.get("derivative_filename") != TASK_COLLISION_DERIVATIVE_FILENAME
         or not task_collision_path.is_file()
-        or _sha256(task_collision_path)
-        != task_collision_manifest.get("derivative_sha256")
-        or task_collision_manifest.get("claim_ceiling")
-        != "preregistered_franka_task_envelope_only"
+        or _sha256(task_collision_path) != task_collision_manifest.get("derivative_sha256")
+        or task_collision_manifest.get("claim_ceiling") != "preregistered_franka_task_envelope_only"
     ):
         raise RuntimeError("sage_task_collision_derivative_binding_invalid")
     expected_sage_profile = {
@@ -1150,15 +1130,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         expected_sage_profile != SAGE_RUNTIME_PROFILE
         or task_collision_manifest.get("candidate_source_prim_count") != 16
         or task_collision_manifest.get("source_face_count") != 47_359
-        or task_collision_manifest.get("roi_min_m")
-        != [2.4681748, -4.3100837, -0.1]
-        or task_collision_manifest.get("roi_max_m")
-        != [4.4681748, -1.9100837, 1.8]
+        or task_collision_manifest.get("roi_min_m") != [2.4681748, -4.3100837, -0.1]
+        or task_collision_manifest.get("roi_max_m") != [4.4681748, -1.9100837, 1.8]
         or task_collision_manifest.get("maximum_edge_limit_m") != 0.5
-        or float(task_collision_manifest.get("observed_maximum_edge_m", math.inf))
-        > 0.500001
-        or float(task_collision_manifest.get("relative_surface_area_error", math.inf))
-        > 1.0e-6
+        or float(task_collision_manifest.get("observed_maximum_edge_m", math.inf)) > 0.500001
+        or float(task_collision_manifest.get("relative_surface_area_error", math.inf)) > 1.0e-6
     ):
         raise RuntimeError("sage_task_collision_profile_invalid")
     sage_overlay_stage = Usd.Stage.Open(str(task_collision_path))
@@ -1180,9 +1156,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     fallback_messages: list[str] = []
     stability_messages: list[str] = []
 
-    def on_log(
-        channel, level, module, filename, func, line_no, message, pid, tid, timestamp
-    ):
+    def on_log(channel, level, module, filename, func, line_no, message, pid, tid, timestamp):
         del channel, level, module, filename, func, line_no, pid, tid, timestamp
         if PHYSX_FALLBACK_MARKER in message:
             fallback_messages.append(str(message))
@@ -1193,6 +1167,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     consumer = log.add_message_consumer(on_log)
     env = None
     timings_seconds: dict[str, float] = {}
+    external_task_camera_plan: dict[str, Any] | None = None
     try:
         _phase("runtime_import_preflight")
         runtime_import_preflight = _preflight_environment_imports()
@@ -1200,9 +1175,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         _phase("environment_build")
         phase_started = time.monotonic()
         env, cfg, torch = _build_environment(runtime, args)
-        timings_seconds["environment_build"] = round(
-            time.monotonic() - phase_started, 6
-        )
+        timings_seconds["environment_build"] = round(time.monotonic() - phase_started, 6)
         log.flush()
         _phase("environment_build", "completed")
         _fail_on_physx_collision_fallback(fallback_messages)
@@ -1228,10 +1201,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             matches = [
                 str(prim.GetPath())
                 for prim in live_stage.Traverse()
-                if any(
-                    token in str(prim.GetPath()).lower()
-                    for token in ("gauss", "aura", "nurec")
-                )
+                if any(token in str(prim.GetPath()).lower() for token in ("gauss", "aura", "nurec"))
                 or bool(prim.GetAttribute("omni:nurec:isNuRecVolume").Get())
             ]
             aura_stage_probe["matching_prim_paths"] = matches[:20]
@@ -1243,9 +1213,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 field_paths = [m for m in matches if m.endswith("GaussianSurflets")]
                 found = live_stage.GetPrimAtPath(field_paths[0] if field_paths else matches[0])
                 aura_stage_probe["inspected_prim_path"] = str(found.GetPath())
-                aura_stage_probe["applied_schemas"] = [
-                    str(v) for v in found.GetAppliedSchemas()
-                ]
+                aura_stage_probe["applied_schemas"] = [str(v) for v in found.GetAppliedSchemas()]
                 aura_stage_probe["type_name"] = str(found.GetTypeName())
                 aura_stage_probe["is_active"] = bool(found.IsActive())
                 visibility = found.GetAttribute("visibility")
@@ -1255,9 +1223,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         except Exception as exc:  # noqa: BLE001 - a diagnostic must not fail a run
             aura_stage_probe["error"] = f"{type(exc).__name__}: {exc}"
 
-        live_collider = _inspect_physx_sdf_collider(
-            live_stage, APPROVED_CAN_LIVE_COLLIDER_PRIM
-        )
+        live_collider = _inspect_physx_sdf_collider(live_stage, APPROVED_CAN_LIVE_COLLIDER_PRIM)
         live_sage_collision = _inspect_sage_static_triangle_colliders(
             live_stage,
             SAGE_LIVE_ROOT_PRIM,
@@ -1269,9 +1235,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             _phase(f"reset_{index}")
             phase_started = time.monotonic()
             observation, info = env.reset(seed=20260806)
-            timings_seconds[f"reset_{index}"] = round(
-                time.monotonic() - phase_started, 6
-            )
+            timings_seconds[f"reset_{index}"] = round(time.monotonic() - phase_started, 6)
             robot = env.unwrapped.scene["robot"]
             approved_can = env.unwrapped.scene["approved_can"]
             reset_arm_maximum_error_rad = _assert_arm_pose(
@@ -1284,9 +1248,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 {
                     "index": index,
                     "joint_pos": _jsonable(_to_torch(robot.data.joint_pos)[0]),
-                    "can_root_pose_world": _jsonable(
-                        _to_torch(approved_can.data.root_pose_w)[0]
-                    ),
+                    "can_root_pose_world": _jsonable(_to_torch(approved_can.data.root_pose_w)[0]),
                     "observation_keys": sorted(str(key) for key in observation),
                     "info_keys": sorted(str(key) for key in (info or {})),
                     "arm_maximum_error_rad": reset_arm_maximum_error_rad,
@@ -1325,9 +1287,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 ),
             },
         )
-        timings_seconds["zero_action_step"] = round(
-            time.monotonic() - phase_started, 6
-        )
+        timings_seconds["zero_action_step"] = round(time.monotonic() - phase_started, 6)
         _phase("zero_action_step", "completed")
         log.flush()
         _fail_on_physx_collision_fallback(fallback_messages)
@@ -1349,6 +1309,43 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         robot = env.unwrapped.scene["robot"]
         body_names_all = list(robot.data.body_names)
         approved_can = env.unwrapped.scene["approved_can"]
+        external_camera = env.unwrapped.scene["external_camera"]
+        current_external_eye = _to_torch(external_camera.data.pos_w)[0, :3]
+        current_can_pose = _to_torch(approved_can.data.root_pose_w)[0]
+        external_target = [
+            float(current_can_pose[0]),
+            float(current_can_pose[1]),
+            float(current_can_pose[2]) + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0,
+        ]
+        resolved_external_eye = external_task_camera_eye_position(
+            current_position_world=[float(value) for value in current_external_eye],
+            target_position_world=external_target,
+        )
+        # Exact pinned IsaacLab e57379c owns the view-orientation convention.
+        # Supplying eyes and targets avoids hand-authoring a quaternion whose
+        # OpenGL/ROS convention could silently point the policy camera away.
+        external_camera.set_world_poses_from_view(
+            eyes=torch.tensor(
+                [resolved_external_eye],
+                device=env.unwrapped.device,
+                dtype=torch.float32,
+            ),
+            targets=torch.tensor(
+                [external_target],
+                device=env.unwrapped.device,
+                dtype=torch.float32,
+            ),
+        )
+        external_task_camera_plan = {
+            "schema_version": "adp009d_external_task_camera_plan.v1",
+            "source_api": "isaaclab.Camera.set_world_poses_from_view",
+            "original_eye_position_world_m": [float(value) for value in current_external_eye],
+            "target_position_world_m": external_target,
+            "resolved_eye_position_world_m": resolved_external_eye,
+            "target_distance_m": EXTERNAL_TASK_CAMERA_DISTANCE_M,
+            "resolution_unchanged": True,
+            "intrinsics_unchanged": True,
+        }
         hold_start_can_pose = _to_torch(approved_can.data.root_pose_w)[0].clone()
         hold_action = torch.zeros_like(action)
         hold_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
@@ -1382,12 +1379,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     camera_name,
                     env.unwrapped.scene[camera_name],
                     frame_index=warmup_frames,
-                    sim_time=float(env.unwrapped.episode_length_buf[0].item() * cfg.sim.dt * cfg.decimation),
+                    sim_time=float(
+                        env.unwrapped.episode_length_buf[0].item() * cfg.sim.dt * cfg.decimation
+                    ),
                 )
             )
-        timings_seconds["camera_retention"] = round(
-            time.monotonic() - camera_retention_started, 6
-        )
+        timings_seconds["camera_retention"] = round(time.monotonic() - camera_retention_started, 6)
         # A frame is the only thing that answers whether the appearance actually
         # draws, and at roughly a minute per rendered frame the phases after
         # this one -- a four-hundred-step approach, a four-hundred-and-eighty
@@ -1471,9 +1468,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         phase_started = time.monotonic()
         finger_pair = ("left_inner_finger", "right_inner_finger")
         finger_indices = [
-            body_names_all.index(name)
-            for name in finger_pair
-            if name in body_names_all
+            body_names_all.index(name) for name in finger_pair if name in body_names_all
         ]
         gripper_probe: dict[str, Any] = {
             "schema_version": "adp009d_gripper_convention_probe.v1",
@@ -1491,9 +1486,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 for _ in range(30):
                     env.step(probe_action)
                 poses = _to_torch(robot.data.body_pose_w)[0, finger_indices, :3]
-                separations[str(command)] = float(
-                    torch.linalg.vector_norm(poses[0] - poses[1])
-                )
+                separations[str(command)] = float(torch.linalg.vector_norm(poses[0] - poses[1]))
             open_gap = separations["0.0"]
             closed_gap = separations["1.0"]
             travel = abs(open_gap - closed_gap)
@@ -1518,9 +1511,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         # the retained evidence above was measured under.
         env.reset(seed=20260806)
         _phase("gripper_convention_probe", gripper_probe["status"])
-        timings_seconds["gripper_convention_probe"] = round(
-            time.monotonic() - phase_started, 6
-        )
+        timings_seconds["gripper_convention_probe"] = round(time.monotonic() - phase_started, 6)
 
         # The canonical hold is judged on the hold alone.  Evaluating it after the
         # approach would measure motion the canonical condition never contained.
@@ -1599,9 +1590,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             wrist_camera_driven = False
             reset_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
             wrist_camera = env.unwrapped.scene["wrist_camera"]
-            reset_camera_position = [
-                float(v) for v in _to_torch(wrist_camera.data.pos_w)[0]
-            ]
+            reset_camera_position = [float(v) for v in _to_torch(wrist_camera.data.pos_w)[0]]
             reset_camera_quaternion = [
                 float(v) for v in _to_torch(wrist_camera.data.quat_w_opengl)[0]
             ]
@@ -1615,9 +1604,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "strategy": "rotate_mounted_opengl_optical_axis_to_can_center",
                 "camera_position_world_m": reset_camera_position,
                 "camera_quaternion_world_opengl_xyzw": reset_camera_quaternion,
-                "target_position_world_m": [
-                    float(v) for v in canonical_hold_can_pose[:3]
-                ],
+                "target_position_world_m": [float(v) for v in canonical_hold_can_pose[:3]],
                 "target_body_quaternion_world_xyzw": camera_aim_quaternion,
                 "max_steps": CAMERA_AIM_MAX_STEPS,
                 "camera_mount_reauthored": False,
@@ -1719,35 +1706,30 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         approach_object_trace.append(
                             {
                                 "step": len(approach_object_trace),
-                                "offset_m": [
-                                    round(float(v), 9) for v in approach_object_offset
-                                ],
-                                "displacement_m": round(
-                                    approach_object_displacement_m, 9
-                                ),
+                                "offset_m": [round(float(v), 9) for v in approach_object_offset],
+                                "displacement_m": round(approach_object_displacement_m, 9),
                                 "ee_position_world_m": [
                                     round(float(v), 6)
-                                    for v in _to_torch(robot.data.body_pose_w)[
-                                        0, body_index, :3
-                                    ]
+                                    for v in _to_torch(robot.data.body_pose_w)[0, body_index, :3]
                                 ],
                             }
                         )
-                    approach_object_offset_m = [
-                        float(v) for v in approach_object_offset
-                    ]
+                    approach_object_offset_m = [float(v) for v in approach_object_offset]
                     wrist_observability = _approved_can_observability(
                         env.unwrapped.scene["wrist_camera"]
+                    )
+                    external_observability = _approved_can_observability(
+                        env.unwrapped.scene["external_camera"]
                     )
                     episode_start_samples.append(
                         {
                             "step": len(episode_start_samples),
                             "joint_position_rad": [
-                                float(v)
-                                for v in _to_torch(robot.data.joint_pos)[0, :7]
+                                float(v) for v in _to_torch(robot.data.joint_pos)[0, :7]
                             ],
                             "object_offset_m": list(approach_object_offset_m),
                             **wrist_observability,
+                            "external_observability": external_observability,
                         }
                     )
                     episode_start_selection = select_wrist_observable_episode_start(
@@ -1757,12 +1739,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         break
                     if (
                         any(
-                            abs(value)
-                            > EPISODE_START_OBJECT_OFFSET_TOLERANCE_M
+                            abs(value) > EPISODE_START_OBJECT_OFFSET_TOLERANCE_M
                             for value in approach_object_offset_m
                         )
-                        or approach_object_displacement_m
-                        > APPROACH_MAX_OBJECT_DISPLACEMENT_M
+                        or approach_object_displacement_m > APPROACH_MAX_OBJECT_DISPLACEMENT_M
                     ):
                         approach_aborted = True
                         break
@@ -1782,9 +1762,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     if name in body_names
                 ]
                 lowest_gripper_z = (
-                    float(
-                        _to_torch(robot.data.body_pose_w)[0, gripper_indices, 2].min()
-                    )
+                    float(_to_torch(robot.data.body_pose_w)[0, gripper_indices, 2].min())
                     if gripper_indices
                     else None
                 )
@@ -1796,27 +1774,21 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 # the can across the whole articulation.
                 can_position = _to_torch(approved_can.data.root_pose_w)[0, :3]
                 all_body_positions = _to_torch(robot.data.body_pose_w)[0, :, :3]
-                body_distances = torch.linalg.vector_norm(
-                    all_body_positions - can_position, dim=-1
-                )
+                body_distances = torch.linalg.vector_norm(all_body_positions - can_position, dim=-1)
                 nearest_index = int(torch.argmin(body_distances))
                 approach_arrivals.append(
                     {
                         "waypoint_index": waypoint["waypoint_index"],
                         "lowest_gripper_body_z_m": lowest_gripper_z,
                         "nearest_body_to_can": body_names[nearest_index],
-                        "nearest_body_distance_to_can_m": float(
-                            body_distances[nearest_index]
-                        ),
+                        "nearest_body_distance_to_can_m": float(body_distances[nearest_index]),
                         "body_distances_to_can_m": {
                             name: round(float(body_distances[index]), 6)
                             for index, name in enumerate(body_names)
                         },
                         "approved_can_top_z_m": can_top_z,
                         "gripper_clearance_over_can_m": (
-                            None
-                            if lowest_gripper_z is None
-                            else lowest_gripper_z - can_top_z
+                            None if lowest_gripper_z is None else lowest_gripper_z - can_top_z
                         ),
                         "target_position_world_m": [float(v) for v in target_world],
                         "achieved_position_world_m": [float(v) for v in achieved_world],
@@ -1862,12 +1834,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         # Always produce a selection receipt, including when IK raised before
         # the first sample.  Absence is a blocker, not an implicit return to the
         # canonical reset pose that the wrist camera cannot use.
-        episode_start_selection = select_wrist_observable_episode_start(
-            episode_start_samples
-        )
-        timings_seconds["wrist_approach"] = round(
-            time.monotonic() - wrist_approach_started, 6
-        )
+        episode_start_selection = select_wrist_observable_episode_start(episode_start_samples)
+        timings_seconds["wrist_approach"] = round(time.monotonic() - wrist_approach_started, 6)
 
         # --- learned policy episode --------------------------------------------
         # Everything this needs is now measured rather than assumed: the gripper
@@ -1891,13 +1859,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         if not candidate_ids:
             policy_episode_skipped_reason = "no_policy_candidate_bound"
         elif gripper_probe.get("status") != "measured":
-            policy_episode_skipped_reason = (
-                f"gripper_convention_{gripper_probe.get('status')}"
-            )
+            policy_episode_skipped_reason = f"gripper_convention_{gripper_probe.get('status')}"
         elif episode_start_selection.get("status") != "ready":
-            policy_episode_skipped_reason = (
-                "wrist_observable_episode_start_not_ready"
-            )
+            policy_episode_skipped_reason = "wrist_observable_episode_start_not_ready"
         if (
             candidate_ids
             and gripper_probe.get("status") == "measured"
@@ -1913,9 +1877,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     summarize_candidate_batches,
                 )
 
-                destination_path = Path(
-                    runtime / "adp009d_task_destination.v1.json"
-                )
+                destination_path = Path(runtime / "adp009d_task_destination.v1.json")
                 destination = json.loads(destination_path.read_text(encoding="utf-8"))
 
                 selected_episode_start = episode_start_selection["selected"]
@@ -1946,8 +1908,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                             - canonical_hold_can_pose[:3]
                         )
                         if any(
-                            abs(float(value))
-                            > EPISODE_START_OBJECT_OFFSET_TOLERANCE_M
+                            abs(float(value)) > EPISODE_START_OBJECT_OFFSET_TOLERANCE_M
                             for value in live_can_offset
                         ):
                             # A longer replay horizon must never buy convergence
@@ -1956,13 +1917,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                             # object-moved blocker.
                             break
                         remaining = torch.max(
-                            torch.abs(
-                                target - _to_torch(robot.data.joint_pos)[:, :7]
-                            )
+                            torch.abs(target - _to_torch(robot.data.joint_pos)[:, :7])
                         )
-                        if float(remaining) <= (
-                            EPISODE_START_JOINT_TOLERANCE_RAD / 3.0
-                        ):
+                        if float(remaining) <= (EPISODE_START_JOINT_TOLERANCE_RAD / 3.0):
                             break
 
                     restored_joints = _to_torch(robot.data.joint_pos)[0, :7]
@@ -1973,41 +1930,41 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     restored_observability = _approved_can_observability(
                         env.unwrapped.scene["wrist_camera"]
                     )
-                    restore_receipt = (
-                        validate_wrist_observable_episode_start_restore(
-                            selected_joint_position_rad=target[0],
-                            restored_joint_position_rad=restored_joints,
-                            object_offset_m=restored_can_offset,
-                            approved_task_object_pixel_count=(
-                                restored_observability[
-                                    "approved_task_object_pixel_count"
-                                ]
-                            ),
-                            approved_task_object_pixel_fraction=(
-                                restored_observability[
-                                    "approved_task_object_pixel_fraction"
-                                ]
-                            ),
-                            approved_task_object_within_frame_margin=(
-                                restored_observability[
-                                    "approved_task_object_within_frame_margin"
-                                ]
-                            ),
-                            approved_task_object_bbox_xyxy=(
-                                restored_observability[
-                                    "approved_task_object_bbox_xyxy"
-                                ]
-                            ),
-                            approved_task_object_centroid_xy_fraction=(
-                                restored_observability[
-                                    "approved_task_object_centroid_xy_fraction"
-                                ]
-                            ),
-                            frame_resolution_hw=restored_observability[
-                                "frame_resolution_hw"
-                            ],
-                            restore_steps=restore_steps,
-                        )
+                    restored_external_observability = _approved_can_observability(
+                        env.unwrapped.scene["external_camera"]
+                    )
+                    restore_receipt = validate_wrist_observable_episode_start_restore(
+                        selected_joint_position_rad=target[0],
+                        restored_joint_position_rad=restored_joints,
+                        object_offset_m=restored_can_offset,
+                        approved_task_object_pixel_count=(
+                            restored_observability["approved_task_object_pixel_count"]
+                        ),
+                        approved_task_object_pixel_fraction=(
+                            restored_observability["approved_task_object_pixel_fraction"]
+                        ),
+                        approved_task_object_within_frame_margin=(
+                            restored_observability["approved_task_object_within_frame_margin"]
+                        ),
+                        external_approved_task_object_pixel_count=(
+                            restored_external_observability["approved_task_object_pixel_count"]
+                        ),
+                        external_approved_task_object_pixel_fraction=(
+                            restored_external_observability["approved_task_object_pixel_fraction"]
+                        ),
+                        external_approved_task_object_within_frame_margin=(
+                            restored_external_observability[
+                                "approved_task_object_within_frame_margin"
+                            ]
+                        ),
+                        approved_task_object_bbox_xyxy=(
+                            restored_observability["approved_task_object_bbox_xyxy"]
+                        ),
+                        approved_task_object_centroid_xy_fraction=(
+                            restored_observability["approved_task_object_centroid_xy_fraction"]
+                        ),
+                        frame_resolution_hw=restored_observability["frame_resolution_hw"],
+                        restore_steps=restore_steps,
                     )
                     episode_start_restore_receipts.append(restore_receipt)
                     if restore_receipt["status"] != "ready":
@@ -2029,14 +1986,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     reset_seed=20260806,
                     to_torch=_to_torch,
                     gripper_closed_width_m=float(
-                        gripper_probe["finger_separation_m"][
-                            str(gripper_probe["closed_command"])
-                        ]
+                        gripper_probe["finger_separation_m"][str(gripper_probe["closed_command"])]
                     ),
                     gripper_open_width_m=float(
-                        gripper_probe["finger_separation_m"][
-                            str(gripper_probe["open_command"])
-                        ]
+                        gripper_probe["finger_separation_m"][str(gripper_probe["open_command"])]
                     ),
                     reset_callback=_restore_wrist_observable_episode_start,
                 )
@@ -2045,6 +1998,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     open_command=float(gripper_probe["open_command"]),
                     measured_by_probe=True,
                 )
+
                 def _client_for(receipt: dict[str, Any]):
                     """Bind whichever transport this candidate speaks.
 
@@ -2066,9 +2020,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
 
                         worker_identity = receipt.get("worker_identity_receipt")
                         if not isinstance(worker_identity, dict):
-                            raise RuntimeError(
-                                "groot_worker_identity_receipt_missing_from_server"
-                            )
+                            raise RuntimeError("groot_worker_identity_receipt_missing_from_server")
                         return GrootN17DroidPolicyClient(
                             spec=GrootN17DroidPolicySpec(),
                             worker_identity_receipt=worker_identity,
@@ -2109,11 +2061,13 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         f"adp009d_policy_server_receipt.{bound_candidate}.json"
                     )
                     if not receipt_path.is_file():
-                        batches.append({
-                            "candidate_id": bound_candidate,
-                            "status": "blocked",
-                            "blockers": ["policy_server_receipt_missing"],
-                        })
+                        batches.append(
+                            {
+                                "candidate_id": bound_candidate,
+                                "status": "blocked",
+                                "blockers": ["policy_server_receipt_missing"],
+                            }
+                        )
                         _phase(f"policy_batch_{bound_candidate}", "blocked")
                         continue
                     server_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -2121,13 +2075,15 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         # One candidate failing to serve must not deny the other
                         # its episodes: a comparison with one arm missing is
                         # still evidence, a run that aborts produces none.
-                        batches.append({
-                            "candidate_id": bound_candidate,
-                            "status": "blocked",
-                            "blockers": [
-                                f"policy_server_not_ready:{server_receipt.get('status')}"
-                            ],
-                        })
+                        batches.append(
+                            {
+                                "candidate_id": bound_candidate,
+                                "status": "blocked",
+                                "blockers": [
+                                    f"policy_server_not_ready:{server_receipt.get('status')}"
+                                ],
+                            }
+                        )
                         _phase(f"policy_batch_{bound_candidate}", "blocked")
                         continue
                     batch = run_episode_batch(
@@ -2148,17 +2104,13 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     "comparison": summarize_candidate_batches(
                         [b for b in batches if b.get("episodes_scored") is not None]
                     ),
-                    "episode_start_restore_receipts": (
-                        episode_start_restore_receipts
-                    ),
+                    "episode_start_restore_receipts": (episode_start_restore_receipts),
                 }
                 _phase("policy_episode", "completed")
             except Exception as exc:  # noqa: BLE001 - recorded, never fatal
                 policy_episode_error = f"{type(exc).__name__}: {exc}"
                 _phase("policy_episode", "blocked")
-            timings_seconds["policy_episode"] = round(
-                time.monotonic() - phase_started, 6
-            )
+            timings_seconds["policy_episode"] = round(time.monotonic() - phase_started, 6)
 
         wrist_approach_capture = summarize_wrist_approach_capture(
             captured_frames=approach_frames,
@@ -2218,13 +2170,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "zero_action_step": {
                 **zero_action_row,
             },
-            "post_warmup_robot_joint_pos": _jsonable(
-                _to_torch(robot.data.joint_pos)[0]
-            ),
+            "post_warmup_robot_joint_pos": _jsonable(_to_torch(robot.data.joint_pos)[0]),
             "post_warmup_arm_maximum_error_rad": hold_arm_maximum_error_rad,
             "post_warmup_approved_can_root_pose_world": _jsonable(can_pose),
             "canonical_hold_object_stability": object_stability,
             "camera_frames": camera_rows,
+            "external_task_camera_plan": external_task_camera_plan,
             "camera_warmup_frames": 40,
             "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": True,
@@ -2252,18 +2203,14 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "policy_candidate_bound": candidate_id or None,
             "wrist_approach_capture": wrist_approach_capture,
             "semantic_override_layer": SEMANTIC_OVERRIDE_LAYER,
-            "semantic_override_layer_digest": _canonical_digest(
-                SEMANTIC_OVERRIDE_LAYER
-            ),
+            "semantic_override_layer_digest": _canonical_digest(SEMANTIC_OVERRIDE_LAYER),
             "semantic_override_layer_composed": True,
             "semantic_source_usd_mutated": False,
             "sealed_source_mutated": False,
             # Both follow the episodes rather than asserting their absence: a
             # run that queried two policies and read their outcomes must not
             # keep reporting that it did neither.
-            "candidate_policy_queried": bool(
-                (policy_episode or {}).get("batches")
-            ),
+            "candidate_policy_queried": bool((policy_episode or {}).get("batches")),
             "candidate_outcomes_accessed": bool(
                 (policy_episode or {}).get("comparison", {}).get("ranking")
             ),
@@ -2305,7 +2252,10 @@ def main(argv: list[str] | None = None) -> int:
     result_path = output / RESULT_NAME
     result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     app_launcher.app.close()
-    print("BLUEPRINT_ADP009D_NATIVE_MICROCHECK_" + ("OK" if result["status"] == "completed" else "BLOCKED"))
+    print(
+        "BLUEPRINT_ADP009D_NATIVE_MICROCHECK_"
+        + ("OK" if result["status"] == "completed" else "BLOCKED")
+    )
     return 0 if result["status"] == "completed" else 1
 
 
