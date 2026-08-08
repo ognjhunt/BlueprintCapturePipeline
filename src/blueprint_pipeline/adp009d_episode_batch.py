@@ -33,7 +33,7 @@ try:  # flat provider-bundle layout
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
 
-BATCH_SCHEMA_VERSION = "adp009d_episode_batch.v2"
+BATCH_SCHEMA_VERSION = "adp009d_episode_batch.v3"
 
 # A proof, deliberately.  Enough to show the path runs repeatably and to surface
 # gross nondeterminism; nowhere near enough to rank two policies.
@@ -42,6 +42,7 @@ MAX_EPISODES_PER_CANDIDATE = 25
 
 BLOCKER_NO_EPISODES = "episode_batch_no_episodes_requested"
 BLOCKER_TOO_MANY = "episode_batch_exceeds_proof_scale"
+BLOCKER_CAPTURE_WITHOUT_MEDIA = "episode_batch_dataset_capture_requires_media"
 
 
 class EpisodeBatchError(ValueError):
@@ -62,9 +63,16 @@ def run_episode_batch(
     gripper: Any,
     episodes: int = DEFAULT_EPISODES_PER_CANDIDATE,
     media_output_dir: str | Path | None = None,
+    dataset_capture_factory: Any | None = None,
     **episode_kwargs: Any,
 ) -> dict[str, Any]:
-    """Run ``episodes`` independent episodes and report them without ranking."""
+    """Run ``episodes`` independent episodes and report them without ranking.
+
+    ``dataset_capture_factory`` builds one control-rate recorder per episode
+    from its episode id.  It requires media retention: a 15 Hz stream without
+    the authoritative policy-input PNGs beside it would be weaker evidence
+    presented as stronger.
+    """
 
     if int(episodes) < 1:
         raise EpisodeBatchError([BLOCKER_NO_EPISODES])
@@ -72,9 +80,16 @@ def run_episode_batch(
         # A proof pipeline asking for benchmark scale is a scope error, and
         # silently obliging would produce numbers that invite a decision.
         raise EpisodeBatchError([f"{BLOCKER_TOO_MANY}:{episodes}"])
+    if dataset_capture_factory is not None and media_output_dir is None:
+        raise EpisodeBatchError([BLOCKER_CAPTURE_WITHOUT_MEDIA])
 
     rows: list[dict[str, Any]] = []
     for index in range(int(episodes)):
+        episode_id = (
+            f"{candidate_id}-episode-{index:03d}"
+            if media_output_dir is not None
+            else None
+        )
         try:
             # A temporal policy's history is episode state.  Reset it before
             # the simulator reset so frame -15 of episode N can never come
@@ -90,9 +105,10 @@ def run_episode_batch(
                 prompt=prompt,
                 gripper=gripper,
                 media_output_dir=media_output_dir,
-                episode_id=(
-                    f"{candidate_id}-episode-{index:03d}"
-                    if media_output_dir is not None
+                episode_id=episode_id,
+                dataset_capture=(
+                    dataset_capture_factory(episode_id)
+                    if dataset_capture_factory is not None
                     else None
                 ),
                 **episode_kwargs,
@@ -155,6 +171,11 @@ def run_episode_batch(
                     "episode_id": receipt.get("episode_id"),
                     "visual_evidence": receipt.get("visual_evidence"),
                     "media_artifacts": receipt.get("media_artifacts"),
+                    "step_trace": receipt.get("step_trace"),
+                    "object_samples": receipt.get("object_samples"),
+                    "motion_quality": receipt.get("motion_quality"),
+                    "dataset_capture": receipt.get("dataset_capture"),
+                    "dataset_contract": receipt.get("dataset_contract"),
                     "observation_trace_digest": receipt.get(
                         "observation_trace_digest"
                     ),

@@ -477,8 +477,15 @@ def finalize_visual_evidence(
     policy_input_frames: Sequence[Mapping[str, Any]],
     terminal_observation: Mapping[str, Any],
     frames_per_second: float = 4.0,
+    seconds_of_sim_per_frame: float | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Seal the exact PNG sequence, frame manifest, and derived MP4."""
+    """Seal the exact PNG sequence, frame manifest, and derived MP4.
+
+    ``seconds_of_sim_per_frame`` states how much simulated time separates
+    consecutive retained frames.  When provided, the derived video records its
+    playback-speed factor so a reviewer knows whether motion plays at real
+    rate: 1.0 means one second of video shows one second of simulation.
+    """
 
     if not policy_input_frames:
         raise ValueError("visual_evidence_policy_input_frames_missing")
@@ -539,6 +546,15 @@ def finalize_visual_evidence(
     )
     video["relative_path"] = video_path.relative_to(output_dir).as_posix()
     video["derived_from_frame_manifest_digest"] = manifest["frame_manifest_digest"]
+    if seconds_of_sim_per_frame is not None:
+        if not math.isfinite(float(seconds_of_sim_per_frame)) or float(
+            seconds_of_sim_per_frame
+        ) <= 0.0:
+            raise ValueError("episode_video_sim_seconds_per_frame_invalid")
+        video["seconds_of_sim_per_frame"] = float(seconds_of_sim_per_frame)
+        video["playback_realtime_factor"] = float(frames_per_second) * float(
+            seconds_of_sim_per_frame
+        )
     artifacts.append(
         {
             "role": "episode_video",

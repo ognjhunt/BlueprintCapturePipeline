@@ -2355,3 +2355,65 @@ def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> No
     episode = _Path(runtime.__file__).read_text(encoding="utf-8")
     assert "isinstance(response, dict)" in probe
     assert "isinstance(response, dict)" in episode
+
+
+def test_render_interval_derives_from_candidate_cadence_and_profile(monkeypatch) -> None:
+    """Per-query rendering is earned by every bound candidate consuming only
+    the current frame; any per-step candidate or the dataset profile forces a
+    render at every environment step."""
+
+    from blueprint_pipeline.adp009d_isaac_runtime import resolve_render_interval
+
+    assert resolve_render_interval(
+        decimation=8, candidate_ids=["pi05_droid"], evidence_profile="eval"
+    ) == 64
+    assert resolve_render_interval(
+        decimation=8,
+        candidate_ids=["pi05_droid", "groot_n17_droid"],
+        evidence_profile="eval",
+    ) == 8
+    assert resolve_render_interval(
+        decimation=8, candidate_ids=["pi05_droid"], evidence_profile="dataset"
+    ) == 8
+    # replay runs the live leg fast; the offline pass renders every frame.
+    assert resolve_render_interval(
+        decimation=8, candidate_ids=["pi05_droid"], evidence_profile="replay"
+    ) == 64
+    monkeypatch.setenv("BLUEPRINT_ADP009D_RENDER_PER_QUERY", "0")
+    assert resolve_render_interval(
+        decimation=8, candidate_ids=["pi05_droid"], evidence_profile="eval"
+    ) == 8
+    monkeypatch.delenv("BLUEPRINT_ADP009D_RENDER_PER_QUERY")
+    # An unknown candidate is never granted the optimization.
+    assert resolve_render_interval(
+        decimation=8, candidate_ids=["unheard_of_policy"], evidence_profile="eval"
+    ) == 8
+
+
+def test_entrypoint_exports_every_tuning_variable(tmp_path: Path, monkeypatch) -> None:
+    """A setting that does not reach the worker is not a setting."""
+
+    monkeypatch.setenv("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", "policy")
+    monkeypatch.setenv("BLUEPRINT_ADP009D_RENDER_PER_QUERY", "1")
+    monkeypatch.setenv("BLUEPRINT_ADP009D_EPISODES", "3")
+    monkeypatch.setenv("BLUEPRINT_ADP009D_EVIDENCE_PROFILE", "replay")
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "job-envs",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="e" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        entrypoint = archive.read(
+            "provider_runtime/run_adp_arena_provider_runtime.sh"
+        ).decode()
+
+    assert 'export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="policy"' in entrypoint
+    assert 'export BLUEPRINT_ADP009D_RENDER_PER_QUERY="1"' in entrypoint
+    assert 'export BLUEPRINT_ADP009D_EPISODES="3"' in entrypoint
+    assert 'export BLUEPRINT_ADP009D_EVIDENCE_PROFILE="replay"' in entrypoint
+    assert "@@" not in entrypoint

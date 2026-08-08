@@ -2555,6 +2555,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             else:
                 result = run_adp009d_native_microcheck_vast(
+                    allowed_active_instance_ids=tuple(
+                        args.adp_allowed_active_vast_instance_id
+                    ),
                     job_dir=args.adp_job_dir,
                     prepared_bundle=prepared_bundle,
                     paid_resource_admission_grant=grant,

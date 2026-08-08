@@ -195,3 +195,47 @@ def test_batch_retains_complete_media_for_every_scored_episode(tmp_path) -> None
         (row["visual_evidence"] or {}).get("human_review_available") is True
         for row in batch["episodes"]
     )
+
+
+def test_batch_rows_retain_step_trace_motion_quality_and_dataset_capture(
+    tmp_path,
+) -> None:
+    """What the loop measures must survive into the persisted batch rows."""
+
+    from blueprint_pipeline.adp009d_dataset_capture import DatasetCaptureRecorder
+    from blueprint_pipeline.adp009d_droid_observation import (
+        DROID_EXTERIOR_VIEW_1,
+        DROID_WRIST_VIEW,
+    )
+
+    captured_ids: list[str] = []
+
+    def factory(episode_id: str) -> DatasetCaptureRecorder:
+        captured_ids.append(episode_id)
+        return DatasetCaptureRecorder(
+            output_dir=tmp_path,
+            episode_id=episode_id,
+            view_keys=(DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW),
+        )
+
+    batch = _batch(
+        episodes=2,
+        media_output_dir=tmp_path,
+        dataset_capture_factory=factory,
+    )
+
+    assert batch["schema_version"] == "adp009d_episode_batch.v3"
+    assert batch["episodes_scored"] == 2
+    for row in batch["episodes"]:
+        assert row["step_trace"]["total_steps"] == row["environment_steps"]
+        assert row["step_trace"]["control_hz"] == 15
+        assert row["motion_quality"]["observed_joint_velocity_max_abs_rad_s"] > 0.0
+        assert row["dataset_contract"]["control_hz"] == 15
+        assert row["object_samples"][0]["step_index"] == 0
+        assert row["dataset_capture"]["frame_count"] == row["environment_steps"]
+    assert captured_ids == [row["episode_id"] for row in batch["episodes"]]
+
+
+def test_dataset_capture_factory_requires_media_retention() -> None:
+    with pytest.raises(EpisodeBatchError):
+        _batch(dataset_capture_factory=lambda episode_id: None)

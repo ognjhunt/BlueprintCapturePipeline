@@ -236,3 +236,26 @@ def test_conversion_receipt_records_what_was_padded_and_asserts_no_crop() -> Non
     assert wide["padded_columns"] == 0
     assert wide["video_delta_indices"] == [-15, 0]
     assert wide["history_sampling"] == "exact_simulator_control_steps"
+
+
+def test_every_candidate_declares_an_observation_frame_cadence() -> None:
+    """Render scheduling is derived from what each policy consumes, not from a
+    per-run environment variable someone must remember."""
+
+    from blueprint_pipeline.adp009d_droid_observation import (
+        CANDIDATE_OBSERVATION_FRAME_CADENCE,
+        CANDIDATE_REQUIRED_VIEWS,
+        FRAME_CADENCE_PER_QUERY,
+        FRAME_CADENCE_PER_STEP,
+    )
+
+    assert set(CANDIDATE_OBSERVATION_FRAME_CADENCE) == set(CANDIDATE_REQUIRED_VIEWS)
+    for cadence in CANDIDATE_OBSERVATION_FRAME_CADENCE.values():
+        assert cadence in {FRAME_CADENCE_PER_QUERY, FRAME_CADENCE_PER_STEP}
+    # pi05 consumes only the current frame; GR00T consumes a t-minus-15-step
+    # history, so per-query rendering would silently feed it stale history.
+    assert CANDIDATE_OBSERVATION_FRAME_CADENCE["pi05_droid"] == FRAME_CADENCE_PER_QUERY
+    assert (
+        CANDIDATE_OBSERVATION_FRAME_CADENCE["groot_n17_droid"]
+        == FRAME_CADENCE_PER_STEP
+    )

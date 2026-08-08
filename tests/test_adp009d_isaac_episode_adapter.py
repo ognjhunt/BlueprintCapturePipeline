@@ -13,6 +13,7 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     GRIPPER_PHYSICAL_FULL_OPENING_M,
     IsaacEpisodeAdapter,
     IsaacEpisodeAdapterError,
+    IsaacKinematicReplayWriter,
     describe_adapter,
     rgb_from_camera_output,
     rotation_row_major_from_quaternion_wxyz,
@@ -92,7 +93,22 @@ class _Env:
         scene = _Scene(
             {"external_camera": _Camera(channels), "wrist_camera": _Camera(channels)}
         )
-        self.unwrapped = type("U", (), {"scene": scene, "device": "cpu"})()
+        self.unwrapped = type(
+            "U",
+            (),
+            {
+                "scene": scene,
+                "device": "cpu",
+                # Live environments always expose the sim-time counter; the
+                # stub models it so the freshness stamp cannot degrade silently.
+                "episode_length_buf": _Tensor([0.0]),
+                "cfg": type(
+                    "C",
+                    (),
+                    {"sim": type("S", (), {"dt": 1.0 / 120.0})(), "decimation": 8},
+                )(),
+            },
+        )()
 
     def reset(self, seed=None):
         self.reset_calls.append(seed)
@@ -391,3 +407,136 @@ def test_module_imports_without_isaac_or_torch() -> None:
     assert "import torch" not in header
     assert "import isaaclab" not in header
     assert "from pxr" not in header
+
+
+def test_policy_inputs_are_stamped_with_rendered_sim_time() -> None:
+    env = _Env()
+    env.unwrapped.episode_length_buf = _Tensor([3.0])
+    env.unwrapped.cfg = type("C", (), {
+        "sim": type("S", (), {"dt": 1.0 / 120.0})(),
+        "decimation": 8,
+    })()
+    adapter = _adapter(env)
+
+    inputs = adapter.read_policy_inputs()
+
+    # 3 environment steps x 8 physics steps x 1/120 s = 0.2 s.
+    assert inputs["observation_sim_time"] == pytest.approx(0.2)
+    assert adapter.sim_time() == pytest.approx(0.2)
+
+
+def test_sim_time_requires_the_environment_counter() -> None:
+    env = _Env()
+    env.unwrapped.episode_length_buf = None
+    adapter = _adapter(env)
+
+    with pytest.raises(IsaacEpisodeAdapterError, match="sim_time"):
+        adapter.sim_time()
+
+
+def test_full_joint_positions_expose_every_dof() -> None:
+    adapter = _adapter()
+
+    full = adapter.read_full_joint_positions()
+
+    assert len(full) == 13
+    assert full[0] == pytest.approx(0.0)
+    assert full[-1] == pytest.approx(0.6)
+
+
+def test_kinematic_replay_writer_scrubs_state_and_renders_without_physics() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _WritableRobot(_Robot):
+        def __init__(self):
+            super().__init__()
+            self.written: list[tuple] = []
+
+        def write_joint_state_to_sim(self, position, velocity):
+            self.written.append((position, velocity))
+
+    class _WritableCan(_Can):
+        def __init__(self):
+            super().__init__()
+            self.poses: list = []
+            self.velocities: list = []
+
+        def write_root_pose_to_sim(self, pose):
+            self.poses.append(pose)
+
+        def write_root_velocity_to_sim(self, velocity):
+            self.velocities.append(velocity)
+
+    class _RecordingSim:
+        def __init__(self):
+            self.render_calls = 0
+
+        def render(self):
+            self.render_calls += 1
+
+    class _RecordingScene(dict):
+        def __init__(self, cameras):
+            super().__init__(cameras)
+            self.update_dts: list[float] = []
+
+        def update(self, dt):
+            self.update_dts.append(float(dt))
+
+    env = _Env()
+    scene = _RecordingScene(
+        {"external_camera": _Camera(4), "wrist_camera": _Camera(4)}
+    )
+    env.unwrapped.scene = scene
+    env.unwrapped.sim = _RecordingSim()
+    robot = _WritableRobot()
+    can = _WritableCan()
+    adapter = IsaacEpisodeAdapter(
+        env=env,
+        robot=robot,
+        approved_can=can,
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
+    )
+    writer = IsaacKinematicReplayWriter(adapter=adapter)
+
+    state = {
+        "kind": "policy-step",
+        "frame_index": 0,
+        "sim_time_s": 0.0,
+        "joint_position_rad": [0.1] * 7,
+        "full_joint_position_rad": [0.1] * 13,
+        "gripper_width_m": 0.05,
+        "object_sample": {
+            "step_index": 0,
+            "can_pose_world": [1.0, 2.0, 0.5, 1.0, 0.0, 0.0, 0.0],
+        },
+    }
+    writer.write_step_state(state)
+    writer.render()
+    views = writer.read_views()
+
+    position, velocity = robot.written[0]
+    assert list(map(float, torch.as_tensor(position).reshape(-1))) == (
+        pytest.approx([0.1] * 13)
+    )
+    assert float(torch.as_tensor(velocity).abs().sum()) == 0.0
+    assert list(map(float, torch.as_tensor(can.poses[0]).reshape(-1))) == (
+        pytest.approx([1.0, 2.0, 0.5, 1.0, 0.0, 0.0, 0.0])
+    )
+    assert float(torch.as_tensor(can.velocities[0]).abs().sum()) == 0.0
+    assert env.unwrapped.sim.render_calls == 1
+    assert scene.update_dts == [pytest.approx(1.0 / 120.0)]
+    assert "observation/exterior_image_1_left" in views
+
+
+def test_kinematic_replay_writer_requires_the_full_joint_vector() -> None:
+    pytest.importorskip("torch")
+    writer = IsaacKinematicReplayWriter(adapter=_adapter())
+
+    with pytest.raises(IsaacEpisodeAdapterError, match="full_joint"):
+        writer.write_step_state(
+            {"joint_position_rad": [0.0] * 7, "object_sample": {}}
+        )

@@ -419,6 +419,82 @@ def _phase(name: str, status: str = "started") -> None:
     print(f"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d_native:{name}:{status}", flush=True)
 
 
+try:  # flat provider-bundle layout
+    from adp009d_droid_observation import (
+        CANDIDATE_OBSERVATION_FRAME_CADENCE,
+        FRAME_CADENCE_PER_QUERY,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_droid_observation import (
+        CANDIDATE_OBSERVATION_FRAME_CADENCE,
+        FRAME_CADENCE_PER_QUERY,
+    )
+try:  # flat provider-bundle layout
+    from adp009d_droid_action_execution import DROID_OPEN_LOOP_HORIZON
+except ModuleNotFoundError:  # repository package
+    from .adp009d_droid_action_execution import DROID_OPEN_LOOP_HORIZON
+
+EVIDENCE_PROFILE_ENV = "BLUEPRINT_ADP009D_EVIDENCE_PROFILE"
+RENDER_PER_QUERY_ENV = "BLUEPRINT_ADP009D_RENDER_PER_QUERY"
+REPLAY_RENDER_ENV = "BLUEPRINT_ADP009D_REPLAY_RENDER"
+
+
+def replay_render_enabled(profile: str) -> bool:
+    """Replay renders offline after episodes: implied by the replay profile,
+    or forced alongside any profile for the parity canary."""
+
+    return (
+        str(profile) == "replay"
+        or os.environ.get(REPLAY_RENDER_ENV, "").strip() == "1"
+    )
+
+
+def evidence_profile() -> str:
+    """The run's evidence profile: eval (fast), dataset (per-step), replay."""
+
+    return os.environ.get(EVIDENCE_PROFILE_ENV, "").strip().lower() or "eval"
+
+
+def bound_candidate_ids() -> list[str]:
+    return [
+        part.strip()
+        for part in (os.environ.get("BLUEPRINT_ADP009D_POLICY_CANDIDATE") or "").split(",")
+        if part.strip()
+    ]
+
+
+def resolve_render_interval(
+    *, decimation: int, candidate_ids, evidence_profile: str
+) -> int:
+    """Physics steps between renders, derived from what the run consumes.
+
+    Rendering once per policy query is an ~88% saving and is granted only when
+    every bound candidate declares it consumes nothing but the current frame.
+    Any per-step candidate (GR00T's t-minus-15 history), the dataset profile
+    (which retains a frame per step), an unknown candidate, or the explicit
+    environment override forces a render at every environment step -- the
+    always-safe cadence.  The episode independently refuses stale frames, so a
+    misalignment here fails loudly rather than producing a plausible verdict.
+    """
+
+    per_step = int(decimation)
+    override = os.environ.get(RENDER_PER_QUERY_ENV, "").strip().lower()
+    if override in {"0", "false", "no"}:
+        return per_step
+    if str(evidence_profile) == "dataset":
+        return per_step
+    ids = [str(candidate_id) for candidate_id in candidate_ids if str(candidate_id)]
+    if not ids:
+        return per_step
+    if any(
+        CANDIDATE_OBSERVATION_FRAME_CADENCE.get(candidate_id)
+        != FRAME_CADENCE_PER_QUERY
+        for candidate_id in ids
+    ):
+        return per_step
+    return per_step * int(DROID_OPEN_LOOP_HORIZON)
+
+
 STOP_AFTER_FRAMES_ENV = "BLUEPRINT_ADP009D_STOP_AFTER_FRAMES"
 # Above this, a frame has accumulated something.  At or below it the render
 # never converged, whatever the reason.
@@ -1019,8 +1095,16 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
 
         cfg.sim.dt = 1.0 / 120.0
         cfg.seed = 20260806
-        cfg.sim.render_interval = 8
         cfg.decimation = 8
+        # Built at the always-safe per-step cadence: the camera warmup counts
+        # renders (forty of them settle the RTX accumulator) and the wrist
+        # approach reads diagnostic frames after individual steps -- both
+        # assume a render per environment step.  The episode section flips to
+        # the resolved cadence immediately before the policy batches, where
+        # the freshness guard refuses any stale query frame, so a cadence
+        # flip that failed to take effect fails loudly instead of silently
+        # serving eight-step-old observations.
+        cfg.sim.render_interval = int(cfg.decimation)
         cfg.episode_length_s = 5.0
         cfg.sim.physics = PhysxCfg(
             solver_type=1,
@@ -1880,12 +1964,17 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             _phase("policy_episode")
             phase_started = time.monotonic()
             try:
-                from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
+                from adp009d_isaac_episode_adapter import (
+                    IsaacEpisodeAdapter,
+                    IsaacKinematicReplayWriter,
+                )
                 from adp009d_droid_action_execution import GripperConvention
                 from adp009d_episode_batch import (
                     run_episode_batch,
                     summarize_candidate_batches,
                 )
+                from adp009d_dataset_capture import DatasetCaptureRecorder
+                from adp009d_droid_observation import CANDIDATE_REQUIRED_VIEWS
 
                 destination_path = Path(
                     runtime / "adp009d_task_destination.v1.json"
@@ -2064,6 +2153,37 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         })
                         _phase(f"policy_batch_{bound_candidate}", "blocked")
                         continue
+                    # ``dataset`` retains one H.264 stream per camera at the
+                    # true 15 Hz control rate (its per-step renders are forced
+                    # by resolve_render_interval); ``eval`` and ``replay`` run
+                    # the live leg at per-query rendering when every bound
+                    # candidate's cadence allows it.
+                    run_evidence_profile = evidence_profile()
+                    run_render_interval = resolve_render_interval(
+                        decimation=int(cfg.decimation),
+                        candidate_ids=candidate_ids,
+                        evidence_profile=run_evidence_profile,
+                    )
+                    # Isaac Lab consults cfg.sim.render_interval live inside
+                    # the decimation loop, so the flip takes effect from the
+                    # next step.  Applied only now -- after warmup and the
+                    # wrist approach -- and verified per query by the
+                    # episode's exact-time freshness guard.
+                    env.unwrapped.cfg.sim.render_interval = run_render_interval
+
+                    def _capture_factory(
+                        episode_id: str,
+                        _views: tuple[str, ...] = CANDIDATE_REQUIRED_VIEWS[
+                            bound_candidate
+                        ],
+                        _out_dir: Path = out_dir,
+                    ) -> DatasetCaptureRecorder:
+                        return DatasetCaptureRecorder(
+                            output_dir=_out_dir,
+                            episode_id=episode_id,
+                            view_keys=_views,
+                        )
+
                     batch = run_episode_batch(
                         environment=adapter,
                         policy=_client_for(server_receipt),
@@ -2073,10 +2193,88 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         gripper=convention,
                         episodes=int(os.environ.get("BLUEPRINT_ADP009D_EPISODES", "3")),
                         media_output_dir=out_dir,
+                        dataset_capture_factory=(
+                            _capture_factory
+                            if run_evidence_profile == "dataset"
+                            else None
+                        ),
+                        # Rendering less often than stepping is only sound
+                        # when every consumed frame is proven fresh.
+                        require_observation_freshness=(
+                            run_render_interval > int(cfg.decimation)
+                        ),
                     )
                     batch["transport"] = server_receipt.get("transport")
+                    batch["evidence_profile"] = run_evidence_profile
+                    batch["render_interval_physics_steps"] = run_render_interval
+                    batch["render_cadence"] = (
+                        "per_policy_query"
+                        if run_render_interval > int(cfg.decimation)
+                        else "per_environment_step"
+                    )
                     batches.append(batch)
                     _phase(f"policy_batch_{bound_candidate}", "completed")
+                replay_error: str | None = None
+                replay_rendered_episodes = 0
+                if batches and replay_render_enabled(evidence_profile()):
+                    # Offline pass: scrub each retained step trace through the
+                    # renderer kinematically -- no physics, no policy, no
+                    # server -- and seal a derived, provenance-labeled
+                    # capture per episode.  Non-fatal by design: episode
+                    # evidence must survive a replay failure.
+                    _phase("replay_render")
+                    replay_started = time.monotonic()
+                    try:
+                        from adp009d_dataset_capture import (
+                            CAPTURE_SOURCE_REPLAY,
+                            DatasetCaptureRecorder as _ReplayRecorder,
+                        )
+                        from episode_replay_render import (
+                            compare_capture_streams,
+                            replay_render_episode,
+                        )
+
+                        replay_writer = IsaacKinematicReplayWriter(adapter=adapter)
+                        for batch in batches:
+                            for row in batch.get("episodes") or []:
+                                trace = row.get("step_trace")
+                                if row.get("status") != "scored" or not trace:
+                                    continue
+                                recorder = _ReplayRecorder(
+                                    output_dir=out_dir,
+                                    episode_id=f"{row['episode_id']}-replay",
+                                    view_keys=CANDIDATE_REQUIRED_VIEWS[
+                                        batch["candidate_id"]
+                                    ],
+                                    source=CAPTURE_SOURCE_REPLAY,
+                                    derived_from_step_trace_digest=trace[
+                                        "step_trace_digest"
+                                    ],
+                                )
+                                row["replay_render"] = replay_render_episode(
+                                    step_trace=trace,
+                                    state_writer=replay_writer,
+                                    recorder=recorder,
+                                )
+                                replay_rendered_episodes += 1
+                                live_capture = row.get("dataset_capture")
+                                if live_capture:
+                                    # The parity canary in one receipt: live
+                                    # per-step capture vs derived replay of
+                                    # the same sealed states.
+                                    row["replay_parity"] = compare_capture_streams(
+                                        live_capture,
+                                        row["replay_render"]["capture"],
+                                        media_root_a=out_dir,
+                                        media_root_b=out_dir,
+                                    )
+                        _phase("replay_render", "completed")
+                    except Exception as exc:  # noqa: BLE001 - recorded, never fatal
+                        replay_error = f"{type(exc).__name__}: {exc}"
+                        _phase("replay_render", "blocked")
+                    timings_seconds["replay_render"] = round(
+                        time.monotonic() - replay_started, 6
+                    )
                 policy_episode = {
                     "batches": batches,
                     "comparison": summarize_candidate_batches(
@@ -2085,6 +2283,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     "episode_start_restore_receipts": (
                         episode_start_restore_receipts
                     ),
+                    "replay_render_enabled": replay_render_enabled(evidence_profile()),
+                    "replay_rendered_episodes": replay_rendered_episodes,
+                    "replay_render_error": replay_error,
                 }
                 _phase("policy_episode", "completed")
             except Exception as exc:  # noqa: BLE001 - recorded, never fatal
