@@ -68,6 +68,7 @@ def test_one_blocked_attempt_cannot_starve_the_readiness_deadline(
 
     monkeypatch.setattr(worker, "attempt_round_trip", _blocked)
     monkeypatch.setattr(worker, "ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(worker, "READINESS_POLL_SECONDS", 0.01)
 
     started = time.monotonic()
     with pytest.raises(RuntimeError) as excinfo:
@@ -79,8 +80,18 @@ def test_one_blocked_attempt_cannot_starve_the_readiness_deadline(
             transport=worker.TRANSPORT_GROOT_ZMQ,
         )
 
-    assert time.monotonic() - started < 0.5
-    assert "round_trip_attempt_timed_out" in str(excinfo.value)
+    # The intent is unchanged -- a blocked client must not run to the deadline.
+    # It is now bounded by a cap on *consecutive* timeouts rather than by
+    # ending on the first one, because ending on the first made any server
+    # slower than the attempt bound unreachable: pi05_droid loads in about 53
+    # seconds against a 30 second bound and failed every time.
+    assert time.monotonic() - started < 1.5
+    message = str(excinfo.value)
+    assert (
+        "policy_client_blocked_repeatedly" in message
+        or "round_trip_attempt_timed_out" in message
+        or "policy_server_never_answered" in message
+    ), message
 
 
 def test_failed_server_log_is_digest_bound_and_embedded_in_receipt(tmp_path) -> None:
@@ -303,3 +314,51 @@ def test_the_episode_connects_to_the_port_that_actually_started() -> None:
     # And it speaks GR00T's own client rather than assuming a websocket.
     assert "_GrootEpisodeClient" in source
     assert "get_action(observation)" in source
+
+
+def test_a_slow_server_is_not_killed_by_the_attempt_bound(monkeypatch) -> None:
+    """Ending readiness on the first timed-out attempt makes any server slower
+    than the bound unreachable.
+
+    pi05_droid loads 12.4 GB in about 53 seconds against a 30 second attempt
+    bound, so a policy with four clean prior receipts failed every time -- the
+    receipt read policy_server_round_trip_attempt_timed_out:30.000s and the
+    episode never ran.
+    """
+
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    calls = {"n": 0}
+
+    def _slow_then_ready(*_a, **_k):
+        calls["n"] += 1
+        if calls["n"] < 3:  # two attempts time out, as a slow load would
+            raise worker.RoundTripAttemptTimeout("attempt_exceeded_30s")
+        return {"action_chunk_rows": 15, "action_chunk_width": 8}
+
+    monkeypatch.setattr(worker, "_attempt_round_trip_with_timeout", _slow_then_ready)
+    monkeypatch.setattr(worker, "READINESS_POLL_SECONDS", 0.01)
+    result = worker.wait_for_round_trip(
+        host="127.0.0.1", port=1, timeout_seconds=30.0, process=None
+    )
+    assert result["action_chunk_rows"] == 15
+    assert calls["n"] == 3
+
+
+def test_a_client_that_always_blocks_still_fails_and_says_so(monkeypatch) -> None:
+    """The original concern is real: a wedged client must not run to the
+    deadline.  Consecutive timeouts are capped rather than ignored."""
+
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    def _always_blocks(*_a, **_k):
+        raise worker.RoundTripAttemptTimeout("attempt_exceeded_30s")
+
+    monkeypatch.setattr(worker, "_attempt_round_trip_with_timeout", _always_blocks)
+    monkeypatch.setattr(worker, "READINESS_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(worker, "MAX_CONSECUTIVE_ATTEMPT_TIMEOUTS", 3)
+    with pytest.raises(RuntimeError) as excinfo:
+        worker.wait_for_round_trip(
+            host="127.0.0.1", port=1, timeout_seconds=300.0, process=None
+        )
+    assert "policy_client_blocked_repeatedly" in str(excinfo.value)

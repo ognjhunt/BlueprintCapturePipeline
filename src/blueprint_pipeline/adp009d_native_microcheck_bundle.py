@@ -74,6 +74,14 @@ OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 export BLUEPRINT_ADP009D_OUTPUT_DIR="$OUT_DIR"
 export BLUEPRINT_ADP009D_POLICY_CANDIDATE="@@POLICY_CANDIDATE@@"
 export BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES="@@CAMERA_WARMUP_FRAMES@@"
+# Never exported, so the worker always rendered 1280x720 and the 16x
+# saving from rendering at the size the policies consume was never once
+# active -- a setting that does not reach the worker is not a setting.
+export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"
+export BLUEPRINT_ADP009D_RENDER_PER_QUERY="@@RENDER_PER_QUERY@@"
+export BLUEPRINT_ADP009D_EPISODES="@@EPISODES@@"
+export BLUEPRINT_ADP009D_FIRST_RENDER_BUDGET_SECONDS="@@FIRST_RENDER_BUDGET@@"
+export BLUEPRINT_ADP009D_MAX_GAUSSIANS_TO_ACCUMULATE="@@MAX_GAUSSIANS@@"
 export BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"
 mkdir -p "$OUT_DIR"
 
@@ -890,6 +898,23 @@ def build_native_microcheck_bundle(
         .replace(
             "@@STOP_AFTER_FRAMES@@",
             str(os.environ.get("BLUEPRINT_ADP009D_STOP_AFTER_FRAMES", "")),
+        )
+        .replace(
+            "@@CAMERA_RESOLUTION@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", "")),
+        )
+        .replace(
+            "@@RENDER_PER_QUERY@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_RENDER_PER_QUERY", "")),
+        )
+        .replace("@@EPISODES@@", str(os.environ.get("BLUEPRINT_ADP009D_EPISODES", "")))
+        .replace(
+            "@@FIRST_RENDER_BUDGET@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_FIRST_RENDER_BUDGET_SECONDS", "")),
+        )
+        .replace(
+            "@@MAX_GAUSSIANS@@",
+            str(os.environ.get("BLUEPRINT_ADP009D_MAX_GAUSSIANS_TO_ACCUMULATE", "")),
         ),
     )
     generated = generated_at or utc_now_iso()

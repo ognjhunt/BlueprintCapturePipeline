@@ -38,6 +38,9 @@ READINESS_POLL_SECONDS = 10.0
 # than the overall model-load allowance and leaves the outer loop free to
 # observe process exit and its own deadline.
 ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS = 30.0
+# Enough consecutive timeouts to distinguish a slow load from a wedged
+# client, without letting a genuinely blocked client run to the deadline.
+MAX_CONSECUTIVE_ATTEMPT_TIMEOUTS = 6
 SERVER_LOG_TAIL_BYTES = 32_768
 DROID_ACTION_WIDTH = 8
 DROID_OPEN_LOOP_HORIZON = 8
@@ -240,6 +243,7 @@ def wait_for_round_trip(
 
     started = time.monotonic()
     attempts = 0
+    timed_out_attempts = 0
     last_error: str | None = None
     while time.monotonic() - started < timeout_seconds:
         if process is not None and process.poll() is not None:
@@ -260,9 +264,23 @@ def wait_for_round_trip(
             result["readiness_seconds"] = round(time.monotonic() - started, 3)
             return result
         except RoundTripAttemptTimeout as exc:
-            # Do not start another vendor call while the timed-out daemon may
-            # still be blocked.  Preserve this exact diagnosis immediately.
-            raise RuntimeError(str(exc)) from exc
+            # Retried, not terminal.  Ending readiness on the first timed-out
+            # attempt makes any server slower than the attempt bound
+            # unreachable: pi05_droid loads 12.4 GB in about 53 seconds against
+            # a 30 second bound, so a policy with four clean prior receipts
+            # failed every time.
+            #
+            # The original concern -- not starting another vendor call while a
+            # timed-out daemon thread may still hold the socket -- is real, so
+            # consecutive timeouts are capped rather than ignored.  A server
+            # that never answers still fails, and now says which way it failed.
+            timed_out_attempts += 1
+            last_error = f"{type(exc).__name__}: {exc}"
+            if timed_out_attempts >= MAX_CONSECUTIVE_ATTEMPT_TIMEOUTS:
+                raise RuntimeError(
+                    f"policy_client_blocked_repeatedly:{timed_out_attempts}:{exc}"
+                ) from exc
+            time.sleep(min(READINESS_POLL_SECONDS, max(0.0, timeout_seconds - (time.monotonic() - started))))
         except Exception as exc:  # noqa: BLE001 - not-yet-ready is the normal case
             last_error = f"{type(exc).__name__}: {exc}"
             remaining = float(timeout_seconds) - (time.monotonic() - started)

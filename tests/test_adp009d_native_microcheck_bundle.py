@@ -2131,3 +2131,49 @@ def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> No
     episode = _Path(runtime.__file__).read_text(encoding="utf-8")
     assert "isinstance(response, dict)" in probe
     assert "isinstance(response, dict)" in episode
+
+
+def test_the_render_resolution_reaches_the_worker() -> None:
+    """It never did, so every run rendered 1280x720.
+
+    The 16x saving from rendering at the size the policies actually consume
+    was never once active: a setting the entrypoint does not export is not a
+    setting, and the worker's own marker read 1280x720 while the launch
+    environment said policy.
+    """
+
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+
+    assert 'BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"' in ENTRYPOINT
+    assert 'BLUEPRINT_ADP009D_RENDER_PER_QUERY="@@RENDER_PER_QUERY@@"' in ENTRYPOINT
+
+    import inspect
+
+    from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle
+
+    source = inspect.getsource(bundle)
+    assert '"@@CAMERA_RESOLUTION@@",' in source
+    assert '"@@RENDER_PER_QUERY@@",' in source
+
+
+def test_every_tuning_env_the_runtime_reads_is_exported_by_the_entrypoint() -> None:
+    """The whole class, so the next one cannot be silently inert."""
+
+    import re
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    read = set(re.findall(r'"(BLUEPRINT_ADP009D_[A-Z_]+)"', source))
+    # Output/candidate bindings are exported by other means.
+    # Output/candidate bindings are exported by other means, and the
+    # marker prefix is a literal rather than an environment name.
+    read -= {
+        "BLUEPRINT_ADP009D_OUTPUT_DIR",
+        "BLUEPRINT_ADP009D_POLICY_CANDIDATE",
+        "BLUEPRINT_ADP009D_NATIVE_MICROCHECK_",
+    }
+    missing = {name for name in read if name not in ENTRYPOINT}
+    assert not missing, f"runtime reads env the entrypoint never exports: {sorted(missing)}"
