@@ -260,3 +260,101 @@ def test_the_episode_connects_to_the_port_that_actually_started() -> None:
     # And it speaks GR00T's own client rather than assuming a websocket.
     assert "_GrootEpisodeClient" in source
     assert "get_action(observation)" in source
+
+
+def test_a_blocking_attempt_cannot_starve_the_readiness_deadline() -> None:
+    """The loop tests elapsed time, which only helps if control returns to it.
+
+    groot_n17_droid ran forty-seven minutes against a fifteen-minute timeout
+    because the ZMQ client blocked on connect -- its timeout_ms governs the
+    request, not the connect -- so the while condition was never re-evaluated
+    and the loop was never given the chance to give up.
+    """
+
+    import time
+
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError) as excinfo:
+        worker.wait_for_round_trip(
+            host="127.0.0.1",
+            port=1,
+            timeout_seconds=3.0,
+            process=None,
+            transport=worker.TRANSPORT_OPENPI_WEBSOCKET,
+        )
+    elapsed = time.monotonic() - started
+    # Bounded by its own deadline rather than by whatever it called.
+    assert elapsed < 30.0, elapsed
+    assert "policy_server_never_answered" in str(
+        excinfo.value
+    ) or "policy_client_blocked_every_attempt" in str(excinfo.value)
+
+
+def test_the_deadline_holds_even_when_every_attempt_hangs(monkeypatch) -> None:
+    """And the failure names the client, not the server.
+
+    A server that never answers and a client that never returns need different
+    repairs, and the second is invisible in a plain "never answered".
+    """
+
+    import time
+
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    monkeypatch.setattr(worker, "ATTEMPT_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(worker, "READINESS_POLL_SECONDS", 0.05)
+
+    def _hangs(*_args, **_kwargs):
+        time.sleep(30)
+
+    monkeypatch.setattr(worker, "attempt_round_trip", _hangs)
+    started = time.monotonic()
+    with pytest.raises(RuntimeError) as excinfo:
+        worker.wait_for_round_trip(
+            host="127.0.0.1", port=1, timeout_seconds=1.0, process=None
+        )
+    elapsed = time.monotonic() - started
+    assert elapsed < 10.0, elapsed
+    assert "policy_client_blocked_every_attempt" in str(excinfo.value)
+
+
+def test_a_fast_success_is_not_penalised_by_the_deadline(monkeypatch) -> None:
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    monkeypatch.setattr(
+        worker,
+        "attempt_round_trip",
+        lambda *a, **k: {"action_chunk_rows": 15, "action_chunk_width": 8},
+    )
+    result = worker.wait_for_round_trip(
+        host="127.0.0.1", port=1, timeout_seconds=30.0, process=None
+    )
+    assert result["action_chunk_rows"] == 15
+    assert result["readiness_attempts"] == 1
+
+
+def test_a_failed_readiness_receipt_carries_the_servers_own_output(tmp_path) -> None:
+    """Diagnosed from what the server printed, not from a sibling artefact.
+
+    Requiring a reader to correlate the receipt with a log file across a
+    provider upload is how a diagnosis gets deferred to another paid run --
+    and groot_n17_droid has now cost several without one.
+    """
+
+    import inspect
+
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    source = inspect.getsource(worker.main)
+    assert '"server_log_tail"' in source
+    assert '"server_log_bytes"' in source
+    assert '"server_log_path"' in source
+    # A server that printed nothing did not start; one that printed and then
+    # stopped answering is a different failure.
+    assert '"server_produced_output"' in source
+    # Bounded, so a runaway log cannot bloat the receipt meant to explain it.
+    assert worker.SERVER_LOG_TAIL_CHARS <= 32000
+    # Read defensively: a missing or unreadable log must not mask the real error.
+    assert "except OSError" in source

@@ -29,6 +29,9 @@ DEFAULT_PORT = 8000
 # Loading 12.4 GB of weights dominates this; a port appears long before.
 READINESS_TIMEOUT_SECONDS = 900.0
 READINESS_POLL_SECONDS = 10.0
+# Enough of the server's last words to diagnose from, bounded so a runaway
+# log cannot bloat the receipt it is meant to explain.
+SERVER_LOG_TAIL_CHARS = 8000
 DROID_ACTION_WIDTH = 8
 DROID_OPEN_LOOP_HORIZON = 8
 
@@ -145,6 +148,46 @@ def attempt_round_trip(host: str, port: int, transport: str = TRANSPORT_OPENPI_W
     }
 
 
+# A single attempt gets its own deadline.  The readiness loop tests elapsed
+# time in its `while` condition, which only helps if control returns to it: a
+# blocking attempt starves the check entirely.  groot_n17_droid ran forty-seven
+# minutes against this fifteen-minute timeout because the ZMQ client blocked on
+# connect -- its own timeout_ms governs the request, not the connect -- so the
+# loop was never given the chance to give up.
+ATTEMPT_TIMEOUT_SECONDS = 60.0
+
+
+def _call_with_deadline(call, seconds: float):
+    """Run ``call`` with a hard deadline, whatever it blocks on.
+
+    A worker thread rather than a signal: the blocking is inside a socket or an
+    import in native code, where a Python-level alarm may never be delivered,
+    and signal handling is main-thread only.  The thread is a daemon and is
+    deliberately abandoned on timeout -- it cannot be killed, and the worker
+    process is short-lived and exits after writing its receipt, so a leaked
+    thread costs nothing while a starved loop costs the whole run.
+    """
+
+    import threading
+
+    box: dict = {}
+
+    def _run() -> None:
+        try:
+            box["value"] = call()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller
+            box["error"] = exc
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise TimeoutError(f"attempt_exceeded_{seconds:.0f}s")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def wait_for_round_trip(
     *,
     host: str,
@@ -157,6 +200,7 @@ def wait_for_round_trip(
 
     started = time.monotonic()
     attempts = 0
+    blocked_attempts = 0
     last_error: str | None = None
     while time.monotonic() - started < timeout_seconds:
         if process is not None and process.poll() is not None:
@@ -164,14 +208,26 @@ def wait_for_round_trip(
                 f"policy_server_exited_before_ready:{process.returncode}"
             )
         attempts += 1
+        remaining = timeout_seconds - (time.monotonic() - started)
+        budget = max(1.0, min(ATTEMPT_TIMEOUT_SECONDS, remaining))
         try:
-            result = attempt_round_trip(host, port, transport)
+            result = _call_with_deadline(
+                lambda: attempt_round_trip(host, port, transport), budget
+            )
             result["readiness_attempts"] = attempts
             result["readiness_seconds"] = round(time.monotonic() - started, 3)
             return result
         except Exception as exc:  # noqa: BLE001 - not-yet-ready is the normal case
             last_error = f"{type(exc).__name__}: {exc}"
+            blocked_attempts += isinstance(exc, TimeoutError)
             time.sleep(READINESS_POLL_SECONDS)
+    # Named separately: a server that never answers and a client that never
+    # returns need different repairs, and the second is invisible in a plain
+    # "never answered".
+    if blocked_attempts and blocked_attempts == attempts:
+        raise RuntimeError(
+            f"policy_client_blocked_every_attempt:{attempts}:{last_error}"
+        )
     raise RuntimeError(f"policy_server_never_answered:{last_error}")
 
 
@@ -241,6 +297,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         exit_code = 0
     except Exception as exc:  # noqa: BLE001 - the failure is the evidence
+        # The server's own last words go in the receipt, not only in a log file
+        # beside it.  A candidate that never becomes ready is diagnosed from
+        # what its server printed, and requiring a reader to correlate two
+        # artefacts across a provider upload is how a diagnosis gets deferred
+        # to another paid run.
+        server_tail = ""
+        try:
+            if log_path.is_file():
+                server_tail = log_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )[-SERVER_LOG_TAIL_CHARS:]
+        except OSError:
+            server_tail = ""
         receipt.update(
             {
                 "status": "blocked",
@@ -248,6 +317,14 @@ def main(argv: list[str] | None = None) -> int:
                 "error": f"{type(exc).__name__}: {exc}",
                 "server_pid": process.pid if process else None,
                 "server_exit_code": process.poll() if process else None,
+                "server_log_path": str(log_path),
+                "server_log_tail": server_tail,
+                "server_log_bytes": (
+                    log_path.stat().st_size if log_path.is_file() else 0
+                ),
+                # A server that printed nothing at all did not start; one that
+                # printed and then stopped answering is a different failure.
+                "server_produced_output": bool(server_tail.strip()),
             }
         )
         exit_code = 1
