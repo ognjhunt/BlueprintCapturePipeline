@@ -12,7 +12,7 @@ one policy is generally better.
 ## What landed
 
 The branch advanced from the overnight handoff at `54f70c8e0` to
-`51fd02555`. The changes fall into five evidence-bearing groups:
+`04db82770`. The changes fall into six evidence-bearing groups:
 
 - **P0, interpretable action delivery:** `c9103d311`, `b9a3b30ac`,
   `7b901349a`. Episode receipts retain reset/end joints, maximum joint motion,
@@ -47,6 +47,14 @@ The branch advanced from the overnight handoff at `54f70c8e0` to
   DROID `CameraCfg.offset` before prim spawn, so its sensor buffer and
   render-authoritative USD transform agree. A post-spawn metadata-only pose
   update is no longer accepted as a camera fix.
+- **Frozen scenario matrix and fail-closed native controls:** `46e5d2e99`,
+  `2086690c1`, `a350153b5`, `adee2091a`, `db9559137`, `3127e461c`,
+  `04db82770`. The policy-neutral 128-cell matrix binds identical cells and
+  seeds to both candidates and both controls. Every episode retains external,
+  wrist, and overview media. The positive control now targets the measured
+  finger-midpoint frame, gates every IK phase on arrival, and expresses the
+  raw world-aligned PhysX Jacobian in the yawed robot root before pairing it
+  with root-frame Cartesian errors.
 
 Other supporting changes are `a78e70dde` and `f98622f67` for the frames-only
 Aura comparison, `790b95eec` for explicit concurrent-GPU authority without
@@ -59,8 +67,8 @@ PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode
 .venv/bin/ruff check src/ tests/
 ```
 
-The previous code commit passed `941 passed, 1 skipped`. The scenario-control
-and overview-camera change passed `953 passed, 1 skipped`; Ruff was clean.
+The latest Jacobian-frame correction passed `962 passed, 1 skipped, 9052
+deselected` in the required filtered lane. Ruff was clean.
 
 ## Scientific findings through v84
 
@@ -176,8 +184,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v89
-ledgers add `$7.147675`, for `$18.145974` total and `$6.854026` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v90
+ledgers add `$7.256296`, for `$18.254595` total and `$6.745405` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -220,9 +228,10 @@ they are evidence that concurrency failed closed.
 | v87 canonical controls + overview retry | `$0.194701` estimated | All three camera warmups passed and the controls runner started, but the first control could not seal its required review video because the controls-only image lacked `ffmpeg`/`ffprobe`. No sealed control receipt or control outcome; encoded base media-toolchain preflight followed. |
 | v88 canonical controls + media preflight | `$0.136833` estimated | Both controls sealed complete external/wrist/overview media. Zero-action passed as `never_moved`; scripted positive failed as `never_moved`. The arm moved up to 0.81 rad while the finger midpoint remained at least 0.39 m from the can, exposing a guessed IK-body/tool-frame transform. The stock overview also retained zero task semantic pixels. No policy verdict. |
 | v89 measured grasp frame + overview gate | `$0.234044` | The task-centered overview passed with 111 exact-can semantic pixels inside the frame margin and both controls sealed all six videos. Zero-action passed as `never_moved`; scripted positive again failed as `never_moved`. The measured tool offset reduced the descend error, but holding the camera-aimed body orientation made the pregrasp body pose unreachable. No policy verdict. |
+| v90 task orientation + phase gate | `$0.108621` | Zero-action passed. The scripted positive correctly aborted after the 80-step pregrasp instead of advancing or closing, with `scripted_control_phase_not_reached:pregrasp:error_m=0.331908` and `never_moved`. Its intended mostly world -Y motion appeared mostly as world +X, exposing a world-Jacobian/root-error frame mismatch. All six videos were retained. No candidate was provisioned or queried; no policy verdict. |
 
 All completed paid attempts were followed by an API provider-zero check. v86,
-v87, v88, and v89 were each launched from provider zero as the sole active instance;
+v87, v88, v89, and v90 were each launched from provider zero as the sole active instance;
 after each automatic teardown a fresh Vast API query returned `active: 0 []`.
 
 ## Scenario-family and control-harness progress after v85
@@ -332,8 +341,32 @@ The next encoded correction versions the plan as `adp009d_control_plan.v3` and:
   `scripted_control_phase_not_reached` blocker before the gripper closes or the
   program advances when convergence is not established.
 
-This correction is hermetically covered but remains unqualified until the next
-controls-only canonical canary. No learned policy may run on its strength alone.
+v90 executed that correction and made the remaining failure interpretable. It
+aborted the scripted positive at pregrasp after 80 steps with a 0.331908 m
+finger-midpoint error. The target required approximately `[+0.090, -0.326,
++0.153]` m in world coordinates, while the observed tool motion was
+approximately `[+0.208, -0.029, +0.065]` m. The exact pinned Arena source
+confirms the absolute action binds ordered `panda_joint1` through
+`panda_joint7`; action-column ordering was not the fault.
+
+The exact pinned IsaacLab source at `e57379c634b42db5a0fe9f754341be6e2a7c7c43`
+establishes the actual frame contract: `root_view.get_jacobians()` is
+world-aligned, while the differential-IK pose error is expressed in the robot
+root. IsaacLab's own task-space action rotates both the linear and angular
+Jacobian row blocks by the inverse root rotation. ADP-009D's robot root is
+yawed -90 degrees; the runtime had transformed the target/current poses into
+that root but had passed the raw world Jacobian unchanged. That predicts the
+wrong-axis response v90 recorded.
+
+Commit `04db82770` applies the pinned implementation's world-to-root rotation
+to both Jacobian row blocks in the reusable approach and scripted-control
+paths. It also fails closed unless arm action indices resolve exactly to
+`panda_joint1` through `panda_joint7`, retains body/joint/Jacobian/frame
+bindings, adds controlled-body pose to every state sample, and retains bounded
+per-step target, error, Jacobian norm/rank, and joint-delta diagnostics. The
+hermetic -90-degree regression maps v90's world error to the expected root
+error. This is a locally proven harness correction, not yet a simulator-control
+success; one controls-only canonical canary remains required.
 
 ## What remains open
 
@@ -355,10 +388,11 @@ controls-only canonical canary. No learned policy may run on its strength alone.
 
 ## Single next action
 
-After landing the task-orientation/body-local grasp-frame and phase-arrival
-fixes, from provider zero run only the
-checked-in canonical scenario's zero-action
+From provider zero, run only the checked-in canonical scenario's zero-action
 negative and deterministic scripted-positive control pair. Do not query either
-learned policy. If the scripted positive does not place the exact SimReady can,
-retain the overview/external/wrist videos and typed receipt, tear down to
-provider zero, and fix the harness locally before any learned-policy spend.
+learned policy. Verify that the retained IK binding reports world-to-root
+rotation for both Jacobian row blocks and that pregrasp motion converges along
+the commanded task direction. If the scripted positive does not place the
+exact SimReady can, retain the overview/external/wrist videos and typed receipt,
+tear down to provider zero, and fix the harness locally before any
+learned-policy spend.
