@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from pathlib import Path
 
 import pytest
 
@@ -83,6 +84,74 @@ def test_worker_rejects_one_changed_object(tmp_path, small_identity) -> None:
     blocked = json.loads((tmp_path / "blocked.json").read_text())
     assert blocked["status"] == "blocked"
     assert blocked["offline_main_ref_written"] is False
+
+
+def test_runtime_binding_preserves_checkpoint_and_offline_selector_token(
+    tmp_path, small_identity
+) -> None:
+    _expected, values = small_identity
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    for name, value in values.items():
+        (snapshot / name).write_bytes(value)
+
+    checkpoint = tmp_path / "sealed-checkpoint"
+    checkpoint.mkdir()
+    config = json.dumps({"model_name": backbone.MODEL_ID, "model_type": "fixture"})
+    (checkpoint / "config.json").write_text(config)
+    (checkpoint / "weights.safetensors").write_bytes(b"sealed-policy")
+    before = (checkpoint / "config.json").read_bytes()
+
+    runtime = tmp_path / "runtime-checkpoint"
+    aliases = tmp_path / "aliases"
+    receipt = backbone.prepare_offline_runtime_binding(
+        checkpoint_root=checkpoint,
+        backbone_snapshot=snapshot,
+        runtime_checkpoint_root=runtime,
+        alias_root=aliases,
+        output_path=tmp_path / "binding.json",
+    )
+
+    runtime_config = json.loads((runtime / "config.json").read_text())
+    model_name = runtime_config["model_name"]
+    assert "nvidia/Cosmos-Reason2-2B" in model_name
+    assert Path(model_name).resolve(strict=True) == aliases.resolve()
+    assert json.loads((Path(model_name) / "config.json").read_text()) == json.loads(
+        values["config.json"]
+    )
+    assert (checkpoint / "config.json").read_bytes() == before
+    assert (runtime / "weights.safetensors").is_symlink()
+    assert (runtime / "weights.safetensors").resolve() == (
+        checkpoint / "weights.safetensors"
+    ).resolve()
+    assert receipt["status"] == "verified"
+    assert receipt["sealed_checkpoint_modified"] is False
+    assert receipt["local_backbone_alias_resolves_to_verified_snapshot"] is True
+
+
+def test_runtime_binding_rejects_changed_publisher_model_name(
+    tmp_path, small_identity
+) -> None:
+    _expected, values = small_identity
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    for name, value in values.items():
+        (snapshot / name).write_bytes(value)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text('{"model_name":"changed/model"}')
+
+    with pytest.raises(RuntimeError, match="backbone_identity_mismatch"):
+        backbone.prepare_offline_runtime_binding(
+            checkpoint_root=checkpoint,
+            backbone_snapshot=snapshot,
+            runtime_checkpoint_root=tmp_path / "runtime",
+            alias_root=tmp_path / "aliases",
+            output_path=tmp_path / "blocked-binding.json",
+        )
+    blocked = json.loads((tmp_path / "blocked-binding.json").read_text())
+    assert blocked["status"] == "blocked"
+    assert blocked["sealed_checkpoint_modified"] is False
 
 
 def test_local_access_probe_is_revision_and_listing_bound_without_secret_output(

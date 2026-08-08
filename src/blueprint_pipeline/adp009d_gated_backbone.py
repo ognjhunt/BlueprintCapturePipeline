@@ -19,6 +19,7 @@ except ModuleNotFoundError:  # repository package
 
 SCHEMA_VERSION = "adp009d_gated_backbone_identity.v1"
 ACCESS_SCHEMA_VERSION = "adp009d_gated_backbone_access.v1"
+RUNTIME_BINDING_SCHEMA_VERSION = "adp009d_groot_offline_runtime_binding.v1"
 MODEL_ID = "nvidia/Cosmos-Reason2-2B"
 REVISION = "9ce19a195e423419c349abfc86fd07178b230561"
 EXPECTED_TOTAL_BYTES = 4_889_656_452
@@ -224,10 +225,149 @@ def verify_and_seal_offline_cache(*, cache_dir: Path, output_path: Path) -> dict
     return receipt
 
 
+def prepare_offline_runtime_binding(
+    *,
+    checkpoint_root: Path,
+    backbone_snapshot: Path,
+    runtime_checkpoint_root: Path,
+    alias_root: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    """Bind the frozen GR00T checkpoint to a verified local backbone.
+
+    GR00T N1.7 selects its Qwen3 backbone by looking for the literal publisher
+    token ``nvidia/Cosmos-Reason2`` in ``config.model_name``.  Replacing that
+    value with an ordinary local path therefore selects the wrong class.  The
+    ``nvidia/Cosmos-Reason2-2B/../..`` alias retains the upstream selector token
+    while resolving to a flat local directory of links to the verified
+    snapshot.  A symlink-only checkpoint overlay keeps the downloaded frozen
+    checkpoint untouched; only its small runtime config is derived.
+    """
+
+    checkpoint = checkpoint_root.expanduser().resolve()
+    snapshot = backbone_snapshot.expanduser().resolve()
+    runtime = runtime_checkpoint_root.expanduser().resolve()
+    aliases = alias_root.expanduser().resolve()
+    blockers: list[str] = []
+
+    config_path = checkpoint / "config.json"
+    config_bytes = config_path.read_bytes() if config_path.is_file() else b""
+    try:
+        config = json.loads(config_bytes) if config_bytes else {}
+    except json.JSONDecodeError:
+        config = {}
+        blockers.append("adp009d_groot_checkpoint_config_invalid")
+    if not isinstance(config, dict):
+        config = {}
+        blockers.append("adp009d_groot_checkpoint_config_invalid")
+    if config.get("model_name") != MODEL_ID:
+        blockers.append("adp009d_groot_checkpoint_backbone_identity_mismatch")
+    if not checkpoint.is_dir():
+        blockers.append("adp009d_groot_checkpoint_root_missing")
+    if not snapshot.is_dir():
+        blockers.append("adp009d_gated_backbone_snapshot_missing")
+    if runtime.exists() or runtime.is_symlink():
+        blockers.append("adp009d_groot_runtime_checkpoint_root_not_fresh")
+    if aliases.exists() or aliases.is_symlink():
+        blockers.append("adp009d_groot_backbone_alias_root_not_fresh")
+    if snapshot.is_dir() and (snapshot / "nvidia").exists():
+        blockers.append("adp009d_groot_backbone_alias_reserved_name_collision")
+
+    receipt: dict[str, Any] = {
+        "schema_version": RUNTIME_BINDING_SCHEMA_VERSION,
+        "status": "blocked" if blockers else "verified",
+        "checkpoint_root": str(checkpoint),
+        "checkpoint_config_sha256": (
+            "sha256:" + hashlib.sha256(config_bytes).hexdigest()
+            if config_bytes
+            else None
+        ),
+        "backbone_model_id": MODEL_ID,
+        "backbone_revision": REVISION,
+        "backbone_snapshot": str(snapshot),
+        "runtime_checkpoint_root": str(runtime),
+        "alias_root": str(aliases),
+        "sealed_checkpoint_modified": False,
+        "runtime_overlay_uses_symlinks": True,
+        "credentials_required_at_runtime": False,
+        "blockers": sorted(set(blockers)),
+    }
+    if blockers:
+        receipt["receipt_digest"] = canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+        if output_path.exists() or output_path.is_symlink():
+            raise FileExistsError("adp009d_groot_runtime_binding_receipt_overwrite_forbidden")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        raise RuntimeError(";".join(receipt["blockers"]))
+
+    aliases.mkdir(parents=True)
+    for relative, _size, _kind, _object_id in EXPECTED_FILES:
+        source = snapshot / relative
+        destination = aliases / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.symlink_to(source)
+    selector_anchor = aliases / "nvidia" / "Cosmos-Reason2-2B"
+    selector_anchor.mkdir(parents=True)
+    alias_name = str(selector_anchor / "../..")
+    if Path(alias_name).resolve(strict=True) != aliases:
+        raise RuntimeError("adp009d_groot_local_backbone_alias_resolution_failed")
+
+    runtime.mkdir(parents=True)
+    for source in checkpoint.iterdir():
+        if source.name == "config.json":
+            continue
+        (runtime / source.name).symlink_to(
+            source, target_is_directory=source.is_dir()
+        )
+    runtime_config = dict(config)
+    runtime_config["blueprint_original_model_name"] = MODEL_ID
+    runtime_config["blueprint_runtime_backbone_path"] = str(snapshot)
+    runtime_config["model_name"] = alias_name
+    runtime_config_path = runtime / "config.json"
+    runtime_config_path.write_text(
+        json.dumps(runtime_config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    receipt.update(
+        {
+            "alias_model_name": alias_name,
+            "runtime_checkpoint_config_sha256": (
+                "sha256:" + _sha256(runtime_config_path)
+            ),
+            "runtime_overlay_entry_count": len(list(runtime.iterdir())),
+            "original_backbone_identity_preserved": True,
+            "local_backbone_alias_resolves_to_verified_snapshot": all(
+                (aliases / relative).resolve(strict=True)
+                == (snapshot / relative).resolve(strict=True)
+                for relative, _size, _kind, _object_id in EXPECTED_FILES
+            ),
+        }
+    )
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    if output_path.exists() or output_path.is_symlink():
+        raise FileExistsError("adp009d_groot_runtime_binding_receipt_overwrite_forbidden")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return receipt
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--checkpoint-root", type=Path)
+    parser.add_argument("--runtime-checkpoint-root", type=Path)
+    parser.add_argument("--alias-root", type=Path)
+    parser.add_argument("--runtime-binding-output", type=Path)
     return parser
 
 
@@ -237,6 +377,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         cache_dir=args.cache_dir,
         output_path=args.output,
     )
+    binding_args = (
+        args.checkpoint_root,
+        args.runtime_checkpoint_root,
+        args.alias_root,
+        args.runtime_binding_output,
+    )
+    if any(binding_args) and not all(binding_args):
+        raise RuntimeError("adp009d_groot_runtime_binding_arguments_incomplete")
+    if all(binding_args):
+        prepare_offline_runtime_binding(
+            checkpoint_root=args.checkpoint_root,
+            backbone_snapshot=Path(receipt["snapshot_path"]),
+            runtime_checkpoint_root=args.runtime_checkpoint_root,
+            alias_root=args.alias_root,
+            output_path=args.runtime_binding_output,
+        )
     print(json.dumps(receipt, indent=2, sort_keys=True))
     return 0
 
@@ -251,8 +407,10 @@ __all__ = [
     "EXPECTED_TOTAL_BYTES",
     "MODEL_ID",
     "REVISION",
+    "RUNTIME_BINDING_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "main",
+    "prepare_offline_runtime_binding",
     "probe_gated_backbone_access",
     "verify_and_seal_offline_cache",
 ]

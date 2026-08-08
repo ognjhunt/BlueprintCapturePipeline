@@ -973,6 +973,19 @@ def test_entrypoint_records_how_the_worker_died(tmp_path: Path) -> None:
     assert "adp009d_worker_failed_without_runtime_result" in ENTRYPOINT
 
 
+def test_entrypoint_skips_arena_after_only_policy_fails_provisioning() -> None:
+    """A known single-policy blocker must not spend time installing Arena."""
+
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+
+    fail_fast = ENTRYPOINT.index("adp009d_single_candidate_policy_provisioning_failed")
+    arena_runner = ENTRYPOINT.index('"$RUNTIME_DIR/adp_arena_provider_runner.py"')
+    assert fail_fast < arena_runner
+    assert 'candidate_count" = "1"' in ENTRYPOINT
+    assert '"$provisioning_worst_rc" -ne 0' in ENTRYPOINT
+    assert '"arena_setup_skipped": True' in ENTRYPOINT
+
+
 def test_entrypoint_signal_decoding_is_correct(tmp_path: Path) -> None:
     """Exercise the embedded decoder on the exit codes that actually occur."""
 

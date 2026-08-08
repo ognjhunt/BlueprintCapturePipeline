@@ -68,6 +68,12 @@ def test_groot_uses_credential_only_for_explicit_pinned_backbone_materialization
     assert "adp009d_gated_backbone.py" in script
     assert "HF_HUB_OFFLINE=1" in script
     assert "TRANSFORMERS_OFFLINE=1" in script
+    assert '--runtime-checkpoint-root "/opt/adp009d-runtime-checkpoints/groot_n17_droid"' in script
+    assert '--alias-root "/opt/adp009d-model-aliases/groot_n17_droid"' in script
+    assert (
+        '--checkpoint-root "/opt/adp009d-runtime-checkpoints/groot_n17_droid"'
+        in script
+    )
     assert "unset HF_TOKEN" in script
     assert script.index("adp009d_gated_backbone.py") < script.rindex(
         "unset HF_TOKEN"

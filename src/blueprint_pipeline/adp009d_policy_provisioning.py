@@ -74,6 +74,8 @@ POLICY_PORT = 8000
 GATED_BACKBONE_AUTH_ENV = "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"
 GATED_BACKBONE_HF_HOME = "/opt/adp009d-hf-cache"
 GATED_BACKBONE_HUB_CACHE = f"{GATED_BACKBONE_HF_HOME}/hub"
+GATED_BACKBONE_ALIAS_ROOT = "/opt/adp009d-model-aliases/groot_n17_droid"
+GROOT_RUNTIME_CHECKPOINT_ROOT = "/opt/adp009d-runtime-checkpoints/groot_n17_droid"
 
 # Measured: sigmoid-free, this is the setting that keeps JAX from taking the
 # card out from under Isaac.  A smaller fraction narrows the race rather than
@@ -209,6 +211,7 @@ def build_provisioning_script(candidate_id: str) -> str:
     install = "\n".join(_install_commands(candidate_id))
     identity = ""
     server_identity_arg = ""
+    server_checkpoint_root = f"{CHECKPOINT_ROOT}/{candidate_id}"
     credential_contract = (
         "unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true"
     )
@@ -243,6 +246,7 @@ esac'''
             " \\\n  --worker-identity-receipt "
             f'"$OUT_DIR/adp009d_groot_worker_identity.{candidate_id}.json"'
         )
+        server_checkpoint_root = GROOT_RUNTIME_CHECKPOINT_ROOT
         gated_backbone = f'''# NVIDIA's exact GR00T checkpoint names a separately gated Cosmos backbone.
 # Download only the frozen revision under explicit authority, verify every Git/LFS
 # object, bind unversioned lookup to that revision, then remove the credential and
@@ -255,7 +259,11 @@ export HF_HOME="{GATED_BACKBONE_HF_HOME}"
   --cache-dir "{GATED_BACKBONE_HUB_CACHE}"
 "{venv_root}/bin/python" "$RUNTIME_DIR/adp009d_gated_backbone.py" \
   --cache-dir "{GATED_BACKBONE_HUB_CACHE}" \
-  --output "$OUT_DIR/adp009d_gated_backbone_identity.{candidate_id}.json"
+  --output "$OUT_DIR/adp009d_gated_backbone_identity.{candidate_id}.json" \
+  --checkpoint-root "{CHECKPOINT_ROOT}/{candidate_id}" \
+  --runtime-checkpoint-root "{GROOT_RUNTIME_CHECKPOINT_ROOT}" \
+  --alias-root "{GATED_BACKBONE_ALIAS_ROOT}" \
+  --runtime-binding-output "$OUT_DIR/adp009d_groot_offline_runtime_binding.{candidate_id}.json"
 unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
@@ -341,7 +349,7 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_server:starte
 "{venv_root}/bin/python" "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
   --candidate-id "{candidate_id}" \
   --source-root "{POLICY_SOURCE_ROOT}/{candidate_id}" \
-  --checkpoint-root "{CHECKPOINT_ROOT}/{candidate_id}" \
+  --checkpoint-root "{server_checkpoint_root}" \
   --python "{venv_root}/bin/python" \
   --host {POLICY_HOST} \
   --log "$OUT_DIR/adp009d_policy_server.{candidate_id}.log" \

@@ -169,6 +169,32 @@ else
     >"$OUT_DIR/adp009d_policy_provisioning_status.json"
 fi
 
+# A single-candidate diagnostic has no policy evidence to gain from cloning and
+# installing Arena after its only policy failed provisioning.  Multi-candidate
+# runs still continue so an independently healthy candidate retains episodes.
+candidate_count=$(printf '%s' "$provisioning_candidates" | tr ',' '\n' | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+if [ "$candidate_count" = "1" ] && [ "$provisioning_worst_rc" -ne 0 ]; then
+  /isaac-sim/python.sh - "$OUT_DIR" "$provisioning_worst_rc" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+code = int(sys.argv[2])
+(out / "adp009d_native_microcheck.json").write_text(json.dumps({
+    "schema_version": "adp009d_native_microcheck.v1",
+    "status": "blocked",
+    "blockers": ["adp009d_single_candidate_policy_provisioning_failed"],
+    "provisioning_exit_code": code,
+    "candidate_policy_queried": False,
+    "candidate_outcomes_accessed": False,
+    "arena_setup_skipped": True,
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:single_candidate_provisioning_failed:completed"
+  exit "$provisioning_worst_rc"
+fi
+
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
 if [ $runner_rc -ne 0 ] && [ ! -f "$OUT_DIR/adp009d_native_microcheck.json" ]; then
