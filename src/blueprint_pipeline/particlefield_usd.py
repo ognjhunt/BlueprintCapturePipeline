@@ -37,6 +37,15 @@ GAUSSIAN_SURFLET_SCHEMA = "ParticleField+ParticleFieldKernelGaussianSurfletAPI"
 GAUSSIAN_SURFLET_RECEIPT_SCHEMA_VERSION = "aura_ovrtx_particlefield_receipt.v1"
 
 
+# Zeroth-order spherical-harmonic basis constant, for reading a DC coefficient
+# back as a display colour: colour = 0.5 + C0 * dc.
+SH_C0 = 0.28209479177387814
+
+# The structural Z extent, as a fraction of the smaller learned planar extent.
+# Flat has to be relative: a constant epsilon would be thicker than wide for the
+# smallest surfels in this field, which is the bug it replaces at a new scale.
+STRUCTURAL_Z_SCALE_FRACTION = 0.01
+
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     result = 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
     result = np.where(np.isposinf(x), 1.0, result)
@@ -142,9 +151,22 @@ def build_gaussian_surflet_arrays(surfel: GaussianSurfelData) -> dict:
         raise ValueError("aura_2dgs_activated_scale_invalid")
     # GaussianSurflet is planar in local XY. Z is a structural API component,
     # not a learned thickness or an invented third ellipsoid scale.
-    scales = np.concatenate(
-        [planar_scales, np.ones((surfel.count, 1), dtype=np.float32)], axis=1
-    )
+    #
+    # It was authored as 1.0 on the reasoning that a structural component is
+    # "unused", which is multiplicative-identity thinking applied to a value
+    # that is an extent in metres, where the neutral value is zero.  With a
+    # median learned extent of 0.8 mm that made every surfel a one-metre
+    # needle, 1237x thicker than wide, and 414k of them at mean opacity 0.90
+    # put 47 m^3 of opaque geometry inside a 117 m^3 room with the camera in
+    # it.  Every frame rendered came back at max 1 of 255.
+    #
+    # Flat means proportional to the surfel, not a constant: a fixed epsilon
+    # would be thicker than wide for the smallest surfels here, which is the
+    # same error at a different magnitude.
+    structural_z = (
+        planar_scales.min(axis=1, keepdims=True) * STRUCTURAL_Z_SCALE_FRACTION
+    ).astype(np.float32)
+    scales = np.concatenate([planar_scales, structural_z], axis=1)
 
     raw_quats = np.asarray(surfel.quats, dtype=np.float64)
     norms = np.linalg.norm(raw_quats, axis=1, keepdims=True)
@@ -168,8 +190,24 @@ def build_gaussian_surflet_arrays(surfel: GaussianSurfelData) -> dict:
         "sh_degree": 3,
         "extent": extent,
         "mask_logits": np.ascontiguousarray(surfel.mask_logits, dtype=np.float32),
-        "structural_z_scale": 1.0,
+        "structural_z_scale_fraction": STRUCTURAL_Z_SCALE_FRACTION,
+        "structural_z_scale_max_m": float(structural_z.max()),
+        "structural_z_scale_median_m": float(np.median(structural_z)),
         "positive_infinite_opacity_logit_count": int(np.isposinf(surfel.opacity).sum()),
+        # Reported, never clamped: these are the sealed learned coefficients,
+        # and silently rescaling them would change the appearance the capture
+        # actually recorded.  A reader can see how much of the field renders
+        # outside displayable range and decide, rather than be told nothing.
+        "sh_dc_out_of_display_range_fraction": float(
+            1.0
+            - (
+                (0.5 + SH_C0 * dc.reshape(-1, 3) >= 0.0)
+                & (0.5 + SH_C0 * dc.reshape(-1, 3) <= 1.0)
+            )
+            .all(axis=1)
+            .mean()
+        ),
+        "sh_dc_radiance_max": float((0.5 + SH_C0 * dc).max()),
     }
 
 
@@ -326,7 +364,13 @@ def write_gaussian_surflet_particlefield_usd(
         "source_sha256": source_sha256,
         "output_sha256": f"sha256:{sha256_file(out_path)}",
         "learned_scale_components": 2,
-        "structural_z_scale": arrays["structural_z_scale"],
+        "structural_z_scale_fraction": arrays["structural_z_scale_fraction"],
+        "structural_z_scale_median_m": arrays["structural_z_scale_median_m"],
+        "structural_z_scale_max_m": arrays["structural_z_scale_max_m"],
+        "sh_dc_out_of_display_range_fraction": arrays[
+            "sh_dc_out_of_display_range_fraction"
+        ],
+        "sh_dc_radiance_max": arrays["sh_dc_radiance_max"],
         "positive_infinite_opacity_logit_count": arrays[
             "positive_infinite_opacity_logit_count"
         ],

@@ -1449,3 +1449,103 @@ def test_the_stage_probe_inspects_the_field_not_its_parent() -> None:
     assert 'm.endswith("GaussianSurflets")' in source
     # And it records which prim it actually read, so the answer is checkable.
     assert '"inspected_prim_path"' in source
+
+
+def _surfel_arrays(count: int = 8):
+    import numpy as np
+
+    from blueprint_pipeline.particlefield_usd import (
+        GaussianSurfelData,
+        build_gaussian_surflet_arrays,
+    )
+
+    rng = np.random.default_rng(20260807)
+    # log-scales around exp(-7) ~ 0.9mm, the real field's median planar extent.
+    return build_gaussian_surflet_arrays(
+        GaussianSurfelData(
+            count=count,
+            xyz=rng.normal(size=(count, 3)).astype("float32"),
+            opacity=np.full(count, 3.0, dtype="float32"),
+            f_dc=rng.normal(size=(count, 3)).astype("float32"),
+            scales=np.full((count, 2), -7.0, dtype="float32"),
+            quats=np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype="float32"), (count, 1)),
+            sh_rest=rng.normal(size=(count, 3 * 15)).astype("float32"),
+            mask_logits=np.zeros((count, 3), dtype="float32"),
+            properties=(),
+        )
+    )
+
+
+def test_the_structural_z_extent_is_flat_not_one_metre() -> None:
+    """It was authored as 1.0 because a structural component is "unused".
+
+    That is multiplicative-identity thinking applied to an extent in metres,
+    where the neutral value is zero.  Against a median learned extent of
+    0.8mm it made every surfel a one-metre needle, 1237x thicker than wide,
+    and 414k of them at mean opacity 0.90 put 47m^3 of opaque geometry inside
+    a 117m^3 room with the camera in it.  Every frame came back max 1 of 255.
+    """
+
+    import numpy as np
+
+    arrays = _surfel_arrays()
+    scales = arrays["scales"]
+    planar = scales[:, :2]
+    z = scales[:, 2]
+    assert (z < planar.min(axis=1)).all(), "z must be flatter than the surfel is wide"
+    assert not np.isclose(z, 1.0).any()
+    # Proportional, not a constant: a fixed epsilon would be thicker than wide
+    # for the smallest surfels in the real field.
+    assert np.allclose(z / planar.min(axis=1), z[0] / planar.min(axis=1)[0])
+
+
+def test_the_receipt_reports_radiance_outside_display_range() -> None:
+    """The coefficients are sealed learned data, so this reports and never clamps.
+
+    Thirty percent of the real field's DC terms decode above 1.0, peaking at
+    4.6x overbright; a reader has to be able to see that.
+    """
+
+    arrays = _surfel_arrays()
+    assert "sh_dc_out_of_display_range_fraction" in arrays
+    assert 0.0 <= arrays["sh_dc_out_of_display_range_fraction"] <= 1.0
+    assert "sh_dc_radiance_max" in arrays
+    # Never rescaled: the DC coefficients must survive untouched.
+    assert "structural_z_scale_fraction" in arrays
+
+
+def test_the_written_receipt_carries_the_scale_and_radiance_facts(tmp_path) -> None:
+    """The array builder and the receipt drifted apart.
+
+    Renaming the structural-Z key left the receipt reading the old name, and
+    the array-level test could not see it because it never wrote a file.
+    """
+
+    import numpy as np
+
+    from blueprint_pipeline.particlefield_usd import (
+        GaussianSurfelData,
+        write_gaussian_surflet_particlefield_usd,
+    )
+
+    count = 8
+    rng = np.random.default_rng(20260807)
+    data = GaussianSurfelData(
+        count=count,
+        xyz=rng.normal(size=(count, 3)).astype("float32"),
+        opacity=np.full(count, 3.0, dtype="float32"),
+        f_dc=rng.normal(size=(count, 3)).astype("float32"),
+        scales=np.full((count, 2), -7.0, dtype="float32"),
+        quats=np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype="float32"), (count, 1)),
+        sh_rest=rng.normal(size=(count, 3 * 15)).astype("float32"),
+        mask_logits=np.zeros((count, 3), dtype="float32"),
+        properties=(),
+    )
+    receipt = write_gaussian_surflet_particlefield_usd(
+        data, tmp_path / "surflets.usd", receipt_path=tmp_path / "receipt.json"
+    )
+    assert receipt["status"] == "completed", receipt
+    assert receipt["structural_z_scale_fraction"] > 0
+    assert receipt["structural_z_scale_median_m"] < 0.001
+    assert "sh_dc_out_of_display_range_fraction" in receipt
+    assert receipt["default_prim"] == "/World"

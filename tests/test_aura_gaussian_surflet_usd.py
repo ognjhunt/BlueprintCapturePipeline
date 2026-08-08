@@ -15,6 +15,7 @@ from blueprint_pipeline.gaussian_splat_decode import (
     read_aura_2dgs_surfel_ply,
 )
 from blueprint_pipeline.particlefield_usd import (
+    STRUCTURAL_Z_SCALE_FRACTION,
     GAUSSIAN_SURFLET_SCHEMA,
     build_gaussian_surflet_arrays,
     write_gaussian_surflet_particlefield_usd,
@@ -88,7 +89,18 @@ def test_aura_activations_and_channel_major_sh_are_exact() -> None:
     source.opacity[-1] = np.inf
     arrays = build_gaussian_surflet_arrays(source)
     np.testing.assert_allclose(arrays["scales"][:, :2], np.exp(source.scales))
-    np.testing.assert_array_equal(arrays["scales"][:, 2], np.ones(2, dtype=np.float32))
+    # Flat, and proportional to the surfel.  This asserted ones, which is what
+    # put a one-metre structural thickness on surfels with a median learned
+    # extent of 0.8mm and rendered every frame at max 1 of 255.  A "structural"
+    # component is not multiplicatively neutral -- it is an extent in metres,
+    # where neutral is zero.
+    planar = arrays["scales"][:, :2]
+    np.testing.assert_allclose(
+        arrays["scales"][:, 2],
+        planar.min(axis=1) * STRUCTURAL_Z_SCALE_FRACTION,
+        rtol=1e-6,
+    )
+    assert (arrays["scales"][:, 2] < planar.min(axis=1)).all()
     np.testing.assert_allclose(
         arrays["opacities"], 1.0 / (1.0 + np.exp(-source.opacity)), rtol=1e-6
     )
