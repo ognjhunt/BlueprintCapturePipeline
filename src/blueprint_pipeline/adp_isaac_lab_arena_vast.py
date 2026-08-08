@@ -36,6 +36,9 @@ _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
+_ADP009D_GATED_BACKBONE_AUTH_ENV = (
+    "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"
+)
 
 
 ENTRYPOINT = r"""#!/usr/bin/env bash
@@ -148,11 +151,16 @@ def _remaining_session_live_minutes(
 
 
 @contextmanager
-def _vast_authority_environment():
-    previous = {name: os.environ.get(name) for name in _VAST_MUTATION_ENV}
+def _vast_authority_environment(*, gated_backbone_authorized: bool = False):
+    managed = (*_VAST_MUTATION_ENV, _ADP009D_GATED_BACKBONE_AUTH_ENV)
+    previous = {name: os.environ.get(name) for name in managed}
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
+        if gated_backbone_authorized:
+            os.environ[_ADP009D_GATED_BACKBONE_AUTH_ENV] = "true"
+        else:
+            os.environ.pop(_ADP009D_GATED_BACKBONE_AUTH_ENV, None)
         yield
     finally:
         for name, value in previous.items():
@@ -399,7 +407,9 @@ def run_arena_native_control_vast(
     local_avoidlist = _stage_machine_avoidlist(job, machine_avoidlist_path)
     adapter: dict[str, Any] = {}
     try:
-        with _vast_authority_environment():
+        with _vast_authority_environment(
+            gated_backbone_authorized=forward_hf_token
+        ):
             adapter = run_vast_provider_adapter(
                 job_dir=provider_run,
                 mode="live-startup-probe",

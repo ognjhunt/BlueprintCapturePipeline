@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     _candidate_policy_query_blocker,
     _next_attempt_root,
     _remaining_session_live_minutes,
+    _vast_authority_environment,
     build_arena_native_control_bundle,
 )
 from blueprint_pipeline.common import write_json
@@ -106,7 +108,9 @@ def test_bundle_is_deterministic_approved_and_native_control_only(tmp_path: Path
     assert preflight["blockers"] == []
 
 
-def test_arena_bundle_uses_isaac_image_terms_and_ssh_bundle_path(tmp_path: Path) -> None:
+def test_arena_bundle_uses_isaac_image_terms_and_ssh_bundle_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     assert (
         _resolve_probe_image(
             public_image="public",
@@ -134,6 +138,16 @@ def test_arena_bundle_uses_isaac_image_terms_and_ssh_bundle_path(tmp_path: Path)
     )
     assert env["ACCEPT_EULA"] == "Y"
     assert env["PRIVACY_CONSENT"] == "Y"
+    monkeypatch.setenv(
+        "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED", "true"
+    )
+    authorized_env = _probe_env(
+        job_dir=tmp_path,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="adp009d_isaac",
+        forward_hf_token=False,
+    )
+    assert authorized_env["BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"] == "true"
     script = _probe_shell_script(
         "https://example.com",
         enable_isaac_smoke=True,
@@ -148,6 +162,16 @@ def test_arena_bundle_uses_isaac_image_terms_and_ssh_bundle_path(tmp_path: Path)
     assert script.rindex("BLUEPRINT_VAST_GPU_SANITY_OK") > script.index(
         "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED"
     )
+
+
+def test_gated_backbone_authority_is_scoped_to_one_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"
+    monkeypatch.delenv(name, raising=False)
+    with _vast_authority_environment(gated_backbone_authorized=True):
+        assert os.environ[name] == "true"
+    assert name not in os.environ
 
 
 def test_paid_attempt_roots_are_fresh_and_preserve_prior_evidence(tmp_path: Path) -> None:
