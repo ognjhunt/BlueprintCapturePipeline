@@ -222,6 +222,25 @@ def test_runtime_measures_the_gripper_convention_rather_than_assuming_it() -> No
     assert "gripper_convention_probe" in source
 
 
+def test_runtime_phase_timings_are_closed_before_the_next_phase_starts() -> None:
+    """A reused timer made camera and approach durations copy later work."""
+
+    from pathlib import Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    camera_start = source.index("camera_retention_started = time.monotonic()")
+    camera_end = source.index('timings_seconds["camera_retention"]', camera_start)
+    gripper_start = source.index('_phase("gripper_convention_probe")', camera_start)
+    assert camera_start < camera_end < gripper_start
+
+    approach_start = source.index("wrist_approach_started = time.monotonic()")
+    approach_end = source.index('timings_seconds["wrist_approach"]', approach_start)
+    policy_start = source.index('_phase("policy_episode")', approach_start)
+    assert approach_start < approach_end < policy_start
+
+
 def test_a_measured_probe_result_constructs_a_usable_convention() -> None:
     """The probe's output shape must feed GripperConvention directly."""
 

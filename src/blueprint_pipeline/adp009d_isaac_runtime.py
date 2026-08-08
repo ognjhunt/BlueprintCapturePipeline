@@ -1331,7 +1331,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             tolerance_rad=HOLD_ARM_TOLERANCE_RAD,
             blocker="canonical_hold_arm_pose_drift",
         )
-        phase_started = time.monotonic()
+        camera_retention_started = time.monotonic()
         camera_rows = []
         for camera_name in ("external_camera", "wrist_camera"):
             camera_rows.append(
@@ -1343,6 +1343,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     sim_time=float(env.unwrapped.episode_length_buf[0].item() * cfg.sim.dt * cfg.decimation),
                 )
             )
+        timings_seconds["camera_retention"] = round(
+            time.monotonic() - camera_retention_started, 6
+        )
         # A frame is the only thing that answers whether the appearance actually
         # draws, and at roughly a minute per rendered frame the phases after
         # this one -- a four-hundred-step approach, a four-hundred-and-eighty
@@ -1477,10 +1480,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             time.monotonic() - phase_started, 6
         )
 
-        timings_seconds["camera_retention"] = round(
-            time.monotonic() - phase_started, 6
-        )
-
         # The canonical hold is judged on the hold alone.  Evaluating it after the
         # approach would measure motion the canonical condition never contained.
         approved_can = env.unwrapped.scene["approved_can"]
@@ -1499,7 +1498,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         # observability is established by servoing the end effector toward the
         # object and capturing along the way.  A failure here is recorded, never
         # fatal: the hold-phase evidence above must survive regardless.
-        phase_started = time.monotonic()
+        wrist_approach_started = time.monotonic()
         approach_frames: list[dict[str, Any]] = []
         approach_arrivals: list[dict[str, Any]] = []
         approach_body_names: list[str] = []
@@ -1761,6 +1760,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             approach_ik_succeeded = False
             approach_error = f"{type(exc).__name__}: {exc}"
             _phase("wrist_approach", "blocked")
+        timings_seconds["wrist_approach"] = round(
+            time.monotonic() - wrist_approach_started, 6
+        )
 
         # --- learned policy episode --------------------------------------------
         # Everything this needs is now measured rather than assumed: the gripper
@@ -1935,8 +1937,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         wrist_approach_capture["articulation_body_names"] = approach_body_names
         wrist_approach_capture["wrist_camera_driven_from_body_pose"] = wrist_camera_driven
         camera_rows.extend(approach_frames)
-        timings_seconds["wrist_approach"] = round(time.monotonic() - phase_started, 6)
-
         robot = env.unwrapped.scene["robot"]
         # A run that was asked for episodes and produced none is not completed.
         # This reported completed with an empty blocker list while carrying a
