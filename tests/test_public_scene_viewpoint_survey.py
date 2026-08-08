@@ -63,6 +63,7 @@ def test_room_survey_uses_interiorgs_rooms_and_assigns_publisher_objects(
 
     assert observed["camera_count"] == 8
     assert observed["publisher_object_count"] == 3
+    assert observed["articulated_open_close_inventory"]["candidate_count"] == 0
     assert observed["room_assigned_object_count"] == 2
     assert observed["unassigned_object_ids"] == ["30"]
     assert observed["rooms"][0]["publisher_objects"][0]["ins_id"] == "10"
@@ -129,6 +130,27 @@ def test_room_survey_rejects_unknown_target_instance(tmp_path: Path) -> None:
             approved_roots=[tmp_path],
             target_ins_id="missing",
         )
+
+
+def test_room_survey_admits_wall_bound_door_from_adjacent_room(tmp_path: Path) -> None:
+    structure, labels = _sources(tmp_path)
+    payload = json.loads(labels.read_text(encoding="utf-8"))
+    payload.append(_box("40", "door", (-0.12, 1.0, 1.0)))
+    labels.write_text(json.dumps(payload), encoding="utf-8")
+
+    observed = build_room_viewpoint_survey(
+        structure_path=structure,
+        labels_path=labels,
+        scene_id="scene-1",
+        approved_roots=[tmp_path],
+        target_ins_id="40",
+    )
+
+    closeup = observed["target_closeup"]
+    assert closeup["room_resolution"] == "within_publisher_room_boundary_tolerance"
+    assert closeup["target_room_ids"] == ["room_00"]
+    assert closeup["camera_count"] >= 4
+    assert {camera["room_id"] for camera in closeup["cameras"]} == {"room_00"}
 
 
 def test_room_survey_rejects_source_outside_approved_roots(tmp_path: Path) -> None:

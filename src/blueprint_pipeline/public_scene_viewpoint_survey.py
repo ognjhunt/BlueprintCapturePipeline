@@ -16,6 +16,7 @@ from typing import Any, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .scene_placement.interiorgs_index import (
+    inventory_articulated_open_close_candidates,
     load_interiorgs_labels,
     load_interiorgs_structure,
     point_in_polygon,
@@ -24,6 +25,7 @@ from .scene_placement.perception_views import generate_view_ring
 
 
 SCHEMA_VERSION = "adp009a_room_viewpoint_survey.v1"
+TARGET_ROOM_BOUNDARY_TOLERANCE_M = 0.35
 
 
 def _resolved_under(path: str | Path, approved_roots: Sequence[str | Path]) -> Path:
@@ -86,6 +88,41 @@ def _representative_point(polygon: list[tuple[float, float]]) -> tuple[float, fl
     return best[1], best[2]
 
 
+def _target_room_indices(
+    *,
+    target_xy: tuple[float, float],
+    room_polygons: Sequence[list[tuple[float, float]]],
+    boundary_tolerance_m: float = TARGET_ROOM_BOUNDARY_TOLERANCE_M,
+) -> list[int]:
+    """Rooms containing or immediately adjacent to a wall-bound target.
+
+    InteriorGS door labels commonly center the leaf inside the wall band, so a
+    strict point-in-polygon lookup rejects the very targets an open/close task
+    needs.  Distance to the publisher room profile admits camera space on the
+    room side of the wall without treating an arbitrary out-of-room object as a
+    room member.
+    """
+
+    containing = [
+        index
+        for index, polygon in enumerate(room_polygons)
+        if point_in_polygon(target_xy, polygon)
+    ]
+    if containing:
+        return containing
+    adjacent: list[int] = []
+    for index, polygon in enumerate(room_polygons):
+        if len(polygon) < 3:
+            continue
+        distance = min(
+            _distance_to_segment(target_xy, polygon[edge - 1], polygon[edge])
+            for edge in range(len(polygon))
+        )
+        if distance <= boundary_tolerance_m:
+            adjacent.append(index)
+    return adjacent
+
+
 def build_room_viewpoint_survey(
     *,
     structure_path: str | Path,
@@ -98,6 +135,7 @@ def build_room_viewpoint_survey(
     labels_source = _resolved_under(labels_path, approved_roots)
     structure = load_interiorgs_structure(structure_source)
     objects = load_interiorgs_labels(labels_source)
+    articulated_inventory = inventory_articulated_open_close_candidates(objects)
     if not structure.rooms:
         raise ValueError("structure_rooms_missing")
     cameras: list[dict[str, Any]] = []
@@ -157,48 +195,83 @@ def build_room_viewpoint_survey(
         if len(matches) != 1:
             raise ValueError(f"target_instance_not_exactly_one:{target_ins_id}")
         target = matches[0]
-        target_room_index = structure.room_index_of_point(
-            (target.centroid[0], target.centroid[1])
+        target_room_indices = _target_room_indices(
+            target_xy=(target.centroid[0], target.centroid[1]),
+            room_polygons=structure.rooms,
         )
-        if target_room_index is None:
+        if not target_room_indices:
             raise ValueError(f"target_instance_not_in_room:{target_ins_id}")
         radius = max(0.75, 2.5 * max(target.size()[0], target.size()[1]))
-        planned = generate_view_ring(
-            target.centroid,
-            radius,
-            n_azimuths=8,
-            elevations_deg=(25.0,),
-            vfov_deg=55.0,
-            width=1024,
-            height=768,
-        )
         target_cameras: list[dict[str, Any]] = []
-        for index, camera in enumerate(planned):
-            eye = camera["eye"]
-            if structure.room_index_of_point((float(eye[0]), float(eye[1]))) != target_room_index:
-                continue
-            target_cameras.append(
+        selected_radius: float | None = None
+        radius_attempts: list[dict[str, Any]] = []
+        for radius_scale in (1.0, 0.75, 0.5):
+            candidate_radius = max(0.75, radius * radius_scale)
+            planned = generate_view_ring(
+                target.centroid,
+                candidate_radius,
+                n_azimuths=16,
+                elevations_deg=(25.0,),
+                vfov_deg=55.0,
+                width=1024,
+                height=768,
+            )
+            admitted: list[dict[str, Any]] = []
+            for index, camera in enumerate(planned):
+                eye = camera["eye"]
+                eye_room_index = structure.room_index_of_point(
+                    (float(eye[0]), float(eye[1]))
+                )
+                if eye_room_index not in target_room_indices:
+                    continue
+                admitted.append(
+                    {
+                        "id": f"target_{target.id}_view_{index:02d}",
+                        "room_id": f"room_{eye_room_index:02d}",
+                        "spec": {
+                            "pos": [round(float(value), 9) for value in eye],
+                            "target": [
+                                round(float(value), 9) for value in camera["target"]
+                            ],
+                            "fov": 55.0,
+                            "up": [round(float(value), 9) for value in camera["up"]],
+                        },
+                    }
+                )
+            radius_attempts.append(
                 {
-                    "id": f"target_{target.id}_view_{index:02d}",
-                    "spec": {
-                        "pos": [round(float(value), 9) for value in eye],
-                        "target": [round(float(value), 9) for value in camera["target"]],
-                        "fov": 55.0,
-                        "up": [round(float(value), 9) for value in camera["up"]],
-                    },
+                    "radius_m": round(candidate_radius, 9),
+                    "admitted_camera_count": len(admitted),
                 }
             )
+            if len(admitted) >= 4:
+                target_cameras = admitted
+                selected_radius = candidate_radius
+                break
         if len(target_cameras) < 4:
             raise ValueError(f"target_closeup_viewpoint_coverage_insufficient:{target_ins_id}")
         target_closeup = {
             "target_ins_id": target.id,
             "target_label": target.extra.get("raw_label", target.label),
-            "target_room_id": f"room_{target_room_index:02d}",
+            "target_room_id": f"room_{target_room_indices[0]:02d}",
+            "target_room_ids": [
+                f"room_{room_index:02d}" for room_index in target_room_indices
+            ],
+            "room_resolution": (
+                "centroid_inside_room"
+                if structure.room_index_of_point(
+                    (target.centroid[0], target.centroid[1])
+                )
+                is not None
+                else "within_publisher_room_boundary_tolerance"
+            ),
+            "room_boundary_tolerance_m": TARGET_ROOM_BOUNDARY_TOLERANCE_M,
             "target_centroid_world_m": [round(value, 9) for value in target.centroid],
             "planner": "scene_placement.perception_views.generate_view_ring",
             "planner_parameters": {
-                "radius_m": round(radius, 9),
-                "azimuth_count_before_room_filter": 8,
+                "radius_m": round(float(selected_radius), 9),
+                "radius_attempts": radius_attempts,
+                "azimuth_count_before_room_filter": 16,
                 "elevation_degrees": 25.0,
                 "vertical_fov_degrees": 55.0,
                 "same_room_filter": True,
@@ -231,6 +304,7 @@ def build_room_viewpoint_survey(
         "cameras": cameras,
         "camera_count": len(cameras),
         "publisher_object_count": len(objects),
+        "articulated_open_close_inventory": articulated_inventory,
         "room_assigned_object_count": len(assigned_object_ids),
         "unassigned_object_ids": sorted(
             (item.id for item in objects if item.id not in assigned_object_ids),

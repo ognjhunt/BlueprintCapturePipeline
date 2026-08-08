@@ -16,10 +16,13 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from .interiorgs_index import (
+    ARTICULATED_AGGREGATE_SEMANTICS,
+    ARTICULATED_OPEN_CLOSE_SEMANTICS,
     build_interiorgs_object_index,
     InteriorGSSceneSpatialIndex,
     InteriorGSStructure,
     build_interiorgs_probe,
+    inventory_articulated_open_close_candidates,
     load_interiorgs_labels,
     load_interiorgs_structure,
     point_in_polygon,
@@ -137,6 +140,8 @@ from .usd_index import (
 )
 
 __all__ = [
+    "ARTICULATED_AGGREGATE_SEMANTICS",
+    "ARTICULATED_OPEN_CLOSE_SEMANTICS",
     "SceneObject",
     "StandPose",
     "SceneSpatialIndex",
@@ -147,6 +152,7 @@ __all__ = [
     "InteriorGSStructure",
     "build_interiorgs_object_index",
     "build_interiorgs_probe",
+    "inventory_articulated_open_close_candidates",
     "load_interiorgs_labels",
     "load_interiorgs_structure",
     "point_in_polygon",

@@ -41,6 +41,37 @@ INTERIORGS_STRUCTURE_SOURCE = "interiorgs_structure"
 # mats, paint-thin decals) is walk-over-able and must not block placement.
 DEFAULT_ANKLE_CLEARANCE_M = 0.06
 
+# Ordered from the user's preregistered preferred task form to progressively
+# less self-contained open/close assemblies.  These are discovery semantics,
+# not inferred joints: an InteriorGS label never establishes a moving link,
+# handle, axis, limits, collider separation, or simulator articulation.
+ARTICULATED_OPEN_CLOSE_SEMANTICS: tuple[tuple[str, str], ...] = (
+    ("drawer", "explicit_moving_link"),
+    ("oven", "appliance_assembly"),
+    ("dishwasher", "appliance_assembly"),
+    ("microwave_oven", "appliance_assembly"),
+    ("microwave", "appliance_assembly"),
+    ("refrigerator", "appliance_assembly"),
+    ("fridge", "appliance_assembly"),
+    ("door", "explicit_moving_link"),
+)
+
+ARTICULATED_AGGREGATE_SEMANTICS: frozenset[str] = frozenset(
+    {
+        "basin_cabinet",
+        "cabinet",
+        "cupboard",
+        "display_cabinet",
+        "laundry_cabinets",
+        "mirror_cabinet",
+        "shoe_cabinet",
+        "tv_cabinet",
+        "wall_cabinet",
+        "wardrobe",
+        "wine_cabinet",
+    }
+)
+
 
 # ----------------------------- labels.json -----------------------------
 
@@ -128,6 +159,89 @@ def load_interiorgs_labels(path: str | Path) -> List[SceneObject]:
             )
         )
     return objects
+
+
+def inventory_articulated_open_close_candidates(
+    objects: Sequence[SceneObject],
+) -> dict[str, Any]:
+    """Inventory label-derived open/close candidates without inventing a joint.
+
+    The result deliberately separates an explicit leaf or appliance assembly
+    label from aggregate storage labels.  A cabinet label may contain several
+    doors or drawers, so it cannot enter the target-closeup queue until a
+    separately observed moving member is bound.  Likewise, an ``oven`` label is
+    only an assembly candidate; visual and collision evidence must still prove
+    a fixed link, moving link, handle/contact region, and one admissible joint.
+    """
+
+    semantic_priority = {
+        semantic: (index, candidate_kind)
+        for index, (semantic, candidate_kind) in enumerate(
+            ARTICULATED_OPEN_CLOSE_SEMANTICS
+        )
+    }
+    candidates: list[dict[str, Any]] = []
+    aggregate_only: list[dict[str, Any]] = []
+    for item in objects:
+        semantic = _normalize_label(item.extra.get("raw_label", item.label))
+        size = [round(float(value), 9) for value in item.size()]
+        row = {
+            "ins_id": item.id,
+            "semantic_label": semantic,
+            "raw_label": item.extra.get("raw_label", item.label),
+            "centroid_world_m": [round(float(value), 9) for value in item.centroid],
+            "aabb_size_m": size,
+            "oriented_bounding_box": item.extra.get("oriented_bounding_box"),
+        }
+        if semantic in semantic_priority:
+            priority, candidate_kind = semantic_priority[semantic]
+            candidates.append(
+                {
+                    **row,
+                    "semantic_priority": priority,
+                    "candidate_kind": candidate_kind,
+                    "closeup_admission": "pending_observed_link_and_interface_evidence",
+                    "articulation_qualified": False,
+                }
+            )
+        elif semantic in ARTICULATED_AGGREGATE_SEMANTICS:
+            aggregate_only.append(
+                {
+                    **row,
+                    "closeup_admission": "blocked_aggregate_label_has_no_separate_moving_member",
+                    "articulation_qualified": False,
+                }
+            )
+    candidates.sort(
+        key=lambda row: (
+            int(row["semantic_priority"]),
+            len(str(row["ins_id"])),
+            str(row["ins_id"]),
+        )
+    )
+    aggregate_only.sort(
+        key=lambda row: (
+            str(row["semantic_label"]),
+            len(str(row["ins_id"])),
+            str(row["ins_id"]),
+        )
+    )
+    return {
+        "schema_version": "interiorgs_articulated_open_close_inventory.v1",
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "aggregate_only_count": len(aggregate_only),
+        "aggregate_only": aggregate_only,
+        "selection_authority": "publisher_semantic_labels_and_bounds_only",
+        "claim_boundary": {
+            "joint_or_articulation_inferred": False,
+            "handle_or_contact_region_observed": False,
+            "fixed_and_moving_links_separated": False,
+            "collision_identity_established": False,
+            "reachability_established": False,
+            "task_selected": False,
+        },
+    }
 
 
 def _sha256_file(path: Path) -> str:
@@ -638,6 +752,8 @@ def supporting_fixtures_for(
 
 
 __all__ = [
+    "ARTICULATED_AGGREGATE_SEMANTICS",
+    "ARTICULATED_OPEN_CLOSE_SEMANTICS",
     "DEFAULT_ANKLE_CLEARANCE_M",
     "INTERIORGS_LABELS_SOURCE",
     "INTERIORGS_STRUCTURE_SOURCE",
@@ -645,6 +761,7 @@ __all__ = [
     "InteriorGSStructure",
     "build_interiorgs_probe",
     "estimate_labels_floor_z",
+    "inventory_articulated_open_close_candidates",
     "load_interiorgs_labels",
     "load_interiorgs_structure",
     "point_in_polygon",

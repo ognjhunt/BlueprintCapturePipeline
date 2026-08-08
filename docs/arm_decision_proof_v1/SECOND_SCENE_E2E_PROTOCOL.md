@@ -5,7 +5,8 @@ Status: articulated selection criteria being frozen; scene and task not yet sele
 Backlog item: **ADP-009D**. Gate: **public-scene day 28**. The observed
 completion artifact must be one sealed, digest-bound, development-only Task
 Evaluation Run on a genuinely different InteriorGS/SAGE scene and one bounded
-single-joint articulated open-or-close task, with the
+single-commanded-joint articulated open-or-close task in an assembly with at
+most four joints, with the
 zero-action negative and deterministic scripted-positive controls passing in
 every scored cell before exactly `pi05_droid` and `groot_n17_droid` execute.
 
@@ -38,6 +39,15 @@ first candidate in ascending publisher scene-ID order that passes every required
 criterion is selected; a failure is retained with the smallest blocker and does
 not relax a threshold.
 
+After direct inspection of only `840076` and `840411`, and before any new
+inpainting or learned-policy outcome, the user explicitly allowed a bounded
+multi-joint assembly while retaining exactly one named commanded and scored
+task joint. The immutable supplement is
+[`manifests/second_scene_selection_scope_amendment.v2.json`](manifests/second_scene_selection_scope_amendment.v2.json).
+It leaves candidate order unchanged, caps the assembly at four joints, and
+requires every non-task joint to be locked at its frozen reset with native
+readback. It does not admit either already inspected candidate.
+
 Historical inspections of `841244` and `841757` are disclosed in the freeze.
 They were not used to change the new thresholds. All nine locally materialized,
 previously unused InteriorGS/SAGE pairs are considered in the frozen order.
@@ -47,8 +57,9 @@ previously unused InteriorGS/SAGE pairs are considered in the frozen order.
 Selection requires exact admitted rights and source digests; matching
 InteriorGS appearance and SAGE collision identities; a proved shared metric
 frame or typed abstention; a full known-topology survey with unseen regions
-reported; one observed cabinet, drawer, door, or appliance with exactly one
-revolute or prismatic joint; separable fixed and moving links; an observed
+reported; one observed cabinet, drawer, door, or appliance with one to four
+revolute or prismatic joints and exactly one commanded task joint; separable
+fixed and moving links; locked non-task joints; an observed
 handle/contact region; exact removable source collision; bounded Franka reach;
 selection-view coverage; external, wrist, and review observability; and an exact
 released-code inpainting path. NVIDIA USD Content Agents Joint Agent `0.5.2`

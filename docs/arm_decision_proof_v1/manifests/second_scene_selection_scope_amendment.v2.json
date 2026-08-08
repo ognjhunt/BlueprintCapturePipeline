@@ -1,0 +1,37 @@
+{
+  "schema_version": "public_scene_task_selection_scope_amendment.v2",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009D",
+  "recorded_on": "2026-08-08",
+  "base_preregistration_digest": "sha256:32793a474c30b6be26a03d145dddb3b332d6beadffc525bafcca341bb7040ea0",
+  "authority": "user_explicitly_allowed_multi_joint_assembly_with_one_commanded_task_joint_on_2026_08_08",
+  "reason": "The assembly may exercise USD Content Agents multi-joint generality while the robot task remains bounded to one named commanded and scored joint.",
+  "learned_policy_outcomes_accessed": false,
+  "new_inpainting_outcomes_accessed": false,
+  "candidate_order_changed": false,
+  "task_family": "one_commanded_joint_in_bounded_multi_joint_articulated_assembly",
+  "joint_scope": {
+    "minimum_assembly_joint_count": 1,
+    "maximum_assembly_joint_count": 4,
+    "commanded_task_joint_count": 1,
+    "required_articulation_root_count": 1,
+    "non_task_joint_mode": "locked_at_frozen_reset_with_native_readback",
+    "non_task_joint_motion_tolerance": 0.001
+  },
+  "source_link_separation_rule": "target_link_must_be_separately_observed_and_bound_by_source_evidence_or_qualified_released_code_never_manual_selection",
+  "inspection_disclosure": [
+    {
+      "publisher_scene_id": "840076",
+      "observed_before_amendment": ["publisher_labels_and_bounds", "full_room_reconnaissance_render", "door_target_closeup_render"],
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "840411",
+      "observed_before_amendment": ["publisher_labels_and_bounds", "full_room_reconnaissance_render", "refrigerator_target_closeup_render"],
+      "method_outcomes_consulted": false
+    }
+  ],
+  "effect_on_prior_observations": "Previously observed multi-part candidates return to pending source-link and collision-separation qualification; neither is admitted by this amendment.",
+  "claim_ceiling": "development_only_selection_rule",
+  "amendment_digest": "sha256:e7ce00d6859a2f32831b0b60658f2ab2209898aaa65770f5be2057ab8d98f1e2"
+}

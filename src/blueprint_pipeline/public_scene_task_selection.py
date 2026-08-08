@@ -17,6 +17,7 @@ from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "public_scene_task_selection_preregistration.v1"
+SCOPE_AMENDMENT_SCHEMA_VERSION = "public_scene_task_selection_scope_amendment.v2"
 REQUIRED_CRITERIA = {
     "admissible_rights_and_disclosure",
     "exact_interiorgs_appearance_identity",
@@ -179,10 +180,84 @@ def load_selection_preregistration(path: str | Path) -> dict[str, Any]:
     return validate_selection_preregistration(payload)
 
 
+def validate_selection_scope_amendment(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the explicit multi-joint-assembly, one-task-joint amendment."""
+
+    payload = json.loads(json.dumps(value))
+    errors: list[str] = []
+    if payload.get("schema_version") != SCOPE_AMENDMENT_SCHEMA_VERSION:
+        errors.append("selection_scope_amendment_schema_invalid")
+    if payload.get("program_id") != "arm-decision-proof-v1":
+        errors.append("selection_scope_amendment_program_invalid")
+    if payload.get("adp_item") != "ADP-009D":
+        errors.append("selection_scope_amendment_adp_item_invalid")
+    if payload.get("base_preregistration_digest") != (
+        "sha256:32793a474c30b6be26a03d145dddb3b332d6beadffc525bafcca341bb7040ea0"
+    ):
+        errors.append("selection_scope_amendment_base_digest_invalid")
+    if payload.get("authority") != (
+        "user_explicitly_allowed_multi_joint_assembly_with_one_commanded_task_joint_"
+        "on_2026_08_08"
+    ):
+        errors.append("selection_scope_amendment_authority_invalid")
+    if payload.get("learned_policy_outcomes_accessed") is not False:
+        errors.append("selection_scope_amendment_policy_outcome_leakage")
+    if payload.get("new_inpainting_outcomes_accessed") is not False:
+        errors.append("selection_scope_amendment_inpainting_outcome_leakage")
+    if payload.get("candidate_order_changed") is not False:
+        errors.append("selection_scope_amendment_candidate_order_changed")
+    if payload.get("task_family") != (
+        "one_commanded_joint_in_bounded_multi_joint_articulated_assembly"
+    ):
+        errors.append("selection_scope_amendment_task_family_invalid")
+    exact_joint_scope = {
+        "minimum_assembly_joint_count": 1,
+        "maximum_assembly_joint_count": 4,
+        "commanded_task_joint_count": 1,
+        "required_articulation_root_count": 1,
+        "non_task_joint_mode": "locked_at_frozen_reset_with_native_readback",
+        "non_task_joint_motion_tolerance": 0.001,
+    }
+    if payload.get("joint_scope") != exact_joint_scope:
+        errors.append("selection_scope_amendment_joint_scope_invalid")
+    inspection = _rows(payload.get("inspection_disclosure"))
+    if [str(row.get("publisher_scene_id") or "") for row in inspection] != [
+        "840076",
+        "840411",
+    ]:
+        errors.append("selection_scope_amendment_inspection_disclosure_invalid")
+    if any(row.get("method_outcomes_consulted") is not False for row in inspection):
+        errors.append("selection_scope_amendment_inspection_outcome_leakage")
+    if payload.get("source_link_separation_rule") != (
+        "target_link_must_be_separately_observed_and_bound_by_source_evidence_or_"
+        "qualified_released_code_never_manual_selection"
+    ):
+        errors.append("selection_scope_amendment_link_separation_invalid")
+    if payload.get("claim_ceiling") != "development_only_selection_rule":
+        errors.append("selection_scope_amendment_claim_ceiling_invalid")
+    expected = canonical_digest(payload, digest_field="amendment_digest")
+    if payload.get("amendment_digest") != expected:
+        errors.append("selection_scope_amendment_digest_invalid")
+    if errors:
+        raise PublicSceneTaskSelectionError(errors)
+    return payload
+
+
+def load_selection_scope_amendment(path: str | Path) -> dict[str, Any]:
+    source = Path(path)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise PublicSceneTaskSelectionError(["selection_scope_amendment_not_mapping"])
+    return validate_selection_scope_amendment(payload)
+
+
 __all__ = [
     "PublicSceneTaskSelectionError",
     "REQUIRED_CRITERIA",
     "SCHEMA_VERSION",
+    "SCOPE_AMENDMENT_SCHEMA_VERSION",
+    "load_selection_scope_amendment",
     "load_selection_preregistration",
+    "validate_selection_scope_amendment",
     "validate_selection_preregistration",
 ]

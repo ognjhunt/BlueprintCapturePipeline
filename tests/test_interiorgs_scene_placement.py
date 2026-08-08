@@ -24,6 +24,7 @@ from blueprint_pipeline.scene_placement import (
     compute_stand_pose,
     load_interiorgs_labels,
     load_interiorgs_structure,
+    inventory_articulated_open_close_candidates,
     link_mounted_camera_spec,
     point_in_polygon,
     resolve_target_by_instance,
@@ -201,6 +202,70 @@ class TestObjectIndex:
         assert first["claim_boundary"]["comparative_policy_ranking_verdict"] == (
             "thesis_not_supported"
         )
+
+
+class TestArticulatedOpenCloseInventory:
+    def test_original_rigid_fixture_does_not_become_articulated(self, tmp_path):
+        labels = tmp_path / "labels.json"
+        labels.write_text(
+            json.dumps(
+                [
+                    {
+                        "ins_id": "160",
+                        "label": "canned beverage",
+                        "bounding_box": _box_corners(0, 0, 0.8, 0.07, 0.07, 0.97),
+                    },
+                    {
+                        "ins_id": "299",
+                        "label": "TV cabinet",
+                        "bounding_box": _box_corners(-1, -1, 0, 1, 1, 0.8),
+                    },
+                ]
+            )
+        )
+
+        observed = inventory_articulated_open_close_candidates(
+            load_interiorgs_labels(labels)
+        )
+
+        assert observed["candidate_count"] == 0
+        assert observed["aggregate_only_count"] == 1
+        assert observed["aggregate_only"][0]["ins_id"] == "299"
+        assert observed["claim_boundary"]["task_selected"] is False
+
+    def test_new_fixture_prioritizes_oven_but_does_not_infer_joint(self, tmp_path):
+        labels = tmp_path / "labels.json"
+        labels.write_text(
+            json.dumps(
+                [
+                    {
+                        "ins_id": "172",
+                        "label": "oven",
+                        "bounding_box": _box_corners(4.5, -1.2, 0.08, 5.2, -0.5, 0.69),
+                    },
+                    {
+                        "ins_id": "83",
+                        "label": "door",
+                        "bounding_box": _box_corners(0, 0, 0, 0.2, 0.9, 2.1),
+                    },
+                    {
+                        "ins_id": "84",
+                        "label": "cabinet",
+                        "bounding_box": _box_corners(1, 1, 0, 2, 2, 1),
+                    },
+                ]
+            )
+        )
+
+        observed = inventory_articulated_open_close_candidates(
+            load_interiorgs_labels(labels)
+        )
+
+        assert [row["ins_id"] for row in observed["candidates"]] == ["172", "83"]
+        assert observed["candidates"][0]["candidate_kind"] == "appliance_assembly"
+        assert observed["candidates"][0]["articulation_qualified"] is False
+        assert observed["aggregate_only"][0]["ins_id"] == "84"
+        assert observed["claim_boundary"]["joint_or_articulation_inferred"] is False
 
 
 # ----------------------------- structure -----------------------------
