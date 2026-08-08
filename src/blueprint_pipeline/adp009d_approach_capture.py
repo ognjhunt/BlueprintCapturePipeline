@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -232,6 +233,29 @@ def select_wrist_observable_episode_start(
     return receipt
 
 
+# Renders needed for this scene's RTX accumulator to converge after a reset.
+# Forty settles a frame from cold (measured); the restore loop itself renders
+# roughly a dozen while converging joints, so the default settle tops the
+# total up to the documented count.  A pixel count measured on an
+# under-accumulated frame fails a pose the selection proved visible -- v75
+# measured 33 pixels after 12 renders where selection saw 219 from the same
+# joints to within 0.01 rad.
+DEFAULT_EPISODE_START_RESTORE_SETTLE_FRAMES = 28
+RESTORE_SETTLE_FRAMES_ENV = "BLUEPRINT_ADP009D_RESTORE_SETTLE_FRAMES"
+
+
+def episode_start_restore_settle_frames() -> int:
+    """Hold-at-target renders before the restore pixel count is measured."""
+
+    raw = os.environ.get(RESTORE_SETTLE_FRAMES_ENV, "").strip()
+    if not raw:
+        return DEFAULT_EPISODE_START_RESTORE_SETTLE_FRAMES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_EPISODE_START_RESTORE_SETTLE_FRAMES
+
+
 def validate_wrist_observable_episode_start_restore(
     *,
     selected_joint_position_rad: Sequence[float],
@@ -239,6 +263,7 @@ def validate_wrist_observable_episode_start_restore(
     object_offset_m: Sequence[float],
     approved_task_object_pixel_count: int,
     restore_steps: int,
+    render_settle_frames: int = 0,
     min_object_pixels: int = MIN_WRIST_OBJECT_PIXELS,
     object_offset_tolerance_m: float = EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
     joint_tolerance_rad: float = EPISODE_START_JOINT_TOLERANCE_RAD,
@@ -274,6 +299,16 @@ def validate_wrist_observable_episode_start_restore(
         "approved_task_object_pixel_count": pixels,
         "min_approved_task_object_pixels": int(min_object_pixels),
         "restore_steps": int(restore_steps),
+        "render_settle_frames": int(render_settle_frames),
+        # How much headroom the measured count has over the minimum: a ratio
+        # near 1.0 means the pose sees the object at the frame edge, where
+        # small joint deltas swing the count hard.  Recorded as a diagnostic;
+        # the pass threshold stays min_object_pixels.
+        "selection_margin_ratio": (
+            float(pixels) / float(min_object_pixels)
+            if int(min_object_pixels) > 0
+            else None
+        ),
     }
     receipt["restore_digest"] = canonical_digest(
         receipt, digest_field="restore_digest"

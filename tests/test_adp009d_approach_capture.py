@@ -851,3 +851,49 @@ def test_the_approach_holds_the_gripper_open() -> None:
     # Only when the convention is measured: guessing which value opens would
     # reintroduce exactly the bug this fixes.
     assert 'gripper_probe.get("status") == "measured"' in approach
+
+
+def test_restore_validation_records_render_settle_frames() -> None:
+    """The pixel count is only meaningful on a converged frame.  This scene's
+    RTX accumulator needs ~40 renders after a reset; v75 measured after 12 and
+    saw 33 pixels where selection had seen 219 from the same pose."""
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        validate_wrist_observable_episode_start_restore,
+    )
+
+    receipt = validate_wrist_observable_episode_start_restore(
+        selected_joint_position_rad=[0.1] * 7,
+        restored_joint_position_rad=[0.1] * 7,
+        object_offset_m=[0.0, 0.0, 0.0],
+        approved_task_object_pixel_count=219,
+        restore_steps=12,
+        render_settle_frames=28,
+    )
+
+    assert receipt["status"] == "ready"
+    assert receipt["render_settle_frames"] == 28
+    assert receipt["selection_margin_ratio"] == pytest.approx(219 / 200)
+
+
+def test_restore_settle_frames_env_reader_floors_at_zero(monkeypatch) -> None:
+    from blueprint_pipeline.adp009d_approach_capture import (
+        DEFAULT_EPISODE_START_RESTORE_SETTLE_FRAMES,
+        episode_start_restore_settle_frames,
+    )
+
+    monkeypatch.delenv("BLUEPRINT_ADP009D_RESTORE_SETTLE_FRAMES", raising=False)
+    assert (
+        episode_start_restore_settle_frames()
+        == DEFAULT_EPISODE_START_RESTORE_SETTLE_FRAMES
+        == 28
+    )
+    monkeypatch.setenv("BLUEPRINT_ADP009D_RESTORE_SETTLE_FRAMES", "40")
+    assert episode_start_restore_settle_frames() == 40
+    monkeypatch.setenv("BLUEPRINT_ADP009D_RESTORE_SETTLE_FRAMES", "-3")
+    assert episode_start_restore_settle_frames() == 0
+    monkeypatch.setenv("BLUEPRINT_ADP009D_RESTORE_SETTLE_FRAMES", "junk")
+    assert (
+        episode_start_restore_settle_frames()
+        == DEFAULT_EPISODE_START_RESTORE_SETTLE_FRAMES
+    )

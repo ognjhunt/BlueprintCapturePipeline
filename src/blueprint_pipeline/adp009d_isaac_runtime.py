@@ -29,6 +29,7 @@ try:  # flat provider-bundle layout, where this file runs as a script
         EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
+        episode_start_restore_settle_frames,
         pose_world_to_base,
         select_wrist_observable_episode_start,
         semantic_label_pixel_count,
@@ -46,6 +47,7 @@ except ModuleNotFoundError:  # imported as part of the repository package
         EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
         approach_waypoints_world,
+        episode_start_restore_settle_frames,
         pose_world_to_base,
         select_wrist_observable_episode_start,
         semantic_label_pixel_count,
@@ -2014,6 +2016,18 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         ):
                             break
 
+                    # Hold at the target while the RTX accumulator converges:
+                    # a pixel count measured on an under-accumulated frame
+                    # fails a pose the selection proved visible.  v75 measured
+                    # 33 pixels after 12 renders where selection saw 219 from
+                    # the same joints to within 0.01 rad.
+                    settle_frames = episode_start_restore_settle_frames()
+                    hold_restore_action = torch.zeros_like(action)
+                    hold_restore_action[:, :7] = target
+                    hold_restore_action[:, 7] = float(gripper_probe["open_command"])
+                    for _ in range(settle_frames):
+                        env.step(hold_restore_action)
+
                     restored_joints = _to_torch(robot.data.joint_pos)[0, :7]
                     restored_can_offset = (
                         _to_torch(approved_can.data.root_pose_w)[0, :3]
@@ -2030,6 +2044,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 )
                             ),
                             restore_steps=restore_steps,
+                            render_settle_frames=settle_frames,
                         )
                     )
                     episode_start_restore_receipts.append(restore_receipt)
