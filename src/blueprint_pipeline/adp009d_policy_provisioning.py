@@ -299,7 +299,7 @@ set -euo pipefail
 
 apt-get update -qq >/dev/null 2>&1 || true
 apt-get install -y -qq \
-  linux-libc-dev build-essential pkg-config \
+  linux-libc-dev build-essential pkg-config ffmpeg \
   python3-dev python3.12-dev >/dev/null 2>&1 || true
 
 /isaac-sim/python.sh "$RUNTIME_DIR/adp009d_provisioning_preflight.py" \

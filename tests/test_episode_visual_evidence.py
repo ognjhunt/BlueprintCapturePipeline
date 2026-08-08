@@ -7,12 +7,49 @@ import pytest
 
 from blueprint_pipeline.adp_prospective_design import validate_episode_evidence_contract
 from blueprint_pipeline.episode_visual_evidence import (
+    _encode_episode_video,
+    _ffmpeg_encode_command,
+    _ffprobe_command,
     finalize_multicamera_visual_evidence,
     finalize_visual_evidence,
     persist_multicamera_observation,
     persist_observation_frame,
     validate_multicamera_frame_manifest,
 )
+
+
+def test_review_video_uses_explicit_libx264_avc1_commands(tmp_path) -> None:
+    video = tmp_path / "review.mp4"
+    encode = _ffmpeg_encode_command(
+        executable="/fixture/ffmpeg",
+        video_path=video,
+        width=448,
+        height=224,
+        frames_per_second=15.0,
+        frame_count=61,
+    )
+    assert encode[0] == "/fixture/ffmpeg"
+    assert encode[encode.index("-c:v") + 1] == "libx264"
+    assert encode[encode.index("-tag:v") + 1] == "avc1"
+    assert encode[encode.index("-pix_fmt") + 1] == "yuv420p"
+    assert encode[encode.index("-frames:v") + 1] == "61"
+    assert _ffprobe_command(
+        executable="/fixture/ffprobe", video_path=video
+    )[-1] == str(video)
+
+
+def test_review_video_fails_closed_without_ffmpeg_toolchain(
+    tmp_path, monkeypatch
+) -> None:
+    from PIL import Image
+
+    frame = tmp_path / "frame.png"
+    Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(frame)
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    with pytest.raises(RuntimeError, match="ffmpeg_toolchain_unavailable"):
+        _encode_episode_video(
+            [frame], video_path=tmp_path / "review.mp4", frames_per_second=4.0
+        )
 
 
 def test_media_seal_retains_lossless_inputs_terminal_manifest_and_review_video(
@@ -58,8 +95,10 @@ def test_media_seal_retains_lossless_inputs_terminal_manifest_and_review_video(
     assert (tmp_path / video["relative_path"]).read_bytes()[4:8] == b"ftyp"
     assert visual["video"]["codec"] == "h264"
     assert visual["video"]["fourcc"] == "avc1"
+    assert visual["video"]["encoder"] == "ffmpeg_libx264"
     assert visual["video"]["decoded_frame_count"] == 3
     assert visual["video"]["decode_round_trip_passed"] is True
+    assert visual["video"]["ffprobe_passed"] is True
     episode = {
         "episode_id": episode_id,
         "status": "completed",

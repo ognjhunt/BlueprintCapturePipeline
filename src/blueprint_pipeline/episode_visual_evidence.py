@@ -6,6 +6,8 @@ import hashlib
 import json
 import math
 import re
+import shutil
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,7 @@ _CAMERA_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 REVIEW_VIDEO_CONTAINER = "mp4"
 REVIEW_VIDEO_CODEC = "h264"
 REVIEW_VIDEO_FOURCC = "avc1"
+REVIEW_VIDEO_ENCODER = "ffmpeg_libx264"
 
 
 def _file_sha256(path: Path) -> str:
@@ -302,6 +305,66 @@ def persist_multicamera_observation(
     return record
 
 
+def _ffmpeg_encode_command(
+    *,
+    executable: str,
+    video_path: Path,
+    width: int,
+    height: int,
+    frames_per_second: float,
+    frame_count: int,
+) -> list[str]:
+    """Build the exact portable H.264 review encoder command."""
+
+    return [
+        executable,
+        "-v",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "bgr24",
+        "-video_size",
+        f"{width}x{height}",
+        "-framerate",
+        str(float(frames_per_second)),
+        "-i",
+        "pipe:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-tag:v",
+        REVIEW_VIDEO_FOURCC,
+        "-movflags",
+        "+faststart",
+        "-frames:v",
+        str(frame_count),
+        "-y",
+        str(video_path),
+    ]
+
+
+def _ffprobe_command(*, executable: str, video_path: Path) -> list[str]:
+    return [
+        executable,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name,codec_tag_string,width,height",
+        "-of",
+        "json",
+        str(video_path),
+    ]
+
+
 def _encode_episode_video(
     frame_paths: Sequence[Path],
     *,
@@ -317,28 +380,57 @@ def _encode_episode_video(
         raise ValueError("episode_video_first_frame_unreadable")
     height, width = first.shape[:2]
     video_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(
-        str(video_path),
-        cv2.VideoWriter_fourcc(*REVIEW_VIDEO_FOURCC),
-        float(frames_per_second),
-        (width, height),
+    if video_path.exists() or video_path.is_symlink():
+        raise FileExistsError("episode_video_overwrite_forbidden")
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        raise RuntimeError("episode_video_ffmpeg_toolchain_unavailable")
+    raw_frames: list[bytes] = []
+    for path in frame_paths:
+        frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError(f"episode_video_frame_unreadable:{path.name}")
+        if frame.shape[:2] != (height, width):
+            raise ValueError(f"episode_video_frame_shape_mismatch:{path.name}")
+        raw_frames.append(frame.tobytes())
+    encode = subprocess.run(  # noqa: S603 - absolute discovered binary, fixed argv
+        _ffmpeg_encode_command(
+            executable=ffmpeg,
+            video_path=video_path,
+            width=width,
+            height=height,
+            frames_per_second=frames_per_second,
+            frame_count=len(frame_paths),
+        ),
+        input=b"".join(raw_frames),
+        capture_output=True,
+        check=False,
     )
-    if not writer.isOpened():
-        raise RuntimeError(
-            f"episode_video_encoder_unavailable:{REVIEW_VIDEO_FOURCC}"
-        )
-    try:
-        for path in frame_paths:
-            frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
-            if frame is None:
-                raise ValueError(f"episode_video_frame_unreadable:{path.name}")
-            if frame.shape[:2] != (height, width):
-                raise ValueError(f"episode_video_frame_shape_mismatch:{path.name}")
-            writer.write(frame)
-    finally:
-        writer.release()
+    if encode.returncode != 0:
+        error = encode.stderr[-2048:].decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"episode_video_ffmpeg_failed:{error}")
     if not video_path.is_file() or video_path.stat().st_size <= 0:
         raise RuntimeError("episode_video_not_written")
+
+    probe = subprocess.run(  # noqa: S603 - absolute discovered binary, fixed argv
+        _ffprobe_command(executable=ffprobe, video_path=video_path),
+        capture_output=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError("episode_video_ffprobe_failed")
+    try:
+        probe_payload = json.loads(probe.stdout)
+        stream = probe_payload["streams"][0]
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("episode_video_ffprobe_output_invalid") from exc
+    if stream.get("codec_name") != REVIEW_VIDEO_CODEC:
+        raise RuntimeError("episode_video_codec_not_h264")
+    if stream.get("codec_tag_string") != REVIEW_VIDEO_FOURCC:
+        raise RuntimeError("episode_video_codec_tag_not_avc1")
+    if [stream.get("width"), stream.get("height")] != [width, height]:
+        raise RuntimeError("episode_video_ffprobe_dimensions_mismatch")
 
     # A non-empty container is not review evidence.  Decode the complete output
     # and prove the expected count and dimensions before calling it available.
@@ -368,10 +460,12 @@ def _encode_episode_video(
         "container": REVIEW_VIDEO_CONTAINER,
         "codec": REVIEW_VIDEO_CODEC,
         "fourcc": REVIEW_VIDEO_FOURCC,
+        "encoder": REVIEW_VIDEO_ENCODER,
         "frames_per_second": float(frames_per_second),
         "frame_count": len(frame_paths),
         "decoded_frame_count": decoded_count,
         "decode_round_trip_passed": True,
+        "ffprobe_passed": True,
     }
 
 
