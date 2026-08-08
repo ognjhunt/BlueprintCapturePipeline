@@ -1957,3 +1957,25 @@ def test_the_claim_fields_follow_the_episodes() -> None:
     assert '"candidate_policy_queried": bool(' in body
     assert '"candidate_outcomes_accessed": bool(' in body
     assert '"candidate_policy_queried": False' not in body
+
+
+def test_provisioning_progress_reaches_the_container_log() -> None:
+    """The watchdog reads container stdout, not the provisioning log file.
+
+    The entrypoint redirects the script's output to a file, so markers emitted
+    inside the script went where nothing was looking and two runs were killed
+    at thirty minutes while provisioning correctly.
+    """
+
+    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
+
+    # Emitted by the entrypoint itself, outside the redirection.
+    assert 'echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_${candidate}:started"' in ENTRYPOINT
+    assert 'provision_${candidate}:completed:rc=$rc' in ENTRYPOINT
+    # And a tick while the fetch runs, because a checkpoint download has
+    # nothing to say for minutes at a time.
+    assert "while kill -0" in ENTRYPOINT
+    assert "_working:" in ENTRYPOINT
+    # The exit code must still be the script's, not the loop's.
+    assert 'wait "$provisioning_pid"' in ENTRYPOINT
+    assert ENTRYPOINT.index('wait "$provisioning_pid"') < ENTRYPOINT.index("rc=$?\n  echo")
