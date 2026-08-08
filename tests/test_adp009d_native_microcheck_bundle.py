@@ -2064,10 +2064,11 @@ def test_a_hanging_candidate_cannot_consume_the_whole_run() -> None:
     assert "BLUEPRINT_ADP009D_PROVISION_TIMEOUT_SECONDS" in ENTRYPOINT
     assert 'provision_${candidate}:abandoned' in ENTRYPOINT
     # Terminated, then killed: a process ignoring TERM must not survive.
-    assert 'kill -TERM "$provisioning_pid"' in ENTRYPOINT
-    assert 'kill -KILL "$provisioning_pid"' in ENTRYPOINT
-    assert ENTRYPOINT.index('kill -TERM "$provisioning_pid"') < ENTRYPOINT.index(
-        'kill -KILL "$provisioning_pid"'
+    assert 'setsid bash "$script"' in ENTRYPOINT
+    assert 'kill -TERM -- "-$provisioning_pid"' in ENTRYPOINT
+    assert 'kill -KILL -- "-$provisioning_pid"' in ENTRYPOINT
+    assert ENTRYPOINT.index('kill -TERM -- "-$provisioning_pid"') < ENTRYPOINT.index(
+        'kill -KILL -- "-$provisioning_pid"'
     )
     # The loop still runs the remaining candidates after abandoning one.
     abandoned = ENTRYPOINT.index('provision_${candidate}:abandoned')

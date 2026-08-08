@@ -305,8 +305,15 @@ def test_each_candidate_gets_its_own_transport_and_launch() -> None:
         checkpoint_root="/checkpoints/groot_n17_droid",
         port=5555,
     )
-    assert "gr00t.policy.server" in groot
-    assert "serve_policy.py" not in " ".join(groot)
+    assert groot[:2] == [
+        "/venv/bin/python",
+        "/source/groot_n17_droid/gr00t/eval/run_gr00t_server.py",
+    ]
+    assert "gr00t.policy.server" not in groot
+    assert groot[groot.index("--embodiment-tag") + 1] == (
+        "OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT"
+    )
+    assert groot[groot.index("--host") + 1] == "127.0.0.1"
     assert "--model-path" in groot
 
     # Default ports differ, and neither is guessed at the call site.

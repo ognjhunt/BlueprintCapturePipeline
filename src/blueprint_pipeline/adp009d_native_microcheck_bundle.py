@@ -105,8 +105,13 @@ for candidate in $(printf '%s' "$BLUEPRINT_ADP009D_POLICY_CANDIDATE" | tr ',' ' 
   # log.  Emitting them inside the script put them where nothing was looking,
   # and two runs were killed at thirty minutes while provisioning correctly.
   echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_${candidate}:started"
+  # Give each candidate its own process group.  Killing only the shell leaves
+  # its policy worker and GPU server orphaned; a measured GR00T failure did
+  # exactly that, then started Isaac beside an unowned server after the outer
+  # timeout.  ``setsid`` makes the background PID the group leader so timeout
+  # teardown covers every descendant without touching the provider entrypoint.
   RUNTIME_DIR="$RUNTIME_DIR" OUT_DIR="$OUT_DIR" \
-    bash "$script" >"$OUT_DIR/adp009d_policy_provisioning.$candidate.log" 2>&1 &
+    setsid bash "$script" >"$OUT_DIR/adp009d_policy_provisioning.$candidate.log" 2>&1 &
   provisioning_pid=$!
   # A checkpoint fetch runs for minutes with nothing to say.  Tick while it
   # works so the watchdog can tell a long download from a stalled one, and
@@ -126,9 +131,9 @@ for candidate in $(printf '%s' "$BLUEPRINT_ADP009D_POLICY_CANDIDATE" | tr ',' ' 
     # fifteen-minute readiness timeout.
     if [ $waited -ge ${BLUEPRINT_ADP009D_PROVISION_TIMEOUT_SECONDS:-1500} ]; then
       echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_${candidate}:abandoned"
-      kill -TERM "$provisioning_pid" 2>/dev/null || true
+      kill -TERM -- "-$provisioning_pid" 2>/dev/null || true
       sleep 10
-      kill -KILL "$provisioning_pid" 2>/dev/null || true
+      kill -KILL -- "-$provisioning_pid" 2>/dev/null || true
       break
     fi
   done

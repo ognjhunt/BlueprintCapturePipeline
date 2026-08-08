@@ -51,6 +51,7 @@ DROID_OPEN_LOOP_HORIZON = 8
 
 TRANSPORT_OPENPI_WEBSOCKET = "openpi_websocket"
 TRANSPORT_GROOT_ZMQ = "groot_zmq"
+GROOT_DROID_EMBODIMENT_TAG = "OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT"
 
 # Read from each vendor runtime rather than assumed: openpi serves over a
 # websocket on 8000 via scripts/serve_policy.py, while GR00T's client is
@@ -104,10 +105,15 @@ def build_serve_command(
         ]
     return [
         python,
-        "-m",
-        "gr00t.policy.server",
+        str(Path(source_root, "gr00t", "eval", "run_gr00t_server.py")),
         "--model-path",
         checkpoint_root,
+        "--embodiment-tag",
+        GROOT_DROID_EMBODIMENT_TAG,
+        "--device",
+        "cuda:0",
+        "--host",
+        DEFAULT_HOST,
         "--port",
         str(port),
     ]
