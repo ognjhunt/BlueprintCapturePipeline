@@ -134,6 +134,12 @@ def _normalize_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_articulated_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Public fail-closed validator for a frozen articulated scorer contract."""
+
+    return _normalize_articulated_spec(spec)
+
+
 def _normalize_articulated_samples(
     samples: Sequence[Mapping[str, Any]], *, joint_ids: set[str]
 ) -> list[dict[str, Any]]:
@@ -393,4 +399,5 @@ __all__ = [
     "TaskNeutralScoringError",
     "score_articulated_task_episode",
     "score_task_episode_from_spec",
+    "validate_articulated_task_spec",
 ]

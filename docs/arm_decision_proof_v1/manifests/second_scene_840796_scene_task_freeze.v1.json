@@ -1,0 +1,329 @@
+{
+  "schema_version": "second_scene_scene_task_freeze.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009D",
+  "status": "frozen_for_construction_before_learned_outcomes",
+  "frozen_at_utc": "2026-08-08T23:59:00Z",
+  "selection_rule": "first_candidate_in_frozen_order_without_a_local_selection_blocker",
+  "considered_scenes": [
+    {
+      "publisher_scene_id": "840076",
+      "status": "rejected_before_task_freeze",
+      "reason": "best SAGE door collider AABB IoU 0.200712895 below frozen 0.85 whole-object threshold"
+    },
+    {
+      "publisher_scene_id": "840411",
+      "status": "rejected_before_task_freeze",
+      "reason": "exact right-door prism contacts SAGE chair-227 triangle mesh at 26.75 degrees before required 45 degrees",
+      "receipt_digest": "sha256:9c8ec87d11ebf492fa6e14affccb939c79e61212570a5f66ca832d04d5ae52e8"
+    },
+    {
+      "publisher_scene_id": "840796",
+      "status": "selected_and_frozen_for_construction",
+      "reason": "exact source identities, full six-room survey, observed two-door refrigerator and handle, unique SAGE object collider IoU 0.992325475, and exact upper-door 45-degree SAGE mesh sweep clear"
+    },
+    {
+      "publisher_scene_ids": [
+        "840873",
+        "840874",
+        "840920",
+        "841151",
+        "841193",
+        "841757"
+      ],
+      "status": "not_inspected_after_first_selected_candidate",
+      "reason": "frozen first-passing-candidate order stops after 840796; no method or policy outcomes consulted"
+    }
+  ],
+  "scene": {
+    "publisher_scene_id": "840796",
+    "interiorgs_folder": "0498_840796",
+    "target_instance_id": "123",
+    "target_semantic_label": "refrigerator",
+    "target_world_aabb_min_m": [
+      1.617248144,
+      1.129218059,
+      0.000000002
+    ],
+    "target_world_aabb_max_m": [
+      2.331180256,
+      1.829218141,
+      1.631869998
+    ],
+    "target_sage_collision_prim_path": "/Root/ZC2DFJJVAIJFUPTUJQ888888",
+    "target_sage_aabb_iou": 0.992325475,
+    "target_room_id": "room_03"
+  },
+  "rights": {
+    "declared_use_scope": "noncommercial_internal_research",
+    "interiorgs_repository": "spatialverse/InteriorGS",
+    "interiorgs_revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+    "interiorgs_license": "custom_InteriorGS_terms",
+    "sage_collision_repository": "spatialverse/SAGE-3D_Collision_Mesh",
+    "sage_collision_revision": "3ba75cc7887b62bf84211d5db08adfa64d691597",
+    "sage_collision_license": "CC-BY-NC-4.0",
+    "required_attribution_and_citation": true,
+    "raw_dataset_redistribution_allowed": false,
+    "external_provider_upload_authorized": false,
+    "commercial_use_allowed": false,
+    "disclosure_rule": "No scene bytes, scene-derived renders, masks, or extracted geometry may be uploaded to Aura, Joint Agent, or another external provider without new explicit rights and authority."
+  },
+  "rights_authority_record": {
+    "relative_path": "docs/arm_decision_proof_v1/manifests/adp009a_interiorgs_rights_authority.v1.json",
+    "size_bytes": 1465,
+    "sha256": "sha256:8353a51238feb13da805853129ee3c4e4dcb3aeb3ee656f3097b33be42564db7"
+  },
+  "source_artifacts": [
+    {
+      "role": "interiorgs_splat",
+      "repository": "spatialverse/InteriorGS",
+      "revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+      "relative_path": "shortlist/InteriorGS/0498_840796/3dgs_compressed.ply",
+      "size_bytes": 36382397,
+      "sha256": "sha256:1b8d0ff463a9a68d83ad10b5a49c3c5be9819b692005162382eaf30c733a8fdf"
+    },
+    {
+      "role": "interiorgs_labels",
+      "repository": "spatialverse/InteriorGS",
+      "revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+      "relative_path": "shortlist/InteriorGS/0498_840796/labels.json",
+      "size_bytes": 132539,
+      "sha256": "sha256:57aa8675dbf7938d0b7e0194b5c581b37d049594ba6037d0a77552e6693c1484"
+    },
+    {
+      "role": "interiorgs_structure",
+      "repository": "spatialverse/InteriorGS",
+      "revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+      "relative_path": "shortlist/InteriorGS/0498_840796/structure.json",
+      "size_bytes": 70572,
+      "sha256": "sha256:6563f49fe1266d477a90ac0007c18feaceb3397531968a1a28a8864477d74e8d"
+    },
+    {
+      "role": "sage_collision",
+      "repository": "spatialverse/SAGE-3D_Collision_Mesh",
+      "revision": "3ba75cc7887b62bf84211d5db08adfa64d691597",
+      "relative_path": "shortlist/SAGE-3D_Collision_Mesh/Collision_Mesh/840796/840796_collision.usd",
+      "size_bytes": 23988263,
+      "sha256": "sha256:7bfc6e4b6909f7057fa1983ac228e5d7511d7053745d8b6f467aecfea0c7194e"
+    }
+  ],
+  "registration": {
+    "publisher_scene_id_join": "840796",
+    "coordinate_frame": "InteriorGS_world_and_SAGE_world",
+    "handedness": "right_handed",
+    "up_axis": "Z",
+    "meters_per_unit": 1.0,
+    "interiorgs_to_sage_transform": [
+      [1.0, 0.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0, 0.0],
+      [0.0, 0.0, 1.0, 0.0],
+      [0.0, 0.0, 0.0, 1.0]
+    ],
+    "inverse_transform": [
+      [1.0, 0.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0, 0.0],
+      [0.0, 0.0, 1.0, 0.0],
+      [0.0, 0.0, 0.0, 1.0]
+    ],
+    "round_trip_max_error_m": 0.0,
+    "observed_target_aabb_iou": 0.992325475,
+    "claim": "publisher-frame synthetic registration consistency",
+    "not_claimed": [
+      "measurement_authoritative_local_surface_truth",
+      "physical_site_registration",
+      "real_world_metric_fidelity"
+    ]
+  },
+  "topology_and_visibility": {
+    "publisher_room_count": 6,
+    "room_survey_camera_count": 24,
+    "nonblank_room_survey_frame_count": 24,
+    "target_closeup_camera_count": 9,
+    "nonblank_target_closeup_frame_count": 9,
+    "retained_splat_count": 593665,
+    "source_splat_count": 593665,
+    "global_decimation_applied": false,
+    "unassigned_publisher_object_ids": [
+      "66", "67", "68", "69", "70", "71", "72", "76",
+      "931", "932", "933", "934", "935", "936"
+    ],
+    "explicitly_unseen_or_uncaptured": [
+      "refrigerator interior behind both closed source doors",
+      "wall and floor surfaces hidden behind the source refrigerator",
+      "cabinet interiors behind closed doors",
+      "surfaces outside the six publisher room profiles",
+      "occluded backs and undersides not represented by retained source observations"
+    ],
+    "reconnaissance_render_only": true,
+    "evaluation_authorized_render": false
+  },
+  "evidence_artifacts": [
+    {
+      "role": "room_survey",
+      "relative_path": "selection_inspection_second_scene/840796/room_survey.json",
+      "size_bytes": 72493,
+      "sha256": "sha256:d395b1e4680430d9a04ac0e0cf6e622cbe9219b1e88632064b0c602d03acbe90",
+      "receipt_digest": "sha256:f19d09bb240dc8b3c21a77820e1a0f94aee490bae03b77ee2cf0cf48490e50d2"
+    },
+    {
+      "role": "room_survey_render",
+      "relative_path": "selection_inspection_second_scene/840796/room_survey_render_metal/splat_render_manifest.json",
+      "size_bytes": 13142,
+      "sha256": "sha256:e519d63bb790d4775f52dc94a0cd30e7376bc83d276364881cea0366f85e10cc",
+      "receipt_digest": "sha256:51cee7635c75dd20a55db7387cbe1eb80d92b18ea7559a00ae41e06943937c03"
+    },
+    {
+      "role": "target_closeup_render",
+      "relative_path": "selection_inspection_second_scene/840796/target_123_render_metal/splat_render_manifest.json",
+      "size_bytes": 7614,
+      "sha256": "sha256:ed05376a79d04bfe19d06e96bc22e6076df67eba7ed9e4625a4b82729032cab0",
+      "receipt_digest": "sha256:4422586f627dfef732fcbfd8de467cc0f3dd6e6eaa3bb72df5c4075d815422ac"
+    },
+    {
+      "role": "target_collision_identity",
+      "relative_path": "selection_inspection_second_scene/840796/target_123_sage_collision_identity.json",
+      "size_bytes": 2970,
+      "sha256": "sha256:4190d48bb39e08ebe226c4120c32f5f9b550f76ecd4341e71a1c673d2d14d60a",
+      "receipt_digest": "sha256:180be682025cb74be20d24e209d3b2131e78e5a5f9b2b0cc6fc770cce90697b0"
+    },
+    {
+      "role": "member_seam_observation",
+      "relative_path": "selection_inspection_second_scene/840796/target_123_upper_lower_seam_observation.v1.json",
+      "size_bytes": 1865,
+      "sha256": "sha256:d2aa942d4cdac221696ea74ed90f1a6db9029d8a2eca9e61970a18d47c04c7b4",
+      "receipt_digest": "sha256:97bbb1e2a84f7150df2f13168c03705588fa4bed528a9dc729cd4a305e98c330"
+    },
+    {
+      "role": "sage_sweep_obstacle_inventory",
+      "relative_path": "selection_inspection_second_scene/840796/target_123_upper_door_sage_sweep_obstacle_inventory.v1.json",
+      "size_bytes": 2863,
+      "sha256": "sha256:893733b25bee8a77050fa41b1c156a5bd118be50b7258b67afcbcdada8cc2f34",
+      "receipt_digest": "sha256:31806c4bd2320b9786a949f054385649af6af6162fe6a558b71f27d7ea45f34e"
+    },
+    {
+      "role": "exact_sage_mesh_sweep",
+      "relative_path": "selection_inspection_second_scene/840796/target_123_upper_door_exact_sage_mesh_sweep.v2.json",
+      "size_bytes": 2131,
+      "sha256": "sha256:eb796b92688708eee63493a778ac4d38d4f311974aaf38df3fc479514a4c6d52",
+      "receipt_digest": "sha256:516a784b4eb4e6be9c3836c7ccabfbde0a1f0083d423d2944953306f7c084807"
+    }
+  ],
+  "member_geometry_observation": {
+    "moving_member": "upper refrigerator door",
+    "fixed_frame": "refrigerator cabinet shell",
+    "non_task_moving_member": "lower refrigerator door",
+    "observed_front_plane_axis": "Y",
+    "observed_front_plane_value_m": 1.829218141,
+    "seam_pixel_v": 402,
+    "seam_world_z_m": 0.9399812489142184,
+    "upper_member_vertical_interval_m": [
+      0.939981249,
+      1.631869998
+    ],
+    "hinge_origin_world_m": [
+      1.617248144,
+      1.829218141,
+      1.2859256235
+    ],
+    "closed_endpoint_world_m": [
+      2.331180256,
+      1.829218141,
+      1.2859256235
+    ],
+    "joint_axis_world": [0.0, 0.0, 1.0],
+    "positive_open_direction": "closed radial +X rotates toward +Y",
+    "member_half_thickness_m_for_clearance": 0.05,
+    "observed_handle": "white horizontal handle on lower portion of upper door, visible in multiple retained closeups",
+    "exact_3d_handle_contact_volume_status": "pending_replacement_asset_construction_and_native_readback",
+    "source_joint_topology_claimed": false
+  },
+  "task_spec": {
+    "schema_version": "adp_task_spec.v1",
+    "task_kind": "articulated_open_close",
+    "task_id": "840796_refrigerator_upper_door_open_v1",
+    "prompt": "Open the upper refrigerator door to at least 45 degrees, release it, and retreat.",
+    "target_joint_id": "refrigerator_upper_door_hinge",
+    "joint_reset_positions_rad": {
+      "refrigerator_upper_door_hinge": 0.0,
+      "refrigerator_lower_door_hinge": 0.0
+    },
+    "target_success_interval_rad": [
+      0.7853981633974483,
+      0.9599310885968813
+    ],
+    "joint_hard_limits_rad": {
+      "refrigerator_upper_door_hinge": [0.0, 1.5707963267948966],
+      "refrigerator_lower_door_hinge": [0.0, 1.5707963267948966]
+    },
+    "scripted_positive_target_rad": 0.8726646259971648,
+    "settle_window_samples": 40,
+    "maximum_settled_target_speed_rad_s": 0.05,
+    "non_task_joint_motion_tolerance_rad": 0.001,
+    "movement_epsilon_rad": 0.0001,
+    "reset_tolerance_rad": 0.0001,
+    "control_frequency_hz": 15,
+    "maximum_action_steps": 450,
+    "failure_rungs": [
+      "reset_readback_mismatch",
+      "never_moved",
+      "moved_below_threshold",
+      "opened_then_rebounded",
+      "non_task_joint_moved",
+      "joint_limit_or_containment_violation",
+      "robot_or_scene_collision_failure",
+      "release_or_retreat_incomplete"
+    ],
+    "judgement_source": "deterministic_native_simulator_joint_state_only"
+  },
+  "seeds": [
+    2026080800,
+    2026080801,
+    2026080802,
+    2026080803,
+    2026080804,
+    2026080805,
+    2026080806,
+    2026080807,
+    2026080808,
+    2026080809,
+    2026080810,
+    2026080811,
+    2026080812,
+    2026080813,
+    2026080814,
+    2026080815
+  ],
+  "initial_powered_subset": {
+    "canonical_seed": 2026080800,
+    "policy_launch_cell_count": 1,
+    "expansion_rule": "expand only after both controls pass the exact resolved cell and the smallest diagnostic family subset is materialized"
+  },
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "candidate_inventory": {
+    "relative_path": "docs/arm_decision_proof_v1/manifests/adp009d_policy_candidate_inventory.v1.json",
+    "size_bytes": 33030,
+    "sha256": "sha256:cd8bf62b16e0d4dc8cfa6e7cf79dec6f1a72089a1c522f9554280b269c1e7531",
+    "inventory_digest": "sha256:3c6aead117c8f436b81d81d0d21de0658f5555cded1ac5963619665fac482102"
+  },
+  "construction_gates_remaining": [
+    "evaluation_authorized_exact_camera_render_packet",
+    "exact_source_object_removal_masks",
+    "released_aura_inpainting_execution_and_quality",
+    "joint_agent_owned_core_topology_execution_or_typed_rights_platform_abstention",
+    "replacement_rigid_body_mass_inertia_collision_drive_and_material_authoring",
+    "native_joint_graph_limits_reset_contact_containment_and_stability_readback",
+    "collision_free_franka_base_and_phase_ik",
+    "external_wrist_and_review_camera_observability",
+    "zero_action_and_scripted_positive_per_resolved_cell"
+  ],
+  "construction_authorized": true,
+  "scenario_materialization_authorized": false,
+  "evaluation_authorized": false,
+  "learned_policy_outcomes_consulted": false,
+  "new_inpainting_outcomes_consulted": false,
+  "claim_ceiling": "development_only_public_dataset_construction_freeze",
+  "freeze_digest": "sha256:0774b7072bb1a0fd0929fde81cd48aaff384af4608772f31d603c2324f97d03f"
+}

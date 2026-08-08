@@ -1,7 +1,11 @@
 # Second-scene Arm Decision Proof v1 rehearsal protocol
 
-Status: candidate inspection active; `840076` and `840411` rejected, with no
-scene or task yet frozen.
+Status: scene and task frozen before learned outcomes. InteriorGS/SAGE scene
+`840796`, refrigerator instance `123`, and the upper-door open task are frozen
+for construction by
+[`manifests/second_scene_840796_scene_task_freeze.v1.json`](manifests/second_scene_840796_scene_task_freeze.v1.json).
+This does not authorize scenario materialization or evaluation; every remaining
+construction, native robot, camera, and control gate still fails closed.
 
 Backlog item: **ADP-009D**. Gate: **public-scene day 28**. The observed
 completion artifact must be one sealed, digest-bound, development-only Task
@@ -107,22 +111,43 @@ the labeled target, below the frozen `0.85` exact-removal threshold.
 
 Candidate `840411` initially passed aggregate collision identity: its source
 refrigerator collider matches the InteriorGS label at AABB IoU `0.991112022`.
-It was then rejected before task freeze because exact SAGE chair colliders leave
-only about `0.203 m` between the chair row and refrigerator front, and the
-idealized zero-thickness right-door centerline intersects chair `227` before
-the frozen minimum 45-degree opening. The corresponding left leaf also
-intersects chair `226`; moving or deleting either chair would silently change
-the public scene. No Franka base pose can make a mechanically blocked door
-sweep valid, so placement and Joint Agent execution are not attempted for this
-candidate. The 223-component extracted source and fail-closed Joint Agent packet
-are retained as reusable construction evidence, not promoted to a selected
-task.
+It was then rejected before task freeze. The earlier AABB broadphase estimated
+chair `227` contact at `25.75` degrees; the required full-stage exact triangle
+narrowphase independently confirms that a 5 cm half-thickness right-door prism
+contacts the collider uniquely bound to chair `227` at `26.75` degrees, before
+the frozen minimum 45-degree opening. Moving or deleting the chair would
+silently change the public scene. No Franka base pose can make a mechanically
+blocked door sweep valid, so placement and Joint Agent execution are not
+attempted for this candidate. The 223-component extracted source and
+fail-closed Joint Agent packet are retained as reusable construction evidence,
+not promoted to a selected task.
 
 The sweep receipt is consumed by the reusable scenario harness's
-`adp_task_construction_admission.v1` decision. A blocked articulated sweep sets
+`adp_task_construction_admission.v1` decision. Legacy AABB-only clearance is no
+longer sufficient. A blocked exact SAGE triangle sweep sets
 both placement-search and scenario-materialization authority to false; the
 harness refuses to create cells before IK, controls, policies, or paid launch.
 This is not a parallel scene-selection-only judgment.
+
+Candidate `840796` is the first frozen-order candidate without a local selection
+blocker. Exact InteriorGS bytes contain `593665` splats; the full publisher
+topology has six room profiles and was rendered from 24 in-scene cameras before
+nine refrigerator close-ups. The source refrigerator label and unique SAGE
+collider match at AABB IoU `0.992325475`. A deterministic median-gradient seam
+observation finds the upper/lower door boundary at image row `402` and
+back-projects it to `z=0.9399812489 m`. Using that observed upper-member interval,
+the full-stage SAGE inventory and exact triangle-prism sweep are clear from
+closed through 45 degrees. This is clearance candidate evidence, not native
+articulation or robot qualification.
+
+The frozen task commands only `refrigerator_upper_door_hinge`; the lower door is
+locked at zero with a `0.001 rad` maximum motion tolerance. Success requires the
+upper joint to remain between 45 and 55 degrees for 40 samples at 15 Hz with
+speed at most `0.05 rad/s`, task contact released, no collision/limit/containment
+failure, and retreat complete. The exact prompt, limits, resets, failure rungs,
+16 seeds, and two candidate IDs are in the freeze digest. The visible source
+handle is observed, but its exact 3D replacement contact volume remains a
+construction gate rather than an asserted measurement.
 
 ## Joint Agent construction boundary
 
