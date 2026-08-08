@@ -9,6 +9,7 @@ import pytest
 
 from blueprint_pipeline.adp009d_franka_evaluation_harness import (
     Adp009dHarnessError,
+    admit_task_construction,
     admit_cousin_static_validation,
     materialize_cousin_package,
     materialize_scenario_suite,
@@ -16,6 +17,7 @@ from blueprint_pipeline.adp009d_franka_evaluation_harness import (
     validate_cousin_static_validation_receipt,
     validate_harness_manifest,
     validate_scenario_suite,
+    validate_task_construction_admission,
 )
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -145,6 +147,47 @@ def test_harness_rejects_sage_geometry_or_approximation_mutation() -> None:
             evidence_root=REPO_ROOT,
             verify_files=False,
         )
+
+
+def test_articulated_sweep_rejection_is_a_harness_materialization_decision(
+    tmp_path: Path,
+) -> None:
+    rejection = _load("second_scene_candidate_840411_clearance_rejection.v1.json")
+    task_contract = {
+        "schema_version": "adp_task_spec.v1",
+        "task_kind": "articulated_open_close",
+        "target_joint_id": "refrigerator_right_door_hinge",
+    }
+    admission = admit_task_construction(
+        task_contract=task_contract,
+        member_sweep_clearance=rejection["right_door_sweep"],
+    )
+
+    assert admission["scenario_materialization_authorized"] is False
+    assert admission["placement_search_authorized"] is False
+    assert admission["blockers"] == [
+        "articulated_member_sweep_obstructed:chair:227"
+    ]
+    assert validate_task_construction_admission(
+        admission, task_contract=task_contract
+    ) == admission
+
+    harness = _load("adp009d_franka_eval_harness_manifest.v1.json")
+    harness["task_contract"] = task_contract
+    with pytest.raises(Adp009dHarnessError) as caught:
+        materialize_scenario_suite(
+            harness_manifest=harness,
+            scenario_suite={},
+            cousin_manifests=[],
+            cousin_static_validation_receipts=[],
+            output_dir=tmp_path / "blocked",
+            task_construction_admission=admission,
+        )
+
+    assert caught.value.errors == (
+        "scenario_task_construction_not_admitted:articulated_member_sweep_obstructed:chair:227",
+    )
+    assert not (tmp_path / "blocked").exists()
 
 
 def _load(name: str) -> dict:

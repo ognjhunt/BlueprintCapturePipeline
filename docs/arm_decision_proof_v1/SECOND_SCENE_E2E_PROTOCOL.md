@@ -118,6 +118,12 @@ candidate. The 223-component extracted source and fail-closed Joint Agent packet
 are retained as reusable construction evidence, not promoted to a selected
 task.
 
+The sweep receipt is consumed by the reusable scenario harness's
+`adp_task_construction_admission.v1` decision. A blocked articulated sweep sets
+both placement-search and scenario-materialization authority to false; the
+harness refuses to create cells before IK, controls, policies, or paid launch.
+This is not a parallel scene-selection-only judgment.
+
 ## Joint Agent construction boundary
 
 NVIDIA USD Content Agents Joint Agent is bound to tag `v0.5.2`, commit

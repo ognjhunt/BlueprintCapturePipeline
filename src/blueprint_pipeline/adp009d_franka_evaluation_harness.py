@@ -19,6 +19,10 @@ from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.articulated_workspace_clearance import (
+    ArticulatedWorkspaceClearanceError,
+    validate_articulated_workspace_clearance,
+)
 
 
 HARNESS_SCHEMA_VERSION = "adp009d_franka_eval_harness_manifest.v1"
@@ -30,6 +34,7 @@ COUSIN_STATIC_VALIDATION_SCHEMA_VERSION = (
 SCENARIO_SUITE_SCHEMA_VERSION = "adp009d_scenario_suite.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
 SCENARIO_MATERIALIZATION_SCHEMA_VERSION = "adp009d_scenario_materialization.v1"
+TASK_CONSTRUCTION_ADMISSION_SCHEMA_VERSION = "adp_task_construction_admission.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 SCENARIO_FREEZE_STATUS = (
     "frozen_after_canonical_canary_before_scenario_evaluation"
@@ -103,6 +108,16 @@ FORBIDDEN_OUTCOME_KEYS = {
     "policy_result",
     "result_success",
     "task_success",
+}
+ARTICULATED_TASK_KIND = "articulated_open_close"
+REQUIRED_ARTICULATED_CONSTRUCTION_GATES = {
+    "source_link_partition",
+    "source_visual_removal",
+    "replacement_asset",
+    "native_robot_placement",
+    "native_phase_ik",
+    "policy_camera_observability",
+    "review_camera_observability",
 }
 
 
@@ -200,6 +215,139 @@ def _resolve_file_record(
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def admit_task_construction(
+    *,
+    task_contract: Mapping[str, Any],
+    member_sweep_clearance: Mapping[str, Any],
+    construction_gate_receipts: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Decide whether an articulated task may reach scenario materialization.
+
+    This is the harness admission seam, not an analysis helper.  A blocked
+    member sweep rejects the task before placement or spend.  A clear sweep is
+    necessary but insufficient: every construction, placement, IK, and camera
+    gate must also provide a digest-bound passing receipt.
+    """
+
+    contract = _clone(task_contract, error="task_construction_contract_invalid")
+    errors: list[str] = []
+    if contract.get("schema_version") != "adp_task_spec.v1":
+        errors.append("task_construction_contract_schema_invalid")
+    if contract.get("task_kind") != ARTICULATED_TASK_KIND:
+        errors.append("task_construction_kind_unsupported")
+    if not str(contract.get("target_joint_id") or ""):
+        errors.append("task_construction_target_joint_missing")
+    try:
+        clearance = validate_articulated_workspace_clearance(
+            member_sweep_clearance
+        )
+    except ArticulatedWorkspaceClearanceError as exc:
+        errors.extend(exc.errors)
+        clearance = {}
+    if errors:
+        raise Adp009dHarnessError(errors)
+
+    blockers: list[str] = []
+    gate_bindings: list[dict[str, Any]] = []
+    if clearance.get("status") == "blocked_by_observed_obstacle":
+        obstacle_ids = _strings(clearance.get("collision_obstacle_ids"))
+        blockers.extend(
+            f"articulated_member_sweep_obstructed:{obstacle_id}"
+            for obstacle_id in obstacle_ids
+        )
+        if not obstacle_ids:
+            blockers.append("articulated_member_sweep_obstructed")
+    else:
+        seen_gate_ids: set[str] = set()
+        for index, raw in enumerate(construction_gate_receipts):
+            if not isinstance(raw, Mapping):
+                raise Adp009dHarnessError(
+                    [f"task_construction_gate_{index}_invalid"]
+                )
+            gate = _clone(raw, error=f"task_construction_gate_{index}_invalid")
+            gate_id = str(gate.get("gate_id") or "")
+            receipt_digest = str(gate.get("receipt_digest") or "")
+            if (
+                gate_id not in REQUIRED_ARTICULATED_CONSTRUCTION_GATES
+                or gate_id in seen_gate_ids
+                or gate.get("status") != "passed"
+                or not receipt_digest.startswith("sha256:")
+                or len(receipt_digest) != 71
+            ):
+                raise Adp009dHarnessError(
+                    [f"task_construction_gate_{index}_invalid"]
+                )
+            seen_gate_ids.add(gate_id)
+            gate_bindings.append(
+                {
+                    "gate_id": gate_id,
+                    "status": "passed",
+                    "receipt_digest": receipt_digest,
+                }
+            )
+        blockers.extend(
+            f"articulated_construction_gate_missing:{gate_id}"
+            for gate_id in sorted(
+                REQUIRED_ARTICULATED_CONSTRUCTION_GATES - seen_gate_ids
+            )
+        )
+    authorized = not blockers
+    receipt: dict[str, Any] = {
+        "schema_version": TASK_CONSTRUCTION_ADMISSION_SCHEMA_VERSION,
+        "program_id": PROGRAM_ID,
+        "task_contract_digest": canonical_digest(contract),
+        "task_kind": contract["task_kind"],
+        "target_joint_id": contract["target_joint_id"],
+        "member_sweep_clearance_receipt_digest": clearance["receipt_digest"],
+        "construction_gate_bindings": sorted(
+            gate_bindings, key=lambda row: row["gate_id"]
+        ),
+        "status": "admitted" if authorized else "rejected_or_blocked",
+        "scenario_materialization_authorized": authorized,
+        "placement_search_authorized": clearance.get("status")
+        == "clearance_candidate_only",
+        "blockers": sorted(blockers),
+        "learned_policy_outcomes_consulted": False,
+        "caller_asserted_success_accepted": False,
+        "admission_digest": "",
+    }
+    receipt["admission_digest"] = canonical_digest(
+        receipt, digest_field="admission_digest"
+    )
+    return receipt
+
+
+def validate_task_construction_admission(
+    value: Mapping[str, Any], *, task_contract: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Validate a retained harness admission receipt before materialization."""
+
+    receipt = _clone(value, error="task_construction_admission_invalid")
+    errors: list[str] = []
+    if receipt.get("schema_version") != TASK_CONSTRUCTION_ADMISSION_SCHEMA_VERSION:
+        errors.append("task_construction_admission_schema_invalid")
+    if receipt.get("program_id") != PROGRAM_ID:
+        errors.append("task_construction_admission_program_invalid")
+    if receipt.get("task_contract_digest") != canonical_digest(task_contract):
+        errors.append("task_construction_admission_contract_mismatch")
+    if receipt.get("learned_policy_outcomes_consulted") is not False:
+        errors.append("task_construction_admission_policy_outcome_leakage")
+    if receipt.get("caller_asserted_success_accepted") is not False:
+        errors.append("task_construction_admission_caller_success_accepted")
+    if receipt.get("admission_digest") != canonical_digest(
+        receipt, digest_field="admission_digest"
+    ):
+        errors.append("task_construction_admission_digest_invalid")
+    authorized = receipt.get("scenario_materialization_authorized") is True
+    if authorized != (receipt.get("status") == "admitted"):
+        errors.append("task_construction_admission_status_inconsistent")
+    if authorized and receipt.get("blockers") != []:
+        errors.append("task_construction_admission_authorized_with_blockers")
+    if errors:
+        raise Adp009dHarnessError(errors)
+    return receipt
 
 
 def _number(value: Any) -> float | None:
@@ -1560,8 +1708,27 @@ def materialize_scenario_suite(
     cousin_manifests: Sequence[Mapping[str, Any]],
     cousin_static_validation_receipts: Sequence[Mapping[str, Any]],
     output_dir: str | Path,
+    task_construction_admission: Mapping[str, Any] | None = None,
 ) -> ScenarioMaterialization:
     """Resolve every explicit suite cell from its frozen digest and seed."""
+
+    task_contract = _mapping(harness_manifest.get("task_contract"))
+    if task_contract.get("task_kind") == ARTICULATED_TASK_KIND:
+        if task_construction_admission is None:
+            raise Adp009dHarnessError(
+                ["scenario_task_construction_admission_missing"]
+            )
+        admission = validate_task_construction_admission(
+            task_construction_admission, task_contract=task_contract
+        )
+        if admission.get("scenario_materialization_authorized") is not True:
+            raise Adp009dHarnessError(
+                [
+                    f"scenario_task_construction_not_admitted:{blocker}"
+                    for blocker in _strings(admission.get("blockers"), nonempty=True)
+                ]
+                or ["scenario_task_construction_not_admitted"]
+            )
 
     suite = validate_scenario_suite(
         scenario_suite,
