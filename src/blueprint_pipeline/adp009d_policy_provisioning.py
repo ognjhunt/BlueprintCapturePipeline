@@ -201,7 +201,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 UV="$UV_INSTALL_DIR/uv"
 test -x "$UV"
 
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_venv:started"
 "$UV" venv --python "{SYSTEM_INTERPRETER}" "{venv_root}"
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_venv:completed"
 
 # Prove the venv is real and is not Isaac's interpreter before anything installs.
 test -x "{venv_root}/bin/python"
@@ -214,15 +216,23 @@ test -x "{venv_root}/bin/python"
 # Every frozen candidate is public, so no credential is forwarded to this host.
 unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true
 
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_install:started"
 {install}
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_install:completed"
 
+# The long pole: pi05's checkpoint alone is 12.4 GB.  Marked at both ends so
+# the watchdog sees progress and a stall is attributable to the fetch rather
+# than to provisioning generally.
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_checkpoint:started"
 {fetch}
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_checkpoint:completed"
 
 # Readiness is a completed inference round trip, not a listening socket: one
 # shipped server writes "model_loaded_ready_to_serve" before it serves at all,
 # and loading 12.4 GB of weights takes far longer than binding a port.  The
 # worker starts the server, waits for a real inference returning a well-formed
 # chunk, and leaves it running for the episode.
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_server:started"
 "{venv_root}/bin/python" "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
   --candidate-id "{candidate_id}" \
   --source-root "{POLICY_SOURCE_ROOT}/{candidate_id}" \

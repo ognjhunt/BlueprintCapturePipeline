@@ -260,3 +260,36 @@ def test_native_build_dependencies_are_installed_before_the_policy() -> None:
     # And never fatal on their own: the apt step is best-effort.
     # Best-effort: a missing apt must not fail provisioning on its own.
     assert "|| true" in script[script.index("apt-get install") :][:400]
+
+
+def test_provisioning_reports_progress_at_every_long_step() -> None:
+    """The no-progress watchdog counts only new phase markers.
+
+    Provisioning two candidates means two multi-gigabyte checkpoint fetches
+    with nothing emitted in between, so a run doing exactly what it was asked
+    is indistinguishable from a hung one -- and a live two-policy run was
+    killed at thirty minutes for that reason, after the bundle had downloaded
+    and the entrypoint had started.
+    """
+
+    import re
+
+    for candidate in ("pi05_droid", "groot_n17_droid"):
+        script = build_provisioning_script(candidate)
+        markers = re.findall(
+            r"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:(provision_[a-z0-9_]+):(started|completed)",
+            script,
+        )
+        steps = {name for name, _ in markers}
+        # Each long step: creating the venv, installing the pinned source,
+        # fetching the checkpoint, and starting the server.
+        assert f"provision_{candidate}_venv" in steps
+        assert f"provision_{candidate}_install" in steps
+        assert f"provision_{candidate}_checkpoint" in steps
+        assert f"provision_{candidate}_server" in steps
+        # The checkpoint fetch is the long pole and must be marked at both
+        # ends, so a stall is attributable to it rather than to provisioning
+        # generally.
+        assert (f"provision_{candidate}_checkpoint", "started") in markers
+        assert (f"provision_{candidate}_checkpoint", "completed") in markers
+        assert "{candidate_id}" not in script
