@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -27,6 +30,7 @@ def test_grasp_frame_target_retains_the_measured_full_tool_offset() -> None:
         current_body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
         current_grasp_frame_position_world_m=[1.2, 1.9, 2.7],
         target_grasp_frame_position_world_m=[4.0, 5.0, 6.0],
+        target_body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
     )
 
     assert target_body == pytest.approx([3.8, 5.1, 6.3])
@@ -43,7 +47,68 @@ def test_grasp_frame_target_rejects_a_nonrigid_orientation() -> None:
             current_body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 2.0],
             current_grasp_frame_position_world_m=[1.2, 1.9, 2.7],
             target_grasp_frame_position_world_m=[4.0, 5.0, 6.0],
+            target_body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
         )
+
+
+def test_grasp_frame_target_rotates_the_measured_full_offset_into_task_orientation() -> None:
+    target_body, target_quaternion = controlled_body_pose_for_grasp_frame_target(
+        current_body_position_world_m=[1.0, 2.0, 3.0],
+        current_body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        current_grasp_frame_position_world_m=[1.2, 1.9, 2.7],
+        target_grasp_frame_position_world_m=[4.0, 5.0, 6.0],
+        target_body_quaternion_world_xyzw=[1.0, 0.0, 0.0, 0.0],
+    )
+
+    # A 180 degree rotation about body X preserves X and reverses Y/Z.
+    assert target_body == pytest.approx([3.8, 4.9, 5.7])
+    assert target_quaternion == [1.0, 0.0, 0.0, 0.0]
+
+
+def test_v89_camera_orientation_was_unreachable_but_task_orientation_is_reachable() -> None:
+    body = [3.468174695968628, -3.1697866916656494, 0.7484458684921265]
+    camera_aim_quaternion = [
+        -0.2917867997481312,
+        -0.23988355674504283,
+        0.4887041767341441,
+        -0.7864378998615812,
+    ]
+    finger_midpoint = [
+        3.3785593509674072,
+        -2.9842019081115723,
+        0.7934765517711639,
+    ]
+    pregrasp = [3.4681748, -3.3100837, 0.9464650138348478]
+    robot_base = [3.4681748, -2.8100837, 0.2766791]
+
+    held_body, _ = controlled_body_pose_for_grasp_frame_target(
+        current_body_position_world_m=body,
+        current_body_quaternion_world_xyzw=camera_aim_quaternion,
+        current_grasp_frame_position_world_m=finger_midpoint,
+        target_grasp_frame_position_world_m=pregrasp,
+        target_body_quaternion_world_xyzw=camera_aim_quaternion,
+    )
+    task_body, _ = controlled_body_pose_for_grasp_frame_target(
+        current_body_position_world_m=body,
+        current_body_quaternion_world_xyzw=camera_aim_quaternion,
+        current_grasp_frame_position_world_m=finger_midpoint,
+        target_grasp_frame_position_world_m=pregrasp,
+        target_body_quaternion_world_xyzw=[1.0, 0.0, 0.0, 0.0],
+    )
+
+    assert math.dist(held_body, robot_base) > 0.855
+    assert math.dist(task_body, robot_base) < 0.855
+
+
+def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -> None:
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    callback = source[source.index("def _scripted_pose_action_callback") :]
+    assert "scripted_control_task_orientation_missing" in callback
+    assert "target_body_quaternion_world_xyzw=(" in callback
+    assert "target_quaternion_world_xyzw" in callback
+    assert 'runtime / "adp009d_control_plan.v3.json"' in callback
 
 
 class _Tensor(list):

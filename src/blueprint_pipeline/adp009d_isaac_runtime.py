@@ -2097,9 +2097,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 ):
                     """One bounded native differential-IK action for a control phase."""
 
-                    if target_quaternion_world_xyzw is not None:
+                    if target_quaternion_world_xyzw is None:
                         raise RuntimeError(
-                            "scripted_control_requires_live_body_orientation"
+                            "scripted_control_task_orientation_missing"
                         )
                     body_poses = _to_torch(robot.data.body_pose_w)[0]
                     body_pose = body_poses[body_index, :7]
@@ -2124,6 +2124,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                             ],
                             target_grasp_frame_position_world_m=(
                                 target_position_world_m
+                            ),
+                            target_body_quaternion_world_xyzw=(
+                                target_quaternion_world_xyzw
                             ),
                         )
                     )
@@ -2261,7 +2264,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         scenario_instance = json.loads(
                             scenario_instance_path.read_text(encoding="utf-8")
                         )
-                        control_plan_path = runtime / "adp009d_control_plan.v2.json"
+                        control_plan_path = runtime / "adp009d_control_plan.v3.json"
                         if not control_plan_path.is_file():
                             raise RuntimeError("adp009d_control_plan_missing")
                         expected_control_plan = json.loads(

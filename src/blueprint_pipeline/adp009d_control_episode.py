@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v2"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v3"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v1"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -64,9 +64,11 @@ REQUIRED_CONTROLS = (ZERO_ACTION_NEGATIVE, SCRIPTED_POSITIVE)
 # live adapter measures the body-to-grasp transform; no asset-specific scalar
 # tool offset is allowed here.
 GRASP_TARGET_FRAME = "probe_calibrated_finger_midpoint"
-CONTROLLED_BODY_ORIENTATION_STRATEGY = "hold_live_controlled_body_orientation"
+CONTROLLED_BODY_ORIENTATION_STRATEGY = "horizontal_support_top_down_task_orientation"
+CONTROLLED_BODY_QUATERNION_WORLD_XYZW = [1.0, 0.0, 0.0, 0.0]
 PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
+PHASE_ARRIVAL_TOLERANCE_M = 0.02
 ZERO_ACTION_STEPS = 80
 # Retain a calibrated overview sequence throughout motion, not only at phase
 # boundaries.  Arena advances at roughly 30 Hz, so eight native steps yields a
@@ -75,6 +77,7 @@ CONTROL_REVIEW_FRAME_STRIDE_STEPS = 8
 
 BLOCKER_ZERO_COMPLETED_TASK = "zero_action_negative_completed_task"
 BLOCKER_POSITIVE_FAILED = "deterministic_scripted_positive_failed"
+BLOCKER_PHASE_NOT_REACHED = "scripted_control_phase_not_reached"
 BLOCKER_MEDIA_INCOMPLETE = "control_episode_media_incomplete"
 
 
@@ -250,7 +253,10 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         if phase["target_position_world_m"] is not None:
             phase["target_frame"] = GRASP_TARGET_FRAME
             phase["orientation_strategy"] = CONTROLLED_BODY_ORIENTATION_STRATEGY
-            phase["target_quaternion_world_xyzw"] = None
+            phase["target_quaternion_world_xyzw"] = list(
+                CONTROLLED_BODY_QUATERNION_WORLD_XYZW
+            )
+            phase["arrival_tolerance_m"] = PHASE_ARRIVAL_TOLERANCE_M
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
 
     plan: dict[str, Any] = {
@@ -266,6 +272,9 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         "object_height_m": object_height,
         "grasp_target_frame": GRASP_TARGET_FRAME,
         "controlled_body_orientation_strategy": CONTROLLED_BODY_ORIENTATION_STRATEGY,
+        "controlled_body_quaternion_world_xyzw": list(
+            CONTROLLED_BODY_QUATERNION_WORLD_XYZW
+        ),
         "zero_action": {
             "semantics": (
                 "zero_joint_velocity_realized_as_hold_current_absolute_joint_positions"
@@ -288,6 +297,33 @@ def _sample(environment: ControlEnvironment, step_index: int) -> dict[str, Any]:
         raise ControlEpisodeError(["control_episode_can_pose_world_missing"])
     sample["step_index"] = int(step_index)
     return sample
+
+
+def _phase_arrival(
+    *,
+    phase: Mapping[str, Any],
+    start_sample: Mapping[str, Any],
+    terminal_sample: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Retain and gate the semantic grasp-frame error for one IK phase."""
+
+    target = [float(value) for value in phase["target_position_world_m"]]
+    start = [float(value) for value in start_sample["grasp_frame_position_world_m"]]
+    achieved = [
+        float(value) for value in terminal_sample["grasp_frame_position_world_m"]
+    ]
+    tolerance = float(phase["arrival_tolerance_m"])
+    error = math.dist(achieved, target)
+    return {
+        "phase_id": str(phase["phase_id"]),
+        "target_frame": str(phase["target_frame"]),
+        "target_position_world_m": target,
+        "start_position_world_m": start,
+        "achieved_position_world_m": achieved,
+        "terminal_position_error_m": error,
+        "arrival_tolerance_m": tolerance,
+        "target_reached": error <= tolerance,
+    }
 
 
 def _persist_observation(
@@ -374,6 +410,8 @@ def run_control_episode(
     review_observations: list[dict[str, Any]] = []
     observation_index = 1
     step_index = 0
+    phase_arrivals: list[dict[str, Any]] = []
+    phase_execution_blocker: str | None = None
 
     if control_id == ZERO_ACTION_NEGATIVE:
         phases = [
@@ -391,6 +429,7 @@ def run_control_episode(
         phases = [dict(phase) for phase in plan["scripted_positive_phases"]]
 
     for phase_index, phase in enumerate(phases):
+        phase_start_sample = samples[-1]
         gripper_command = (
             float(gripper_open_command)
             if phase["gripper"] == "open"
@@ -447,6 +486,19 @@ def run_control_episode(
                 )
             )
             observation_index += 1
+        if phase["mode"] == "ik_pose":
+            arrival = _phase_arrival(
+                phase=phase,
+                start_sample=phase_start_sample,
+                terminal_sample=samples[-1],
+            )
+            phase_arrivals.append(arrival)
+            if not arrival["target_reached"]:
+                phase_execution_blocker = (
+                    f"{BLOCKER_PHASE_NOT_REACHED}:{phase['phase_id']}:"
+                    f"error_m={arrival['terminal_position_error_m']:.6f}"
+                )
+                break
 
     terminal = _persist_observation(
         environment,
@@ -489,6 +541,9 @@ def run_control_episode(
             if passed
             else [f"{BLOCKER_POSITIVE_FAILED}:{score.get('outcome')}"]
         )
+        if phase_execution_blocker is not None:
+            blockers.append(phase_execution_blocker)
+            passed = False
     if visual.get("status") != "complete":
         blockers.append(BLOCKER_MEDIA_INCOMPLETE)
         passed = False
@@ -517,6 +572,8 @@ def run_control_episode(
         "state_trace_digest": canonical_digest({"samples": samples}),
         "action_trace": actions,
         "action_trace_digest": canonical_digest({"actions": actions}),
+        "phase_arrivals": phase_arrivals,
+        "phase_execution_blocker": phase_execution_blocker,
         "contact_trace": [
             {
                 "step_index": sample["step_index"],
@@ -579,7 +636,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v2.json", plan)
+    _write_json(output / "adp009d_control_plan.v3.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(
@@ -628,6 +685,7 @@ def run_required_controls(
 
 __all__ = [
     "BLOCKER_POSITIVE_FAILED",
+    "BLOCKER_PHASE_NOT_REACHED",
     "BLOCKER_ZERO_COMPLETED_TASK",
     "CONTROL_EPISODE_SCHEMA_VERSION",
     "CONTROL_PAIR_SCHEMA_VERSION",

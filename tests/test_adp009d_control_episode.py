@@ -8,6 +8,7 @@ import pytest
 
 from blueprint_pipeline.adp009d_control_episode import (
     BLOCKER_POSITIVE_FAILED,
+    BLOCKER_PHASE_NOT_REACHED,
     SCRIPTED_POSITIVE,
     ZERO_ACTION_NEGATIVE,
     ControlEpisodeError,
@@ -86,12 +87,19 @@ def _calibration(width: int, height: int) -> dict:
 
 
 class _ControlEnvironment:
-    def __init__(self, *, positive_moves_object: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        positive_moves_object: bool = True,
+        grasp_frame_converges: bool = True,
+    ) -> None:
         self.positive_moves_object = positive_moves_object
+        self.grasp_frame_converges = grasp_frame_converges
         self.reset_count = 0
         self.step_index = 0
         self.joints = [0.1 * index for index in range(7)]
         self.can = list(START)
+        self.grasp_frame = list(START)
         self.gripper_width = 0.085
         self.gripped = False
         self.pending_target = None
@@ -103,6 +111,7 @@ class _ControlEnvironment:
         self.step_index = 0
         self.joints = [0.1 * index for index in range(7)]
         self.can = list(START)
+        self.grasp_frame = list(START)
         self.gripper_width = 0.085
         self.gripped = False
         self.pending_target = None
@@ -149,7 +158,7 @@ class _ControlEnvironment:
         return {
             "can_pose_world": [*self.can, 0.0, 0.0, 0.0, 1.0],
             "gripper_width_m": self.gripper_width,
-            "grasp_frame_position_world_m": list(self.can),
+            "grasp_frame_position_world_m": list(self.grasp_frame),
         }
 
     def hold_action(self, *, gripper_command: float):
@@ -165,7 +174,7 @@ class _ControlEnvironment:
         gripper_command,
         max_joint_delta_rad,
     ):
-        assert target_quaternion_world_xyzw is None
+        assert target_quaternion_world_xyzw == [1.0, 0.0, 0.0, 0.0]
         assert max_joint_delta_rad == 0.03
         self.pending_target = [float(value) for value in target_position_world_m]
         self.pending_gripper = float(gripper_command)
@@ -180,6 +189,8 @@ class _ControlEnvironment:
         self.joints = action[:7]
         self.step_index += 1
         self.gripper_width = 0.085 if self.pending_gripper == 1.0 else 0.04
+        if self.grasp_frame_converges and self.pending_target is not None:
+            self.grasp_frame = list(self.pending_target)
         if not self.positive_moves_object or self.pending_target is None:
             return
         target = self.pending_target
@@ -189,7 +200,10 @@ class _ControlEnvironment:
         if self.gripped and self.pending_gripper == 0.0:
             self.can[0] = target[0]
             self.can[1] = target[1]
-            self.can[2] = max(START[2], target[2] - 0.27)
+            self.can[2] = max(
+                START[2],
+                target[2] - _instance()["resolved_parameters"]["object_height_m"] / 2.0,
+            )
         if self.pending_gripper == 1.0:
             self.gripped = False
             if np.linalg.norm(np.asarray(target[:2]) - np.asarray(TARGET[:2])) < 0.05:
@@ -207,8 +221,9 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
     assert first["resolved_destination_position_world_m"] == TARGET
     assert first["grasp_target_frame"] == "probe_calibrated_finger_midpoint"
     assert first["controlled_body_orientation_strategy"] == (
-        "hold_live_controlled_body_orientation"
+        "horizontal_support_top_down_task_orientation"
     )
+    assert first["controlled_body_quaternion_world_xyzw"] == [1.0, 0.0, 0.0, 0.0]
     grasp = next(
         phase for phase in first["scripted_positive_phases"]
         if phase["phase_id"] == "grasp"
@@ -222,7 +237,8 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
         ]
     )
     assert grasp["target_frame"] == "probe_calibrated_finger_midpoint"
-    assert grasp["target_quaternion_world_xyzw"] is None
+    assert grasp["target_quaternion_world_xyzw"] == [1.0, 0.0, 0.0, 0.0]
+    assert grasp["arrival_tolerance_m"] == 0.02
     assert [phase["phase_id"] for phase in first["scripted_positive_phases"]] == [
         "pregrasp",
         "descend",
@@ -292,6 +308,7 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
     assert positive["observed_outcome"] == "placed"
     assert negative["candidate_policy_queried"] is False
     assert positive["candidate_policy_queried"] is False
+    assert all(row["target_reached"] for row in positive["phase_arrivals"])
     assert negative["action_trace"][0]["isaac_action"][:7] == negative[
         "action_trace"
     ][0]["observed_joint_position_before_rad"]
@@ -324,3 +341,40 @@ def test_failed_scripted_positive_blocks_cell_without_becoming_policy_failure(
     assert pair["policy_execution_blockers"] == [
         f"{BLOCKER_POSITIVE_FAILED}:never_moved"
     ]
+
+
+def test_nonconverging_phase_aborts_before_grasp_and_retains_typed_evidence(
+    tmp_path: Path,
+) -> None:
+    pair = run_required_controls(
+        environment=_ControlEnvironment(grasp_frame_converges=False),
+        scenario_instance=_instance(),
+        gripper_open_command=1.0,
+        gripper_closed_command=0.0,
+        output_dir=tmp_path,
+    )
+
+    positive = json.loads(
+        (tmp_path / f"adp009d_control_episode.{SCRIPTED_POSITIVE}.json").read_text()
+    )
+    assert pair["cell_admitted_for_policy_execution"] is False
+    assert any(
+        blocker.startswith(f"{BLOCKER_PHASE_NOT_REACHED}:pregrasp:error_m=")
+        for blocker in pair["policy_execution_blockers"]
+    )
+    assert positive["environment_steps"] == 80
+    assert positive["phase_arrivals"] == [
+        {
+            "phase_id": "pregrasp",
+            "target_frame": "probe_calibrated_finger_midpoint",
+            "target_position_world_m": pytest.approx(
+                [START[0], START[1], START[2] + 0.42]
+            ),
+            "start_position_world_m": START,
+            "achieved_position_world_m": START,
+            "terminal_position_error_m": pytest.approx(0.42),
+            "arrival_tolerance_m": 0.02,
+            "target_reached": False,
+        }
+    ]
+    assert {row["phase_id"] for row in positive["action_trace"]} == {"pregrasp"}

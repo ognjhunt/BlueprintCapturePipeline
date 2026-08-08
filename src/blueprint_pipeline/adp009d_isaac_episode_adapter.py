@@ -40,7 +40,7 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v4"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v5"
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -82,13 +82,16 @@ def controlled_body_pose_for_grasp_frame_target(
     current_body_quaternion_world_xyzw: Sequence[float],
     current_grasp_frame_position_world_m: Sequence[float],
     target_grasp_frame_position_world_m: Sequence[float],
+    target_body_quaternion_world_xyzw: Sequence[float],
 ) -> tuple[list[float], list[float]]:
-    """Translate an IK-body target so the measured finger midpoint reaches it.
+    """Resolve the IK-body pose that puts the measured finger midpoint at target.
 
-    The body orientation is deliberately held at its current live value.  With
-    that orientation fixed, the measured world-space body-to-finger-midpoint
-    vector remains the correct rigid offset, including every lateral and
-    vertical component of the actual composed gripper asset.
+    The reset pose measures the complete body-to-finger-midpoint offset.  That
+    offset is transformed into the controlled body's local frame, then applied
+    at the task orientation.  This matters because the wrist-observability pose
+    can point the tool offset away from the task: v89 made the pregrasp body
+    target 0.93 m from the Franka base even though the finger target was within
+    reach.  A scalar tool length or a world-space offset cannot represent this.
     """
 
     try:
@@ -96,6 +99,9 @@ def controlled_body_pose_for_grasp_frame_target(
         quaternion = [float(value) for value in current_body_quaternion_world_xyzw]
         grasp = [float(value) for value in current_grasp_frame_position_world_m]
         target = [float(value) for value in target_grasp_frame_position_world_m]
+        target_quaternion = [
+            float(value) for value in target_body_quaternion_world_xyzw
+        ]
     except (TypeError, ValueError) as exc:
         raise IsaacEpisodeAdapterError(
             ["isaac_episode_grasp_frame_transform_invalid"]
@@ -105,17 +111,45 @@ def controlled_body_pose_for_grasp_frame_target(
         or len(quaternion) != 4
         or len(grasp) != 3
         or len(target) != 3
-        or not all(math.isfinite(value) for value in (*body, *quaternion, *grasp, *target))
+        or len(target_quaternion) != 4
+        or not all(
+            math.isfinite(value)
+            for value in (*body, *quaternion, *grasp, *target, *target_quaternion)
+        )
         or abs(math.sqrt(sum(value * value for value in quaternion)) - 1.0) > 1.0e-5
+        or abs(
+            math.sqrt(sum(value * value for value in target_quaternion)) - 1.0
+        )
+        > 1.0e-5
     ):
         raise IsaacEpisodeAdapterError(
             ["isaac_episode_grasp_frame_transform_invalid"]
         )
+    def _rotate(q: Sequence[float], vector: Sequence[float]) -> list[float]:
+        x, y, z, w = q
+        vx, vy, vz = vector
+        tx = 2.0 * (y * vz - z * vy)
+        ty = 2.0 * (z * vx - x * vz)
+        tz = 2.0 * (x * vy - y * vx)
+        return [
+            vx + w * tx + (y * tz - z * ty),
+            vy + w * ty + (z * tx - x * tz),
+            vz + w * tz + (x * ty - y * tx),
+        ]
+
     body_to_grasp_world = [grasp[index] - body[index] for index in range(3)]
+    body_to_grasp_local = _rotate(
+        [-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3]],
+        body_to_grasp_world,
+    )
+    target_body_to_grasp_world = _rotate(
+        target_quaternion,
+        body_to_grasp_local,
+    )
     target_body = [
-        target[index] - body_to_grasp_world[index] for index in range(3)
+        target[index] - target_body_to_grasp_world[index] for index in range(3)
     ]
-    return target_body, quaternion
+    return target_body, target_quaternion
 
 
 def _as_array(value: Any) -> Any:
@@ -509,7 +543,7 @@ def describe_adapter() -> dict[str, Any]:
         "gripper_width_source": GRIPPER_WIDTH_SOURCE,
         "scripted_control_target_frame": "probe_calibrated_finger_midpoint",
         "scripted_control_body_pose_resolution": (
-            "measured_live_body_to_finger_midpoint_with_orientation_held"
+            "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
         ),
         "gripper_physical_full_opening_m": GRIPPER_PHYSICAL_FULL_OPENING_M,
         "raw_gripper_body_separation_retained": True,
@@ -541,7 +575,7 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
     ):
         errors.append("isaac_episode_adapter_scripted_control_target_frame_drifted")
     if bindings.get("scripted_control_body_pose_resolution") != (
-        "measured_live_body_to_finger_midpoint_with_orientation_held"
+        "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
     ):
         errors.append("isaac_episode_adapter_scripted_control_body_pose_resolution_drifted")
     if (

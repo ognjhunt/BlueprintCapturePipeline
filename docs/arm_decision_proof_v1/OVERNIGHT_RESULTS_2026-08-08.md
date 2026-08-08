@@ -176,8 +176,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v88
-ledgers add `$6.913631`, for `$17.911930` total and `$7.088070` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v89
+ledgers add `$7.147675`, for `$18.145974` total and `$6.854026` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -219,9 +219,10 @@ they are evidence that concurrency failed closed.
 | v86 canonical controls + overview | `$0.100146` estimated | Blocked before both controls: the review-only overview camera had no valid metric-depth AOV. No policy/control outcome; encoded review-camera depth fix followed. |
 | v87 canonical controls + overview retry | `$0.194701` estimated | All three camera warmups passed and the controls runner started, but the first control could not seal its required review video because the controls-only image lacked `ffmpeg`/`ffprobe`. No sealed control receipt or control outcome; encoded base media-toolchain preflight followed. |
 | v88 canonical controls + media preflight | `$0.136833` estimated | Both controls sealed complete external/wrist/overview media. Zero-action passed as `never_moved`; scripted positive failed as `never_moved`. The arm moved up to 0.81 rad while the finger midpoint remained at least 0.39 m from the can, exposing a guessed IK-body/tool-frame transform. The stock overview also retained zero task semantic pixels. No policy verdict. |
+| v89 measured grasp frame + overview gate | `$0.234044` | The task-centered overview passed with 111 exact-can semantic pixels inside the frame margin and both controls sealed all six videos. Zero-action passed as `never_moved`; scripted positive again failed as `never_moved`. The measured tool offset reduced the descend error, but holding the camera-aimed body orientation made the pregrasp body pose unreachable. No policy verdict. |
 
 All completed paid attempts were followed by an API provider-zero check. v86,
-v87, and v88 were each launched from provider zero as the sole active instance;
+v87, v88, and v89 were each launched from provider zero as the sole active instance;
 after each automatic teardown a fresh Vast API query returned `active: 0 []`.
 
 ## Scenario-family and control-harness progress after v85
@@ -305,6 +306,35 @@ task/control-harness failure rather than simulator task success. The six videos
 and lossless manifests are retained under its immutable execution output. No
 learned policy was queried.
 
+v89 closed the overview ambiguity. The exact can occupied 111 semantic pixels
+with bounding box `[150, 107, 156, 124]`, centroid approximately
+`[0.4804, 0.6460]`, and passed the five-percent frame-margin gate. Both controls
+again sealed external, wrist, and overview videos. The zero-action negative
+passed; the scripted positive remained `never_moved`, with only micrometric can
+motion. Its semantic grasp-frame terminal errors were approximately 0.287 m at
+pregrasp and 0.343 m after descend. The retained reset/tool geometry explains
+why: applying the measured world-space offset while holding the wrist-camera
+aim orientation places the pregrasp controlled-body target about 0.93 m from
+the Franka base, outside the frozen 0.855 m reach, although the finger target
+itself is reachable. This is a control-frame construction fault, not a policy
+result.
+
+The next encoded correction versions the plan as `adp009d_control_plan.v3` and:
+
+- measures the complete body-to-finger-midpoint offset in the controlled
+  body's local frame;
+- applies that offset at the horizontal-support top-down task orientation,
+  rather than preserving the camera-observability orientation;
+- keeps the target at the semantic finger midpoint for every pick/place phase;
+  and
+- records each phase's target, achieved grasp-frame position, terminal error,
+  and 0.02 m arrival tolerance, aborting with the typed
+  `scripted_control_phase_not_reached` blocker before the gripper closes or the
+  program advances when convergence is not established.
+
+This correction is hermetically covered but remains unqualified until the next
+controls-only canonical canary. No learned policy may run on its strength alone.
+
 ## What remains open
 
 - The P4 result is intentionally underpowered and single-cell. Its comparison
@@ -325,8 +355,8 @@ learned policy was queried.
 
 ## Single next action
 
-After landing the measured grasp-frame IK and task-centered overview fixes,
-from provider zero run only the
+After landing the task-orientation/body-local grasp-frame and phase-arrival
+fixes, from provider zero run only the
 checked-in canonical scenario's zero-action
 negative and deterministic scripted-positive control pair. Do not query either
 learned policy. If the scripted positive does not place the exact SimReady can,
