@@ -37,7 +37,13 @@ READINESS_POLL_SECONDS = 10.0
 # or inference can occupy the polling thread forever.  This bound is shorter
 # than the overall model-load allowance and leaves the outer loop free to
 # observe process exit and its own deadline.
-ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS = 30.0
+# The released pi05-DROID server has taken about 53 seconds for its first cold
+# inference on the qualified worker class.  A 30 second guard therefore killed
+# a healthy server before it could prove readiness.  Keep the vendor call
+# bounded, but leave measured cold-start headroom; this remains far below the
+# 15-minute overall readiness budget and still turns the prior 47-minute GR00T
+# hang into a typed failure.
+ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS = 120.0
 SERVER_LOG_TAIL_BYTES = 32_768
 DROID_ACTION_WIDTH = 8
 DROID_OPEN_LOOP_HORIZON = 8

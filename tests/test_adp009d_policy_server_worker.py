@@ -83,6 +83,13 @@ def test_one_blocked_attempt_cannot_starve_the_readiness_deadline(
     assert "round_trip_attempt_timed_out" in str(excinfo.value)
 
 
+def test_attempt_bound_has_measured_pi05_cold_start_headroom() -> None:
+    """The bound must not reject the observed 53-second pi05 first inference."""
+
+    assert worker.ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS >= 2 * 53.0
+    assert worker.ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS < worker.READINESS_TIMEOUT_SECONDS
+
+
 def test_failed_server_log_is_digest_bound_and_embedded_in_receipt(tmp_path) -> None:
     log = tmp_path / "adp009d_policy_server.groot_n17_droid.log"
     log.write_text("import ok\nconstructor blocked\n", encoding="utf-8")
