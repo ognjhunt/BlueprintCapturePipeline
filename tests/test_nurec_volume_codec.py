@@ -447,3 +447,81 @@ def test_the_composed_prim_tree_matches_the_shipped_package(tmp_path) -> None:
     if not INTERIORGS_USDZ.is_file():
         pytest.skip("InteriorGS usdz not present in this checkout")
     assert tree(str(tmp_path / "aura.usdz")) == tree(str(INTERIORGS_USDZ))
+
+
+# --- Z-order ------------------------------------------------------------------
+
+
+def test_the_shipped_payload_is_not_z_ordered() -> None:
+    """And the trap that made it look like it was.
+
+    ``np.diff(keys) >= 0`` on a uint32 array wraps on subtraction, so every
+    difference is non-negative by construction and the answer is 1.000
+    whatever the data says.  That reading nearly added a sort that would have
+    made our payload differ from the only reference known to render.
+    """
+
+    from blueprint_pipeline.aura_nurec_volume import morton_order
+
+    positions = gaussian_arrays(decode_nurec_bytes(_shipped_payload()))["positions"]
+    order = morton_order(positions.astype(np.float32))
+    identity = float((order == np.arange(order.size)).mean())
+    assert identity < 0.01, "shipped payload is in arbitrary order, not Morton"
+
+
+def test_the_unsigned_diff_trap_is_what_it_looks_like() -> None:
+    """Pin the arithmetic directly, so the mistake cannot be made twice."""
+
+    descending = np.array([9, 5, 1], dtype=np.uint32)
+    assert float((np.diff(descending) >= 0).mean()) == 1.0, "unsigned wrap"
+    assert float((np.diff(descending.astype(np.int64)) >= 0).mean()) == 0.0
+
+
+def test_authored_volumes_are_not_z_ordered_by_default() -> None:
+    """Matching the shipped payload, which is the only known-rendering shape."""
+
+    assert _authored()["_blueprint_authoring"]["z_ordered"] is False
+
+
+def test_every_array_is_permuted_by_the_same_index() -> None:
+    """Otherwise the parameters stop corresponding to each other.
+
+    A positions/colour mismatch renders a plausible-looking scene made of the
+    wrong colours, which is far worse than a scene that fails to render.
+    """
+
+    from blueprint_pipeline.aura_nurec_volume import build_aura_nurec_document, morton_order
+
+    surfels = _aura_surfels()
+    unsorted_doc = build_aura_nurec_document(surfels, template=_shipped_payload())
+    sorted_doc = build_aura_nurec_document(
+        surfels, template=_shipped_payload(), z_order=True
+    )
+    order = morton_order(np.asarray(surfels.xyz, dtype=np.float32))
+
+    a = gaussian_arrays(unsorted_doc)
+    b = gaussian_arrays(sorted_doc)
+    for name in ("positions", "rotations", "scales", "densities", "features_albedo",
+                 "features_specular"):
+        np.testing.assert_array_equal(
+            b[name], a[name][order], err_msg=f"{name} permuted inconsistently"
+        )
+
+
+def test_z_order_can_be_enabled_for_a_controlled_comparison() -> None:
+    from blueprint_pipeline.aura_nurec_volume import build_aura_nurec_document
+
+    document = build_aura_nurec_document(
+        _aura_surfels(), template=_shipped_payload(), z_order=True
+    )
+    assert document["_blueprint_authoring"]["z_ordered"] is True
+
+
+def test_a_degenerate_axis_does_not_divide_by_zero() -> None:
+    """A flat scene is still orderable."""
+
+    from blueprint_pipeline.aura_nurec_volume import morton_order
+
+    flat = np.zeros((5, 3), dtype=np.float32)
+    flat[:, 0] = np.arange(5)
+    assert morton_order(flat).shape == (5,)

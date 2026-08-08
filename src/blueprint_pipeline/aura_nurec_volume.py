@@ -56,6 +56,57 @@ BLOCKER_TEMPLATE_NOT_GAUSSIAN = "aura_nurec_template_not_a_gaussian_volume"
 BLOCKER_SH_WIDTH = "aura_nurec_sh_rest_width_mismatch"
 
 
+MORTON_BITS = 10
+"""Quantisation per axis for the Z-order key.  Ten bits fills a 32-bit key."""
+
+
+def morton_order(positions: np.ndarray) -> np.ndarray:
+    """Index order that sorts gaussians by Morton (Z-order) curve.
+
+    Provided, but **off by default**, and the reason is worth recording.  The
+    renderer config carries ``global_z_order: True``, which looked like a
+    requirement that the payload arrive pre-sorted.  A check appeared to
+    confirm it, reporting the shipped gaussians as perfectly Morton-monotone.
+
+    That check was wrong: it evaluated ``np.diff(keys) >= 0`` on a **uint32**
+    array, where subtraction wraps, so every difference is non-negative by
+    construction and the answer is 1.000 whatever the data says.  Cast to
+    int64 the shipped payload scores 0.500 -- arbitrary order.  The renderer
+    orders internally, and sorting our payload would make it differ from the
+    only reference known to render.
+
+    Kept because the ordering question will come back, and a named function
+    with this note attached is cheaper than rediscovering the trap.
+    """
+
+    positions = np.asarray(positions, dtype=np.float64)
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise NuRecCodecError([f"aura_nurec_morton_positions_invalid:{positions.shape}"])
+    span = positions.max(axis=0) - positions.min(axis=0)
+    # A degenerate axis would divide by zero; a flat scene is still orderable.
+    span = np.where(span > 0, span, 1.0)
+    scale = (1 << MORTON_BITS) - 1
+    quantised = np.clip(
+        ((positions - positions.min(axis=0)) / span * scale).astype(np.uint64), 0, scale
+    )
+
+    def _spread(value: np.ndarray) -> np.ndarray:
+        value = (value | (value << 16)) & 0x030000FF
+        value = (value | (value << 8)) & 0x0300F00F
+        value = (value | (value << 4)) & 0x030C30C3
+        value = (value | (value << 2)) & 0x09249249
+        return value
+
+    key = (
+        _spread(quantised[:, 0])
+        | (_spread(quantised[:, 1]) << np.uint64(1))
+        | (_spread(quantised[:, 2]) << np.uint64(2))
+    )
+    # Stable, so an already-ordered payload keeps its exact arrangement rather
+    # than being permuted within ties.
+    return np.argsort(key, kind="stable")
+
+
 def _template_document(template: bytes | Mapping[str, Any]) -> dict[str, Any]:
     document = (
         decode_nurec_bytes(template) if isinstance(template, (bytes, bytearray))
@@ -73,6 +124,7 @@ def build_aura_nurec_document(
     *,
     template: bytes | Mapping[str, Any],
     planar: bool = True,
+    z_order: bool = False,
 ) -> dict[str, Any]:
     """Lay Aura's learned 2DGS parameters into a NuRec container document.
 
@@ -102,6 +154,20 @@ def build_aura_nurec_document(
     planar_log = np.asarray(surfel.scales, dtype=np.float32).reshape(count, 2)
     albedo = np.asarray(surfel.f_dc, dtype=np.float32).reshape(count, 3)
     specular = np.asarray(surfel.sh_rest, dtype=np.float32).reshape(count, -1)
+    raw_opacity = np.asarray(surfel.opacity, dtype=np.float32).reshape(count, 1)
+
+    # Off by default: the shipped payload is not Z-ordered, so sorting would
+    # make ours differ from the only reference known to render.  When it is
+    # enabled, every per-gaussian array is permuted by the same index, because
+    # a positions/colour mismatch renders a plausible-looking scene made of
+    # the wrong colours -- worse than one that fails outright.
+    order = morton_order(positions) if z_order else np.arange(count)
+    positions = positions[order]
+    rotations = rotations[order]
+    planar_log = planar_log[order]
+    albedo = albedo[order]
+    specular = specular[order]
+    raw_opacity = raw_opacity[order]
     if specular.shape[1] != 45:
         raise NuRecCodecError([f"{BLOCKER_SH_WIDTH}:{specular.shape[1]}"])
 
@@ -112,7 +178,7 @@ def build_aura_nurec_document(
     structural_log = planar_log.min(axis=1, keepdims=True) + STRUCTURAL_Z_LOG_OFFSET
     scales = np.concatenate([planar_log, structural_log], axis=1)
 
-    raw_density = np.asarray(surfel.opacity, dtype=np.float32).reshape(count, 1)
+    raw_density = raw_opacity
     infinite_logits = int(np.isposinf(raw_density).sum() + np.isneginf(raw_density).sum())
     densities = np.clip(
         np.nan_to_num(raw_density, nan=0.0, posinf=FINITE_LOGIT_CLAMP, neginf=-FINITE_LOGIT_CLAMP),
@@ -163,6 +229,8 @@ def build_aura_nurec_document(
         "infinite_opacity_logits_clamped": infinite_logits,
         "finite_logit_clamp": FINITE_LOGIT_CLAMP,
         "values_written": "pre_activation_learned_parameters",
+        "z_ordered": bool(z_order),
+        "z_order_bits": MORTON_BITS,
     }
     return built
 
