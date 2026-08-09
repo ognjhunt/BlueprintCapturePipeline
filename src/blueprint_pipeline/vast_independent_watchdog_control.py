@@ -198,7 +198,7 @@ def close_independent_vast_watchdog(
     instance_ids: list[int],
     provider_teardown_completed: bool,
     provider_allocation_impossible: bool = False,
-    wait_seconds: float = 45.0,
+    wait_seconds: float = 300.0,
 ) -> dict[str, Any]:
     """Ask the watchdog to close only after owner teardown, or leave it armed."""
 
@@ -250,10 +250,24 @@ def close_independent_vast_watchdog(
         provider_name="vast",
         instance_id=instance_id,
     )
+    # The independent watchdog double-inspects the exact instance and the
+    # global inventory before writing terminal evidence, which can take
+    # minutes. Poll the evidence itself and return as soon as absence is
+    # confirmed; waiting only for process exit misread v7/v9's correct
+    # closures as unclosed.
     wait_deadline = time.monotonic() + max(0.1, wait_seconds)
-    while handle.process.poll() is None and time.monotonic() < wait_deadline:
-        time.sleep(0.2)
     terminal = _read_json(handle.out_dir / EVIDENCE_NAME)
+    while time.monotonic() < wait_deadline:
+        terminal = _read_json(handle.out_dir / EVIDENCE_NAME)
+        if (
+            terminal.get("status") == "provider_terminal"
+            and terminal.get("provider_absence_confirmed") is True
+        ):
+            break
+        if handle.process.poll() is not None:
+            terminal = _read_json(handle.out_dir / EVIDENCE_NAME)
+            break
+        time.sleep(0.2)
     status = (
         "provider_terminal"
         if terminal.get("status") == "provider_terminal"

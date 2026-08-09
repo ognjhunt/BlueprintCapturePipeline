@@ -565,6 +565,7 @@ def run_joint_agent_vast(
     hard_ttl_seconds: int = 10_800,
     public_image: str = DEFAULT_IMAGE,
     allowed_active_instance_ids: Sequence[int] = (),
+    machine_avoidlist_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Execute exactly one zero-retry Joint Agent attempt with provider zero."""
 
@@ -684,6 +685,7 @@ def run_joint_agent_vast(
                 started_instance_id_path=watchdog_handle.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
+                machine_avoidlist_path=machine_avoidlist_path,
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {

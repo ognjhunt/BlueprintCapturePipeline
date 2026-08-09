@@ -851,8 +851,388 @@ def validate_articulated_replacement_physics(
     return receipt
 
 
+AUTHORING_SCHEMA_VERSION = "articulated_simready_authoring.v1"
+
+
+def _local_range(cache: Any, prim: Any) -> tuple[list[float], list[float]]:
+    aligned = cache.ComputeLocalBound(prim).ComputeAlignedRange()
+    return (
+        [float(aligned.GetMin()[axis]) for axis in range(3)],
+        [float(aligned.GetMax()[axis]) for axis in range(3)],
+    )
+
+
+def author_articulated_simready_replacement(
+    *,
+    rigged_topology_usd_path: str | Path,
+    output_usd_path: str | Path,
+    topology_contract: Mapping[str, Any],
+    physics_contract: Mapping[str, Any],
+    authoring_spec: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Deterministically author physics onto an owned-core topology candidate.
+
+    Joint Agent's owned-core output is topology-only (joints, no masses or
+    colliders). This function adds the Blueprint-owned physics: rigid bodies,
+    density-independent role-based masses with box-approximation inertia,
+    per-component convex-hull colliders, an inherited physics material,
+    handle contact geometry on the task door (observed component when one
+    protrudes, otherwise a generated parametric candidate), a generated
+    interior block behind the doors, and observed/generated provenance tags.
+    The output is admitted only if both static validators pass; nothing here
+    is native-simulator qualification or physical equivalence.
+    """
+
+    try:
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+    except ImportError as exc:  # pragma: no cover - environment guard
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_replacement_openusd_runtime_missing"]
+        ) from exc
+
+    rigged = Path(rigged_topology_usd_path).expanduser().resolve()
+    output = Path(output_usd_path).expanduser().resolve()
+    if not rigged.is_file() or rigged.is_symlink():
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_authoring_rigged_input_missing"]
+        )
+    spec = json.loads(json.dumps(dict(authoring_spec)))
+    for field in (
+        "support_link_mass_kg",
+        "door_link_mass_kg",
+        "other_link_mass_kg",
+        "static_friction",
+        "dynamic_friction",
+        "restitution",
+        "generated_interior_inset_m",
+    ):
+        value = spec.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0.0:
+            raise ArticulatedSimReadyReplacementError(
+                [f"articulated_authoring_spec_invalid:{field}"]
+            )
+    handle_spec = spec.get("handle")
+    if (
+        not isinstance(handle_spec, Mapping)
+        or _finite_vector(handle_spec.get("generated_center_asset_m"), 3) is None
+        or _finite_vector(handle_spec.get("generated_half_extents_m"), 3) is None
+        or not isinstance(handle_spec.get("minimum_protrusion_m"), (int, float))
+        or isinstance(handle_spec.get("minimum_protrusion_m"), bool)
+        or float(handle_spec.get("minimum_protrusion_m")) <= 0.0
+    ):
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_authoring_spec_invalid:handle"]
+        )
+
+    source_stage = Usd.Stage.Open(str(rigged))
+    if source_stage is None:
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_authoring_rigged_input_unreadable"]
+        )
+    flat_layer = source_stage.Flatten()
+    # Flattened layers embed the absolute source path in their documentation;
+    # scrub identity so byte determinism depends only on content.
+    flat_layer.documentation = ""
+    flat_layer.comment = ""
+    stage = Usd.Stage.Open(flat_layer)
+    default_prim = stage.GetDefaultPrim()
+    if not default_prim or not default_prim.IsValid():
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_authoring_default_prim_missing"]
+        )
+
+    resolved = _validated_contract(dict(topology_contract), [])
+    task_axis = resolved.get("task_axis_asset")
+    task_interval = resolved.get("task_interval", (math.inf, -math.inf))
+    axis_tokens = {"X": (1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
+
+    joint_prims = [prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.Joint)]
+    if not joint_prims:
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_authoring_topology_joints_missing"]
+        )
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    joint_rows: list[dict[str, Any]] = []
+    for prim in sorted(joint_prims, key=lambda item: str(item.GetPath())):
+        joint = UsdPhysics.Joint(prim)
+        body0_targets = joint.GetBody0Rel().GetTargets()
+        body1_targets = joint.GetBody1Rel().GetTargets()
+        if len(body0_targets) != 1 or len(body1_targets) != 1:
+            raise ArticulatedSimReadyReplacementError(
+                [f"articulated_authoring_joint_bodies_unresolved:{prim.GetPath()}"]
+            )
+        body1 = stage.GetPrimAtPath(body1_targets[0])
+        if not body1.IsValid():
+            raise ArticulatedSimReadyReplacementError(
+                [f"articulated_authoring_joint_body_missing:{prim.GetPath()}"]
+            )
+        axis_attr = prim.GetAttribute("physics:axis")
+        axis_local = axis_tokens.get(
+            str(axis_attr.Get()) if axis_attr and axis_attr.HasAuthoredValue() else ""
+        )
+        axis_dot = None
+        if axis_local is not None and task_axis is not None:
+            axis_dot = abs(
+                sum(left * right for left, right in zip(axis_local, task_axis))
+            )
+        moving_range = cache.ComputeWorldBound(body1).ComputeAlignedRange()
+        overlap_fraction = None
+        if not moving_range.IsEmpty():
+            low = float(moving_range.GetMin()[2])
+            high = float(moving_range.GetMax()[2])
+            span = task_interval[1] - task_interval[0]
+            if span > 0:
+                overlap_fraction = max(
+                    0.0, min(high, task_interval[1]) - max(low, task_interval[0])
+                ) / span
+        joint_rows.append(
+            {
+                "prim": prim,
+                "path": str(prim.GetPath()),
+                "body0": str(body0_targets[0]),
+                "body1": str(body1_targets[0]),
+                "task_match": bool(
+                    prim.IsA(UsdPhysics.RevoluteJoint)
+                    and axis_dot is not None
+                    and axis_dot >= resolved.get("axis_dot_minimum", 2.0)
+                    and overlap_fraction is not None
+                    and overlap_fraction >= resolved.get("overlap_minimum", 2.0)
+                ),
+            }
+        )
+    task_joints = [row for row in joint_rows if row["task_match"]]
+    if len(task_joints) != 1:
+        raise ArticulatedSimReadyReplacementError(
+            [
+                "articulated_authoring_exactly_one_task_joint_not_resolved:"
+                f"matches={len(task_joints)}"
+            ]
+        )
+    task_joint = task_joints[0]
+    support_link_path = task_joint["body0"]
+    task_door_path = task_joint["body1"]
+    link_paths = sorted(
+        {row["body0"] for row in joint_rows} | {row["body1"] for row in joint_rows}
+    )
+    door_link_paths = sorted({row["body1"] for row in joint_rows})
+
+    # Exactly one articulation root: the default prim.
+    for prim in stage.Traverse():
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI) and prim != default_prim:
+            prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+    UsdPhysics.ArticulationRootAPI.Apply(default_prim)
+
+    # Frozen task limits on every revolute joint, matching the freeze contract.
+    limits = resolved.get("task_limits_rad", (math.nan, math.nan))
+    for row in joint_rows:
+        prim = row["prim"]
+        if prim.IsA(UsdPhysics.RevoluteJoint) and math.isfinite(limits[0]):
+            revolute = UsdPhysics.RevoluteJoint(prim)
+            revolute.CreateLowerLimitAttr().Set(math.degrees(limits[0]))
+            revolute.CreateUpperLimitAttr().Set(math.degrees(limits[1]))
+
+    material = UsdShade.Material.Define(
+        stage, f"{default_prim.GetPath()}/physics_materials/replacement_default"
+    )
+    material_api = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    material_api.CreateStaticFrictionAttr().Set(float(spec["static_friction"]))
+    material_api.CreateDynamicFrictionAttr().Set(float(spec["dynamic_friction"]))
+    material_api.CreateRestitutionAttr().Set(float(spec["restitution"]))
+    UsdShade.MaterialBindingAPI.Apply(default_prim).Bind(
+        material, materialPurpose="physics"
+    )
+
+    def _tag(prim: Any, provenance: str) -> None:
+        prim.CreateAttribute(PROVENANCE_ATTRIBUTE, Sdf.ValueTypeNames.String).Set(
+            provenance
+        )
+
+    link_rows: list[dict[str, Any]] = []
+    for link_path in link_paths:
+        prim = stage.GetPrimAtPath(link_path)
+        if not prim.IsValid():
+            raise ArticulatedSimReadyReplacementError(
+                [f"articulated_authoring_link_missing:{link_path}"]
+            )
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        if link_path == support_link_path:
+            mass = float(spec["support_link_mass_kg"])
+        elif link_path in door_link_paths:
+            mass = float(spec["door_link_mass_kg"])
+        else:
+            mass = float(spec["other_link_mass_kg"])
+        low, high = _local_range(cache, prim)
+        dims = [max(high[axis] - low[axis], 1e-4) for axis in range(3)]
+        center = [(high[axis] + low[axis]) / 2.0 for axis in range(3)]
+        mass_api = UsdPhysics.MassAPI.Apply(prim)
+        mass_api.CreateMassAttr().Set(mass)
+        mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(*center))
+        mass_api.CreateDiagonalInertiaAttr().Set(
+            Gf.Vec3f(
+                mass * (dims[1] ** 2 + dims[2] ** 2) / 12.0,
+                mass * (dims[0] ** 2 + dims[2] ** 2) / 12.0,
+                mass * (dims[0] ** 2 + dims[1] ** 2) / 12.0,
+            )
+        )
+        for child in Usd.PrimRange(prim):
+            if child.IsA(UsdGeom.Gprim):
+                UsdPhysics.CollisionAPI.Apply(child)
+                mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(child)
+                mesh_collision.CreateApproximationAttr().Set("convexHull")
+                _tag(child, OBSERVED_PROVENANCE_VALUE)
+        link_rows.append(
+            {
+                "link_prim_path": link_path,
+                "role": (
+                    "support"
+                    if link_path == support_link_path
+                    else "door" if link_path in door_link_paths else "other"
+                ),
+                "mass_kg": mass,
+                "local_aabb_min_m": low,
+                "local_aabb_max_m": high,
+            }
+        )
+
+    # Handle: prefer an observed protruding component on the task door.
+    door_prim = stage.GetPrimAtPath(task_door_path)
+    door_gprims = [
+        child for child in Usd.PrimRange(door_prim) if child.IsA(UsdGeom.Gprim)
+    ]
+    fronts = {}
+    for child in door_gprims:
+        aligned = cache.ComputeWorldBound(child).ComputeAlignedRange()
+        if not aligned.IsEmpty():
+            fronts[str(child.GetPath())] = float(aligned.GetMax()[1])
+    handle_source = None
+    handle_path = None
+    minimum_protrusion = float(handle_spec["minimum_protrusion_m"])
+    if len(fronts) >= 2:
+        best_path, best_front = max(fronts.items(), key=lambda item: (item[1], item[0]))
+        slab_front = max(
+            front for path, front in fronts.items() if path != best_path
+        )
+        if best_front - slab_front >= minimum_protrusion:
+            handle_path = best_path
+            handle_source = "observed_source_component"
+            stage.GetPrimAtPath(best_path).CreateAttribute(
+                TASK_CONTACT_ROLE_ATTRIBUTE, Sdf.ValueTypeNames.String
+            ).Set(HANDLE_ROLE_VALUE)
+    if handle_path is None:
+        center = [float(v) for v in handle_spec["generated_center_asset_m"]]
+        half = [float(v) for v in handle_spec["generated_half_extents_m"]]
+        handle_mesh = UsdGeom.Mesh.Define(
+            stage, f"{task_door_path}/generated_task_handle"
+        )
+        points = [
+            Gf.Vec3f(
+                center[0] + sx * half[0],
+                center[1] + sy * half[1],
+                center[2] + sz * half[2],
+            )
+            for sx in (-1.0, 1.0)
+            for sy in (-1.0, 1.0)
+            for sz in (-1.0, 1.0)
+        ]
+        handle_mesh.CreatePointsAttr(points)
+        handle_mesh.CreateFaceVertexCountsAttr([4, 4, 4, 4, 4, 4])
+        handle_mesh.CreateFaceVertexIndicesAttr(
+            [0, 1, 3, 2, 4, 6, 7, 5, 0, 4, 5, 1, 2, 3, 7, 6, 0, 2, 6, 4, 1, 5, 7, 3]
+        )
+        handle_prim = handle_mesh.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(handle_prim)
+        mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(handle_prim)
+        mesh_collision.CreateApproximationAttr().Set("convexHull")
+        handle_prim.CreateAttribute(
+            TASK_CONTACT_ROLE_ATTRIBUTE, Sdf.ValueTypeNames.String
+        ).Set(HANDLE_ROLE_VALUE)
+        _tag(handle_prim, GENERATED_PROVENANCE_VALUE)
+        handle_path = str(handle_prim.GetPath())
+        handle_source = "generated_parametric_candidate"
+
+    # Generated interior: a solid inset block behind the doors so an opened
+    # door never reveals a nonexistent shell. Candidate geometry, not truth.
+    support_prim = stage.GetPrimAtPath(support_link_path)
+    support_low, support_high = _local_range(cache, support_prim)
+    inset = float(spec["generated_interior_inset_m"])
+    interior_low = [support_low[axis] + inset for axis in range(3)]
+    interior_high = [support_high[axis] - inset for axis in range(3)]
+    if any(interior_low[axis] >= interior_high[axis] for axis in range(3)):
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_authoring_interior_inset_too_large"]
+        )
+    interior_mesh = UsdGeom.Mesh.Define(
+        stage, f"{support_link_path}/generated_interior"
+    )
+    interior_points = [
+        Gf.Vec3f(
+            interior_low[0] if sx == 0 else interior_high[0],
+            interior_low[1] if sy == 0 else interior_high[1],
+            interior_low[2] if sz == 0 else interior_high[2],
+        )
+        for sx in (0, 1)
+        for sy in (0, 1)
+        for sz in (0, 1)
+    ]
+    interior_mesh.CreatePointsAttr(interior_points)
+    interior_mesh.CreateFaceVertexCountsAttr([4, 4, 4, 4, 4, 4])
+    interior_mesh.CreateFaceVertexIndicesAttr(
+        [0, 1, 3, 2, 4, 6, 7, 5, 0, 4, 5, 1, 2, 3, 7, 6, 0, 2, 6, 4, 1, 5, 7, 3]
+    )
+    _tag(interior_mesh.GetPrim(), GENERATED_PROVENANCE_VALUE)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if not stage.GetRootLayer().Export(str(output)):
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_authoring_output_export_failed"]
+        )
+
+    topology_validation = validate_articulated_replacement_topology(
+        replacement_usd_path=output, contract=topology_contract
+    )
+    physics_validation = validate_articulated_replacement_physics(
+        replacement_usd_path=output, contract=physics_contract
+    )
+
+    receipt: dict[str, Any] = {
+        "schema_version": AUTHORING_SCHEMA_VERSION,
+        "status": "simready_candidate_statically_admitted",
+        "rigged_topology_usd_sha256": _sha256(rigged),
+        "output_usd_path": str(output),
+        "output_usd_sha256": _sha256(output),
+        "task_joint_prim_path": task_joint["path"],
+        "support_link_prim_path": support_link_path,
+        "task_door_link_prim_path": task_door_path,
+        "link_authoring": link_rows,
+        "handle": {
+            "prim_path": handle_path,
+            "source": handle_source,
+            "minimum_protrusion_m": minimum_protrusion,
+        },
+        "generated_interior": {
+            "prim_path": f"{support_link_path}/generated_interior",
+            "style": "solid_inset_block_v1",
+            "inset_m": inset,
+        },
+        "fixed_base_required_at_insertion": bool(spec.get("fixed_base", True)),
+        "authoring_spec": spec,
+        "topology_validation": topology_validation,
+        "physics_validation": physics_validation,
+        "claim_boundary": {
+            "authoring_is_deterministic_code_not_vlm_inference": True,
+            "native_simulator_qualified": False,
+            "physical_equivalence_proven": False,
+            "generated_geometry_is_observed_site_truth": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    return receipt
+
+
 __all__ = [
     "ArticulatedSimReadyReplacementError",
+    "AUTHORING_SCHEMA_VERSION",
     "GENERATED_PROVENANCE_VALUE",
     "HANDLE_ROLE_VALUE",
     "OBSERVED_PROVENANCE_VALUE",
@@ -860,6 +1240,7 @@ __all__ = [
     "PROVENANCE_ATTRIBUTE",
     "TASK_CONTACT_ROLE_ATTRIBUTE",
     "TOPOLOGY_SCHEMA_VERSION",
+    "author_articulated_simready_replacement",
     "validate_articulated_replacement_physics",
     "validate_articulated_replacement_topology",
 ]

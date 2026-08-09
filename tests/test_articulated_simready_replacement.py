@@ -545,3 +545,139 @@ def test_physics_validator_rejects_unsupported_cabinet(tmp_path: Path) -> None:
         )
 
     assert any("support_contact_not_grounded" in error for error in excinfo.value.errors)
+
+
+from blueprint_pipeline.articulated_simready_replacement import (  # noqa: E402
+    author_articulated_simready_replacement,
+)
+
+
+def _rigged_topology_fixture(path: Path, *, include_handle_component: bool = True) -> Path:
+    """Mimic an owned-core rigged asset: joints + links, no masses/colliders."""
+
+    stage = Usd.Stage.CreateNew(str(path))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    asset = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(asset.GetPrim())
+    UsdPhysics.ArticulationRootAPI.Apply(asset.GetPrim())
+    upper_z = (UPPER_INTERVAL[0] + UPPER_INTERVAL[1]) / 2.0
+    lower_z = (LOWER_INTERVAL[0] + LOWER_INTERVAL[1]) / 2.0
+    _define_link(
+        stage, "/Asset/link_cabinet", center=(0.0, 0.0, 0.8), half=(DOOR_HALF_X, 0.3, 0.8)
+    )
+    _define_link(
+        stage,
+        "/Asset/link_upper_door",
+        center=(0.0, DOOR_FRONT_Y - 0.025, upper_z),
+        half=(DOOR_HALF_X, 0.025, (UPPER_INTERVAL[1] - UPPER_INTERVAL[0]) / 2.0 - 0.002),
+    )
+    _define_link(
+        stage,
+        "/Asset/link_lower_door",
+        center=(0.0, DOOR_FRONT_Y - 0.025, lower_z),
+        half=(DOOR_HALF_X, 0.025, (LOWER_INTERVAL[1] - LOWER_INTERVAL[0]) / 2.0 - 0.002),
+    )
+    if include_handle_component:
+        _mesh_box(
+            stage,
+            "/Asset/link_upper_door/component_handle",
+            center=(0.25, DOOR_FRONT_Y + 0.02, 1.05),
+            half=(0.02, 0.018, 0.09),
+        )
+    _define_revolute(
+        stage,
+        "/Asset/joints/joint_0",
+        body0="/Asset/link_cabinet",
+        body1="/Asset/link_upper_door",
+        pivot=(HINGE_ASSET[0], HINGE_ASSET[1], upper_z),
+    )
+    _define_revolute(
+        stage,
+        "/Asset/joints/joint_1",
+        body0="/Asset/link_cabinet",
+        body1="/Asset/link_lower_door",
+        pivot=(HINGE_ASSET[0], HINGE_ASSET[1], lower_z),
+    )
+    stage.GetRootLayer().Save()
+    return path
+
+
+def _authoring_arguments(tmp_path: Path, rigged: Path) -> dict:
+    return {
+        "rigged_topology_usd_path": rigged,
+        "output_usd_path": tmp_path / "simready_candidate.usda",
+        "topology_contract": _contract(),
+        "physics_contract": _physics_contract(),
+        "authoring_spec": {
+            "support_link_mass_kg": 62.0,
+            "door_link_mass_kg": 9.0,
+            "other_link_mass_kg": 2.0,
+            "static_friction": 0.6,
+            "dynamic_friction": 0.5,
+            "restitution": 0.05,
+            "handle": {
+                "minimum_protrusion_m": 0.012,
+                "generated_center_asset_m": [0.25, DOOR_FRONT_Y + 0.02, 1.05],
+                "generated_half_extents_m": [0.02, 0.018, 0.09],
+            },
+            "generated_interior_inset_m": 0.04,
+            "fixed_base": True,
+        },
+    }
+
+
+def test_authoring_produces_statically_admitted_candidate(tmp_path: Path) -> None:
+    rigged = _rigged_topology_fixture(tmp_path / "rigged.usda")
+
+    receipt = author_articulated_simready_replacement(
+        **_authoring_arguments(tmp_path, rigged)
+    )
+
+    assert receipt["schema_version"] == "articulated_simready_authoring.v1"
+    assert receipt["status"] == "simready_candidate_statically_admitted"
+    assert receipt["claim_boundary"]["physical_equivalence_proven"] is False
+    assert receipt["claim_boundary"]["native_simulator_qualified"] is False
+    assert receipt["topology_validation"]["status"] == "topology_statically_admitted"
+    assert receipt["physics_validation"]["status"] == "physics_statically_admitted"
+    assert receipt["task_joint_prim_path"]
+    assert receipt["output_usd_sha256"].startswith("sha256:")
+
+
+def test_authoring_generates_labeled_handle_when_source_lacks_one(
+    tmp_path: Path,
+) -> None:
+    rigged = _rigged_topology_fixture(
+        tmp_path / "rigged.usda", include_handle_component=False
+    )
+
+    receipt = author_articulated_simready_replacement(
+        **_authoring_arguments(tmp_path, rigged)
+    )
+
+    assert receipt["status"] == "simready_candidate_statically_admitted"
+    assert receipt["handle"]["source"] == "generated_parametric_candidate"
+    handle_paths = receipt["physics_validation"]["handle_prim_paths"]
+    assert len(handle_paths) == 1
+    stage = Usd.Stage.Open(str(receipt["output_usd_path"]))
+    prim = stage.GetPrimAtPath(handle_paths[0])
+    assert prim.GetAttribute(PROVENANCE_ATTRIBUTE).Get() == GENERATED_PROVENANCE_VALUE
+
+
+def test_authoring_is_deterministic_for_identical_inputs(tmp_path: Path) -> None:
+    rigged = _rigged_topology_fixture(tmp_path / "rigged.usda")
+
+    first = author_articulated_simready_replacement(
+        **{
+            **_authoring_arguments(tmp_path / "a", rigged),
+            "output_usd_path": tmp_path / "a/out.usda",
+        }
+    )
+    second = author_articulated_simready_replacement(
+        **{
+            **_authoring_arguments(tmp_path / "b", rigged),
+            "output_usd_path": tmp_path / "b/out.usda",
+        }
+    )
+
+    assert first["output_usd_sha256"] == second["output_usd_sha256"]

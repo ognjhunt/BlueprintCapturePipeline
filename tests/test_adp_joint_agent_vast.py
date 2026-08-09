@@ -817,3 +817,17 @@ def test_output_zip_inspection_recognizes_joint_agent_runtime_result(
 
     assert inspection["runtime_result_present"] is True
     assert inspection["runtime_result_status"] == "completed"
+
+
+def test_runtime_script_probes_ovrtx_daemon_before_service() -> None:
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp_joint_agent_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "ovrtx_daemon_probe.log" in script
+    assert "joint_agent_ovrtx_daemon_probe_failed" in script
+    assert script.index("ovrtx_daemon_probe.log") < script.index(
+        "uvicorn service.main:app"
+    )
+    assert "env -u PYTHONPATH" in script

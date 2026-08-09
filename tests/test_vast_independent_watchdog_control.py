@@ -164,3 +164,61 @@ def test_watchdog_stays_armed_when_create_identity_is_ambiguous(
     assert result["status"] == "retained_until_hard_ttl"
     assert result["reason"] == "provider_allocation_identity_ambiguous"
     assert handle.process.poll() is None
+
+
+def test_close_returns_terminal_as_soon_as_evidence_confirms_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow watchdog must not be misread as unclosed.
+
+    v7/v9 wrote provider_terminal evidence ~2-3 minutes after the owner cancel
+    request while close only waited 45 seconds for process exit and read the
+    evidence once, so a correctly closing watchdog was recorded as
+    joint_agent_independent_watchdog_not_closed. Close now polls the evidence
+    during the wait and returns terminal as soon as absence is confirmed.
+    """
+
+    import threading
+    import time as time_module
+
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-09T00:00:00+00:00",
+    )
+    assert handle is not None
+
+    def _write_terminal_evidence() -> None:
+        (handle.out_dir / control.EVIDENCE_NAME).write_text(
+            json.dumps(
+                {
+                    "status": "provider_terminal",
+                    "provider_absence_confirmed": True,
+                    "provider_mutations_performed": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    threading.Timer(0.5, _write_terminal_evidence).start()
+    started = time_module.monotonic()
+    result = control.close_independent_vast_watchdog(
+        job_dir=tmp_path,
+        handle=handle,
+        instance_ids=[47283980],
+        provider_teardown_completed=True,
+        wait_seconds=30.0,
+    )
+    elapsed = time_module.monotonic() - started
+
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+    assert elapsed < 10.0
+
+
+def test_close_default_wait_covers_slow_absence_confirmation() -> None:
+    import inspect
+
+    signature = inspect.signature(control.close_independent_vast_watchdog)
+    assert signature.parameters["wait_seconds"].default >= 300.0

@@ -225,6 +225,8 @@ def provider_runtime_contract_blockers(
             and "gpu_initialized" in entrypoint_text
             and 'export WU_SO_PACKAGE_DIR=' in entrypoint_text
             and "joint_agent_scene_optimizer_core_missing" in entrypoint_text
+            and "ovrtx_daemon_probe.log" in entrypoint_text
+            and "joint_agent_ovrtx_daemon_probe_failed" in entrypoint_text
         )
         runner_valid = all(
             token in runner_text

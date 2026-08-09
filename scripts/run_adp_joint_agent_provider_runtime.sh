@@ -91,6 +91,30 @@ export OVRTX_NUM_SENSOR_UPDATES="32"
 export DISPLAY=:99
 Xvfb :99 -screen 0 1920x1080x24 >"${OUTPUT_DIR}/xvfb.log" 2>&1 &
 xvfb_pid=$!
+sleep 2
+
+# v9 (machine 31726) hung inside the OvRTX daemon for the full poll window
+# with its stderr drained invisibly at the service's warn level. Probe the
+# exact failing operation directly - ovrtx Renderer construction in the
+# isolated venv - with stderr retained, so a host that cannot run OvRTX fails
+# fast with diagnosable evidence instead of a silent 15-minute timeout.
+{
+  echo "=== nvidia-smi ==="; nvidia-smi 2>&1 || true
+  echo "=== vulkan icd files ==="; ls -la /usr/share/vulkan/icd.d/ /etc/vulkan/icd.d/ 2>&1 || true
+  echo "=== ovrtx renderer probe ==="
+} > "${OUTPUT_DIR}/ovrtx_daemon_probe.log" 2>&1
+if ! timeout 300 env -u PYTHONPATH "${WU_OVRTX_VENV_DIR}/bin/python" - >> "${OUTPUT_DIR}/ovrtx_daemon_probe.log" 2>&1 <<'PY'
+import ovrtx
+
+renderer = ovrtx.Renderer()
+print("ovrtx_renderer_constructed_ok", flush=True)
+PY
+then
+  kill "${xvfb_pid}" >/dev/null 2>&1 || true
+  write_missing_result "joint_agent_ovrtx_daemon_probe_failed"
+  exit 2
+fi
+
 "${SOURCE_DIR}/.venv/bin/python" -m uvicorn service.main:app \
   --host 127.0.0.1 --port 8001 >"${OUTPUT_DIR}/ovrtx_service.log" 2>&1 &
 renderer_pid=$!
