@@ -262,6 +262,44 @@ def test_rejects_cross_scene_joint_agent_execution_receipt() -> None:
         compile_articulated_public_scene_state(**inputs)
 
 
+def test_observed_zero_retry_joint_null_replaces_generic_missing_execution() -> None:
+    inputs = _inputs()
+    inputs["execution_authority"] = _authority(inputs)
+    aura, _ = _executions(inputs)
+    source = inputs["articulated_source_receipt"]
+    joint = {
+        "schema_version": "adp_joint_agent_execution_abstention.v1",
+        "status": "typed_execution_abstention",
+        "source": {
+            "packet_digest": inputs["joint_agent_packet"]["packet_digest"],
+            "source_receipt_digest": source["receipt_digest"],
+            "source_asset_sha256": source["output_asset"]["sha256"],
+        },
+        "bundle": {"freeze_digest": inputs["freeze"]["freeze_digest"]},
+        "smallest_missing_capability": "joint_agent_local_ovrtx_renderer_not_ready",
+        "automatic_retry_executed": False,
+        "claim_boundary": {
+            "joint_agent_model_output_exists": False,
+            "owned_core_topology_exists": False,
+        },
+        "receipt_digest": "",
+    }
+    joint["receipt_digest"] = canonical_digest(joint, digest_field="receipt_digest")
+    inputs["aura_execution_receipt"] = aura
+    inputs["joint_agent_execution_receipt"] = joint
+
+    result = compile_articulated_public_scene_state(**inputs)
+
+    assert result["blockers"] == [
+        "released_code_inpainting_quality_admission_missing",
+        "joint_agent_topology_execution_abstained:joint_agent_local_ovrtx_renderer_not_ready",
+    ]
+    assert result["stage_status"]["joint_agent_execution_attempted"] is True
+    assert result["stage_status"]["joint_agent_execution_abstained"] is True
+    assert result["stage_status"]["joint_agent_topology_executed"] is False
+    assert result["stage_receipts"]["joint_agent_execution"] == joint["receipt_digest"]
+
+
 def test_authority_cannot_cross_join_another_scene() -> None:
     inputs = _inputs()
     authority = _authority(inputs)

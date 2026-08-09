@@ -191,16 +191,28 @@ def compile_articulated_public_scene_state(
         if aura_execution_receipt is not None
         else None
     )
-    joint_execution = (
-        _require_digest(
-            joint_agent_execution_receipt,
-            field="receipt_digest",
-            schema="adp_joint_agent_execution_receipt.v1",
-            error_prefix="joint_agent_execution_receipt",
-        )
-        if joint_agent_execution_receipt is not None
-        else None
-    )
+    joint_execution = None
+    joint_abstention = None
+    if joint_agent_execution_receipt is not None:
+        joint_schema = joint_agent_execution_receipt.get("schema_version")
+        if joint_schema == "adp_joint_agent_execution_receipt.v1":
+            joint_execution = _require_digest(
+                joint_agent_execution_receipt,
+                field="receipt_digest",
+                schema="adp_joint_agent_execution_receipt.v1",
+                error_prefix="joint_agent_execution_receipt",
+            )
+        elif joint_schema == "adp_joint_agent_execution_abstention.v1":
+            joint_abstention = _require_digest(
+                joint_agent_execution_receipt,
+                field="receipt_digest",
+                schema="adp_joint_agent_execution_abstention.v1",
+                error_prefix="joint_agent_execution_abstention",
+            )
+        else:
+            raise ArticulatedPublicScenePipelineError(
+                ["joint_agent_execution_receipt_schema_invalid"]
+            )
 
     scene_id, target_id = _scene_target(frozen)
     errors: list[str] = []
@@ -301,6 +313,24 @@ def compile_articulated_public_scene_state(
             or execution_bundle.get("freeze_digest") != frozen.get("freeze_digest")
         ):
             errors.append("joint_agent_execution_source_or_freeze_join_invalid")
+    if joint_abstention is not None:
+        execution_source = joint_abstention.get("source") or {}
+        execution_bundle = joint_abstention.get("bundle") or {}
+        claim_boundary = joint_abstention.get("claim_boundary") or {}
+        if (
+            joint_abstention.get("status") != "typed_execution_abstention"
+            or execution_source.get("packet_digest") != joint.get("packet_digest")
+            or execution_source.get("source_receipt_digest")
+            != source.get("receipt_digest")
+            or execution_source.get("source_asset_sha256")
+            != source_asset.get("sha256")
+            or execution_bundle.get("freeze_digest") != frozen.get("freeze_digest")
+            or not str(joint_abstention.get("smallest_missing_capability") or "")
+            or joint_abstention.get("automatic_retry_executed") is not False
+            or claim_boundary.get("joint_agent_model_output_exists") is not False
+            or claim_boundary.get("owned_core_topology_exists") is not False
+        ):
+            errors.append("joint_agent_execution_abstention_join_invalid")
     if errors:
         raise ArticulatedPublicScenePipelineError(errors)
 
@@ -320,7 +350,12 @@ def compile_articulated_public_scene_state(
     elif (aura_execution.get("quality") or {}).get("status") != "admitted":
         blockers.append("released_code_inpainting_quality_admission_missing")
     if joint_execution is None:
-        blockers.append("joint_agent_topology_execution_missing")
+        blockers.append(
+            "joint_agent_topology_execution_abstained:"
+            + str(joint_abstention["smallest_missing_capability"])
+            if joint_abstention is not None
+            else "joint_agent_topology_execution_missing"
+        )
     blockers = list(dict.fromkeys(blockers))
     upstream_ready = not blockers
 
@@ -362,7 +397,13 @@ def compile_articulated_public_scene_state(
                 aura_execution["receipt_digest"] if aura_execution is not None else None
             ),
             "joint_agent_execution": (
-                joint_execution["receipt_digest"] if joint_execution is not None else None
+                joint_execution["receipt_digest"]
+                if joint_execution is not None
+                else (
+                    joint_abstention["receipt_digest"]
+                    if joint_abstention is not None
+                    else None
+                )
             ),
         },
         "stage_status": {
@@ -371,6 +412,10 @@ def compile_articulated_public_scene_state(
             "evaluation_authorized_removal_inputs_materialized": True,
             "released_code_inpainting_executed": aura_execution is not None,
             "joint_agent_topology_executed": joint_execution is not None,
+            "joint_agent_execution_attempted": (
+                joint_execution is not None or joint_abstention is not None
+            ),
+            "joint_agent_execution_abstained": joint_abstention is not None,
             "simready_replacement_materialized": False,
             "native_simulator_qualified": False,
             "controls_executed": False,
@@ -389,7 +434,14 @@ def compile_articulated_public_scene_state(
                     "obtain one sealed zero-retry Joint Agent topology execution receipt"
                     if blockers
                     and blockers[0] == "joint_agent_topology_execution_missing"
-                    else "materialize and independently qualify the articulated SimReady replacement"
+                    else (
+                        "resolve the retained Joint Agent runtime blocker without an automatic paid retry"
+                        if blockers
+                        and blockers[0].startswith(
+                            "joint_agent_topology_execution_abstained:"
+                        )
+                        else "materialize and independently qualify the articulated SimReady replacement"
+                    )
                 )
             )
         ),
