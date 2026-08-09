@@ -73,12 +73,14 @@ def _connected_components(
         faces.append(face)
     if offset != len(indices) or not faces:
         raise ArticulatedSourceAssetError(["source_mesh_topology_invalid"])
-    grouped_faces: dict[int, list[list[int]]] = {}
-    for face in faces:
-        grouped_faces.setdefault(find(face[0]), []).append(face)
+    grouped_faces: dict[int, list[tuple[int, list[int]]]] = {}
+    for face_index, face in enumerate(faces):
+        grouped_faces.setdefault(find(face[0]), []).append((face_index, face))
     rows: list[dict[str, Any]] = []
     for face_group in grouped_faces.values():
-        vertex_ids = sorted({vertex for face in face_group for vertex in face})
+        vertex_ids = sorted(
+            {vertex for _, face in face_group for vertex in face}
+        )
         component_points = [points[index] for index in vertex_ids]
         minimum = [min(float(point[axis]) for point in component_points) for axis in range(3)]
         maximum = [max(float(point[axis]) for point in component_points) for axis in range(3)]
@@ -86,6 +88,7 @@ def _connected_components(
             {
                 "vertex_count": len(vertex_ids),
                 "face_count": len(face_group),
+                "face_indices": [face_index for face_index, _ in face_group],
                 "aabb_min_asset_m": [round(value, 9) for value in minimum],
                 "aabb_max_asset_m": [round(value, 9) for value in maximum],
                 "aabb_extent_m": [
@@ -186,6 +189,14 @@ def materialize_articulated_source_asset(
     mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.55, 0.58, 0.62)]))
     extent = UsdGeom.PointBased.ComputeExtent(mesh.GetPointsAttr().Get())
     mesh.CreateExtentAttr(extent)
+    subset_paths: list[str] = []
+    for component in components:
+        subset_path = f"/Asset/source_mesh/component_{component['component_index']:03d}"
+        subset = UsdGeom.Subset.Define(output_stage, subset_path)
+        subset.CreateElementTypeAttr(UsdGeom.Tokens.face)
+        subset.CreateFamilyNameAttr("blueprint_connected_components")
+        subset.CreateIndicesAttr(Vt.IntArray(component["face_indices"]))
+        subset_paths.append(subset_path)
     root.GetPrim().SetCustomDataByKey("blueprint:sourcePrimPath", source_prim_path)
     root.GetPrim().SetCustomDataByKey(
         "blueprint:sourceCollisionSha256",
@@ -231,12 +242,18 @@ def materialize_articulated_source_asset(
             "face_count": len(counts),
         },
         "connected_component_count": len(components),
-        "connected_components": components,
+        "connected_components": [
+            {key: value for key, value in component.items() if key != "face_indices"}
+            for component in components
+        ],
         "joint_agent_0_5_2_input": {
             "usd_path_ready": True,
             "default_prim_valid": True,
             "single_source_mesh_requires_split_meshes": len(components) > 1,
             "predicted_split_prim_count": len(components),
+            "connected_component_geom_subsets_authored": True,
+            "geom_subset_family_name": "blueprint_connected_components",
+            "geom_subset_paths": subset_paths,
             "topology_inference_executed": False,
         },
         "claim_boundary": {

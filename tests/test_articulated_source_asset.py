@@ -96,8 +96,22 @@ def test_articulated_fixture_reports_split_candidates_without_naming_links(tmp_p
 
     assert receipt["connected_component_count"] == 2
     assert receipt["joint_agent_0_5_2_input"]["predicted_split_prim_count"] == 2
+    assert receipt["joint_agent_0_5_2_input"]["connected_component_geom_subsets_authored"]
     assert receipt["claim_boundary"]["connected_components_are_not_rigid_links"]
     assert receipt["claim_boundary"]["joint_topology_inferred"] is False
+    from pxr import Usd, UsdGeom
+
+    stage = Usd.Stage.Open(str(tmp_path / "out/articulated_source_mesh.usda"))
+    subsets = [
+        subset
+        for subset in UsdGeom.Subset.GetAllGeomSubsets(
+            UsdGeom.Imageable(stage.GetPrimAtPath("/Asset/source_mesh"))
+        )
+        if subset.GetElementTypeAttr().Get() == UsdGeom.Tokens.face
+        and subset.GetFamilyNameAttr().Get() == "blueprint_connected_components"
+    ]
+    assert len(subsets) == 2
+    assert sorted(len(subset.GetIndicesAttr().Get()) for subset in subsets) == [6, 6]
 
 
 def test_extractor_rejects_nonempty_output(tmp_path: Path) -> None:
