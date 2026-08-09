@@ -4639,8 +4639,24 @@ def _request_logs_and_fetch(
                 "instance_liveness_probe_error": last_instance_liveness.get("probe_error"),
             }
         )
-        terminal_container_missing = container_missing and container_missing_count >= max(
-            1, int(container_missing_retry_attempts)
+        instance_status = _string(last_instance_liveness.get("status")).lower()
+        instance_still_starting = bool(
+            last_instance_liveness.get("observed")
+            and instance_status in {"created", "creating", "loading", "scheduling"}
+        )
+        # Vast can return Docker's "No such container" while the provider API
+        # still truthfully reports an instance in its bounded image-pull/startup
+        # state.  Treating two such reads as terminal killed a retained Isaac
+        # launch after 42 seconds despite an 1,800-second no-progress watchdog.
+        # Once the instance is no longer starting, repeated absence is useful
+        # terminal evidence; while it is starting, the existing deadline and
+        # no-progress watchdog remain the bounded authorities.
+        terminal_container_missing = (
+            container_missing
+            and container_missing_count
+            >= max(1, int(container_missing_retry_attempts))
+            and not instance_still_starting
+            and not last_instance_liveness.get("exited")
         )
         deadline_reached = time.monotonic() >= deadline
         instance_exited = instance_exited_count >= 2

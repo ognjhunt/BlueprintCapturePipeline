@@ -1087,6 +1087,16 @@ def test_request_logs_breaks_on_missing_container_marker(
         "_fetch_text",
         lambda *_args, **_kwargs: "Error response from daemon: No such container: C.123",
     )
+    monkeypatch.setattr(
+        vpa,
+        "_instance_liveness",
+        lambda **_kwargs: {
+            "observed": True,
+            "status": "running",
+            "exited": False,
+            "probe_error": None,
+        },
+    )
 
     result = vpa._request_logs_and_fetch(
         instance_id=123,
@@ -1125,6 +1135,14 @@ def test_request_logs_retries_transient_missing_container_marker(
     monkeypatch.setattr(vpa, "_api_json", fake_api_json)
     monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(log_texts))
     monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    liveness = iter(
+        [
+            {"observed": True, "status": "loading", "exited": False, "probe_error": None},
+            {"observed": True, "status": "loading", "exited": False, "probe_error": None},
+            {"observed": True, "status": "running", "exited": False, "probe_error": None},
+        ]
+    )
+    monkeypatch.setattr(vpa, "_instance_liveness", lambda **_kwargs: next(liveness))
 
     result = vpa._request_logs_and_fetch(
         instance_id=123,
@@ -1140,8 +1158,10 @@ def test_request_logs_retries_transient_missing_container_marker(
 
     assert calls["count"] == 3
     assert result["log_poll_attempts"][0]["container_missing_marker_observed"] is True
+    assert result["log_poll_attempts"][0]["instance_status"] == "loading"
     assert result["log_poll_attempts"][1]["container_missing_observed_count"] == 2
     assert result["log_poll_attempts"][2]["success_marker_found"] is True
+    assert result["break_reason"] == "success_marker_found"
     assert "BLUEPRINT_VAST_ONSTART_DONE" in (tmp_path / "onstart.log").read_text(encoding="utf-8")
 
 
@@ -5068,6 +5088,16 @@ def test_vast_adapter_request_logs_container_missing_retry(
     )
     texts = iter(["No such container\n", "No such container\n"])
     monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(texts))
+    monkeypatch.setattr(
+        vpa,
+        "_instance_liveness",
+        lambda **_kwargs: {
+            "observed": True,
+            "status": "running",
+            "exited": False,
+            "probe_error": None,
+        },
+    )
     result = vpa._request_logs_and_fetch(
         instance_id=42,
         api_key="secret",
