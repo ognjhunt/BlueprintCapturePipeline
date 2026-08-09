@@ -24,10 +24,12 @@ from typing import Any, Sequence
 
 from .common import ensure_dir, write_json
 from .decision_evidence_contracts import canonical_digest
+# Reuse the digest the SimReady Isaac lane already pins, so the allocator's
+# image check and this bundle cannot drift apart.
+from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE
 
 
 ARTICULATED_ISAAC_BUNDLE_SCHEMA_VERSION = "adp009d_articulated_isaac_bundle.v1"
-DEFAULT_IMAGE = "nvcr.io/nvidia/isaac-sim:5.0.0"
 PROBE_SPEC_FILENAME = "articulated_native_probe_spec.json"
 ENTRYPOINT = r'''#!/usr/bin/env bash
 set +e

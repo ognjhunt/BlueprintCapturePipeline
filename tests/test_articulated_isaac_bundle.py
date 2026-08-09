@@ -141,6 +141,19 @@ def test_a_short_commit_is_refused(tmp_path: Path) -> None:
     assert any("source_commit_invalid" in error for error in excinfo.value.errors)
 
 
+def test_bundle_pins_the_same_image_the_allocator_checks(tmp_path: Path) -> None:
+    """A separate image constant here would fail admission on every run."""
+
+    from blueprint_pipeline.public_scene_simready_isaac_bundle import (
+        DEFAULT_IMAGE as LANE_IMAGE,
+    )
+
+    receipt = _build(tmp_path)
+
+    assert receipt["container_image"] == LANE_IMAGE
+    assert "@sha256:" in receipt["container_image"]
+
+
 def test_bundle_is_deterministic(tmp_path: Path) -> None:
     root = _probe_root(tmp_path)
 
