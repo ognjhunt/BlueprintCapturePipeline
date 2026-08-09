@@ -212,6 +212,9 @@ def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
     )
     assert first["remote_config_contract_validated"] is True
     assert first["retry_cap"] == 0
+    assert first["execution_role"] == "optional_construction_enrichment"
+    assert first["failure_blocks_native_simulator_qualification"] is False
+    assert first["agent_output_is_simready_authority"] is False
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
         generated_at="fixed",

@@ -107,9 +107,9 @@ def test_checked_freeze_is_outcome_blind_and_not_evaluation_authority() -> None:
     assert validated["learned_policy_outcomes_consulted"] is False
 
 
-def test_freeze_rejects_original_scene_or_policy_outcome_leakage(tmp_path) -> None:
+def test_freeze_rejects_empty_scene_or_policy_outcome_leakage(tmp_path) -> None:
     freeze = _freeze()
-    freeze["scene"]["publisher_scene_id"] = "840313"
+    freeze["scene"]["publisher_scene_id"] = ""
     freeze["learned_policy_outcomes_consulted"] = True
     freeze["freeze_digest"] = canonical_digest(freeze, digest_field="freeze_digest")
 
@@ -120,6 +120,23 @@ def test_freeze_rejects_original_scene_or_policy_outcome_leakage(tmp_path) -> No
 
     assert "freeze_scene_identity_invalid" in caught.value.errors
     assert "freeze_policy_outcome_leakage" in caught.value.errors
+
+
+def test_freeze_accepts_non_refrigerator_articulated_joint_names(tmp_path) -> None:
+    freeze = _freeze()
+    task = freeze["task_spec"]
+    task["target_joint_id"] = "drawer_slide"
+    task["joint_reset_positions_rad"] = {"drawer_slide": 0.0, "safety_latch": 0.0}
+    task["joint_hard_limits_rad"] = {
+        "drawer_slide": [0.0, 1.570796327],
+        "safety_latch": [0.0, 1.570796327],
+    }
+    freeze["freeze_digest"] = canonical_digest(freeze, digest_field="freeze_digest")
+
+    validated = validate_second_scene_freeze(
+        freeze, repo_root=tmp_path, data_root=tmp_path, verify_files=False
+    )
+    assert validated["task_spec"]["target_joint_id"] == "drawer_slide"
 
 
 def test_freeze_rejects_candidate_substitution(tmp_path) -> None:

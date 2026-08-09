@@ -99,7 +99,7 @@ def validate_second_scene_freeze(
     if payload.get("status") != "frozen_for_construction_before_learned_outcomes":
         errors.append("freeze_status_invalid")
     scene = payload.get("scene")
-    if not isinstance(scene, Mapping) or str(scene.get("publisher_scene_id") or "") in {"", "840313"}:
+    if not isinstance(scene, Mapping) or not str(scene.get("publisher_scene_id") or "").strip():
         errors.append("freeze_scene_identity_invalid")
     if payload.get("learned_policy_outcomes_consulted") is not False:
         errors.append("freeze_policy_outcome_leakage")
@@ -120,11 +120,10 @@ def validate_second_scene_freeze(
         else:
             if task.get("task_kind") != TASK_KIND_ARTICULATED_OPEN_CLOSE:
                 errors.append("freeze_task_kind_invalid")
-            if set(normalized_task["joint_reset_positions_rad"]) != {
-                "refrigerator_upper_door_hinge",
-                "refrigerator_lower_door_hinge",
-            }:
-                errors.append("freeze_joint_set_invalid")
+            if normalized_task["target_joint_id"] not in normalized_task[
+                "joint_reset_positions_rad"
+            ]:
+                errors.append("freeze_target_joint_reset_missing")
     seeds = payload.get("seeds")
     if (
         not isinstance(seeds, list)

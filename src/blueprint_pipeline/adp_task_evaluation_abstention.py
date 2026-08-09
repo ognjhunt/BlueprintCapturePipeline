@@ -328,9 +328,7 @@ def materialize_task_evaluation_abstention(
         errors.append("task_evaluation_terminal_blocker_missing")
     if (
         not stage_receipts.get("aura_execution")
-        or not stage_receipts.get("joint_agent_execution")
         or stage_status.get("released_code_inpainting_executed") is not True
-        or stage_status.get("joint_agent_execution_attempted") is not True
     ):
         errors.append("task_evaluation_construction_attempt_receipts_incomplete")
     if (
@@ -340,11 +338,11 @@ def materialize_task_evaluation_abstention(
         or stage_status.get("learned_candidates_executed") is not False
     ):
         errors.append("task_evaluation_abstention_after_episode_state_invalid")
-    if not any(
-        str(blocker).startswith("joint_agent_topology_execution_abstained:")
+    if any(
+        str(blocker).startswith("joint_agent_topology_execution")
         for blocker in (blockers or [])
     ):
-        errors.append("task_evaluation_observed_execution_abstention_missing")
+        errors.append("research_preview_agent_cannot_be_terminal_blocker")
     if errors:
         raise TaskEvaluationAbstentionError(";".join(sorted(set(errors))))
 
@@ -367,6 +365,7 @@ def materialize_task_evaluation_abstention(
         "episode_media_exists": False,
         "comparison_exists": False,
         "automatic_paid_retry_executed": False,
+        "research_preview_agents_are_nonblocking_enrichment": True,
         "claim_ceiling": (
             "public_dataset_construction_rehearsal_only; no partner capture, "
             "real_site_fidelity, deployment readiness, physical performance, "

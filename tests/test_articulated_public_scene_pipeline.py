@@ -225,7 +225,9 @@ def test_bound_authority_removes_only_rights_and_budget_blockers() -> None:
 
     assert result["blockers"] == [
         "released_code_inpainting_execution_missing",
-        "joint_agent_topology_execution_missing",
+    ]
+    assert result["optional_enrichment_gaps"] == [
+        "joint_agent_topology_execution_missing"
     ]
     assert result["execution_authority"]["hard_total_spend_cap_usd"] == 12.0
 
@@ -346,9 +348,10 @@ def test_observed_zero_retry_joint_null_replaces_generic_missing_execution() -> 
 
     result = compile_articulated_public_scene_state(**inputs)
 
-    assert result["blockers"] == [
-        "released_code_inpainting_quality_admission_missing",
-        "joint_agent_topology_execution_abstained:joint_agent_local_ovrtx_renderer_not_ready",
+    assert result["blockers"] == ["released_code_inpainting_quality_admission_missing"]
+    assert result["optional_enrichment_gaps"] == [
+        "joint_agent_topology_execution_abstained:"
+        "joint_agent_local_ovrtx_renderer_not_ready"
     ]
     assert result["stage_status"]["joint_agent_execution_attempted"] is True
     assert result["stage_status"]["joint_agent_execution_abstained"] is True

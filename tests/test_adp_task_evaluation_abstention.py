@@ -56,7 +56,6 @@ def _run(freeze: dict) -> dict:
         },
         "blockers": [
             "released_code_inpainting_quality_admission_missing",
-            "joint_agent_topology_execution_abstained:joint_agent_local_ovrtx_renderer_not_ready",
         ],
         "smallest_blocker": "released_code_inpainting_quality_admission_missing",
         "next_action": "qualify the retained Aura candidate",
@@ -76,15 +75,30 @@ def test_seals_pre_episode_completion_path_b_with_exact_candidates() -> None:
     assert receipt["candidate_ids"] == ["pi05_droid", "groot_n17_droid"]
     assert receipt["controls_executed"] is False
     assert receipt["learned_candidate_episodes_executed"] is False
+    assert receipt["research_preview_agents_are_nonblocking_enrichment"] is True
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
     )
 
 
+def test_optional_joint_agent_receipt_is_not_required_for_terminal_evidence() -> None:
+    freeze = _freeze()
+    run = _run(freeze)
+    run["stage_receipts"].pop("joint_agent_execution")
+    run["stage_status"]["joint_agent_execution_attempted"] = False
+    run["stage_status"]["joint_agent_execution_abstained"] = False
+    run["run_digest"] = canonical_digest(run, digest_field="run_digest")
+
+    receipt = materialize_task_evaluation_abstention(
+        construction_run=run, scene_task_freeze=freeze
+    )
+    assert receipt["research_preview_agents_are_nonblocking_enrichment"] is True
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda run: run["stage_receipts"].update({"joint_agent_execution": None}),
+        lambda run: run["stage_receipts"].update({"aura_execution": None}),
         lambda run: run["stage_status"].update({"controls_executed": True}),
         lambda run: run.update({"blockers": ["joint_agent_topology_execution_missing"]}),
     ],

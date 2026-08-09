@@ -126,13 +126,18 @@ def validate_selection_preregistration(
         errors.append("selection_preregistration_forbidden_signals_invalid")
 
     previous = payload.get("previously_used_scene_ids")
-    if previous != ["840313"]:
+    if (
+        not isinstance(previous, list)
+        or not previous
+        or previous != sorted(set(map(str, previous)))
+        or any(not str(scene_id).strip() for scene_id in previous)
+    ):
         errors.append("selection_preregistration_prior_scene_identity_invalid")
     candidates = _rows(payload.get("candidate_order"))
     scene_ids = [str(row.get("publisher_scene_id") or "") for row in candidates]
     if not scene_ids or len(scene_ids) != len(set(scene_ids)):
         errors.append("selection_preregistration_candidate_order_invalid")
-    if "840313" in scene_ids:
+    if isinstance(previous, list) and set(scene_ids).intersection(map(str, previous)):
         errors.append("selection_preregistration_prior_scene_reused")
     if scene_ids != sorted(scene_ids):
         errors.append("selection_preregistration_candidate_order_not_deterministic")

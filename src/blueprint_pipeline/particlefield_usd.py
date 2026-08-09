@@ -288,7 +288,7 @@ def write_gaussian_surflet_particlefield_usd(
     # appearance at all -- max difference 12 of 255.  Nothing composed, so there
     # was nothing to render, which is also why authoring gaussian accumulation
     # settings changed nothing.  Both assets that do compose in this scene carry
-    # one: sage_task_collision has /Root, the approved can has /canned_beverage.
+    # one: the collision scene and task asset can have different default prims.
     # The standalone OVRTX worker never noticed because it opens the file as a
     # stage rather than referencing it.
     stage.SetDefaultPrim(world.GetPrim())

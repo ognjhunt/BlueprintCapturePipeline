@@ -539,6 +539,11 @@ def build_content_agents_vast_bundle(
             else "blueprint_owned_control"
         ),
         "joint_agent_inapplicable_single_rigid_body": True,
+        "execution_role": "optional_construction_enrichment",
+        "failure_blocks_deterministic_asset_construction": False,
+        "failure_blocks_native_simulator_qualification": False,
+        "agent_output_is_simready_authority": False,
+        "deterministic_usd_construction_remains_primary": True,
         "local_bundle_ready_for_remote_staging": not blockers,
         "provider_zero_required_after_return": True,
         "retry_cap": 0,

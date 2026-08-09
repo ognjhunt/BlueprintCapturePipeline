@@ -373,7 +373,7 @@ def materialize_aura_adapter(
         mask_records=list(mask_records.values()),
         maximum_mask_fraction=AURA_MAXIMUM_ADMITTED_MASK_FRACTION,
         profile_basis=(
-            "four_times_qualified_840313_small_object_rehearsal_maximum_mask_fraction"
+            "four_times_qualified_small_object_rehearsal_maximum_mask_fraction"
         ),
     )
     max_mask = max(mask_records.values(), key=lambda row: int(row["masked_pixel_count"]))

@@ -327,6 +327,9 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     assert "joint_agent_scene_optimizer_core_missing" in runtime_script
     assert receipt["blueprint_source"]["commit"] == "a" * 40
     assert receipt["completion_retries"] == 0
+    assert receipt["execution_role"] == "optional_construction_enrichment"
+    assert receipt["failure_blocks_native_simulator_qualification"] is False
+    assert receipt["agent_output_is_simready_authority"] is False
     assert receipt["scope_amendment_digest"] == scope_amendment["amendment_digest"]
     assert receipt["nim_preflight_receipt_digest"] == nim_preflight["receipt_digest"]
     review_contract = json.loads(

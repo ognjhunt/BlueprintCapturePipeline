@@ -363,13 +363,6 @@ def compile_articulated_public_scene_state(
     blockers: list[str] = []
     if authority is None and rights.get("external_provider_upload_authorized") is not True:
         blockers.append("external_scene_derived_byte_disclosure_authority_missing")
-    joint_admission = (
-        joint.get("execution_admission")
-        if isinstance(joint.get("execution_admission"), Mapping)
-        else {}
-    )
-    if authority is None and joint_admission.get("paid_execution_authorized") is not True:
-        blockers.append("fresh_paid_joint_agent_execution_authority_missing")
     if aura_execution is None:
         blockers.append("released_code_inpainting_execution_missing")
     elif (aura_execution.get("quality") or {}).get("status") != "admitted":
@@ -387,8 +380,9 @@ def compile_articulated_public_scene_state(
             }
             else f"released_code_inpainting_abstained:{aura_blocker}"
         )
+    enrichment_gaps: list[str] = []
     if joint_execution is None:
-        blockers.append(
+        enrichment_gaps.append(
             "joint_agent_topology_execution_abstained:"
             + str(joint_abstention["smallest_missing_capability"])
             if joint_abstention is not None
@@ -459,12 +453,15 @@ def compile_articulated_public_scene_state(
                 joint_execution is not None or joint_abstention is not None
             ),
             "joint_agent_execution_abstained": joint_abstention is not None,
+            "joint_agent_required_for_deterministic_construction": False,
+            "joint_agent_required_for_native_simulator_qualification": False,
             "simready_replacement_materialized": False,
             "native_simulator_qualified": False,
             "controls_executed": False,
             "learned_candidates_executed": False,
         },
         "blockers": blockers,
+        "optional_enrichment_gaps": enrichment_gaps,
         "smallest_blocker": blockers[0] if blockers else None,
         "next_action": (
             "obtain explicit dataset disclosure authority for the exact retained scene-derived Aura and Joint Agent inputs"
@@ -482,19 +479,7 @@ def compile_articulated_public_scene_state(
                     "qualify the released-code inpainting candidate with exact-camera locality and retained before/after evidence"
                     if blockers
                     and blockers[0] == "released_code_inpainting_quality_admission_missing"
-                    else (
-                        "obtain one sealed zero-retry Joint Agent topology execution receipt"
-                        if blockers
-                        and blockers[0] == "joint_agent_topology_execution_missing"
-                        else (
-                            "resolve the retained Joint Agent runtime blocker without an automatic paid retry"
-                            if blockers
-                            and blockers[0].startswith(
-                                "joint_agent_topology_execution_abstained:"
-                            )
-                            else "materialize and independently qualify the articulated SimReady replacement"
-                        )
-                    )
+                    else "materialize and independently qualify the articulated SimReady replacement"
                 )
             )
         ),
@@ -504,6 +489,8 @@ def compile_articulated_public_scene_state(
             "generated_geometry_is_not_physical_truth": True,
             "simulator_evidence_is_not_physical_evidence": True,
             "partner_capture_or_deployment_claimed": False,
+            "research_preview_agent_outputs_are_optional_enrichment": True,
+            "deterministic_usd_and_native_readback_own_qualification": True,
         },
         "run_digest": "",
     }

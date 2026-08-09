@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_task_selection import (
     PublicSceneTaskSelectionError,
     load_selection_scope_amendment,
@@ -73,6 +74,16 @@ def test_second_scene_selection_rejects_threshold_or_digest_mutation() -> None:
 
     assert "selection_preregistration_thresholds_invalid" in caught.value.errors
     assert "selection_preregistration_digest_invalid" in caught.value.errors
+
+
+def test_selection_contract_accepts_a_different_prior_fixture_registry() -> None:
+    payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    payload["previously_used_scene_ids"] = ["100001", "100002"]
+    payload["preregistration_digest"] = canonical_digest(
+        payload, digest_field="preregistration_digest"
+    )
+    validated = validate_selection_preregistration(payload)
+    assert validated["previously_used_scene_ids"] == ["100001", "100002"]
 
 
 def test_scope_amendment_allows_multi_joint_assembly_but_one_task_joint() -> None:
