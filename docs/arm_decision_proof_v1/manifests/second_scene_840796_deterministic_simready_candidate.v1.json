@@ -12,8 +12,9 @@
       "prim_path": "/Asset/upper_door/component_004",
       "source": "observed_source_component_group"
     },
-    "output_usd_sha256": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1",
+    "output_usd_sha256": "sha256:81b1796ac9725c5cc1707f7afb21186bfcf18871872c3276a3d26f621100ffc5",
     "receipt_digest": "sha256:c060aa5caff510ae9c17e843870fab8a0acd8ecce1abe8a28a6b14bfa448f4c8",
+    "render_ready_supersedes": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1",
     "status": "simready_candidate_statically_admitted",
     "support_link_prim_path": "/Asset/cabinet",
     "task_door_link_prim_path": "/Asset/upper_door",
@@ -491,7 +492,7 @@
   "physics_validation_receipt_digest": "sha256:ff41d2e8959f4e62710445e65c6f134dd85a1ff934f0f46105eaba9b56b13282",
   "program_id": "arm-decision-proof-v1",
   "publisher_scene_id": "840796",
-  "receipt_digest": "sha256:150933274faeae7f55627c89e6ddbd4d10fa1ac2f6b9ed876b6d9d024b2411cb",
+  "receipt_digest": "sha256:68d78ba647412a497ac432adf63e9b759c0e360e0c62cbe5d016e3eba8372bf2",
   "reference_image_authority": "blueprint_deterministic_render_of_sage_derived_candidate_not_interiorgs_dataset_bytes",
   "reference_image_sha256": "sha256:0e79487f1ff0a2ba43d8e33fa5aa74cf42a40089f169f41bb4bf679d29010450",
   "render_readiness": {
