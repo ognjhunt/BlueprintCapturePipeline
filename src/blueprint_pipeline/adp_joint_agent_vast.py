@@ -54,6 +54,13 @@ DEFAULT_IMAGE = (
 )
 CONSTRUCTION_RENDER_MODE = "rt2"
 CONSTRUCTION_RENDER_SENSOR_UPDATES = 32
+RUNTIME_DISK_GB = 96
+# The released OVRTX wheel is about 2.4 GiB compressed and is materialized in
+# both uv's cache and the isolated runtime environment.  Agent dependencies,
+# source, and retained outputs share that filesystem.  v12 began with 9.5 GiB
+# free and failed partway through installation, so capacity is an admission
+# input rather than something discovered one missing file at a time.
+MINIMUM_FREE_BYTES_BEFORE_DEPENDENCY_INSTALL = 32 * 1024**3
 # Exact public Scene Optimizer Core package the released optimize_usd step
 # requires for its local backend. v8 proved the released CLI fails closed
 # without it ("local backend unavailable"), so the bundle ships the pinned
@@ -356,6 +363,10 @@ def build_joint_agent_vast_bundle(
         repo / "src/blueprint_pipeline/provider_archive.py",
         runtime / "provider_archive.py",
     )
+    shutil.copy2(
+        repo / "src/blueprint_pipeline/provider_runtime_capacity.py",
+        runtime / "provider_runtime_capacity.py",
+    )
     for name in (
         "__init__.py",
         "decision_evidence_contracts.py",
@@ -413,6 +424,14 @@ def build_joint_agent_vast_bundle(
             "evaluation_authorized": False,
             "policy_input": False,
             "scene_bytes_leave_vast_instance": False,
+        },
+        "runtime_resource_requirements": {
+            "requested_disk_gb": RUNTIME_DISK_GB,
+            "minimum_free_bytes_before_dependency_install": (
+                MINIMUM_FREE_BYTES_BEFORE_DEPENDENCY_INSTALL
+            ),
+            "measurement_path": "provider_runtime",
+            "failure_blocker": "joint_agent_runtime_disk_headroom_insufficient",
         },
         "model": {"backend": "nvidia_nim", "id": "google/gemma-4-31b-it"},
         "completion_retries": 0,
@@ -695,7 +714,7 @@ def run_joint_agent_vast(
                 provider_bundle_kind=PROVIDER_BUNDLE_KIND,
                 vast_launch_mode="ssh_direct",
                 allow_cold_isaac_image_pull=False,
-                disk_gb=96,
+                disk_gb=RUNTIME_DISK_GB,
                 min_gpu_ram_mb=24_000,
                 poll_interval_seconds=15,
                 startup_timeout_seconds=min(10_800, remaining_minutes * 60),

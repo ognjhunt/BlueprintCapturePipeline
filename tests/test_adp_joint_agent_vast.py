@@ -301,6 +301,14 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         tmp_path / "bundle/provider_runtime/scene_optimizer_core.zip"
     ).is_file()
     assert receipt["provider_bundle_kind"] == "adp_joint_agent"
+    assert receipt["runtime_resource_requirements"] == {
+        "requested_disk_gb": joint_vast.RUNTIME_DISK_GB,
+        "minimum_free_bytes_before_dependency_install": (
+            joint_vast.MINIMUM_FREE_BYTES_BEFORE_DEPENDENCY_INSTALL
+        ),
+        "measurement_path": "provider_runtime",
+        "failure_blocker": "joint_agent_runtime_disk_headroom_insufficient",
+    }
     assert receipt["input_usd_sha256"] == source_digest
     assert receipt["renderer"]["scene_bytes_leave_vast_instance"] is False
     assert receipt["renderer"] == {
@@ -850,6 +858,11 @@ def test_runtime_script_probes_ovrtx_daemon_before_service() -> None:
         "uvicorn service.main:app"
     )
     assert "env -u PYTHONPATH" in script
+    assert "runtime_disk_headroom.json" in script
+    assert "joint_agent_runtime_disk_headroom_insufficient" in script
+    assert script.index("runtime_disk_headroom.json") < script.index(
+        "pip install --disable-pip-version-check"
+    )
 
 
 def test_scene_optimizer_probe_retains_real_failure_diagnostics(

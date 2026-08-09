@@ -1376,6 +1376,12 @@ def _offer_summary(offer: Mapping[str, Any], *, disk_gb: int = 0) -> dict[str, A
             else "provider_storage_price_unavailable"
         ),
         "disk_gb": int(disk_gb),
+        # Vast reports the host's currently allocatable disk separately from
+        # the disk requested in the create payload.  A create call can return
+        # 200 while the resulting container still receives only the host's
+        # smaller overlay (observed as 10 GB after requesting 96 GB).  Preserve
+        # and gate this value before selecting a paid machine.
+        "provider_available_disk_gb": _number(offer.get("disk_space")),
         "hourly_rate_usd": all_in_hourly_rate,
         "driver_version": driver or None,
         "isaac_driver_support_status": driver_status,
@@ -1436,6 +1442,7 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "storage_hourly_rate_usd": offer.get("storage_hourly_rate_usd"),
         "storage_rate_source": offer.get("storage_rate_source"),
         "disk_gb": offer.get("disk_gb"),
+        "provider_available_disk_gb": offer.get("provider_available_disk_gb"),
         "driver_version": _string(offer.get("driver_version")) or None,
         "isaac_driver_support_status": _string(offer.get("isaac_driver_support_status")) or None,
         "cuda_max_good": offer.get("cuda_max_good"),
@@ -1664,6 +1671,7 @@ def _select_offer(
     prefer_isaac_rt: bool = True,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     disk_gb: int = 0,
+    required_provider_disk_gb: int = 0,
 ) -> dict[str, Any] | None:
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
@@ -1676,6 +1684,14 @@ def _select_offer(
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
+        and (
+            not required_provider_disk_gb
+            or (
+                _number(item.get("provider_available_disk_gb")) is not None
+                and float(_number(item.get("provider_available_disk_gb")) or 0.0)
+                >= float(required_provider_disk_gb)
+            )
+        )
         and vcc.meets_min_compute_cap(item, min_compute_cap)
         and vcc.meets_max_compute_cap(item, max_compute_cap)
         and (
@@ -1765,6 +1781,7 @@ def _offer_selection_manifest(
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     create_retry_attempts: Sequence[Mapping[str, Any]] = (),
     disk_gb: int = 0,
+    required_provider_disk_gb: int = 0,
 ) -> dict[str, Any]:
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
     summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
@@ -1799,6 +1816,14 @@ def _offer_selection_manifest(
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
+        and (
+            not required_provider_disk_gb
+            or (
+                _number(item.get("provider_available_disk_gb")) is not None
+                and float(_number(item.get("provider_available_disk_gb")) or 0.0)
+                >= float(required_provider_disk_gb)
+            )
+        )
         and vcc.meets_min_compute_cap(item, min_compute_cap)
         and vcc.meets_max_compute_cap(item, max_compute_cap)
         and (
@@ -1823,6 +1848,7 @@ def _offer_selection_manifest(
         "offer_count": len(offers),
         "max_hourly_rate_usd": max_hourly_rate,
         "disk_gb": int(disk_gb),
+        "required_provider_disk_gb": int(required_provider_disk_gb),
         "hourly_rate_includes_provider_offer_storage": True,
         "min_gpu_ram_mb": min_gpu_ram_mb,
         "min_compute_cap": min_compute_cap,
@@ -1839,6 +1865,16 @@ def _offer_selection_manifest(
         "prefer_isaac_rt": prefer_isaac_rt,
         "gpu_selection_policy": policy_manifest(policy),
         "quality_filtered_offer_count": quality_filtered_offer_count,
+        "disk_capacity_filtered_offer_count": sum(
+            1
+            for item in summaries
+            if not required_provider_disk_gb
+            or (
+                _number(item.get("provider_available_disk_gb")) is not None
+                and float(_number(item.get("provider_available_disk_gb")) or 0.0)
+                >= float(required_provider_disk_gb)
+            )
+        ),
         "known_supported_driver_offer_count": known_supported_offer_count,
         "known_unsupported_driver_offer_count": known_unsupported_driver_offer_count,
         "minimum_driver_offer_count": minimum_driver_offer_count,
@@ -5385,6 +5421,10 @@ def run_vast_provider_adapter(
         requested=disk_gb,
         enable_isaac_smoke=enable_isaac_smoke,
     )
+    # A caller that explicitly requests disk is declaring a workload capacity
+    # requirement.  Default smoke allocations remain backward compatible, but
+    # explicit paid workloads fail closed if the offer cannot supply it.
+    required_provider_disk_gb = resolved_disk_gb if disk_gb is not None else 0
     selected_container_image = _resolve_probe_image(
         public_image=public_image,
         isaac_image=isaac_image,
@@ -6442,6 +6482,7 @@ def run_vast_provider_adapter(
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
                 gpu_selection_policy=gpu_selection_policy,
                 disk_gb=resolved_disk_gb,
+                required_provider_disk_gb=required_provider_disk_gb,
             )
             offer_blockers: list[str] = []
             if not selected_offer:
@@ -6482,6 +6523,7 @@ def run_vast_provider_adapter(
                 gpu_selection_policy=gpu_selection_policy,
                 create_retry_attempts=create_retry_attempts,
                 disk_gb=resolved_disk_gb,
+                required_provider_disk_gb=required_provider_disk_gb,
             )
             write_json(resolved_job_dir / "vast_offer_selection_manifest.json", offer_manifest)
             _append_phase(
@@ -6622,6 +6664,7 @@ def run_vast_provider_adapter(
                     gpu_selection_policy=gpu_selection_policy,
                     create_retry_attempts=create_retry_attempts,
                     disk_gb=resolved_disk_gb,
+                    required_provider_disk_gb=required_provider_disk_gb,
                 )
                 write_json(
                     resolved_job_dir / "vast_offer_selection_manifest.json",

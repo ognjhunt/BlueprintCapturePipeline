@@ -72,6 +72,18 @@ PY
   exit 0
 fi
 
+# Fail before downloading or unpacking multi-gigabyte dependencies when the
+# paid host did not honor the requested disk allocation.  The threshold comes
+# from the immutable bundle manifest, and the receipt records native
+# filesystem readback rather than trusting the provider create request.
+if ! python3 "${SCRIPT_DIR}/provider_runtime_capacity.py" \
+  "${SCRIPT_DIR}/adp_joint_agent_provider_manifest.json" \
+  "${OUTPUT_DIR}/runtime_disk_headroom.json" \
+  "${SCRIPT_DIR}"
+then
+  write_missing_result "joint_agent_runtime_disk_headroom_insufficient"; exit 2;
+fi
+
 python3 -m pip install --disable-pip-version-check --no-cache-dir uv==0.10.7 || {
   write_missing_result "joint_agent_uv_install_failed"; exit 2;
 }

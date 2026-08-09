@@ -2548,6 +2548,39 @@ def test_vast_adapter_can_require_minimum_gpu_memory() -> None:
     assert selected["gpu_ram_mb"] == 49152
 
 
+def test_vast_adapter_rejects_offer_without_requested_disk_capacity() -> None:
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "A100",
+                "gpu_ram_mb": 40960,
+                "disk_space": 10.0,
+                "dph_total": 0.20,
+                "driver_version": "580.173.02",
+            },
+            {
+                "id": 2,
+                "ask_contract_id": 2,
+                "gpu_name": "L40S",
+                "gpu_ram_mb": 49152,
+                "disk_space": 160.0,
+                "dph_total": 0.35,
+                "driver_version": "580.159.03",
+            },
+        ],
+        max_hourly_rate=0.60,
+        disk_gb=96,
+        required_provider_disk_gb=96,
+        prefer_isaac_rt=False,
+    )
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
+    assert selected["provider_available_disk_gb"] == 160.0
+
+
 def test_vast_adapter_caps_host_total_memory_for_known_4090_model() -> None:
     selected = _select_offer(
         [
