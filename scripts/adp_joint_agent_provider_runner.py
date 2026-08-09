@@ -104,6 +104,82 @@ def retain_available_joint_agent_artifacts(
     return retain_joint_agent_artifacts(output_root=output_root, artifacts=present)
 
 
+def _load_optimize_usd_local():
+    from world_understanding.functions.graphics.scene_optimizer_local import (
+        optimize_usd_local,
+    )
+
+    return optimize_usd_local
+
+
+def scene_optimizer_probe(*, output_root: Path) -> list[str]:
+    """Run one tiny splitMeshes optimization and retain its real diagnostics.
+
+    The released OptimizeUSDTask quarantines every exception into the bare
+    string "USD optimization failed" (v10 retained exactly that and nothing
+    else). Calling the underlying scene_optimizer_local entrypoint directly
+    surfaces the subprocess's stdout/stderr, which this probe retains in
+    scene_optimizer_probe.log before any paid model work begins.
+    """
+
+    import tempfile
+
+    log = output_root / "scene_optimizer_probe.log"
+    try:
+        optimize_usd_local = _load_optimize_usd_local()
+        from pxr import Sdf as _Sdf, Usd as _Usd, UsdGeom as _UsdGeom
+
+        with tempfile.TemporaryDirectory(prefix="so_probe_") as tmp:
+            probe_source = Path(tmp) / "probe.usda"
+            stage = _Usd.Stage.CreateNew(str(probe_source))
+            _UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            _UsdGeom.SetStageUpAxis(stage, _UsdGeom.Tokens.z)
+            root = _UsdGeom.Xform.Define(stage, "/Probe")
+            stage.SetDefaultPrim(root.GetPrim())
+            mesh = _UsdGeom.Mesh.Define(stage, "/Probe/mesh")
+            mesh.CreatePointsAttr(
+                [(0, 0, 0), (1, 0, 0), (0, 1, 0), (2, 0, 0), (3, 0, 0), (2, 1, 0)]
+            )
+            mesh.CreateFaceVertexCountsAttr([3, 3])
+            mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3, 4, 5])
+            for index in (0, 1):
+                subset = _UsdGeom.Subset.Define(
+                    stage, f"/Probe/mesh/component_{index}"
+                )
+                subset.CreateElementTypeAttr().Set(_UsdGeom.Tokens.face)
+                subset.CreateIndicesAttr().Set([index])
+                subset.CreateFamilyNameAttr().Set("blueprint_connected_components")
+                subset.GetPrim().SetMetadata(
+                    "customData", {"probe": True}
+                )
+            del _Sdf
+            stage.GetRootLayer().Save()
+            result = optimize_usd_local(
+                probe_source,
+                Path(tmp) / "probe_optimized.usdc",
+                {
+                    "scene_optimizer_settings": {
+                        "enable_deinstance": False,
+                        "enable_split_meshes": True,
+                        "enable_deduplicate": False,
+                    }
+                },
+            )
+        log.write_text(
+            "scene_optimizer_probe_ok\n"
+            + json.dumps(result, indent=2, sort_keys=True, default=str)
+            + "\n",
+            encoding="utf-8",
+        )
+        return []
+    except Exception as exc:
+        log.write_text(
+            f"scene_optimizer_probe_failed\n{type(exc).__name__}: {exc}\n",
+            encoding="utf-8",
+        )
+        return ["joint_agent_scene_optimizer_probe_failed"]
+
+
 def _run(command: list[str], log_name: str) -> dict[str, Any]:
     started = dt.datetime.now(dt.timezone.utc)
     process = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=7200)
@@ -183,6 +259,9 @@ def main() -> int:
             raise ValueError("joint_agent_review_contract_digest_invalid")
         if not os.environ.get("NVIDIA_API_KEY"):
             raise ValueError("joint_agent_nvidia_api_key_missing")
+        probe_blockers = scene_optimizer_probe(output_root=OUTPUT)
+        if probe_blockers:
+            return _result(probe_blockers)
         config_path = ROOT / "joint_agent.yaml"
         python = str(ROOT / "content_agents_source/.venv/bin/python")
         cli = [python, "-m", "joint_agent.cli", "run", str(config_path)]

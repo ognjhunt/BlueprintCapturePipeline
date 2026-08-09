@@ -769,6 +769,7 @@ def test_provider_runner_review_failure_retains_topology_evidence(
     monkeypatch.setattr(runner, "ROOT", root)
     monkeypatch.setattr(runner, "OUTPUT", output)
     monkeypatch.setattr(runner, "_run", fake_run)
+    monkeypatch.setattr(runner, "scene_optimizer_probe", lambda *, output_root: [])
     monkeypatch.setattr(
         runner,
         "_candidate_bounds",
@@ -831,3 +832,39 @@ def test_runtime_script_probes_ovrtx_daemon_before_service() -> None:
         "uvicorn service.main:app"
     )
     assert "env -u PYTHONPATH" in script
+
+
+def test_scene_optimizer_probe_retains_real_failure_diagnostics(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runner = _provider_runner_module()
+
+    def _failing_loader():
+        def _optimize(*args, **kwargs):
+            raise RuntimeError(
+                "Scene Optimizer subprocess failed (exit code 127)\n"
+                "--- stderr (last 2000) ---\nlibExample.so: cannot open shared object file"
+            )
+
+        return _optimize
+
+    monkeypatch.setattr(runner, "_load_optimize_usd_local", _failing_loader)
+    blockers = runner.scene_optimizer_probe(output_root=tmp_path)
+
+    assert blockers == ["joint_agent_scene_optimizer_probe_failed"]
+    log = (tmp_path / "scene_optimizer_probe.log").read_text(encoding="utf-8")
+    assert "cannot open shared object file" in log
+
+    def _passing_loader():
+        def _optimize(input_path, output_path, config):
+            assert Path(input_path).is_file()
+            settings = config["scene_optimizer_settings"]
+            assert settings["enable_split_meshes"] is True
+            return {"status": "completed", "operations_executed": ["splitMeshes"]}
+
+        return _optimize
+
+    monkeypatch.setattr(runner, "_load_optimize_usd_local", _passing_loader)
+    assert runner.scene_optimizer_probe(output_root=tmp_path) == []
+    log = (tmp_path / "scene_optimizer_probe.log").read_text(encoding="utf-8")
+    assert "scene_optimizer_probe_ok" in log
