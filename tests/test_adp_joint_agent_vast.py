@@ -266,8 +266,9 @@ def test_run_dry_run_is_zero_mutation_and_requires_bound_bundle(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("execute", [False, True])
+@pytest.mark.parametrize("concurrent", [False, True])
 def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
-    monkeypatch, tmp_path: Path, execute: bool
+    monkeypatch, tmp_path: Path, execute: bool, concurrent: bool
 ) -> None:
     bundle = tmp_path / "bundle.zip"
     bundle.write_bytes(b"immutable-joint-agent-runtime")
@@ -283,6 +284,8 @@ def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
         "provider_zero_required_after_return": True,
         "scope_amendment_digest": "sha256:" + "1" * 64,
         "nim_preflight_receipt_digest": "sha256:" + "2" * 64,
+        "one_instance_at_a_time": not concurrent,
+        "maximum_concurrent_paid_instances": 2 if concurrent else 1,
         "blockers": [],
         "bundle_path": str(bundle),
         "bundle_sha256": bundle_digest,
@@ -341,12 +344,15 @@ def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
     ]
     if execute:
         args.append("--execute")
+    if concurrent:
+        args.extend(["--adp-allowed-active-vast-instance-id", "47226054"])
 
     assert allocator.main(args) == 0
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["status"] == "admitted"
     assert admission["allocation_binding"]["bundle_sha256"] == bundle_digest
     assert admission["raw_interiorgs_downloaded_bytes_uploaded"] is False
+    assert admission["explicit_concurrent_gpu_authority_bound"] is concurrent
     assert observed["execute"] is execute
     assert (observed["paid_resource_admission_grant"] is not None) is execute
 

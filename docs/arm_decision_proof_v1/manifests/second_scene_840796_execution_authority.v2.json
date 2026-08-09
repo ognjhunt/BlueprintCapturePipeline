@@ -1,0 +1,52 @@
+{
+  "aura_adapter_receipt_digest": "sha256:5ece75f9913dfe706fc0b62c3e3bab43fd0fbdae75032c9f52764d1264352beb",
+  "authority_kind": "explicit_user_direction_in_current_goal",
+  "authority_reference": "codex-goal-user-message-2026-08-08T21:00-05:00",
+  "authorization_digest": "sha256:704cb36b328b357d75fb2a331d96361cafb31a16e7d2117f3dd3fd6d782817bf",
+  "authorized_by": "nijelhunt_1",
+  "authorized_on": "2026-08-08",
+  "automatic_paid_retry_authorized": false,
+  "commercial_use_authorized": false,
+  "concurrent_authority_reference": "user explicitly authorized a second GPU when necessary",
+  "concurrent_paid_compute_authorized": true,
+  "dataset_claim": "internal_noncommercial_private_processing_authority_only;does_not_change_publisher_nonredistribution_terms",
+  "derived_aura_adapter_upload_authorized": true,
+  "freeze_digest": "sha256:0774b7072bb1a0fd0929fde81cd48aaff384af4608772f31d603c2324f97d03f",
+  "hard_total_spend_cap_usd": 12.0,
+  "interiorgs_terms_text_digest": "sha256:508b0ec62ff1b5bee3c47524dd36f2402f5f70a09afbe62a4d0041078856356b",
+  "joint_agent_source_asset_digest": "sha256:4e0986e79b9d358de7e3289c0179eeaa4ec94b035e2133d2ea309298b525a4c3",
+  "joint_agent_source_receipt_digest": "sha256:14696cb1dd047e24d1c74fd8767efb3a07ee740368c5805501de7abb630f9882",
+  "known_active_instance_ids_at_authorization": [
+    47226054
+  ],
+  "maximum_concurrent_paid_instances": 2,
+  "maximum_single_resource_ttl_seconds": 14400,
+  "model_training_authorized": false,
+  "one_instance_at_a_time": false,
+  "paid_compute_authorized": true,
+  "prelaunch_provider_inventory_rule": "no_unadmitted_active_or_billable_resources;explicitly_allowed_active_instance_ids_must_be_read_back",
+  "prior_rights_authority_digest": "sha256:8353a51238feb13da805853129ee3c4e4dcb3aeb3ee656f3097b33be42564db7",
+  "provider_scope": [
+    "vast",
+    "nvidia_nim",
+    "nvidia_remote_renderer",
+    "object_store"
+  ],
+  "provider_zero_required_before_and_after": true,
+  "public_disclosure_authorized": false,
+  "publisher_scene_id": "840796",
+  "purpose_scope": [
+    "released_code_inpainting",
+    "articulation_topology_inference",
+    "native_simulator_qualification",
+    "two_candidate_policy_evaluation"
+  ],
+  "raw_interiorgs_downloaded_bytes_upload_authorized": false,
+  "remote_upload_authorized": true,
+  "retention_policy": "bounded_to_goal_then_provider_zero",
+  "sage_cc_by_nc_derived_asset_upload_authorized": true,
+  "schema_version": "public_scene_execution_authority.v2",
+  "supersedes_execution_authority_digest": "sha256:a218f494897070781ce3c03f5b7dfa984d5f261cb2fd0a0873c2a48fc74d69e0",
+  "target_instance_id": "123",
+  "teardown_required": true
+}

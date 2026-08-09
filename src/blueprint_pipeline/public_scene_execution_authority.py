@@ -10,6 +10,7 @@ from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "public_scene_execution_authority.v1"
+CONCURRENT_SCHEMA_VERSION = "public_scene_execution_authority.v2"
 REQUIRED_PROVIDERS = {"vast", "nvidia_nim", "nvidia_remote_renderer", "object_store"}
 REQUIRED_PURPOSES = {
     "released_code_inpainting",
@@ -44,7 +45,8 @@ def validate_public_scene_execution_authority(
     if not isinstance(authority, dict):
         raise PublicSceneExecutionAuthorityError(["execution_authority_invalid"])
     errors: list[str] = []
-    if authority.get("schema_version") != SCHEMA_VERSION:
+    schema_version = authority.get("schema_version")
+    if schema_version not in {SCHEMA_VERSION, CONCURRENT_SCHEMA_VERSION}:
         errors.append("execution_authority_schema_invalid")
     if authority.get("authority_kind") != "explicit_user_direction_in_current_goal":
         errors.append("execution_authority_kind_invalid")
@@ -91,13 +93,38 @@ def validate_public_scene_execution_authority(
         "paid_compute_authorized",
         "derived_aura_adapter_upload_authorized",
         "sage_cc_by_nc_derived_asset_upload_authorized",
-        "one_instance_at_a_time",
         "provider_zero_required_before_and_after",
         "teardown_required",
     )
     for key in required_true:
         if authority.get(key) is not True:
             errors.append(f"execution_authority_{key}_not_true")
+    if schema_version == SCHEMA_VERSION:
+        if authority.get("one_instance_at_a_time") is not True:
+            errors.append("execution_authority_one_instance_at_a_time_not_true")
+    else:
+        if authority.get("one_instance_at_a_time") is not False:
+            errors.append("execution_authority_one_instance_at_a_time_not_false")
+        if authority.get("maximum_concurrent_paid_instances") != 2:
+            errors.append("execution_authority_maximum_concurrent_paid_instances_invalid")
+        if authority.get("concurrent_paid_compute_authorized") is not True:
+            errors.append("execution_authority_concurrent_paid_compute_not_true")
+        if not isinstance(authority.get("concurrent_authority_reference"), str) or not authority[
+            "concurrent_authority_reference"
+        ].strip():
+            errors.append("execution_authority_concurrent_authority_reference_invalid")
+        active_ids = authority.get("known_active_instance_ids_at_authorization")
+        if (
+            not isinstance(active_ids, list)
+            or len(active_ids) != 1
+            or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in active_ids)
+        ):
+            errors.append("execution_authority_known_active_instance_ids_invalid")
+        if authority.get("prelaunch_provider_inventory_rule") != (
+            "no_unadmitted_active_or_billable_resources;"
+            "explicitly_allowed_active_instance_ids_must_be_read_back"
+        ):
+            errors.append("execution_authority_prelaunch_provider_inventory_rule_invalid")
     required_false = (
         "raw_interiorgs_downloaded_bytes_upload_authorized",
         "public_disclosure_authorized",
@@ -126,6 +153,7 @@ def validate_public_scene_execution_authority(
 
 __all__ = [
     "PublicSceneExecutionAuthorityError",
+    "CONCURRENT_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "validate_public_scene_execution_authority",
 ]

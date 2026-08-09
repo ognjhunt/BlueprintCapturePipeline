@@ -1418,6 +1418,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp_joint_agent_hard_ttl_invalid")
             if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
                 blockers.append("adp_joint_agent_allowed_active_vast_instance_id_invalid")
+            allowed_active_instance_ids = sorted(
+                set(args.adp_allowed_active_vast_instance_id)
+            )
             prepared_bundle: dict[str, Any] | None = None
             receipt_path: Path | None = None
             if args.adp_joint_agent_bundle_receipt:
@@ -1471,6 +1474,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
                     blockers.append("adp_joint_agent_bundle_binding_invalid")
+                if allowed_active_instance_ids and (
+                    len(allowed_active_instance_ids) != 1
+                    or prepared_bundle.get("one_instance_at_a_time") is not False
+                    or prepared_bundle.get("maximum_concurrent_paid_instances") != 2
+                ):
+                    blockers.append("adp_joint_agent_concurrent_authority_binding_invalid")
             receipt_sha256 = (
                 "sha256:" + hashlib.sha256(receipt_path.read_bytes()).hexdigest()
                 if receipt_path and receipt_path.is_file()
@@ -1500,9 +1509,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
-                "allowed_active_vast_instance_ids": sorted(
-                    set(args.adp_allowed_active_vast_instance_id)
-                ),
+                "allowed_active_vast_instance_ids": allowed_active_instance_ids,
                 "retry_cap": 0,
             }
             allocation_binding_digest = (

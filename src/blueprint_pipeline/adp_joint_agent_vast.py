@@ -346,6 +346,10 @@ def build_joint_agent_vast_bundle(
         "input_usd_sha256": _sha256(runtime / "input" / "articulated_source.usda"),
         "packet_digest": packet["packet_digest"],
         "execution_authority_digest": authority["authorization_digest"],
+        "one_instance_at_a_time": authority.get("one_instance_at_a_time", True),
+        "maximum_concurrent_paid_instances": authority.get(
+            "maximum_concurrent_paid_instances", 1
+        ),
         "freeze_digest": freeze["freeze_digest"],
         "scope_amendment_digest": scope_amendment["amendment_digest"],
         "nim_preflight_receipt_digest": nim_preflight["receipt_digest"],

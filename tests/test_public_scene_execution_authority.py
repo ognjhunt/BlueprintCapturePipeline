@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -73,6 +75,74 @@ def test_execution_authority_binds_private_processing_and_twelve_dollar_cap() ->
     assert validated["raw_interiorgs_downloaded_bytes_upload_authorized"] is False
     assert validated["derived_aura_adapter_upload_authorized"] is True
     assert validated["automatic_paid_retry_authorized"] is False
+
+
+def test_concurrent_authority_allows_exactly_one_additional_paid_instance() -> None:
+    authority = _authority()
+    authority.update(
+        {
+            "schema_version": "public_scene_execution_authority.v2",
+            "one_instance_at_a_time": False,
+            "maximum_concurrent_paid_instances": 2,
+            "concurrent_paid_compute_authorized": True,
+            "concurrent_authority_reference": "goal-user-message-second-gpu-2026-08-08",
+            "known_active_instance_ids_at_authorization": [47226054],
+            "prelaunch_provider_inventory_rule": (
+                "no_unadmitted_active_or_billable_resources;"
+                "explicitly_allowed_active_instance_ids_must_be_read_back"
+            ),
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+
+    validated = validate_public_scene_execution_authority(authority)
+
+    assert validated["maximum_concurrent_paid_instances"] == 2
+    assert validated["known_active_instance_ids_at_authorization"] == [47226054]
+
+
+def test_concurrent_authority_rejects_more_than_one_existing_instance() -> None:
+    authority = _authority()
+    authority.update(
+        {
+            "schema_version": "public_scene_execution_authority.v2",
+            "one_instance_at_a_time": False,
+            "maximum_concurrent_paid_instances": 2,
+            "concurrent_paid_compute_authorized": True,
+            "concurrent_authority_reference": "fixture",
+            "known_active_instance_ids_at_authorization": [1, 2],
+            "prelaunch_provider_inventory_rule": (
+                "no_unadmitted_active_or_billable_resources;"
+                "explicitly_allowed_active_instance_ids_must_be_read_back"
+            ),
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+
+    with pytest.raises(
+        PublicSceneExecutionAuthorityError,
+        match="known_active_instance_ids_invalid",
+    ):
+        validate_public_scene_execution_authority(authority)
+
+
+def test_checked_second_scene_concurrent_authority_is_digest_valid() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "docs/arm_decision_proof_v1/manifests"
+        / "second_scene_840796_execution_authority.v2.json"
+    )
+
+    authority = validate_public_scene_execution_authority(
+        json.loads(path.read_text(encoding="utf-8"))
+    )
+
+    assert authority["maximum_concurrent_paid_instances"] == 2
+    assert authority["known_active_instance_ids_at_authorization"] == [47226054]
 
 
 @pytest.mark.parametrize(
