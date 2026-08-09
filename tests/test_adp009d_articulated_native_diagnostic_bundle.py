@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+import zipfile
+
+import pytest
+from pxr import Usd, UsdGeom, UsdPhysics
+
+from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline.articulated_native_diagnostic_bundle import (
+    ArticulatedNativeDiagnosticError,
+    REQUEST_SCHEMA,
+    build_articulated_native_diagnostic_bundle,
+    build_articulated_native_diagnostic_request,
+)
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+
+def _sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _asset(path: Path) -> Path:
+    stage = Usd.Stage.CreateNew(str(path))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    root = UsdGeom.Xform.Define(stage, "/Asset").GetPrim()
+    stage.SetDefaultPrim(root)
+    UsdPhysics.ArticulationRootAPI.Apply(root)
+    for name in ("cabinet", "upper_door", "lower_door"):
+        prim = UsdGeom.Xform.Define(stage, f"/Asset/{name}").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        mesh = UsdGeom.Cube.Define(stage, f"/Asset/{name}/collision").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(mesh)
+    joints = UsdGeom.Scope.Define(stage, "/Asset/joints")
+    assert joints
+    for name, body in (
+        ("upper_door_hinge", "upper_door"),
+        ("lower_door_hinge", "lower_door"),
+    ):
+        joint = UsdPhysics.RevoluteJoint.Define(stage, f"/Asset/joints/{name}")
+        joint.CreateAxisAttr("Z")
+        joint.CreateLowerLimitAttr(0.0)
+        joint.CreateUpperLimitAttr(90.0)
+        joint.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+        joint.CreateBody1Rel().SetTargets([f"/Asset/{body}"])
+    stage.GetRootLayer().Save()
+    return path
+
+
+def _request(asset: Path, *, scene_id: str = "840796") -> dict:
+    value = {
+        "schema_version": REQUEST_SCHEMA,
+        "program_id": "arm-decision-proof-v1",
+        "scene_id": scene_id,
+        "learned_policy_outcomes_observed": False,
+        "asset": {"sha256": _sha256(asset)},
+        "articulation": {
+            "root_prim_path": "/Asset",
+            "fixed_base_body_prim_path": "/Asset/cabinet",
+            "driven_joint_prim_path": "/Asset/joints/upper_door_hinge",
+            "locked_joint_prim_paths": ["/Asset/joints/lower_door_hinge"],
+            "expected_joint_count": 2,
+            "commanded_angles_degrees": [0.0, 30.0, 55.0],
+        },
+        "runtime": {
+            "settle_steps_per_command": 120,
+            "joint_readback_tolerance_degrees": 1.0,
+            "locked_joint_tolerance_degrees": 0.5,
+            "fixed_base_translation_tolerance_m": 1e-5,
+            "fixed_base_rotation_tolerance_degrees": 0.01,
+            "maximum_abs_joint_velocity_rad_s_after_settle": 0.05,
+            "drive_stiffness": 2000.0,
+            "drive_damping": 150.0,
+            "drive_max_force": 5000.0,
+        },
+    }
+    value["request_digest"] = canonical_digest(
+        value, digest_field="request_digest"
+    )
+    return value
+
+
+@pytest.mark.parametrize("scene_id", ["840313", "840796"])
+def test_request_is_scene_neutral_and_allows_multiple_joints(
+    tmp_path: Path, scene_id: str
+) -> None:
+    asset = _asset(tmp_path / f"{scene_id}.usda")
+    request = build_articulated_native_diagnostic_request(
+        _request(asset, scene_id=scene_id)
+    )
+
+    assert request["scene_id"] == scene_id
+    assert request["articulation"]["expected_joint_count"] == 2
+    assert request["articulation"]["locked_joint_prim_paths"] == [
+        "/Asset/joints/lower_door_hinge"
+    ]
+    assert request["request_digest"].startswith("sha256:")
+
+
+def test_request_rejects_policy_leakage_and_driven_joint_lock(tmp_path: Path) -> None:
+    asset = _asset(tmp_path / "asset.usda")
+    request = _request(asset)
+    request["learned_policy_outcomes_observed"] = True
+    request["articulation"]["locked_joint_prim_paths"] = [
+        "/Asset/joints/upper_door_hinge"
+    ]
+    request.pop("request_digest")
+
+    with pytest.raises(ArticulatedNativeDiagnosticError) as excinfo:
+        build_articulated_native_diagnostic_request(request)
+
+    assert "articulated_native_request_policy_outcome_leakage" in excinfo.value.codes
+    assert "articulated_native_request_locked_joints_invalid" in excinfo.value.codes
+
+
+def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
+    asset = _asset(tmp_path / "asset.usda")
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(_request(asset)), encoding="utf-8")
+    harness = tmp_path / "harness.json"
+    harness.write_text('{"schema_version":"fixture"}\n', encoding="utf-8")
+    before = asset.read_bytes()
+    rows = []
+    for name in ("first", "second"):
+        rows.append(
+            build_articulated_native_diagnostic_bundle(
+                job_dir=tmp_path / name,
+                asset_path=asset,
+                request_path=request_path,
+                harness_manifest_path=harness,
+                implementation_commit="a" * 40,
+                generated_at="fixed",
+            )
+        )
+
+    assert rows[0]["bundle_sha256"] == rows[1]["bundle_sha256"]
+    assert rows[0]["diagnostic_kind"] == "blank_stage_articulated_asset"
+    assert rows[0]["asset_binding"]["sha256"] == _sha256(asset)
+    assert rows[0]["static_inventory"]["joint_prim_paths"] == [
+        "/Asset/joints/lower_door_hinge",
+        "/Asset/joints/upper_door_hinge",
+    ]
+    assert rows[0]["candidate_policy_queried"] is False
+    assert rows[0]["controls_requested"] is False
+    assert asset.read_bytes() == before
+    with zipfile.ZipFile(rows[0]["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        entrypoint = archive.read(
+            "provider_runtime/run_adp_arena_provider_runtime.sh"
+        ).decode()
+    assert "provider_runtime/assets/articulated_task_asset.usda" in names
+    assert "provider_runtime/articulated_native_diagnostic_runtime.py" in names
+    assert "adp009d_native_microcheck.json" in entrypoint
+    assert "policy_provisioning" not in entrypoint
+    assert "IsaacLab-Arena" not in entrypoint
+
+
+def test_bundle_rejects_changed_asset(tmp_path: Path) -> None:
+    asset = _asset(tmp_path / "asset.usda")
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(_request(asset)), encoding="utf-8")
+    asset.write_text(asset.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    harness = tmp_path / "harness.json"
+    harness.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(ArticulatedNativeDiagnosticError) as excinfo:
+        build_articulated_native_diagnostic_bundle(
+            job_dir=tmp_path / "bundle",
+            asset_path=asset,
+            request_path=request_path,
+            harness_manifest_path=harness,
+            implementation_commit="b" * 40,
+            generated_at="fixed",
+        )
+
+    assert "articulated_native_asset_digest_mismatch" in excinfo.value.codes
+
+
+def _allocator_args(tmp_path: Path) -> list[str]:
+    return [
+        "gpu-canary",
+        "--probe-kind",
+        "adp009d-franka-native-microcheck",
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "adapter.json"),
+        "--pod-name",
+        "adp009d-articulated-native",
+        "--adp009d-harness-manifest",
+        str(tmp_path / "harness.json"),
+        "--adp009d-articulated-diagnostic-asset",
+        str(tmp_path / "asset.usda"),
+        "--adp009d-articulated-diagnostic-request",
+        str(tmp_path / "request.json"),
+        "--adp009d-diagnostic-only",
+        "--adp-job-dir",
+        str(tmp_path / "job"),
+        "--adp-max-hourly-rate-usd",
+        "1.0",
+        "--adp-max-spend-usd",
+        "2.0",
+        "--adp-hard-ttl-seconds",
+        "7200",
+    ]
+
+
+def test_allocator_routes_articulated_diagnostic_without_canned_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, Any] = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+
+    def fake_build(**kwargs):
+        observed["build"] = kwargs
+        return {
+            "status": "ready",
+            "bundle_path": str(tmp_path / "bundle.zip"),
+            "bundle_sha256": "sha256:" + "b" * 64,
+            "input_digest": "sha256:" + "c" * 64,
+            "request_digest": "sha256:" + "d" * 64,
+            "diagnostic_kind": "blank_stage_articulated_asset",
+        }
+
+    monkeypatch.setattr(
+        allocator, "build_articulated_native_diagnostic_bundle", fake_build
+    )
+    def fake_run(**kwargs):
+        observed["run"] = kwargs
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+
+    assert allocator.main(_allocator_args(tmp_path)) == 0
+    assert "approved_can_path" not in observed["build"]
+    assert observed["build"]["asset_path"] == str(tmp_path / "asset.usda")
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    binding = admission["allocation_binding"]
+    assert binding["articulated_native_diagnostic_requested"] is True
+    assert binding["diagnostic_kind"] == "blank_stage_articulated_asset"
+    assert binding["articulated_native_request_digest"] == "sha256:" + "d" * 64
+
+
+def test_allocator_forbids_policy_in_blank_stage_articulated_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    args = _allocator_args(tmp_path) + [
+        "--adp009d-policy-candidate",
+        "pi05_droid",
+    ]
+
+    assert allocator.main(args) == 2
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert "adp009d_execution_modes_conflict" in result["blockers"]
+    assert (
+        "adp009d_articulated_native_policy_or_controls_forbidden"
+        in result["blockers"]
+    )

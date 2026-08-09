@@ -129,6 +129,9 @@ from .adp009d_native_microcheck_bundle import (
     PROBE_KIND as ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
     build_native_microcheck_bundle_isolated as build_native_microcheck_bundle,
 )
+from .articulated_native_diagnostic_bundle import (
+    build_articulated_native_diagnostic_bundle,
+)
 from .model_access_env import model_access_secret_status, normalize_model_access_env
 from .adp009d_ovrtx_vast import (
     PROBE_KIND as ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
@@ -1111,6 +1114,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp009d-approved-can")
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
+    gpu.add_argument(
+        "--adp009d-articulated-diagnostic-asset",
+        help=(
+            "Exact articulated USD for the blank-stage native import/drive/reset "
+            "diagnostic. Requires --adp009d-articulated-diagnostic-request and "
+            "--adp009d-diagnostic-only; replaces the canned-object inputs."
+        ),
+    )
+    gpu.add_argument(
+        "--adp009d-articulated-diagnostic-request",
+        help="Frozen articulated_native_diagnostic_request.v1 JSON.",
+    )
     gpu.add_argument(
         "--adp009d-aura-particlefield",
         default=None,
@@ -2909,16 +2924,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == ADP009D_NATIVE_MICROCHECK_PROBE_KIND:
+            articulated_native_requested = bool(
+                args.adp009d_articulated_diagnostic_asset
+                or args.adp009d_articulated_diagnostic_request
+            )
             missing = [
                 name
                 for name in (
-                    "adp009d_approved_can",
-                    "adp009d_sage_collision",
                     "adp009d_harness_manifest",
                     "adp_job_dir",
                 )
                 if not getattr(args, name, None)
             ]
+            if articulated_native_requested:
+                missing.extend(
+                    name
+                    for name in (
+                        "adp009d_articulated_diagnostic_asset",
+                        "adp009d_articulated_diagnostic_request",
+                    )
+                    if not getattr(args, name, None)
+                )
+            else:
+                missing.extend(
+                    name
+                    for name in (
+                        "adp009d_approved_can",
+                        "adp009d_sage_collision",
+                    )
+                    if not getattr(args, name, None)
+                )
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
             if args.adp009d_controls and not args.adp009d_scenario_instance:
@@ -2939,6 +2974,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp009d_execution_mode_missing")
             elif args.adp009d_diagnostic_only and execution_modes != 1:
                 blockers.append("adp009d_execution_modes_conflict")
+            if articulated_native_requested and not args.adp009d_diagnostic_only:
+                blockers.append(
+                    "adp009d_articulated_native_requires_diagnostic_only"
+                )
+            if articulated_native_requested and (
+                selected_candidates or args.adp009d_controls
+            ):
+                blockers.append(
+                    "adp009d_articulated_native_policy_or_controls_forbidden"
+                )
             gated_backbone_selected = "groot_n17_droid" in selected_candidates
             gated_backbone_access: dict[str, Any] | None = None
             if gated_backbone_selected and not args.adp009d_authorize_gated_backbone:
@@ -2974,17 +3019,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared_bundle = None
             if not blockers:
                 try:
-                    prepared_bundle = build_native_microcheck_bundle(
-                        job_dir=Path(args.adp_job_dir) / "bundle",
-                        approved_can_path=args.adp009d_approved_can,
-                        sage_collision_path=args.adp009d_sage_collision,
-                        harness_manifest_path=args.adp009d_harness_manifest,
-                        implementation_commit=control_identity["orchestrator_source_commit"],
-                        policy_candidate_id=args.adp009d_policy_candidate,
-                        run_controls=args.adp009d_controls,
-                        scenario_instance_path=args.adp009d_scenario_instance,
-                        aura_particlefield_path=args.adp009d_aura_particlefield,
-                    )
+                    if articulated_native_requested:
+                        prepared_bundle = build_articulated_native_diagnostic_bundle(
+                            job_dir=Path(args.adp_job_dir) / "bundle",
+                            asset_path=args.adp009d_articulated_diagnostic_asset,
+                            request_path=args.adp009d_articulated_diagnostic_request,
+                            harness_manifest_path=args.adp009d_harness_manifest,
+                            implementation_commit=control_identity[
+                                "orchestrator_source_commit"
+                            ],
+                        )
+                    else:
+                        prepared_bundle = build_native_microcheck_bundle(
+                            job_dir=Path(args.adp_job_dir) / "bundle",
+                            approved_can_path=args.adp009d_approved_can,
+                            sage_collision_path=args.adp009d_sage_collision,
+                            harness_manifest_path=args.adp009d_harness_manifest,
+                            implementation_commit=control_identity[
+                                "orchestrator_source_commit"
+                            ],
+                            policy_candidate_id=args.adp009d_policy_candidate,
+                            run_controls=args.adp009d_controls,
+                            scenario_instance_path=args.adp009d_scenario_instance,
+                            aura_particlefield_path=args.adp009d_aura_particlefield,
+                        )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(f"adp009d_bundle_preparation_failed:{type(exc).__name__}")
             allocation_binding = {
@@ -3000,6 +3058,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "candidate_policy_queried": False,
                 "controls_requested": bool(args.adp009d_controls),
                 "diagnostic_only_requested": bool(args.adp009d_diagnostic_only),
+                "articulated_native_diagnostic_requested": articulated_native_requested,
+                "diagnostic_kind": (
+                    prepared_bundle.get("diagnostic_kind")
+                    if prepared_bundle
+                    else None
+                ),
+                "articulated_native_request_digest": (
+                    prepared_bundle.get("request_digest")
+                    if prepared_bundle and articulated_native_requested
+                    else None
+                ),
                 "scenario_instance_digest": (
                     prepared_bundle.get("scenario_instance_digest")
                     if prepared_bundle

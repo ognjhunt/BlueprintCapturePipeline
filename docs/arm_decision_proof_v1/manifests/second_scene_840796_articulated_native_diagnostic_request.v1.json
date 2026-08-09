@@ -1,0 +1,52 @@
+{
+  "articulation": {
+    "commanded_angles_degrees": [
+      0.0,
+      5.0,
+      10.0,
+      15.0,
+      20.0,
+      25.0,
+      30.0,
+      35.0,
+      40.0,
+      45.0,
+      50.0,
+      55.0
+    ],
+    "driven_joint_prim_path": "/Asset/joints/upper_door_hinge",
+    "expected_joint_count": 2,
+    "fixed_base_body_prim_path": "/Asset/cabinet",
+    "locked_joint_prim_paths": [
+      "/Asset/joints/lower_door_hinge"
+    ],
+    "root_prim_path": "/Asset"
+  },
+  "asset": {
+    "claim": "statically_admitted_simready_candidate_only",
+    "sha256": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1"
+  },
+  "claim_boundary": {
+    "blank_stage_joint_import_only": true,
+    "franka_reachability_proven": false,
+    "physical_equivalence_proven": false,
+    "task_contact_or_initial_penetration_proven": false
+  },
+  "learned_policy_outcomes_observed": false,
+  "program_id": "arm-decision-proof-v1",
+  "request_digest": "sha256:3335132d0fd9c6ccae6fc8499c329dc182659bd52f5232f2ebc278595c344752",
+  "runtime": {
+    "drive_damping": 150.0,
+    "drive_max_force": 5000.0,
+    "drive_stiffness": 2000.0,
+    "fixed_base_rotation_tolerance_degrees": 0.01,
+    "fixed_base_translation_tolerance_m": 1e-05,
+    "joint_readback_tolerance_degrees": 1.0,
+    "locked_joint_tolerance_degrees": 0.5,
+    "maximum_abs_joint_velocity_rad_s_after_settle": 0.05,
+    "settle_steps_per_command": 180
+  },
+  "scene_id": "840796",
+  "schema_version": "articulated_native_diagnostic_request.v1",
+  "target_instance_id": "123"
+}
