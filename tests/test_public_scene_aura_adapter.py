@@ -246,6 +246,8 @@ def test_aura_adapter_derives_native_packet_and_remains_unexecuted(
     assert receipt["scene"]["reference_camera_selection"] == (
         "maximum_frozen_target_mask_pixel_count"
     )
+    assert receipt["scene"]["reference_camera_index"] == 4
+    assert receipt["scene"]["scene_slug"] == "840313_ins160"
     assert receipt["scene"]["method_resolution_divisor"] == 1
     assert receipt["reference_generator"]["checkpoint_archive"]["sha256"].startswith("sha256:")
     assert receipt["source"]["source_modified_for_adapter"] is False
@@ -258,6 +260,42 @@ def test_aura_adapter_derives_native_packet_and_remains_unexecuted(
     assert "reference_index = 4" in inpaint_config
     assert "resolution = 1" in inpaint_config
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
+
+
+def test_aura_adapter_derives_new_scene_slug_and_reference_camera(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    frozen = json.loads(paths["frozen"].read_text())
+    frozen["scene"].update(
+        {
+            "publisher_scene_id": "840796",
+            "target_instance_id": "123",
+            "target_semantic_label": "refrigerator",
+        }
+    )
+    selected = paths["input"] / "masks/raised_left.png"
+    pixels = np.zeros((1536, 2048), np.uint8)
+    pixels[300:500, 500:700] = 255
+    Image.fromarray(pixels, mode="L").save(selected)
+    for row in frozen["derived_artifacts"]["masks"]:
+        if row["camera_id"] == "raised_left":
+            row.update(_record(selected, paths["input"]))
+            row["masked_pixel_count"] = int(np.count_nonzero(pixels))
+    frozen["receipt_digest"] = canonical_digest(frozen, digest_field="receipt_digest")
+    paths["frozen"].write_text(json.dumps(frozen), encoding="utf-8")
+
+    receipt = _materialize(paths)
+
+    assert receipt["scene"]["publisher_scene_id"] == "840796"
+    assert receipt["scene"]["target_instance_id"] == "ins123"
+    assert receipt["scene"]["scene_slug"] == "840796_ins123"
+    assert receipt["scene"]["reference_camera_id"] == "raised_left"
+    assert receipt["scene"]["reference_camera_index"] == 5
+    assert (
+        paths["data"]
+        / "adapter/data/Other-360/840796_ins123/reference"
+    ).is_dir()
 
 
 def test_aura_adapter_rejects_changed_frozen_mask(

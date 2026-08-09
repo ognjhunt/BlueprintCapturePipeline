@@ -39,8 +39,6 @@ LAMA_TREE = "25f9902ca0c2ec4bf6c31c2b4427f0a4f05f2fd1"
 BIG_LAMA_SIZE = 381_428_720
 BIG_LAMA_SHA256 = "sha256:d7161bba4d68b438f9fa7f09dcb750a223804c300c68d214a5e0be16251fba8d"
 SH_C0 = 0.28209479177387814
-REFERENCE_CAMERA_ID = "low_approach"
-SCENE_SLUG = "840313_ins160"
 
 
 class AuraAdapterError(ValueError):
@@ -288,9 +286,10 @@ def materialize_aura_adapter(
     if frozen.get("status") != "render_derived_input_packet_materialized":
         raise AuraAdapterError(["aurafusion360_input_packet_not_materialized"])
     scene = frozen.get("scene") or {}
-    if str(scene.get("publisher_scene_id")) != "840313" or str(
-        scene.get("target_instance_id")
-    ) not in {"160", "ins160"}:
+    if not all(
+        str(scene.get(key) or "").strip()
+        for key in ("publisher_scene_id", "target_instance_id", "target_semantic_label")
+    ):
         raise AuraAdapterError(["aurafusion360_scene_or_target_mismatch"])
     if frozen.get("proof_boundaries", {}).get("inpainting_result") is not False:
         raise AuraAdapterError(["aurafusion360_input_claim_boundary_invalid"])
@@ -361,13 +360,23 @@ def materialize_aura_adapter(
 
     image_records = {str(row["camera_id"]): row for row in derived.get("images", [])}
     mask_records = {str(row["camera_id"]): row for row in derived.get("masks", [])}
-    if REFERENCE_CAMERA_ID not in image_records or REFERENCE_CAMERA_ID not in mask_records:
-        raise AuraAdapterError(["aurafusion360_reference_camera_missing"])
     max_mask = max(mask_records.values(), key=lambda row: int(row["masked_pixel_count"]))
-    if str(max_mask["camera_id"]) != REFERENCE_CAMERA_ID:
-        raise AuraAdapterError(["aurafusion360_reference_camera_not_max_coverage"])
+    reference_camera_id = str(max_mask["camera_id"])
+    if reference_camera_id not in image_records:
+        raise AuraAdapterError(["aurafusion360_reference_camera_missing"])
+    camera_ids = [str(camera.get("camera_id") or "") for camera in cameras]
+    if len(set(camera_ids)) != len(camera_ids) or reference_camera_id not in camera_ids:
+        raise AuraAdapterError(["aurafusion360_camera_artifact_join_missing"])
+    reference_index = camera_ids.index(reference_camera_id)
+    scene_id = str(scene.get("publisher_scene_id") or "")
+    target_instance_id = str(scene.get("target_instance_id") or "")
+    if not scene_id or not target_instance_id or any(
+        token in value for value in (scene_id, target_instance_id) for token in ("/", "..")
+    ):
+        raise AuraAdapterError(["aurafusion360_scene_or_target_identity_invalid"])
+    scene_slug = f"{scene_id}_ins{target_instance_id.removeprefix('ins')}"
 
-    scene_root = output / "data" / "Other-360" / SCENE_SLUG
+    scene_root = output / "data" / "Other-360" / scene_slug
     artifacts: list[dict[str, Any]] = []
     for directory in ("images", "object_masks", "test_images", "reference"):
         (scene_root / directory).mkdir(parents=True, exist_ok=True)
@@ -402,19 +411,19 @@ def materialize_aura_adapter(
     )
     artifacts.append(_record(points, output))
 
-    reference_image = scene_root / "images" / f"{REFERENCE_CAMERA_ID}.png"
-    reference_mask = scene_root / "object_masks" / f"{REFERENCE_CAMERA_ID}.png"
-    lama_input_image = output / "reference_lama_input" / f"{REFERENCE_CAMERA_ID}.png"
+    reference_image = scene_root / "images" / f"{reference_camera_id}.png"
+    reference_mask = scene_root / "object_masks" / f"{reference_camera_id}.png"
+    lama_input_image = output / "reference_lama_input" / f"{reference_camera_id}.png"
     lama_input_mask = (
-        output / "reference_lama_input" / f"{REFERENCE_CAMERA_ID}_mask.png"
+        output / "reference_lama_input" / f"{reference_camera_id}_mask.png"
     )
     _copy_exact(reference_image, lama_input_image)
     _copy_exact(reference_mask, lama_input_mask)
     artifacts.extend([_record(lama_input_image, output), _record(lama_input_mask, output)])
 
-    configs = output / "configs" / "Other-360" / SCENE_SLUG
-    source_path = f"./data/Other-360/{SCENE_SLUG}"
-    model_path = f"./output/Other-360/{SCENE_SLUG}"
+    configs = output / "configs" / "Other-360" / scene_slug
+    source_path = f"./data/Other-360/{scene_slug}"
+    model_path = f"./output/Other-360/{scene_slug}"
     config_paths = [
         _write_config(
             configs / "train.config",
@@ -445,7 +454,7 @@ def materialize_aura_adapter(
                 ("skip_train", False), ("skip_test", False),
                 ("skip_mesh", True), ("render_path", True),
                 ("dilate_mask_kernel_size", 5), ("dilate_mask_iter", 3),
-                ("finetune_iteration", -1), ("reference_index", 4),
+                ("finetune_iteration", -1), ("reference_index", reference_index),
                 ("dilate_iter", 5), ("kernel_size", 3),
                 ("optimize_iter", 8), ("delta", 0.3),
                 ("infer_iter", 4), ("densify_until_iter", 1000),
@@ -454,7 +463,7 @@ def materialize_aura_adapter(
         _write_config(
             configs / "sdedit.config",
             [
-                ("dataset", "Other-360"), ("scene", SCENE_SLUG),
+                ("dataset", "Other-360"), ("scene", scene_slug),
                 ("script", "sdedit"), ("use_ddim_inversion", True),
                 ("strength", 0.85), ("eta", 1.0), ("scale", 2.5),
             ],
@@ -468,19 +477,19 @@ def materialize_aura_adapter(
             "indir=./reference_lama_input", "outdir=./reference_lama_output",
         ],
         "reference_publish": {
-            "from": f"reference_lama_output/{REFERENCE_CAMERA_ID}_mask.png",
-            "to": f"data/Other-360/{SCENE_SLUG}/reference/{REFERENCE_CAMERA_ID}.png",
+            "from": f"reference_lama_output/{reference_camera_id}_mask.png",
+            "to": f"data/Other-360/{scene_slug}/reference/{reference_camera_id}.png",
             "required_nonzero_mask_pixels": int(max_mask["masked_pixel_count"]),
         },
         "author_workflow": [
-            ["python", "train.py", "--config", f"configs/Other-360/{SCENE_SLUG}/train.config"],
+            ["python", "train.py", "--config", f"configs/Other-360/{scene_slug}/train.config"],
             ["python", "render.py", "-s", source_path, "-m", model_path,
              "--skip_mesh", "--render_path", "--iteration", "30000", "--resolution", "1"],
-            ["python", "remove.py", "--config", f"configs/Other-360/{SCENE_SLUG}/remove.config"],
-            ["python", "utils/sam2_utils.py", "--dataset", "Other-360", "--scene", SCENE_SLUG],
-            ["python", "inpaint.py", "--config", f"configs/Other-360/{SCENE_SLUG}/inpaint.config"],
-            ["python", "utils/LeftRefill/sdedit_utils.py", "--config", f"configs/Other-360/{SCENE_SLUG}/sdedit.config"],
-            ["python", "inpaint.py", "--config", f"configs/Other-360/{SCENE_SLUG}/inpaint.config",
+            ["python", "remove.py", "--config", f"configs/Other-360/{scene_slug}/remove.config"],
+            ["python", "utils/sam2_utils.py", "--dataset", "Other-360", "--scene", scene_slug],
+            ["python", "inpaint.py", "--config", f"configs/Other-360/{scene_slug}/inpaint.config"],
+            ["python", "utils/LeftRefill/sdedit_utils.py", "--config", f"configs/Other-360/{scene_slug}/sdedit.config"],
+            ["python", "inpaint.py", "--config", f"configs/Other-360/{scene_slug}/inpaint.config",
              "--images", "inpaint", "--finetune_iteration", "10000"],
         ],
     }
@@ -494,16 +503,18 @@ def materialize_aura_adapter(
         "adp_item": "ADP-009B",
         "status": "prepared_unexecuted",
         "scene": {
-            "publisher_scene_id": "840313",
-            "target_instance_id": "ins160",
+            "publisher_scene_id": scene_id,
+            "target_instance_id": f"ins{target_instance_id.removeprefix('ins')}",
             "target_semantic_label": scene.get("target_semantic_label"),
             "input_receipt_digest": frozen["receipt_digest"],
             "camera_count": len(cameras),
             "source_resolution": [2048, 1536],
             "method_resolution_divisor": 1,
-            "reference_camera_id": REFERENCE_CAMERA_ID,
+            "reference_camera_id": reference_camera_id,
             "reference_camera_selection": "maximum_frozen_target_mask_pixel_count",
             "reference_masked_pixel_count": int(max_mask["masked_pixel_count"]),
+            "reference_camera_index": reference_index,
+            "scene_slug": scene_slug,
         },
         "source": source,
         "reference_generator": reference_generator,
