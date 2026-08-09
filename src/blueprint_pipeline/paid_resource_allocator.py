@@ -1446,6 +1446,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("gaussian_excision_hard_ttl_mismatch")
             if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
                 blockers.append("gaussian_excision_allowed_active_instance_id_invalid")
+            machine_avoidlist_path: Path | None = None
+            machine_avoidlist_sha256: str | None = None
+            if args.adp_machine_avoidlist:
+                machine_avoidlist_path = Path(
+                    args.adp_machine_avoidlist
+                ).expanduser().resolve()
+                if not machine_avoidlist_path.is_file():
+                    blockers.append("gaussian_excision_machine_avoidlist_missing")
+                else:
+                    machine_avoidlist_sha256 = (
+                        "sha256:"
+                        + hashlib.sha256(machine_avoidlist_path.read_bytes()).hexdigest()
+                    )
             prepared_bundle: dict[str, Any] | None = None
             receipt_path: Path | None = None
             if args.adp_gaussian_excision_bundle_receipt:
@@ -1531,6 +1544,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "allowed_active_vast_instance_ids": sorted(
                     set(args.adp_allowed_active_vast_instance_id)
                 ),
+                "machine_avoidlist_sha256": machine_avoidlist_sha256,
                 "retry_cap": 0,
             }
             allocation_binding_digest = (
@@ -1597,6 +1611,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     public_image=ADP_GAUSSIAN_EXCISION_IMAGE,
                     allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                    machine_avoidlist_path=machine_avoidlist_path,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

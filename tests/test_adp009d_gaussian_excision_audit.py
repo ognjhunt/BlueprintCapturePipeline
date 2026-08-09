@@ -328,6 +328,19 @@ def test_canonical_allocator_binds_gaussian_excision_bundle(
     }
     receipt_path = tmp_path / "receipt.json"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    avoidlist_path = tmp_path / "machine-avoidlist.json"
+    avoidlist_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "vast_machine_avoidlist.v1",
+                "machine_ids": [8207],
+            }
+        ),
+        encoding="utf-8",
+    )
+    avoidlist_digest = "sha256:" + hashlib.sha256(
+        avoidlist_path.read_bytes()
+    ).hexdigest()
     monkeypatch.setattr(
         allocator,
         "_control_plane_checkout_blockers",
@@ -377,14 +390,21 @@ def test_canonical_allocator_binds_gaussian_excision_bundle(
         "1.50",
         "--adp-hard-ttl-seconds",
         "3600",
+        "--adp-machine-avoidlist",
+        str(avoidlist_path),
     ]
 
     assert allocator.main(arguments) == 0
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["status"] == "admitted"
     assert admission["allocation_binding"]["bundle_sha256"] == bundle_digest
+    assert (
+        admission["allocation_binding"]["machine_avoidlist_sha256"]
+        == avoidlist_digest
+    )
     assert admission["heldout_cameras_accessed_for_classification"] is False
     assert observed["execute"] is False
+    assert observed["machine_avoidlist_path"] == avoidlist_path
 
 
 def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
@@ -415,6 +435,7 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
     def fake_adapter(**kwargs):
         events.append("adapter")
         assert kwargs["provider_bundle_kind"] == "adp_gaussian_excision"
+        assert kwargs["machine_avoidlist_path"] == tmp_path / "avoidlist.json"
         output_zip = Path(kwargs["provider_runtime_output_zip"])
         output_zip.parent.mkdir(parents=True)
         with zipfile.ZipFile(output_zip, "w") as archive:
@@ -462,6 +483,7 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
         paid_resource_admission_grant=object(),  # type: ignore[arg-type]
         execute=True,
         prepared_bundle=_prepared_excision_bundle(tmp_path),
+        machine_avoidlist_path=tmp_path / "avoidlist.json",
     )
 
     assert events == ["watchdog", "adapter"]

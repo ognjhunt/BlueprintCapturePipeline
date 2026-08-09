@@ -410,6 +410,7 @@ def run_gaussian_excision_vast(
     hard_ttl_seconds: int = 3600,
     public_image: str = DEFAULT_IMAGE,
     allowed_active_instance_ids: Sequence[int] = (),
+    machine_avoidlist_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Execute exactly one contribution attempt with watchdog and provider zero."""
 
@@ -537,6 +538,7 @@ def run_gaussian_excision_vast(
                 preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000", "A100"),
                 prefer_isaac_rt=False,
                 allowed_active_instance_ids=allowed_active_instance_ids,
+                machine_avoidlist_path=machine_avoidlist_path,
                 vast_launch_lock_file=job.parent
                 / "gaussian_excision_paid_launch.lock",
                 instance_label_prefix="blueprint-adp-gaussian-excision-",
