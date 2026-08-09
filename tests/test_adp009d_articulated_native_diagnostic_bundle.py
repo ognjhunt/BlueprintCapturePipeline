@@ -612,4 +612,5 @@ def test_transport_selects_articulated_bundle_profile(
 
     assert result["status"] == "dry_run_ready"
     assert observed["provider_bundle_kind"] == "adp009d_articulated_native"
+    assert observed["minimum_driver_version"] == "580.65.06"
     assert observed["candidate_policy_query_expected"] is False

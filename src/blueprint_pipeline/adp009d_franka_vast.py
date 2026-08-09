@@ -13,6 +13,7 @@ from .paid_resource_admission import PaidResourceAdmissionGrant
 
 RESULT_SCHEMA_VERSION = "adp009d_franka_vast_run.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/adp009d-native-microcheck"
+MINIMUM_DRIVER_VERSION = "580.65.06"
 
 
 def run_adp009d_native_microcheck_vast(
@@ -59,7 +60,12 @@ def run_adp009d_native_microcheck_vast(
             str(prepared_bundle.get("policy_candidate_id") or "").strip()
         ),
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
+        minimum_driver_version=MINIMUM_DRIVER_VERSION,
     )
 
 
-__all__ = ["PROBE_KIND", "run_adp009d_native_microcheck_vast"]
+__all__ = [
+    "MINIMUM_DRIVER_VERSION",
+    "PROBE_KIND",
+    "run_adp009d_native_microcheck_vast",
+]
