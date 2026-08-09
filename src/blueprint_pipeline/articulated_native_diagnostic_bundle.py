@@ -356,16 +356,16 @@ PY
   fi
 }
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:articulated_native_diagnostic:started"
+set -o pipefail
 /isaac-sim/python.sh "$RUNTIME_DIR/articulated_native_diagnostic_runtime.py" \
   --asset "$RUNTIME_DIR/assets/articulated_task_asset.usda" \
   --request "$RUNTIME_DIR/articulated_native_diagnostic_request.v1.json" \
   --output "$OUT_DIR/adp009d_native_microcheck.json" \
-  >"$OUT_DIR/articulated_native_diagnostic.log" 2>&1
-rc=$?
+  2>&1 | tee "$OUT_DIR/articulated_native_diagnostic.log"
+rc=${PIPESTATUS[0]}
 if [ "$rc" -ne 0 ]; then
   write_articulated_native_missing_result "articulated_native_runner_failed_without_runtime_result"
 fi
-cat "$OUT_DIR/articulated_native_diagnostic.log" || true
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:articulated_native_diagnostic:completed:rc=$rc"
 exit "$rc"
 """

@@ -20,6 +20,7 @@ from blueprint_pipeline.articulated_native_diagnostic_bundle import (
     build_articulated_native_diagnostic_request,
 )
 from blueprint_pipeline.articulated_native_diagnostic_runtime import (
+    _author_fixed_base_anchor,
     _require_runtime_symbols,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -386,6 +387,39 @@ def test_provider_runtime_uses_isaac6_articulation_api_not_removed_dynamic_contr
     assert "joint_command_started" in source
     assert "joint_command_completed" in source
     assert "runtime_capabilities_resolved" in source
+
+
+def test_native_articulation_anchor_is_fixed_to_world_and_not_kinematic(
+    tmp_path: Path,
+) -> None:
+    stage = Usd.Stage.CreateNew(str(tmp_path / "anchor.usda"))
+    body = UsdGeom.Xform.Define(stage, "/Asset/cabinet").GetPrim()
+    rigid = UsdPhysics.RigidBodyAPI.Apply(body)
+    rigid.CreateKinematicEnabledAttr(True).Set(True)
+
+    anchor_path = _author_fixed_base_anchor(
+        stage, "/Asset/cabinet", UsdPhysics
+    )
+
+    assert anchor_path == "/BlueprintDiagnostic/Physics/FixedBaseAnchor"
+    assert rigid.GetKinematicEnabledAttr().Get() is False
+    anchor = UsdPhysics.FixedJoint(stage.GetPrimAtPath(anchor_path))
+    assert anchor.GetBody0Rel().GetTargets() == []
+    assert [str(path) for path in anchor.GetBody1Rel().GetTargets()] == [
+        "/Asset/cabinet"
+    ]
+
+
+def test_provider_entrypoint_streams_progress_without_losing_runtime_exit_code() -> None:
+    source = Path(
+        allocator.__file__
+    ).with_name("articulated_native_diagnostic_bundle.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '2>&1 | tee "$OUT_DIR/articulated_native_diagnostic.log"' in source
+    assert "rc=${PIPESTATUS[0]}" in source
+    assert 'cat "$OUT_DIR/articulated_native_diagnostic.log"' not in source
 
 
 def test_bundle_rejects_changed_asset(tmp_path: Path) -> None:

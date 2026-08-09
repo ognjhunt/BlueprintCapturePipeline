@@ -153,6 +153,28 @@ def _usd_world_pose(stage: Any, prim_path: str, usd_geom: Any) -> dict[str, Any]
     }
 
 
+def _author_fixed_base_anchor(
+    stage: Any, fixed_base_body_prim_path: str, usd_physics: Any
+) -> str:
+    """Anchor an articulation base to world without making a link kinematic."""
+
+    fixed_prim = stage.GetPrimAtPath(fixed_base_body_prim_path)
+    if not fixed_prim or not fixed_prim.IsValid():
+        raise RuntimeError(
+            f"articulated_native_fixed_body_prim_missing:{fixed_base_body_prim_path}"
+        )
+    rigid = usd_physics.RigidBodyAPI(fixed_prim)
+    if not rigid:
+        raise RuntimeError(
+            f"articulated_native_fixed_body_not_rigid:{fixed_base_body_prim_path}"
+        )
+    rigid.CreateKinematicEnabledAttr(False).Set(False)
+    anchor_path = "/BlueprintDiagnostic/Physics/FixedBaseAnchor"
+    anchor = usd_physics.FixedJoint.Define(stage, anchor_path)
+    anchor.CreateBody1Rel().SetTargets([fixed_base_body_prim_path])
+    return anchor_path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset", required=True)
@@ -274,11 +296,11 @@ def main(argv: list[str] | None = None) -> int:
             camera_objects[camera_id] = Camera(
                 prim_path=camera_path, resolution=(width, height)
             )
-        fixed_prim = stage.GetPrimAtPath(
-            articulation_spec["fixed_base_body_prim_path"]
+        fixed_anchor_path = _author_fixed_base_anchor(
+            stage,
+            articulation_spec["fixed_base_body_prim_path"],
+            UsdPhysics,
         )
-        fixed_api = UsdPhysics.RigidBodyAPI(fixed_prim)
-        fixed_api.CreateKinematicEnabledAttr(True).Set(True)
         for joint_path in [
             articulation_spec["driven_joint_prim_path"],
             *articulation_spec["locked_joint_prim_paths"],
@@ -490,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
                     "reset_readback_degrees": reset_readback,
                 },
                 "fixed_base_readback": {
+                    "world_anchor_joint_prim_path": fixed_anchor_path,
+                    "kinematic_base_used": False,
                     "initial_pose": initial_fixed_pose,
                     "final_pose": final_fixed_pose,
                     "translation_drift_m": translation_drift,
