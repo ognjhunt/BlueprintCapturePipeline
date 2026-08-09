@@ -23,6 +23,7 @@ RUNTIME_RESULT_FILENAMES = (
     "unitree_groot_n17_sonic_wam_persistent_session_output.json",
     "adp_simpler_closed_loop_execution.json",
     "adp_content_agents_vast_result.json",
+    "adp_joint_agent_result.json",
     "adp_aura_author_smoke_result.json",
     "adp_aura_interiorgs_result.json",
     "adp_inpaint360_interiorgs_result.json",

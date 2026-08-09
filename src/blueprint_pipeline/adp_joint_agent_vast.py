@@ -50,6 +50,16 @@ DEFAULT_IMAGE = (
 )
 CONSTRUCTION_RENDER_MODE = "rt2"
 CONSTRUCTION_RENDER_SENSOR_UPDATES = 32
+# Exact public Scene Optimizer Core package the released optimize_usd step
+# requires for its local backend. v8 proved the released CLI fails closed
+# without it ("local backend unavailable"), so the bundle ships the pinned
+# artifact instead of fetching at provider runtime.
+SCENE_OPTIMIZER_CORE_PACKAGE = "scene_optimizer_core_usd_25.11_py_3.12"
+SCENE_OPTIMIZER_CORE_RELEASE = "NVIDIA-Omniverse/usd-optimize v1.0.3"
+SCENE_OPTIMIZER_CORE_LICENSE = "Apache-2.0"
+SCENE_OPTIMIZER_CORE_SHA256 = (
+    "sha256:9d98d22eed1eb31da3183bfd4155f3b8eca48576e6eb5947d126e781f0edc671"
+)
 RESULT_SCHEMA_VERSION = "adp_joint_agent_vast_run.v1"
 REQUIRED_RETAINED_ARTIFACT_ROLES = frozenset(
     {
@@ -196,6 +206,7 @@ def build_joint_agent_vast_bundle(
     freeze_path: str | Path,
     scope_amendment_path: str | Path,
     nim_preflight_path: str | Path,
+    scene_optimizer_core_zip_path: str | Path,
     job_dir: str | Path,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -203,6 +214,13 @@ def build_joint_agent_vast_bundle(
 
     repo = Path(repo_root).expanduser().resolve()
     source = Path(joint_agent_root).expanduser().resolve()
+    optimizer_zip = Path(scene_optimizer_core_zip_path).expanduser().resolve()
+    if (
+        not optimizer_zip.is_file()
+        or optimizer_zip.is_symlink()
+        or _sha256(optimizer_zip) != SCENE_OPTIMIZER_CORE_SHA256
+    ):
+        raise ValueError("adp_joint_agent_scene_optimizer_core_binding_invalid")
     packet = _canonical_receipt(
         Path(packet_path).expanduser().resolve(),
         digest_field="packet_digest",
@@ -320,6 +338,7 @@ def build_joint_agent_vast_bundle(
         cwd=source,
         check=True,
     )
+    shutil.copy2(optimizer_zip, runtime / "scene_optimizer_core.zip")
     scripts = repo / "scripts"
     _write_executable(
         runtime / "run_adp_joint_agent_provider_runtime.sh",
@@ -356,6 +375,14 @@ def build_joint_agent_vast_bundle(
         "blueprint_source": blueprint,
         "source_tree": tree,
         "source_archive_sha256": _sha256(runtime / "content_agents_source.zip"),
+        "scene_optimizer_core": {
+            "role": "released_code_public_build_resource",
+            "package": SCENE_OPTIMIZER_CORE_PACKAGE,
+            "release": SCENE_OPTIMIZER_CORE_RELEASE,
+            "license": SCENE_OPTIMIZER_CORE_LICENSE,
+            "sha256": _sha256(runtime / "scene_optimizer_core.zip"),
+            "size_bytes": (runtime / "scene_optimizer_core.zip").stat().st_size,
+        },
         "input_usd_sha256": _sha256(runtime / "input" / "articulated_source.usda"),
         "packet_digest": packet["packet_digest"],
         "execution_authority_digest": authority["authorization_digest"],
@@ -731,6 +758,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--freeze", required=True)
     parser.add_argument("--scope-amendment", required=True)
     parser.add_argument("--nim-preflight", required=True)
+    parser.add_argument("--scene-optimizer-core", required=True)
     parser.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
     receipt = build_joint_agent_vast_bundle(
@@ -741,6 +769,7 @@ def main(argv: list[str] | None = None) -> int:
         freeze_path=args.freeze,
         scope_amendment_path=args.scope_amendment,
         nim_preflight_path=args.nim_preflight,
+        scene_optimizer_core_zip_path=args.scene_optimizer_core,
         job_dir=args.job_dir,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))

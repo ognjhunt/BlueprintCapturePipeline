@@ -64,6 +64,22 @@ WU_OVRTX_LOCK_DIR="${SOURCE_DIR}/.ovrtx_locks" \
   write_missing_result "joint_agent_ovrtx_runtime_probe_failed"; exit 2;
 }
 
+# The released optimize_usd step needs the pinned public Scene Optimizer Core
+# package as its local backend; v8 failed closed here when it was absent. The
+# bundle ships the exact digest-bound zip, so no provider-side network fetch.
+export WU_SO_PACKAGE_DIR="${SOURCE_DIR}/.build-resources/scene_optimizer_core"
+mkdir -p "${WU_SO_PACKAGE_DIR}"
+python3 -m zipfile -e "${SCRIPT_DIR}/scene_optimizer_core.zip" "${WU_SO_PACKAGE_DIR}" || {
+  write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
+}
+chmod -R u+rwX "${WU_SO_PACKAGE_DIR}" || true
+find "${WU_SO_PACKAGE_DIR}" -type f -name "*.so*" -exec chmod +x {} + 2>/dev/null || true
+for so_subdir in python lib extraLibs usdpy; do
+  if [ ! -d "${WU_SO_PACKAGE_DIR}/${so_subdir}" ]; then
+    write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
+  fi
+done
+
 export PYTHONPATH="${SCRIPT_DIR}/blueprint_src:${SOURCE_DIR}:${SOURCE_DIR}/apps/ovrtx_rendering_api"
 export RENDER_ENDPOINT="http://127.0.0.1:8001"
 # These are Joint Agent construction previews, not evaluation-authorized scene

@@ -2049,6 +2049,7 @@ def _blueprint_bundle_preflight(
         "provider_runtime/run_adp_joint_agent_provider_runtime.sh",
         "provider_runtime/adp_joint_agent_provider_runner.py",
         "provider_runtime/adp_joint_agent_provider_manifest.json",
+        "provider_runtime/scene_optimizer_core.zip",
         "provider_runtime/content_agents_source.zip",
         "provider_runtime/input/articulated_source.usda",
         "provider_runtime/joint_agent.yaml",

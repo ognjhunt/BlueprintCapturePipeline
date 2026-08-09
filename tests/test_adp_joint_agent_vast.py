@@ -263,6 +263,17 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     )
     authority_path = tmp_path / "authority.json"
     authority_path.write_text(json.dumps(authority), encoding="utf-8")
+    optimizer_zip = tmp_path / "scene_optimizer_core.zip"
+    with zipfile.ZipFile(optimizer_zip, "w") as archive:
+        for subdir in ("python", "lib", "extraLibs", "usdpy"):
+            archive.writestr(f"{subdir}/.keep", subdir)
+    optimizer_digest = "sha256:" + __import__("hashlib").sha256(
+        optimizer_zip.read_bytes()
+    ).hexdigest()
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast.SCENE_OPTIMIZER_CORE_SHA256",
+        optimizer_digest,
+    )
 
     receipt = build_joint_agent_vast_bundle(
         repo_root=repo,
@@ -272,11 +283,23 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         freeze_path=freeze_path,
         scope_amendment_path=scope_amendment_path,
         nim_preflight_path=nim_preflight_path,
+        scene_optimizer_core_zip_path=optimizer_zip,
         job_dir=tmp_path / "bundle",
         generated_at="2026-08-08T00:00:00+00:00",
     )
 
     assert receipt["status"] == "ready"
+    assert receipt["scene_optimizer_core"] == {
+        "role": "released_code_public_build_resource",
+        "package": "scene_optimizer_core_usd_25.11_py_3.12",
+        "release": "NVIDIA-Omniverse/usd-optimize v1.0.3",
+        "license": "Apache-2.0",
+        "sha256": optimizer_digest,
+        "size_bytes": optimizer_zip.stat().st_size,
+    }
+    assert (
+        tmp_path / "bundle/provider_runtime/scene_optimizer_core.zip"
+    ).is_file()
     assert receipt["provider_bundle_kind"] == "adp_joint_agent"
     assert receipt["input_usd_sha256"] == source_digest
     assert receipt["renderer"]["scene_bytes_leave_vast_instance"] is False
@@ -300,6 +323,8 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         in runtime_script
     )
     assert 'export OVRTX_RENDER_MODE="pt"' not in runtime_script
+    assert 'export WU_SO_PACKAGE_DIR=' in runtime_script
+    assert "joint_agent_scene_optimizer_core_missing" in runtime_script
     assert receipt["blueprint_source"]["commit"] == "a" * 40
     assert receipt["completion_retries"] == 0
     assert receipt["scope_amendment_digest"] == scope_amendment["amendment_digest"]
@@ -612,6 +637,14 @@ def test_builder_preflight_failure_leaves_no_partial_output(
         "blueprint_pipeline.adp_joint_agent_vast._blueprint_identity",
         lambda value: {"commit": "a" * 40, "tree": "b" * 40, "dirty": False},
     )
+    optimizer_zip = tmp_path / "scene_optimizer_core.zip"
+    with zipfile.ZipFile(optimizer_zip, "w") as archive:
+        for subdir in ("python", "lib", "extraLibs", "usdpy"):
+            archive.writestr(f"{subdir}/.keep", subdir)
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast.SCENE_OPTIMIZER_CORE_SHA256",
+        "sha256:" + __import__("hashlib").sha256(optimizer_zip.read_bytes()).hexdigest(),
+    )
     destination = tmp_path / "bundle"
 
     with pytest.raises(ValueError, match="release mismatch"):
@@ -623,6 +656,7 @@ def test_builder_preflight_failure_leaves_no_partial_output(
             freeze_path=freeze_path,
             scope_amendment_path=scope_amendment_path,
             nim_preflight_path=nim_preflight_path,
+            scene_optimizer_core_zip_path=optimizer_zip,
             job_dir=destination,
         )
 
@@ -763,3 +797,23 @@ def test_provider_runner_review_failure_retains_topology_evidence(
         retained = output / row["relative_path"]
         assert retained.is_file()
         assert row["sha256"] == runner._sha256(retained)
+
+
+def test_output_zip_inspection_recognizes_joint_agent_runtime_result(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.wam_provider_output import (
+        inspect_provider_runtime_output_zip,
+    )
+
+    output_zip = tmp_path / "vast_provider_runtime_output.zip"
+    with zipfile.ZipFile(output_zip, "w") as archive:
+        archive.writestr(
+            "adp_joint_agent_result.json",
+            json.dumps({"status": "completed", "blockers": []}),
+        )
+
+    inspection = inspect_provider_runtime_output_zip(output_zip)
+
+    assert inspection["runtime_result_present"] is True
+    assert inspection["runtime_result_status"] == "completed"
