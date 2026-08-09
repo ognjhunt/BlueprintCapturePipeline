@@ -272,6 +272,8 @@ def test_aura_adapter_derives_native_packet_and_remains_unexecuted(
         "retained": False,
         "reason": "unretained_240_frame_trajectory_is_not_evaluation_evidence",
     }
+    assert receipt["adapter"]["method_scope_admission"]["status"] == "admitted"
+    assert receipt["adapter"]["method_scope_admission"]["paid_execution_admitted"] is True
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
 
 
@@ -332,6 +334,53 @@ def test_aura_adapter_derives_new_scene_slug_and_reference_camera(
     assert binding["publisher_scene_id"] == "840796"
     assert binding["target_instance_id"] == "ins123"
     assert binding["reference_camera_id"] == "raised_left"
+
+
+def test_aura_adapter_blocks_large_object_before_paid_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    frozen = json.loads(paths["frozen"].read_text())
+    frozen["scene"].update(
+        {
+            "publisher_scene_id": "840796",
+            "target_instance_id": "123",
+            "target_semantic_label": "refrigerator",
+        }
+    )
+    for row in frozen["derived_artifacts"]["masks"]:
+        mask = paths["input"] / row["relative_path"]
+        pixels = np.zeros((1536, 2048), np.uint8)
+        pixels[200:1000, 300:1300] = 255
+        Image.fromarray(pixels, mode="L").save(mask)
+        row.update(_record(mask, paths["input"]))
+        row["masked_pixel_count"] = int(np.count_nonzero(pixels))
+    frozen["receipt_digest"] = canonical_digest(frozen, digest_field="receipt_digest")
+    paths["frozen"].write_text(json.dumps(frozen), encoding="utf-8")
+
+    receipt = _materialize(paths)
+    scope = receipt["adapter"]["method_scope_admission"]
+    assert scope["status"] == "blocked"
+    assert scope["maximum_observed_mask_fraction"] == pytest.approx(
+        800_000 / (2048 * 1536)
+    )
+    assert scope["profile_is_blueprint_admission_policy_not_author_claim"] is True
+    assert scope["blockers"] == [
+        "aurafusion360_input_exceeds_qualified_mask_scale"
+    ]
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_aura_interiorgs_vast.SOURCE_COMMIT",
+        receipt["source"]["commit"],
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_aura_interiorgs_vast.SOURCE_TREE",
+        receipt["source"]["tree"],
+    )
+    with pytest.raises(
+        ValueError, match="adp_aura_interiorgs_method_scope_not_admitted"
+    ):
+        _validated_adapter(receipt, paths["data"] / "adapter")
 
 
 def test_aura_bundle_rejects_caller_asserted_unretained_trajectory(

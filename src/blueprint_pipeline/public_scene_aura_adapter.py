@@ -21,6 +21,7 @@ from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .gaussian_splat_decode import read_standard_3dgs_ply
+from .method_input_scope import evaluate_multiview_mask_fraction_scope
 
 SCHEMA_VERSION = "adp009b_aurafusion360_adapter_receipt.v1"
 AURA_REPOSITORY = "https://github.com/kkennethwu/AuraFusion360_official"
@@ -39,6 +40,11 @@ LAMA_TREE = "25f9902ca0c2ec4bf6c31c2b4427f0a4f05f2fd1"
 BIG_LAMA_SIZE = 381_428_720
 BIG_LAMA_SHA256 = "sha256:d7161bba4d68b438f9fa7f09dcb750a223804c300c68d214a5e0be16251fba8d"
 SH_C0 = 0.28209479177387814
+# Empirical Blueprint admission ceiling: four times the largest target-mask
+# fraction in the previously qualified small-object rehearsal. This is a
+# conservative spend gate, not a claim about AuraFusion360's training set.
+AURA_QUALIFIED_ANCHOR_MAX_MASK_FRACTION = 0.02533
+AURA_MAXIMUM_ADMITTED_MASK_FRACTION = 4.0 * AURA_QUALIFIED_ANCHOR_MAX_MASK_FRACTION
 
 
 class AuraAdapterError(ValueError):
@@ -360,6 +366,16 @@ def materialize_aura_adapter(
 
     image_records = {str(row["camera_id"]): row for row in derived.get("images", [])}
     mask_records = {str(row["camera_id"]): row for row in derived.get("masks", [])}
+    method_scope = evaluate_multiview_mask_fraction_scope(
+        method_id="aurafusion360",
+        profile_id="aurafusion360_blueprint_small_object_anchor_v1",
+        cameras=cameras,
+        mask_records=list(mask_records.values()),
+        maximum_mask_fraction=AURA_MAXIMUM_ADMITTED_MASK_FRACTION,
+        profile_basis=(
+            "four_times_qualified_840313_small_object_rehearsal_maximum_mask_fraction"
+        ),
+    )
     max_mask = max(mask_records.values(), key=lambda row: int(row["masked_pixel_count"]))
     reference_camera_id = str(max_mask["camera_id"])
     if reference_camera_id not in image_records:
@@ -550,6 +566,7 @@ def materialize_aura_adapter(
                 "retained": False,
                 "reason": "unretained_240_frame_trajectory_is_not_evaluation_evidence",
             },
+            "method_scope_admission": method_scope,
         },
         "artifacts": sorted(artifacts, key=lambda row: row["relative_path"]),
         "commands": commands,
@@ -569,7 +586,12 @@ def materialize_aura_adapter(
             "simready_replacement_inserted": False,
             "output_claim_ceiling_after_execution": "visual_candidate_only",
         },
-        "blockers": ["aurafusion360_interiorgs_gpu_execution_missing"],
+        "blockers": sorted(
+            {
+                "aurafusion360_interiorgs_gpu_execution_missing",
+                *method_scope["blockers"],
+            }
+        ),
         "raw_secret_values_recorded": False,
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")

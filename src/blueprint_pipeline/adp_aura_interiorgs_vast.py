@@ -173,6 +173,16 @@ def _validated_adapter(
         "reason": "unretained_240_frame_trajectory_is_not_evaluation_evidence",
     }:
         raise ValueError("adp_aura_interiorgs_trajectory_media_contract_invalid")
+    method_scope = (receipt.get("adapter") or {}).get("method_scope_admission")
+    if (
+        not isinstance(method_scope, Mapping)
+        or method_scope.get("status") != "admitted"
+        or method_scope.get("paid_execution_admitted") is not True
+        or method_scope.get("blockers") != []
+        or method_scope.get("profile_is_blueprint_admission_policy_not_author_claim")
+        is not True
+    ):
+        raise ValueError("adp_aura_interiorgs_method_scope_not_admitted")
     rows: list[tuple[str, Path]] = []
     for record in receipt.get("artifacts") or []:
         relative = str(record.get("relative_path") or "")
@@ -423,6 +433,9 @@ def build_aura_interiorgs_bundle(
             "files": adapter_manifest,
             "trajectory_media_contract": (adapter.get("adapter") or {}).get(
                 "trajectory_media_contract"
+            ),
+            "method_scope_admission": (adapter.get("adapter") or {}).get(
+                "method_scope_admission"
             ),
         },
         "runtime_models": [*_RUNTIME_MODELS, openclip_runtime_model],
