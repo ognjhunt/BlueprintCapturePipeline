@@ -22,6 +22,7 @@ from blueprint_pipeline.public_scene_replacement_occlusion import (
     build_replacement_occlusion_request,
     classify_gaussian_contributions,
     coverage_safe_ambiguous,
+    materialize_bound_index_union_candidate,
     materialize_direct_evidence_expansion_candidate,
     materialize_replacement_occlusion_cutout,
     select_direct_calibration_evidence_expansion,
@@ -355,4 +356,31 @@ def test_direct_evidence_expansion_materializes_byte_exact_candidate(
         "retained_total": 4,
     }
     assert np.load(tmp_path / "output/deleted_source_indices.npy").tolist() == [0, 1]
+    assert receipt["preservation"]["retained_rows_byte_exact"] is True
+
+
+def test_bound_index_union_preserves_all_unselected_rows(tmp_path: Path) -> None:
+    source = _source_splat(tmp_path / "source.ply")
+    required = tmp_path / "required.npy"
+    registered = tmp_path / "registered.npy"
+    np.save(required, np.array([0, 4], dtype=np.int64), allow_pickle=False)
+    np.save(registered, np.array([1, 4, 5], dtype=np.int64), allow_pickle=False)
+
+    receipt = materialize_bound_index_union_candidate(
+        source_standard_splat_path=source,
+        required_deletion_indices_path=required,
+        registered_volume_indices_path=registered,
+        output_root=tmp_path / "output",
+    )
+
+    assert receipt["counts"] == {
+        "source": 6,
+        "required_deletion": 2,
+        "registered_volume": 3,
+        "registered_volume_only": 2,
+        "deleted_total": 4,
+        "retained_total": 2,
+    }
+    assert np.load(tmp_path / "output/deleted_source_indices.npy").tolist() == [0, 1, 4, 5]
+    assert np.load(tmp_path / "output/retained_source_indices.npy").tolist() == [2, 3]
     assert receipt["preservation"]["retained_rows_byte_exact"] is True

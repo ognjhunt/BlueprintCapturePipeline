@@ -493,6 +493,132 @@ def materialize_direct_evidence_expansion_candidate(
     return receipt
 
 
+def materialize_bound_index_union_candidate(
+    *,
+    source_standard_splat_path: str | Path,
+    required_deletion_indices_path: str | Path,
+    registered_volume_indices_path: str | Path,
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Materialize the exact union of owned and registered-volume indices.
+
+    This is a construction candidate, not a success assertion.  Replacement
+    coverage and authorized seam containment remain independent downstream
+    gates.
+    """
+
+    source = Path(source_standard_splat_path).expanduser().resolve()
+    required_path = Path(required_deletion_indices_path).expanduser().resolve()
+    registered_path = Path(registered_volume_indices_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ReplacementOcclusionError(
+            ["replacement_occlusion_bound_union_output_not_empty"]
+        )
+    splat = read_standard_3dgs_ply(source)
+    required = np.asarray(
+        _load_array(
+            required_path, "replacement_occlusion_bound_required_indices_invalid"
+        ),
+        dtype=np.int64,
+    )
+    registered = np.asarray(
+        _load_array(
+            registered_path,
+            "replacement_occlusion_bound_registered_indices_invalid",
+        ),
+        dtype=np.int64,
+    )
+    if any(
+        values.ndim != 1
+        or len(set(values.tolist())) != values.size
+        or np.any(values < 0)
+        or np.any(values >= splat.count)
+        for values in (required, registered)
+    ):
+        raise ReplacementOcclusionError(
+            ["replacement_occlusion_bound_union_indices_invalid"]
+        )
+    deleted = np.union1d(required, registered).astype(np.int64)
+    registered_only = np.setdiff1d(registered, required, assume_unique=True)
+    retained = np.setdiff1d(
+        np.arange(splat.count, dtype=np.int64), deleted, assume_unique=True
+    )
+    output.mkdir(parents=True, exist_ok=True)
+    outputs = {
+        "deleted_source_indices": output / "deleted_source_indices.npy",
+        "retained_source_indices": output / "retained_source_indices.npy",
+        "registered_volume_only_indices": output
+        / "registered_volume_only_indices.npy",
+    }
+    np.save(outputs["deleted_source_indices"], deleted, allow_pickle=False)
+    np.save(outputs["retained_source_indices"], retained, allow_pickle=False)
+    np.save(
+        outputs["registered_volume_only_indices"],
+        registered_only,
+        allow_pickle=False,
+    )
+    deleted_ply = write_standard_3dgs_ply_subset_exact(
+        source, output / "deleted_source_gaussians.ply", deleted
+    )
+    retained_ply = write_standard_3dgs_ply_subset_exact(
+        source, output / "retained_scene_gaussians.ply", retained
+    )
+    preservation = verify_standard_3dgs_ply_subset_exact(
+        source, retained_ply, retained
+    )
+    if preservation.get("retained_rows_byte_exact") is not True:
+        raise ReplacementOcclusionError(
+            ["replacement_occlusion_bound_union_retained_rows_changed"]
+        )
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009b_bound_index_union_candidate.v1",
+        "status": "bound_cutout_materialized_pending_coverage_and_seam_gates",
+        "source_standard_splat": {
+            "path": str(source),
+            "size_bytes": source.stat().st_size,
+            "sha256": _sha256(source),
+        },
+        "required_deletion_indices": {
+            "path": str(required_path),
+            "size_bytes": required_path.stat().st_size,
+            "sha256": _sha256(required_path),
+        },
+        "registered_volume_indices": {
+            "path": str(registered_path),
+            "size_bytes": registered_path.stat().st_size,
+            "sha256": _sha256(registered_path),
+        },
+        "selection": {
+            "rule": "set_union_of_required_deletion_and_registered_volume_indices",
+            "heldout_pixels_used_to_select_indices": False,
+            "learned_policy_outcomes_used": False,
+            "caller_asserted_coverage": False,
+        },
+        "counts": {
+            "source": splat.count,
+            "required_deletion": int(required.size),
+            "registered_volume": int(registered.size),
+            "registered_volume_only": int(registered_only.size),
+            "deleted_total": int(deleted.size),
+            "retained_total": int(retained.size),
+        },
+        "preservation": preservation,
+        "outputs": {
+            **{name: _record(path, output) for name, path in outputs.items()},
+            "deleted_source_gaussians": _record(deleted_ply, output),
+            "retained_scene_gaussians": _record(retained_ply, output),
+        },
+        "claim_ceiling": "byte_exact_cutout_candidate_pending_hybrid_coverage_and_seam_review",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = output / "adp009b_bound_index_union_candidate.v1.json"
+    receipt_path.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
 def evaluate_depth_coverage(
     removal_alpha: np.ndarray,
     replacement_depth_m: np.ndarray,
@@ -845,6 +971,7 @@ __all__ = [
     "evaluate_depth_coverage",
     "materialize_replacement_occlusion_cutout",
     "materialize_direct_evidence_expansion_candidate",
+    "materialize_bound_index_union_candidate",
     "select_direct_calibration_evidence_expansion",
 ]
 
