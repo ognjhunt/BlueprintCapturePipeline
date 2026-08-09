@@ -194,3 +194,31 @@ def test_the_lane_validates_the_probe_set_the_bundle_declares() -> None:
     assert "simready_isaac_probe_set_invalid" in _execution_blockers(
         articulated, RIGID_PROBE_NAMES
     )
+
+
+def test_bundle_fills_every_transport_slot_the_lane_requires(tmp_path: Path) -> None:
+    """The lane's entry contract is its interface; the probe must satisfy it."""
+
+    receipt = _build(tmp_path)
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        scene = archive.read("provider_runtime/generated_site_scene.usda").decode()
+        manifest = json.loads(
+            archive.read("provider_runtime/isaac_provider_eval_manifest.json")
+        )
+    for required in (
+        "provider_runtime/isaac_provider_eval_manifest.json",
+        "provider_runtime/generated_site_scene.usda",
+        "provider_runtime/generated_site_scene.usd",
+        "provider_runtime/scenario_eval_matrix.json",
+        "provider_runtime/camera_manifest.json",
+        "provider_runtime/episode_spec_manifest.json",
+    ):
+        assert required in names, required
+    # the scene the runtime opens is the articulation stage, not a rigid drop
+    assert "PhysicsScene" in scene
+    assert manifest["proof_boundaries"]["physical_success_established"] is False
+    assert manifest["relative_paths"]["probe_spec"].endswith(
+        "articulated_native_probe_spec.json"
+    )

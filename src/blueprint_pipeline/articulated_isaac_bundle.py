@@ -143,6 +143,52 @@ def build_articulated_isaac_bundle(
     entrypoint.write_text(ENTRYPOINT, encoding="utf-8")
     entrypoint.chmod(0o755)
 
+    # The Isaac lane's transport declares a fixed set of slots. Fill them with
+    # the articulated equivalents rather than inventing a parallel layout: the
+    # articulation stage is the scene the runtime opens, and the three
+    # manifests carry the same placeholder contract the rigid probe uses.
+    articulation = native / Path(
+        str((stages.get("articulation_stage") or {}).get("path") or "")
+    ).name
+    for name in ("generated_site_scene.usda", "generated_site_scene.usd"):
+        shutil.copy2(articulation, runtime / name)
+    common = {
+        "schema_version": "adp009b_simready_isaac_placeholder_contract.v1",
+        "source_commit_sha": str(source_commit_sha),
+        "probe_spec_sha256": _sha256(spec_path),
+        "status": "bounded_articulated_readback_probe",
+    }
+    if generated_at is not None:
+        common["generated_at"] = generated_at
+    for name in (
+        "scenario_eval_matrix.json",
+        "camera_manifest.json",
+        "episode_spec_manifest.json",
+    ):
+        write_json(runtime / name, {**common, "artifact": name.removesuffix(".json")})
+    write_json(
+        runtime / "isaac_provider_eval_manifest.json",
+        {
+            "schema_version": "isaac_provider_eval_manifest.v1",
+            "job_id": "adp009d-articulated-native-readback",
+            "relative_paths": {
+                "generated_site_scene_usda": "generated_site_scene.usda",
+                "generated_site_scene_usd": "generated_site_scene.usd",
+                "scenario_eval_matrix": "scenario_eval_matrix.json",
+                "camera_manifest": "camera_manifest.json",
+                "episode_spec_manifest": "episode_spec_manifest.json",
+                "runtime_runner": "isaac_realistic_runtime_runner.py",
+                "entrypoint": "run_isaac_realistic_runtime.sh",
+                "probe_spec": f"native/{PROBE_SPEC_FILENAME}",
+            },
+            "proof_boundaries": {
+                "native_articulation_readback_only": True,
+                "articulation_qualification_is_not_task_success": True,
+                "physical_success_established": False,
+            },
+        },
+    )
+
     bundle_path = job / "adp009d_articulated_isaac_provider_bundle.zip"
     members = sorted(
         (path for path in runtime.rglob("*") if path.is_file()),
