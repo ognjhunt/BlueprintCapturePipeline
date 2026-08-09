@@ -335,6 +335,43 @@ Render-ready candidate `sha256:81b1796a...`, manifest resealed at
 `sha256:68d78ba6...`. The local config preflight passes on the rebuilt bundle
 `sha256:9d2d9221...`.
 
+## The rerun: all four agents completed
+
+With the aperture cut and four bound preview surfaces in place, the pass was
+rerun (`840796_v5`, instance `47310948`, `$0.19232`, torn down to provider
+zero). **Material, Texture, Physics and Validation all completed
+successfully.** The single missing render material had been the root cause of
+both earlier failures, and the stale 840313 prompt had been the reason the
+classifier answered `Car_Paint_Green`.
+
+The Texture Agent produced a real PBR set - albedo, roughness, metalness,
+normal and ORM - and the albedo reads as a pale off-white panel with faint
+vertical brushed grain, sampling to `(0.904, 0.879, 0.818)` against the
+`(0.810, 0.782, 0.762)` measured from the removed splats.
+
+`accept_agent_enriched_asset` admits both the textured and the physics output:
+articulation preserved, authored link masses unchanged, interior still exposed,
+render materials still bound. Textured candidate `sha256:5574c5f0...`, seal
+`manifests/second_scene_840796_textured_simready.v1.json`.
+
+One honest note about the runner: its terminal record is still `blocked`
+without a runtime result even though all four agents completed, so the
+acceptance evidence here comes from reading the retained outputs directly
+rather than from the runner's own verdict.
+
+## What the interior actually is
+
+Worth stating precisely, because "there is an interior" overstates it. The
+cavity is **one six-face box** with all normals facing outward - a solid inset
+block, not a hollow liner. It has no shelves, bins, drawers or door pockets and
+no child prims. Opening the door now reveals its recessed front face rather
+than the carcass front, which is a genuine improvement, but a gripper could not
+place anything inside it. Its appearance is a generated `interior_liner`
+material at `(0.90, 0.91, 0.92)`; its physics material is the agent-assigned
+`PhysMat_sf0_60_df0_45_r0_30`. The real interior was never observed - the
+refrigerator is closed in every frame of the scan - so all of it stays tagged
+`generated_candidate_geometry`.
+
 ## Smallest next action
 
 Run the blank-stage Isaac/PhysX diagnostic against
