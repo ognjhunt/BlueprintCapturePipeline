@@ -21,6 +21,7 @@ from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.articulated_workspace_clearance import (
     ArticulatedWorkspaceClearanceError,
+    validate_door_state_clearance,
     validate_sage_mesh_sweep,
 )
 
@@ -222,6 +223,7 @@ def admit_task_construction(
     task_contract: Mapping[str, Any],
     member_sweep_clearance: Mapping[str, Any],
     construction_gate_receipts: Sequence[Mapping[str, Any]] = (),
+    door_state_clearance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Decide whether an articulated task may reach scenario materialization.
 
@@ -249,6 +251,7 @@ def admit_task_construction(
 
     blockers: list[str] = []
     gate_bindings: list[dict[str, Any]] = []
+    door_states: dict[str, Any] = {}
     if clearance.get("status") == "blocked_by_exact_sage_mesh_contact":
         obstacle_ids = _strings(clearance.get("collision_prim_paths"))
         blockers.extend(
@@ -258,6 +261,37 @@ def admit_task_construction(
         if not obstacle_ids:
             blockers.append("articulated_member_sweep_obstructed")
     else:
+        # A clear continuous sweep is necessary but not sufficient: the frozen
+        # discrete door-state matrix must also be bound with the replacement
+        # body, locked lower door, and Franka base classes before any
+        # scenario cell may materialize. An unbound class is a blocker, never
+        # an implicit clear.
+        if door_state_clearance is None:
+            blockers.append("articulated_door_state_matrix_missing")
+        else:
+            try:
+                door_states = validate_door_state_clearance(door_state_clearance)
+            except ArticulatedWorkspaceClearanceError as exc:
+                raise Adp009dHarnessError(list(exc.errors)) from exc
+            if door_states.get("status") == "blocked_by_door_state_contact":
+                contact = _mapping(door_states.get("first_contact"))
+                blockers.append(
+                    "articulated_door_state_contact:"
+                    f"{contact.get('obstacle_class')}:{contact.get('source')}"
+                )
+            missing_classes = sorted(
+                {"replacement_body", "replacement_lower_door", "franka_base"}
+                - {
+                    str(item)
+                    for item in door_states.get("static_obstacle_classes_bound")
+                    or []
+                }
+            )
+            if missing_classes:
+                blockers.append(
+                    "articulated_door_state_obstacle_classes_unbound:"
+                    + ",".join(missing_classes)
+                )
         seen_gate_ids: set[str] = set()
         for index, raw in enumerate(construction_gate_receipts):
             if not isinstance(raw, Mapping):
@@ -299,6 +333,7 @@ def admit_task_construction(
         "task_kind": contract["task_kind"],
         "target_joint_id": contract["target_joint_id"],
         "member_sweep_clearance_receipt_digest": clearance["receipt_digest"],
+        "door_state_clearance_receipt_digest": door_states.get("receipt_digest"),
         "construction_gate_bindings": sorted(
             gate_bindings, key=lambda row: row["gate_id"]
         ),

@@ -707,3 +707,145 @@ def test_cousin_authoring_is_path_independent(tmp_path: Path) -> None:
         authored.append(content)
 
     assert authored[0] == authored[1]
+
+
+def _clear_sweep_receipt() -> dict:
+    receipt = {
+        "schema_version": "articulated_sage_mesh_sweep.v1",
+        "status": "exact_sage_mesh_clearance_candidate_only",
+        "first_collision": None,
+        "collision_prim_paths": [],
+        "claim_boundary": {
+            "triangle_prism_intersection_tested": True,
+            "full_stage_inventory_is_bound_broadphase": True,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    return receipt
+
+
+def _door_state_receipt(
+    *, classes: list[str], blocked: bool = False, source: str = "/Root/chair"
+) -> dict:
+    angles = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0]
+    receipt = {
+        "schema_version": "articulated_door_state_clearance.v1",
+        "status": (
+            "blocked_by_door_state_contact"
+            if blocked
+            else "door_state_matrix_clearance_candidate_only"
+        ),
+        "door_state_rows": [
+            {
+                "angle_degrees": angle,
+                "sage_contact_prim_paths": [],
+                "static_box_contacts": [],
+                "clear": not blocked,
+            }
+            for angle in angles
+        ],
+        "static_obstacle_classes_bound": sorted(classes),
+        "first_contact": (
+            {
+                "angle_degrees": 50.0,
+                "source": source,
+                "obstacle_class": "sage_static_scene",
+            }
+            if blocked
+            else None
+        ),
+        "claim_boundary": {
+            "triangle_prism_intersection_tested": True,
+            "full_stage_inventory_is_bound_broadphase": True,
+            "clear_result_is_not_native_dynamic_qualification": True,
+            "replacement_self_geometry_bound": "replacement_body" in classes
+            or "replacement_lower_door" in classes,
+            "franka_base_bound": "franka_base" in classes,
+            "ik_or_contact_qualified": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    return receipt
+
+
+_ARTICULATED_CONTRACT = {
+    "schema_version": "adp_task_spec.v1",
+    "task_kind": "articulated_open_close",
+    "target_joint_id": "refrigerator_upper_door_hinge",
+}
+
+
+def test_clear_sweep_without_door_state_matrix_stays_unmaterializable() -> None:
+    admission = admit_task_construction(
+        task_contract=_ARTICULATED_CONTRACT,
+        member_sweep_clearance=_clear_sweep_receipt(),
+    )
+
+    assert admission["scenario_materialization_authorized"] is False
+    assert admission["placement_search_authorized"] is True
+    assert "articulated_door_state_matrix_missing" in admission["blockers"]
+    assert admission["door_state_clearance_receipt_digest"] is None
+
+
+def test_clear_matrix_with_unbound_classes_blocks_materialization() -> None:
+    admission = admit_task_construction(
+        task_contract=_ARTICULATED_CONTRACT,
+        member_sweep_clearance=_clear_sweep_receipt(),
+        door_state_clearance=_door_state_receipt(classes=[]),
+    )
+
+    assert admission["scenario_materialization_authorized"] is False
+    assert any(
+        blocker.startswith("articulated_door_state_obstacle_classes_unbound:")
+        for blocker in admission["blockers"]
+    )
+
+
+def test_blocked_door_state_matrix_blocks_materialization() -> None:
+    admission = admit_task_construction(
+        task_contract=_ARTICULATED_CONTRACT,
+        member_sweep_clearance=_clear_sweep_receipt(),
+        door_state_clearance=_door_state_receipt(
+            classes=["replacement_body", "replacement_lower_door", "franka_base"],
+            blocked=True,
+        ),
+    )
+
+    assert admission["scenario_materialization_authorized"] is False
+    assert any(
+        blocker.startswith("articulated_door_state_contact:") for blocker in admission["blockers"]
+    )
+
+
+def test_fully_bound_clear_matrix_with_gates_admits_materialization() -> None:
+    gates = [
+        {"gate_id": gate_id, "status": "passed", "receipt_digest": "sha256:" + "9" * 64}
+        for gate_id in sorted(
+            {
+                "source_link_partition",
+                "source_visual_removal",
+                "replacement_asset",
+                "native_robot_placement",
+                "native_phase_ik",
+                "policy_camera_observability",
+                "review_camera_observability",
+            }
+        )
+    ]
+    admission = admit_task_construction(
+        task_contract=_ARTICULATED_CONTRACT,
+        member_sweep_clearance=_clear_sweep_receipt(),
+        door_state_clearance=_door_state_receipt(
+            classes=["replacement_body", "replacement_lower_door", "franka_base"]
+        ),
+        construction_gate_receipts=gates,
+    )
+
+    assert admission["blockers"] == []
+    assert admission["scenario_materialization_authorized"] is True
+    assert admission["door_state_clearance_receipt_digest"].startswith("sha256:")
+    assert validate_task_construction_admission(
+        admission, task_contract=_ARTICULATED_CONTRACT
+    ) == admission

@@ -1072,6 +1072,51 @@ def validate_articulated_workspace_clearance(value: Mapping[str, Any]) -> dict[s
     return payload
 
 
+def validate_door_state_clearance(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a retained twelve-door-state clearance receipt."""
+
+    payload = json.loads(json.dumps(value))
+    errors: list[str] = []
+    if payload.get("schema_version") != DOOR_STATE_CLEARANCE_SCHEMA_VERSION:
+        errors.append("door_state_clearance_schema_invalid")
+    status = payload.get("status")
+    if status not in {
+        "blocked_by_door_state_contact",
+        "door_state_matrix_clearance_candidate_only",
+    }:
+        errors.append("door_state_clearance_status_invalid")
+    rows = payload.get("door_state_rows")
+    if not isinstance(rows, list) or len(rows) < DOOR_STATE_MINIMUM_COUNT:
+        errors.append("door_state_clearance_rows_invalid")
+        rows = []
+    first_contact = payload.get("first_contact")
+    any_unclear = any(
+        not row.get("clear") for row in rows if isinstance(row, Mapping)
+    )
+    if status == "blocked_by_door_state_contact" and (
+        not isinstance(first_contact, Mapping) or not any_unclear
+    ):
+        errors.append("door_state_clearance_contact_missing")
+    if status == "door_state_matrix_clearance_candidate_only" and (
+        first_contact is not None or any_unclear
+    ):
+        errors.append("door_state_clearance_unexpected_contact")
+    boundary = payload.get("claim_boundary")
+    if not isinstance(boundary, Mapping) or (
+        boundary.get("triangle_prism_intersection_tested") is not True
+        or boundary.get("clear_result_is_not_native_dynamic_qualification")
+        is not True
+    ):
+        errors.append("door_state_clearance_exact_evidence_missing")
+    if payload.get("receipt_digest") != canonical_digest(
+        payload, digest_field="receipt_digest"
+    ):
+        errors.append("door_state_clearance_digest_invalid")
+    if errors:
+        raise ArticulatedWorkspaceClearanceError(errors)
+    return payload
+
+
 def validate_sage_mesh_sweep(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate an exact SAGE triangle sweep before harness admission."""
 
@@ -1116,10 +1161,12 @@ __all__ = [
     "SAGE_OBSTACLE_INVENTORY_SCHEMA_VERSION",
     "SAGE_MESH_SWEEP_SCHEMA_VERSION",
     "evaluate_revolute_member_sweep",
+    "evaluate_frozen_door_state_clearance",
     "evaluate_revolute_member_sweep_against_sage_meshes",
     "inventory_sage_sweep_obstacles",
     "load_bound_collision_obstacle",
     "obstacles_from_sage_sweep_inventory",
     "validate_articulated_workspace_clearance",
+    "validate_door_state_clearance",
     "validate_sage_mesh_sweep",
 ]
