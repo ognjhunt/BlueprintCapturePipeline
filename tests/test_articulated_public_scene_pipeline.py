@@ -267,6 +267,41 @@ def test_propagates_observed_aura_reference_binding_abstention() -> None:
     )
 
 
+def test_propagates_digest_bound_aura_visual_artifact_rejection() -> None:
+    inputs = _inputs()
+    inputs["execution_authority"] = _authority(inputs)
+    aura, joint = _executions(inputs)
+    aura["blockers"] = ["aurafusion360_stage_localization_evidence_missing"]
+    aura["receipt_digest"] = canonical_digest(aura, digest_field="receipt_digest")
+    visual = {
+        "schema_version": "adp009b_aura_visual_abstention.v1",
+        "status": "abstained_visual_artifact_rejection",
+        "scene": {
+            "publisher_scene_id": inputs["freeze"]["scene"]["publisher_scene_id"],
+            "target_instance_id": "ins" + inputs["freeze"]["scene"]["target_instance_id"],
+        },
+        "bindings": {"aura_execution_receipt_digest": aura["receipt_digest"]},
+        "successful_inpainting_admitted": False,
+        "blockers": ["aurafusion360_interiorgs_visual_artifact_rejection"],
+        "receipt_digest": "",
+    }
+    visual["receipt_digest"] = canonical_digest(visual, digest_field="receipt_digest")
+    inputs["aura_execution_receipt"] = aura
+    inputs["aura_visual_abstention_receipt"] = visual
+    inputs["joint_agent_execution_receipt"] = joint
+
+    result = compile_articulated_public_scene_state(**inputs)
+
+    assert result["smallest_blocker"] == (
+        "released_code_inpainting_abstained:"
+        "aurafusion360_interiorgs_visual_artifact_rejection"
+    )
+    assert result["stage_receipts"]["aura_visual_abstention"] == visual["receipt_digest"]
+    assert result["next_action"].startswith(
+        "select or implement a released-code inpainting correction"
+    )
+
+
 def test_rejects_cross_scene_joint_agent_execution_receipt() -> None:
     inputs = _inputs()
     inputs["execution_authority"] = _authority(inputs)

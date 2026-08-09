@@ -218,13 +218,36 @@ def materialize_aura_execution_receipt(
     runtime_frames = runtime.get("final_frames") or []
     if len(runtime_frames) != int(scene.get("camera_count") or 0) or not runtime_frames:
         raise AuraExecutionReceiptError(["aurafusion360_final_frame_set_incomplete"])
-    for record in runtime_frames:
+    for camera_id, record in zip(camera_ids, runtime_frames, strict=True):
         _, verified = _verify_record(
             record,
             root=artifact_root,
             code="aurafusion360_final_frame_changed",
         )
+        verified["camera_id"] = camera_id
         frames.append(verified)
+
+    intermediate_sets = runtime.get("intermediate_frame_sets") or {}
+    intermediate_stage_artifacts_retained = (
+        runtime.get("stage_localization_evidence_retained") is True
+        and isinstance(intermediate_sets, Mapping)
+        and set(intermediate_sets) == {"inpaint_init_renders", "sdedit_images"}
+        and all(
+            isinstance(records, list) and len(records) == len(camera_ids)
+            for records in intermediate_sets.values()
+        )
+    )
+    verified_intermediate_sets: dict[str, list[dict[str, Any]]] = {}
+    if intermediate_stage_artifacts_retained:
+        for role, records in sorted(intermediate_sets.items()):
+            verified_intermediate_sets[role] = [
+                _verify_record(
+                    record,
+                    root=artifact_root,
+                    code="aurafusion360_intermediate_frame_changed",
+                )[1]
+                for record in records
+            ]
 
     logs: list[dict[str, Any]] = []
     for row in observed_workflow:
@@ -293,6 +316,7 @@ def materialize_aura_execution_receipt(
             "stage_logs": logs,
             "final_point_cloud": final_point_cloud,
             "final_frames": frames,
+            "intermediate_frame_sets": verified_intermediate_sets,
             "depth_anything3_used": runtime.get("depth_anything3_used") is True,
         },
         "quality": {
@@ -300,6 +324,9 @@ def materialize_aura_execution_receipt(
             "hidden_background_truth_available": False,
             "quantitative_locality_measurement_observed": False,
             "human_visual_review_observed": False,
+            "intermediate_stage_artifacts_retained": (
+                intermediate_stage_artifacts_retained
+            ),
             "runtime_reference_camera_binding_observed": reference_binding_observed,
             "runtime_reference_camera_binding_valid": reference_binding_valid,
             "reference_camera_id": reference_camera_id or None,
@@ -318,7 +345,11 @@ def materialize_aura_execution_receipt(
             (
                 "aurafusion360_runtime_reference_camera_binding_mismatch"
                 if reference_binding_valid is False
-                else "aurafusion360_interiorgs_quality_admission_missing"
+                else (
+                    "aurafusion360_interiorgs_quality_admission_missing"
+                    if intermediate_stage_artifacts_retained
+                    else "aurafusion360_stage_localization_evidence_missing"
+                )
             )
         ],
         "raw_secret_values_recorded": False,

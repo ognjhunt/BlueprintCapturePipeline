@@ -169,9 +169,39 @@ def test_aura_execution_receipt_hashes_observed_files_without_self_admission(
     assert receipt["provider_run"]["continuing_spend_from_this_run"] is False
     assert receipt["claim_boundary"]["released_method_execution_completed"] is True
     assert receipt["claim_boundary"]["successful_inpainting_admitted"] is False
-    assert receipt["blockers"] == ["aurafusion360_interiorgs_quality_admission_missing"]
+    assert receipt["blockers"] == ["aurafusion360_stage_localization_evidence_missing"]
     assert receipt["quality"]["runtime_reference_camera_binding_valid"] is True
+    assert receipt["quality"]["intermediate_stage_artifacts_retained"] is False
+    assert [row["camera_id"] for row in receipt["execution"]["final_frames"]] == [
+        "view_a",
+        "view_b",
+    ]
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
+
+
+def test_aura_execution_receipt_verifies_stage_localization_frames(
+    tmp_path: Path,
+) -> None:
+    paths = _fixture(tmp_path)
+    runtime = json.loads(paths["runtime"].read_text())
+    frame_sets = {}
+    for role in ("inpaint_init_renders", "sdedit_images"):
+        records = []
+        for index in range(2):
+            frame = paths["runtime"].parent / "artifacts/intermediate_frames" / role / f"{index:05d}.png"
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(f"{role}-{index}".encode())
+            records.append(_record(frame, paths["runtime"].parent))
+        frame_sets[role] = records
+    runtime["intermediate_frame_sets"] = frame_sets
+    runtime["stage_localization_evidence_retained"] = True
+    _write(paths["runtime"], runtime)
+
+    receipt = _materialize(paths)
+
+    assert receipt["quality"]["intermediate_stage_artifacts_retained"] is True
+    assert receipt["blockers"] == ["aurafusion360_interiorgs_quality_admission_missing"]
+    assert set(receipt["execution"]["intermediate_frame_sets"]) == set(frame_sets)
 
 
 def test_aura_execution_retains_runtime_reference_camera_index_mismatch(

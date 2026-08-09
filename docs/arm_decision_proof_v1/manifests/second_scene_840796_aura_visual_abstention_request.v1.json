@@ -1,0 +1,13 @@
+{
+  "schema_version": "adp009b_aura_visual_abstention_request.v1",
+  "decision": "reject_visual_candidate",
+  "reviewer_role": "evidence_operator",
+  "aura_execution_receipt_path": "docs/arm_decision_proof_v1/manifests/second_scene_840796_aurafusion360_execution_receipt.v2.json",
+  "locality_measurement_path": "aura_interiorgs/second_scene_840796_v5_retry_execute/run/immutable_execution/outside_mask_locality_measurement.v1.json",
+  "observed_artifact_codes": [
+    "gaussian_explosion_or_rainbow_splat",
+    "semantic_hallucination_in_removed_volume",
+    "outside_mask_scene_damage",
+    "multiview_background_inconsistency"
+  ]
+}

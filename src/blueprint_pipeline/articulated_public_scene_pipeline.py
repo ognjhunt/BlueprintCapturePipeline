@@ -137,6 +137,7 @@ def compile_articulated_public_scene_state(
     repository_commit: str,
     execution_authority: Mapping[str, Any] | None = None,
     aura_execution_receipt: Mapping[str, Any] | None = None,
+    aura_visual_abstention_receipt: Mapping[str, Any] | None = None,
     joint_agent_execution_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Join validated construction artifacts and choose the next finite gate."""
@@ -189,6 +190,16 @@ def compile_articulated_public_scene_state(
             error_prefix="aura_execution_receipt",
         )
         if aura_execution_receipt is not None
+        else None
+    )
+    aura_visual_abstention = (
+        _require_digest(
+            aura_visual_abstention_receipt,
+            field="receipt_digest",
+            schema="adp009b_aura_visual_abstention.v1",
+            error_prefix="aura_visual_abstention_receipt",
+        )
+        if aura_visual_abstention_receipt is not None
         else None
     )
     joint_execution = None
@@ -299,6 +310,20 @@ def compile_articulated_public_scene_state(
             is not True
         ):
             errors.append("aura_execution_scene_target_or_adapter_join_invalid")
+    if aura_visual_abstention is not None:
+        visual_scene = aura_visual_abstention.get("scene") or {}
+        visual_bindings = aura_visual_abstention.get("bindings") or {}
+        if (
+            aura_execution is None
+            or aura_visual_abstention.get("status")
+            != "abstained_visual_artifact_rejection"
+            or aura_visual_abstention.get("successful_inpainting_admitted") is not False
+            or visual_scene.get("publisher_scene_id") != scene_id
+            or not _same_instance_id(visual_scene.get("target_instance_id"), target_id)
+            or visual_bindings.get("aura_execution_receipt_digest")
+            != aura_execution.get("receipt_digest")
+        ):
+            errors.append("aura_visual_abstention_join_invalid")
     if joint_execution is not None:
         execution_source = joint_execution.get("source") or {}
         execution_bundle = joint_execution.get("bundle") or {}
@@ -349,7 +374,11 @@ def compile_articulated_public_scene_state(
         blockers.append("released_code_inpainting_execution_missing")
     elif (aura_execution.get("quality") or {}).get("status") != "admitted":
         aura_blockers = aura_execution.get("blockers") or []
-        aura_blocker = str(aura_blockers[0]) if aura_blockers else ""
+        aura_blocker = (
+            str((aura_visual_abstention.get("blockers") or [""])[0])
+            if aura_visual_abstention is not None
+            else (str(aura_blockers[0]) if aura_blockers else "")
+        )
         blockers.append(
             "released_code_inpainting_quality_admission_missing"
             if aura_blocker in {
@@ -405,6 +434,11 @@ def compile_articulated_public_scene_state(
             "aura_execution": (
                 aura_execution["receipt_digest"] if aura_execution is not None else None
             ),
+            "aura_visual_abstention": (
+                aura_visual_abstention["receipt_digest"]
+                if aura_visual_abstention is not None
+                else None
+            ),
             "joint_agent_execution": (
                 joint_execution["receipt_digest"]
                 if joint_execution is not None
@@ -436,7 +470,12 @@ def compile_articulated_public_scene_state(
             "obtain explicit dataset disclosure authority for the exact retained scene-derived Aura and Joint Agent inputs"
             if blockers and blockers[0] == "external_scene_derived_byte_disclosure_authority_missing"
             else (
-                "regenerate the sealed Aura adapter with the released runtime camera order; any new paid execution requires fresh zero-retry authority"
+                (
+                    "select or implement a released-code inpainting correction that preserves outside-mask scene content; require retained inpaint-init and SDEdit frames before any fresh paid authority"
+                    if blockers[0]
+                    == "released_code_inpainting_abstained:aurafusion360_interiorgs_visual_artifact_rejection"
+                    else "regenerate the sealed Aura adapter with the released runtime camera order; any new paid execution requires fresh zero-retry authority"
+                )
                 if blockers
                 and blockers[0].startswith("released_code_inpainting_abstained:")
                 else (
@@ -507,6 +546,7 @@ def compile_articulated_public_scene_run(
     joint_agent_packet_path: str | Path,
     execution_authority_path: str | Path | None,
     aura_execution_receipt_path: str | Path | None,
+    aura_visual_abstention_receipt_path: str | Path | None,
     joint_agent_execution_receipt_path: str | Path | None,
     output_path: str | Path,
 ) -> dict[str, Any]:
@@ -547,6 +587,11 @@ def compile_articulated_public_scene_run(
             if aura_execution_receipt_path is not None
             else None
         ),
+        aura_visual_abstention_receipt=(
+            _load(aura_visual_abstention_receipt_path)
+            if aura_visual_abstention_receipt_path is not None
+            else None
+        ),
         joint_agent_execution_receipt=(
             _load(joint_agent_execution_receipt_path)
             if joint_agent_execution_receipt_path is not None
@@ -571,6 +616,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--joint-agent-packet", required=True)
     parser.add_argument("--execution-authority")
     parser.add_argument("--aura-execution-receipt")
+    parser.add_argument("--aura-visual-abstention-receipt")
     parser.add_argument("--joint-agent-execution-receipt")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
@@ -585,6 +631,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         joint_agent_packet_path=args.joint_agent_packet,
         execution_authority_path=args.execution_authority,
         aura_execution_receipt_path=args.aura_execution_receipt,
+        aura_visual_abstention_receipt_path=args.aura_visual_abstention_receipt,
         joint_agent_execution_receipt_path=args.joint_agent_execution_receipt,
         output_path=args.output,
     )

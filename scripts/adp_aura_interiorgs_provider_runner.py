@@ -276,6 +276,29 @@ def _ply_count(path: Path) -> int | None:
     return None
 
 
+def _retain_intermediate_png_set(
+    *, source: Path, output: Path, role: str, expected_count: int
+) -> list[dict[str, Any]]:
+    """Retain a complete stage boundary so a bad final render can be localized."""
+
+    frames = sorted(source.glob("*.png")) if source.is_dir() else []
+    if len(frames) != expected_count or expected_count <= 0:
+        raise ValueError(f"aurafusion360_interiorgs_{role}_frame_set_incomplete")
+    retained: list[dict[str, Any]] = []
+    for frame in frames:
+        destination = output / "artifacts/intermediate_frames" / role / frame.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(frame, destination)
+        retained.append(
+            {
+                "relative_path": destination.relative_to(output).as_posix(),
+                "size_bytes": destination.stat().st_size,
+                "sha256": _sha256(destination),
+            }
+        )
+    return retained
+
+
 def _reference_lama_command(*, source: Path, runtime: Path, lama_python: str) -> list[str]:
     checkpoint_root = (source / "LaMa/big-lama").resolve()
     if not (checkpoint_root / "config.yaml").is_file() or not (
@@ -347,6 +370,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     aura_python = str(source / ".venv/bin/python")
     lama_python = str(source / "LaMa/.venv/bin/python")
     workflow: list[dict[str, Any]] = []
+    intermediate_frame_sets: dict[str, list[dict[str, Any]]] = {}
+    retention_blockers: list[str] = []
     commands = [
         (
             "reference_lama",
@@ -384,11 +409,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(produced[0], target)
+        elif stage == "inpaint_init":
+            try:
+                intermediate_frame_sets["inpaint_init_renders"] = (
+                    _retain_intermediate_png_set(
+                        source=source
+                        / f"output/Other-360/{scene_slug}/train/ours_object_inpaint_init/renders",
+                        output=output,
+                        role="inpaint_init_renders",
+                        expected_count=int(scene["camera_count"]),
+                    )
+                )
+            except ValueError as exc:
+                retention_blockers.append(str(exc))
+                break
+        elif stage == "sdedit":
+            try:
+                intermediate_frame_sets["sdedit_images"] = _retain_intermediate_png_set(
+                    source=source / f"data/Other-360/{scene_slug}/inpaint",
+                    output=output,
+                    role="sdedit_images",
+                    expected_count=int(scene["camera_count"]),
+                )
+            except ValueError as exc:
+                retention_blockers.append(str(exc))
+                break
 
     completed = {row["stage"] for row in workflow if row["returncode"] == 0}
     required = ["reference_lama", "train", "render", "remove", "sam2_masks", "inpaint_init", "sdedit", "inpaint_finetune"]
     final_ply = source / f"output/Other-360/{scene_slug}/point_cloud/iteration_10000_object_inpaint/point_cloud.ply"
-    blockers: list[str] = []
+    blockers: list[str] = list(retention_blockers)
     for stage in required:
         if stage not in completed:
             blockers.append(f"aurafusion360_interiorgs_{stage}_failed_or_not_executed")
@@ -429,6 +479,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "inpaint_finetune_executed": "inpaint_finetune" in completed,
         "final_point_cloud": ({"relative_path": retained.relative_to(output).as_posix(), "size_bytes": retained.stat().st_size, "sha256": _sha256(retained), "vertex_count": _ply_count(retained)} if retained.is_file() else None),
         "final_frames": retained_frames,
+        "intermediate_frame_sets": intermediate_frame_sets,
+        "stage_localization_evidence_retained": (
+            set(intermediate_frame_sets) == {"inpaint_init_renders", "sdedit_images"}
+        ),
         "claim_ceiling": "visual_candidate_only",
         "hidden_background_truth_available": False,
         "depth_anything3_used": False,

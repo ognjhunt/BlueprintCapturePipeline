@@ -1,7 +1,7 @@
 {
   "episode_count": 0,
   "episodes": [],
-  "index_digest": "sha256:6f0a4b5a5f3c728e57e8997c34a8360d2e9598c3e1cc9f2f9395afaca6a93bc4",
+  "index_digest": "sha256:52c9e895211040f3e6fe4b5cd08540742e970fab915beec5ac2539bde2229d7a",
   "overview_is_review_only": true,
   "required_camera_ids": [
     "external",
@@ -10,7 +10,7 @@
   ],
   "review_videos_are_not_physical_truth": true,
   "run_identity": {
-    "construction_run_digest": "sha256:895c54301887588c8a11a228a0c9c8ff1f46cd98681213a8ba01421189cedbf7",
+    "construction_run_digest": "sha256:dfd4b35f33afb4f7d1c8fc66ff1fc7fc72d3bf03374dc7da9c64cd9df5638ce5",
     "freeze_digest": "sha256:0774b7072bb1a0fd0929fde81cd48aaff384af4608772f31d603c2324f97d03f",
     "scenario_suite_digest": "not_materialized_due_pre_episode_abstention",
     "scene_id": "840796",
@@ -20,7 +20,7 @@
   "scores_are_deterministic_simulator_state": true,
   "typed_abstention": {
     "all_terminal_construction_blockers": [
-      "released_code_inpainting_abstained:aurafusion360_runtime_reference_camera_binding_mismatch",
+      "released_code_inpainting_abstained:aurafusion360_interiorgs_visual_artifact_rejection",
       "joint_agent_topology_execution_abstained:joint_agent_local_ovrtx_renderer_not_ready"
     ],
     "automatic_paid_retry_executed": false,
@@ -30,23 +30,24 @@
     ],
     "claim_ceiling": "public_dataset_construction_rehearsal_only; no partner capture, real_site_fidelity, deployment readiness, physical performance, or learned_policy_comparison",
     "comparison_exists": false,
-    "construction_run_digest": "sha256:895c54301887588c8a11a228a0c9c8ff1f46cd98681213a8ba01421189cedbf7",
+    "construction_run_digest": "sha256:dfd4b35f33afb4f7d1c8fc66ff1fc7fc72d3bf03374dc7da9c64cd9df5638ce5",
     "controls_executed": false,
     "episode_media_exists": false,
     "freeze_digest": "sha256:0774b7072bb1a0fd0929fde81cd48aaff384af4608772f31d603c2324f97d03f",
     "learned_candidate_episodes_executed": false,
-    "next_action": "regenerate the sealed Aura adapter with the released runtime camera order; any new paid execution requires fresh zero-retry authority",
+    "next_action": "select or implement a released-code inpainting correction that preserves outside-mask scene content; require retained inpaint-init and SDEdit frames before any fresh paid authority",
     "program_id": "arm-decision-proof-v1",
-    "receipt_digest": "sha256:a32fb5c762e4fbeb46bb24f8b1308e765dc18f972438d6dde55d4452e36c83fa",
+    "receipt_digest": "sha256:54c252e9477cc441b26d0e7b3a1ec4909e85bd79bca087ba9232160f64e643aa",
     "scene_id": "840796",
     "schema_version": "adp_task_evaluation_run_abstention.v1",
-    "smallest_missing_capability": "released_code_inpainting_abstained:aurafusion360_runtime_reference_camera_binding_mismatch",
+    "smallest_missing_capability": "released_code_inpainting_abstained:aurafusion360_interiorgs_visual_artifact_rejection",
     "stage_receipts": {
       "appearance_component": "sha256:0df34654cb917e278c6a3473bf626fb76002a8ea6477e2069d9a57e376f06569",
       "articulated_source_asset": "sha256:14696cb1dd047e24d1c74fd8767efb3a07ee740368c5805501de7abb630f9882",
-      "aura_execution": "sha256:7fec2771bdd279a63c22edc89d501185b73d262687722a5c8069c0b37d1cb552",
+      "aura_execution": "sha256:25815f77415073913d332a9022ad3c1983aa0b567451b8c1a4b8f8d8f5041c00",
+      "aura_visual_abstention": "sha256:74e41db595ec181886c20bc455cc56f1560de3e0fff2638bb5d5f65fb48d7559",
       "collision_component": "sha256:e215e215808dca084ab9db733b4a52643652413d9ebee41b497b5ffef0f7ddb6",
-      "inpainting_adapter": "sha256:5ece75f9913dfe706fc0b62c3e3bab43fd0fbdae75032c9f52764d1264352beb",
+      "inpainting_adapter": "sha256:bfdc2500d324b44e014c030b6c2bb3e6593e4f5d9797d70f7e637ae654e48893",
       "inpainting_inputs": "sha256:14835d010e3f15b610ff33ee8ae56f0daf8fa01b96aefe17db5ec36852a46f29",
       "joint_agent_execution": "sha256:05158fccee3933c85c3ca2538817080867f14dd518b45fbb102d36917427b564",
       "joint_agent_packet": "sha256:53deb1ad7fa36484fca4081ed181299c594c48b2d9851f87de829f0dd6563153"

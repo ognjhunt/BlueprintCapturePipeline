@@ -105,3 +105,53 @@ def test_locality_rejects_changed_after_bytes_and_paths_outside_roots(tmp_path: 
             approved_roots=[tmp_path / "unrelated"],
             dilation_pixels=0,
         )
+
+
+def test_locality_releases_full_resolution_working_set_after_each_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before, masks, manifest = _fixture(tmp_path)
+    source = before / "view.png"
+    mask = masks / "view.png"
+    after = tmp_path / "after/frames/view.png"
+    source.replace(before / "view_a.png")
+    mask.replace(masks / "view_a.png")
+    after.replace(tmp_path / "after/frames/view_a.png")
+    Image.open(before / "view_a.png").save(before / "view_b.png")
+    Image.open(masks / "view_a.png").save(masks / "view_b.png")
+    Image.open(tmp_path / "after/frames/view_a.png").save(
+        tmp_path / "after/frames/view_b.png"
+    )
+    value = json.loads(manifest.read_text())
+    value["renders"] = [
+        {
+            "camera_id": camera_id,
+            "relative_path": f"frames/{camera_id}.png",
+            "digest": _sha256(tmp_path / f"after/frames/{camera_id}.png"),
+        }
+        for camera_id in ("view_a", "view_b")
+    ]
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+    collections = 0
+
+    def observed_collect() -> int:
+        nonlocal collections
+        collections += 1
+        return 0
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpainting_locality.gc.collect",
+        observed_collect,
+    )
+
+    receipt = measure_inpainting_locality(
+        before_dir=before,
+        mask_dir=masks,
+        after_render_manifest=manifest,
+        output_path=tmp_path / "measurement.json",
+        approved_roots=[tmp_path],
+        dilation_pixels=0,
+    )
+
+    assert receipt["aggregate"]["view_count"] == 2
+    assert collections == 2

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
@@ -159,6 +160,11 @@ def measure_inpainting_locality(
                 lpips_runtime.distance(left, locality_only), 8
             )
         rows.append(row)
+        # Full-resolution public-scene frames are multi-megapixel.  Release every
+        # per-view array before decoding the next camera so an eight-view receipt
+        # does not retain several copies of the scene in process memory.
+        del left, right, target, outside, difference, outside_difference, locality_only
+        gc.collect()
     finite_psnr = [
         float(row["outside_mask_psnr_db"])
         for row in rows
