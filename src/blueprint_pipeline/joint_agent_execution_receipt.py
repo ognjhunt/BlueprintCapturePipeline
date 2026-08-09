@@ -103,6 +103,17 @@ def materialize_joint_agent_execution_receipt(
         or bundle.get("automatic_paid_retry_allowed") is not False
     ):
         raise JointAgentExecutionReceiptError(["joint_agent_bundle_binding_invalid"])
+    provider_bundle = _under(
+        str(bundle.get("bundle_path") or ""),
+        evidence,
+        "joint_agent_provider_bundle_outside_evidence_root",
+    )
+    if (
+        not provider_bundle.is_file()
+        or provider_bundle.stat().st_size != bundle.get("bundle_size_bytes")
+        or _sha256(provider_bundle) != bundle.get("bundle_sha256")
+    ):
+        raise JointAgentExecutionReceiptError(["joint_agent_provider_bundle_changed"])
     if (
         runtime.get("schema_version") != RUNTIME_SCHEMA_VERSION
         or runtime.get("status") != "completed"
@@ -199,6 +210,12 @@ def materialize_joint_agent_execution_receipt(
         "released_code": bundle.get("released_code"),
         "bundle": {
             "bundle_sha256": bundle.get("bundle_sha256"),
+            "provider_bundle": _file_record(
+                provider_bundle, evidence, role="provider_bundle"
+            ),
+            "bundle_receipt": _file_record(
+                bundle_file, evidence, role="bundle_receipt"
+            ),
             "freeze_digest": bundle.get("freeze_digest"),
             "review_contract_digest": bundle.get("review_contract_digest"),
         },

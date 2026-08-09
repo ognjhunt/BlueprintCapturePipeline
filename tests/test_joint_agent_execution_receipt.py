@@ -43,11 +43,16 @@ def _fixture(tmp_path: Path, *, scene_id: str, target_id: str) -> dict[str, Path
     packet["packet_digest"] = canonical_digest(packet, digest_field="packet_digest")
     packet_path = evidence / "packet.json"
     _write(packet_path, packet)
+    provider_bundle = evidence / "build/adp_joint_agent_provider_runtime_bundle.zip"
+    provider_bundle.parent.mkdir(parents=True)
+    provider_bundle.write_bytes(b"immutable-provider-bundle")
     bundle = {
         "status": "ready",
         "packet_digest": packet["packet_digest"],
         "input_usd_sha256": source_sha,
-        "bundle_sha256": "sha256:" + "c" * 64,
+        "bundle_path": str(provider_bundle),
+        "bundle_sha256": _sha(provider_bundle),
+        "bundle_size_bytes": provider_bundle.stat().st_size,
         "freeze_digest": "sha256:" + "d" * 64,
         "review_contract_digest": "sha256:" + "e" * 64,
         "completion_retries": 0,
@@ -199,6 +204,24 @@ def test_rejects_runtime_to_retained_review_digest_mismatch(tmp_path: Path) -> N
     with pytest.raises(
         JointAgentExecutionReceiptError,
         match="joint_agent_runtime_retained_artifact_cross_join_invalid",
+    ):
+        materialize_joint_agent_execution_receipt(
+            packet_path=paths["packet"],
+            bundle_receipt_path=paths["bundle"],
+            runtime_result_path=paths["runtime"],
+            run_result_path=paths["run"],
+            evidence_root=paths["evidence"],
+            repo_root=paths["repo"],
+        )
+
+
+def test_rejects_changed_provider_bundle(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path, scene_id="840796", target_id="123")
+    bundle_receipt = json.loads(paths["bundle"].read_text(encoding="utf-8"))
+    Path(bundle_receipt["bundle_path"]).write_bytes(b"changed")
+
+    with pytest.raises(
+        JointAgentExecutionReceiptError, match="joint_agent_provider_bundle_changed"
     ):
         materialize_joint_agent_execution_receipt(
             packet_path=paths["packet"],
