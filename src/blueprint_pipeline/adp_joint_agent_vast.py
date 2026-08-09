@@ -36,6 +36,7 @@ from .wam_provider_object_store import (
 
 
 PROVIDER_BUNDLE_KIND = "adp_joint_agent"
+PROBE_KIND = "adp-usd-joint-agent"
 SCHEMA_VERSION = "adp_joint_agent_provider_bundle.v1"
 SOURCE_TREE = "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3"
 DEFAULT_IMAGE = (
@@ -653,6 +654,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "DEFAULT_IMAGE",
+    "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
     "build_joint_agent_vast_bundle",
     "run_joint_agent_vast",

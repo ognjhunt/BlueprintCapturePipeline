@@ -8,6 +8,13 @@ import zipfile
 
 import pytest
 
+from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline.adp_joint_agent_vast import (
+    DEFAULT_IMAGE,
+    PROBE_KIND,
+    PROVIDER_BUNDLE_KIND,
+    SOURCE_TREE,
+)
 from blueprint_pipeline.adp_joint_agent_vast import (
     build_joint_agent_vast_bundle,
     run_joint_agent_vast,
@@ -230,6 +237,91 @@ def test_run_dry_run_is_zero_mutation_and_requires_bound_bundle(tmp_path: Path) 
     assert result["status"] == "dry_run_ready"
     assert result["provider_mutations_performed"] == 0
     assert result["retry_cap"] == 0
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
+    monkeypatch, tmp_path: Path, execute: bool
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    bundle.write_bytes(b"immutable-joint-agent-runtime")
+    bundle_digest = "sha256:" + __import__("hashlib").sha256(bundle.read_bytes()).hexdigest()
+    receipt = {
+        "status": "ready",
+        "provider_bundle_kind": PROVIDER_BUNDLE_KIND,
+        "container_image": DEFAULT_IMAGE,
+        "source_tree": SOURCE_TREE,
+        "blueprint_source": {"commit": "a" * 40, "dirty": False},
+        "completion_retries": 0,
+        "automatic_paid_retry_allowed": False,
+        "provider_zero_required_after_return": True,
+        "scope_amendment_digest": "sha256:" + "1" * 64,
+        "blockers": [],
+        "bundle_path": str(bundle),
+        "bundle_sha256": bundle_digest,
+    }
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: (
+            [],
+            {"orchestrator_source_commit": "a" * 40, "checkout_clean": True},
+        ),
+    )
+    observed: dict = {}
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_joint_agent_vast", fake_run)
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "adapter.json"),
+        "--pod-name",
+        "adp-joint-agent",
+        "--expected-source-commit",
+        "a" * 40,
+        "--adp-joint-agent-bundle-receipt",
+        str(receipt_path),
+        "--adp-job-dir",
+        str(tmp_path / "run"),
+        "--adp-max-hourly-rate-usd",
+        "1.00",
+        "--adp-max-spend-usd",
+        "3.00",
+        "--adp-hard-ttl-seconds",
+        "10800",
+    ]
+    if execute:
+        args.append("--execute")
+
+    assert allocator.main(args) == 0
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["status"] == "admitted"
+    assert admission["allocation_binding"]["bundle_sha256"] == bundle_digest
+    assert admission["raw_interiorgs_downloaded_bytes_uploaded"] is False
+    assert observed["execute"] is execute
+    assert (observed["paid_resource_admission_grant"] is not None) is execute
 
 
 def test_live_run_arms_watchdog_before_adapter_and_forwards_only_nvidia_key(
