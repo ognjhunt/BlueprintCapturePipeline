@@ -28,7 +28,9 @@ from blueprint_pipeline.vast_provider_adapter import (
     _provider_expected_video_count,
     _resolve_launch_mode,
     _resolve_probe_image,
+    _select_offer,
 )
+from blueprint_pipeline.vast_retained_instance import bind_all_in_cost
 
 
 def _sha256(path: Path) -> str:
@@ -284,6 +286,56 @@ def test_articulated_bundle_uses_complete_native_isaac_transport_closure(
     assert "run_adp_arena_provider_runtime.sh" in script
     assert "adp_arena_provider_runtime_output.zip" in script
     assert "run_wam_provider_runtime.sh" not in script
+
+
+def test_paid_offer_and_post_create_gates_include_storage_in_hourly_cap(
+    tmp_path: Path,
+) -> None:
+    offer = {
+        "ask_contract_id": 7,
+        "gpu_name": "RTX 6000 Ada",
+        "dph_total": 0.70,
+        "storage_cost": 0.54,
+        "gpu_ram": 49_152,
+        "num_gpus": 1,
+        "rentable": True,
+        "machine_id": 11,
+        "driver_version": "580.119.02",
+        "compute_cap": 890,
+    }
+
+    assert (
+        _select_offer(
+            [offer],
+            max_hourly_rate=0.80,
+            min_gpu_ram_mb=46_000,
+            disk_gb=200,
+        )
+        is None
+    )
+    admitted = _select_offer(
+        [offer],
+        max_hourly_rate=0.90,
+        min_gpu_ram_mb=46_000,
+        disk_gb=200,
+    )
+    assert admitted is not None
+    assert admitted["compute_hourly_rate_usd"] == pytest.approx(0.70)
+    assert admitted["storage_hourly_rate_usd"] == pytest.approx(0.15)
+    assert admitted["hourly_rate_usd"] == pytest.approx(0.85)
+
+    binding = bind_all_in_cost(
+        tmp_path,
+        selected_offer=admitted,
+        instance_payload={"dph_total": 0.86, "storage_total_cost": 0.16},
+        instance_id=9,
+        disk_gb=200,
+        max_live_minutes=60,
+        hard_cap_usd=1.0,
+        max_hourly_rate_usd=0.80,
+    )
+    assert binding["all_in_hourly_rate_usd"] == pytest.approx(0.86)
+    assert binding["all_in_hourly_rate_under_max_hourly"] is False
 
 
 def test_bundle_rejects_changed_asset(tmp_path: Path) -> None:

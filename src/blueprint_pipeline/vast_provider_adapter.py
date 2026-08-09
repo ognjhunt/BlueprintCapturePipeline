@@ -267,6 +267,7 @@ VAST_TERMINAL_INSTANCE_STATUSES = (
     "completed",
 )
 logger = logging.getLogger(__name__)
+VAST_BILLING_HOURS_PER_MONTH = 720.0
 
 
 def _string(value: Any) -> str:
@@ -1320,11 +1321,37 @@ def _known_gpu_vram_cap_mb(gpu_name: str) -> int | None:
     return None
 
 
-def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
+def _offer_storage_hourly_rate(
+    offer: Mapping[str, Any], *, disk_gb: int = 0
+) -> float | None:
+    direct = _number(offer.get("storage_total_cost"))
+    if direct is not None and direct >= 0:
+        return direct
+    for section_name in ("search", "instance"):
+        section = _mapping(offer.get(section_name))
+        direct = _number(section.get("diskHour"))
+        if direct is not None and direct >= 0:
+            return direct
+    monthly_per_gb = _number(offer.get("storage_cost"))
+    if monthly_per_gb is None:
+        monthly_per_gb = _number(_mapping(offer.get("pricing")).get("storage_cost"))
+    if monthly_per_gb is None or monthly_per_gb < 0 or disk_gb <= 0:
+        return None
+    return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
+
+
+def _offer_summary(offer: Mapping[str, Any], *, disk_gb: int = 0) -> dict[str, Any]:
     gpu = _gpu_name(offer)
     driver = _driver_version(offer)
     driver_status = _isaac_driver_support_status(driver)
     compute_cap = offer.get("compute_cap")
+    compute_hourly_rate = _offer_hourly_rate(offer)
+    storage_hourly_rate = _offer_storage_hourly_rate(offer, disk_gb=disk_gb)
+    all_in_hourly_rate = (
+        compute_hourly_rate + storage_hourly_rate
+        if compute_hourly_rate is not None and storage_hourly_rate is not None
+        else compute_hourly_rate
+    )
     provider_reported_gpu_ram_mb = _number(
         offer.get("gpu_ram") or offer.get("gpu_totalram") or offer.get("gpu_ram_mb")
     )
@@ -1341,7 +1368,15 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "ask_contract_id": _offer_id(offer),
         "gpu_name": gpu,
-        "hourly_rate_usd": _offer_hourly_rate(offer),
+        "compute_hourly_rate_usd": compute_hourly_rate,
+        "storage_hourly_rate_usd": storage_hourly_rate,
+        "storage_rate_source": (
+            "provider_offer_storage_price"
+            if storage_hourly_rate is not None
+            else "provider_storage_price_unavailable"
+        ),
+        "disk_gb": int(disk_gb),
+        "hourly_rate_usd": all_in_hourly_rate,
         "driver_version": driver or None,
         "isaac_driver_support_status": driver_status,
         "isaac_driver_preferred_for_rtx": driver_status
@@ -1397,6 +1432,10 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "ask_contract_id": int(ask_contract_id) if ask_contract_id is not None else None,
         "gpu_model_slug": _safe_slug(gpu),
         "hourly_rate_usd": hourly,
+        "compute_hourly_rate_usd": offer.get("compute_hourly_rate_usd"),
+        "storage_hourly_rate_usd": offer.get("storage_hourly_rate_usd"),
+        "storage_rate_source": offer.get("storage_rate_source"),
+        "disk_gb": offer.get("disk_gb"),
         "driver_version": _string(offer.get("driver_version")) or None,
         "isaac_driver_support_status": _string(offer.get("isaac_driver_support_status")) or None,
         "cuda_max_good": offer.get("cuda_max_good"),
@@ -1624,11 +1663,12 @@ def _select_offer(
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool = True,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
+    disk_gb: int = 0,
 ) -> dict[str, Any] | None:
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
-    summaries = [_offer_summary(offer) for offer in offers]
+    summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
     candidates = [
         item
         for item in summaries
@@ -1724,9 +1764,10 @@ def _offer_selection_manifest(
     prefer_isaac_rt: bool = True,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     create_retry_attempts: Sequence[Mapping[str, Any]] = (),
+    disk_gb: int = 0,
 ) -> dict[str, Any]:
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
-    summaries = [_offer_summary(offer) for offer in offers]
+    summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
     known_supported_offer_count = sum(
         1
         for item in summaries
@@ -1781,6 +1822,8 @@ def _offer_selection_manifest(
         "http_status_code": status_code,
         "offer_count": len(offers),
         "max_hourly_rate_usd": max_hourly_rate,
+        "disk_gb": int(disk_gb),
+        "hourly_rate_includes_provider_offer_storage": True,
         "min_gpu_ram_mb": min_gpu_ram_mb,
         "min_compute_cap": min_compute_cap,
         "max_compute_cap": max_compute_cap,
@@ -6380,6 +6423,7 @@ def run_vast_provider_adapter(
                 preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
                 gpu_selection_policy=gpu_selection_policy,
+                disk_gb=resolved_disk_gb,
             )
             offer_blockers: list[str] = []
             if not selected_offer:
@@ -6419,6 +6463,7 @@ def run_vast_provider_adapter(
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
                 gpu_selection_policy=gpu_selection_policy,
                 create_retry_attempts=create_retry_attempts,
+                disk_gb=resolved_disk_gb,
             )
             write_json(resolved_job_dir / "vast_offer_selection_manifest.json", offer_manifest)
             _append_phase(
@@ -6558,6 +6603,7 @@ def run_vast_provider_adapter(
                     prefer_isaac_rt=resolved_prefer_isaac_rt,
                     gpu_selection_policy=gpu_selection_policy,
                     create_retry_attempts=create_retry_attempts,
+                    disk_gb=resolved_disk_gb,
                 )
                 write_json(
                     resolved_job_dir / "vast_offer_selection_manifest.json",
@@ -6616,9 +6662,12 @@ def run_vast_provider_adapter(
             disk_gb=resolved_disk_gb,
             max_live_minutes=max_live_minutes,
             hard_cap_usd=hard_cap_usd,
+            max_hourly_rate_usd=max_hourly_rate,
         )
         if not all_in_cost_binding["projected_all_in_cost_under_hard_cap"]:
             raise RuntimeError("created_instance_projected_all_in_runtime_exceeds_hard_cap")
+        if not all_in_cost_binding["all_in_hourly_rate_under_max_hourly"]:
+            raise RuntimeError("created_instance_all_in_hourly_rate_exceeds_max_hourly")
         instance_running = status.lower() == "running"
         instance_log_readable = instance_running or (
             launch_mode == "args" and status.lower() in {"exited", "stopped"}
