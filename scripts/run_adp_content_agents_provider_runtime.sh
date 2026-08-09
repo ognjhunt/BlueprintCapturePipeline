@@ -27,7 +27,12 @@ if not path.exists():
         "texture_agent_executed": False,
         "physics_agent_executed": False,
         "validation_agent_executed": False,
-        "joint_agent_inapplicable_single_rigid_body": True,
+        "joint_agent_plan": {
+            "planned": False,
+            "executed_by_content_agents_bundle": False,
+            "reason": "runner_failed_before_bound_input_plan_readback"
+        },
+        "joint_agent_inapplicable_single_rigid_body": None,
         "retry_cap": 0,
         "raw_secret_values_recorded": False,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")

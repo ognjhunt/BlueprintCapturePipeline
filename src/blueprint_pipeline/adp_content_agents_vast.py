@@ -329,6 +329,9 @@ def _materialize_articulated_content_agents_input(
         for prim in reopened.Traverse()
         if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
     ]
+    rigid_bodies = [
+        prim for prim in reopened.Traverse() if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    ]
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
     bounds = cache.ComputeWorldBound(reopened.GetDefaultPrim()).ComputeAlignedRange()
     if bounds.IsEmpty() or not joints or len(roots) != 1:
@@ -348,6 +351,7 @@ def _materialize_articulated_content_agents_input(
         "default_purpose_bbox_nonempty": True,
         "articulation_preserved": True,
         "joint_count": len(joints),
+        "rigid_body_count": len(rigid_bodies),
         "articulation_root_count": len(roots),
     }
 
@@ -379,6 +383,15 @@ def _materialize_content_agents_input(
     if reopened is None:
         raise ValueError("adp_content_agents_input_reopen_failed")
     normalized_visual = UsdGeom.Mesh.Get(reopened, "/canned_beverage/visuals/body")
+    joints = [prim for prim in reopened.Traverse() if prim.IsA(UsdPhysics.Joint)]
+    rigid_bodies = [
+        prim for prim in reopened.Traverse() if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    ]
+    roots = [
+        prim
+        for prim in reopened.Traverse()
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+    ]
     cache = UsdGeom.BBoxCache(
         Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
     )
@@ -395,6 +408,45 @@ def _materialize_content_agents_input(
         "visual_prim": "/canned_beverage/visuals/body",
         "visual_purpose": "default",
         "default_purpose_bbox_nonempty": True,
+        "articulation_preserved": not joints and not roots,
+        "joint_count": len(joints),
+        "rigid_body_count": len(rigid_bodies),
+        "articulation_root_count": len(roots),
+    }
+
+
+def _derive_joint_agent_plan(
+    *, input_variant: str, input_normalization: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Derive Joint Agent applicability from the normalized USD inventory."""
+
+    joint_count = input_normalization.get("joint_count")
+    rigid_body_count = input_normalization.get("rigid_body_count")
+    root_count = input_normalization.get("articulation_root_count")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in (joint_count, rigid_body_count, root_count)
+    ):
+        raise ValueError("adp_content_agents_joint_agent_inventory_invalid")
+    if joint_count:
+        if root_count != 1 or rigid_body_count < 2:
+            raise ValueError("adp_content_agents_joint_agent_articulation_invalid")
+        reason = "preexisting_articulation_preserved_by_enrichment_pass"
+        single_rigid_body = False
+    else:
+        if root_count != 0 or rigid_body_count != 1:
+            raise ValueError("adp_content_agents_joint_agent_rigid_input_invalid")
+        reason = "single_rigid_body_has_no_articulation_task"
+        single_rigid_body = True
+    return {
+        "planned": False,
+        "executed_by_content_agents_bundle": False,
+        "reason": reason,
+        "input_variant": input_variant,
+        "input_joint_count": joint_count,
+        "input_rigid_body_count": rigid_body_count,
+        "input_articulation_root_count": root_count,
+        "joint_agent_inapplicable_single_rigid_body": single_rigid_body,
     }
 
 
@@ -659,6 +711,10 @@ def build_content_agents_vast_bundle(
         runtime / "input" / runtime_usd_name,
         variant=str(variant["variant"]),
     )
+    joint_agent_plan = _derive_joint_agent_plan(
+        input_variant=str(variant["variant"]),
+        input_normalization=input_normalization,
+    )
     shutil.copy2(reference_source, runtime / "input" / reference_name)
 
     entrypoint = runtime / "run_adp_content_agents_provider_runtime.sh"
@@ -711,7 +767,14 @@ def build_content_agents_vast_bundle(
             if native_probe is not None
             else "blueprint_owned_control"
         ),
-        "joint_agent_inapplicable_single_rigid_body": True,
+        "runtime_input_binding": {
+            "relative_path": f"input/{runtime_usd_name}",
+            "sha256": input_normalization["normalized_input_usd_sha256"],
+        },
+        "joint_agent_plan": joint_agent_plan,
+        "joint_agent_inapplicable_single_rigid_body": joint_agent_plan[
+            "joint_agent_inapplicable_single_rigid_body"
+        ],
         "execution_role": "optional_construction_enrichment",
         "failure_blocks_deterministic_asset_construction": False,
         "failure_blocks_native_simulator_qualification": False,

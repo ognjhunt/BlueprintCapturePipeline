@@ -240,7 +240,8 @@ def provider_runtime_contract_blockers(
                 "texture_agent_executed",
                 "physics_agent_executed",
                 "validation_agent_executed",
-                "joint_agent_inapplicable_single_rigid_body",
+                "joint_agent_plan",
+                "runtime_input_binding",
             )
         )
         runner_blocker = "provider_runner_missing_adp_content_agents_runtime_contract"

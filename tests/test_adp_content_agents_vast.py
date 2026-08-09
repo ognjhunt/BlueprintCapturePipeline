@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
 import subprocess
@@ -25,6 +26,17 @@ from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_outp
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _provider_runner_module():
+    path = ROOT / "scripts/adp_content_agents_provider_runner.py"
+    spec = importlib.util.spec_from_file_location(
+        "test_adp_content_agents_provider_runner", path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _fake_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -215,6 +227,19 @@ def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
     assert first["execution_role"] == "optional_construction_enrichment"
     assert first["failure_blocks_native_simulator_qualification"] is False
     assert first["agent_output_is_simready_authority"] is False
+    assert first["runtime_input_binding"]["relative_path"] == (
+        "input/adp009a_840313_canned_beverage_control.usda"
+    )
+    assert first["joint_agent_plan"] == {
+        "planned": False,
+        "executed_by_content_agents_bundle": False,
+        "reason": "single_rigid_body_has_no_articulation_task",
+        "input_variant": "control_v1",
+        "input_joint_count": 0,
+        "input_rigid_body_count": 1,
+        "input_articulation_root_count": 0,
+        "joint_agent_inapplicable_single_rigid_body": True,
+    }
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
         generated_at="fixed",
@@ -1039,7 +1064,8 @@ def test_articulated_input_normalization_preserves_joints_and_purposes(
     stage.SetDefaultPrim(asset.GetPrim())
     UsdPhysics.ArticulationRootAPI.Apply(asset.GetPrim())
     for link in ("cabinet", "upper_door"):
-        UsdGeom.Xform.Define(stage, f"/Asset/{link}")
+        link_prim = UsdGeom.Xform.Define(stage, f"/Asset/{link}").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(link_prim)
         mesh = UsdGeom.Mesh.Define(stage, f"/Asset/{link}/geom")
         mesh.CreatePointsAttr(
             [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
@@ -1061,6 +1087,7 @@ def test_articulated_input_normalization_preserves_joints_and_purposes(
     assert result["default_purpose_bbox_nonempty"] is True
     assert result["articulation_preserved"] is True
     assert result["joint_count"] == 1
+    assert result["rigid_body_count"] == 2
     reopened = Usd.Stage.Open(str(tmp_path / "runtime_input.usda"))
     assert str(reopened.GetDefaultPrim().GetPath()) == "/Asset"
     assert (
@@ -1069,6 +1096,93 @@ def test_articulated_input_normalization_preserves_joints_and_purposes(
     for prim in reopened.Traverse():
         if prim.IsA(UsdGeom.Mesh):
             assert UsdGeom.Mesh(prim).ComputePurpose() == UsdGeom.Tokens.default_
+
+
+def test_joint_agent_plan_is_derived_from_topology_for_both_fixtures() -> None:
+    rigid = content_agents._derive_joint_agent_plan(
+        input_variant="control_v1",
+        input_normalization={
+            "joint_count": 0,
+            "rigid_body_count": 1,
+            "articulation_root_count": 0,
+        },
+    )
+    articulated = content_agents._derive_joint_agent_plan(
+        input_variant="articulated_v1",
+        input_normalization={
+            "joint_count": 2,
+            "rigid_body_count": 3,
+            "articulation_root_count": 1,
+        },
+    )
+
+    assert rigid["joint_agent_inapplicable_single_rigid_body"] is True
+    assert rigid["reason"] == "single_rigid_body_has_no_articulation_task"
+    assert articulated["joint_agent_inapplicable_single_rigid_body"] is False
+    assert articulated["reason"] == (
+        "preexisting_articulation_preserved_by_enrichment_pass"
+    )
+
+
+def test_provider_runner_resolves_manifest_bound_articulated_input(
+    tmp_path: Path,
+) -> None:
+    runner = _provider_runner_module()
+    runtime = tmp_path / "provider_runtime"
+    input_path = runtime / "input/refrigerator.usda"
+    input_path.parent.mkdir(parents=True)
+    input_path.write_text('#usda 1.0\ndef Xform "Asset" {}\n', encoding="utf-8")
+    digest = "sha256:" + hashlib.sha256(input_path.read_bytes()).hexdigest()
+    plan = content_agents._derive_joint_agent_plan(
+        input_variant="articulated_v1",
+        input_normalization={
+            "joint_count": 2,
+            "rigid_body_count": 3,
+            "articulation_root_count": 1,
+        },
+    )
+    write_json(
+        runtime / "adp_content_agents_provider_manifest.json",
+        {
+            "runtime_input_binding": {
+                "relative_path": "input/refrigerator.usda",
+                "sha256": digest,
+            },
+            "joint_agent_plan": plan,
+        },
+    )
+
+    resolved, resolved_plan = runner._runtime_input_plan(runtime)
+
+    assert resolved == input_path.resolve()
+    assert resolved_plan == plan
+
+
+def test_provider_runner_rejects_changed_bound_input(tmp_path: Path) -> None:
+    runner = _provider_runner_module()
+    runtime = tmp_path / "provider_runtime"
+    input_path = runtime / "input/object.usda"
+    input_path.parent.mkdir(parents=True)
+    input_path.write_text('#usda 1.0\n', encoding="utf-8")
+    write_json(
+        runtime / "adp_content_agents_provider_manifest.json",
+        {
+            "runtime_input_binding": {
+                "relative_path": "input/object.usda",
+                "sha256": "sha256:" + "0" * 64,
+            },
+            "joint_agent_plan": {
+                "planned": False,
+                "executed_by_content_agents_bundle": False,
+                "reason": "single_rigid_body_has_no_articulation_task",
+                "input_joint_count": 0,
+                "input_rigid_body_count": 1,
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="runtime_input_binding_invalid"):
+        runner._runtime_input_plan(runtime)
 
 
 def test_local_preflight_image_admission_is_recipe_bound(monkeypatch) -> None:

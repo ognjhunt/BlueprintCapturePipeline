@@ -94,6 +94,33 @@ def _copy_evidence(source: Path, destination: Path) -> None:
         shutil.copy2(path, target)
 
 
+def _runtime_input_plan(runtime_root: Path) -> tuple[Path, dict[str, Any]]:
+    """Resolve the exact input and Joint Agent plan from the bundled manifest."""
+
+    manifest_path = runtime_root / "adp_content_agents_provider_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    binding = manifest.get("runtime_input_binding") or {}
+    relative_path = str(binding.get("relative_path") or "")
+    input_path = (runtime_root / relative_path).resolve()
+    if (
+        not relative_path
+        or not input_path.is_relative_to(runtime_root.resolve())
+        or not input_path.is_file()
+        or _sha256(input_path) != binding.get("sha256")
+    ):
+        raise ValueError("content_agents_runtime_input_binding_invalid")
+    joint_plan = manifest.get("joint_agent_plan") or {}
+    if (
+        joint_plan.get("planned") is not False
+        or joint_plan.get("executed_by_content_agents_bundle") is not False
+        or not isinstance(joint_plan.get("input_joint_count"), int)
+        or not isinstance(joint_plan.get("input_rigid_body_count"), int)
+        or not str(joint_plan.get("reason") or "")
+    ):
+        raise ValueError("content_agents_joint_agent_plan_invalid")
+    return input_path, dict(joint_plan)
+
+
 def _physics_output(work: Path) -> Path | None:
     candidates = sorted(
         path
@@ -295,6 +322,8 @@ def main() -> int:
     env["WU_OVRTX_VENV_DIR"] = str(source_root / ".ovrtx_venv")
     env["NVIDIA_DRIVER_CAPABILITIES"] = "all"
 
+    input_usd, joint_agent_plan = _runtime_input_plan(runtime_root)
+
     gpu = _run(
         ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
         log_path=output_root / "nvidia-smi.log",
@@ -408,9 +437,8 @@ def main() -> int:
             blockers.append("validation_agent_static_check_failed")
     agents["validation"] = validation
     agents["joint"] = {
-        "joint_agent_inapplicable_single_rigid_body": True,
+        **joint_agent_plan,
         "joint_agent_executed": False,
-        "reason": "selected target has one rigid body and zero articulated joints",
     }
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -419,16 +447,17 @@ def main() -> int:
         "source_commit": "36dbf3f274f8e256637230a05a085853f65cc175",
         "source_tree": "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3",
         "source_version": "0.5.2",
-        "input_usd_sha256": _sha256(
-            runtime_root / "input" / "adp009a_840313_canned_beverage_control.usda"
-        ),
+        "input_usd_sha256": _sha256(input_usd),
         "gpu_probe": gpu,
         "agents": agents,
         "material_agent_executed": agents["material"]["material_agent_executed"],
         "texture_agent_executed": agents["texture"]["texture_agent_executed"],
         "physics_agent_executed": agents["physics"]["physics_agent_executed"],
         "validation_agent_executed": validation["validation_agent_executed"],
-        "joint_agent_inapplicable_single_rigid_body": True,
+        "joint_agent_plan": joint_agent_plan,
+        "joint_agent_inapplicable_single_rigid_body": joint_agent_plan[
+            "joint_agent_inapplicable_single_rigid_body"
+        ],
         "native_probes": native,
         "native_ovrtx_exact_camera_executed": native[
             "ovrtx_exact_camera_executed"
