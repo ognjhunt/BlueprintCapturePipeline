@@ -10,6 +10,7 @@ sheets without changing ownership labels.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 from pathlib import Path
 from typing import Any, Sequence
@@ -180,6 +181,36 @@ def _contact_sheet(
         canvas.paste(image, (x, header))
     output.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output, format="PNG", optimize=False)
+
+
+def _contact_sheet_index(
+    rows: Sequence[dict[str, Any]], output: Path, *, heldout_passed: bool
+) -> None:
+    cards = []
+    for row in rows:
+        camera_id = html.escape(str(row["camera_id"]))
+        relative_path = html.escape(str(row["contact_sheet"]["relative_path"]))
+        split = html.escape(str(row["split"]))
+        result = "pass" if row["ownership_gate_passed"] else "fail"
+        cards.append(
+            f"<section><h2>{camera_id} <small>({split}, {result})</small></h2>"
+            f'<a href="{relative_path}"><img src="{relative_path}" '
+            f'alt="{camera_id} six-panel Gaussian excision contact sheet"></a></section>'
+        )
+    status = "PASS" if heldout_passed else "FAIL / ABSTAIN"
+    document = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        "<title>840796 Gaussian excision audit</title>"
+        "<style>body{font-family:-apple-system,sans-serif;margin:2rem}"
+        "img{max-width:100%;border:1px solid #ccc}small{font-weight:normal}"
+        "section{margin:2rem 0}</style></head><body>"
+        f"<h1>840796 held-out Gaussian excision audit: {status}</h1>"
+        "<p>Each lossless sheet is: original | exact mask | OBB removed-only | "
+        "contribution removed-only | retained scene | ambiguity heatmap.</p>"
+        + "".join(cards)
+        + "</body></html>\n"
+    )
+    output.write_text(document, encoding="utf-8")
 
 
 def materialize_gaussian_excision_heldout_audit(
@@ -379,6 +410,8 @@ def materialize_gaussian_excision_heldout_audit(
             for row in heldout_rows
         )
     )
+    index_path = output / "OPEN_ME_gaussian_excision_contact_sheets.html"
+    _contact_sheet_index(rows, index_path, heldout_passed=passed)
     receipt: dict[str, Any] = {
         "schema_version": HELDOUT_AUDIT_SCHEMA,
         "program_id": "arm-decision-proof-v1",
@@ -403,6 +436,7 @@ def materialize_gaussian_excision_heldout_audit(
             name: {"path": str(path), "sha256": _sha256(path)} for name, path in manifests.items()
         },
         "camera_results": rows,
+        "contact_sheet_index": _record(index_path, output),
         "determinism_gate_passed": deterministic,
         "partition_gate_passed": partition_passed,
         "protected_records_gate_passed": protected_records_passed,

@@ -245,3 +245,8 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
         (tmp_path / "audit" / row["contact_sheet"]["relative_path"]).is_file()
         for row in receipt["camera_results"]
     )
+    index_path = tmp_path / "audit" / receipt["contact_sheet_index"]["relative_path"]
+    assert index_path.is_file()
+    index = index_path.read_text(encoding="utf-8")
+    assert "original | exact mask | OBB removed-only" in index
+    assert all(camera_id in index for camera_id in camera_ids)
