@@ -154,6 +154,13 @@ def _validated_adapter(
         raise ValueError("adp_aura_interiorgs_source_identity_mismatch")
     if any(bool(value) for value in execution.values()):
         raise ValueError("adp_aura_interiorgs_caller_asserted_execution_forbidden")
+    trajectory = (receipt.get("adapter") or {}).get("trajectory_media_contract")
+    if trajectory is not None and trajectory != {
+        "generated": False,
+        "retained": False,
+        "reason": "unretained_240_frame_trajectory_is_not_evaluation_evidence",
+    }:
+        raise ValueError("adp_aura_interiorgs_trajectory_media_contract_invalid")
     rows: list[tuple[str, Path]] = []
     for record in receipt.get("artifacts") or []:
         relative = str(record.get("relative_path") or "")
@@ -402,6 +409,9 @@ def build_aura_interiorgs_bundle(
             "archive_sha256": _sha256(runtime / "interiorgs_adapter.zip"),
             "receipt_digest": adapter["receipt_digest"],
             "files": adapter_manifest,
+            "trajectory_media_contract": (adapter.get("adapter") or {}).get(
+                "trajectory_media_contract"
+            ),
         },
         "runtime_models": [*_RUNTIME_MODELS, openclip_runtime_model],
         "sd2_checkpoint": {

@@ -258,8 +258,20 @@ def test_aura_adapter_derives_native_packet_and_remains_unexecuted(
     assert (output / "data/Other-360/840313_ins160/sparse/0/points3D.ply").is_file()
     assert (output / "reference_lama_input/low_approach_mask.png").is_file()
     inpaint_config = (output / "configs/Other-360/840313_ins160/inpaint.config").read_text()
+    remove_config = (output / "configs/Other-360/840313_ins160/remove.config").read_text()
     assert "reference_index = 4" in inpaint_config
     assert "resolution = 1" in inpaint_config
+    assert "render_path = false" in inpaint_config
+    assert "render_path = false" in remove_config
+    assert all(
+        "--render_path" not in command
+        for command in receipt["commands"]["author_workflow"]
+    )
+    assert receipt["adapter"]["trajectory_media_contract"] == {
+        "generated": False,
+        "retained": False,
+        "reason": "unretained_240_frame_trajectory_is_not_evaluation_evidence",
+    }
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
 
 
@@ -293,6 +305,7 @@ def test_aura_adapter_derives_new_scene_slug_and_reference_camera(
     assert receipt["scene"]["scene_slug"] == "840796_ins123"
     assert receipt["scene"]["reference_camera_id"] == "raised_left"
     assert receipt["scene"]["reference_camera_index"] == 5
+    assert receipt["adapter"]["trajectory_media_contract"]["generated"] is False
     assert (
         paths["data"]
         / "adapter/data/Other-360/840796_ins123/reference"
@@ -311,6 +324,28 @@ def test_aura_adapter_derives_new_scene_slug_and_reference_camera(
     assert binding["publisher_scene_id"] == "840796"
     assert binding["target_instance_id"] == "ins123"
     assert binding["reference_camera_id"] == "raised_left"
+
+
+def test_aura_bundle_rejects_caller_asserted_unretained_trajectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    receipt = _materialize(paths)
+    receipt["adapter"]["trajectory_media_contract"]["generated"] = True
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_aura_interiorgs_vast.SOURCE_COMMIT",
+        receipt["source"]["commit"],
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_aura_interiorgs_vast.SOURCE_TREE",
+        receipt["source"]["tree"],
+    )
+
+    with pytest.raises(
+        ValueError, match="adp_aura_interiorgs_trajectory_media_contract_invalid"
+    ):
+        _validated_adapter(receipt, paths["data"] / "adapter")
 
 
 def test_aura_adapter_rejects_changed_frozen_mask(
