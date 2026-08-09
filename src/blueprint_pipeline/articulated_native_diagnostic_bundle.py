@@ -12,6 +12,7 @@ import json
 import math
 import shutil
 import stat
+import subprocess
 import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -44,6 +45,22 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _current_checkout_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip().lower()
+    return commit if len(commit) == 40 else None
 
 
 def _is_sha256(value: Any) -> bool:
@@ -375,6 +392,15 @@ def build_articulated_native_diagnostic_bundle(
     ):
         raise ArticulatedNativeDiagnosticError(
             ["articulated_native_implementation_commit_invalid"]
+        )
+    current_commit = _current_checkout_commit()
+    if current_commit is None:
+        raise ArticulatedNativeDiagnosticError(
+            ["articulated_native_checkout_commit_unavailable"]
+        )
+    if implementation_commit != current_commit:
+        raise ArticulatedNativeDiagnosticError(
+            ["articulated_native_implementation_commit_mismatch"]
         )
     asset = Path(asset_path).expanduser().resolve()
     request_source = Path(request_path).expanduser().resolve()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 from typing import Any
 import zipfile
 
@@ -23,6 +24,16 @@ from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
 
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _implementation_commit() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def _asset(path: Path) -> Path:
@@ -167,7 +178,7 @@ def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
                 asset_path=asset,
                 request_path=request_path,
                 harness_manifest_path=harness,
-                implementation_commit="a" * 40,
+                implementation_commit=_implementation_commit(),
                 generated_at="fixed",
             )
         )
@@ -231,7 +242,7 @@ def test_bundle_rejects_changed_asset(tmp_path: Path) -> None:
             asset_path=asset,
             request_path=request_path,
             harness_manifest_path=harness,
-            implementation_commit="b" * 40,
+            implementation_commit=_implementation_commit(),
             generated_at="fixed",
         )
 
@@ -260,7 +271,7 @@ def test_bundle_rejects_missing_render_material_before_paid_runtime(
             asset_path=asset,
             request_path=request_path,
             harness_manifest_path=harness,
-            implementation_commit="b" * 40,
+            implementation_commit=_implementation_commit(),
             generated_at="fixed",
         )
 
@@ -268,6 +279,28 @@ def test_bundle_rejects_missing_render_material_before_paid_runtime(
         "articulated_native_render_material_missing:"
         "/Asset/render_materials/missing"
     ) in excinfo.value.codes
+
+
+def test_bundle_rejects_caller_asserted_commit_that_is_not_current(
+    tmp_path: Path,
+) -> None:
+    asset = _asset(tmp_path / "asset.usda")
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(_request(asset)), encoding="utf-8")
+    harness = tmp_path / "harness.json"
+    harness.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(ArticulatedNativeDiagnosticError) as excinfo:
+        build_articulated_native_diagnostic_bundle(
+            job_dir=tmp_path / "bundle",
+            asset_path=asset,
+            request_path=request_path,
+            harness_manifest_path=harness,
+            implementation_commit="0" * 40,
+            generated_at="fixed",
+        )
+
+    assert "articulated_native_implementation_commit_mismatch" in excinfo.value.codes
 
 
 def test_checked_in_second_scene_request_binds_material_readback() -> None:
