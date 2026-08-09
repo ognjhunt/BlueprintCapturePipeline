@@ -22,6 +22,7 @@ from blueprint_pipeline.public_scene_replacement_occlusion import (
     build_replacement_occlusion_request,
     classify_gaussian_contributions,
     coverage_safe_ambiguous,
+    materialize_direct_evidence_expansion_candidate,
     materialize_replacement_occlusion_cutout,
     select_direct_calibration_evidence_expansion,
 )
@@ -314,3 +315,44 @@ def test_direct_evidence_expansion_ignores_neighbor_score_and_outcomes() -> None
         minimum_geometry_score=0.5,
     )
     assert selected.tolist() == [1]
+
+
+def test_direct_evidence_expansion_materializes_byte_exact_candidate(
+    tmp_path: Path,
+) -> None:
+    source = _source_splat(tmp_path / "source.ply")
+    arrays = {
+        "owned": np.array([0], dtype=np.int64),
+        "candidate": np.array([1, 2, 3, 4], dtype=np.int64),
+        "protected": np.array([0, 0, 0, 1, 0, 0], dtype=np.int16),
+        "core_count": np.array([0, 2, 1, 3, 2, 0], dtype=np.int16),
+        "core_fraction": np.array([0.0, 0.99, 1.0, 1.0, 0.5, 0.0]),
+        "geometry": np.array([0.0, 1.0, 1.0, 1.0, 1.0, 0.0]),
+    }
+    paths = {}
+    for name, values in arrays.items():
+        path = tmp_path / f"{name}.npy"
+        np.save(path, values, allow_pickle=False)
+        paths[name] = path
+    receipt = materialize_direct_evidence_expansion_candidate(
+        source_standard_splat_path=source,
+        owned_indices_path=paths["owned"],
+        candidate_indices_path=paths["candidate"],
+        protected_camera_count_path=paths["protected"],
+        core_camera_count_path=paths["core_count"],
+        core_fraction_path=paths["core_fraction"],
+        geometry_score_path=paths["geometry"],
+        output_root=tmp_path / "output",
+        minimum_core_camera_count=2,
+        minimum_core_fraction=0.9,
+        minimum_geometry_score=0.5,
+    )
+    assert receipt["counts"] == {
+        "source": 6,
+        "owned": 1,
+        "direct_evidence_expansion": 1,
+        "deleted_total": 2,
+        "retained_total": 4,
+    }
+    assert np.load(tmp_path / "output/deleted_source_indices.npy").tolist() == [0, 1]
+    assert receipt["preservation"]["retained_rows_byte_exact"] is True

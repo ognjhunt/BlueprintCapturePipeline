@@ -345,6 +345,154 @@ def select_direct_calibration_evidence_expansion(
     return selected.astype(np.int64, copy=False)
 
 
+def _load_array(path: Path, code: str) -> np.ndarray:
+    if not path.is_file() or path.is_symlink():
+        raise ReplacementOcclusionError([code])
+    try:
+        return np.asarray(np.load(path, allow_pickle=False))
+    except (OSError, ValueError) as exc:
+        raise ReplacementOcclusionError([code]) from exc
+
+
+def materialize_direct_evidence_expansion_candidate(
+    *,
+    source_standard_splat_path: str | Path,
+    owned_indices_path: str | Path,
+    candidate_indices_path: str | Path,
+    protected_camera_count_path: str | Path,
+    core_camera_count_path: str | Path,
+    core_fraction_path: str | Path,
+    geometry_score_path: str | Path,
+    output_root: str | Path,
+    minimum_core_camera_count: int,
+    minimum_core_fraction: float,
+    minimum_geometry_score: float,
+) -> dict[str, Any]:
+    """Materialize a byte-exact diagnostic cutout from direct evidence only."""
+
+    source = Path(source_standard_splat_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ReplacementOcclusionError(
+            ["replacement_occlusion_direct_output_not_empty"]
+        )
+    splat = read_standard_3dgs_ply(source)
+    paths = {
+        "owned_indices": Path(owned_indices_path).expanduser().resolve(),
+        "candidate_indices": Path(candidate_indices_path).expanduser().resolve(),
+        "protected_camera_count": Path(protected_camera_count_path)
+        .expanduser()
+        .resolve(),
+        "core_camera_count": Path(core_camera_count_path).expanduser().resolve(),
+        "core_fraction": Path(core_fraction_path).expanduser().resolve(),
+        "geometry_score": Path(geometry_score_path).expanduser().resolve(),
+    }
+    arrays = {
+        name: _load_array(path, f"replacement_occlusion_direct_{name}_invalid")
+        for name, path in paths.items()
+    }
+    owned_indices = np.asarray(arrays["owned_indices"], dtype=np.int64)
+    candidate_indices = np.asarray(arrays["candidate_indices"], dtype=np.int64)
+    if (
+        owned_indices.ndim != 1
+        or candidate_indices.ndim != 1
+        or len(set(owned_indices.tolist())) != owned_indices.size
+        or len(set(candidate_indices.tolist())) != candidate_indices.size
+        or np.any(owned_indices < 0)
+        or np.any(owned_indices >= splat.count)
+    ):
+        raise ReplacementOcclusionError(
+            ["replacement_occlusion_direct_indices_invalid"]
+        )
+    owned = np.zeros(splat.count, dtype=bool)
+    owned[owned_indices] = True
+    expansion = select_direct_calibration_evidence_expansion(
+        candidate_indices,
+        owned,
+        arrays["protected_camera_count"],
+        arrays["core_camera_count"],
+        arrays["core_fraction"],
+        arrays["geometry_score"],
+        minimum_core_camera_count=minimum_core_camera_count,
+        minimum_core_fraction=minimum_core_fraction,
+        minimum_geometry_score=minimum_geometry_score,
+    )
+    deleted = np.union1d(owned_indices, expansion).astype(np.int64)
+    retained = np.setdiff1d(
+        np.arange(splat.count, dtype=np.int64), deleted, assume_unique=True
+    )
+    output.mkdir(parents=True, exist_ok=True)
+    deleted_indices_path = output / "deleted_source_indices.npy"
+    retained_indices_path = output / "retained_source_indices.npy"
+    expansion_indices_path = output / "direct_evidence_expansion_indices.npy"
+    np.save(deleted_indices_path, deleted, allow_pickle=False)
+    np.save(retained_indices_path, retained, allow_pickle=False)
+    np.save(expansion_indices_path, expansion, allow_pickle=False)
+    deleted_ply = write_standard_3dgs_ply_subset_exact(
+        source, output / "deleted_source_gaussians.ply", deleted
+    )
+    retained_ply = write_standard_3dgs_ply_subset_exact(
+        source, output / "retained_scene_gaussians.ply", retained
+    )
+    preservation = verify_standard_3dgs_ply_subset_exact(
+        source, retained_ply, retained
+    )
+    if preservation.get("retained_rows_byte_exact") is not True:
+        raise ReplacementOcclusionError(
+            ["replacement_occlusion_direct_retained_rows_changed"]
+        )
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009b_direct_evidence_expansion_candidate.v1",
+        "status": "diagnostic_cutout_materialized_pending_exact_camera_audit",
+        "source_standard_splat": {
+            "path": str(source),
+            "size_bytes": source.stat().st_size,
+            "sha256": _sha256(source),
+        },
+        "inputs": {
+            name: {
+                "path": str(path),
+                "size_bytes": path.stat().st_size,
+                "sha256": _sha256(path),
+            }
+            for name, path in paths.items()
+        },
+        "policy": {
+            "minimum_core_camera_count": minimum_core_camera_count,
+            "minimum_core_fraction": float(minimum_core_fraction),
+            "minimum_geometry_score": float(minimum_geometry_score),
+            "maximum_protected_camera_count": 0,
+            "neighborhood_score_used": False,
+            "heldout_pixels_used": False,
+            "learned_policy_outcomes_used": False,
+        },
+        "counts": {
+            "source": splat.count,
+            "owned": int(owned_indices.size),
+            "direct_evidence_expansion": int(expansion.size),
+            "deleted_total": int(deleted.size),
+            "retained_total": int(retained.size),
+        },
+        "preservation": preservation,
+        "outputs": {
+            "deleted_source_indices": _record(deleted_indices_path, output),
+            "retained_source_indices": _record(retained_indices_path, output),
+            "direct_evidence_expansion_indices": _record(
+                expansion_indices_path, output
+            ),
+            "deleted_source_gaussians": _record(deleted_ply, output),
+            "retained_scene_gaussians": _record(retained_ply, output),
+        },
+        "claim_ceiling": "diagnostic_byte_exact_cutout_pending_heldout_and_hybrid_review",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = output / "adp009b_direct_evidence_expansion_candidate.v1.json"
+    receipt_path.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
 def evaluate_depth_coverage(
     removal_alpha: np.ndarray,
     replacement_depth_m: np.ndarray,
@@ -696,6 +844,7 @@ __all__ = [
     "coverage_safe_ambiguous",
     "evaluate_depth_coverage",
     "materialize_replacement_occlusion_cutout",
+    "materialize_direct_evidence_expansion_candidate",
     "select_direct_calibration_evidence_expansion",
 ]
 
