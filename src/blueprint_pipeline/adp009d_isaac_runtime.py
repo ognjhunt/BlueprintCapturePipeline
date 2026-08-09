@@ -31,14 +31,19 @@ try:  # flat provider-bundle layout, where this file runs as a script
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
+        apply_rigid_offset,
         approach_waypoints_world,
-        camera_aim_body_quaternion_xyzw,
+        approved_can_visual_center_world,
         external_task_camera_offset_plan,
         pose_world_to_base,
+        rigid_offset_in_body_frame,
+        solve_live_rigid_mount_camera_aim_command,
+        solve_rigid_mount_camera_aim,
         select_wrist_observable_episode_start,
         semantic_target_observability,
         summarize_wrist_approach_capture,
         validate_wrist_observable_episode_start_restore,
+        world_to_base_rotation_row_major_xyzw,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_approach_capture import (
@@ -53,14 +58,19 @@ except ModuleNotFoundError:  # imported as part of the repository package
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
+        apply_rigid_offset,
         approach_waypoints_world,
-        camera_aim_body_quaternion_xyzw,
+        approved_can_visual_center_world,
         external_task_camera_offset_plan,
         pose_world_to_base,
+        rigid_offset_in_body_frame,
+        solve_live_rigid_mount_camera_aim_command,
+        solve_rigid_mount_camera_aim,
         select_wrist_observable_episode_start,
         semantic_target_observability,
         summarize_wrist_approach_capture,
         validate_wrist_observable_episode_start_restore,
+        world_to_base_rotation_row_major_xyzw,
     )
 
 RESULT_NAME = "adp009d_native_microcheck.json"
@@ -71,6 +81,8 @@ EXPECTED_ASSETS = {
 APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
 TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usda"
 TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
+OVERVIEW_TASK_CAMERA_DISTANCE_M = 1.25
+MIN_OVERVIEW_TASK_OBJECT_PIXELS = 80
 # Aura authored as an Omniverse ParticleField of Gaussian surfels.  Rendered
 # by the same omni.rtx that the standalone OVRTX lane wraps -- the v11 worker
 # log shows omni.rtx mapping /rtx/rtpt/gaussian/* onto
@@ -257,12 +269,17 @@ def _configure_deterministic_reset_events(embodiment: Any) -> None:
     reset_writer.params["std"] = 0.0
 
 
-def _canonical_digest(value: dict[str, Any]) -> str:
+def _canonical_digest(
+    value: dict[str, Any], *, digest_field: str | None = None
+) -> str:
     """Digest matching ``decision_evidence_contracts.canonical_digest``."""
 
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
-        "utf-8"
-    )
+    normalized = dict(value)
+    if digest_field:
+        normalized.pop(digest_field, None)
+    encoded = json.dumps(
+        normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
@@ -752,6 +769,8 @@ def _save_camera(
     frame_index: int,
     sim_time: float,
     require_metric_depth: bool = True,
+    pose_override: tuple[list[float], list[float]] | None = None,
+    pose_source: str = "isaac_sensor_buffer",
 ) -> dict[str, Any]:
     import numpy as np
     from PIL import Image
@@ -820,8 +839,19 @@ def _save_camera(
         np.save(depth_path, depth, allow_pickle=False)
     np.save(semantic_path, semantic, allow_pickle=False)
     intrinsic = _to_torch(camera.data.intrinsic_matrices)[0]
-    pos_w = _to_torch(camera.data.pos_w)[0]
-    quat_w_opengl = _to_torch(camera.data.quat_w_opengl)[0]
+    if pose_override is None:
+        pos_w = _jsonable(_to_torch(camera.data.pos_w)[0])
+        quat_w_opengl = _jsonable(_to_torch(camera.data.quat_w_opengl)[0])
+    else:
+        pos_w = [float(value) for value in pose_override[0]]
+        quat_w_opengl = [float(value) for value in pose_override[1]]
+    prim_diagnostics = _camera_prim_diagnostics(camera)
+    prim_diagnostics.update(
+        {
+            "evidence_pose_source": pose_source,
+            "evidence_world_translation_m": list(pos_w),
+        }
+    )
     return {
         "camera_id": name,
         "frame_index": frame_index,
@@ -864,9 +894,10 @@ def _save_camera(
             "foreground_semantic_pixel_fraction": float((semantic > 1).mean()),
         },
         "intrinsic_matrix": _jsonable(intrinsic),
-        "position_world_m": _jsonable(pos_w),
-        "quaternion_world_opengl_xyzw": _jsonable(quat_w_opengl),
-        "prim_diagnostics": _camera_prim_diagnostics(camera),
+        "position_world_m": list(pos_w),
+        "quaternion_world_opengl_xyzw": list(quat_w_opengl),
+        "pose_source": pose_source,
+        "prim_diagnostics": prim_diagnostics,
         "device": str(camera.data.output["rgb"].device),
         "dlpack_ownership": "isaac_camera_tensor_read_only_copy_retained",
         "synchronization": "environment_step_completed_before_copy",
@@ -1007,13 +1038,45 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             "intrinsics_unchanged": True,
         }
     )
-    # Arena's second fixed exterior view is the review-only overview camera.
-    # It never enters either candidate's observation mapping or the scorer.
+    # Arena's stock second exterior view faces away from this task: v88
+    # measured zero robot/can semantic pixels in every retained frame.  Reuse
+    # the proven task-camera orientation, move farther back on the ray through
+    # the midpoint of the start/destination envelope, and apply it at the
+    # render-authoritative CameraCfg seam before spawn.  This remains
+    # review-only and can never enter policy input or scoring.
+    destination = json.loads(
+        (runtime / "adp009d_task_destination.v1.json").read_text(encoding="utf-8")
+    )["position_world_m"]
+    task_envelope_center = [
+        (CAN_AXIS_XY_M[0] + float(destination[0])) / 2.0,
+        (CAN_AXIS_XY_M[1] + float(destination[1])) / 2.0,
+        SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0,
+    ]
+    overview_camera_cfg = embodiment.camera_config.external_camera_2
+    overview_offset_plan = external_task_camera_offset_plan(
+        robot_position_world=robot_pose.position_xyz,
+        robot_quaternion_world_xyzw=robot_pose.rotation_xyzw,
+        current_camera_offset_position_robot=external_camera_cfg.offset.pos,
+        target_position_world=task_envelope_center,
+        distance_m=OVERVIEW_TASK_CAMERA_DISTANCE_M,
+    )
+    overview_camera_cfg.offset.pos = tuple(
+        overview_offset_plan["resolved_offset_position_robot_m"]
+    )
+    overview_camera_cfg.offset.rot = external_camera_cfg.offset.rot
+    overview_camera_cfg.offset.convention = external_camera_cfg.offset.convention
     overview_camera_plan = {
         "schema_version": "blueprint_episode_overview_camera_plan.v1",
         "runtime_camera_name": "external_camera_2",
         "evidence_camera_id": "overview",
-        "pose_source": "official_arena_droid_second_external_camera",
+        "pose_source": "task_centered_wide_view_from_proven_external_orientation",
+        "task_envelope_center_world_m": task_envelope_center,
+        "target_distance_m": OVERVIEW_TASK_CAMERA_DISTANCE_M,
+        "resolved_eye_position_world_m": overview_offset_plan[
+            "resolved_eye_position_world_m"
+        ],
+        "render_authoritative_seam": "Arena CameraCfg.offset before prim spawn",
+        "minimum_start_object_semantic_pixels": MIN_OVERVIEW_TASK_OBJECT_PIXELS,
         "role": "review_only_full_task_motion",
         "policy_input": False,
         "grader_input": False,
@@ -1430,6 +1493,26 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     require_metric_depth=(camera_name != "external_camera_2"),
                 )
             )
+        overview_observability = _approved_can_observability(
+            env.unwrapped.scene["external_camera_2"]
+        )
+        overview_camera_plan["start_object_observability"] = overview_observability
+        overview_camera_plan["start_object_observability_status"] = (
+            "ready"
+            if overview_observability["approved_task_object_pixel_count"]
+            >= MIN_OVERVIEW_TASK_OBJECT_PIXELS
+            and overview_observability[
+                "approved_task_object_within_frame_margin"
+            ]
+            else "blocked"
+        )
+        if overview_camera_plan["start_object_observability_status"] != "ready":
+            raise RuntimeError(
+                "overview_camera_task_object_not_observable:"
+                f"pixels={overview_observability['approved_task_object_pixel_count']}:"
+                "within_margin="
+                f"{overview_observability['approved_task_object_within_frame_margin']}"
+            )
         timings_seconds["camera_retention"] = round(time.monotonic() - camera_retention_started, 6)
         # A frame is the only thing that answers whether the appearance actually
         # draws, and at roughly a minute per rendered frame the phases after
@@ -1590,6 +1673,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         episode_start_samples: list[dict[str, Any]] = []
         episode_start_selection: dict[str, Any] | None = None
         camera_aim_plan: dict[str, Any] = {}
+        control_ik_binding: dict[str, Any] | None = None
+        control_ik_step_diagnostics: list[dict[str, Any]] = []
         approach_aborted = False
         try:
             from isaaclab.controllers import (  # noqa: PLC0415
@@ -1640,26 +1725,117 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             reset_camera_quaternion = [
                 float(v) for v in _to_torch(wrist_camera.data.quat_w_opengl)[0]
             ]
-            camera_aim_quaternion = camera_aim_body_quaternion_xyzw(
-                body_quaternion_world_xyzw=[float(v) for v in reset_body_pose[3:7]],
-                camera_position_world=reset_camera_position,
-                camera_quaternion_world_opengl_xyzw=reset_camera_quaternion,
-                target_position_world=[float(v) for v in canonical_hold_can_pose[:3]],
+            wrist_mount_position_body, wrist_mount_quaternion_body = (
+                rigid_offset_in_body_frame(
+                    body_position_world=[float(value) for value in reset_body_pose[:3]],
+                    body_quaternion_world_xyzw=[
+                        float(value) for value in reset_body_pose[3:7]
+                    ],
+                    child_position_world=reset_camera_position,
+                    child_quaternion_world_xyzw=reset_camera_quaternion,
+                )
             )
+
+            def _wrist_camera_evidence_pose() -> tuple[list[float], list[float]]:
+                """Pose of the rendered rigid mount from the live articulation body."""
+
+                live_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
+                return apply_rigid_offset(
+                    body_position_world=[float(value) for value in live_body_pose[:3]],
+                    body_quaternion_world_xyzw=[
+                        float(value) for value in live_body_pose[3:7]
+                    ],
+                    offset_position_body=wrist_mount_position_body,
+                    offset_quaternion_body_xyzw=wrist_mount_quaternion_body,
+                )
+
+            wrist_camera_driven = True
+            camera_aim_target_world = approved_can_visual_center_world()
+            camera_aim_solution = solve_rigid_mount_camera_aim(
+                body_position_world=[float(v) for v in reset_body_pose[:3]],
+                body_quaternion_world_xyzw=[float(v) for v in reset_body_pose[3:7]],
+                offset_position_body=wrist_mount_position_body,
+                offset_quaternion_body_xyzw=wrist_mount_quaternion_body,
+                target_position_world=camera_aim_target_world,
+            )
+            camera_aim_quaternion = camera_aim_solution[
+                "body_quaternion_world_xyzw"
+            ]
             camera_aim_plan = {
-                "strategy": "rotate_mounted_opengl_optical_axis_to_can_center",
+                "strategy": "solve_rigid_mount_opengl_optical_axis_to_can_center",
                 "camera_position_world_m": reset_camera_position,
                 "camera_quaternion_world_opengl_xyzw": reset_camera_quaternion,
-                "target_position_world_m": [float(v) for v in canonical_hold_can_pose[:3]],
+                "target_position_world_m": camera_aim_target_world,
                 "target_body_quaternion_world_xyzw": camera_aim_quaternion,
                 "max_steps": CAMERA_AIM_MAX_STEPS,
                 "camera_mount_reauthored": False,
+                "camera_pose_evidence_source": (
+                    "live_articulation_body_times_reset_rigid_mount_offset"
+                ),
+                "wrist_mount_position_body_m": wrist_mount_position_body,
+                "wrist_mount_quaternion_body_xyzw": wrist_mount_quaternion_body,
+                "rigid_mount_aim_solution": camera_aim_solution,
             }
             # Isaac Lab e57379c drops the root row from the jacobian stack for a
             # fixed-base articulation, so the jacobian index is offset by one.
             jacobian_index = body_index - 1 if robot.is_fixed_base else body_index
             arm_joint_ids = list(range(7))
+            arm_joint_names = [str(name) for name in list(robot.joint_names)[:7]]
+            expected_arm_joint_names = [f"panda_joint{index}" for index in range(1, 8)]
+            if arm_joint_names != expected_arm_joint_names:
+                raise RuntimeError(
+                    "scripted_control_arm_joint_binding_invalid:"
+                    + ",".join(arm_joint_names)
+                )
             base_pose = _to_torch(robot.data.root_pose_w)[0, :7]
+            world_to_base_rotation = world_to_base_rotation_row_major_xyzw(
+                [float(value) for value in base_pose[3:7]]
+            )
+            world_to_base_rotation_tensor = torch.tensor(
+                [world_to_base_rotation],
+                device=env.unwrapped.device,
+                dtype=torch.float32,
+            ).reshape(1, 3, 3)
+
+            def _jacobians_world_and_root():
+                """Read PhysX's world Jacobian and express both row blocks in root."""
+
+                jacobian_world = _to_torch(robot.root_view.get_jacobians())[
+                    :, jacobian_index, :, arm_joint_ids
+                ]
+                jacobian_root = jacobian_world.clone()
+                jacobian_root[:, :3, :] = torch.bmm(
+                    world_to_base_rotation_tensor,
+                    jacobian_world[:, :3, :],
+                )
+                jacobian_root[:, 3:, :] = torch.bmm(
+                    world_to_base_rotation_tensor,
+                    jacobian_world[:, 3:, :],
+                )
+                return jacobian_world, jacobian_root
+
+            control_ik_binding = {
+                "schema_version": "adp009d_scripted_control_ik_binding.v1",
+                "isaac_lab_revision": ISAAC_LAB_REVISION,
+                "arena_revision": ARENA_REVISION,
+                "action_semantics": "ordered_absolute_joint_position_radians_plus_binary_gripper",
+                "action_dimension": int(env.unwrapped.action_manager.total_action_dim),
+                "arm_joint_ids": arm_joint_ids,
+                "arm_joint_names": arm_joint_names,
+                "controlled_body_name": end_effector_name,
+                "controlled_body_index": body_index,
+                "jacobian_body_index": jacobian_index,
+                "fixed_base": bool(robot.is_fixed_base),
+                "root_pose_world_xyzw": [float(value) for value in base_pose],
+                "physx_jacobian_frame": "world",
+                "controller_pose_error_frame": "robot_root",
+                "world_to_root_rotation_row_major": world_to_base_rotation,
+                "linear_jacobian_rows_rotated_world_to_root": True,
+                "angular_jacobian_rows_rotated_world_to_root": True,
+                "binding_source": (
+                    "pinned_isaaclab_task_space_actions.DifferentialInverseKinematicsAction"
+                ),
+            }
             resolved_waypoints = [
                 {
                     "waypoint_index": -1,
@@ -1680,6 +1856,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 ],
             ]
             camera_aim_plan["resolved_waypoints"] = resolved_waypoints
+            camera_aim_live_solver_updates: list[dict[str, Any]] = []
             for waypoint in resolved_waypoints:
                 position_base, quaternion_base = pose_world_to_base(
                     position_world=waypoint["position_world_m"],
@@ -1694,10 +1871,54 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 )
                 controller.reset()
                 controller.set_command(command)
-                for _ in range(int(waypoint["steps"])):
-                    jacobian = _to_torch(robot.root_view.get_jacobians())[
-                        :, jacobian_index, :, arm_joint_ids
-                    ]
+                resolved_target_world = list(waypoint["position_world_m"])
+                position_control_mode = "fixed_preregistered_waypoint"
+                for waypoint_step in range(int(waypoint["steps"])):
+                    if waypoint["waypoint_index"] == -1:
+                        live_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
+                        live_aim_command = solve_live_rigid_mount_camera_aim_command(
+                            body_position_world=[float(value) for value in live_body_pose[:3]],
+                            body_quaternion_world_xyzw=[
+                                float(value) for value in live_body_pose[3:7]
+                            ],
+                            offset_position_body=wrist_mount_position_body,
+                            offset_quaternion_body_xyzw=wrist_mount_quaternion_body,
+                            target_position_world=camera_aim_target_world,
+                        )
+                        resolved_target_world = live_aim_command["body_position_world_m"]
+                        position_control_mode = live_aim_command["position_control_mode"]
+                        position_base, quaternion_base = pose_world_to_base(
+                            position_world=resolved_target_world,
+                            quaternion_world_xyzw=live_aim_command[
+                                "body_quaternion_world_xyzw"
+                            ],
+                            base_position_world=[float(v) for v in base_pose[:3]],
+                            base_quaternion_world_xyzw=[float(v) for v in base_pose[3:7]],
+                        )
+                        controller.set_command(
+                            torch.tensor(
+                                [position_base + quaternion_base],
+                                device=env.unwrapped.device,
+                                dtype=torch.float32,
+                            )
+                        )
+                        if waypoint_step < 4 or waypoint_step % 20 == 0:
+                            camera_aim_live_solver_updates.append(
+                                {
+                                    "step": waypoint_step,
+                                    "body_position_world_m": resolved_target_world,
+                                    "target_body_quaternion_world_xyzw": live_aim_command[
+                                        "body_quaternion_world_xyzw"
+                                    ],
+                                    "solver_iterations": live_aim_command["solver"][
+                                        "iterations"
+                                    ],
+                                    "solver_residual_angle_degrees": live_aim_command[
+                                        "solver"
+                                    ]["residual_angle_degrees"],
+                                }
+                            )
+                    _, jacobian = _jacobians_world_and_root()
                     ee_pose_w = _to_torch(robot.data.body_pose_w)[:, body_index]
                     root_pose_w = _to_torch(robot.data.root_pose_w)
                     ee_pos_b, ee_quat_b = subtract_frame_transforms(
@@ -1798,7 +2019,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 # a wrist that never saw the object can be told apart from a
                 # wrist that never got there.
                 achieved_world = _to_torch(robot.data.body_pose_w)[0, body_index, :3]
-                target_world = waypoint["position_world_m"]
+                target_world = resolved_target_world
                 # Measure the tool's true clearance over the can rather than
                 # inferring it from published gripper geometry: the lowest
                 # gripper body is what actually collides.
@@ -1837,6 +2058,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                             None if lowest_gripper_z is None else lowest_gripper_z - can_top_z
                         ),
                         "target_position_world_m": [float(v) for v in target_world],
+                        "preregistered_position_world_m": [
+                            float(v) for v in waypoint["position_world_m"]
+                        ],
+                        "position_control_mode": position_control_mode,
                         "achieved_position_world_m": [float(v) for v in achieved_world],
                         "position_error_m": float(
                             sum(
@@ -1849,6 +2074,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     }
                 )
                 for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
+                    wrist_pose_override = (
+                        _wrist_camera_evidence_pose()
+                        if camera_name == "wrist_camera"
+                        else None
+                    )
                     approach_frames.append(
                         _save_camera(
                             output,
@@ -1861,6 +2091,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 * cfg.decimation
                             ),
                             require_metric_depth=(camera_name != "external_camera_2"),
+                            pose_override=wrist_pose_override,
+                            pose_source=(
+                                "live_articulation_body_times_reset_rigid_mount_offset"
+                                if wrist_pose_override is not None
+                                else "isaac_sensor_buffer"
+                            ),
                         )
                     )
                 _phase(
@@ -1874,6 +2110,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     and episode_start_selection.get("status") == "ready"
                 ):
                     break
+            camera_aim_plan["live_solver_updates"] = camera_aim_live_solver_updates
         except Exception as exc:  # noqa: BLE001 - recorded, never fatal
             approach_ik_succeeded = False
             approach_error = f"{type(exc).__name__}: {exc}"
@@ -1923,6 +2160,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             phase_started = time.monotonic()
             try:
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
+                from adp009d_isaac_episode_adapter import (
+                    controlled_body_pose_for_grasp_frame_target,
+                )
                 from adp009d_droid_action_execution import GripperConvention
                 from adp009d_control_episode import run_required_controls
                 from adp009d_episode_batch import (
@@ -2030,6 +2270,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 # failed replay therefore cannot spend inference or masquerade
                 # as a policy that chose to do nothing.
                 _restore_wrist_observable_episode_start()
+                control_ik_call_counter = [0]
 
                 def _scripted_pose_action_callback(
                     *,
@@ -2040,10 +2281,43 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 ):
                     """One bounded native differential-IK action for a control phase."""
 
+                    if target_quaternion_world_xyzw is None:
+                        raise RuntimeError(
+                            "scripted_control_task_orientation_missing"
+                        )
+                    body_poses = _to_torch(robot.data.body_pose_w)[0]
+                    body_pose = body_poses[body_index, :7]
+                    finger_indices = [
+                        body_names.index("left_inner_finger"),
+                        body_names.index("right_inner_finger"),
+                    ]
+                    finger_midpoint = (
+                        body_poses[finger_indices[0], :3]
+                        + body_poses[finger_indices[1], :3]
+                    ) / 2.0
+                    target_body_position_world, held_body_quaternion_world = (
+                        controlled_body_pose_for_grasp_frame_target(
+                            current_body_position_world_m=[
+                                float(value) for value in body_pose[:3]
+                            ],
+                            current_body_quaternion_world_xyzw=[
+                                float(value) for value in body_pose[3:7]
+                            ],
+                            current_grasp_frame_position_world_m=[
+                                float(value) for value in finger_midpoint
+                            ],
+                            target_grasp_frame_position_world_m=(
+                                target_position_world_m
+                            ),
+                            target_body_quaternion_world_xyzw=(
+                                target_quaternion_world_xyzw
+                            ),
+                        )
+                    )
                     base_pose = _to_torch(robot.data.root_pose_w)[0, :7]
                     position_base, quaternion_base = pose_world_to_base(
-                        position_world=target_position_world_m,
-                        quaternion_world_xyzw=target_quaternion_world_xyzw,
+                        position_world=target_body_position_world,
+                        quaternion_world_xyzw=held_body_quaternion_world,
                         base_position_world=[float(v) for v in base_pose[:3]],
                         base_quaternion_world_xyzw=[float(v) for v in base_pose[3:7]],
                     )
@@ -2054,9 +2328,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     )
                     controller.reset()
                     controller.set_command(command)
-                    jacobian = _to_torch(robot.root_view.get_jacobians())[
-                        :, jacobian_index, :, arm_joint_ids
-                    ]
+                    jacobian_world, jacobian = _jacobians_world_and_root()
                     ee_pose_w = _to_torch(robot.data.body_pose_w)[:, body_index]
                     root_pose_w = _to_torch(robot.data.root_pose_w)
                     ee_pos_b, ee_quat_b = subtract_frame_transforms(
@@ -2077,6 +2349,56 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         -float(max_joint_delta_rad),
                         float(max_joint_delta_rad),
                     )
+                    callback_index = control_ik_call_counter[0]
+                    control_ik_call_counter[0] += 1
+                    if len(control_ik_step_diagnostics) < 16 and (
+                        callback_index < 4 or callback_index % 20 == 0
+                    ):
+                        control_ik_step_diagnostics.append(
+                            {
+                                "callback_index": callback_index,
+                                "target_grasp_frame_position_world_m": [
+                                    float(value) for value in target_position_world_m
+                                ],
+                                "current_grasp_frame_position_world_m": [
+                                    float(value) for value in finger_midpoint
+                                ],
+                                "target_controlled_body_position_world_m": [
+                                    float(value) for value in target_body_position_world
+                                ],
+                                "current_controlled_body_position_world_m": [
+                                    float(value) for value in ee_pose_w[0, :3]
+                                ],
+                                "target_controlled_body_position_root_m": [
+                                    float(value) for value in position_base
+                                ],
+                                "current_controlled_body_position_root_m": [
+                                    float(value) for value in ee_pos_b[0]
+                                ],
+                                "position_error_root_m": [
+                                    float(position_base[index] - ee_pos_b[0, index])
+                                    for index in range(3)
+                                ],
+                                "jacobian_shape": list(jacobian.shape),
+                                "jacobian_world_frobenius_norm": float(
+                                    torch.linalg.vector_norm(jacobian_world[0])
+                                ),
+                                "jacobian_root_frobenius_norm": float(
+                                    torch.linalg.vector_norm(jacobian[0])
+                                ),
+                                "jacobian_root_rank": int(
+                                    torch.linalg.matrix_rank(jacobian[0])
+                                ),
+                                "unbounded_joint_delta_rad": [
+                                    float(value)
+                                    for value in (joint_target - current_arm)[0]
+                                ],
+                                "bounded_joint_delta_rad": [
+                                    float(value)
+                                    for value in (bounded_target - current_arm)[0]
+                                ],
+                            }
+                        )
                     scripted_action = torch.zeros_like(action)
                     scripted_action[:, :7] = bounded_target
                     scripted_action[:, 7] = float(gripper_command)
@@ -2098,6 +2420,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     reset_callback=_restore_wrist_observable_episode_start,
                     simulation_step_seconds=float(cfg.sim.dt * cfg.decimation),
                     scripted_pose_action_callback=_scripted_pose_action_callback,
+                    camera_pose_callback=lambda camera_name: (
+                        _wrist_camera_evidence_pose()
+                        if camera_name == "wrist_camera"
+                        else None
+                    ),
                 )
                 convention = GripperConvention(
                     closed_command=float(gripper_probe["closed_command"]),
@@ -2174,7 +2501,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         scenario_instance = json.loads(
                             scenario_instance_path.read_text(encoding="utf-8")
                         )
-                        control_plan_path = runtime / "adp009d_control_plan.v1.json"
+                        control_plan_path = runtime / "adp009d_control_plan.v4.json"
                         if not control_plan_path.is_file():
                             raise RuntimeError("adp009d_control_plan_missing")
                         expected_control_plan = json.loads(
@@ -2316,6 +2643,16 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 )
             if episode_start_selection.get("status") != "ready":
                 episode_blockers.extend(episode_start_selection.get("blockers") or [])
+        scripted_control_ik = {
+            "schema_version": "adp009d_scripted_control_ik_receipt.v1",
+            "binding": control_ik_binding,
+            "step_diagnostics": control_ik_step_diagnostics,
+            "receipt_digest": "",
+        }
+        scripted_control_ik["receipt_digest"] = _canonical_digest(
+            scripted_control_ik,
+            digest_field="receipt_digest",
+        )
         return {
             "schema_version": "adp009d_native_microcheck.v1",
             "status": "completed" if not episode_blockers else "blocked",
@@ -2376,6 +2713,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "controls_requested": controls_requested,
             "control_episode": control_episode,
             "control_episode_error": control_episode_error,
+            "scripted_control_ik": scripted_control_ik,
             "wrist_episode_start_selection": episode_start_selection,
             "wrist_episode_start_restore_receipts": episode_start_restore_receipts,
             "policy_candidate_bound": candidate_id or None,

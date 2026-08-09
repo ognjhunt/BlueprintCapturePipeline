@@ -48,8 +48,8 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v1"
-CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v1"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v4"
+CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
 
@@ -57,13 +57,23 @@ ZERO_ACTION_NEGATIVE = "zero_action_negative"
 SCRIPTED_POSITIVE = "deterministic_scripted_positive"
 REQUIRED_CONTROLS = (ZERO_ACTION_NEGATIVE, SCRIPTED_POSITIVE)
 
-# The controlled body is the Robotiq base.  v84's approach receipt measured the
-# lowest gripper body about 0.185 m below it.  Adding half the sealed can height
-# centers the fingers on the can; the value remains explicit in every plan.
-GRIPPER_BODY_TO_FINGER_CENTER_Z_M = 0.1855
+# IK controls an articulation body while the task is grasped at the midpoint
+# between the finger bodies.  Those frames are not coincident: v88 proved that
+# treating them as one left the fingers 0.39 m from the can while the arm moved
+# by 0.81 rad.  The plan therefore targets the semantic grasp frame and the
+# live adapter measures the body-to-grasp transform; no asset-specific scalar
+# tool offset is allowed here.
+GRASP_TARGET_FRAME = "probe_calibrated_finger_midpoint"
+CONTROLLED_BODY_ORIENTATION_STRATEGY = "horizontal_support_top_down_task_orientation"
+CONTROLLED_BODY_QUATERNION_WORLD_XYZW = [1.0, 0.0, 0.0, 0.0]
 PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
-TOOL_QUATERNION_WORLD_XYZW = (1.0, 0.0, 0.0, 0.0)
+PHASE_ARRIVAL_TOLERANCE_M = 0.02
+MOTION_PHASE_MINIMUM_STEPS = 1
+MOTION_PHASE_MAXIMUM_STEPS = 240
+GRIPPER_DWELL_MINIMUM_STEPS = 30
+GRIPPER_DWELL_MAXIMUM_STEPS = 120
+PHASE_ARRIVAL_STABILITY_STEPS = 3
 ZERO_ACTION_STEPS = 80
 # Retain a calibrated overview sequence throughout motion, not only at phase
 # boundaries.  Arena advances at roughly 30 Hz, so eight native steps yields a
@@ -72,6 +82,7 @@ CONTROL_REVIEW_FRAME_STRIDE_STEPS = 8
 
 BLOCKER_ZERO_COMPLETED_TASK = "zero_action_negative_completed_task"
 BLOCKER_POSITIVE_FAILED = "deterministic_scripted_positive_failed"
+BLOCKER_PHASE_NOT_REACHED = "scripted_control_phase_not_reached"
 BLOCKER_MEDIA_INCOMPLETE = "control_episode_media_incomplete"
 
 
@@ -106,7 +117,7 @@ class ControlEnvironment(Protocol):
         self,
         *,
         target_position_world_m: Sequence[float],
-        target_quaternion_world_xyzw: Sequence[float],
+        target_quaternion_world_xyzw: Sequence[float] | None,
         gripper_command: float,
         max_joint_delta_rad: float,
     ) -> Sequence[float]: ...
@@ -160,12 +171,8 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
     object_height = _finite(parameters.get("object_height_m"))
     if object_height <= 0.0:
         raise ControlEpisodeError(["control_plan_object_height_invalid"])
-    grasp_body_z = (
-        start[2] + GRIPPER_BODY_TO_FINGER_CENTER_Z_M + object_height / 2.0
-    )
-    place_body_z = (
-        target[2] + GRIPPER_BODY_TO_FINGER_CENTER_Z_M + object_height / 2.0
-    )
+    grasp_frame_z = start[2] + object_height / 2.0
+    place_frame_z = target[2] + object_height / 2.0
     phases = [
         {
             "phase_id": "pregrasp",
@@ -176,21 +183,24 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
                 start[2] + PREGRASP_CLEARANCE_ABOVE_SUPPORT_M,
             ],
             "gripper": "open",
-            "steps": 80,
+            "minimum_steps": MOTION_PHASE_MINIMUM_STEPS,
+            "maximum_steps": MOTION_PHASE_MAXIMUM_STEPS,
         },
         {
             "phase_id": "descend",
             "mode": "ik_pose",
-            "target_position_world_m": [start[0], start[1], grasp_body_z],
+            "target_position_world_m": [start[0], start[1], grasp_frame_z],
             "gripper": "open",
-            "steps": 80,
+            "minimum_steps": MOTION_PHASE_MINIMUM_STEPS,
+            "maximum_steps": MOTION_PHASE_MAXIMUM_STEPS,
         },
         {
             "phase_id": "grasp",
             "mode": "ik_pose",
-            "target_position_world_m": [start[0], start[1], grasp_body_z],
+            "target_position_world_m": [start[0], start[1], grasp_frame_z],
             "gripper": "closed",
-            "steps": 30,
+            "minimum_steps": GRIPPER_DWELL_MINIMUM_STEPS,
+            "maximum_steps": GRIPPER_DWELL_MAXIMUM_STEPS,
         },
         {
             "phase_id": "lift",
@@ -201,7 +211,8 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
                 start[2] + PREGRASP_CLEARANCE_ABOVE_SUPPORT_M,
             ],
             "gripper": "closed",
-            "steps": 80,
+            "minimum_steps": MOTION_PHASE_MINIMUM_STEPS,
+            "maximum_steps": MOTION_PHASE_MAXIMUM_STEPS,
         },
         {
             "phase_id": "transport",
@@ -212,21 +223,24 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
                 target[2] + PREGRASP_CLEARANCE_ABOVE_SUPPORT_M,
             ],
             "gripper": "closed",
-            "steps": 100,
+            "minimum_steps": MOTION_PHASE_MINIMUM_STEPS,
+            "maximum_steps": MOTION_PHASE_MAXIMUM_STEPS,
         },
         {
             "phase_id": "place",
             "mode": "ik_pose",
-            "target_position_world_m": [target[0], target[1], place_body_z],
+            "target_position_world_m": [target[0], target[1], place_frame_z],
             "gripper": "closed",
-            "steps": 80,
+            "minimum_steps": MOTION_PHASE_MINIMUM_STEPS,
+            "maximum_steps": MOTION_PHASE_MAXIMUM_STEPS,
         },
         {
             "phase_id": "release",
             "mode": "ik_pose",
-            "target_position_world_m": [target[0], target[1], place_body_z],
+            "target_position_world_m": [target[0], target[1], place_frame_z],
             "gripper": "open",
-            "steps": 30,
+            "minimum_steps": GRIPPER_DWELL_MINIMUM_STEPS,
+            "maximum_steps": GRIPPER_DWELL_MAXIMUM_STEPS,
         },
         {
             "phase_id": "retreat",
@@ -237,7 +251,8 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
                 target[2] + PREGRASP_CLEARANCE_ABOVE_SUPPORT_M,
             ],
             "gripper": "open",
-            "steps": 60,
+            "minimum_steps": MOTION_PHASE_MINIMUM_STEPS,
+            "maximum_steps": MOTION_PHASE_MAXIMUM_STEPS,
         },
         {
             "phase_id": "settle",
@@ -249,9 +264,13 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
     ]
     for phase in phases:
         if phase["target_position_world_m"] is not None:
+            phase["target_frame"] = GRASP_TARGET_FRAME
+            phase["orientation_strategy"] = CONTROLLED_BODY_ORIENTATION_STRATEGY
             phase["target_quaternion_world_xyzw"] = list(
-                TOOL_QUATERNION_WORLD_XYZW
+                CONTROLLED_BODY_QUATERNION_WORLD_XYZW
             )
+            phase["arrival_tolerance_m"] = PHASE_ARRIVAL_TOLERANCE_M
+            phase["arrival_stability_steps"] = PHASE_ARRIVAL_STABILITY_STEPS
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
 
     plan: dict[str, Any] = {
@@ -265,8 +284,11 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_start_position_world_m": start,
         "resolved_destination_position_world_m": target,
         "object_height_m": object_height,
-        "gripper_body_to_finger_center_z_m": GRIPPER_BODY_TO_FINGER_CENTER_Z_M,
-        "tool_quaternion_world_xyzw": list(TOOL_QUATERNION_WORLD_XYZW),
+        "grasp_target_frame": GRASP_TARGET_FRAME,
+        "controlled_body_orientation_strategy": CONTROLLED_BODY_ORIENTATION_STRATEGY,
+        "controlled_body_quaternion_world_xyzw": list(
+            CONTROLLED_BODY_QUATERNION_WORLD_XYZW
+        ),
         "zero_action": {
             "semantics": (
                 "zero_joint_velocity_realized_as_hold_current_absolute_joint_positions"
@@ -289,6 +311,54 @@ def _sample(environment: ControlEnvironment, step_index: int) -> dict[str, Any]:
         raise ControlEpisodeError(["control_episode_can_pose_world_missing"])
     sample["step_index"] = int(step_index)
     return sample
+
+
+def _phase_arrival(
+    *,
+    phase: Mapping[str, Any],
+    start_sample: Mapping[str, Any],
+    terminal_sample: Mapping[str, Any],
+    steps_executed: int,
+    stability_steps_observed: int,
+    termination_reason: str,
+) -> dict[str, Any]:
+    """Retain and gate the semantic grasp-frame error for one IK phase."""
+
+    target = [float(value) for value in phase["target_position_world_m"]]
+    start = [float(value) for value in start_sample["grasp_frame_position_world_m"]]
+    achieved = [
+        float(value) for value in terminal_sample["grasp_frame_position_world_m"]
+    ]
+    tolerance = float(phase["arrival_tolerance_m"])
+    error = math.dist(achieved, target)
+    stability_steps_required = int(phase["arrival_stability_steps"])
+    return {
+        "phase_id": str(phase["phase_id"]),
+        "target_frame": str(phase["target_frame"]),
+        "target_position_world_m": target,
+        "start_position_world_m": start,
+        "achieved_position_world_m": achieved,
+        "terminal_position_error_m": error,
+        "arrival_tolerance_m": tolerance,
+        "terminal_within_tolerance": error <= tolerance,
+        "minimum_steps": int(phase["minimum_steps"]),
+        "maximum_steps": int(phase["maximum_steps"]),
+        "steps_executed": int(steps_executed),
+        "arrival_stability_steps_required": stability_steps_required,
+        "arrival_stability_steps_observed": int(stability_steps_observed),
+        "termination_reason": str(termination_reason),
+        "target_reached": termination_reason == "stable_arrival",
+    }
+
+
+def _within_phase_arrival_tolerance(
+    *, phase: Mapping[str, Any], sample: Mapping[str, Any]
+) -> bool:
+    target = [float(value) for value in phase["target_position_world_m"]]
+    achieved = [
+        float(value) for value in sample["grasp_frame_position_world_m"]
+    ]
+    return math.dist(achieved, target) <= float(phase["arrival_tolerance_m"])
 
 
 def _persist_observation(
@@ -354,6 +424,8 @@ def run_control_episode(
 
     if control_id not in REQUIRED_CONTROLS:
         raise ControlEpisodeError([f"control_episode_control_unknown:{control_id}"])
+    if plan.get("schema_version") != CONTROL_PLAN_SCHEMA_VERSION:
+        raise ControlEpisodeError(["control_episode_plan_schema_invalid"])
     if plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest"):
         raise ControlEpisodeError(["control_episode_plan_digest_mismatch"])
     output = Path(media_output_dir).expanduser().resolve()
@@ -375,6 +447,8 @@ def run_control_episode(
     review_observations: list[dict[str, Any]] = []
     observation_index = 1
     step_index = 0
+    phase_arrivals: list[dict[str, Any]] = []
+    phase_execution_blocker: str | None = None
 
     if control_id == ZERO_ACTION_NEGATIVE:
         phases = [
@@ -392,12 +466,19 @@ def run_control_episode(
         phases = [dict(phase) for phase in plan["scripted_positive_phases"]]
 
     for phase_index, phase in enumerate(phases):
+        phase_start_sample = samples[-1]
+        phase_steps_executed = 0
+        stability_steps_observed = 0
+        termination_reason = "fixed_steps_completed"
         gripper_command = (
             float(gripper_open_command)
             if phase["gripper"] == "open"
             else float(gripper_closed_command)
         )
-        for _ in range(int(phase["steps"])):
+        phase_step_limit = int(
+            phase.get("maximum_steps", phase.get("steps", 0))
+        )
+        for _ in range(phase_step_limit):
             before = [float(v) for v in environment.read_arm_joint_positions()]
             if phase["mode"] == "hold_current_joint_positions":
                 action = environment.hold_action(gripper_command=gripper_command)
@@ -412,6 +493,7 @@ def run_control_episode(
                 )
             environment.step(action)
             step_index += 1
+            phase_steps_executed += 1
             after = [float(v) for v in environment.read_arm_joint_positions()]
             actions.append(
                 _record_action(
@@ -423,6 +505,13 @@ def run_control_episode(
                 )
             )
             samples.append(_sample(environment, step_index))
+            if phase["mode"] == "ik_pose":
+                if _within_phase_arrival_tolerance(
+                    phase=phase, sample=samples[-1]
+                ):
+                    stability_steps_observed += 1
+                else:
+                    stability_steps_observed = 0
             if step_index % CONTROL_REVIEW_FRAME_STRIDE_STEPS == 0:
                 review_observations.append(
                     _persist_observation(
@@ -434,6 +523,16 @@ def run_control_episode(
                     )
                 )
                 observation_index += 1
+            if (
+                phase["mode"] == "ik_pose"
+                and phase_steps_executed >= int(phase["minimum_steps"])
+                and stability_steps_observed
+                >= int(phase["arrival_stability_steps"])
+            ):
+                termination_reason = "stable_arrival"
+                break
+        if phase["mode"] == "ik_pose" and termination_reason != "stable_arrival":
+            termination_reason = "maximum_steps_exhausted"
         if (
             phase_index < len(phases) - 1
             and step_index % CONTROL_REVIEW_FRAME_STRIDE_STEPS != 0
@@ -448,6 +547,25 @@ def run_control_episode(
                 )
             )
             observation_index += 1
+        if phase["mode"] == "ik_pose":
+            arrival = _phase_arrival(
+                phase=phase,
+                start_sample=phase_start_sample,
+                terminal_sample=samples[-1],
+                steps_executed=phase_steps_executed,
+                stability_steps_observed=stability_steps_observed,
+                termination_reason=termination_reason,
+            )
+            phase_arrivals.append(arrival)
+            if not arrival["target_reached"]:
+                phase_execution_blocker = (
+                    f"{BLOCKER_PHASE_NOT_REACHED}:{phase['phase_id']}:"
+                    f"error_m={arrival['terminal_position_error_m']:.6f}:"
+                    "stability_steps="
+                    f"{arrival['arrival_stability_steps_observed']}/"
+                    f"{arrival['arrival_stability_steps_required']}"
+                )
+                break
 
     terminal = _persist_observation(
         environment,
@@ -490,6 +608,9 @@ def run_control_episode(
             if passed
             else [f"{BLOCKER_POSITIVE_FAILED}:{score.get('outcome')}"]
         )
+        if phase_execution_blocker is not None:
+            blockers.append(phase_execution_blocker)
+            passed = False
     if visual.get("status") != "complete":
         blockers.append(BLOCKER_MEDIA_INCOMPLETE)
         passed = False
@@ -518,6 +639,8 @@ def run_control_episode(
         "state_trace_digest": canonical_digest({"samples": samples}),
         "action_trace": actions,
         "action_trace_digest": canonical_digest({"actions": actions}),
+        "phase_arrivals": phase_arrivals,
+        "phase_execution_blocker": phase_execution_blocker,
         "contact_trace": [
             {
                 "step_index": sample["step_index"],
@@ -580,7 +703,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v1.json", plan)
+    _write_json(output / "adp009d_control_plan.v4.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(
@@ -629,6 +752,7 @@ def run_required_controls(
 
 __all__ = [
     "BLOCKER_POSITIVE_FAILED",
+    "BLOCKER_PHASE_NOT_REACHED",
     "BLOCKER_ZERO_COMPLETED_TASK",
     "CONTROL_EPISODE_SCHEMA_VERSION",
     "CONTROL_PAIR_SCHEMA_VERSION",

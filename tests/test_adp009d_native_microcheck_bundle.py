@@ -160,6 +160,7 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     assert "provider_runtime/assets/approved_can.usda" in names
     assert f"provider_runtime/assets/{APPROVED_CAN_ADAPTER_FILENAME}" in names
     assert "provider_runtime/assets/sage_collision.usd" in names
+    assert "provider_runtime/adp009d_task_destination.v1.json" in names
     assert f"provider_runtime/assets/{TASK_COLLISION_DERIVATIVE_FILENAME}" in names
     assert f"provider_runtime/assets/{TASK_COLLISION_MANIFEST_FILENAME}" in names
     derivative_root = Path(first["bundle_path"]).parent / "provider_runtime/assets"
@@ -204,7 +205,7 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
         ).decode()
     assert "provider_runtime/adp009d_control_episode.py" in names
     assert "provider_runtime/adp009d_scenario_instance.v1.json" in names
-    assert "provider_runtime/adp009d_control_plan.v1.json" in names
+    assert "provider_runtime/adp009d_control_plan.v4.json" in names
     assert 'BLUEPRINT_ADP009D_CONTROLS="1"' in entrypoint
     assert "adp009d_policy_provisioning.pi05_droid.sh" not in names
     media_preflight = entrypoint.index(
@@ -641,6 +642,26 @@ def test_runtime_retains_camera_semantic_mapping_and_quality_diagnostics() -> No
     assert '"foreground_semantic_pixel_fraction"' in source
 
 
+def test_overview_camera_is_task_centered_and_fails_closed_when_object_is_absent() -> None:
+    """The stock second Arena view faced backward and showed no task pixels."""
+
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+    configure = source[source.index("overview_camera_cfg =") :]
+    gate = configure.index("overview_camera_task_object_not_observable")
+    controls = configure.index('os.environ.get("BLUEPRINT_ADP009D_CONTROLS")')
+    assert "task_envelope_center" in configure[:gate]
+    assert "distance_m=OVERVIEW_TASK_CAMERA_DISTANCE_M" in configure[:gate]
+    assert (
+        "overview_camera_cfg.offset.rot = external_camera_cfg.offset.rot"
+        in configure[:gate]
+    )
+    assert (
+        "overview_camera_cfg.offset.convention = external_camera_cfg.offset.convention"
+        in configure[:gate]
+    )
+    assert gate < controls
+
+
 def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
     source = Path(isaac_runtime.__file__).with_name("adp009d_native_microcheck_worker.py")
     text = source.read_text(encoding="utf-8")
@@ -878,7 +899,9 @@ def test_allocator_routes_microcheck_only_through_canonical_grant(
 
     monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
 
-    assert allocator.main(_allocator_args(tmp_path, execute=execute)) == 0
+    assert allocator.main(
+        _allocator_args(tmp_path, execute=execute) + ["--adp009d-diagnostic-only"]
+    ) == 0
     assert observed["execute"] is execute
     assert (
         isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is execute
@@ -887,6 +910,59 @@ def test_allocator_routes_microcheck_only_through_canonical_grant(
     assert admission["probe_kind"] == PROBE_KIND
     assert admission["retry_cap"] == 0
     assert admission["candidate_policy_queried"] is False
+    assert admission["allocation_binding"]["diagnostic_only_requested"] is True
+
+
+def test_allocator_refuses_an_ambiguous_paid_microcheck_without_an_execution_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v94 omitted the controls flag and paid for a request with no work mode."""
+
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+
+    assert allocator.main(_allocator_args(tmp_path, execute=False)) == 2
+    assert called is False
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert result["provider_mutations_performed"] == 0
+    assert "adp009d_execution_mode_missing" in result["blockers"]
+
+
+def test_paid_host_exit_before_control_receipt_is_avoidlisted_not_scored() -> None:
+    """v95 exited during install before a terminal bundle marker or receipt."""
+
+    from blueprint_pipeline import vast_provider_adapter as vast
+
+    blockers = vast._provider_instance_exit_blockers(
+        instance_exited=True,
+        provider_completed_or_blocked=False,
+    )
+    assert blockers == ["provider_instance_exited_before_bundle_terminal_marker"]
+    assert (
+        vast._machine_avoidlist_reason(
+            ["provider_bundle_completion_marker_missing", *blockers]
+        )
+        == "vast_provider_bundle_instance_exited_before_terminal_marker"
+    )
+    assert (
+        vast._provider_instance_exit_blockers(
+            instance_exited=True,
+            provider_completed_or_blocked=True,
+        )
+        == []
+    )
+    assert vast._machine_avoidlist_reason(["provider_output_upload_marker_missing"]) is None
 
 
 def test_allocator_controls_fail_closed_without_scenario_instance(
@@ -1040,6 +1116,7 @@ def test_allocator_binds_concurrent_instance_authority_through_transport(
 
     monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
     args = _allocator_args(tmp_path, execute=False) + [
+        "--adp009d-diagnostic-only",
         "--adp-allowed-active-vast-instance-id",
         "47190772",
     ]
@@ -1551,9 +1628,11 @@ def test_the_exit_is_named_rather_than_blamed_on_absent_log_progress() -> None:
         'break_reason = "no_log_progress_timeout"'
     )
     # And it blacklists the machine, like the other startup-plane failures.
-    assert '"vast_heartbeat_instance_exited",' in source
-    blockers = source[source.index("startup_control_plane_blocked = any(") :]
-    assert "vast_heartbeat_instance_exited" in blockers[:600]
+    assert (
+        adapter._machine_avoidlist_reason(["vast_heartbeat_instance_exited"])
+        == "vast_startup_control_plane_did_not_reach_onstart_heartbeat"
+    )
+    assert "_machine_avoidlist_reason(current_blockers)" in source
 
 
 def test_the_first_render_step_is_visible_in_the_phase_log() -> None:

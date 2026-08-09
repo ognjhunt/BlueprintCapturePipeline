@@ -156,6 +156,18 @@ EPISODE_START_RESTORE_MAX_STEPS = (
     + len(APPROACH_STANDOFF_HEIGHTS_M) * APPROACH_STEPS_PER_WAYPOINT
     + EPISODE_START_RESTORE_SETTLE_STEPS
 )
+
+
+def approved_can_visual_center_world() -> list[float]:
+    """Observed visual centre of the exact can, not its support-plane root."""
+
+    return [
+        CAN_AXIS_XY_M[0],
+        CAN_AXIS_XY_M[1],
+        SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0,
+    ]
+
+
 BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START = "no_safe_wrist_observable_episode_start"
 BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH = "wrist_episode_start_restore_joint_mismatch"
 BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED = "wrist_episode_start_restore_object_moved"
@@ -733,6 +745,37 @@ def pose_world_to_base(
     return position_base, quaternion_base
 
 
+def world_to_base_rotation_row_major_xyzw(
+    base_quaternion_world_xyzw: Sequence[float],
+) -> list[float]:
+    """Return the rotation that expresses world vectors in the robot root.
+
+    PhysX exposes articulation Jacobians in world axes.  A Cartesian pose error
+    expressed in the robot root therefore cannot be paired with the raw matrix
+    when the root is rotated.  ADP-009D's DROID base has a -90 degree yaw, which
+    made that mismatch visible in v90: the requested world -Y motion appeared
+    mostly as world +X motion.  Keep this tiny transform simulator-independent
+    so the exact frame contract has a hermetic numerical regression.
+    """
+
+    try:
+        quaternion = tuple(float(value) for value in base_quaternion_world_xyzw)
+    except (TypeError, ValueError) as exc:
+        raise ApproachCaptureError(["robot_base_quaternion_invalid"]) from exc
+    if len(quaternion) != 4 or not all(math.isfinite(value) for value in quaternion):
+        raise ApproachCaptureError(["robot_base_quaternion_invalid"])
+    norm = math.sqrt(sum(value * value for value in quaternion))
+    if norm <= 1.0e-12:
+        raise ApproachCaptureError(["robot_base_quaternion_invalid"])
+    normalized = tuple(value / norm for value in quaternion)
+    inverse = _quat_conjugate(normalized)
+    columns = [
+        _quat_rotate(inverse, basis)
+        for basis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    ]
+    return [columns[column][row] for row in range(3) for column in range(3)]
+
+
 def rigid_offset_in_body_frame(
     *,
     body_position_world: Sequence[float],
@@ -742,16 +785,15 @@ def rigid_offset_in_body_frame(
 ) -> tuple[list[float], list[float]]:
     """Express a child's world pose as a constant offset in a body's frame.
 
-    Arena parents the wrist camera under the Robotiq gripper base, which is not
-    an articulation body -- PhysX never writes a pose for it, so the camera keeps
-    its authored transform while the arm moves.  A live run measured the hand
-    travelling 0.27 m while every recorded wrist pose stayed byte-identical.
+    Arena parents the wrist camera under the Robotiq gripper base.  The rendered
+    hierarchy follows that live articulation body, but v92 established that the
+    sensor buffer and direct USD query both retained their initialization pose
+    while Fabric moved the articulation for rendering.
 
     Rather than re-author Arena's rig, the offset is measured once at the reset
     pose, where the authored transform is still the true one, and re-applied from
-    the live body pose at each capture.  This assumes the gripper base is rigidly
-    fixed to the body it hangs from, which holds: the fingers articulate, the
-    base does not.
+    the live gripper-base body pose at each capture.  The camera-to-base mount is
+    rigid; only the fingers articulate below it.
     """
 
     body_inverse = _quat_conjugate(body_quaternion_world_xyzw)
@@ -776,6 +818,135 @@ def apply_rigid_offset(
     position_world = [float(body_position_world[index]) + rotated[index] for index in range(3)]
     quaternion_world = list(_quat_multiply(body_quaternion_world_xyzw, offset_quaternion_body_xyzw))
     return position_world, quaternion_world
+
+
+def solve_rigid_mount_camera_aim(
+    *,
+    body_position_world: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
+    offset_position_body: Sequence[float],
+    offset_quaternion_body_xyzw: Sequence[float],
+    target_position_world: Sequence[float],
+    max_iterations: int = 20,
+    tolerance_degrees: float = 1.0e-5,
+) -> dict[str, Any]:
+    """Aim an offset rigid camera while accounting for its rotational swing.
+
+    A one-shot look-at rotation is only exact when the camera is colocated with
+    the controlled body.  A wrist camera has a non-zero mount offset, so body
+    rotation changes both its orientation *and* its world position.  Solve that
+    coupling as a bounded fixed point: rebuild the camera pose from the proposed
+    body orientation, then correct the remaining optical-axis error.
+
+    The bounded iteration and explicit residual keep the admission gate
+    fail-closed for unusual mounts or targets where the fixed point does not
+    converge.  The camera mount itself is never re-authored.
+    """
+
+    if (
+        not isinstance(max_iterations, int)
+        or isinstance(max_iterations, bool)
+        or max_iterations < 1
+        or not math.isfinite(float(tolerance_degrees))
+        or tolerance_degrees <= 0.0
+    ):
+        raise ApproachCaptureError(["wrist_camera_aim_solver_configuration_invalid"])
+
+    body_quaternion = [float(value) for value in body_quaternion_world_xyzw]
+    residual_angle_degrees = math.inf
+    camera_position: list[float] = []
+    camera_quaternion: list[float] = []
+    for iteration in range(1, max_iterations + 1):
+        camera_position, camera_quaternion = apply_rigid_offset(
+            body_position_world=body_position_world,
+            body_quaternion_world_xyzw=body_quaternion,
+            offset_position_body=offset_position_body,
+            offset_quaternion_body_xyzw=offset_quaternion_body_xyzw,
+        )
+        body_quaternion = camera_aim_body_quaternion_xyzw(
+            body_quaternion_world_xyzw=body_quaternion,
+            camera_position_world=camera_position,
+            camera_quaternion_world_opengl_xyzw=camera_quaternion,
+            target_position_world=target_position_world,
+        )
+        camera_position, camera_quaternion = apply_rigid_offset(
+            body_position_world=body_position_world,
+            body_quaternion_world_xyzw=body_quaternion,
+            offset_position_body=offset_position_body,
+            offset_quaternion_body_xyzw=offset_quaternion_body_xyzw,
+        )
+        target_delta = [
+            float(target_position_world[index]) - camera_position[index]
+            for index in range(3)
+        ]
+        target_norm = math.sqrt(sum(value * value for value in target_delta))
+        if target_norm <= 1.0e-12:
+            raise ApproachCaptureError(["wrist_camera_aim_pose_invalid"])
+        target_direction = [value / target_norm for value in target_delta]
+        camera_forward = _quat_rotate(camera_quaternion, (0.0, 0.0, -1.0))
+        forward_norm = math.sqrt(sum(value * value for value in camera_forward))
+        dot = max(
+            -1.0,
+            min(
+                1.0,
+                sum(
+                    camera_forward[index] * target_direction[index] / forward_norm
+                    for index in range(3)
+                ),
+            ),
+        )
+        residual_angle_degrees = math.degrees(math.acos(dot))
+        if residual_angle_degrees <= tolerance_degrees:
+            return {
+                "schema_version": "adp009d_rigid_mount_camera_aim_solution.v1",
+                "body_quaternion_world_xyzw": body_quaternion,
+                "camera_position_world_m": camera_position,
+                "camera_quaternion_world_opengl_xyzw": camera_quaternion,
+                "iterations": iteration,
+                "residual_angle_degrees": residual_angle_degrees,
+                "tolerance_degrees": float(tolerance_degrees),
+                "converged": True,
+            }
+
+    raise ApproachCaptureError(
+        [
+            "wrist_camera_aim_solution_not_converged",
+            f"wrist_camera_aim_residual_degrees:{residual_angle_degrees:.9f}",
+        ]
+    )
+
+
+def solve_live_rigid_mount_camera_aim_command(
+    *,
+    body_position_world: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
+    offset_position_body: Sequence[float],
+    offset_quaternion_body_xyzw: Sequence[float],
+    target_position_world: Sequence[float],
+) -> dict[str, Any]:
+    """Build an orientation-priority camera command from the live body pose.
+
+    Holding an old body position while asking for a large wrist-camera rotation
+    can define an unreachable six-DoF end-effector pose.  The observation gate
+    only needs a safe view, so hold the *current* live position and solve the
+    rigid-mount orientation again after every servo step. Object displacement
+    and collision guards remain authoritative during the motion.
+    """
+
+    solution = solve_rigid_mount_camera_aim(
+        body_position_world=body_position_world,
+        body_quaternion_world_xyzw=body_quaternion_world_xyzw,
+        offset_position_body=offset_position_body,
+        offset_quaternion_body_xyzw=offset_quaternion_body_xyzw,
+        target_position_world=target_position_world,
+    )
+    return {
+        "schema_version": "adp009d_live_rigid_mount_camera_aim_command.v1",
+        "position_control_mode": "hold_current_live_body_position",
+        "body_position_world_m": [float(value) for value in body_position_world],
+        "body_quaternion_world_xyzw": solution["body_quaternion_world_xyzw"],
+        "solver": solution,
+    }
 
 
 def _max_travel_m(positions: Sequence[Sequence[float]]) -> float:
@@ -961,12 +1132,16 @@ __all__ = [
     "WRIST_POSE_CAUSE_PRIM_DETACHED",
     "WRIST_POSE_CAUSE_STALE_BUFFER",
     "WRIST_POSE_CAUSE_UNDETERMINED",
+    "approved_can_visual_center_world",
     "apply_rigid_offset",
     "approach_waypoints_world",
     "camera_aim_body_quaternion_xyzw",
     "classify_wrist_pose_discrepancy",
     "rigid_offset_in_body_frame",
+    "solve_rigid_mount_camera_aim",
+    "solve_live_rigid_mount_camera_aim_command",
     "pose_world_to_base",
+    "world_to_base_rotation_row_major_xyzw",
     "select_wrist_observable_episode_start",
     "semantic_label_pixel_count",
     "semantic_target_observability",

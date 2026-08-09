@@ -1532,6 +1532,43 @@ def _record_machine_avoidlist_entry(
     return payload
 
 
+def _provider_instance_exit_blockers(
+    *,
+    instance_exited: bool,
+    provider_completed_or_blocked: bool,
+) -> list[str]:
+    """Classify a paid host that disappears before the bundle seals output.
+
+    A completed or typed-blocked bundle owns its result. An instance that exits
+    after the entrypoint starts but before either terminal marker is a provider
+    host failure, not a simulator or control result. v95 otherwise collapsed
+    that fact into generic missing-output blockers and left the machine eligible.
+    """
+
+    if instance_exited and not provider_completed_or_blocked:
+        return ["provider_instance_exited_before_bundle_terminal_marker"]
+    return []
+
+
+def _machine_avoidlist_reason(blockers: Sequence[str]) -> str | None:
+    """Return the evidence-bounded machine exclusion reason, if any."""
+
+    observed = set(blockers)
+    if "provider_instance_exited_before_bundle_terminal_marker" in observed:
+        return "vast_provider_bundle_instance_exited_before_terminal_marker"
+    startup_blockers = {
+        "vast_heartbeat_blocked",
+        "vast_heartbeat_instance_exited",
+        "vast_heartbeat_no_log_progress_timeout",
+        "vast_heartbeat_container_missing",
+        "vast_heartbeat_output_missing_success_marker",
+        "vast_probe_interrupted_before_completion",
+    }
+    if observed & startup_blockers or any("No such container" in item for item in blockers):
+        return "vast_startup_control_plane_did_not_reach_onstart_heartbeat"
+    return None
+
+
 def _attempt_preservation_slug(generated_at: str) -> str:
     """Compatibility wrapper for the decomposed preservation helper."""
 
@@ -6922,6 +6959,12 @@ def run_vast_provider_adapter(
                 completion_blockers.append("provider_entrypoint_start_marker_missing")
             if not provider_completed_or_blocked:
                 completion_blockers.append("provider_bundle_completion_marker_missing")
+            completion_blockers.extend(
+                _provider_instance_exit_blockers(
+                    instance_exited=heartbeat_instance_exited,
+                    provider_completed_or_blocked=provider_completed_or_blocked,
+                )
+            )
             if not provider_upload_ok:
                 completion_blockers.append("provider_output_upload_marker_missing")
             if not output_zip_received:
@@ -7345,30 +7388,6 @@ def run_vast_provider_adapter(
             generated_at=utc_now_iso(),
         )
         launch_lock_handle = None
-        current_blockers = _string_list(base_result.get("blockers"))
-        startup_control_plane_blocked = any(
-            blocker
-            in {
-                "vast_heartbeat_blocked",
-                "vast_heartbeat_instance_exited",
-                "vast_heartbeat_no_log_progress_timeout",
-                "vast_heartbeat_container_missing",
-                "vast_heartbeat_output_missing_success_marker",
-                "vast_probe_interrupted_before_completion",
-            }
-            or "No such container" in blocker
-            for blocker in current_blockers
-        )
-        if selected_offer and startup_control_plane_blocked:
-            avoidlist = _record_machine_avoidlist_entry(
-                path=resolved_machine_avoidlist_path,
-                generated_at=utc_now_iso(),
-                selected_offer=selected_offer,
-                instance_id=instance_ids[-1] if instance_ids else None,
-                blockers=current_blockers,
-                reason="vast_startup_control_plane_did_not_reach_onstart_heartbeat",
-            )
-            excluded_machine_ids = _machine_id_set(avoidlist.get("machine_ids") or [])
         _append_phase(
             resolved_job_dir,
             "vast_artifacts_exported",
@@ -7455,6 +7474,18 @@ def run_vast_provider_adapter(
                     "structured_policy_canary_passed": structured_policy_canary_passed,
                 }
             )
+        current_blockers = _string_list(base_result.get("blockers"))
+        avoidlist_reason = _machine_avoidlist_reason(current_blockers)
+        if selected_offer and avoidlist_reason:
+            avoidlist = _record_machine_avoidlist_entry(
+                path=resolved_machine_avoidlist_path,
+                generated_at=utc_now_iso(),
+                selected_offer=selected_offer,
+                instance_id=instance_ids[-1] if instance_ids else None,
+                blockers=current_blockers,
+                reason=avoidlist_reason,
+            )
+            excluded_machine_ids = _machine_id_set(avoidlist.get("machine_ids") or [])
         base_result.update(
             {
                 "vast_instance_ids": instance_ids,

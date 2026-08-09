@@ -6,6 +6,7 @@ import pytest
 from blueprint_pipeline.adp009d_approach_capture import (
     APPROACH_CAPTURE_FRAME_BASE,
     APPROACH_STANDOFF_HEIGHTS_M,
+    APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
     BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START,
     BLOCKER_EXTERNAL_TASK_OBJECT_NOT_VISIBLE,
     BLOCKER_EPISODE_START_RESTORE_EXTERNAL_OBJECT_NOT_VISIBLE,
@@ -17,6 +18,7 @@ from blueprint_pipeline.adp009d_approach_capture import (
     CAN_AXIS_XY_M,
     SUPPORT_HEIGHT_M,
     approach_waypoints_world,
+    approved_can_visual_center_world,
     camera_aim_body_quaternion_xyzw,
     external_task_camera_eye_position,
     external_task_camera_offset_plan,
@@ -26,6 +28,7 @@ from blueprint_pipeline.adp009d_approach_capture import (
     semantic_target_observability,
     summarize_wrist_approach_capture,
     validate_wrist_observable_episode_start_restore,
+    world_to_base_rotation_row_major_xyzw,
 )
 
 
@@ -72,6 +75,16 @@ def test_waypoints_descend_over_the_can_axis_and_clear_its_top() -> None:
     assert min(w["capture_frame_index"] for w in waypoints) > 40
 
 
+def test_wrist_aim_targets_the_observed_can_center_not_its_support_root() -> None:
+    target = approved_can_visual_center_world()
+
+    assert target[:2] == list(CAN_AXIS_XY_M)
+    assert target[2] == pytest.approx(
+        SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0
+    )
+    assert target[2] > SUPPORT_HEIGHT_M
+
+
 def test_world_to_base_conversion_matches_a_rotated_translated_base() -> None:
     """A pose expressed in the base frame must round-trip through the base pose."""
 
@@ -92,6 +105,28 @@ def test_world_to_base_conversion_matches_a_rotated_translated_base() -> None:
     # Orientation is the base rotation inverted.
     assert quaternion_base[2] == pytest.approx(-half, abs=1e-9)
     assert quaternion_base[3] == pytest.approx(half, abs=1e-9)
+
+
+def test_v90_world_jacobian_rows_rotate_into_the_minus_90_degree_robot_root() -> None:
+    """The raw PhysX Jacobian cannot consume a root-frame error directly."""
+
+    half = np.sqrt(0.5)
+    world_to_root = np.asarray(
+        world_to_base_rotation_row_major_xyzw([0.0, 0.0, -half, half])
+    ).reshape(3, 3)
+
+    # v90 asked for mostly world -Y motion.  In the yawed robot root that is
+    # mostly +X; pairing this error with an unrotated world Jacobian produced
+    # the observed mostly world +X response.
+    error_world = np.asarray([0.08961545, -0.32588179, 0.1530])
+    error_root = world_to_root @ error_world
+
+    np.testing.assert_allclose(
+        world_to_root,
+        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        atol=1e-8,
+    )
+    assert error_root == pytest.approx([0.32588179, 0.08961545, 0.1530])
 
 
 def test_sealed_can_axis_maps_forward_of_the_minus_90_degree_robot_base() -> None:
@@ -133,6 +168,134 @@ def test_camera_aim_refuses_a_target_at_the_camera_origin() -> None:
             camera_quaternion_world_opengl_xyzw=[0.0, 0.0, 0.0, 1.0],
             target_position_world=[1.0, 2.0, 3.0],
         )
+
+
+def test_rigid_mount_camera_aim_accounts_for_camera_position_swing() -> None:
+    """v93's one-shot aim left the can clipped against the image top edge."""
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        apply_rigid_offset,
+        solve_rigid_mount_camera_aim,
+    )
+
+    body_position = [3.4681746928393387, -3.1697866897883302, 0.7484458672401548]
+    body_quaternion = [
+        -0.5000003054737467,
+        -0.5000001862644553,
+        0.49999976903193577,
+        -0.499999739229613,
+    ]
+    mount_position = [
+        0.010997542936674404,
+        -0.03101206713744055,
+        -0.07399032768695175,
+    ]
+    mount_quaternion = [
+        0.4198868084065459,
+        -0.5699144837283656,
+        -0.5758936469182312,
+        0.4089487234504179,
+    ]
+    target = [3.4681748, -3.3100837, 0.6109650138348479]
+    camera_position, camera_quaternion = apply_rigid_offset(
+        body_position_world=body_position,
+        body_quaternion_world_xyzw=body_quaternion,
+        offset_position_body=mount_position,
+        offset_quaternion_body_xyzw=mount_quaternion,
+    )
+    one_shot = camera_aim_body_quaternion_xyzw(
+        body_quaternion_world_xyzw=body_quaternion,
+        camera_position_world=camera_position,
+        camera_quaternion_world_opengl_xyzw=camera_quaternion,
+        target_position_world=target,
+    )
+    one_shot_camera_position, one_shot_camera_quaternion = apply_rigid_offset(
+        body_position_world=body_position,
+        body_quaternion_world_xyzw=one_shot,
+        offset_position_body=mount_position,
+        offset_quaternion_body_xyzw=mount_quaternion,
+    )
+
+    def optical_axis_error_degrees(position: list[float], quaternion: list[float]) -> float:
+        from blueprint_pipeline import adp009d_approach_capture as capture
+
+        forward = np.asarray(capture._quat_rotate(quaternion, (0.0, 0.0, -1.0)))
+        direction = np.asarray(target) - np.asarray(position)
+        direction /= np.linalg.norm(direction)
+        return float(np.degrees(np.arccos(np.clip(np.dot(forward, direction), -1.0, 1.0))))
+
+    assert optical_axis_error_degrees(
+        one_shot_camera_position, one_shot_camera_quaternion
+    ) == pytest.approx(8.675954583, abs=1.0e-6)
+
+    solved = solve_rigid_mount_camera_aim(
+        body_position_world=body_position,
+        body_quaternion_world_xyzw=body_quaternion,
+        offset_position_body=mount_position,
+        offset_quaternion_body_xyzw=mount_quaternion,
+        target_position_world=target,
+    )
+
+    assert solved["converged"] is True
+    assert solved["iterations"] <= 8
+    assert solved["residual_angle_degrees"] <= solved["tolerance_degrees"]
+    assert optical_axis_error_degrees(
+        solved["camera_position_world_m"],
+        solved["camera_quaternion_world_opengl_xyzw"],
+    ) <= 1.0e-5
+
+
+def test_rigid_mount_camera_aim_rejects_an_unbounded_solver() -> None:
+    from blueprint_pipeline.adp009d_approach_capture import (
+        ApproachCaptureError,
+        solve_rigid_mount_camera_aim,
+    )
+
+    with pytest.raises(
+        ApproachCaptureError,
+        match="wrist_camera_aim_solver_configuration_invalid",
+    ):
+        solve_rigid_mount_camera_aim(
+            body_position_world=[0.0, 0.0, 0.0],
+            body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+            offset_position_body=[0.0, 0.0, 0.1],
+            offset_quaternion_body_xyzw=[0.0, 0.0, 0.0, 1.0],
+            target_position_world=[0.0, 0.0, 1.0],
+            max_iterations=0,
+        )
+
+
+def test_live_rigid_mount_aim_holds_the_shifted_live_position() -> None:
+    """The camera servo must not pull back toward v96's unreachable reset pose."""
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        apply_rigid_offset,
+        solve_live_rigid_mount_camera_aim_command,
+    )
+
+    live_position = [0.04, -0.02, 0.03]
+    command = solve_live_rigid_mount_camera_aim_command(
+        body_position_world=live_position,
+        body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        offset_position_body=[0.08, 0.01, -0.04],
+        offset_quaternion_body_xyzw=[0.0, 0.0, 0.0, 1.0],
+        target_position_world=[0.2, -0.4, -0.1],
+    )
+
+    assert command["position_control_mode"] == "hold_current_live_body_position"
+    assert command["body_position_world_m"] == live_position
+    camera_position, camera_quaternion = apply_rigid_offset(
+        body_position_world=command["body_position_world_m"],
+        body_quaternion_world_xyzw=command["body_quaternion_world_xyzw"],
+        offset_position_body=[0.08, 0.01, -0.04],
+        offset_quaternion_body_xyzw=[0.0, 0.0, 0.0, 1.0],
+    )
+    from blueprint_pipeline import adp009d_approach_capture as capture
+
+    forward = np.asarray(capture._quat_rotate(camera_quaternion, (0.0, 0.0, -1.0)))
+    target_direction = np.asarray([0.2, -0.4, -0.1]) - np.asarray(camera_position)
+    target_direction /= np.linalg.norm(target_direction)
+    assert np.dot(forward, target_direction) == pytest.approx(1.0, abs=1.0e-10)
 
 
 def test_external_task_camera_preserves_the_view_ray_at_fixed_distance() -> None:
@@ -453,6 +616,34 @@ def test_standalone_digest_matches_the_repository_contract() -> None:
     assert bundled(payload, digest_field="a") == canonical_digest(payload, digest_field="a")
 
 
+def test_runtime_control_closeout_digest_matches_repository_contract() -> None:
+    """A blocked control must still seal its IK evidence without crashing."""
+
+    from blueprint_pipeline.adp009d_isaac_runtime import _canonical_digest
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    receipt = {
+        "schema_version": "adp009d_scripted_control_ik_receipt.v1",
+        "binding": {
+            "jacobian_frame": "world",
+            "pose_error_frame": "robot_root",
+            "jacobian_rotation": "world_to_robot_root_linear_and_angular_rows",
+        },
+        "step_diagnostics": [
+            {
+                "phase": "pregrasp",
+                "terminal_error_m": 0.12,
+                "status": "blocked",
+            }
+        ],
+        "receipt_digest": "stale-self-digest-must-be-ignored",
+    }
+
+    expected = canonical_digest(receipt, digest_field="receipt_digest")
+    assert _canonical_digest(receipt, digest_field="receipt_digest") == expected
+    assert receipt["receipt_digest"] == "stale-self-digest-must-be-ignored"
+
+
 def test_runtime_imports_helper_in_both_layouts() -> None:
     """The runtime resolves the helper as a package member and would as a script."""
 
@@ -487,6 +678,15 @@ def test_runtime_uses_the_arena_pinned_isaac_lab_jacobian_api() -> None:
     assert "body_link_pose_w" not in source
     # Fixed-base articulations drop the root row from the jacobian stack.
     assert "robot.is_fixed_base" in source
+    # PhysX returns world-aligned rows.  The controller pose and command are in
+    # the robot root, so both linear and angular blocks must be rotated.  The
+    # pinned task-space action implementation performs these same two bmm calls.
+    assert "world_to_base_rotation_row_major_xyzw(" in source
+    assert "jacobian_world[:, :3, :]" in source
+    assert "jacobian_world[:, 3:, :]" in source
+    assert source.count("torch.bmm(") >= 2
+    assert "_, jacobian = _jacobians_world_and_root()" in source
+    assert "jacobian_world, jacobian = _jacobians_world_and_root()" in source
 
 
 def test_wrist_gate_blocks_when_the_approach_moved_the_object() -> None:
@@ -656,7 +856,8 @@ def test_runtime_records_stage_transform_on_every_capture() -> None:
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     source = Path(runtime.__file__).read_text(encoding="utf-8")
-    assert '"prim_diagnostics": _camera_prim_diagnostics(camera)' in source
+    assert "prim_diagnostics = _camera_prim_diagnostics(camera)" in source
+    assert '"prim_diagnostics": prim_diagnostics' in source
     assert "ComputeLocalToWorldTransform" in source
     # Established stage accessor for this runtime.
     assert "omni.usd.get_context().get_stage()" in source
@@ -740,11 +941,10 @@ def test_runtime_records_the_achieved_end_effector_pose_per_waypoint() -> None:
 
 
 def test_rigid_offset_round_trips_a_camera_through_a_moving_body() -> None:
-    """A camera on a non-articulation prim must be driven from its parent body.
+    """A camera with stale pose buffers must be derived from its live body.
 
-    Arena parents the wrist camera under the Robotiq gripper base, which PhysX
-    never writes a pose for.  A live run measured the hand travelling 0.27 m
-    while every recorded wrist pose stayed byte-identical.
+    v92 rendered the mount moving with the Robotiq gripper base while both the
+    sensor buffer and direct USD query stayed byte-identical.
     """
 
     from blueprint_pipeline.adp009d_approach_capture import (
@@ -831,8 +1031,8 @@ def test_rigid_offset_rotates_the_camera_with_the_body() -> None:
     assert live_quat[3] == pytest.approx(half, abs=1e-9)
 
 
-def test_runtime_refreshes_pose_metadata_without_reauthoring_the_mount() -> None:
-    """v79 rendered motion but retained the initialization pose for every frame."""
+def test_runtime_derives_wrist_pose_metadata_from_the_live_rigid_mount() -> None:
+    """v92 proved the sensor/USD pose stayed stale while the render mount moved."""
 
     from pathlib import Path
 
@@ -841,9 +1041,16 @@ def test_runtime_refreshes_pose_metadata_without_reauthoring_the_mount() -> None
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     code = [line for line in source.splitlines() if not line.strip().startswith("#")]
     assert not [line for line in code if "set_world_poses(" in line]
-    assert not [line for line in code if "apply_rigid_offset(" in line]
+    assert [line for line in code if "apply_rigid_offset(" in line]
     assert "camera_cfg.update_latest_camera_pose = True" in source
-    assert "camera_aim_body_quaternion_xyzw(" in source
+    assert "rigid_offset_in_body_frame(" in source
+    assert "_wrist_camera_evidence_pose()" in source
+    assert 'camera_pose_callback=lambda camera_name:' in source
+    assert "approved_can_visual_center_world()" in source
+    assert "solve_rigid_mount_camera_aim(" in source
+    assert '"rigid_mount_aim_solution": camera_aim_solution' in source
+    assert "solve_live_rigid_mount_camera_aim_command(" in source
+    assert '"position_control_mode": position_control_mode' in source
     assert '"purpose": "camera_aim_in_place"' in source
     # The stale-pose gate remains fail closed if the configured refresh ever
     # regresses or the reported pose still does not move.

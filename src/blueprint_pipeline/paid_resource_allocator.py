@@ -1123,6 +1123,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "before admitting policy execution."
         ),
     )
+    gpu.add_argument(
+        "--adp009d-diagnostic-only",
+        action="store_true",
+        help=(
+            "Explicitly admit a camera/physics diagnostic with neither controls "
+            "nor a learned-policy candidate. Paid ADP-009D requests must select "
+            "this mode, controls, or at least one candidate."
+        ),
+    )
     gpu.add_argument("--adp009d-scenario-instance", default=None)
     gpu.add_argument(
         "--adp009d-authorize-gated-backbone",
@@ -2635,6 +2644,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for item in str(args.adp009d_policy_candidate or "").split(",")
                 if item.strip()
             }
+            execution_modes = sum(
+                (
+                    bool(selected_candidates),
+                    bool(args.adp009d_controls),
+                    bool(args.adp009d_diagnostic_only),
+                )
+            )
+            if execution_modes == 0:
+                blockers.append("adp009d_execution_mode_missing")
+            elif args.adp009d_diagnostic_only and execution_modes != 1:
+                blockers.append("adp009d_execution_modes_conflict")
             gated_backbone_selected = "groot_n17_droid" in selected_candidates
             gated_backbone_access: dict[str, Any] | None = None
             if gated_backbone_selected and not args.adp009d_authorize_gated_backbone:
@@ -2695,6 +2715,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "candidate_policy_queried": False,
                 "controls_requested": bool(args.adp009d_controls),
+                "diagnostic_only_requested": bool(args.adp009d_diagnostic_only),
                 "scenario_instance_digest": (
                     prepared_bundle.get("scenario_instance_digest")
                     if prepared_bundle
