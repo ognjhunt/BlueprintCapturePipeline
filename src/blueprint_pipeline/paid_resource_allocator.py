@@ -173,6 +173,10 @@ from .adp_aura_interiorgs_vast import (
     PROBE_KIND as ADP_AURA_INTERIORGS_PROBE_KIND,
     run_aura_interiorgs_vast,
 )
+from .public_scene_execution_authority import (
+    PublicSceneExecutionAuthorityError,
+    validate_aura_retry_authority_binding,
+)
 from .adp_inpaint360_interiorgs_vast import (
     DEFAULT_IMAGE as ADP_INPAINT360_INTERIORGS_IMAGE,
     LAMA_SOURCE_COMMIT as ADP_INPAINT360_LAMA_SOURCE_COMMIT,
@@ -1161,6 +1165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-joint-agent-bundle-receipt")
     gpu.add_argument("--adp-aura-bundle-receipt")
     gpu.add_argument("--adp-aura-interiorgs-bundle-receipt")
+    gpu.add_argument("--adp-aura-attempt-authority")
     gpu.add_argument("--adp-inpaint360-bundle-receipt")
     gpu.add_argument(
         "--reconstruction-refresh-preflight",
@@ -1806,6 +1811,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         aura_receipt_argument,
                     ),
                     ("adp_job_dir", args.adp_job_dir),
+                    (
+                        "adp_aura_attempt_authority",
+                        args.adp_aura_attempt_authority if aura_interiorgs else True,
+                    ),
                 )
                 if not value
             ]
@@ -1867,6 +1876,39 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
                     blockers.append("adp_aura_bundle_binding_invalid")
+            execution_authority: dict[str, Any] | None = None
+            execution_authority_path: Path | None = None
+            execution_authority_sha256: str | None = None
+            if aura_interiorgs and args.adp_aura_attempt_authority:
+                execution_authority_path = Path(
+                    args.adp_aura_attempt_authority
+                ).expanduser().resolve()
+                if not execution_authority_path.is_file():
+                    blockers.append("adp_aura_attempt_authority_missing")
+                elif prepared_bundle is None:
+                    blockers.append("adp_aura_attempt_authority_bundle_missing")
+                else:
+                    try:
+                        execution_authority = validate_aura_retry_authority_binding(
+                            _load(execution_authority_path),
+                            adapter_receipt_digest=str(
+                                prepared_bundle.get("adapter_receipt_digest") or ""
+                            ),
+                            hard_cap_usd=args.adp_max_spend_usd,
+                            hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                        )
+                    except (
+                        OSError,
+                        ValueError,
+                        json.JSONDecodeError,
+                        PublicSceneExecutionAuthorityError,
+                    ):
+                        blockers.append("adp_aura_attempt_authority_invalid")
+                    else:
+                        execution_authority_sha256 = (
+                            "sha256:"
+                            + hashlib.sha256(execution_authority_path.read_bytes()).hexdigest()
+                        )
             receipt_sha256 = (
                 "sha256:" + hashlib.sha256(receipt_path.read_bytes()).hexdigest()
                 if receipt_path and receipt_path.is_file()
@@ -1915,6 +1957,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "adapter_receipt_digest": (
                     prepared_bundle.get("adapter_receipt_digest")
                     if prepared_bundle and aura_interiorgs
+                    else None
+                ),
+                "execution_authority_digest": (
+                    execution_authority.get("authorization_digest")
+                    if execution_authority
+                    else None
+                ),
+                "execution_authority_file_sha256": execution_authority_sha256,
+                "attempt_ordinal": (
+                    execution_authority["attempt_authority"]["attempt_ordinal"]
+                    if execution_authority
                     else None
                 ),
                 "container_image": ADP_AURA_SMOKE_IMAGE,

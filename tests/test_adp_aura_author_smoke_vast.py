@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -927,3 +928,97 @@ def test_output_inspector_recognizes_aura_runtime_result(tmp_path: Path) -> None
     inspection = inspect_provider_runtime_output_zip(output)
     assert inspection["runtime_result_present"] is True
     assert inspection["runtime_result_blockers"] == ["typed_runtime_failure"]
+
+
+def test_canonical_allocator_binds_aura_retry_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = tmp_path / "aura-interiorgs.zip"
+    bundle.write_bytes(b"immutable-aura-interiorgs-bundle")
+    adapter_digest = (
+        "sha256:bfdc2500d324b44e014c030b6c2bb3e6593e4f5d9797d70f7e637ae654e48893"
+    )
+    bundle_receipt = tmp_path / "aura-interiorgs-bundle.json"
+    _write_json(
+        bundle_receipt,
+        {
+            "status": "ready",
+            "source_commit": allocator.ADP_AURA_SOURCE_COMMIT,
+            "source_tree": allocator.ADP_AURA_SOURCE_TREE,
+            "prerequisite_receipt_digest": allocator.ADP_AURA_PREREQUISITE_RECEIPT_DIGEST,
+            "runtime_prerequisite_receipt_digest": (
+                allocator.ADP_AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST
+            ),
+            "container_image": allocator.ADP_AURA_SMOKE_IMAGE,
+            "retry_cap": 0,
+            "blockers": [],
+            "adapter_receipt_digest": adapter_digest,
+            "blueprint_commit": "a" * 40,
+            "bundle_path": str(bundle),
+            "bundle_sha256": "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest(),
+        },
+    )
+    authority = (
+        Path(__file__).resolve().parents[1]
+        / "docs/arm_decision_proof_v1/manifests"
+        / "second_scene_840796_aura_retry_authority.v1.json"
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    observed: dict[str, object] = {}
+
+    def fake_run(**kwargs: object) -> dict[str, str]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_aura_interiorgs_vast", fake_run)
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        allocator.ADP_AURA_INTERIORGS_PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "adapter.json"),
+        "--pod-name",
+        "adp-aura-interiorgs-retry",
+        "--expected-source-commit",
+        "a" * 40,
+        "--adp-aura-interiorgs-bundle-receipt",
+        str(bundle_receipt),
+        "--adp-aura-attempt-authority",
+        str(authority),
+        "--adp-job-dir",
+        str(tmp_path / "run"),
+        "--adp-max-hourly-rate-usd",
+        "1.50",
+        "--adp-max-spend-usd",
+        "3.50",
+        "--adp-hard-ttl-seconds",
+        "14400",
+    ]
+
+    assert allocator.main(args) == 0
+    admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
+    binding = admission["allocation_binding"]
+    assert binding["execution_authority_digest"] == (
+        "sha256:242932cff2cb3bb915852679b8a6a5f08f6d63d7da7a1c2ce31ab9dccd7dd30d"
+    )
+    assert binding["attempt_ordinal"] == 2
+    assert binding["adapter_receipt_digest"] == adapter_digest
+    assert observed["execute"] is False

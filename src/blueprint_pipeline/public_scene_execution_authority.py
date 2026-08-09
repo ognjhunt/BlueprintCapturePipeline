@@ -18,6 +18,7 @@ REQUIRED_PURPOSES = {
     "native_simulator_qualification",
     "two_candidate_policy_evaluation",
 }
+AURA_RETRY_WORKLOAD = "aurafusion360_interiorgs"
 
 
 class PublicSceneExecutionAuthorityError(ValueError):
@@ -135,6 +136,40 @@ def validate_public_scene_execution_authority(
     for key in required_false:
         if authority.get(key) is not False:
             errors.append(f"execution_authority_{key}_not_false")
+    attempt_authority = authority.get("attempt_authority")
+    if attempt_authority is not None:
+        if not isinstance(attempt_authority, dict):
+            errors.append("execution_authority_attempt_authority_invalid")
+        else:
+            if attempt_authority.get("workload") != AURA_RETRY_WORKLOAD:
+                errors.append("execution_authority_attempt_workload_invalid")
+            attempt_ordinal = attempt_authority.get("attempt_ordinal")
+            if (
+                isinstance(attempt_ordinal, bool)
+                or not isinstance(attempt_ordinal, int)
+                or attempt_ordinal < 1
+            ):
+                errors.append("execution_authority_attempt_ordinal_invalid")
+            if attempt_authority.get("maximum_paid_attempts") != 1:
+                errors.append("execution_authority_maximum_paid_attempts_invalid")
+            if attempt_authority.get("maximum_automatic_retries") != 0:
+                errors.append("execution_authority_maximum_automatic_retries_invalid")
+            if not _digest(attempt_authority.get("previous_execution_receipt_digest")):
+                errors.append("execution_authority_previous_execution_receipt_digest_invalid")
+            camera_id = attempt_authority.get("required_reference_camera_id")
+            if not isinstance(camera_id, str) or not camera_id.strip():
+                errors.append("execution_authority_required_reference_camera_id_invalid")
+            runtime_index = attempt_authority.get("required_runtime_reference_index")
+            if (
+                isinstance(runtime_index, bool)
+                or not isinstance(runtime_index, int)
+                or runtime_index < 0
+            ):
+                errors.append("execution_authority_required_runtime_reference_index_invalid")
+            if attempt_authority.get("unretained_trajectory_generation_allowed") is not False:
+                errors.append(
+                    "execution_authority_unretained_trajectory_generation_allowed_not_false"
+                )
     if authority.get("retention_policy") != "bounded_to_goal_then_provider_zero":
         errors.append("execution_authority_retention_policy_invalid")
     if authority.get("dataset_claim") != (
@@ -151,9 +186,39 @@ def validate_public_scene_execution_authority(
     return authority
 
 
+def validate_aura_retry_authority_binding(
+    value: Mapping[str, Any],
+    *,
+    adapter_receipt_digest: str,
+    hard_cap_usd: float,
+    hard_ttl_seconds: int,
+) -> dict[str, Any]:
+    """Bind a fresh Aura attempt to its exact prepared adapter and resource limits."""
+
+    authority = validate_public_scene_execution_authority(value)
+    errors: list[str] = []
+    attempt_authority = authority.get("attempt_authority")
+    if not isinstance(attempt_authority, dict):
+        errors.append("execution_authority_aura_attempt_authority_missing")
+    if authority.get("aura_adapter_receipt_digest") != adapter_receipt_digest:
+        errors.append("execution_authority_aura_adapter_receipt_digest_mismatch")
+    if float(authority.get("hard_total_spend_cap_usd", -1)) != float(hard_cap_usd):
+        errors.append("execution_authority_aura_spend_cap_mismatch")
+    if authority.get("maximum_single_resource_ttl_seconds") != hard_ttl_seconds:
+        errors.append("execution_authority_aura_ttl_mismatch")
+    if authority.get("one_instance_at_a_time") is not True:
+        errors.append("execution_authority_aura_one_instance_at_a_time_required")
+    if authority.get("automatic_paid_retry_authorized") is not False:
+        errors.append("execution_authority_aura_automatic_retry_must_be_false")
+    if errors:
+        raise PublicSceneExecutionAuthorityError(errors)
+    return authority
+
+
 __all__ = [
     "PublicSceneExecutionAuthorityError",
     "CONCURRENT_SCHEMA_VERSION",
     "SCHEMA_VERSION",
+    "validate_aura_retry_authority_binding",
     "validate_public_scene_execution_authority",
 ]
