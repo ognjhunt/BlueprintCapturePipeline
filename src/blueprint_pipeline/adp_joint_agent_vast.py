@@ -42,12 +42,14 @@ from .wam_provider_object_store import (
 
 PROVIDER_BUNDLE_KIND = "adp_joint_agent"
 PROBE_KIND = "adp-usd-joint-agent"
-SCHEMA_VERSION = "adp_joint_agent_provider_bundle.v1"
+SCHEMA_VERSION = "adp_joint_agent_provider_bundle.v2"
 SOURCE_TREE = "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3"
 DEFAULT_IMAGE = (
     "docker.io/nvidia/cuda@"
     "sha256:cff3a0d82d2c2b47bab252d67fa9b34a20ef4c50781d98501b5c7367ea9afd10"
 )
+CONSTRUCTION_RENDER_MODE = "rt2"
+CONSTRUCTION_RENDER_SENSOR_UPDATES = 32
 RESULT_SCHEMA_VERSION = "adp_joint_agent_vast_run.v1"
 REQUIRED_RETAINED_ARTIFACT_ROLES = frozenset(
     {
@@ -367,6 +369,12 @@ def build_joint_agent_vast_bundle(
         "renderer": {
             "implementation": "released_code_local_ovrtx_rendering_api",
             "endpoint": "http://127.0.0.1:8001",
+            "purpose": "joint_agent_construction_preview_only",
+            "render_mode": CONSTRUCTION_RENDER_MODE,
+            "num_sensor_updates": CONSTRUCTION_RENDER_SENSOR_UPDATES,
+            "profile_basis": "released_ovrtx_in_process_backend_defaults",
+            "evaluation_authorized": False,
+            "policy_input": False,
             "scene_bytes_leave_vast_instance": False,
         },
         "model": {"backend": "nvidia_nim", "id": "google/gemma-4-31b-it"},

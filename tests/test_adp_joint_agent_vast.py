@@ -12,6 +12,8 @@ import pytest
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import adp_joint_agent_vast as joint_vast
 from blueprint_pipeline.adp_joint_agent_vast import (
+    CONSTRUCTION_RENDER_MODE,
+    CONSTRUCTION_RENDER_SENSOR_UPDATES,
     DEFAULT_IMAGE,
     PROBE_KIND,
     PROVIDER_BUNDLE_KIND,
@@ -278,6 +280,26 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     assert receipt["provider_bundle_kind"] == "adp_joint_agent"
     assert receipt["input_usd_sha256"] == source_digest
     assert receipt["renderer"]["scene_bytes_leave_vast_instance"] is False
+    assert receipt["renderer"] == {
+        "implementation": "released_code_local_ovrtx_rendering_api",
+        "endpoint": "http://127.0.0.1:8001",
+        "purpose": "joint_agent_construction_preview_only",
+        "render_mode": CONSTRUCTION_RENDER_MODE,
+        "num_sensor_updates": CONSTRUCTION_RENDER_SENSOR_UPDATES,
+        "profile_basis": "released_ovrtx_in_process_backend_defaults",
+        "evaluation_authorized": False,
+        "policy_input": False,
+        "scene_bytes_leave_vast_instance": False,
+    }
+    runtime_script = (
+        tmp_path / "bundle/provider_runtime/run_adp_joint_agent_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
+    assert f'export OVRTX_RENDER_MODE="{CONSTRUCTION_RENDER_MODE}"' in runtime_script
+    assert (
+        f'export OVRTX_NUM_SENSOR_UPDATES="{CONSTRUCTION_RENDER_SENSOR_UPDATES}"'
+        in runtime_script
+    )
+    assert 'export OVRTX_RENDER_MODE="pt"' not in runtime_script
     assert receipt["blueprint_source"]["commit"] == "a" * 40
     assert receipt["completion_retries"] == 0
     assert receipt["scope_amendment_digest"] == scope_amendment["amendment_digest"]

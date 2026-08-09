@@ -66,8 +66,12 @@ WU_OVRTX_LOCK_DIR="${SOURCE_DIR}/.ovrtx_locks" \
 
 export PYTHONPATH="${SCRIPT_DIR}/blueprint_src:${SOURCE_DIR}:${SOURCE_DIR}/apps/ovrtx_rendering_api"
 export RENDER_ENDPOINT="http://127.0.0.1:8001"
-export OVRTX_RENDER_MODE="pt"
-export OVRTX_NUM_SENSOR_UPDATES="128"
+# These are Joint Agent construction previews, not evaluation-authorized scene
+# renders or policy observations. Keep this profile aligned with the released
+# OVRTX in-process backend defaults; PT/128 made the 64x64 service warmup exceed
+# the bounded paid runtime before inference could begin.
+export OVRTX_RENDER_MODE="rt2"
+export OVRTX_NUM_SENSOR_UPDATES="32"
 export DISPLAY=:99
 Xvfb :99 -screen 0 1920x1080x24 >"${OUTPUT_DIR}/xvfb.log" 2>&1 &
 xvfb_pid=$!
