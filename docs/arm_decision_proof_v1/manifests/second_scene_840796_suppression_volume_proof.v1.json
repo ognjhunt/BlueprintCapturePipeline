@@ -1,0 +1,54 @@
+{
+  "adp_item": "ADP-009B/ADP-009D",
+  "c_equivalent_receipt": {
+    "digest": "sha256:5268695f3ebe8cd2c71a816c524e91a5c2c025b0c116ee088a1294f6739ba18e",
+    "index_set_identical_to_sealed_deletion": true,
+    "suppressed_index_count": 4422
+  },
+  "canonical_scan": {
+    "modified": false,
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/inpainting_inputs/840796_refrigerator_v2/scene_standard.ply",
+    "sha256": "sha256:a8dd5baebb98d03e184ead9f352b83a44e248a175103e0bf180c97a07be73a34",
+    "vertex_count": 593665
+  },
+  "claim_boundary": {
+    "canonical_scan_modified": false,
+    "gaussian_ownership_solved": false,
+    "native_simulator_qualified": false,
+    "physical_equivalence_proven": false,
+    "reversible": true,
+    "suppression_is_visibility_not_ownership": true
+  },
+  "coverage_equivalence": {
+    "applies_unchanged": true,
+    "cameras": 8,
+    "cells_covered": 96,
+    "door_states": 12,
+    "method": "input_byte_identity_not_re_execution",
+    "sealed_worst_uncovered_fraction": 0.02895
+  },
+  "payload_equivalence": {
+    "byte_identical": true,
+    "payload_sha256": "sha256:2c26029f55b47efd9fc7c52286544bda81c8fbad49cb81eec5e7080dbcac9313",
+    "sealed_hybrid_review_splat_digest": "sha256:2c26029f55b47efd9fc7c52286544bda81c8fbad49cb81eec5e7080dbcac9313",
+    "sealed_retained_scene_sha256": "sha256:2c26029f55b47efd9fc7c52286544bda81c8fbad49cb81eec5e7080dbcac9313"
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_scene_id": "840796",
+  "receipt_digest": "sha256:ed65b20de244dc89d2ab4c37ed2152294c2d7e227c4be17c2a53c75023ae4d96",
+  "render_package": {
+    "digest": "sha256:15cc5b097d1e30b62ff0a578b2d85b8355714ab8038049565e98d06a6b81a49c",
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/suppression_volumes/840796_v1/render_package"
+  },
+  "reversibility": {
+    "receipt_removed_restores_canonical": true
+  },
+  "schema_version": "second_scene_suppression_volume_proof.v1",
+  "status": "suppression_path_equivalent_to_sealed_deletion",
+  "target_instance_id": "123",
+  "volume_receipt": {
+    "digest": "sha256:abf52da2710bdf7df5ce045b91e8902d24c2125fe6a7960d62b7d5898bb34060",
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/suppression_volumes/840796_v1/second_scene_840796_suppression_volume.v1.json",
+    "suppressed_index_count": 4424
+  }
+}

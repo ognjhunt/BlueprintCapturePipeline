@@ -124,7 +124,7 @@ sibling instance during v8.
 
 | Classification | Claims |
 | --- | --- |
-| Implemented | Deterministic source-to-topology derivation; articulated physics authoring with observed-handle group binding and labeled generated interior; two fail-closed static validators; twelve-state door clearance with bindable static obstacle classes; scenario admission requiring the bound matrix; Franka base placement search with typed rejection histogram; external/wrist/review camera resolution; digest-bound excision join seam with fail-closed inpainting-policy resolution; Joint Agent failure-path evidence retention, optimizer provisioning, on-host renderer probe, watchdog evidence polling, and machine avoidlist. |
+| Implemented | Suppression volumes with proven index, byte, and coverage equivalence to the sealed deletion, plus demonstrated reversibility; deterministic source-to-topology derivation; articulated physics authoring with observed-handle group binding and labeled generated interior; two fail-closed static validators; twelve-state door clearance with bindable static obstacle classes; scenario admission requiring the bound matrix; Franka base placement search with typed rejection histogram; external/wrist/review camera resolution; digest-bound excision join seam with fail-closed inpainting-policy resolution; Joint Agent failure-path evidence retention, optimizer provisioning, on-host renderer probe, watchdog evidence polling, and machine avoidlist. |
 | Generated SimReady candidate | One exact SimReady articulated refrigerator USD, `sha256:a673d2e4…`, produced by the NVIDIA Physics Agent from the Blueprint-authored candidate `sha256:f626998b…`, statically re-admitted on topology and physics with the articulation and authored link masses intact, and with its Franka base, twelve-state clearance, and three cameras resolved. |
 | Native-simulator qualified | **None.** The probe inputs are frozen and the readback is now a required gate, but no blank-stage Isaac diagnostic, joint/limit/lock readback, contact stability, penetration, reset replay, or deterministic final-state check has executed. |
 | Blocked or abstained | The Content Agents Material and Texture agents returned typed nulls in the same run and the runner's terminal record is `blocked`, so this is a partial agent pass. Joint Agent owned-core topology remains a typed abstention; its last attempt blocked at `joint_agent_ovrtx_provision_failed`. Zero-action and scripted-positive controls have not run. No learned-policy episode was prepared or launched. Gaussian excision/coverage join is implemented but unexecuted pending the sibling branch's owned-index result. |
@@ -214,6 +214,62 @@ clean four-agent success.
 
 Agent physics priors are advisory. They are not measured properties, and
 they do not raise the claim ceiling.
+
+## Suppression volumes: hiding the source object instead of deleting it
+
+The sealed cutout answered "which splats does the twin's space own?" by
+writing a new scene file with those rows removed. That works, but it forks a
+140 MB scan per edit, cannot compose two task objects against one scene, and
+edits bytes the capture contract protects. `gaussian_suppression_volume.v1`
+records the same answer as geometry - the box the twin's body occupies, one
+swept prism per articulated member taken to its *authored* limits rather than
+the commanded maximum, and an optional annex of indices from an admitted
+evidence process - and applies it against the untouched scan at render or
+package time.
+
+Three properties are proven against the real 840796 evidence rather than
+asserted:
+
+- **Index equality.** The body region alone reproduces the sealed geometric
+  set exactly (3,791). Body plus annex reproduces the sealed deletion set
+  index-for-index (4,422). Adding the door's swept wedge yields a strict
+  superset (4,424) - two near-transparent halo splats at the door face that
+  the deletion path had no region for.
+- **Byte identity.** The payload built from the untouched canonical scan plus
+  the receipt is byte-identical to the sealed deletion path's retained scene,
+  `sha256:2c26029f…`. Retained rows are copied byte-for-byte in source order
+  and verified, so this is a removal, never a rewrite.
+- **Coverage equivalence by construction.** The sealed 96-cell hybrid review
+  bound the exact splat it rendered, and that digest is the payload's digest.
+  Every one of those eight cameras by twelve door states is therefore
+  reproduced without re-execution, and the 2.9% worst-case residual carries
+  over unchanged.
+
+Reversibility was demonstrated end to end: rendering with the receipt absent,
+applying it, then removing it returns a frame with **zero** pixel difference
+from the original, and the canonical scan's digest `sha256:a8dd5bae…` is
+unchanged throughout.
+
+Two lifetimes share one materializer. A transient payload serves a single
+render invocation and is deleted afterwards; a content-addressed cached
+payload serves closed renderers such as the Isaac/NuRec lane. Neither is a
+capture artifact - both are pure functions of (canonical scan, volume set)
+and regenerable at any time.
+
+The construction join now takes `suppression_mode` - `deletion`,
+`render_time`, or `package_time` - and every coverage, collider-removal,
+replacement-binding, and door-state gate runs identically in all three; a
+test pins that raising residual pixels still blocks admission under
+`render_time`. N task volumes bind against one canonical scan, so a
+multi-object site carries one scan plus one small receipt per object rather
+than a forked scene file per combination.
+
+Seal: `manifests/second_scene_840796_suppression_volume_proof.v1.json`,
+digest `sha256:ed65b20d…`.
+
+What this does **not** change: the residual seam band is the same 2.9%, the
+Gaussian-ownership question remains unsolved and unsolvable by deletion, and
+nothing here is native qualification.
 
 ## Smallest next action
 
