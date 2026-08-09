@@ -9,16 +9,22 @@ simulator import, contact, physical equivalence, or policy readiness.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import cv2
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .public_scene_gaussian_excision_heldout import (
+    derive_alpha_from_background_pair,
+)
 
 
 DEPTH_SWEEP_SCHEMA = "adp009b_articulated_usd_depth_sweep.v1"
+SOURCE_COVERAGE_AUDIT_SCHEMA = "adp009b_source_layer_replacement_coverage_audit.v1"
 
 
 class ArticulatedUsdDepthSweepError(ValueError):
@@ -43,6 +49,16 @@ def _record(path: Path, root: Path) -> dict[str, Any]:
         "size_bytes": path.stat().st_size,
         "sha256": _sha256(path),
     }
+
+
+def _read_object(path: Path, code: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ArticulatedUsdDepthSweepError([code]) from exc
+    if not isinstance(value, dict):
+        raise ArticulatedUsdDepthSweepError([code])
+    return value
 
 
 def _matrix(value: Any, code: str) -> np.ndarray:
@@ -359,11 +375,300 @@ def materialize_articulated_usd_depth_sweep(
     return manifest
 
 
+def _verified_render_rows(
+    manifest_path: Path, *, expected_background: str
+) -> tuple[dict[str, Any], dict[str, Mapping[str, Any]]]:
+    manifest = _read_object(
+        manifest_path, "source_coverage_render_manifest_unreadable"
+    )
+    if (
+        manifest.get("schema_version") != "sealed_camera_render_manifest.v1"
+        or manifest.get("status") != "rendered_exact_cameras"
+        or (manifest.get("renderer_identity") or {}).get("background_rgb")
+        != expected_background
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_coverage_render_manifest_invalid"]
+        )
+    rows = manifest.get("renders")
+    if not isinstance(rows, list) or len(rows) != manifest.get("render_count"):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_coverage_render_manifest_invalid"]
+        )
+    by_camera: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ArticulatedUsdDepthSweepError(
+                ["source_coverage_render_manifest_invalid"]
+            )
+        camera_id = str(row.get("camera_id") or "")
+        relative = str(row.get("relative_path") or "")
+        frame = (manifest_path.parent / relative).resolve()
+        if (
+            not camera_id
+            or camera_id in by_camera
+            or not frame.is_file()
+            or frame.is_symlink()
+            or _sha256(frame) != row.get("digest")
+        ):
+            raise ArticulatedUsdDepthSweepError(
+                ["source_coverage_render_frame_changed"]
+            )
+        by_camera[camera_id] = row
+    return manifest, by_camera
+
+
+def conservative_max_pool_alpha(
+    alpha: np.ndarray, *, output_height: int, output_width: int
+) -> np.ndarray:
+    """Downsample alpha without losing thin source-object contributions."""
+
+    values = np.asarray(alpha, dtype=np.float32)
+    if (
+        values.ndim != 2
+        or not np.isfinite(values).all()
+        or np.any(values < 0.0)
+        or np.any(values > 1.0)
+        or output_height <= 0
+        or output_width <= 0
+        or values.shape[0] % output_height
+        or values.shape[1] % output_width
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_coverage_alpha_pool_invalid"]
+        )
+    factor_y = values.shape[0] // output_height
+    factor_x = values.shape[1] // output_width
+    return values.reshape(
+        output_height, factor_y, output_width, factor_x
+    ).max(axis=(1, 3))
+
+
+def evaluate_source_alpha_coverage(
+    source_alpha_by_camera: np.ndarray,
+    replacement_depth_m: np.ndarray,
+    *,
+    cells: Sequence[Mapping[str, Any]],
+    camera_ids: Sequence[str],
+    significant_alpha_threshold: float = 1.0 / 255.0,
+    coverage_margin_pixels: int = 1,
+) -> list[dict[str, Any]]:
+    """Measure visible source residue after conservative USD silhouette erosion."""
+
+    alpha = np.asarray(source_alpha_by_camera, dtype=np.float32)
+    depth = np.asarray(replacement_depth_m, dtype=np.float32)
+    if (
+        alpha.ndim != 3
+        or depth.ndim != 3
+        or depth.shape[1:] != alpha.shape[1:]
+        or len(cells) != depth.shape[0]
+        or len(camera_ids) != alpha.shape[0]
+        or len(set(camera_ids)) != len(camera_ids)
+        or not np.isfinite(alpha).all()
+        or np.any(alpha < 0.0)
+        or np.any(alpha > 1.0)
+        or not 0.0 < significant_alpha_threshold <= 1.0
+        or not isinstance(coverage_margin_pixels, int)
+        or coverage_margin_pixels < 0
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_coverage_evaluation_input_invalid"]
+        )
+    camera_lookup = {camera_id: index for index, camera_id in enumerate(camera_ids)}
+    kernel_size = 2 * coverage_margin_pixels + 1
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    rows: list[dict[str, Any]] = []
+    for cell_index, cell in enumerate(cells):
+        camera_id = str(cell.get("camera_id") or "")
+        if camera_id not in camera_lookup:
+            raise ArticulatedUsdDepthSweepError(
+                ["source_coverage_cell_camera_missing"]
+            )
+        source = alpha[camera_lookup[camera_id]]
+        finite = np.isfinite(depth[cell_index]) & (depth[cell_index] > 0.0)
+        covered = cv2.erode(
+            finite.astype(np.uint8), kernel, iterations=1
+        ).astype(bool)
+        significant = source >= significant_alpha_threshold
+        uncovered = ~covered
+        alpha_sum = float(source.sum())
+        residual_sum = float(source[uncovered].sum())
+        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            (significant & uncovered).astype(np.uint8), 8
+        )
+        largest = int(stats[1:, cv2.CC_STAT_AREA].max()) if count > 1 else 0
+        rows.append(
+            {
+                "cell_index": cell_index,
+                "camera_id": camera_id,
+                "commanded_door_angle_deg": float(
+                    cell["commanded_door_angle_deg"]
+                ),
+                "readback_door_angle_deg": float(cell["readback_door_angle_deg"]),
+                "source_significant_pixel_count": int(significant.sum()),
+                "uncovered_significant_pixel_count": int(
+                    (significant & uncovered).sum()
+                ),
+                "largest_uncovered_component_pixels": largest,
+                "source_alpha_sum": alpha_sum,
+                "uncovered_alpha_sum": residual_sum,
+                "uncovered_alpha_fraction": (
+                    residual_sum / alpha_sum if alpha_sum > 0.0 else 0.0
+                ),
+                "replacement_covered_pixel_count_after_margin": int(covered.sum()),
+            }
+        )
+    return rows
+
+
+def materialize_source_layer_replacement_coverage_audit(
+    *,
+    black_render_manifest_path: str | Path,
+    white_render_manifest_path: str | Path,
+    depth_sweep_manifest_path: str | Path,
+    output_root: str | Path,
+    significant_alpha_threshold: float = 1.0 / 255.0,
+    coverage_margin_pixels: int = 1,
+) -> dict[str, Any]:
+    """Audit a rendered source-object layer against actual USD sweep coverage."""
+
+    black_path = Path(black_render_manifest_path).expanduser().resolve()
+    white_path = Path(white_render_manifest_path).expanduser().resolve()
+    depth_path = Path(depth_sweep_manifest_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ArticulatedUsdDepthSweepError(["source_coverage_output_not_empty"])
+    output.mkdir(parents=True, exist_ok=True)
+    black_manifest, black_rows = _verified_render_rows(
+        black_path, expected_background="#000000"
+    )
+    white_manifest, white_rows = _verified_render_rows(
+        white_path, expected_background="#ffffff"
+    )
+    if (
+        set(black_rows) != set(white_rows)
+        or black_manifest.get("splat_digest") != white_manifest.get("splat_digest")
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_coverage_background_pair_mismatch"]
+        )
+    depth_manifest = _read_object(
+        depth_path, "source_coverage_depth_manifest_unreadable"
+    )
+    if (
+        depth_manifest.get("schema_version") != DEPTH_SWEEP_SCHEMA
+        or depth_manifest.get("manifest_digest")
+        != canonical_digest(depth_manifest, digest_field="manifest_digest")
+        or depth_manifest.get("actual_mesh_depth_rasterized") is not True
+        or depth_manifest.get("caller_supplied_coverage_mask") is not False
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_coverage_depth_manifest_invalid"]
+        )
+    arrays_record = depth_manifest.get("arrays") or {}
+    depth_array_path = depth_path.parent / str(arrays_record.get("relative_path") or "")
+    if (
+        not depth_array_path.is_file()
+        or depth_array_path.is_symlink()
+        or depth_array_path.stat().st_size != arrays_record.get("size_bytes")
+        or _sha256(depth_array_path) != arrays_record.get("sha256")
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_coverage_depth_array_changed"]
+        )
+    depth = np.load(depth_array_path, allow_pickle=False)
+    cells = depth_manifest.get("cells")
+    if not isinstance(cells, list) or depth.shape[0] != len(cells):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_coverage_depth_cells_invalid"]
+        )
+    camera_ids = list(black_rows)
+    output_height, output_width = depth.shape[1:]
+    source_alpha = []
+    for camera_id in camera_ids:
+        black_frame = black_path.parent / str(black_rows[camera_id]["relative_path"])
+        white_frame = white_path.parent / str(white_rows[camera_id]["relative_path"])
+        black = cv2.imread(str(black_frame), cv2.IMREAD_COLOR)
+        white = cv2.imread(str(white_frame), cv2.IMREAD_COLOR)
+        if black is None or white is None:
+            raise ArticulatedUsdDepthSweepError(
+                ["source_coverage_render_frame_unreadable"]
+            )
+        source_alpha.append(
+            conservative_max_pool_alpha(
+                derive_alpha_from_background_pair(black, white),
+                output_height=output_height,
+                output_width=output_width,
+            )
+        )
+    alpha_array = np.stack(source_alpha).astype(np.float32)
+    rows = evaluate_source_alpha_coverage(
+        alpha_array,
+        depth,
+        cells=cells,
+        camera_ids=camera_ids,
+        significant_alpha_threshold=significant_alpha_threshold,
+        coverage_margin_pixels=coverage_margin_pixels,
+    )
+    alpha_path = output / "source_alpha_by_camera.npy"
+    np.save(alpha_path, alpha_array, allow_pickle=False)
+    manifest: dict[str, Any] = {
+        "schema_version": SOURCE_COVERAGE_AUDIT_SCHEMA,
+        "status": "source_layer_coverage_measured",
+        "source_layer_splat_digest": black_manifest.get("splat_digest"),
+        "black_render_manifest": {
+            "sha256": _sha256(black_path),
+            "sealed_camera_render_manifest_digest": black_manifest.get(
+                "sealed_camera_render_manifest_digest"
+            ),
+        },
+        "white_render_manifest": {
+            "sha256": _sha256(white_path),
+            "sealed_camera_render_manifest_digest": white_manifest.get(
+                "sealed_camera_render_manifest_digest"
+            ),
+        },
+        "depth_sweep_manifest": {
+            "sha256": _sha256(depth_path),
+            "manifest_digest": depth_manifest["manifest_digest"],
+        },
+        "camera_ids": camera_ids,
+        "significant_alpha_threshold": float(significant_alpha_threshold),
+        "coverage_margin_pixels": coverage_margin_pixels,
+        "source_alpha": _record(alpha_path, output),
+        "cells": rows,
+        "summary": {
+            "cell_count": len(rows),
+            "worst_uncovered_significant_pixel_count": max(
+                row["uncovered_significant_pixel_count"] for row in rows
+            ),
+            "worst_largest_uncovered_component_pixels": max(
+                row["largest_uncovered_component_pixels"] for row in rows
+            ),
+            "worst_uncovered_alpha_fraction": max(
+                row["uncovered_alpha_fraction"] for row in rows
+            ),
+        },
+        "coverage_qualified": False,
+        "claim_ceiling": "measured_source_layer_visibility_against_actual_usd_depth",
+    }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    manifest_path = output / f"{SOURCE_COVERAGE_AUDIT_SCHEMA}.json"
+    manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
+    return manifest
+
+
 __all__ = [
     "ArticulatedUsdDepthSweepError",
     "DEPTH_SWEEP_SCHEMA",
+    "SOURCE_COVERAGE_AUDIT_SCHEMA",
+    "conservative_max_pool_alpha",
+    "evaluate_source_alpha_coverage",
     "load_articulated_usd_triangles",
     "materialize_articulated_usd_depth_sweep",
+    "materialize_source_layer_replacement_coverage_audit",
     "rasterize_triangle_depth",
     "rotate_triangles_about_axis",
 ]

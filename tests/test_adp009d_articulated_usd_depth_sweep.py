@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 from pxr import Gf, Usd, UsdGeom
 
 from blueprint_pipeline.articulated_usd_depth_sweep import (
     ArticulatedUsdDepthSweepError,
+    conservative_max_pool_alpha,
+    evaluate_source_alpha_coverage,
     load_articulated_usd_triangles,
     materialize_articulated_usd_depth_sweep,
+    materialize_source_layer_replacement_coverage_audit,
     rasterize_triangle_depth,
     rotate_triangles_about_axis,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 def _triangle(stage: Usd.Stage, path: str, points: list[tuple[float, float, float]]) -> None:
@@ -49,6 +56,43 @@ def _camera() -> dict[str, object]:
             "height": 48,
         },
     }
+
+
+def _sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _render_manifest(
+    root: Path, *, background: str, image: np.ndarray, scene_id: str
+) -> Path:
+    root.mkdir()
+    frames = root / "frames"
+    frames.mkdir()
+    frame = frames / "external.png"
+    assert cv2.imwrite(str(frame), image)
+    value = {
+        "schema_version": "sealed_camera_render_manifest.v1",
+        "status": "rendered_exact_cameras",
+        "camera_set_label": f"{scene_id}_fixture",
+        "render_count": 1,
+        "splat_digest": "sha256:" + "a" * 64,
+        "renderer_identity": {"background_rgb": background},
+        "renders": [
+            {
+                "camera_id": "external",
+                "relative_path": "frames/external.png",
+                "width": int(image.shape[1]),
+                "height": int(image.shape[0]),
+                "digest": _sha256(frame),
+            }
+        ],
+    }
+    value["sealed_camera_render_manifest_digest"] = canonical_digest(
+        value, digest_field="sealed_camera_render_manifest_digest"
+    )
+    path = root / "sealed_camera_render_manifest.v1.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
 
 
 def test_rotation_and_perspective_depth_are_geometric() -> None:
@@ -102,3 +146,90 @@ def test_depth_sweep_rejects_missing_moving_link(tmp_path: Path) -> None:
     with pytest.raises(ArticulatedUsdDepthSweepError) as exc:
         load_articulated_usd_triangles(usd, moving_link_path="/Asset/missing")
     assert exc.value.codes == ("articulated_depth_moving_link_missing",)
+
+
+def test_source_alpha_coverage_is_conservative_and_scene_neutral() -> None:
+    alpha = np.zeros((4, 4), dtype=np.float32)
+    alpha[1, 1] = 0.75
+    pooled = conservative_max_pool_alpha(
+        alpha, output_height=2, output_width=2
+    )
+    assert pooled.tolist() == [[0.75, 0.0], [0.0, 0.0]]
+
+    depth = np.full((2, 2, 2), np.inf, dtype=np.float32)
+    depth[0, 0, 0] = 1.0
+    rows = evaluate_source_alpha_coverage(
+        pooled[None],
+        depth,
+        cells=[
+            {
+                "camera_id": "840313_external",
+                "commanded_door_angle_deg": 0.0,
+                "readback_door_angle_deg": 0.0,
+            },
+            {
+                "camera_id": "840313_external",
+                "commanded_door_angle_deg": 45.0,
+                "readback_door_angle_deg": 45.0,
+            },
+        ],
+        camera_ids=["840313_external"],
+        coverage_margin_pixels=0,
+    )
+    assert rows[0]["uncovered_significant_pixel_count"] == 0
+    assert rows[1]["uncovered_significant_pixel_count"] == 1
+
+
+@pytest.mark.parametrize("scene_id", ["840313", "840796"])
+def test_source_layer_coverage_audit_binds_render_pair_and_depth(
+    tmp_path: Path, scene_id: str
+) -> None:
+    usd = _fixture_usd(tmp_path / "fixture.usda")
+    depth_root = tmp_path / "depth"
+    depth = materialize_articulated_usd_depth_sweep(
+        usd_path=usd,
+        cameras=[_camera()],
+        door_angles_deg=[0.0],
+        moving_link_path="/Asset/door",
+        hinge_origin_asset_m=[0.0, 0.0, 0.0],
+        hinge_axis_asset=[0.0, 0.0, 1.0],
+        T_world_asset=np.eye(4).tolist(),
+        output_root=depth_root,
+        resolution_scale=0.5,
+    )
+    assert depth["actual_mesh_depth_rasterized"] is True
+
+    alpha = np.zeros((48, 64), dtype=np.float32)
+    alpha[15:30, 20:40] = 0.8
+    foreground = np.zeros((48, 64, 3), dtype=np.float32)
+    foreground[..., 1] = 120.0
+    black = np.clip(foreground * alpha[..., None], 0, 255).astype(np.uint8)
+    white = np.clip(
+        foreground * alpha[..., None] + 255.0 * (1.0 - alpha[..., None]),
+        0,
+        255,
+    ).astype(np.uint8)
+    black_manifest = _render_manifest(
+        tmp_path / "black",
+        background="#000000",
+        image=black,
+        scene_id=scene_id,
+    )
+    white_manifest = _render_manifest(
+        tmp_path / "white",
+        background="#ffffff",
+        image=white,
+        scene_id=scene_id,
+    )
+    receipt = materialize_source_layer_replacement_coverage_audit(
+        black_render_manifest_path=black_manifest,
+        white_render_manifest_path=white_manifest,
+        depth_sweep_manifest_path=depth_root
+        / "adp009b_articulated_usd_depth_sweep.v1.json",
+        output_root=tmp_path / "audit",
+        coverage_margin_pixels=0,
+    )
+    assert receipt["status"] == "source_layer_coverage_measured"
+    assert receipt["summary"]["cell_count"] == 1
+    assert receipt["coverage_qualified"] is False
+    assert (tmp_path / "audit/source_alpha_by_camera.npy").is_file()
