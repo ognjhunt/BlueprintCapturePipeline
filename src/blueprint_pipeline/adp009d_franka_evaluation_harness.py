@@ -115,6 +115,11 @@ REQUIRED_ARTICULATED_CONSTRUCTION_GATES = {
     "source_link_partition",
     "source_visual_removal",
     "replacement_asset",
+    # Static admission and a clear sweep describe the asset on paper. The
+    # native readback is what proves the joint graph, limits, locked joints,
+    # commanded motion, contact, and reset actually behave in the simulator,
+    # so it is a required gate rather than a later nicety.
+    "native_articulation_readback",
     "native_robot_placement",
     "native_phase_ik",
     "policy_camera_observability",
