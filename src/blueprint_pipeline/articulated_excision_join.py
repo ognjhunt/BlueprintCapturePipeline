@@ -29,6 +29,13 @@ from .decision_evidence_contracts import canonical_digest
 
 
 JOIN_SCHEMA_VERSION = "articulated_excision_join.v1"
+# How the source object stops being visible. "deletion" is the sealed path: a
+# forked scene file with those rows removed. The suppression modes leave the
+# canonical scan untouched and apply the same index set at render or package
+# time, so the object can be restored by dropping one small receipt. The mode
+# changes only where the removal is applied - every coverage, collider,
+# replacement, and door-state gate below is identical in all three.
+SUPPRESSION_MODES = ("deletion", "render_time", "package_time")
 COVERAGE_SCHEMA_VERSION = "articulated_excision_coverage.v1"
 _REQUIRED_DOOR_CLASSES = frozenset(
     {"replacement_body", "replacement_lower_door", "franka_base"}
@@ -102,6 +109,81 @@ def _matrix4(value: Any) -> list[list[float]] | None:
     return rows
 
 
+def _normalize_suppression(
+    *,
+    mode: str,
+    receipts: Sequence[Mapping[str, Any]],
+    errors: list[str],
+) -> dict[str, Any]:
+    """Validate how the source object is hidden, without relaxing any gate."""
+
+    rows = list(receipts)
+    if mode not in SUPPRESSION_MODES:
+        errors.append(f"articulated_excision_join_suppression_mode_unsupported:{mode}")
+        return {"summary": {"mode": mode}, "digests": []}
+    if mode == "deletion":
+        if rows:
+            errors.append(
+                "articulated_excision_join_suppression_receipts_unexpected_for_deletion"
+            )
+        return {
+            "summary": {
+                "mode": "deletion",
+                "canonical_scan_modified": True,
+                "reversible": False,
+                "task_ids": [],
+            },
+            "digests": [],
+        }
+    if not rows:
+        errors.append("articulated_excision_join_suppression_receipts_missing")
+        return {"summary": {"mode": mode}, "digests": []}
+
+    scans: set[str] = set()
+    task_ids: list[str] = []
+    digests: list[str] = []
+    for index, receipt in enumerate(rows):
+        volume = _canonical(
+            receipt,
+            digest_field="receipt_digest",
+            error=f"articulated_excision_join_suppression_receipt_{index}_digest_invalid",
+            errors=errors,
+        )
+        if not volume:
+            continue
+        if volume.get("schema_version") != "gaussian_suppression_volume.v1":
+            errors.append(
+                f"articulated_excision_join_suppression_receipt_{index}_schema_invalid"
+            )
+        if volume.get("canonical_scan_modified") is not False:
+            errors.append(
+                "articulated_excision_join_suppression_canonical_scan_modified"
+            )
+        for field in ("canonical_scan_sha256", "suppressed_index_digest"):
+            if not _sha256_field(volume.get(field)):
+                errors.append(
+                    f"articulated_excision_join_suppression_field_invalid:{field}"
+                )
+        scans.add(str(volume.get("canonical_scan_sha256")))
+        task_ids.append(str(volume.get("task_id")))
+        digests.append(str(volume.get("receipt_digest")))
+    if len(scans) > 1:
+        errors.append("articulated_excision_join_suppression_canonical_scan_mismatch")
+    if len(set(task_ids)) != len(task_ids):
+        errors.append("articulated_excision_join_suppression_task_ids_duplicated")
+    return {
+        "summary": {
+            "mode": mode,
+            "canonical_scan_modified": False,
+            "reversible": True,
+            "task_ids": sorted(task_ids),
+            "canonical_scan_sha256": next(iter(scans)) if len(scans) == 1 else None,
+            "volume_count": len(digests),
+        },
+        "digests": digests,
+    }
+
+
 def compile_articulated_excision_join(
     *,
     ownership_receipt: Mapping[str, Any],
@@ -113,10 +195,16 @@ def compile_articulated_excision_join(
     expected_camera_ids: Sequence[str],
     expected_door_state_angles_degrees: Sequence[float],
     transform_tolerance_m: float = 1e-6,
+    suppression_mode: str = "deletion",
+    suppression_receipts: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Fail-closed join of the excision and articulated-replacement branches."""
 
     errors: list[str] = []
+
+    suppression = _normalize_suppression(
+        mode=suppression_mode, receipts=suppression_receipts, errors=errors
+    )
 
     expected_transform = _matrix4(expected_T_world_asset)
     if expected_transform is None:
@@ -346,6 +434,7 @@ def compile_articulated_excision_join(
         "schema_version": JOIN_SCHEMA_VERSION,
         "status": "join_admitted",
         "inpainting_policy": inpainting_policy,
+        "suppression": suppression["summary"],
         "bindings": {
             "ownership_receipt_digest": ownership.get("receipt_digest"),
             "owned_index_set_sha256": ownership.get("owned_index_set_sha256"),
@@ -362,6 +451,7 @@ def compile_articulated_excision_join(
             ),
             "door_state_receipt_digest": door_states.get("receipt_digest"),
             "coverage_receipt_digest": coverage.get("receipt_digest"),
+            "suppression_receipt_digests": suppression["digests"],
             "T_world_asset": expected_transform,
         },
         "claim_boundary": {
