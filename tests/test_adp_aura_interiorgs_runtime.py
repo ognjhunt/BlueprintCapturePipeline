@@ -215,6 +215,38 @@ def test_aura_reference_lama_command_rejects_missing_checkpoint_bytes(
         raise AssertionError("missing LaMa checkpoint bytes were not rejected")
 
 
+@pytest.mark.parametrize(
+    ("scene_id", "target_id", "reference_camera"),
+    [
+        ("840313", "ins160", "low_approach"),
+        ("840796", "ins123", "front_medium"),
+    ],
+)
+def test_aura_runtime_scene_binding_is_not_fixture_specific(
+    scene_id: str, target_id: str, reference_camera: str
+) -> None:
+    runner = _load_runner()
+
+    binding = runner._scene_binding(
+        {
+            "scene": {
+                "publisher_scene_id": scene_id,
+                "target_instance_id": target_id,
+                "scene_slug": f"{scene_id}_{target_id}",
+                "reference_camera_id": reference_camera,
+            }
+        }
+    )
+
+    assert binding["scene_slug"] == f"{scene_id}_{target_id}"
+    runner_source = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/adp_aura_interiorgs_provider_runner.py"
+    ).read_text(encoding="utf-8")
+    assert 'SCENE = "840313_ins160"' not in runner_source
+    assert '"scene_id": "840313"' not in runner_source
+
+
 def test_aura_openclip_cache_is_resolved_offline_and_exact(tmp_path: Path) -> None:
     runner = _load_runner()
     checkpoint = tmp_path / "open_clip_pytorch_model.bin"

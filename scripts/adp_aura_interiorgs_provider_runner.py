@@ -17,7 +17,6 @@ import adp_aura_author_smoke_provider_runner as shared
 
 SCHEMA_VERSION = "adp_aura_interiorgs_result.v1"
 COMMAND_TIMEOUT_SECONDS = 21_600
-SCENE = "840313_ins160"
 
 
 def _sha256(path: Path) -> str:
@@ -292,6 +291,27 @@ def _reference_lama_command(*, source: Path, runtime: Path, lama_python: str) ->
     ]
 
 
+def _scene_binding(spec: dict[str, Any]) -> dict[str, Any]:
+    scene = spec.get("scene")
+    if not isinstance(scene, dict):
+        raise ValueError("aurafusion360_interiorgs_scene_binding_missing")
+    scene_id = str(scene.get("publisher_scene_id") or "")
+    target_instance_id = str(scene.get("target_instance_id") or "")
+    scene_slug = str(scene.get("scene_slug") or "")
+    reference_camera_id = str(scene.get("reference_camera_id") or "")
+    if (
+        not scene_id.isdigit()
+        or len(scene_id) != 6
+        or not target_instance_id.startswith("ins")
+        or not target_instance_id[3:].isdigit()
+        or scene_slug != f"{scene_id}_{target_instance_id}"
+        or not reference_camera_id
+        or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for character in reference_camera_id)
+    ):
+        raise ValueError("aurafusion360_interiorgs_scene_binding_invalid")
+    return scene
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prepare-only", action="store_true")
@@ -301,6 +321,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     output = Path(os.environ.get("BLUEPRINT_ADP_AURA_INTERIORGS_OUTPUT_DIR", runtime.parent / "runtime_output")).resolve()
     output.mkdir(parents=True, exist_ok=True)
     spec = _read(runtime / "execution_spec.json")
+    scene = _scene_binding(spec)
+    scene_slug = scene["scene_slug"]
+    reference_camera_id = scene["reference_camera_id"]
     if args.prepare_only:
         return _prepare(runtime, source, spec)
 
@@ -355,13 +378,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             produced = sorted((runtime / "reference_lama_output").glob("*.png"))
             if len(produced) != 1:
                 raise ValueError("aurafusion360_interiorgs_reference_output_not_unique")
-            target = source / f"data/Other-360/{SCENE}/reference/low_approach.png"
+            target = (
+                source
+                / f"data/Other-360/{scene_slug}/reference/{reference_camera_id}.png"
+            )
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(produced[0], target)
 
     completed = {row["stage"] for row in workflow if row["returncode"] == 0}
     required = ["reference_lama", "train", "render", "remove", "sam2_masks", "inpaint_init", "sdedit", "inpaint_finetune"]
-    final_ply = source / f"output/Other-360/{SCENE}/point_cloud/iteration_10000_object_inpaint/point_cloud.ply"
+    final_ply = source / f"output/Other-360/{scene_slug}/point_cloud/iteration_10000_object_inpaint/point_cloud.ply"
     blockers: list[str] = []
     for stage in required:
         if stage not in completed:
@@ -372,11 +398,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         blockers.append("aurafusion360_interiorgs_source_modified")
     if not final_ply.is_file() or final_ply.stat().st_size == 0:
         blockers.append("aurafusion360_interiorgs_final_point_cloud_missing")
-    retained = output / "artifacts/aurafusion360_840313_ins160_final.ply"
+    retained = output / f"artifacts/aurafusion360_{scene_slug}_final.ply"
     if final_ply.is_file():
         retained.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(final_ply, retained)
-    render_dir = source / f"output/Other-360/{SCENE}/train/ours_10000_object_inpaint/renders"
+    render_dir = source / f"output/Other-360/{scene_slug}/train/ours_10000_object_inpaint/renders"
     retained_frames: list[dict[str, Any]] = []
     for frame in sorted(render_dir.glob("*.png"))[:8]:
         destination = output / "artifacts/final_frames" / frame.name
@@ -387,8 +413,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema_version": SCHEMA_VERSION,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": "completed" if not blockers else "blocked",
-        "scene_id": "840313",
-        "target_instance_id": "ins160",
+        "scene_id": scene["publisher_scene_id"],
+        "target_instance_id": scene["target_instance_id"],
         "source_commit": spec["source_commit"],
         "source_tree": spec["source_tree"],
         "source_identity_before": source_before,

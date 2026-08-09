@@ -23,6 +23,7 @@ from blueprint_pipeline.adp_aura_interiorgs_vast import (
     AURA_INTERIORGS_GPU_SELECTION_POLICY,
     PROVIDER_EXECUTION_TIMEOUT_SECONDS,
     PROVIDER_HEARTBEAT_NO_PROGRESS_SECONDS,
+    _validated_adapter,
     _remaining_minutes,
     run_aura_interiorgs_vast,
 )
@@ -296,6 +297,20 @@ def test_aura_adapter_derives_new_scene_slug_and_reference_camera(
         paths["data"]
         / "adapter/data/Other-360/840796_ins123/reference"
     ).is_dir()
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_aura_interiorgs_vast.SOURCE_COMMIT",
+        receipt["source"]["commit"],
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_aura_interiorgs_vast.SOURCE_TREE",
+        receipt["source"]["tree"],
+    )
+    rows, binding = _validated_adapter(receipt, paths["data"] / "adapter")
+    assert rows
+    assert binding["publisher_scene_id"] == "840796"
+    assert binding["target_instance_id"] == "ins123"
+    assert binding["reference_camera_id"] == "raised_left"
 
 
 def test_aura_adapter_rejects_changed_frozen_mask(

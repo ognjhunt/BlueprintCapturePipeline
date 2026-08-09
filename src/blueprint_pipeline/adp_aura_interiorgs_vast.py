@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import zipfile
 from contextlib import contextmanager
@@ -60,8 +61,6 @@ from .wam_provider_object_store import (
 
 PROBE_KIND = "adp-aurafusion360-interiorgs"
 PROVIDER_BUNDLE_KIND = "adp_aura_interiorgs"
-SCENE_ID = "840313"
-TARGET_INSTANCE_ID = "ins160"
 RESULT_SCHEMA_VERSION = "adp_aura_interiorgs_vast_run.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/aurafusion360-interiorgs"
 MIN_RASTERIZER_COMPUTE_CAP = 890
@@ -92,22 +91,61 @@ OPENCLIP_SNAPSHOT_DIGEST = (
     "sha256:9c94ad4897df15ae307d9c809d3d6a0ee7222350ca34a55da9f77a2b1af63110"
 )
 
+_SCENE_ID_PATTERN = re.compile(r"^[0-9]{6}$")
+_TARGET_ID_PATTERN = re.compile(r"^ins[0-9]+$")
+_CAMERA_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
-def _validated_adapter(receipt: Mapping[str, Any], root: Path) -> list[tuple[str, Path]]:
+
+def _adapter_scene_binding(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    scene = receipt.get("scene")
+    if not isinstance(scene, Mapping):
+        raise ValueError("adp_aura_interiorgs_scene_binding_missing")
+    scene_id = str(scene.get("publisher_scene_id") or "")
+    target_instance_id = str(scene.get("target_instance_id") or "")
+    scene_slug = str(scene.get("scene_slug") or "")
+    reference_camera_id = str(scene.get("reference_camera_id") or "")
+    if (
+        _SCENE_ID_PATTERN.fullmatch(scene_id) is None
+        or _TARGET_ID_PATTERN.fullmatch(target_instance_id) is None
+        or scene_slug != f"{scene_id}_{target_instance_id}"
+        or _CAMERA_ID_PATTERN.fullmatch(reference_camera_id) is None
+    ):
+        raise ValueError("adp_aura_interiorgs_scene_binding_invalid")
+    camera_count = scene.get("camera_count")
+    reference_index = scene.get("reference_camera_index")
+    if (
+        isinstance(camera_count, bool)
+        or not isinstance(camera_count, int)
+        or camera_count < 1
+        or isinstance(reference_index, bool)
+        or not isinstance(reference_index, int)
+        or not 0 <= reference_index < camera_count
+    ):
+        raise ValueError("adp_aura_interiorgs_camera_binding_invalid")
+    return {
+        "publisher_scene_id": scene_id,
+        "target_instance_id": target_instance_id,
+        "target_semantic_label": str(scene.get("target_semantic_label") or ""),
+        "scene_slug": scene_slug,
+        "camera_count": camera_count,
+        "reference_camera_id": reference_camera_id,
+        "reference_camera_index": reference_index,
+        "input_receipt_digest": str(scene.get("input_receipt_digest") or ""),
+    }
+
+
+def _validated_adapter(
+    receipt: Mapping[str, Any], root: Path
+) -> tuple[list[tuple[str, Path]], dict[str, Any]]:
     if (
         receipt.get("schema_version") != ADAPTER_SCHEMA
         or receipt.get("status") != "prepared_unexecuted"
         or canonical_digest(receipt, digest_field="receipt_digest") != receipt.get("receipt_digest")
     ):
         raise ValueError("adp_aura_interiorgs_adapter_receipt_invalid")
-    scene = receipt.get("scene") or {}
     source = receipt.get("source") or {}
     execution = receipt.get("execution") or {}
-    if (
-        scene.get("publisher_scene_id") != SCENE_ID
-        or scene.get("target_instance_id") != TARGET_INSTANCE_ID
-    ):
-        raise ValueError("adp_aura_interiorgs_scene_or_target_mismatch")
+    scene = _adapter_scene_binding(receipt)
     if source.get("commit") != SOURCE_COMMIT or source.get("tree") != SOURCE_TREE:
         raise ValueError("adp_aura_interiorgs_source_identity_mismatch")
     if any(bool(value) for value in execution.values()):
@@ -125,19 +163,21 @@ def _validated_adapter(receipt: Mapping[str, Any], root: Path) -> list[tuple[str
         ):
             raise ValueError("adp_aura_interiorgs_adapter_artifact_changed")
         rows.append((relative, path))
+    scene_slug = scene["scene_slug"]
+    reference_camera_id = scene["reference_camera_id"]
     required = {
         "aurafusion360_interiorgs_execution_spec.json",
-        "configs/Other-360/840313_ins160/train.config",
-        "configs/Other-360/840313_ins160/remove.config",
-        "configs/Other-360/840313_ins160/inpaint.config",
-        "configs/Other-360/840313_ins160/sdedit.config",
-        "reference_lama_input/low_approach.png",
-        "reference_lama_input/low_approach_mask.png",
-        "data/Other-360/840313_ins160/sparse/0/points3D.ply",
+        f"configs/Other-360/{scene_slug}/train.config",
+        f"configs/Other-360/{scene_slug}/remove.config",
+        f"configs/Other-360/{scene_slug}/inpaint.config",
+        f"configs/Other-360/{scene_slug}/sdedit.config",
+        f"reference_lama_input/{reference_camera_id}.png",
+        f"reference_lama_input/{reference_camera_id}_mask.png",
+        f"data/Other-360/{scene_slug}/sparse/0/points3D.ply",
     }
     if not required.issubset({relative for relative, _ in rows}):
         raise ValueError("adp_aura_interiorgs_adapter_required_artifact_missing")
-    return rows
+    return rows, scene
 
 
 def _validated_runtime_prerequisite(receipt: Mapping[str, Any]) -> dict[str, Any]:
@@ -267,7 +307,7 @@ def build_aura_interiorgs_bundle(
     runtime_prerequisite = _read_json(runtime_prerequisite_file)
     openclip_runtime_model = _validated_runtime_prerequisite(runtime_prerequisite)
     adapter = _read_json(adapter_file)
-    adapter_rows = _validated_adapter(adapter, packet)
+    adapter_rows, scene_binding = _validated_adapter(adapter, packet)
     aura_rows = _source_files(aura)
     sam2_rows = _tracked_files(sam2)
     wonderworld_rows = [
@@ -311,6 +351,7 @@ def build_aura_interiorgs_bundle(
         "source_tree": SOURCE_TREE,
         "source_files": source_manifest,
         "submodules": SUBMODULES,
+        "scene": scene_binding,
         "sam2_source": {
             "repository": SAM2_SOURCE_REPOSITORY,
             "commit": SAM2_SOURCE_COMMIT,
