@@ -828,6 +828,7 @@ def test_fully_bound_clear_matrix_with_gates_admits_materialization() -> None:
                 "source_visual_removal",
                 "replacement_asset",
                 "native_articulation_readback",
+                "interior_exposure",
                 "native_robot_placement",
                 "native_phase_ik",
                 "policy_camera_observability",
@@ -897,7 +898,71 @@ def test_scenario_admission_requires_the_native_articulation_readback() -> None:
         task_contract=_ARTICULATED_CONTRACT,
         member_sweep_clearance=_clear_sweep_receipt(),
         door_state_clearance=door_states,
-        construction_gate_receipts=[*gates, _native_probe_gate()],
+        construction_gate_receipts=[
+            *gates,
+            _native_probe_gate(),
+            {
+                "gate_id": "interior_exposure",
+                "status": "passed",
+                "receipt_digest": "sha256:" + "4" * 64,
+            },
+        ],
     )
     assert with_probe["blockers"] == []
     assert with_probe["scenario_materialization_authorized"] is True
+
+
+def test_scenario_admission_requires_the_interior_to_be_reachable() -> None:
+    """A door that opens onto a sealed carcass is not a usable articulated task.
+
+    The 840796 twin passed articulation, limits, colliders and the
+    required-interior check while its own shell walled the cavity off. Nothing
+    in the gate set noticed, because every gate asked about parts rather than
+    about what opening the door actually reveals.
+    """
+
+    base = {
+        "source_link_partition",
+        "source_visual_removal",
+        "replacement_asset",
+        "native_articulation_readback",
+        "native_robot_placement",
+        "native_phase_ik",
+        "policy_camera_observability",
+        "review_camera_observability",
+    }
+    gates = [
+        {"gate_id": gate_id, "status": "passed", "receipt_digest": "sha256:" + "9" * 64}
+        for gate_id in sorted(base)
+    ]
+    door_states = _door_state_receipt(
+        classes=["replacement_body", "replacement_lower_door", "franka_base"]
+    )
+
+    without = admit_task_construction(
+        task_contract=_ARTICULATED_CONTRACT,
+        member_sweep_clearance=_clear_sweep_receipt(),
+        door_state_clearance=door_states,
+        construction_gate_receipts=gates,
+    )
+    assert without["scenario_materialization_authorized"] is False
+    assert (
+        "articulated_construction_gate_missing:interior_exposure"
+        in without["blockers"]
+    )
+
+    with_gate = admit_task_construction(
+        task_contract=_ARTICULATED_CONTRACT,
+        member_sweep_clearance=_clear_sweep_receipt(),
+        door_state_clearance=door_states,
+        construction_gate_receipts=[
+            *gates,
+            {
+                "gate_id": "interior_exposure",
+                "status": "passed",
+                "receipt_digest": "sha256:" + "4" * 64,
+            },
+        ],
+    )
+    assert with_gate["blockers"] == []
+    assert with_gate["scenario_materialization_authorized"] is True

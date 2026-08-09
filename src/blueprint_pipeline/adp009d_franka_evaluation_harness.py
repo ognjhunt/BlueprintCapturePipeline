@@ -120,6 +120,9 @@ REQUIRED_ARTICULATED_CONSTRUCTION_GATES = {
     # commanded motion, contact, and reset actually behave in the simulator,
     # so it is a required gate rather than a later nicety.
     "native_articulation_readback",
+    # A twin can satisfy every part-level check and still open onto a sealed
+    # carcass. This gate asks what the open door actually reveals.
+    "interior_exposure",
     "native_robot_placement",
     "native_phase_ik",
     "policy_camera_observability",
