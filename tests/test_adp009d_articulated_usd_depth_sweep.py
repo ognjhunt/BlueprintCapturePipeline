@@ -15,6 +15,7 @@ from blueprint_pipeline.articulated_usd_depth_sweep import (
     evaluate_source_alpha_coverage,
     load_articulated_usd_triangles,
     materialize_articulated_usd_depth_sweep,
+    materialize_reference_hybrid_review,
     materialize_source_layer_replacement_coverage_audit,
     rasterize_triangle_depth,
     rotate_triangles_about_axis,
@@ -240,3 +241,52 @@ def test_source_layer_coverage_audit_binds_render_pair_and_depth(
         tmp_path / "audit/uncovered_source_support_masks/external.png"
     ).is_file()
     assert receipt["uncovered_source_support_masks_are_inpainting_authority"] is False
+
+
+@pytest.mark.parametrize("scene_id", ["840313", "840796"])
+def test_reference_hybrid_review_changes_only_actual_usd_silhouette(
+    tmp_path: Path, scene_id: str
+) -> None:
+    usd = _fixture_usd(tmp_path / "fixture.usda")
+    depth_root = tmp_path / "depth"
+    materialize_articulated_usd_depth_sweep(
+        usd_path=usd,
+        cameras=[_camera()],
+        door_angles_deg=[0.0],
+        moving_link_path="/Asset/door",
+        hinge_origin_asset_m=[0.0, 0.0, 0.0],
+        hinge_axis_asset=[0.0, 0.0, 1.0],
+        T_world_asset=np.eye(4).tolist(),
+        output_root=depth_root,
+        resolution_scale=0.5,
+    )
+    scene = np.full((48, 64, 3), [20, 40, 80], dtype=np.uint8)
+    scene_manifest = _render_manifest(
+        tmp_path / "scene",
+        background="#0b0b10",
+        image=scene,
+        scene_id=scene_id,
+    )
+    receipt = materialize_reference_hybrid_review(
+        retained_scene_render_manifest_path=scene_manifest,
+        depth_sweep_manifest_path=depth_root
+        / "adp009b_articulated_usd_depth_sweep.v1.json",
+        output_root=tmp_path / "hybrid",
+        replacement_rgb=(180, 190, 200),
+    )
+
+    depth = np.load(depth_root / "replacement_depth_sweep.npy")[0]
+    finite = np.isfinite(depth) & (depth > 0.0)
+    expected_scene = cv2.resize(scene, (32, 24), interpolation=cv2.INTER_AREA)
+    rendered = cv2.imread(
+        str(tmp_path / "hybrid/frames/external__door_000p000.png")
+    )
+    assert rendered is not None
+    assert np.array_equal(rendered[~finite], expected_scene[~finite])
+    assert np.any(rendered[finite] != expected_scene[finite])
+    assert receipt["actual_usd_geometry_silhouette_used"] is True
+    assert receipt["usd_materials_rendered"] is False
+    assert receipt["native_isaac_or_rtx_render"] is False
+    assert receipt["cell_count"] == 1
+    assert len(receipt["contact_sheets"]) == 1
+    assert receipt["manifest_digest"].startswith("sha256:")

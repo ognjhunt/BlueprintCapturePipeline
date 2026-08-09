@@ -25,6 +25,7 @@ from .public_scene_gaussian_excision_heldout import (
 
 DEPTH_SWEEP_SCHEMA = "adp009b_articulated_usd_depth_sweep.v1"
 SOURCE_COVERAGE_AUDIT_SCHEMA = "adp009b_source_layer_replacement_coverage_audit.v1"
+REFERENCE_HYBRID_REVIEW_SCHEMA = "adp009b_reference_hybrid_review.v1"
 
 
 class ArticulatedUsdDepthSweepError(ValueError):
@@ -384,6 +385,10 @@ def _verified_render_rows(
     if (
         manifest.get("schema_version") != "sealed_camera_render_manifest.v1"
         or manifest.get("status") != "rendered_exact_cameras"
+        or manifest.get("sealed_camera_render_manifest_digest")
+        != canonical_digest(
+            manifest, digest_field="sealed_camera_render_manifest_digest"
+        )
         or (manifest.get("renderer_identity") or {}).get("background_rgb")
         != expected_background
     ):
@@ -755,14 +760,246 @@ def materialize_source_layer_replacement_coverage_audit(
     return manifest
 
 
+def materialize_reference_hybrid_review(
+    *,
+    retained_scene_render_manifest_path: str | Path,
+    depth_sweep_manifest_path: str | Path,
+    output_root: str | Path,
+    replacement_rgb: Sequence[int] = (184, 188, 194),
+) -> dict[str, Any]:
+    """Composite the actual USD silhouette over retained 3DGS review frames.
+
+    The depth sweep owns the replacement geometry and articulation.  This
+    helper deliberately uses a neutral, synthetic color instead of pretending
+    to render USD materials.  Pixels outside the finite replacement depth mask
+    are copied exactly from the downsampled retained-scene render.  The result
+    is therefore useful for detecting coverage holes and source-object ghosts,
+    but it is never a native Isaac/RTX or evaluation-authorized render.
+    """
+
+    scene_manifest_path = Path(
+        retained_scene_render_manifest_path
+    ).expanduser().resolve()
+    depth_manifest_path = Path(depth_sweep_manifest_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ArticulatedUsdDepthSweepError(["reference_hybrid_output_not_empty"])
+    try:
+        color = tuple(int(value) for value in replacement_rgb)
+    except (TypeError, ValueError) as exc:
+        raise ArticulatedUsdDepthSweepError(
+            ["reference_hybrid_replacement_color_invalid"]
+        ) from exc
+    if len(color) != 3 or any(value < 0 or value > 255 for value in color):
+        raise ArticulatedUsdDepthSweepError(
+            ["reference_hybrid_replacement_color_invalid"]
+        )
+
+    scene_manifest, scene_rows = _verified_render_rows(
+        scene_manifest_path,
+        expected_background=str(
+            (_read_object(
+                scene_manifest_path,
+                "reference_hybrid_scene_manifest_unreadable",
+            ).get("renderer_identity") or {}).get("background_rgb")
+        ),
+    )
+    depth_manifest = _read_object(
+        depth_manifest_path, "reference_hybrid_depth_manifest_unreadable"
+    )
+    if (
+        depth_manifest.get("schema_version") != DEPTH_SWEEP_SCHEMA
+        or depth_manifest.get("manifest_digest")
+        != canonical_digest(depth_manifest, digest_field="manifest_digest")
+        or depth_manifest.get("actual_mesh_depth_rasterized") is not True
+        or depth_manifest.get("caller_supplied_coverage_mask") is not False
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["reference_hybrid_depth_manifest_invalid"]
+        )
+    depth_record = depth_manifest.get("arrays") or {}
+    depth_array_path = depth_manifest_path.parent / str(
+        depth_record.get("relative_path") or ""
+    )
+    if (
+        not depth_array_path.is_file()
+        or depth_array_path.is_symlink()
+        or depth_array_path.stat().st_size != depth_record.get("size_bytes")
+        or _sha256(depth_array_path) != depth_record.get("sha256")
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["reference_hybrid_depth_array_changed"]
+        )
+    depth = np.load(depth_array_path, allow_pickle=False)
+    cells = depth_manifest.get("cells")
+    if (
+        depth.ndim != 3
+        or not isinstance(cells, list)
+        or len(cells) != depth.shape[0]
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["reference_hybrid_depth_cells_invalid"]
+        )
+    camera_ids = list(dict.fromkeys(str(cell.get("camera_id") or "") for cell in cells))
+    if not camera_ids or set(camera_ids) != set(scene_rows):
+        raise ArticulatedUsdDepthSweepError(
+            ["reference_hybrid_camera_join_invalid"]
+        )
+
+    output.mkdir(parents=True, exist_ok=True)
+    frames_root = output / "frames"
+    frames_root.mkdir()
+    height, width = depth.shape[1:]
+    retained_by_camera: dict[str, np.ndarray] = {}
+    for camera_id in camera_ids:
+        row = scene_rows[camera_id]
+        frame_path = scene_manifest_path.parent / str(row["relative_path"])
+        frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ArticulatedUsdDepthSweepError(
+                ["reference_hybrid_scene_frame_unreadable"]
+            )
+        retained_by_camera[camera_id] = cv2.resize(
+            frame, (width, height), interpolation=cv2.INTER_AREA
+        )
+
+    frame_records: list[dict[str, Any]] = []
+    contact_panels: dict[str, list[tuple[float, Path]]] = {
+        camera_id: [] for camera_id in camera_ids
+    }
+    # OpenCV stores BGR.  The public contract remains RGB.
+    base_bgr = np.asarray(color[::-1], dtype=np.float32)
+    for index, cell in enumerate(cells):
+        camera_id = str(cell.get("camera_id") or "")
+        try:
+            angle = float(cell["commanded_door_angle_deg"])
+            readback = float(cell["readback_door_angle_deg"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArticulatedUsdDepthSweepError(
+                ["reference_hybrid_depth_cells_invalid"]
+            ) from exc
+        if not math.isfinite(angle) or not math.isfinite(readback):
+            raise ArticulatedUsdDepthSweepError(
+                ["reference_hybrid_depth_cells_invalid"]
+            )
+        finite = np.isfinite(depth[index]) & (depth[index] > 0.0)
+        frame = retained_by_camera[camera_id].copy()
+        if np.any(finite):
+            values = depth[index][finite].astype(np.float64)
+            low, high = np.percentile(values, [2.0, 98.0])
+            span = max(float(high - low), 1e-6)
+            shade = np.clip(1.08 - 0.22 * (depth[index] - low) / span, 0.78, 1.08)
+            shaded = np.clip(base_bgr[None, None, :] * shade[..., None], 0, 255)
+            frame[finite] = shaded[finite].astype(np.uint8)
+            boundary = cv2.morphologyEx(
+                finite.astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)
+            ).astype(bool) & finite
+            frame[boundary] = np.asarray([45, 210, 255], dtype=np.uint8)
+        angle_token = f"{angle:07.3f}".replace("-", "m").replace(".", "p")
+        frame_path = frames_root / f"{camera_id}__door_{angle_token}.png"
+        if not cv2.imwrite(str(frame_path), frame):
+            raise ArticulatedUsdDepthSweepError(
+                ["reference_hybrid_frame_write_failed"]
+            )
+        frame_records.append(
+            {
+                **_record(frame_path, output),
+                "camera_id": camera_id,
+                "commanded_door_angle_deg": angle,
+                "readback_door_angle_deg": readback,
+                "replacement_covered_pixel_count": int(finite.sum()),
+            }
+        )
+        contact_panels[camera_id].append((angle, frame_path))
+
+    sheets_root = output / "contact_sheets"
+    sheets_root.mkdir()
+    sheet_records: list[dict[str, Any]] = []
+    for camera_id, candidates in contact_panels.items():
+        selected_indices = sorted({0, len(candidates) // 2, len(candidates) - 1})
+        panels = []
+        for selected_index in selected_indices:
+            angle, frame_path = candidates[selected_index]
+            panel = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+            if panel is None:
+                raise ArticulatedUsdDepthSweepError(
+                    ["reference_hybrid_frame_unreadable"]
+                )
+            cv2.putText(
+                panel,
+                f"{camera_id}  door={angle:g}deg  neutral=USD silhouette",
+                (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (10, 10, 10),
+                3,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                panel,
+                f"{camera_id}  door={angle:g}deg  neutral=USD silhouette",
+                (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            panels.append(panel)
+        sheet = np.concatenate(panels, axis=1)
+        sheet_path = sheets_root / f"{camera_id}.png"
+        if not cv2.imwrite(str(sheet_path), sheet):
+            raise ArticulatedUsdDepthSweepError(
+                ["reference_hybrid_contact_sheet_write_failed"]
+            )
+        sheet_records.append(_record(sheet_path, output))
+
+    manifest: dict[str, Any] = {
+        "schema_version": REFERENCE_HYBRID_REVIEW_SCHEMA,
+        "status": "reference_hybrid_review_materialized",
+        "retained_scene_render": {
+            "sha256": _sha256(scene_manifest_path),
+            "sealed_camera_render_manifest_digest": scene_manifest.get(
+                "sealed_camera_render_manifest_digest"
+            ),
+            "splat_digest": scene_manifest.get("splat_digest"),
+        },
+        "depth_sweep": {
+            "sha256": _sha256(depth_manifest_path),
+            "manifest_digest": depth_manifest.get("manifest_digest"),
+            "replacement_usd": depth_manifest.get("replacement_usd"),
+        },
+        "replacement_rgb": list(color),
+        "dimensions": [width, height],
+        "camera_ids": camera_ids,
+        "cell_count": len(frame_records),
+        "frames": frame_records,
+        "contact_sheets": sheet_records,
+        "pixels_outside_replacement_mask_copied_from_retained_scene": True,
+        "actual_usd_geometry_silhouette_used": True,
+        "usd_materials_rendered": False,
+        "native_isaac_or_rtx_render": False,
+        "evaluation_authorized_render": False,
+        "claim_ceiling": "review_only_actual_usd_silhouette_over_reference_3dgs",
+    }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    manifest_path = output / f"{REFERENCE_HYBRID_REVIEW_SCHEMA}.json"
+    manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
+    return manifest
+
+
 __all__ = [
     "ArticulatedUsdDepthSweepError",
     "DEPTH_SWEEP_SCHEMA",
+    "REFERENCE_HYBRID_REVIEW_SCHEMA",
     "SOURCE_COVERAGE_AUDIT_SCHEMA",
     "conservative_max_pool_alpha",
     "evaluate_source_alpha_coverage",
     "load_articulated_usd_triangles",
     "materialize_articulated_usd_depth_sweep",
+    "materialize_reference_hybrid_review",
     "materialize_source_layer_replacement_coverage_audit",
     "rasterize_triangle_depth",
     "rotate_triangles_about_axis",
