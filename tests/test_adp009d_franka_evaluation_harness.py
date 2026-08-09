@@ -9,6 +9,8 @@ import pytest
 
 from blueprint_pipeline.adp009d_franka_evaluation_harness import (
     Adp009dHarnessError,
+    _canonical_asset_binding,
+    _check_instance_constraints,
     admit_task_construction,
     admit_cousin_static_validation,
     materialize_cousin_package,
@@ -531,6 +533,61 @@ def test_scenario_materialization_is_stable_policy_neutral_and_canonical(
         == ["deterministic_scripted_positive", "zero_action_negative"]
         for row in first.instances
     )
+
+
+def test_task_neutral_constraints_admit_articulated_fridge_without_rigid_positions() -> None:
+    fridge_digest = "sha256:" + "f" * 64
+    harness = {
+        "task_contract": {
+            "schema_version": "adp_task_spec.v1",
+            "task_kind": "articulated_open_close",
+            "target_joint_id": "refrigerator_upper_door_hinge",
+            "joint_reset_positions_rad": {
+                "refrigerator_upper_door_hinge": 0.0,
+                "refrigerator_lower_door_hinge": 0.0,
+            },
+            "target_success_interval_rad": [0.7853981633974483, 0.9599310885968813],
+            "joint_hard_limits_rad": {
+                "refrigerator_upper_door_hinge": [0.0, 1.5707963267948966],
+                "refrigerator_lower_door_hinge": [0.0, 1.5707963267948966],
+            },
+        },
+        "canonical_condition": {
+            "object_id": "840796_articulated_refrigerator",
+            "asset_binding": {
+                "asset_id": "840796_articulated_refrigerator",
+                "sha256": fridge_digest,
+            },
+        },
+    }
+    parameters = {
+        "target_joint_reset_rad": 0.0,
+        "scripted_positive_target_rad": 0.8726646259971648,
+        "robot_base_x_m": 1.75,
+        "robot_base_y_m": 1.99,
+    }
+
+    assert _canonical_asset_binding(harness) == (
+        "840796_articulated_refrigerator",
+        fridge_digest,
+    )
+    _check_instance_constraints(
+        harness=harness,
+        suite={"invalid_combinations": []},
+        factor_records=[],
+        parameters=parameters,
+    )
+
+    parameters["scripted_positive_target_rad"] = 1.2
+    with pytest.raises(
+        Adp009dHarnessError, match="scenario_articulated_scripted_target_invalid"
+    ):
+        _check_instance_constraints(
+            harness=harness,
+            suite={"invalid_combinations": []},
+            factor_records=[],
+            parameters=parameters,
+        )
 
 
 def test_checked_in_scenario_suite_is_frozen_bounded_and_materializable(

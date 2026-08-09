@@ -111,6 +111,7 @@ FORBIDDEN_OUTCOME_KEYS = {
     "task_success",
 }
 ARTICULATED_TASK_KIND = "articulated_open_close"
+RIGID_TASK_KIND = "rigid_pick_and_place"
 REQUIRED_ARTICULATED_CONSTRUCTION_GATES = {
     "source_link_partition",
     "source_visual_removal",
@@ -216,6 +217,37 @@ def _resolve_file_record(
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _task_kind(harness: Mapping[str, Any]) -> str:
+    """Return the scenario task kind, preserving the sealed v1 rigid default."""
+
+    return str(_mapping(harness.get("task_contract")).get("task_kind") or RIGID_TASK_KIND)
+
+
+def _canonical_asset_binding(harness: Mapping[str, Any]) -> tuple[str, str]:
+    """Resolve canonical task-asset identity without assuming a canned beverage.
+
+    ADP-009D's first fixture predates the explicit ``asset_binding`` field, so
+    its sealed ``object_id=approved_can`` identity remains a supported legacy
+    form.  New task instances must bind both an asset id and digest directly in
+    the canonical condition.
+    """
+
+    canonical = _mapping(harness.get("canonical_condition"))
+    binding = _mapping(canonical.get("asset_binding"))
+    asset_id = str(binding.get("asset_id") or canonical.get("object_id") or "")
+    asset_digest = str(binding.get("sha256") or "")
+    if not asset_digest and asset_id == "approved_can":
+        asset_digest = REQUIRED_ASSET_DIGESTS["approved_can"]
+    errors: list[str] = []
+    if not asset_id:
+        errors.append("scenario_canonical_asset_id_missing")
+    if not asset_digest.startswith("sha256:") or len(asset_digest) != 71:
+        errors.append("scenario_canonical_asset_digest_invalid")
+    if errors:
+        raise Adp009dHarnessError(errors)
+    return asset_id, asset_digest
 
 
 def admit_task_construction(
@@ -1583,10 +1615,11 @@ def validate_scenario_suite(
             errors.append(f"scenario_template_{template_id}_not_one_factor")
         if family == "held_out_composed" and len(factor_ids or []) < 2:
             errors.append(f"scenario_template_{template_id}_heldout_not_composed")
+        canonical_asset_id, _ = _canonical_asset_binding(harness_manifest)
         expected_cousin = {
             "visual_material_cousin": "adp009d_visual_material_cousin",
             "geometric_cousin": "adp009d_geometric_cousin",
-        }.get(str(family), "approved_can")
+        }.get(str(family), canonical_asset_id)
         if template.get("cousin_id") != expected_cousin:
             errors.append(f"scenario_template_{template_id}_cousin_invalid")
 
@@ -1702,6 +1735,62 @@ def _check_instance_constraints(
         ):
             errors.append(f"scenario_invalid_combination:{invalid.get('constraint_id')}")
 
+    if _task_kind(harness) == ARTICULATED_TASK_KIND:
+        contract = _mapping(harness.get("task_contract"))
+        target_joint_id = str(contract.get("target_joint_id") or "")
+        reset_positions = _mapping(contract.get("joint_reset_positions_rad"))
+        hard_limits = _mapping(contract.get("joint_hard_limits_rad"))
+        success_interval = contract.get("target_success_interval_rad")
+        target_reset = _number(parameters.get("target_joint_reset_rad"))
+        scripted_target = _number(parameters.get("scripted_positive_target_rad"))
+        hard_limit = hard_limits.get(target_joint_id)
+        contract_reset = _number(reset_positions.get(target_joint_id))
+        if not target_joint_id:
+            errors.append("scenario_articulated_target_joint_missing")
+        if not (
+            isinstance(hard_limit, list)
+            and len(hard_limit) == 2
+            and all(_number(value) is not None for value in hard_limit)
+            and float(hard_limit[0]) < float(hard_limit[1])
+        ):
+            errors.append("scenario_articulated_hard_limits_invalid")
+        if not (
+            isinstance(success_interval, list)
+            and len(success_interval) == 2
+            and all(_number(value) is not None for value in success_interval)
+            and float(success_interval[0]) <= float(success_interval[1])
+        ):
+            errors.append("scenario_articulated_success_interval_invalid")
+        if contract_reset is None or target_reset is None or not math.isclose(
+            target_reset, contract_reset, rel_tol=0.0, abs_tol=1.0e-12
+        ):
+            errors.append("scenario_articulated_reset_identity_invalid")
+        if scripted_target is None or not (
+            isinstance(success_interval, list)
+            and len(success_interval) == 2
+            and all(_number(value) is not None for value in success_interval)
+            and float(success_interval[0]) <= scripted_target <= float(success_interval[1])
+        ):
+            errors.append("scenario_articulated_scripted_target_invalid")
+        if (
+            isinstance(hard_limit, list)
+            and len(hard_limit) == 2
+            and all(_number(value) is not None for value in hard_limit)
+            and isinstance(success_interval, list)
+            and len(success_interval) == 2
+            and all(_number(value) is not None for value in success_interval)
+            and not (
+                float(hard_limit[0])
+                <= float(success_interval[0])
+                <= float(success_interval[1])
+                <= float(hard_limit[1])
+            )
+        ):
+            errors.append("scenario_articulated_success_outside_hard_limits")
+        if errors:
+            raise Adp009dHarnessError(errors)
+        return
+
     required_position_keys = (
         "object_start_x_m",
         "object_start_y_m",
@@ -1787,6 +1876,9 @@ def materialize_scenario_suite(
     canonical_parameters = _mapping(
         _mapping(harness_manifest.get("canonical_condition")).get("parameters")
     )
+    canonical_asset_id, canonical_asset_digest = _canonical_asset_binding(
+        harness_manifest
+    )
     instances: list[dict[str, Any]] = []
     for cell in _expanded_cells(suite):
         parameters = json.loads(json.dumps(canonical_parameters))
@@ -1822,16 +1914,16 @@ def materialize_scenario_suite(
             )
         cousin_id = str(cell["cousin_id"])
         cousin_digest = (
-            REQUIRED_ASSET_DIGESTS["approved_can"]
-            if cousin_id == "approved_can"
+            canonical_asset_digest
+            if cousin_id == canonical_asset_id
             else str(cousin_by_id[cousin_id]["cousin_digest"])
         )
         cousin_static_validation_receipt_digest = (
             None
-            if cousin_id == "approved_can"
+            if cousin_id == canonical_asset_id
             else static_receipt_by_id[cousin_id]["validation_receipt_digest"]
         )
-        if cousin_id != "approved_can":
+        if cousin_id != canonical_asset_id and _task_kind(harness_manifest) == RIGID_TASK_KIND:
             dimensions = _mapping(cousin_by_id[cousin_id].get("dimensions_m"))
             parameters["object_radius_m"] = float(dimensions["diameter"]) / 2
             parameters["object_height_m"] = dimensions["height"]
