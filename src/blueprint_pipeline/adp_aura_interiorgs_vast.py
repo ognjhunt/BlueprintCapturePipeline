@@ -117,6 +117,7 @@ def _adapter_scene_binding(receipt: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("adp_aura_interiorgs_scene_binding_invalid")
     camera_count = scene.get("camera_count")
     reference_index = scene.get("reference_camera_index")
+    runtime_camera_order = scene.get("runtime_camera_order")
     if (
         isinstance(camera_count, bool)
         or not isinstance(camera_count, int)
@@ -124,6 +125,13 @@ def _adapter_scene_binding(receipt: Mapping[str, Any]) -> dict[str, Any]:
         or isinstance(reference_index, bool)
         or not isinstance(reference_index, int)
         or not 0 <= reference_index < camera_count
+        or not isinstance(runtime_camera_order, list)
+        or len(runtime_camera_order) != camera_count
+        or runtime_camera_order != sorted(runtime_camera_order)
+        or len(set(runtime_camera_order)) != camera_count
+        or runtime_camera_order[reference_index] != reference_camera_id
+        or scene.get("runtime_camera_order_derivation")
+        != "released_aura_colmap_reader_sorted_by_image_name"
     ):
         raise ValueError("adp_aura_interiorgs_camera_binding_invalid")
     return {
@@ -134,6 +142,10 @@ def _adapter_scene_binding(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "camera_count": camera_count,
         "reference_camera_id": reference_camera_id,
         "reference_camera_index": reference_index,
+        "runtime_camera_order": list(runtime_camera_order),
+        "runtime_camera_order_derivation": scene[
+            "runtime_camera_order_derivation"
+        ],
         "input_receipt_digest": str(scene.get("input_receipt_digest") or ""),
     }
 

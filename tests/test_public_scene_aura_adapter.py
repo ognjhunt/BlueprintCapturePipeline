@@ -280,6 +280,10 @@ def test_aura_adapter_derives_new_scene_slug_and_reference_camera(
 ) -> None:
     paths = _fixture(tmp_path, monkeypatch)
     frozen = json.loads(paths["frozen"].read_text())
+    cameras_path = paths["input"] / "cameras.v1.json"
+    cameras = json.loads(cameras_path.read_text())
+    cameras_path.write_text(json.dumps(list(reversed(cameras))), encoding="utf-8")
+    frozen["derived_artifacts"]["cameras"] = _record(cameras_path, paths["input"])
     frozen["scene"].update(
         {
             "publisher_scene_id": "840796",
@@ -305,6 +309,10 @@ def test_aura_adapter_derives_new_scene_slug_and_reference_camera(
     assert receipt["scene"]["scene_slug"] == "840796_ins123"
     assert receipt["scene"]["reference_camera_id"] == "raised_left"
     assert receipt["scene"]["reference_camera_index"] == 5
+    assert receipt["scene"]["runtime_camera_order"][5] == "raised_left"
+    assert receipt["scene"]["runtime_camera_order_derivation"] == (
+        "released_aura_colmap_reader_sorted_by_image_name"
+    )
     assert receipt["adapter"]["trajectory_media_contract"]["generated"] is False
     assert (
         paths["data"]

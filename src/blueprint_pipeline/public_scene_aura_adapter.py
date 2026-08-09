@@ -367,7 +367,10 @@ def materialize_aura_adapter(
     camera_ids = [str(camera.get("camera_id") or "") for camera in cameras]
     if len(set(camera_ids)) != len(camera_ids) or reference_camera_id not in camera_ids:
         raise AuraAdapterError(["aurafusion360_camera_artifact_join_missing"])
-    reference_index = camera_ids.index(reference_camera_id)
+    # Aura's released COLMAP reader sorts CameraInfo rows by image_name before
+    # inpaint.py consumes reference_index. Input JSON order is not authoritative.
+    runtime_camera_ids = sorted(camera_ids)
+    reference_index = runtime_camera_ids.index(reference_camera_id)
     scene_id = str(scene.get("publisher_scene_id") or "")
     target_instance_id = str(scene.get("target_instance_id") or "")
     if not scene_id or not target_instance_id or any(
@@ -514,6 +517,10 @@ def materialize_aura_adapter(
             "reference_camera_selection": "maximum_frozen_target_mask_pixel_count",
             "reference_masked_pixel_count": int(max_mask["masked_pixel_count"]),
             "reference_camera_index": reference_index,
+            "runtime_camera_order": runtime_camera_ids,
+            "runtime_camera_order_derivation": (
+                "released_aura_colmap_reader_sorted_by_image_name"
+            ),
             "scene_slug": scene_slug,
         },
         "source": source,
