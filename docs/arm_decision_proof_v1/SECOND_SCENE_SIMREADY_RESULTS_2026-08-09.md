@@ -1,6 +1,6 @@
 # Second-scene articulated SimReady branch results — 2026-08-09
 
-Status: **the exact articulated refrigerator candidate exists and is statically
+Status: **the exact SimReady articulated refrigerator exists and is statically
 qualified; Franka placement, the fully bound door-state matrix, and the three
 task cameras are resolved. Native simulator qualification is not reached and is
 the smallest genuinely missing capability.**
@@ -125,9 +125,9 @@ sibling instance during v8.
 | Classification | Claims |
 | --- | --- |
 | Implemented | Deterministic source-to-topology derivation; articulated physics authoring with observed-handle group binding and labeled generated interior; two fail-closed static validators; twelve-state door clearance with bindable static obstacle classes; scenario admission requiring the bound matrix; Franka base placement search with typed rejection histogram; external/wrist/review camera resolution; digest-bound excision join seam with fail-closed inpainting-policy resolution; Joint Agent failure-path evidence retention, optimizer provisioning, on-host renderer probe, watchdog evidence polling, and machine avoidlist. |
-| Generated SimReady candidate | One exact articulated refrigerator USD, `sha256:f626998b…`, statically admitted on topology and physics, with its Franka base, twelve-state clearance, and three cameras resolved. |
+| Generated SimReady candidate | One exact SimReady articulated refrigerator USD, `sha256:a673d2e4…`, produced by the NVIDIA Physics Agent from the Blueprint-authored candidate `sha256:f626998b…`, statically re-admitted on topology and physics with the articulation and authored link masses intact, and with its Franka base, twelve-state clearance, and three cameras resolved. |
 | Native-simulator qualified | **None.** The probe inputs are frozen and the readback is now a required gate, but no blank-stage Isaac diagnostic, joint/limit/lock readback, contact stability, penetration, reset replay, or deterministic final-state check has executed. |
-| Blocked or abstained | The Content Agents SimReady pass is admitted and locally preflighted but has no returned agent output yet. Joint Agent owned-core topology remains a typed abstention; its last attempt blocked at `joint_agent_ovrtx_provision_failed`. Zero-action and scripted-positive controls have not run. No learned-policy episode was prepared or launched. Gaussian excision/coverage join is implemented but unexecuted pending the sibling branch's owned-index result. |
+| Blocked or abstained | The Content Agents Material and Texture agents returned typed nulls in the same run and the runner's terminal record is `blocked`, so this is a partial agent pass. Joint Agent owned-core topology remains a typed abstention; its last attempt blocked at `joint_agent_ovrtx_provision_failed`. Zero-action and scripted-positive controls have not run. No learned-policy episode was prepared or launched. Gaussian excision/coverage join is implemented but unexecuted pending the sibling branch's owned-index result. |
 | Physically unresolved | Physical equivalence; real refrigerator or Franka performance; hidden interior truth; partner-site fidelity; deployment readiness; any candidate ranking. |
 
 ## SimReady authoring pass and native probe (later on 2026-08-09)
@@ -179,6 +179,41 @@ authored asset fails closed before any paid time.
 
 `native_articulation_readback` is now a required construction gate, so no
 scenario cell can materialize on static evidence alone.
+
+## The SimReady asset
+
+The NVIDIA Physics Agent pass completed successfully on the exact candidate
+(instance run `840796_v4`, `$0.485139`, torn down to provider zero). The
+enriched asset is retained as
+
+`BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_simready_v1/simready_articulated_refrigerator_840796.usda`,
+digest `sha256:a673d2e4797498db21597aadca998daa4ecf7cf509b7d6a62165adc4924c32be`,
+manifest `manifests/second_scene_840796_simready_articulated_candidate.v1.json`.
+
+What the agent added, on top of the Blueprint-authored candidate: six
+inferred physics materials spanning distinct friction/restitution classes
+(for example `sf0.90/df0.80/r0.80` and `sf0.40/df0.30/r0.40`), per-component
+material bindings (1 to 27 prims), and per-component `PhysicsMassAPI`
+(3 to 29 prims).
+
+What it did not do, verified by readback: the articulation is intact - one
+articulation root, both revolute hinges, task axis Z, `[0, 90]` degree
+limits - and the Blueprint-authored link masses are unchanged at
+`62 / 11 / 11 kg`. The 26 added component-level mass entries carry zero
+values on non-rigid-body prims. Both static validators re-admit the enriched
+asset unchanged, and a hermetic test now fails closed if any future agent
+pass moves an authored link mass out of the admitted range.
+
+Two agents in the same run returned typed nulls rather than output: the
+Material Agent's pipeline failed, and the Texture Agent rejected its plan
+with zero executable jobs because the configured material path is not bound
+in the candidate. Neither blocks the physics result; both are retained. The
+runner's terminal record is `blocked`, so the run is recorded as a partial
+agent pass whose physics output is independently validated rather than as a
+clean four-agent success.
+
+Agent physics priors are advisory. They are not measured properties, and
+they do not raise the claim ceiling.
 
 ## Smallest next action
 
