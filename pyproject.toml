@@ -229,6 +229,7 @@ blueprint-build-public-scene-survey = "blueprint_pipeline.public_scene_viewpoint
 blueprint-materialize-public-scene-suite = "blueprint_pipeline.public_scene_suite_materializer:main"
 blueprint-materialize-public-scene-method-prerequisites = "blueprint_pipeline.public_scene_method_prerequisites:main"
 blueprint-build-public-scene-simready-control = "blueprint_pipeline.public_scene_simready_control:main"
+blueprint-compile-articulated-public-scene = "blueprint_pipeline.articulated_public_scene_pipeline:main"
 blueprint-render-splat-isaac = "blueprint_pipeline.isaac_particlefield_render_job:main"
 blueprint-isaac-g1-kitchen-parity = "blueprint_pipeline.isaac_g1_kitchen_parity_job:main"
 blueprint-inspect-isaac-worker-image = "blueprint_pipeline.isaac_worker_image_manifest:main"
