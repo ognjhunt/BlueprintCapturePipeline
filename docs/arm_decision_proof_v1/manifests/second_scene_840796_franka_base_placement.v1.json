@@ -1,0 +1,1220 @@
+{
+  "candidates": [
+    {
+      "base_xy_world_m": [
+        1.75,
+        1.99
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          1.91,
+          2.15,
+          0.75
+        ],
+        "aabb_min": [
+          1.59,
+          1.83,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.4553,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.791898
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.78338
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.77542
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.768097
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.761485
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.755655
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.750669
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.746582
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.74344
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.741281
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.740128
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.739995
+        }
+      ],
+      "score": 0.468402,
+      "worst_reach_margin_m": 0.013102
+    },
+    {
+      "base_xy_world_m": [
+        1.75,
+        2.04
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          1.91,
+          2.2,
+          0.75
+        ],
+        "aabb_min": [
+          1.59,
+          1.88,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.4553,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.804936
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.793942
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.783447
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.773553
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.764362
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.755969
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.748465
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.741937
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.73646
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.7321
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.72891
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.726931
+        }
+      ],
+      "score": 0.455364,
+      "worst_reach_margin_m": 6.4e-05
+    },
+    {
+      "base_xy_world_m": [
+        1.8,
+        1.99
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          1.96,
+          2.15,
+          0.75
+        ],
+        "aabb_min": [
+          1.64,
+          1.83,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.4053,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.771513
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.762758
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.754812
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.747761
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.741685
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.736655
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.732732
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.729962
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.728381
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.728009
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.728849
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.730892
+        }
+      ],
+      "score": 0.438787,
+      "worst_reach_margin_m": 0.033487
+    },
+    {
+      "base_xy_world_m": [
+        1.8,
+        2.04
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          1.96,
+          2.2,
+          0.75
+        ],
+        "aabb_min": [
+          1.64,
+          1.88,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.4053,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.78489
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.773601
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.763055
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.753365
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.744638
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.736977
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.730474
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.725211
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.721255
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.718659
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.717455
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.717662
+        }
+      ],
+      "score": 0.42541,
+      "worst_reach_margin_m": 0.02011
+    },
+    {
+      "base_xy_world_m": [
+        1.8,
+        2.09
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          1.96,
+          2.25,
+          0.75
+        ],
+        "aabb_min": [
+          1.64,
+          1.93,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.4053,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.801169
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.787476
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.774445
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.762214
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.750916
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.740682
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.731635
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.723891
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.717551
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.712701
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.70941
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.707725
+        }
+      ],
+      "score": 0.409131,
+      "worst_reach_margin_m": 0.003831
+    },
+    {
+      "base_xy_world_m": [
+        1.85,
+        1.99
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.01,
+          2.15,
+          0.75
+        ],
+        "aabb_min": [
+          1.69,
+          1.83,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.3553,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.753898
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.744927
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.737025
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.730287
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.724799
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.72063
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.717836
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.716454
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.716502
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.717981
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.72087
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.725131
+        }
+      ],
+      "score": 0.406402,
+      "worst_reach_margin_m": 0.051102
+    },
+    {
+      "base_xy_world_m": [
+        1.85,
+        2.04
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.01,
+          2.2,
+          0.75
+        ],
+        "aabb_min": [
+          1.69,
+          1.88,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.3553,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.767582
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.756026
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.745465
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.736024
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.72782
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.720959
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.715531
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.711612
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.709257
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.708498
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.709348
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.711793
+        }
+      ],
+      "score": 0.392718,
+      "worst_reach_margin_m": 0.037418
+    },
+    {
+      "base_xy_world_m": [
+        1.85,
+        2.09
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.01,
+          2.25,
+          0.75
+        ],
+        "aabb_min": [
+          1.69,
+          1.93,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.3553,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.784221
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.770217
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.75712
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.74508
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.734242
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.724745
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.716716
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.710266
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.705489
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.702455
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.70121
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.701773
+        }
+      ],
+      "score": 0.376079,
+      "worst_reach_margin_m": 0.020779
+    },
+    {
+      "base_xy_world_m": [
+        1.9,
+        1.99
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.06,
+          2.15,
+          0.75
+        ],
+        "aabb_min": [
+          1.74,
+          1.83,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.3053,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.739251
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.73009
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.722267
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.715886
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.711034
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.707781
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.706173
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.706234
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.707963
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.711334
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.7163
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.72279
+        }
+      ],
+      "score": 0.371049,
+      "worst_reach_margin_m": 0.065749
+    },
+    {
+      "base_xy_world_m": [
+        1.9,
+        2.04
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.06,
+          2.2,
+          0.75
+        ],
+        "aabb_min": [
+          1.74,
+          1.88,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.3053,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.753201
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.741411
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.730878
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.721737
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.714114
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.708116
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.70383
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.701322
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.700629
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.701762
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.704703
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.709408
+        }
+      ],
+      "score": 0.357099,
+      "worst_reach_margin_m": 0.051799
+    },
+    {
+      "base_xy_world_m": [
+        1.85,
+        2.14
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.01,
+          2.3,
+          0.75
+        ],
+        "aabb_min": [
+          1.69,
+          1.98,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.3553,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.803631
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.787333
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.771844
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.757335
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.743976
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.731936
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.721373
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.712436
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.705255
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.69994
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.696575
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.695212
+        }
+      ],
+      "score": 0.356669,
+      "worst_reach_margin_m": 0.001369
+    },
+    {
+      "base_xy_world_m": [
+        1.9,
+        2.09
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.06,
+          2.25,
+          0.75
+        ],
+        "aabb_min": [
+          1.74,
+          1.93,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.3053,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.770151
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.755877
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.742762
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.73097
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.720658
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.711971
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.705035
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.699957
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.696815
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.69566
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.696511
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.699354
+        }
+      ],
+      "score": 0.340149,
+      "worst_reach_margin_m": 0.034849
+    },
+    {
+      "base_xy_world_m": [
+        1.95,
+        1.99
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.11,
+          2.15,
+          0.75
+        ],
+        "aabb_min": [
+          1.79,
+          1.83,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.2553,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.727751
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.718434
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.710728
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.704745
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.700576
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.698284
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.697906
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.699448
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.702885
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.708164
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.715205
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.723903
+        }
+      ],
+      "score": 0.332549,
+      "worst_reach_margin_m": 0.077249
+    },
+    {
+      "base_xy_world_m": [
+        1.9,
+        2.14
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.06,
+          2.3,
+          0.75
+        ],
+        "aabb_min": [
+          1.74,
+          1.98,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.3053,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.789906
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.77331
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.757765
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.743457
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.730573
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.719289
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.709769
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.702158
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.696578
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.693121
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.691844
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.692771
+        }
+      ],
+      "score": 0.320394,
+      "worst_reach_margin_m": 0.015094
+    },
+    {
+      "base_xy_world_m": [
+        1.95,
+        2.04
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.11,
+          2.2,
+          0.75
+        ],
+        "aabb_min": [
+          1.79,
+          1.88,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.2553,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.741918
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.729936
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.719477
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.710688
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.703701
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.698623
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.695536
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.694488
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.695498
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.698548
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.70359
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.710543
+        }
+      ],
+      "score": 0.318382,
+      "worst_reach_margin_m": 0.063082
+    },
+    {
+      "base_xy_world_m": [
+        1.95,
+        2.09
+      ],
+      "franka_base_class_box": {
+        "aabb_max": [
+          2.11,
+          2.25,
+          0.75
+        ],
+        "aabb_min": [
+          1.79,
+          1.93,
+          0.0
+        ]
+      },
+      "minimum_obstacle_clearance_m": 0.2553,
+      "per_state_reach_m": [
+        {
+          "angle_degrees": 0.0,
+          "reach_m": 0.759119
+        },
+        {
+          "angle_degrees": 5.0,
+          "reach_m": 0.744625
+        },
+        {
+          "angle_degrees": 10.0,
+          "reach_m": 0.731546
+        },
+        {
+          "angle_degrees": 15.0,
+          "reach_m": 0.720063
+        },
+        {
+          "angle_degrees": 20.0,
+          "reach_m": 0.710341
+        },
+        {
+          "angle_degrees": 25.0,
+          "reach_m": 0.70253
+        },
+        {
+          "angle_degrees": 30.0,
+          "reach_m": 0.696754
+        },
+        {
+          "angle_degrees": 35.0,
+          "reach_m": 0.693109
+        },
+        {
+          "angle_degrees": 40.0,
+          "reach_m": 0.691655
+        },
+        {
+          "angle_degrees": 45.0,
+          "reach_m": 0.692418
+        },
+        {
+          "angle_degrees": 50.0,
+          "reach_m": 0.695385
+        },
+        {
+          "angle_degrees": 55.0,
+          "reach_m": 0.700504
+        }
+      ],
+      "score": 0.301181,
+      "worst_reach_margin_m": 0.045881
+    }
+  ],
+  "claim_boundary": {
+    "approach_line_check_is_heuristic": true,
+    "floor_support_native_readback_required": true,
+    "local_geometric_screen_only": true,
+    "native_ik_and_contact_required": true,
+    "physical_equivalence_proven": false
+  },
+  "door_corridor_applies_to_base_band": false,
+  "door_radius_m": 0.714,
+  "door_state_angles_degrees": [
+    0.0,
+    5.0,
+    10.0,
+    15.0,
+    20.0,
+    25.0,
+    30.0,
+    35.0,
+    40.0,
+    45.0,
+    50.0,
+    55.0
+  ],
+  "evaluated_cell_count": 1728,
+  "handle_arc_radius_m": 0.476979,
+  "handle_closed_midpoint_world_m": [
+    2.0937,
+    1.8068,
+    1.0225
+  ],
+  "hinge_origin_world_m": [
+    1.617248144,
+    1.829218141,
+    1.2859256235
+  ],
+  "keepout_labels": [
+    "replacement_target_footprint"
+  ],
+  "member_vertical_interval_m": [
+    0.939981249,
+    1.631869998
+  ],
+  "obstacle_count": 9,
+  "parameters": {
+    "arm_clearance_radius_m": 0.07,
+    "base_footprint_radius_m": 0.16,
+    "base_obstacle_z_interval_m": [
+      0.02,
+      0.75
+    ],
+    "base_reach_center_z_m": 0.333,
+    "door_corridor_margin_m": 0.1,
+    "grid_resolution_m": 0.05,
+    "maximum_candidates": 16,
+    "reach_margin_m": 0.05,
+    "reach_maximum_m": 0.855,
+    "reach_minimum_m": 0.3
+  },
+  "receipt_digest": "sha256:24f5d158e661f336f777c4a07e4836d3114f3d68bddeca71ca50437129f3c516",
+  "rejection_histogram": {
+    "base_footprint_obstacle": 404,
+    "base_footprint_shell_triangle": 95,
+    "base_inside_target_keepout": 58,
+    "handle_arc_unreachable": 1128
+  },
+  "schema_version": "articulated_franka_base_placement_search.v1",
+  "search_region_aabb_m": {
+    "aabb_max": [
+      3.3,
+      3.6,
+      0.0
+    ],
+    "aabb_min": [
+      0.9,
+      1.84,
+      0.0
+    ]
+  },
+  "status": "base_candidates_locally_admissible",
+  "triangle_shell_obstacle_count": 1
+}

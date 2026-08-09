@@ -165,6 +165,19 @@ def scene_optimizer_probe(*, output_root: Path) -> list[str]:
                     }
                 },
             )
+        result_error = str((result or {}).get("error") or "")
+        operations = list((result or {}).get("operations_executed") or [])
+        if result_error or not operations:
+            # v11 proved the worker can return an error payload without the
+            # launcher raising; a probe result carrying an error or zero
+            # executed operations is a failure, never a pass.
+            log.write_text(
+                "scene_optimizer_probe_failed\n"
+                + json.dumps(result, indent=2, sort_keys=True, default=str)
+                + "\n",
+                encoding="utf-8",
+            )
+            return ["joint_agent_scene_optimizer_probe_failed"]
         log.write_text(
             "scene_optimizer_probe_ok\n"
             + json.dumps(result, indent=2, sort_keys=True, default=str)

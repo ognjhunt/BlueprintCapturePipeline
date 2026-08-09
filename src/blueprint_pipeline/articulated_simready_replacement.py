@@ -853,6 +853,257 @@ def validate_articulated_replacement_physics(
 
 
 AUTHORING_SCHEMA_VERSION = "articulated_simready_authoring.v1"
+DERIVED_TOPOLOGY_SCHEMA_VERSION = "articulated_topology_from_source.v1"
+
+
+def derive_articulated_topology_from_source(
+    *,
+    source_asset_usd_path: str | Path,
+    output_usd_path: str | Path,
+    seam_z_m: float,
+    hinge_pivot_asset_xy_m: Sequence[float],
+    joint_limits_rad: Sequence[float],
+    door_back_plane_y_m: float,
+    door_face_plane_y_m: float,
+    slab_minimum_x_span_fraction: float = 0.85,
+    hinge_column_x_maximum_m: float | None = None,
+    subset_family_name: str = "blueprint_connected_components",
+) -> dict[str, Any]:
+    """Deterministically construct the articulated topology from source subsets.
+
+    This is the checked-in "deterministic parametric CAD" comparison arm of the
+    evidence ladder: every partition threshold is an observed value from the
+    frozen receipts (seam plane, shell/door/handle planes, hinge column), the
+    input is the digest-bound 28-component source asset, and no model or
+    manual selection participates. The output is an articulation-topology
+    candidate in exactly the shape the owned-core path produces (links,
+    revolute joints at the frozen pivot, one articulation root), so the same
+    authoring and validators consume either path. It never claims Joint Agent
+    equivalence, native qualification, or physical truth.
+    """
+
+    try:
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+    except ImportError as exc:  # pragma: no cover - environment guard
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_replacement_openusd_runtime_missing"]
+        ) from exc
+
+    source = Path(source_asset_usd_path).expanduser().resolve()
+    output = Path(output_usd_path).expanduser().resolve()
+    if not source.is_file() or source.is_symlink():
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_topology_source_missing"]
+        )
+    pivot = _finite_vector(hinge_pivot_asset_xy_m, 2)
+    limits = _finite_vector(joint_limits_rad, 2)
+    if (
+        pivot is None
+        or limits is None
+        or limits[0] >= limits[1]
+        or not all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+            for value in (seam_z_m, door_back_plane_y_m, door_face_plane_y_m)
+        )
+        or not 0.0 < float(slab_minimum_x_span_fraction) <= 1.0
+    ):
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_topology_parameters_invalid"]
+        )
+    seam = float(seam_z_m)
+    door_back = float(door_back_plane_y_m)
+    door_face = float(door_face_plane_y_m)
+
+    source_stage = Usd.Stage.Open(str(source))
+    if source_stage is None:
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_topology_source_unreadable"]
+        )
+    meshes = [
+        prim
+        for prim in source_stage.Traverse()
+        if prim.IsA(UsdGeom.Mesh) and UsdGeom.Subset.GetAllGeomSubsets(UsdGeom.Mesh(prim))
+    ]
+    if len(meshes) != 1:
+        raise ArticulatedSimReadyReplacementError(
+            [f"articulated_topology_single_subset_mesh_required:{len(meshes)}"]
+        )
+    mesh = UsdGeom.Mesh(meshes[0])
+    points = [tuple(float(v) for v in point) for point in mesh.GetPointsAttr().Get()]
+    counts = [int(v) for v in mesh.GetFaceVertexCountsAttr().Get()]
+    indices = [int(v) for v in mesh.GetFaceVertexIndicesAttr().Get()]
+    face_starts: list[int] = []
+    cursor = 0
+    for count in counts:
+        face_starts.append(cursor)
+        cursor += count
+    subsets = [
+        subset
+        for subset in UsdGeom.Subset.GetAllGeomSubsets(mesh)
+        if str(subset.GetFamilyNameAttr().Get() or "") == subset_family_name
+    ]
+    if not subsets:
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_topology_component_subsets_missing"]
+        )
+
+    asset_x_values = [point[0] for point in points]
+    asset_x_span = max(asset_x_values) - min(asset_x_values)
+    hinge_column_x = (
+        float(hinge_column_x_maximum_m)
+        if hinge_column_x_maximum_m is not None
+        else min(asset_x_values) + 0.02
+    )
+
+    component_rows: list[dict[str, Any]] = []
+    for subset in sorted(subsets, key=lambda item: item.GetPrim().GetName()):
+        face_indices = [int(v) for v in subset.GetIndicesAttr().Get()]
+        vertex_ids: list[int] = []
+        seen: set[int] = set()
+        faces: list[list[int]] = []
+        for face in face_indices:
+            start = face_starts[face]
+            row = indices[start : start + counts[face]]
+            for vertex in row:
+                if vertex not in seen:
+                    seen.add(vertex)
+                    vertex_ids.append(vertex)
+            faces.append(row)
+        component_points = [points[v] for v in vertex_ids]
+        minimum = [min(p[axis] for p in component_points) for axis in range(3)]
+        maximum = [max(p[axis] for p in component_points) for axis in range(3)]
+        z_mid = 0.5 * (minimum[2] + maximum[2])
+        x_span = maximum[0] - minimum[0]
+        is_front = minimum[1] >= door_back - 1e-4
+        is_slab = (
+            is_front
+            and x_span >= float(slab_minimum_x_span_fraction) * asset_x_span
+            and (maximum[2] - minimum[2]) >= 0.5 * abs(seam)
+            and maximum[1] <= door_face + 1e-4
+        )
+        is_handle = is_front and maximum[1] > door_face + 1e-4
+        is_hinge_hardware = (
+            is_front and not is_slab and not is_handle and maximum[0] <= hinge_column_x
+        )
+        if is_slab or is_handle or is_hinge_hardware:
+            link = "upper_door" if z_mid >= seam else "lower_door"
+            role = (
+                "door_slab"
+                if is_slab
+                else "handle_hardware" if is_handle else "hinge_hardware"
+            )
+        else:
+            link = "cabinet"
+            role = "cabinet_shell"
+        component_rows.append(
+            {
+                "component": subset.GetPrim().GetName(),
+                "link": link,
+                "role": role,
+                "aabb_min": [round(v, 6) for v in minimum],
+                "aabb_max": [round(v, 6) for v in maximum],
+                "vertex_ids": vertex_ids,
+                "faces": faces,
+            }
+        )
+
+    links_present = {row["link"] for row in component_rows}
+    if not {"cabinet", "upper_door", "lower_door"}.issubset(links_present):
+        raise ArticulatedSimReadyReplacementError(
+            [
+                "articulated_topology_link_partition_incomplete:"
+                + ",".join(sorted({"cabinet", "upper_door", "lower_door"} - links_present))
+            ]
+        )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stage = Usd.Stage.CreateNew(str(output))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    asset_root = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(asset_root.GetPrim())
+    UsdPhysics.ArticulationRootAPI.Apply(asset_root.GetPrim())
+    for link_name in ("cabinet", "upper_door", "lower_door"):
+        UsdGeom.Xform.Define(stage, f"/Asset/{link_name}")
+    for row in component_rows:
+        vertex_remap = {vertex: index for index, vertex in enumerate(row["vertex_ids"])}
+        component_mesh = UsdGeom.Mesh.Define(
+            stage, f"/Asset/{row['link']}/{row['component']}"
+        )
+        component_mesh.CreatePointsAttr(
+            [Gf.Vec3f(*points[vertex]) for vertex in row["vertex_ids"]]
+        )
+        component_mesh.CreateFaceVertexCountsAttr(
+            [len(face) for face in row["faces"]]
+        )
+        component_mesh.CreateFaceVertexIndicesAttr(
+            [vertex_remap[vertex] for face in row["faces"] for vertex in face]
+        )
+    door_intervals = {
+        "upper_door": [
+            min(row["aabb_min"][2] for row in component_rows if row["link"] == "upper_door"),
+            max(row["aabb_max"][2] for row in component_rows if row["link"] == "upper_door"),
+        ],
+        "lower_door": [
+            min(row["aabb_min"][2] for row in component_rows if row["link"] == "lower_door"),
+            max(row["aabb_max"][2] for row in component_rows if row["link"] == "lower_door"),
+        ],
+    }
+    for door_name in ("upper_door", "lower_door"):
+        joint = UsdPhysics.RevoluteJoint.Define(
+            stage, f"/Asset/joints/{door_name}_hinge"
+        )
+        joint.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+        joint.CreateBody1Rel().SetTargets([f"/Asset/{door_name}"])
+        pivot_z = 0.5 * (door_intervals[door_name][0] + door_intervals[door_name][1])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(pivot[0], pivot[1], pivot_z))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(pivot[0], pivot[1], pivot_z))
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateLowerLimitAttr().Set(math.degrees(limits[0]))
+        joint.CreateUpperLimitAttr().Set(math.degrees(limits[1]))
+    layer = stage.GetRootLayer()
+    layer.documentation = ""
+    layer.comment = ""
+    layer.Save()
+
+    receipt: dict[str, Any] = {
+        "schema_version": DERIVED_TOPOLOGY_SCHEMA_VERSION,
+        "status": "deterministic_topology_candidate_constructed",
+        "construction_path": "deterministic_parametric_from_frozen_observations",
+        "source_asset_sha256": _sha256(source),
+        "output_usd_path": str(output),
+        "output_usd_sha256": _sha256(output),
+        "partition_parameters": {
+            "seam_z_m": seam,
+            "door_back_plane_y_m": door_back,
+            "door_face_plane_y_m": door_face,
+            "slab_minimum_x_span_fraction": float(slab_minimum_x_span_fraction),
+            "hinge_column_x_maximum_m": hinge_column_x,
+            "hinge_pivot_asset_xy_m": list(pivot),
+            "joint_limits_rad": list(limits),
+        },
+        "component_partition": [
+            {
+                "component": row["component"],
+                "link": row["link"],
+                "role": row["role"],
+                "aabb_min": row["aabb_min"],
+                "aabb_max": row["aabb_max"],
+            }
+            for row in component_rows
+        ],
+        "door_z_intervals_m": door_intervals,
+        "claim_boundary": {
+            "joint_agent_output": False,
+            "model_inference_used": False,
+            "manual_component_selection_used": False,
+            "native_simulator_qualified": False,
+            "physical_equivalence_proven": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    return receipt
 
 
 def _local_range(cache: Any, prim: Any) -> tuple[list[float], list[float]]:
@@ -1108,7 +1359,27 @@ def author_articulated_simready_replacement(
     handle_source = None
     handle_path = None
     minimum_protrusion = float(handle_spec["minimum_protrusion_m"])
-    if len(fronts) >= 2:
+    door_face_plane = handle_spec.get("door_face_plane_y_m")
+    if (
+        door_face_plane is not None
+        and not isinstance(door_face_plane, bool)
+        and isinstance(door_face_plane, (int, float))
+        and math.isfinite(float(door_face_plane))
+    ):
+        # The observed handle is a multi-piece assembly (bar, end caps,
+        # standoffs) sharing one front plane, so a single most-protruding
+        # component cannot represent it. Tag every component protruding past
+        # the recorded door-face plane as task contact geometry.
+        threshold = float(door_face_plane) + minimum_protrusion / 2.0
+        group = sorted(path for path, front in fronts.items() if front > threshold)
+        if group:
+            for path in group:
+                stage.GetPrimAtPath(path).CreateAttribute(
+                    TASK_CONTACT_ROLE_ATTRIBUTE, Sdf.ValueTypeNames.String
+                ).Set(HANDLE_ROLE_VALUE)
+            handle_path = group[0]
+            handle_source = "observed_source_component_group"
+    elif len(fronts) >= 2:
         best_path, best_front = max(fronts.items(), key=lambda item: (item[1], item[0]))
         slab_front = max(
             front for path, front in fronts.items() if path != best_path
@@ -1268,7 +1539,9 @@ __all__ = [
     "PROVENANCE_ATTRIBUTE",
     "TASK_CONTACT_ROLE_ATTRIBUTE",
     "TOPOLOGY_SCHEMA_VERSION",
+    "DERIVED_TOPOLOGY_SCHEMA_VERSION",
     "author_articulated_simready_replacement",
+    "derive_articulated_topology_from_source",
     "validate_articulated_replacement_physics",
     "validate_articulated_replacement_topology",
 ]

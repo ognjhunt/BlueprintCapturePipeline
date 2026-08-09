@@ -708,3 +708,127 @@ def test_authoring_is_deterministic_for_identical_inputs(tmp_path: Path) -> None
     )
 
     assert first["output_usd_sha256"] == second["output_usd_sha256"]
+
+
+from blueprint_pipeline.articulated_simready_replacement import (  # noqa: E402
+    derive_articulated_topology_from_source,
+)
+
+
+def _source_like_fixture(path: Path) -> Path:
+    """One mesh + component subsets shaped like the real 28-component source."""
+
+    stage = Usd.Stage.CreateNew(str(path))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    asset = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(asset.GetPrim())
+    mesh = UsdGeom.Mesh.Define(stage, "/Asset/source_mesh")
+    points: list[Gf.Vec3f] = []
+    face_counts: list[int] = []
+    face_indices: list[int] = []
+    subset_faces: dict[str, list[int]] = {}
+
+    def _add_box(name: str, center, half) -> None:
+        base = len(points)
+        cx, cy, cz = center
+        hx, hy, hz = half
+        for sx in (-1.0, 1.0):
+            for sy in (-1.0, 1.0):
+                for sz in (-1.0, 1.0):
+                    points.append(Gf.Vec3f(cx + sx * hx, cy + sy * hy, cz + sz * hz))
+        quads = [
+            (0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1),
+            (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3),
+        ]
+        rows = []
+        for quad in quads:
+            rows.append(len(face_counts))
+            face_counts.append(4)
+            face_indices.extend(base + corner for corner in quad)
+        subset_faces[name] = rows
+
+    upper_mid = (UPPER_INTERVAL[0] + UPPER_INTERVAL[1]) / 2.0
+    lower_mid = (LOWER_INTERVAL[0] + LOWER_INTERVAL[1]) / 2.0
+    _add_box("component_shell", (0.0, -0.086, 0.827), (DOOR_HALF_X, 0.264, 0.805))
+    _add_box(
+        "component_upper_slab",
+        (0.0, 0.2525, upper_mid),
+        (DOOR_HALF_X, 0.0535, (UPPER_INTERVAL[1] - UPPER_INTERVAL[0]) / 2.0 - 0.01),
+    )
+    _add_box(
+        "component_lower_slab",
+        (0.0, 0.2525, lower_mid - 0.02),
+        (DOOR_HALF_X, 0.0535, (LOWER_INTERVAL[1] - LOWER_INTERVAL[0]) / 2.0 - 0.03),
+    )
+    _add_box("component_upper_handle", (0.12, 0.3275, 1.0225), (0.1225, 0.0215, 0.0185))
+    _add_box("component_lower_handle", (0.12, 0.3275, 0.8155), (0.1225, 0.0215, 0.0185))
+    _add_box("component_hinge_upper", (-0.3505, 0.1895, 1.009), (0.0035, 0.0025, 0.01))
+    _add_box("component_foot", (-0.319, -0.316, 0.011), (0.02, 0.016, 0.01))
+
+    mesh.CreatePointsAttr(points)
+    mesh.CreateFaceVertexCountsAttr(face_counts)
+    mesh.CreateFaceVertexIndicesAttr(face_indices)
+    for name, rows in subset_faces.items():
+        subset = UsdGeom.Subset.Define(stage, f"/Asset/source_mesh/{name}")
+        subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+        subset.CreateIndicesAttr().Set(rows)
+        subset.CreateFamilyNameAttr().Set("blueprint_connected_components")
+    stage.GetRootLayer().Save()
+    return path
+
+
+def test_derived_topology_partitions_and_passes_full_authoring_chain(
+    tmp_path: Path,
+) -> None:
+    source = _source_like_fixture(tmp_path / "source.usda")
+
+    derived = derive_articulated_topology_from_source(
+        source_asset_usd_path=source,
+        output_usd_path=tmp_path / "topology.usda",
+        seam_z_m=UPPER_INTERVAL[0],
+        hinge_pivot_asset_xy_m=[HINGE_ASSET[0], HINGE_ASSET[1]],
+        joint_limits_rad=[0.0, math.pi / 2.0],
+        door_back_plane_y_m=0.178,
+        door_face_plane_y_m=0.306,
+    )
+
+    assert derived["schema_version"] == "articulated_topology_from_source.v1"
+    assert derived["construction_path"] == (
+        "deterministic_parametric_from_frozen_observations"
+    )
+    partition = {
+        row["component"]: (row["link"], row["role"])
+        for row in derived["component_partition"]
+    }
+    assert partition["component_shell"] == ("cabinet", "cabinet_shell")
+    assert partition["component_upper_slab"] == ("upper_door", "door_slab")
+    assert partition["component_lower_slab"] == ("lower_door", "door_slab")
+    assert partition["component_upper_handle"] == ("upper_door", "handle_hardware")
+    assert partition["component_lower_handle"] == ("lower_door", "handle_hardware")
+    assert partition["component_hinge_upper"] == ("upper_door", "hinge_hardware")
+    assert partition["component_foot"] == ("cabinet", "cabinet_shell")
+    assert derived["claim_boundary"]["joint_agent_output"] is False
+
+    template = _physics_template()
+    template["maximum_reset_pairwise_overlap_m"] = 0.006
+    template["task_door_envelope_m"] = {
+        "aabb_min": [-0.36, 0.17, UPPER_INTERVAL[0] - 0.005],
+        "aabb_max": [0.36, 0.36, UPPER_INTERVAL[1] + 0.005],
+    }
+    template["non_task_door_envelope_m"] = {
+        "aabb_min": [-0.36, 0.17, LOWER_INTERVAL[0] - 0.005],
+        "aabb_max": [0.36, 0.36, LOWER_INTERVAL[1] + 0.005],
+    }
+    receipt = author_articulated_simready_replacement(
+        rigged_topology_usd_path=tmp_path / "topology.usda",
+        output_usd_path=tmp_path / "candidate.usda",
+        topology_contract=_contract(),
+        physics_contract_template=template,
+        authoring_spec=_authoring_arguments(tmp_path, source)["authoring_spec"],
+    )
+
+    assert receipt["status"] == "simready_candidate_statically_admitted"
+    assert receipt["handle"]["source"] == "observed_source_component"
+    assert receipt["topology_validation"]["status"] == "topology_statically_admitted"
+    assert receipt["physics_validation"]["status"] == "physics_statically_admitted"
