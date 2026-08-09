@@ -232,6 +232,23 @@ def _validated_runtime_prerequisite(receipt: Mapping[str, Any]) -> dict[str, Any
     }
 
 
+def _validated_runtime_source_rows(
+    root: Path,
+    files: Mapping[str, str],
+    *,
+    error: str,
+) -> list[tuple[str, Path]]:
+    """Resolve every released runtime source before any large archive is written."""
+
+    rows = [
+        (archive_path, root / source_path)
+        for archive_path, source_path in sorted(files.items())
+    ]
+    if any(not path.is_file() for _archive_path, path in rows):
+        raise ValueError(error)
+    return rows
+
+
 def build_aura_interiorgs_bundle(
     *,
     repo_root: str | Path,
@@ -310,10 +327,11 @@ def build_aura_interiorgs_bundle(
     adapter_rows, scene_binding = _validated_adapter(adapter, packet)
     aura_rows = _source_files(aura)
     sam2_rows = _tracked_files(sam2)
-    wonderworld_rows = [
-        (archive_path, wonderworld / source_path)
-        for archive_path, source_path in sorted(WONDERWORLD_MARIGOLD_RUNTIME_FILES.items())
-    ]
+    wonderworld_rows = _validated_runtime_source_rows(
+        wonderworld,
+        WONDERWORLD_MARIGOLD_RUNTIME_FILES,
+        error="adp_aura_interiorgs_wonderworld_runtime_source_missing",
+    )
     lama_rows = _tracked_files(lama)
     _deterministic_zip_files(aura_rows, runtime / "aurafusion360_source.zip")
     _deterministic_zip_files(sam2_rows, runtime / "sam2_source.zip")

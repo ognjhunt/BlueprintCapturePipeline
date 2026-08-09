@@ -40,6 +40,28 @@ def test_aura_lama_runtime_isolates_legacy_opencv_distribution() -> None:
     assert "aurafusion360_interiorgs_lama_opencv_validation_failed" in entrypoint
 
 
+def test_aura_bundle_preflights_all_released_runtime_sources(tmp_path: Path) -> None:
+    wonderworld = tmp_path / "WonderWorld"
+    present = wonderworld / "marigold_module/LICENSE.txt"
+    present.parent.mkdir(parents=True)
+    present.write_text("Apache-2.0\n", encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="adp_aura_interiorgs_wonderworld_runtime_source_missing",
+    ):
+        bundle._validated_runtime_source_rows(
+            wonderworld,
+            {
+                "utils/LICENSE.txt": "marigold_module/LICENSE.txt",
+                "utils/batchsize.py": "marigold_lcm/util/batchsize.py",
+            },
+            error="adp_aura_interiorgs_wonderworld_runtime_source_missing",
+        )
+
+    assert not (tmp_path / "provider_runtime.zip").exists()
+
+
 def test_aura_adapter_overlay_preserves_publisher_tree(tmp_path: Path) -> None:
     runner = _load_runner()
     source = tmp_path / "adapter"
