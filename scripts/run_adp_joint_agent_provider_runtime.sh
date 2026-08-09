@@ -101,7 +101,7 @@ if [ -n "${PIP_INDEX_URL:-}" ]; then
   export UV_DEFAULT_INDEX="${PIP_INDEX_URL}"
 fi
 BUILD_REQUIREMENTS_PATH="${OUTPUT_DIR}/python_build_requirements.txt"
-python3 "${SCRIPT_DIR}/provider_python_build_plan.py" \
+"${SOURCE_DIR}/.venv/bin/python" "${SCRIPT_DIR}/provider_python_build_plan.py" \
   "${SCRIPT_DIR}/python_build_dependency_plan.json" \
   "${SOURCE_DIR}" \
   --requirements-out "${BUILD_REQUIREMENTS_PATH}" || {
