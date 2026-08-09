@@ -126,9 +126,59 @@ sibling instance during v8.
 | --- | --- |
 | Implemented | Deterministic source-to-topology derivation; articulated physics authoring with observed-handle group binding and labeled generated interior; two fail-closed static validators; twelve-state door clearance with bindable static obstacle classes; scenario admission requiring the bound matrix; Franka base placement search with typed rejection histogram; external/wrist/review camera resolution; digest-bound excision join seam with fail-closed inpainting-policy resolution; Joint Agent failure-path evidence retention, optimizer provisioning, on-host renderer probe, watchdog evidence polling, and machine avoidlist. |
 | Generated SimReady candidate | One exact articulated refrigerator USD, `sha256:f626998b…`, statically admitted on topology and physics, with its Franka base, twelve-state clearance, and three cameras resolved. |
-| Native-simulator qualified | **None.** No blank-stage Isaac diagnostic, joint/limit/lock readback, contact stability, penetration, reset replay, or deterministic final-state check has run. |
-| Blocked or abstained | Joint Agent owned-core topology remains a typed abstention; its last attempt blocked at `joint_agent_ovrtx_provision_failed`. Zero-action and scripted-positive controls have not run. No learned-policy episode was prepared or launched. Gaussian excision/coverage join is implemented but unexecuted pending the sibling branch's owned-index result. |
+| Native-simulator qualified | **None.** The probe inputs are frozen and the readback is now a required gate, but no blank-stage Isaac diagnostic, joint/limit/lock readback, contact stability, penetration, reset replay, or deterministic final-state check has executed. |
+| Blocked or abstained | The Content Agents SimReady pass is admitted and locally preflighted but has no returned agent output yet. Joint Agent owned-core topology remains a typed abstention; its last attempt blocked at `joint_agent_ovrtx_provision_failed`. Zero-action and scripted-positive controls have not run. No learned-policy episode was prepared or launched. Gaussian excision/coverage join is implemented but unexecuted pending the sibling branch's owned-index result. |
 | Physically unresolved | Physical equivalence; real refrigerator or Franka performance; hidden interior truth; partner-site fidelity; deployment readiness; any candidate ranking. |
+
+## SimReady authoring pass and native probe (later on 2026-08-09)
+
+After the candidate was built, two further pieces landed.
+
+**Content Agents SimReady pass.** The lane could previously only run the
+840313 can. Four hardcodings were generalized so it accepts any admitted
+variant, each with hermetic coverage:
+
+- an `articulated_v1` input variant that keeps the scene-derived USD and its
+  Blueprint reference render in the evidence root while the repo holds only
+  the digest-bound manifest, and admits only a statically admitted candidate
+  with both validator digests;
+- three checked-in agent configs (material, texture, physics) that ship
+  byte-identical and preserve the articulation by contract — `optimize_usd`
+  disabled where present, the joint rigger never enabled, mass writing off
+  because Blueprint already authored masses, inertias, colliders, and both
+  joints;
+- a remote-config contract that keeps every runtime-failure assertion but
+  replaces the can's prim paths with internal consistency, an input
+  normalizer that clears non-default mesh purposes and verifies the
+  articulation survives, and a USD bbox probe derived from the bundle's own
+  input;
+- a bundle entry contract that requires exactly one input USD and one
+  reference image by shape rather than by filename;
+- a local preflight image admitted by recipe (Dockerfile digest, base image,
+  pinned source tree) instead of one unreproducible build ID, which had made
+  the gate unsatisfiable once that image was gone.
+
+The local config preflight then **passed**: all three agent CLIs and the USD
+bbox probe dry-ran in the pinned image against the articulated candidate.
+The paid pass is bundle `sha256:224a9445…` (47.8 MB) bound to input USD
+`sha256:f626998b…`. Two provider attempts were retained: one blocked before
+allocation at the old entry contract (zero spend) and one whose host exited
+70 s in before running the bundle (`$0.006258`, machine `46598`
+auto-recorded to the avoidlist).
+
+**Native articulation probe.** `materialize_articulated_native_probe` freezes
+the inputs for the one run that would convert the statically admitted
+candidate into a native-qualified one: a blank physics stage, an articulation
+stage referencing the exact candidate bytes, and a spec listing eleven
+required readbacks. For 840796 it is frozen at root `/Asset`, two revolute
+joints, task axis Z with `[0, 90]` degree limits, twelve commanded states
+through 55 degrees, both joints reset to zero, 40 settle samples at 15 Hz,
+and a 0.001 rad locked-joint tolerance; spec digest
+`sha256:52c6e567…`. It executes nothing, and a spec contradicting the
+authored asset fails closed before any paid time.
+
+`native_articulation_readback` is now a required construction gate, so no
+scenario cell can materialize on static evidence alone.
 
 ## Smallest next action
 
