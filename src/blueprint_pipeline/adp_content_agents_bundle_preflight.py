@@ -70,16 +70,29 @@ DRY_RUN_MARKERS = {
 }
 MATERIAL_VALIDATE_MARKER = "Pipeline completed successfully"
 USD_BBOX_MARKER = "BLUEPRINT_CONTENT_AGENTS_DEFAULT_PURPOSE_BBOX_OK"
-USD_BBOX_SCRIPT = (
-    "from pxr import Usd,UsdGeom;"
-    "s=Usd.Stage.Open('/bundle/provider_runtime/input/"
-    "adp009a_840313_canned_beverage_control.usda');"
-    "p=UsdGeom.Mesh.Get(s,'/canned_beverage/visuals/body');"
-    "r=UsdGeom.BBoxCache(Usd.TimeCode.Default(),[UsdGeom.Tokens.default_])"
-    ".ComputeWorldBound(p.GetPrim()).ComputeAlignedRange();"
-    "assert p.ComputePurpose()==UsdGeom.Tokens.default_ and not r.IsEmpty();"
-    f"print('{USD_BBOX_MARKER}')"
-)
+def usd_bbox_script(input_usd_name: str) -> str:
+    """Assert NVIDIA 0.5.2 can bound the bundle's own input at default purpose.
+
+    The property is variant-neutral: every mesh must compute the default
+    purpose and the default prim must have a non-empty default-purpose world
+    bound. Naming one scene's prim path made this probe unusable for any other
+    admitted input.
+    """
+
+    return (
+        "from pxr import Usd,UsdGeom;"
+        f"s=Usd.Stage.Open('/bundle/provider_runtime/input/{input_usd_name}');"
+        "d=s.GetDefaultPrim();"
+        "assert d.IsValid();"
+        "ms=[q for q in s.Traverse() if q.IsA(UsdGeom.Mesh)];"
+        "assert ms;"
+        "assert all("
+        "UsdGeom.Mesh(q).ComputePurpose()==UsdGeom.Tokens.default_ for q in ms);"
+        "r=UsdGeom.BBoxCache(Usd.TimeCode.Default(),[UsdGeom.Tokens.default_])"
+        ".ComputeWorldBound(d).ComputeAlignedRange();"
+        "assert not r.IsEmpty();"
+        f"print('{USD_BBOX_MARKER}')"
+    )
 
 
 class ContentAgentsBundlePreflightError(ValueError):
@@ -393,7 +406,15 @@ def materialize_bundle_config_preflight(
             "log_size_bytes": validation_log.stat().st_size,
             "log_sha256": _sha256_file(validation_log),
         }
-        bbox_arguments = ["-c", USD_BBOX_SCRIPT]
+        input_names = sorted(
+            path.name
+            for path in (expanded / "provider_runtime/input").glob("*.usda")
+        )
+        if len(input_names) != 1:
+            raise ContentAgentsBundlePreflightError(
+                "usd_default_purpose_bbox_input_ambiguous"
+            )
+        bbox_arguments = ["-c", usd_bbox_script(input_names[0])]
         bbox_command = [
             docker,
             "run",
@@ -595,9 +616,18 @@ def validate_bundle_config_preflight(
             blockers.append(
                 "adp_content_agents_config_preflight_log_outside_evidence:usd_default_purpose_bbox"
             )
+        # The probe script is derived from the bundle's own input name, so the
+        # validator re-derives it from the recorded arguments rather than a
+        # single scene's constant.
+        recorded_arguments = list(bbox_row.get("arguments") or [])
+        recorded_script = recorded_arguments[1] if len(recorded_arguments) == 2 else ""
+        input_name = ""
+        marker = "/bundle/provider_runtime/input/"
+        if marker in recorded_script:
+            input_name = recorded_script.split(marker, 1)[1].split("'", 1)[0]
         expected_bbox = {
             "entrypoint": "python",
-            "arguments": ["-c", USD_BBOX_SCRIPT],
+            "arguments": ["-c", usd_bbox_script(input_name)] if input_name else [],
             "secret_environment_names_passed_by_name": [],
             "returncode": 0,
             "required_marker": USD_BBOX_MARKER,

@@ -390,7 +390,12 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
     bbox_log.write_text(bundle_preflight.USD_BBOX_MARKER, encoding="utf-8")
     executions["usd_default_purpose_bbox"] = {
         "entrypoint": "python",
-        "arguments": ["-c", bundle_preflight.USD_BBOX_SCRIPT],
+        "arguments": [
+            "-c",
+            bundle_preflight.usd_bbox_script(
+                "adp009a_840313_canned_beverage_control.usda"
+            ),
+        ],
         "secret_environment_names_passed_by_name": [],
         "returncode": 0,
         "required_marker": bundle_preflight.USD_BBOX_MARKER,
@@ -645,6 +650,10 @@ def _executable_preflight_fixture(tmp_path: Path) -> tuple[Path, str]:
         )
         for member in bundle_preflight.CONFIG_MEMBERS.values():
             archive.writestr(member, "project:\n  name: exact-bundle-test\n")
+        archive.writestr(
+            "provider_runtime/input/adp009a_840313_canned_beverage_control.usda",
+            '#usda 1.0\ndef Xform "canned_beverage" {}\n',
+        )
     bundle_receipt = tmp_path / "exact-bundle-receipt.json"
     write_json(
         bundle_receipt,
@@ -1101,3 +1110,14 @@ def test_local_preflight_image_recipe_matches_checked_in_dockerfile() -> None:
     for recipe in bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS.values():
         assert recipe["dockerfile_sha256"] == observed
         assert recipe["content_agents_source_tree"] == content_agents.SOURCE_TREE
+
+
+def test_usd_bbox_probe_script_is_derived_from_the_bundle_input() -> None:
+    script = bundle_preflight.usd_bbox_script(
+        "adp009d_840796_articulated_refrigerator_candidate.usda"
+    )
+
+    assert "adp009d_840796_articulated_refrigerator_candidate.usda" in script
+    assert "canned_beverage" not in script
+    assert "GetDefaultPrim" in script
+    assert "ComputePurpose()==UsdGeom.Tokens.default_" in script
