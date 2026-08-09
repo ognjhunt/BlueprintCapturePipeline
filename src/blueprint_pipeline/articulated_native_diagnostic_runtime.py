@@ -3,12 +3,66 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sys
 import traceback
 from pathlib import Path
 from typing import Any
+
+
+def _sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _camera_quaternion_wxyz(forward: Any, up: Any) -> Any:
+    """Quaternion for a USD camera whose local forward axis is negative Z."""
+
+    import numpy as np
+
+    forward_array = np.asarray(forward, dtype=float)
+    up_array = np.asarray(up, dtype=float)
+    forward_array /= np.linalg.norm(forward_array)
+    right = np.cross(forward_array, up_array)
+    right /= np.linalg.norm(right)
+    corrected_up = np.cross(right, forward_array)
+    corrected_up /= np.linalg.norm(corrected_up)
+    rotation = np.column_stack((right, corrected_up, -forward_array))
+    trace = float(np.trace(rotation))
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        quaternion = np.asarray(
+            [
+                0.25 * scale,
+                (rotation[2, 1] - rotation[1, 2]) / scale,
+                (rotation[0, 2] - rotation[2, 0]) / scale,
+                (rotation[1, 0] - rotation[0, 1]) / scale,
+            ]
+        )
+    else:
+        index = int(np.argmax(np.diag(rotation)))
+        next_index = (index + 1) % 3
+        final_index = (index + 2) % 3
+        scale = math.sqrt(
+            1.0
+            + rotation[index, index]
+            - rotation[next_index, next_index]
+            - rotation[final_index, final_index]
+        ) * 2.0
+        xyz = np.zeros(3)
+        xyz[index] = 0.25 * scale
+        xyz[next_index] = (
+            rotation[next_index, index] + rotation[index, next_index]
+        ) / scale
+        xyz[final_index] = (
+            rotation[final_index, index] + rotation[index, final_index]
+        ) / scale
+        w = (
+            rotation[final_index, next_index] - rotation[next_index, final_index]
+        ) / scale
+        quaternion = np.concatenate(([w], xyz))
+    return quaternion / np.linalg.norm(quaternion)
 
 
 def _pose_row(pose: Any) -> dict[str, list[float]]:
@@ -60,14 +114,28 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             from omni.isaac.kit import SimulationApp
 
+        appearance_spec = request["render_appearance"]
+        width, height = [int(item) for item in appearance_spec["resolution"]]
         app = SimulationApp(
-            {"headless": True, "enable_cameras": False, "renderer": "RayTracedLighting"}
+            {
+                "headless": True,
+                "enable_cameras": True,
+                "renderer": "RayTracedLighting",
+                "width": width,
+                "height": height,
+            }
         )
         import carb
+        import numpy as np
         import omni.timeline
         import omni.usd
         from omni.isaac.dynamic_control import _dynamic_control
-        from pxr import UsdPhysics
+        try:
+            from isaacsim.sensors.camera import Camera
+        except ImportError:
+            from omni.isaac.sensor import Camera
+        from PIL import Image
+        from pxr import Gf, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
         context = omni.usd.get_context()
         context.open_stage(str(asset))
@@ -78,6 +146,64 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("articulated_native_stage_open_failed")
         articulation_spec = request["articulation"]
         runtime = request["runtime"]
+        render_material_rows = []
+        for material_path in appearance_spec["required_material_paths"]:
+            material = UsdShade.Material(stage.GetPrimAtPath(material_path))
+            connected, _invalid = material.GetSurfaceOutput().GetConnectedSources()
+            if not material or not material.GetPrim().IsValid() or not connected:
+                raise RuntimeError(
+                    f"articulated_native_render_material_missing:{material_path}"
+                )
+            render_material_rows.append(
+                {
+                    "material_path": material_path,
+                    "surface_shader_prim_paths": sorted(
+                        str(connection.source.GetPrim().GetPath())
+                        for connection in connected
+                    ),
+                }
+            )
+        dome = UsdLux.DomeLight.Define(stage, "/BlueprintDiagnostic/Lights/Dome")
+        dome.CreateIntensityAttr(1000.0)
+        distant = UsdLux.DistantLight.Define(
+            stage, "/BlueprintDiagnostic/Lights/Key"
+        )
+        distant.CreateIntensityAttr(2500.0)
+        camera_objects: dict[str, Any] = {}
+        for camera_spec in appearance_spec["cameras"]:
+            camera_id = str(camera_spec["camera_id"])
+            camera_path = f"/BlueprintDiagnostic/Cameras/{camera_id}"
+            camera_prim = UsdGeom.Camera.Define(stage, camera_path)
+            aperture = 15.2908
+            camera_prim.CreateVerticalApertureAttr(aperture)
+            camera_prim.CreateHorizontalApertureAttr(aperture * width / height)
+            camera_prim.CreateFocalLengthAttr(
+                aperture
+                / (
+                    2.0
+                    * math.tan(
+                        math.radians(float(appearance_spec["vertical_fov_degrees"]))
+                        / 2.0
+                    )
+                )
+            )
+            position = np.asarray(camera_spec["position_asset_m"], dtype=float)
+            look_at = np.asarray(camera_spec["look_at_asset_m"], dtype=float)
+            quaternion = _camera_quaternion_wxyz(
+                look_at - position, (0.0, 0.0, 1.0)
+            )
+            xform = UsdGeom.Xformable(camera_prim.GetPrim())
+            xform.ClearXformOpOrder()
+            xform.AddTranslateOp().Set(Gf.Vec3d(*position.tolist()))
+            xform.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(
+                Gf.Quatd(
+                    float(quaternion[0]),
+                    Gf.Vec3d(*[float(item) for item in quaternion[1:]]),
+                )
+            )
+            camera_objects[camera_id] = Camera(
+                prim_path=camera_path, resolution=(width, height)
+            )
         fixed_prim = stage.GetPrimAtPath(
             articulation_spec["fixed_base_body_prim_path"]
         )
@@ -101,6 +227,10 @@ def main(argv: list[str] | None = None) -> int:
         timeline = omni.timeline.get_timeline_interface()
         timeline.play()
         for _ in range(60):
+            app.update()
+        for camera in camera_objects.values():
+            camera.initialize()
+        for _ in range(30):
             app.update()
 
         dc = _dynamic_control.acquire_dynamic_control_interface()
@@ -144,6 +274,9 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("articulated_native_fixed_body_handle_invalid")
         initial_fixed_pose = _pose_row(dc.get_rigid_body_pose(fixed_body))
         rows = []
+        frame_rows = []
+        frames_root = output.parent / "native_material_frames"
+        frames_root.mkdir(parents=True, exist_ok=True)
         settle_steps = int(runtime["settle_steps_per_command"])
         for angle in articulation_spec["commanded_angles_degrees"]:
             for name in locked_names:
@@ -169,6 +302,41 @@ def main(argv: list[str] | None = None) -> int:
                     "locked_joint_readback_degrees": locked_readback,
                 }
             )
+            for camera_id, camera in sorted(camera_objects.items()):
+                app.update()
+                rgba = np.asarray(camera.get_rgba())
+                if rgba.ndim != 3 or rgba.shape[:2] != (height, width):
+                    raise RuntimeError(
+                        f"articulated_native_material_frame_shape_invalid:{camera_id}:"
+                        f"{tuple(rgba.shape)}"
+                    )
+                rgb = np.asarray(rgba[:, :, :3], dtype=np.uint8)
+                pixel_stddev = float(rgb.std())
+                if pixel_stddev < float(appearance_spec["minimum_pixel_stddev"]):
+                    raise RuntimeError(
+                        f"articulated_native_material_frame_blank:{camera_id}:"
+                        f"stddev={pixel_stddev}"
+                    )
+                frame_path = frames_root / (
+                    f"{camera_id}_door_{float(angle):06.2f}_degrees.png"
+                )
+                Image.fromarray(rgb).save(frame_path, format="PNG", optimize=False)
+                frame_rows.append(
+                    {
+                        "camera_id": camera_id,
+                        "camera_role": next(
+                            row["role"]
+                            for row in appearance_spec["cameras"]
+                            if row["camera_id"] == camera_id
+                        ),
+                        "door_angle_degrees": float(angle),
+                        "relative_path": frame_path.relative_to(output.parent).as_posix(),
+                        "sha256": _sha256(frame_path),
+                        "width": width,
+                        "height": height,
+                        "pixel_stddev": pixel_stddev,
+                    }
+                )
         # Reset replay is a native operation, not a caller assertion.
         dc.set_dof_position_target(driven_handle, 0.0)
         dc.set_dof_velocity_target(driven_handle, 0.0)
@@ -234,7 +402,25 @@ def main(argv: list[str] | None = None) -> int:
                     "available": False,
                     "gap": "blank_stage_joint_diagnostic_does_not_establish_task_contact_or_initial_penetration",
                 },
-                "claim_ceiling": "native_isaac_articulation_import_drive_and_reset_only",
+                "native_material_render_readback": {
+                    "status": "passed",
+                    "renderer": "RayTracedLighting",
+                    "static_appearance_receipt_digest": appearance_spec[
+                        "static_appearance_receipt_digest"
+                    ],
+                    "render_material_rows": render_material_rows,
+                    "frame_count": len(frame_rows),
+                    "frames": frame_rows,
+                    "usd_materials_rendered": True,
+                    "default_neutral_override_used": False,
+                    "coverage_silhouette_audit_used": False,
+                    "native_renderer_readback_observed": True,
+                    "policy_input_frames_produced": False,
+                },
+                "claim_ceiling": (
+                    "native_isaac_articulation_import_drive_reset_and_material_"
+                    "readback_only"
+                ),
             }
         )
         timeline.stop()

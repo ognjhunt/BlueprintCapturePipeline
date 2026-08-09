@@ -7,7 +7,7 @@ from typing import Any
 import zipfile
 
 import pytest
-from pxr import Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
@@ -49,6 +49,18 @@ def _asset(path: Path) -> Path:
         joint.CreateUpperLimitAttr(90.0)
         joint.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
         joint.CreateBody1Rel().SetTargets([f"/Asset/{body}"])
+    material = UsdShade.Material.Define(stage, "/Asset/render_materials/exterior")
+    shader = UsdShade.Shader.Define(
+        stage, "/Asset/render_materials/exterior_shader"
+    )
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+        Gf.Vec3f(0.8, 0.74, 0.70)
+    )
+    material.CreateSurfaceOutput().ConnectToSource(
+        shader.ConnectableAPI(), "surface"
+    )
+    UsdShade.MaterialBindingAPI.Apply(root).Bind(material)
     stage.GetRootLayer().Save()
     return path
 
@@ -78,6 +90,27 @@ def _request(asset: Path, *, scene_id: str = "840796") -> dict:
             "drive_stiffness": 2000.0,
             "drive_damping": 150.0,
             "drive_max_force": 5000.0,
+        },
+        "render_appearance": {
+            "static_appearance_receipt_digest": "sha256:" + "c" * 64,
+            "required_material_paths": ["/Asset/render_materials/exterior"],
+            "resolution": [320, 180],
+            "vertical_fov_degrees": 55.0,
+            "minimum_pixel_stddev": 2.0,
+            "cameras": [
+                {
+                    "camera_id": "external",
+                    "role": "material_readback",
+                    "position_asset_m": [1.7, 2.3, 1.45],
+                    "look_at_asset_m": [0.0, 0.0, 0.8],
+                },
+                {
+                    "camera_id": "overview",
+                    "role": "review_only",
+                    "position_asset_m": [3.05, 3.3, 1.9],
+                    "look_at_asset_m": [0.0, 0.0, 0.8],
+                },
+            ],
         },
     }
     value["request_digest"] = canonical_digest(
@@ -146,6 +179,9 @@ def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
         "/Asset/joints/lower_door_hinge",
         "/Asset/joints/upper_door_hinge",
     ]
+    assert rows[0]["static_inventory"]["render_material_paths"] == [
+        "/Asset/render_materials/exterior"
+    ]
     assert rows[0]["candidate_policy_queried"] is False
     assert rows[0]["controls_requested"] is False
     assert asset.read_bytes() == before
@@ -154,11 +190,17 @@ def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
         entrypoint = archive.read(
             "provider_runtime/run_adp_arena_provider_runtime.sh"
         ).decode()
+        runtime_source = archive.read(
+            "provider_runtime/articulated_native_diagnostic_runtime.py"
+        ).decode()
     assert "provider_runtime/assets/articulated_task_asset.usda" in names
     assert "provider_runtime/articulated_native_diagnostic_runtime.py" in names
     assert "adp009d_native_microcheck.json" in entrypoint
     assert "policy_provisioning" not in entrypoint
     assert "IsaacLab-Arena" not in entrypoint
+    assert '"enable_cameras": True' in runtime_source
+    assert "native_material_render_readback" in runtime_source
+    assert "coverage_silhouette_audit_used" in runtime_source
 
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
@@ -194,6 +236,61 @@ def test_bundle_rejects_changed_asset(tmp_path: Path) -> None:
         )
 
     assert "articulated_native_asset_digest_mismatch" in excinfo.value.codes
+
+
+def test_bundle_rejects_missing_render_material_before_paid_runtime(
+    tmp_path: Path,
+) -> None:
+    asset = _asset(tmp_path / "asset.usda")
+    request = _request(asset)
+    request["render_appearance"]["required_material_paths"] = [
+        "/Asset/render_materials/missing"
+    ]
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    harness = tmp_path / "harness.json"
+    harness.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(ArticulatedNativeDiagnosticError) as excinfo:
+        build_articulated_native_diagnostic_bundle(
+            job_dir=tmp_path / "bundle",
+            asset_path=asset,
+            request_path=request_path,
+            harness_manifest_path=harness,
+            implementation_commit="b" * 40,
+            generated_at="fixed",
+        )
+
+    assert (
+        "articulated_native_render_material_missing:"
+        "/Asset/render_materials/missing"
+    ) in excinfo.value.codes
+
+
+def test_checked_in_second_scene_request_binds_material_readback() -> None:
+    request_path = (
+        Path(__file__).resolve().parents[1]
+        / "docs/arm_decision_proof_v1/manifests"
+        / "second_scene_840796_articulated_native_diagnostic_request.v2.json"
+    )
+    request = build_articulated_native_diagnostic_request(
+        json.loads(request_path.read_text(encoding="utf-8"))
+    )
+
+    assert request["asset"]["sha256"] == (
+        "sha256:9f487fbee7006c6c276ce37c9e1e7e1653a465ac2fbbe15cffa63653111cc720"
+    )
+    assert request["render_appearance"]["required_material_paths"] == [
+        "/Asset/render_materials/observed_exterior",
+        "/Asset/render_materials/generated_unobserved",
+    ]
+    assert {row["role"] for row in request["render_appearance"]["cameras"]} == {
+        "material_readback",
+        "review_only",
+    }
 
 
 def _allocator_args(tmp_path: Path) -> list[str]:

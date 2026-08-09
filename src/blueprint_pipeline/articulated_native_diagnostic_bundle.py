@@ -144,6 +144,67 @@ def build_articulated_native_diagnostic_request(
         ):
             if _finite(runtime.get(field), minimum=minimum, maximum=maximum) is None:
                 errors.append(f"articulated_native_request_{field}_invalid")
+    appearance = request.get("render_appearance")
+    if not isinstance(appearance, Mapping):
+        errors.append("articulated_native_request_render_appearance_missing")
+    else:
+        if not _is_sha256(appearance.get("static_appearance_receipt_digest")):
+            errors.append("articulated_native_request_appearance_receipt_invalid")
+        material_paths = appearance.get("required_material_paths")
+        if (
+            not isinstance(material_paths, list)
+            or not material_paths
+            or len(set(map(str, material_paths))) != len(material_paths)
+            or any(not _path(item) for item in material_paths)
+        ):
+            errors.append("articulated_native_request_render_materials_invalid")
+        resolution = appearance.get("resolution")
+        if (
+            not isinstance(resolution, list)
+            or len(resolution) != 2
+            or any(isinstance(item, bool) or not isinstance(item, int) for item in resolution)
+            or any(not 64 <= int(item) <= 4096 for item in resolution)
+        ):
+            errors.append("articulated_native_request_render_resolution_invalid")
+        if _finite(
+            appearance.get("vertical_fov_degrees"), minimum=10.0, maximum=150.0
+        ) is None:
+            errors.append("articulated_native_request_render_fov_invalid")
+        if _finite(
+            appearance.get("minimum_pixel_stddev"), minimum=0.1, maximum=100.0
+        ) is None:
+            errors.append("articulated_native_request_render_variance_invalid")
+        cameras = appearance.get("cameras")
+        if not isinstance(cameras, list) or not cameras:
+            errors.append("articulated_native_request_render_cameras_invalid")
+        else:
+            camera_ids: list[str] = []
+            for row in cameras:
+                if not isinstance(row, Mapping):
+                    errors.append("articulated_native_request_render_camera_invalid")
+                    continue
+                camera_id = str(row.get("camera_id") or "")
+                camera_ids.append(camera_id)
+                for field in ("position_asset_m", "look_at_asset_m"):
+                    vector = row.get(field)
+                    if (
+                        not isinstance(vector, list)
+                        or len(vector) != 3
+                        or any(
+                            _finite(item, minimum=-1000.0, maximum=1000.0) is None
+                            for item in vector
+                        )
+                    ):
+                        errors.append(
+                            f"articulated_native_request_render_camera_{field}_invalid"
+                        )
+                if row.get("role") not in {"material_readback", "review_only"}:
+                    errors.append("articulated_native_request_render_camera_role_invalid")
+            if (
+                any(not item for item in camera_ids)
+                or len(camera_ids) != len(set(camera_ids))
+            ):
+                errors.append("articulated_native_request_render_camera_ids_invalid")
     if errors:
         raise ArticulatedNativeDiagnosticError(errors)
     expected = canonical_digest(request, digest_field="request_digest")
@@ -157,7 +218,7 @@ def build_articulated_native_diagnostic_request(
 
 def _inspect_bound_asset(asset_path: Path, request: Mapping[str, Any]) -> dict[str, Any]:
     try:
-        from pxr import Usd, UsdGeom, UsdPhysics
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
     except ImportError as exc:  # pragma: no cover
         raise ArticulatedNativeDiagnosticError(
             ["articulated_native_openusd_runtime_missing"]
@@ -190,6 +251,17 @@ def _inspect_bound_asset(asset_path: Path, request: Mapping[str, Any]) -> dict[s
         prim = stage.GetPrimAtPath(path)
         if not prim.IsValid() or not prim.IsA(UsdPhysics.RevoluteJoint):
             errors.append(f"articulated_native_locked_revolute_joint_missing:{path}")
+    render_material_paths: list[str] = []
+    for path in request["render_appearance"]["required_material_paths"]:
+        material = UsdShade.Material(stage.GetPrimAtPath(path))
+        try:
+            connected, _invalid = material.GetSurfaceOutput().GetConnectedSources()
+        except Exception:
+            connected = []
+        if not material or not material.GetPrim().IsValid() or not connected:
+            errors.append(f"articulated_native_render_material_missing:{path}")
+        else:
+            render_material_paths.append(str(material.GetPath()))
     if errors:
         raise ArticulatedNativeDiagnosticError(errors)
     return {
@@ -206,6 +278,10 @@ def _inspect_bound_asset(asset_path: Path, request: Mapping[str, Any]) -> dict[s
         "collision_prim_count": sum(
             1 for prim in stage.Traverse() if prim.HasAPI(UsdPhysics.CollisionAPI)
         ),
+        "render_material_paths": sorted(render_material_paths),
+        "static_appearance_receipt_digest": request["render_appearance"][
+            "static_appearance_receipt_digest"
+        ],
     }
 
 
