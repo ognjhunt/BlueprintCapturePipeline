@@ -77,7 +77,7 @@ construction artifacts, and sibling-aware watchdog closure.
 |---|---|
 | `4d968c996` | Merge the latest published ADP-009D control harness. |
 | `f3fa149b9` | Prevent absolute-position control starvation with bounded command slew and setpoint lead; covers 840313 and 840796 fixtures. |
-| `265373d5d` | Retain and digest-bind Joint Agent construction outputs outside ephemeral working storage. |
+| `265373d5d` plus current branch | Retain and digest-bind Joint Agent topology, bounds, deterministic review, optimized source, owned-core USD, diagnostics, and validation outside ephemeral working storage. |
 | `51e5506d3` | Close a run watchdog when only explicitly authorized sibling GPU IDs remain. |
 | `e1a18ba00` | Bind the fast, construction-only OVRTX RT2/32 profile and separate it from evaluation media. |
 

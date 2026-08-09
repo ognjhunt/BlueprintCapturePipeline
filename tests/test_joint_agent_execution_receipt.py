@@ -132,7 +132,7 @@ def test_seals_scene_neutral_topology_candidate(
     )
 
     assert receipt["status"] == "executed_topology_candidate_not_simready"
-    assert len(receipt["execution"]["retained_artifacts"]) == 5
+    assert len(receipt["execution"]["retained_artifacts"]) == 7
     assert receipt["provider_run"]["retry_cap"] == 0
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"

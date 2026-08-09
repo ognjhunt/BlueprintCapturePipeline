@@ -54,6 +54,8 @@ RESULT_SCHEMA_VERSION = "adp_joint_agent_vast_run.v1"
 REQUIRED_RETAINED_ARTIFACT_ROLES = frozenset(
     {
         "articulation_candidates",
+        "candidate_bounds",
+        "deterministic_articulation_review",
         "optimized_source",
         "owned_core_rigged_asset",
         "owned_core_diagnostics",

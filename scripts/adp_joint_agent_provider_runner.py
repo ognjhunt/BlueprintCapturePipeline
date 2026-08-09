@@ -226,6 +226,8 @@ def main() -> int:
             output_root=OUTPUT,
             artifacts={
                 "articulation_candidates": candidates_path,
+                "candidate_bounds": OUTPUT / "joint_candidate_bounds.json",
+                "deterministic_articulation_review": review_path,
                 "optimized_source": optimized_path,
                 "owned_core_rigged_asset": rigged,
                 "owned_core_diagnostics": diagnostics,
