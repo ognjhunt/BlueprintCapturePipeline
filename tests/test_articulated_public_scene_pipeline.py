@@ -168,6 +168,39 @@ def _authority(inputs: dict) -> dict:
     return value
 
 
+def _executions(inputs: dict) -> tuple[dict, dict]:
+    aura = {
+        "schema_version": "adp009b_aurafusion360_execution_receipt.v1",
+        "status": "executed_candidate",
+        "scene": {
+            "publisher_scene_id": inputs["freeze"]["scene"]["publisher_scene_id"],
+            "target_instance_id": "ins"
+            + inputs["freeze"]["scene"]["target_instance_id"],
+        },
+        "prepared_adapter": {
+            "receipt_digest": inputs["aura_adapter_receipt"]["receipt_digest"]
+        },
+        "quality": {"status": "not_admitted"},
+        "claim_boundary": {"released_method_execution_completed": True},
+        "receipt_digest": "",
+    }
+    aura["receipt_digest"] = canonical_digest(aura, digest_field="receipt_digest")
+    source = inputs["articulated_source_receipt"]
+    joint = {
+        "schema_version": "adp_joint_agent_execution_receipt.v1",
+        "status": "executed_topology_candidate_not_simready",
+        "source": {
+            "packet_digest": inputs["joint_agent_packet"]["packet_digest"],
+            "source_receipt_digest": source["receipt_digest"],
+            "source_asset_sha256": source["output_asset"]["sha256"],
+        },
+        "bundle": {"freeze_digest": inputs["freeze"]["freeze_digest"]},
+        "receipt_digest": "",
+    }
+    joint["receipt_digest"] = canonical_digest(joint, digest_field="receipt_digest")
+    return aura, joint
+
+
 def test_non_agent_pipeline_stops_at_exact_rights_boundary() -> None:
     result = compile_articulated_public_scene_state(**_inputs())
 
@@ -195,6 +228,38 @@ def test_bound_authority_removes_only_rights_and_budget_blockers() -> None:
         "joint_agent_topology_execution_missing",
     ]
     assert result["execution_authority"]["hard_total_spend_cap_usd"] == 12.0
+
+
+def test_observed_execution_receipts_replace_caller_asserted_packet_flags() -> None:
+    inputs = _inputs()
+    inputs["execution_authority"] = _authority(inputs)
+    aura, joint = _executions(inputs)
+    inputs["aura_execution_receipt"] = aura
+    inputs["joint_agent_execution_receipt"] = joint
+
+    result = compile_articulated_public_scene_state(**inputs)
+
+    assert result["blockers"] == ["released_code_inpainting_quality_admission_missing"]
+    assert result["stage_status"]["released_code_inpainting_executed"] is True
+    assert result["stage_status"]["joint_agent_topology_executed"] is True
+    assert result["stage_receipts"]["aura_execution"] == aura["receipt_digest"]
+    assert result["stage_receipts"]["joint_agent_execution"] == joint["receipt_digest"]
+
+
+def test_rejects_cross_scene_joint_agent_execution_receipt() -> None:
+    inputs = _inputs()
+    inputs["execution_authority"] = _authority(inputs)
+    aura, joint = _executions(inputs)
+    joint["bundle"]["freeze_digest"] = "sha256:" + "0" * 64
+    joint["receipt_digest"] = canonical_digest(joint, digest_field="receipt_digest")
+    inputs["aura_execution_receipt"] = aura
+    inputs["joint_agent_execution_receipt"] = joint
+
+    with pytest.raises(
+        ArticulatedPublicScenePipelineError,
+        match="joint_agent_execution_source_or_freeze_join_invalid",
+    ):
+        compile_articulated_public_scene_state(**inputs)
 
 
 def test_authority_cannot_cross_join_another_scene() -> None:

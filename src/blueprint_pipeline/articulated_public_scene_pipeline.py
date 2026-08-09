@@ -24,7 +24,7 @@ from .public_scene_execution_authority import (
 from .second_scene_freeze import validate_second_scene_freeze
 
 
-SCHEMA_VERSION = "articulated_public_scene_construction_run.v1"
+SCHEMA_VERSION = "articulated_public_scene_construction_run.v2"
 PROGRAM_ID = "arm-decision-proof-v1"
 
 
@@ -136,6 +136,8 @@ def compile_articulated_public_scene_state(
     joint_agent_packet: Mapping[str, Any],
     repository_commit: str,
     execution_authority: Mapping[str, Any] | None = None,
+    aura_execution_receipt: Mapping[str, Any] | None = None,
+    joint_agent_execution_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Join validated construction artifacts and choose the next finite gate."""
 
@@ -177,6 +179,26 @@ def compile_articulated_public_scene_state(
     authority = (
         validate_public_scene_execution_authority(execution_authority)
         if execution_authority is not None
+        else None
+    )
+    aura_execution = (
+        _require_digest(
+            aura_execution_receipt,
+            field="receipt_digest",
+            schema="adp009b_aurafusion360_execution_receipt.v1",
+            error_prefix="aura_execution_receipt",
+        )
+        if aura_execution_receipt is not None
+        else None
+    )
+    joint_execution = (
+        _require_digest(
+            joint_agent_execution_receipt,
+            field="receipt_digest",
+            schema="adp_joint_agent_execution_receipt.v1",
+            error_prefix="joint_agent_execution_receipt",
+        )
+        if joint_agent_execution_receipt is not None
         else None
     )
 
@@ -251,6 +273,34 @@ def compile_articulated_public_scene_state(
             "sha256"
         ):
             errors.append("execution_authority_joint_source_asset_join_invalid")
+    if aura_execution is not None:
+        observed_scene, observed_target = _scene_target(aura_execution)
+        prepared = aura_execution.get("prepared_adapter") or {}
+        if (
+            aura_execution.get("status") != "executed_candidate"
+            or observed_scene != scene_id
+            or not _same_instance_id(observed_target, target_id)
+            or prepared.get("receipt_digest") != aura.get("receipt_digest")
+            or (aura_execution.get("claim_boundary") or {}).get(
+                "released_method_execution_completed"
+            )
+            is not True
+        ):
+            errors.append("aura_execution_scene_target_or_adapter_join_invalid")
+    if joint_execution is not None:
+        execution_source = joint_execution.get("source") or {}
+        execution_bundle = joint_execution.get("bundle") or {}
+        if (
+            joint_execution.get("status")
+            != "executed_topology_candidate_not_simready"
+            or execution_source.get("packet_digest") != joint.get("packet_digest")
+            or execution_source.get("source_receipt_digest")
+            != source.get("receipt_digest")
+            or execution_source.get("source_asset_sha256")
+            != source_asset.get("sha256")
+            or execution_bundle.get("freeze_digest") != frozen.get("freeze_digest")
+        ):
+            errors.append("joint_agent_execution_source_or_freeze_join_invalid")
     if errors:
         raise ArticulatedPublicScenePipelineError(errors)
 
@@ -265,10 +315,11 @@ def compile_articulated_public_scene_state(
     )
     if authority is None and joint_admission.get("paid_execution_authorized") is not True:
         blockers.append("fresh_paid_joint_agent_execution_authority_missing")
-    aura_execution = aura.get("execution") if isinstance(aura.get("execution"), Mapping) else {}
-    if aura_execution.get("aurafusion360_interiorgs_executed") is not True:
+    if aura_execution is None:
         blockers.append("released_code_inpainting_execution_missing")
-    if joint_admission.get("remote_execution_performed") is not True:
+    elif (aura_execution.get("quality") or {}).get("status") != "admitted":
+        blockers.append("released_code_inpainting_quality_admission_missing")
+    if joint_execution is None:
         blockers.append("joint_agent_topology_execution_missing")
     blockers = list(dict.fromkeys(blockers))
     upstream_ready = not blockers
@@ -307,17 +358,19 @@ def compile_articulated_public_scene_state(
             "inpainting_adapter": aura["receipt_digest"],
             "articulated_source_asset": source["receipt_digest"],
             "joint_agent_packet": joint["packet_digest"],
+            "aura_execution": (
+                aura_execution["receipt_digest"] if aura_execution is not None else None
+            ),
+            "joint_agent_execution": (
+                joint_execution["receipt_digest"] if joint_execution is not None else None
+            ),
         },
         "stage_status": {
             "scene_and_task_frozen": True,
             "registered_appearance_and_collision_admitted": True,
             "evaluation_authorized_removal_inputs_materialized": True,
-            "released_code_inpainting_executed": bool(
-                aura_execution.get("aurafusion360_interiorgs_executed")
-            ),
-            "joint_agent_topology_executed": bool(
-                joint_admission.get("remote_execution_performed")
-            ),
+            "released_code_inpainting_executed": aura_execution is not None,
+            "joint_agent_topology_executed": joint_execution is not None,
             "simready_replacement_materialized": False,
             "native_simulator_qualified": False,
             "controls_executed": False,
@@ -328,7 +381,17 @@ def compile_articulated_public_scene_state(
         "next_action": (
             "obtain explicit dataset disclosure authority for the exact retained scene-derived Aura and Joint Agent inputs"
             if blockers and blockers[0] == "external_scene_derived_byte_disclosure_authority_missing"
-            else "materialize and independently qualify the articulated SimReady replacement"
+            else (
+                "qualify the released-code inpainting candidate with exact-camera locality and retained before/after evidence"
+                if blockers
+                and blockers[0] == "released_code_inpainting_quality_admission_missing"
+                else (
+                    "obtain one sealed zero-retry Joint Agent topology execution receipt"
+                    if blockers
+                    and blockers[0] == "joint_agent_topology_execution_missing"
+                    else "materialize and independently qualify the articulated SimReady replacement"
+                )
+            )
         ),
         "claim_boundary": {
             "same_non_agent_stage_contracts_as_interactive_rehearsal": True,
@@ -377,6 +440,8 @@ def compile_articulated_public_scene_run(
     articulated_source_receipt_path: str | Path,
     joint_agent_packet_path: str | Path,
     execution_authority_path: str | Path | None,
+    aura_execution_receipt_path: str | Path | None,
+    joint_agent_execution_receipt_path: str | Path | None,
     output_path: str | Path,
 ) -> dict[str, Any]:
     """Filesystem entrypoint used by local and GPU control planes."""
@@ -411,6 +476,16 @@ def compile_articulated_public_scene_run(
             if execution_authority_path is not None
             else None
         ),
+        aura_execution_receipt=(
+            _load(aura_execution_receipt_path)
+            if aura_execution_receipt_path is not None
+            else None
+        ),
+        joint_agent_execution_receipt=(
+            _load(joint_agent_execution_receipt_path)
+            if joint_agent_execution_receipt_path is not None
+            else None
+        ),
     )
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -429,6 +504,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--articulated-source-receipt", required=True)
     parser.add_argument("--joint-agent-packet", required=True)
     parser.add_argument("--execution-authority")
+    parser.add_argument("--aura-execution-receipt")
+    parser.add_argument("--joint-agent-execution-receipt")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     result = compile_articulated_public_scene_run(
@@ -441,6 +518,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         articulated_source_receipt_path=args.articulated_source_receipt,
         joint_agent_packet_path=args.joint_agent_packet,
         execution_authority_path=args.execution_authority,
+        aura_execution_receipt_path=args.aura_execution_receipt,
+        joint_agent_execution_receipt_path=args.joint_agent_execution_receipt,
         output_path=args.output,
     )
     print(canonical_json(result))
