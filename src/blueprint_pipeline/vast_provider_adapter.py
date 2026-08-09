@@ -4045,6 +4045,23 @@ def _instance_list_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     if isinstance(instances, list):
         return [item for item in instances if isinstance(item, Mapping)]
     if isinstance(instances, Mapping):
+        # ``GET /instances/{id}/`` returns one row under ``instances`` and that
+        # row legitimately contains nested mappings such as ``ports`` and
+        # ``search``. Recognize row identity before treating the mapping as the
+        # keyed collection returned by some list-endpoint versions.
+        if any(
+            key in instances
+            for key in (
+                "id",
+                "instance_id",
+                "contract_id",
+                "actual_status",
+                "cur_state",
+                "status",
+                "intended_status",
+            )
+        ):
+            return [instances]
         if any(isinstance(value, Mapping) for value in instances.values()):
             return [value for value in instances.values() if isinstance(value, Mapping)]
         return [instances]
