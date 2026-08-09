@@ -142,13 +142,19 @@ def _provider_config(packet: Mapping[str, Any]) -> dict[str, Any]:
     return config
 
 
-def _review_contract(freeze: Mapping[str, Any]) -> dict[str, Any]:
+def _review_contract(
+    freeze: Mapping[str, Any], scope_amendment: Mapping[str, Any]
+) -> dict[str, Any]:
     observation = freeze.get("member_geometry_observation") or {}
-    amendment = freeze.get("selection_scope_amendment") or {}
-    maximum = amendment.get("maximum_articulated_joint_count", 4)
+    scope = scope_amendment.get("joint_scope") or {}
     return {
         "schema_version": "joint_agent_task_topology_review_contract.v1",
-        "maximum_assembly_joint_count": maximum,
+        "minimum_assembly_joint_count": scope.get("minimum_assembly_joint_count"),
+        "maximum_assembly_joint_count": scope.get("maximum_assembly_joint_count"),
+        "commanded_task_joint_count": scope.get("commanded_task_joint_count"),
+        "required_articulation_root_count": scope.get("required_articulation_root_count"),
+        "non_task_joint_mode": scope.get("non_task_joint_mode"),
+        "non_task_joint_motion_tolerance": scope.get("non_task_joint_motion_tolerance"),
         "allowed_joint_types": ["revolute", "prismatic"],
         "target_joint_type": "revolute",
         "target_axis_world": observation.get("joint_axis_world"),
@@ -157,6 +163,7 @@ def _review_contract(freeze: Mapping[str, Any]) -> dict[str, Any]:
         "minimum_target_z_overlap_fraction": 0.85,
         "task_joint_id": (freeze.get("task_spec") or {}).get("target_joint_id"),
         "freeze_digest": freeze.get("freeze_digest"),
+        "scope_amendment_digest": scope_amendment.get("amendment_digest"),
         "contract_digest": "",
     }
 
@@ -168,6 +175,7 @@ def build_joint_agent_vast_bundle(
     packet_path: str | Path,
     execution_authority_path: str | Path,
     freeze_path: str | Path,
+    scope_amendment_path: str | Path,
     job_dir: str | Path,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -191,6 +199,11 @@ def build_joint_agent_vast_bundle(
         Path(freeze_path).expanduser().resolve(),
         digest_field="freeze_digest",
         error="adp_joint_agent_freeze_invalid",
+    )
+    scope_amendment = _canonical_receipt(
+        Path(scope_amendment_path).expanduser().resolve(),
+        digest_field="amendment_digest",
+        error="adp_joint_agent_scope_amendment_invalid",
     )
     destination = Path(job_dir).expanduser().resolve()
     if destination.exists() and any(destination.iterdir()):
@@ -242,9 +255,21 @@ def build_joint_agent_vast_bundle(
     (runtime / "joint_agent.yaml").write_text(
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
     )
-    review = _review_contract(freeze)
-    if review["maximum_assembly_joint_count"] != 4:
-        raise ValueError("adp_joint_agent_preregistered_joint_limit_invalid")
+    review = _review_contract(freeze, scope_amendment)
+    if (
+        scope_amendment.get("task_family")
+        != "one_commanded_joint_in_bounded_multi_joint_articulated_assembly"
+        or review["minimum_assembly_joint_count"] != 1
+        or not isinstance(review["maximum_assembly_joint_count"], int)
+        or review["maximum_assembly_joint_count"] < 1
+        or review["commanded_task_joint_count"] != 1
+        or review["required_articulation_root_count"] != 1
+        or review["non_task_joint_mode"]
+        != "locked_at_frozen_reset_with_native_readback"
+        or review["non_task_joint_motion_tolerance"]
+        != (freeze.get("task_spec") or {}).get("non_task_joint_motion_tolerance_rad")
+    ):
+        raise ValueError("adp_joint_agent_preregistered_joint_scope_invalid")
     review["contract_digest"] = canonical_digest(review, digest_field="contract_digest")
     write_json(runtime / "joint_review_contract.json", review)
     write_json(runtime / "execution_authority.json", authority)
@@ -295,6 +320,7 @@ def build_joint_agent_vast_bundle(
         "packet_digest": packet["packet_digest"],
         "execution_authority_digest": authority["authorization_digest"],
         "freeze_digest": freeze["freeze_digest"],
+        "scope_amendment_digest": scope_amendment["amendment_digest"],
         "config_sha256": _sha256(runtime / "joint_agent.yaml"),
         "review_contract_digest": review["contract_digest"],
         "renderer": {
@@ -605,6 +631,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--packet", required=True)
     parser.add_argument("--execution-authority", required=True)
     parser.add_argument("--freeze", required=True)
+    parser.add_argument("--scope-amendment", required=True)
     parser.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
     receipt = build_joint_agent_vast_bundle(
@@ -613,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         packet_path=args.packet,
         execution_authority_path=args.execution_authority,
         freeze_path=args.freeze,
+        scope_amendment_path=args.scope_amendment,
         job_dir=args.job_dir,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))

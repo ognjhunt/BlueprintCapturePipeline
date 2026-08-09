@@ -90,12 +90,32 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
             "joint_axis_world": [0.0, 0.0, 1.0],
             "upper_member_vertical_interval_m": [0.94, 1.632],
         },
-        "task_spec": {"target_joint_id": "upper_hinge"},
+        "task_spec": {
+            "target_joint_id": "upper_hinge",
+            "non_task_joint_motion_tolerance_rad": 0.001,
+        },
         "freeze_digest": "",
     }
     freeze["freeze_digest"] = canonical_digest(freeze, digest_field="freeze_digest")
     freeze_path = tmp_path / "freeze.json"
     freeze_path.write_text(json.dumps(freeze), encoding="utf-8")
+    scope_amendment = {
+        "task_family": "one_commanded_joint_in_bounded_multi_joint_articulated_assembly",
+        "joint_scope": {
+            "minimum_assembly_joint_count": 1,
+            "maximum_assembly_joint_count": 4,
+            "commanded_task_joint_count": 1,
+            "required_articulation_root_count": 1,
+            "non_task_joint_mode": "locked_at_frozen_reset_with_native_readback",
+            "non_task_joint_motion_tolerance": 0.001,
+        },
+        "amendment_digest": "",
+    }
+    scope_amendment["amendment_digest"] = canonical_digest(
+        scope_amendment, digest_field="amendment_digest"
+    )
+    scope_amendment_path = tmp_path / "scope_amendment.json"
+    scope_amendment_path.write_text(json.dumps(scope_amendment), encoding="utf-8")
     authority = {
         "authorization_digest": "",
         "joint_agent_source_asset_digest": source_digest,
@@ -133,6 +153,7 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         packet_path=packet_path,
         execution_authority_path=authority_path,
         freeze_path=freeze_path,
+        scope_amendment_path=scope_amendment_path,
         job_dir=tmp_path / "bundle",
         generated_at="2026-08-08T00:00:00+00:00",
     )
@@ -143,6 +164,13 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     assert receipt["renderer"]["scene_bytes_leave_vast_instance"] is False
     assert receipt["blueprint_source"]["commit"] == "a" * 40
     assert receipt["completion_retries"] == 0
+    assert receipt["scope_amendment_digest"] == scope_amendment["amendment_digest"]
+    review_contract = json.loads(
+        (tmp_path / "bundle/provider_runtime/joint_review_contract.json").read_text()
+    )
+    assert review_contract["maximum_assembly_joint_count"] == 4
+    assert review_contract["commanded_task_joint_count"] == 1
+    assert review_contract["scope_amendment_digest"] == scope_amendment["amendment_digest"]
     assert "840313" not in (tmp_path / "bundle/provider_runtime/joint_agent.yaml").read_text()
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
@@ -290,6 +318,12 @@ def test_builder_preflight_failure_leaves_no_partial_output(
     freeze["freeze_digest"] = canonical_digest(freeze, digest_field="freeze_digest")
     freeze_path = tmp_path / "freeze.json"
     freeze_path.write_text(json.dumps(freeze), encoding="utf-8")
+    scope_amendment = {"amendment_digest": ""}
+    scope_amendment["amendment_digest"] = canonical_digest(
+        scope_amendment, digest_field="amendment_digest"
+    )
+    scope_amendment_path = tmp_path / "scope_amendment.json"
+    scope_amendment_path.write_text(json.dumps(scope_amendment), encoding="utf-8")
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     monkeypatch.setattr(
@@ -313,6 +347,7 @@ def test_builder_preflight_failure_leaves_no_partial_output(
             packet_path=packet_path,
             execution_authority_path=authority_path,
             freeze_path=freeze_path,
+            scope_amendment_path=scope_amendment_path,
             job_dir=destination,
         )
 
