@@ -585,6 +585,7 @@ def materialize_source_layer_replacement_coverage_audit(
     camera_ids = list(black_rows)
     output_height, output_width = depth.shape[1:]
     source_alpha = []
+    black_by_camera: dict[str, np.ndarray] = {}
     for camera_id in camera_ids:
         black_frame = black_path.parent / str(black_rows[camera_id]["relative_path"])
         white_frame = white_path.parent / str(white_rows[camera_id]["relative_path"])
@@ -594,6 +595,9 @@ def materialize_source_layer_replacement_coverage_audit(
             raise ArticulatedUsdDepthSweepError(
                 ["source_coverage_render_frame_unreadable"]
             )
+        black_by_camera[camera_id] = cv2.resize(
+            black, (output_width, output_height), interpolation=cv2.INTER_AREA
+        )
         source_alpha.append(
             conservative_max_pool_alpha(
                 derive_alpha_from_background_pair(black, white),
@@ -612,6 +616,71 @@ def materialize_source_layer_replacement_coverage_audit(
     )
     alpha_path = output / "source_alpha_by_camera.npy"
     np.save(alpha_path, alpha_array, allow_pickle=False)
+    review_root = output / "review_contact_sheets"
+    review_root.mkdir()
+    review_records = []
+    kernel_size = 2 * coverage_margin_pixels + 1
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    for camera_index, camera_id in enumerate(camera_ids):
+        cell_indices = [
+            index
+            for index, cell in enumerate(cells)
+            if str(cell.get("camera_id") or "") == camera_id
+        ]
+        if not cell_indices:
+            raise ArticulatedUsdDepthSweepError(
+                ["source_coverage_cell_camera_missing"]
+            )
+        selected = sorted(
+            {
+                cell_indices[0],
+                cell_indices[len(cell_indices) // 2],
+                cell_indices[-1],
+            }
+        )
+        source = alpha_array[camera_index]
+        base = black_by_camera[camera_id].astype(np.float32)
+        base += (1.0 - source[..., None]) * 230.0
+        panels = []
+        for cell_index in selected:
+            finite = np.isfinite(depth[cell_index]) & (depth[cell_index] > 0.0)
+            covered = cv2.erode(
+                finite.astype(np.uint8), kernel, iterations=1
+            ).astype(bool)
+            uncovered = (source >= significant_alpha_threshold) & ~covered
+            panel = np.clip(base, 0.0, 255.0).astype(np.uint8)
+            panel[uncovered] = (
+                0.25 * panel[uncovered] + 0.75 * np.array([0, 0, 255])
+            ).astype(np.uint8)
+            angle = float(cells[cell_index]["commanded_door_angle_deg"])
+            cv2.putText(
+                panel,
+                f"{camera_id}  door={angle:g}deg  red=uncovered",
+                (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.52,
+                (20, 20, 20),
+                3,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                panel,
+                f"{camera_id}  door={angle:g}deg  red=uncovered",
+                (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.52,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            panels.append(panel)
+        sheet = np.concatenate(panels, axis=1)
+        sheet_path = review_root / f"{camera_id}.png"
+        if not cv2.imwrite(str(sheet_path), sheet):
+            raise ArticulatedUsdDepthSweepError(
+                ["source_coverage_contact_sheet_write_failed"]
+            )
+        review_records.append(_record(sheet_path, output))
     manifest: dict[str, Any] = {
         "schema_version": SOURCE_COVERAGE_AUDIT_SCHEMA,
         "status": "source_layer_coverage_measured",
@@ -636,6 +705,7 @@ def materialize_source_layer_replacement_coverage_audit(
         "significant_alpha_threshold": float(significant_alpha_threshold),
         "coverage_margin_pixels": coverage_margin_pixels,
         "source_alpha": _record(alpha_path, output),
+        "review_contact_sheets": review_records,
         "cells": rows,
         "summary": {
             "cell_count": len(rows),

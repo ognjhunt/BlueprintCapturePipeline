@@ -233,3 +233,5 @@ def test_source_layer_coverage_audit_binds_render_pair_and_depth(
     assert receipt["summary"]["cell_count"] == 1
     assert receipt["coverage_qualified"] is False
     assert (tmp_path / "audit/source_alpha_by_camera.npy").is_file()
+    assert len(receipt["review_contact_sheets"]) == 1
+    assert (tmp_path / "audit/review_contact_sheets/external.png").is_file()
