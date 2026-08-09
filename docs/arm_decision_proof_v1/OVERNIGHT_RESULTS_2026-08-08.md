@@ -13,7 +13,7 @@ one policy is generally better.
 ## What landed
 
 The branch advanced from the overnight handoff at `54f70c8e0` to
-`5b1bb7e11`. The changes fall into six evidence-bearing groups:
+`d14252947`. The changes fall into six evidence-bearing groups:
 
 - **P0, interpretable action delivery:** `c9103d311`, `b9a3b30ac`,
   `7b901349a`. Episode receipts retain reset/end joints, maximum joint motion,
@@ -64,7 +64,12 @@ The branch advanced from the overnight handoff at `54f70c8e0` to
   The aim solver now accounts for the camera's rotational swing around its
   non-zero mount offset. Every bundle carries the frozen task destination
   required by the task-centred overview, and paid requests fail closed unless
-  diagnostic-only, controls, or learned-policy mode is explicit.
+  diagnostic-only, controls, or learned-policy mode is explicit. Commits
+  `0191571a0` and `d14252947` additionally quarantine a host that exits before
+  producing a terminal bundle receipt and make camera aiming orientation-first:
+  every servo step resolves the rigid-mount look-at from the current live body
+  pose while holding that live position, rather than pulling the gripper back
+  toward an unreachable reset translation.
 
 Other supporting changes are `a78e70dde` and `f98622f67` for the frames-only
 Aura comparison, `790b95eec` for explicit concurrent-GPU authority without
@@ -77,7 +82,7 @@ PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode
 .venv/bin/ruff check src/ tests/
 ```
 
-The latest paid-request correction passed `968 passed, 1 skipped, 9052
+The latest live wrist-aim correction passed `970 passed, 1 skipped, 9052
 deselected` in the required filtered lane. Ruff was clean.
 
 ## Scientific findings through v84
@@ -194,8 +199,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v94
-ledgers add `$7.779754`, for `$18.778053` total and `$6.221947` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v96
+ledgers add `$8.105864`, for `$19.104163` total and `$5.895837` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -243,11 +248,17 @@ they are evidence that concurrency failed closed.
 | v92 control receipt closeout | `$0.138032` estimated | The closeout fix worked and retained the exact failure: `no_safe_wrist_observable_episode_start` plus `scenario_controls_receipt_missing`. The corrected Jacobian binding was sealed with both row blocks rotated world-to-root. The rendered wrist view moved and observed up to 5,771 exact-can pixels, but both Isaac's sensor pose and direct USD pose stayed frozen while Fabric moved the articulation; the can was also clipped at the top because the aim targeted its support-plane root. No control ran, no candidate was provisioned or queried, and no policy verdict exists. Commit `b97c13afd` derives wrist calibration from the live rigid mount and aims at the observed can centre. |
 | v93 live wrist mount + visual centre | `$0.130268` | Live body-derived wrist calibration worked and travelled 0.065720 m while the stale USD pose remained fixed. The exact can occupied up to 9,359 pixels, but every admitted wrist box still touched the top edge (`y_min=0`), so all 149 samples correctly failed the five-percent margin gate. No control ran and no candidate was provisioned or queried. The retained mount geometry proves the one-shot look-at left an 8.675955-degree optical-axis residual because rotating the body also swings the offset camera. Commit `8aeeb1203` replaces it with a bounded fixed-point rigid-mount aim solver. |
 | v94 rigid-mount aim attempt | `$0.149134` | Blocked before Isaac startup and before either control. The launch omitted the explicit controls mode, and the diagnostic bundle then lacked the task-destination receipt that the task-centred overview loads unconditionally. No frames or control outcome exist. Commit `5b1bb7e11` ships that frozen receipt in every bundle and rejects ambiguous paid requests unless diagnostic-only, controls, or a policy mode is explicit. |
+| v95 explicit rigid-mount controls | `$0.087379` | The bundle correctly bound controls-only mode, the canonical scenario, the frozen control plan, and the task destination. RTX 6000 Ada instance `47225330` on machine `137572` passed heartbeat, GPU, and Isaac smoke, then the provider host exited during dependency installation before any terminal bundle marker or output ZIP. No Isaac receipt, frame, or control outcome exists. Commit `0191571a0` classifies this as `provider_instance_exited_before_bundle_terminal_marker` and records the machine for future exclusion. No candidate was provisioned or queried. |
+| v96 quarantined-host rigid-mount controls | `$0.238731` | Excluding machine `137572`, L40S instance `47226744` returned a valid native receipt with controls explicitly requested and no candidate queried. The fixed-point solver converged in eight iterations to a `0.000002832` degree predicted residual, but the fixed reset-position plus large target orientation was not a reachable six-DoF pose: reset arrival error was `0.048708 m` and translation-fallback errors were `0.182-0.239 m`. All 240 object holds were safe, yet all 166 wrist-visible samples remained clipped at the top edge, so `no_safe_wrist_observable_episode_start` and `scenario_controls_receipt_missing` correctly blocked both controls. Commit `d14252947` replaces the fixed-position aim with a live, orientation-priority servo. No policy outcome exists. |
 
-All completed paid attempts were followed by an API provider-zero check. v86,
-v87, v88, v89, v90, v91, v92, v93, and v94 were each launched from provider zero as the sole
-active instance; after each automatic teardown a fresh Vast API query returned
-`active: 0 []`.
+All completed paid attempts were followed by an API ownership/zero check. v86
+through v95 were each launched from provider zero as the sole active instance;
+after each automatic teardown a fresh Vast API query returned `active: 0 []`.
+v96 ran under exact concurrent-instance authority while a separately owned
+Aura/InteriorGS instance `47226054` was active. Only v96's instance `47226744`
+was torn down; the post-teardown inventory proved this goal owned zero instances
+and that the one explicitly allowed external instance remained. It was not
+modified or charged to this ledger.
 
 ## Scenario-family and control-harness progress after v85
 
@@ -426,6 +437,32 @@ a paid ADP-009D request unless diagnostic-only, controls, or at least one
 candidate is explicit. No retry is admitted without the explicit controls flag
 and frozen scenario instance.
 
+v95 carried the correct explicit controls and canonical scenario bindings, but
+provider machine `137572` exited during dependency installation after passing
+the heartbeat, GPU, and Isaac smoke gates. It produced no output ZIP or native
+receipt. That null is a provider-host failure rather than evidence about the
+camera aim or controls. Commit `0191571a0` makes an instance that disappears
+before a terminal bundle marker a typed blocker and automatically adds its
+machine to the run's avoidlist.
+
+v96 excluded that machine and returned the first native receipt for the bounded
+fixed-point solver. The mathematical solution was exact, but the Franka could
+not realize the old command because it simultaneously fixed the reset body
+position and demanded a large body rotation. The first arrival retained a
+`0.048708 m` position error, and the three translation fallbacks remained
+`0.182-0.239 m` away. Although all 240 object-hold samples were safe and the
+can reached 11,316 wrist pixels, every visible wrist mask still touched the top
+edge; both controls correctly remained blocked. The external, overview, and
+wrist contact sheets are retained in the run's `review/` directory.
+
+Commit `d14252947` encodes the measured correction without weakening the
+five-percent visibility margin or object-safety gates. During the camera-aim
+waypoint, each IK step now recomputes the rigid-mount orientation from the live
+body pose and holds that current live translation. The receipt distinguishes
+this orientation-priority command from the preregistered reset position and
+retains bounded solver updates. This requires one controls-only canonical
+canary before either learned candidate may run again.
+
 ## What remains open
 
 - The P4 result is intentionally underpowered and single-cell. Its comparison
@@ -446,7 +483,7 @@ and frozen scenario instance.
 
 ## Single next action
 
-From provider zero at clean immutable commit `5b1bb7e11`, run only the
+From provider ownership zero at clean immutable commit `d14252947`, run only the
 checked-in canonical scenario's zero-action negative and deterministic
 scripted-positive control pair, explicitly binding `--adp009d-controls` and
 `docs/arm_decision_proof_v1/manifests/adp009d_canonical_scenario_instance.v1.json`.
@@ -456,5 +493,5 @@ body-derived camera calibration, that the IK binding reports world-to-root
 rotation for both Jacobian row blocks, and that pregrasp converges along the
 commanded task direction. If the scripted positive does not place the exact
 SimReady can, retain the overview/external/wrist videos and typed receipt, tear
-down to provider zero, and fix the harness locally before any learned-policy
-spend.
+down to provider ownership zero with no unexpected instances, and fix the
+harness locally before any learned-policy spend.
