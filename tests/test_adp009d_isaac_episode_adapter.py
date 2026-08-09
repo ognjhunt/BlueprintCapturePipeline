@@ -108,7 +108,7 @@ def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -
     assert "scripted_control_task_orientation_missing" in callback
     assert "target_body_quaternion_world_xyzw=(" in callback
     assert "target_quaternion_world_xyzw" in callback
-    assert 'runtime / "adp009d_control_plan.v3.json"' in callback
+    assert 'runtime / "adp009d_control_plan.v4.json"' in callback
 
 
 class _Tensor(list):
