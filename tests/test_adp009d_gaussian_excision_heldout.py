@@ -23,9 +23,7 @@ def _composite(foreground: np.ndarray, alpha: np.ndarray, background: int) -> np
 
 
 def test_background_pair_recovers_colour_independent_alpha() -> None:
-    foreground = np.array(
-        [[[20.0, 200.0, 80.0], [250.0, 10.0, 120.0]]], dtype=np.float32
-    )
+    foreground = np.array([[[20.0, 200.0, 80.0], [250.0, 10.0, 120.0]]], dtype=np.float32)
     alpha = np.array([[0.25, 0.75]], dtype=np.float32)
 
     recovered = derive_alpha_from_background_pair(
@@ -113,9 +111,7 @@ def _render_manifest(
     return path
 
 
-@pytest.mark.parametrize(
-    ("scene_id", "should_pass"), [("840313", True), ("840796", False)]
-)
+@pytest.mark.parametrize(("scene_id", "should_pass"), [("840313", True), ("840796", False)])
 def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
     tmp_path: Path, scene_id: str, should_pass: bool
 ) -> None:
@@ -169,6 +165,22 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
     }
     ownership_path = tmp_path / "ownership.json"
     _write_json(ownership_path, ownership)
+    replay: dict[str, object] = {
+        "schema_version": "adp009b_gaussian_excision_ownership_replay.v1",
+        "execution_count": 2,
+        "freeze_digest": freeze["freeze_digest"],
+        "ownership_receipt_digest": ownership["receipt_digest"],
+        "canonical_manifests_identical": True,
+        "receipt_files_byte_identical": True,
+        "output_digests_identical": True,
+        "index_sets_identical": True,
+        "protected_source_records_byte_identical": True,
+        "raw_gpu_contribution_arrays_identical": False,
+        "gate_passed": True,
+    }
+    replay["replay_digest"] = canonical_digest(replay, digest_field="replay_digest")
+    replay_path = tmp_path / "ownership-replay.json"
+    _write_json(replay_path, replay)
 
     exact_alpha = mask.astype(np.float32) / 255.0
     owned_alpha = exact_alpha.copy()
@@ -177,30 +189,22 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
         owned_alpha[3:9, 6:9] = 0.0
         ambiguous_alpha[3:9, 3:9] = 1.0
     obb_alpha = exact_alpha.copy()
+    obb_alpha[0, 0] = 1.0
     foreground = np.full((12, 12, 3), 180.0, dtype=np.float32)
 
     def pair(alpha: np.ndarray, label: str) -> tuple[Path, Path]:
-        black = {
-            camera_id: _composite(foreground, alpha, 0) for camera_id in camera_ids
-        }
-        white = {
-            camera_id: _composite(foreground, alpha, 255) for camera_id in camera_ids
-        }
+        black = {camera_id: _composite(foreground, alpha, 0) for camera_id in camera_ids}
+        white = {camera_id: _composite(foreground, alpha, 255) for camera_id in camera_ids}
         return (
-            _render_manifest(
-                tmp_path, f"{label}-black", camera_ids, black, background="#000000"
-            ),
-            _render_manifest(
-                tmp_path, f"{label}-white", camera_ids, white, background="#ffffff"
-            ),
+            _render_manifest(tmp_path, f"{label}-black", camera_ids, black, background="#000000"),
+            _render_manifest(tmp_path, f"{label}-white", camera_ids, white, background="#ffffff"),
         )
 
     obb_black, obb_white = pair(obb_alpha, "obb")
     owned_black, owned_white = pair(owned_alpha, "owned")
     ambiguous_black, ambiguous_white = pair(ambiguous_alpha, "ambiguous")
     retained_images = {
-        camera_id: np.full((12, 12, 3), 90, dtype=np.uint8)
-        for camera_id in camera_ids
+        camera_id: np.full((12, 12, 3), 90, dtype=np.uint8) for camera_id in camera_ids
     }
     retained = _render_manifest(
         tmp_path, "retained", camera_ids, retained_images, background="#000000"
@@ -209,6 +213,7 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
     receipt = materialize_gaussian_excision_heldout_audit(
         freeze_path=freeze_path,
         ownership_receipt_path=ownership_path,
+        ownership_replay_receipt_path=replay_path,
         obb_black_manifest_path=obb_black,
         obb_white_manifest_path=obb_white,
         owned_black_manifest_path=owned_black,
@@ -222,6 +227,8 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
     assert receipt["schema_version"] == HELDOUT_AUDIT_SCHEMA
     assert receipt["heldout_gate_passed"] is should_pass
     assert receipt["replacement_coverage_sweep_authorized"] is should_pass
+    assert receipt["determinism_gate_passed"] is True
+    assert receipt["determinism"]["raw_gpu_contribution_arrays_identical"] is False
     assert len(receipt["camera_results"]) == 3
     assert all(
         (tmp_path / "audit" / row["contact_sheet"]["relative_path"]).is_file()

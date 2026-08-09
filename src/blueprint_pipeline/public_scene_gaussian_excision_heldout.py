@@ -22,6 +22,7 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 
 
 HELDOUT_AUDIT_SCHEMA = "adp009b_gaussian_excision_heldout_audit.v1"
+OWNERSHIP_REPLAY_SCHEMA = "adp009b_gaussian_excision_ownership_replay.v1"
 
 
 class GaussianExcisionHeldoutError(ValueError):
@@ -58,9 +59,7 @@ def _read_json(path: Path, code: str) -> dict[str, Any]:
     return value
 
 
-def derive_alpha_from_background_pair(
-    black_rgb: np.ndarray, white_rgb: np.ndarray
-) -> np.ndarray:
+def derive_alpha_from_background_pair(black_rgb: np.ndarray, white_rgb: np.ndarray) -> np.ndarray:
     """Recover alpha from identical RGB-over-black and RGB-over-white renders."""
 
     black = np.asarray(black_rgb)
@@ -117,11 +116,11 @@ def evaluate_alpha_layer(
         "silhouette_largest_missing_component_pixels": _largest_component(missed),
         "protected_significant_pixel_count": int(protected.sum()),
         "protected_alpha_sum": float(alpha[~envelope].sum()),
+        "protected_maximum_alpha": float(alpha[~envelope].max()) if np.any(~envelope) else 0.0,
         "inside_mask_alpha_sum": float(alpha[mask].sum()),
+        "inside_mask_maximum_alpha": float(alpha[mask].max()) if mask.any() else 0.0,
         "inside_mask_significant_pixel_count": intersection,
-        "inside_mask_largest_significant_component_pixels": _largest_component(
-            significant & mask
-        ),
+        "inside_mask_largest_significant_component_pixels": _largest_component(significant & mask),
     }
 
 
@@ -134,8 +133,7 @@ def _render_frames(manifest_path: Path, expected_background: str) -> dict[str, P
         manifest.get("schema_version") != "sealed_camera_render_manifest.v1"
         or manifest.get("status") != "rendered_exact_cameras"
         or manifest.get("sealed_camera_render_manifest_digest") != expected_digest
-        or (manifest.get("renderer_identity") or {}).get("background_rgb")
-        != expected_background
+        or (manifest.get("renderer_identity") or {}).get("background_rgb") != expected_background
     ):
         raise GaussianExcisionHeldoutError(["heldout_render_manifest_invalid"])
     frames: dict[str, Path] = {}
@@ -188,6 +186,7 @@ def materialize_gaussian_excision_heldout_audit(
     *,
     freeze_path: str | Path,
     ownership_receipt_path: str | Path,
+    ownership_replay_receipt_path: str | Path,
     obb_black_manifest_path: str | Path,
     obb_white_manifest_path: str | Path,
     owned_black_manifest_path: str | Path,
@@ -201,18 +200,33 @@ def materialize_gaussian_excision_heldout_audit(
 
     freeze_file = Path(freeze_path).expanduser().resolve()
     ownership_file = Path(ownership_receipt_path).expanduser().resolve()
+    replay_file = Path(ownership_replay_receipt_path).expanduser().resolve()
     output = Path(output_root).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     freeze = _read_json(freeze_file, "heldout_freeze_unreadable")
     ownership = _read_json(ownership_file, "heldout_ownership_receipt_unreadable")
+    replay = _read_json(replay_file, "heldout_ownership_replay_unreadable")
     if (
         freeze.get("schema_version") != "adp009b_gaussian_excision_audit_freeze.v1"
-        or freeze.get("freeze_digest")
-        != canonical_digest(freeze, digest_field="freeze_digest")
+        or freeze.get("freeze_digest") != canonical_digest(freeze, digest_field="freeze_digest")
         or ownership.get("freeze_digest") != freeze.get("freeze_digest")
         or ownership.get("heldout_cameras_accessed_for_classification") is not False
     ):
         raise GaussianExcisionHeldoutError(["heldout_freeze_or_ownership_join_invalid"])
+    if (
+        replay.get("schema_version") != OWNERSHIP_REPLAY_SCHEMA
+        or replay.get("replay_digest") != canonical_digest(replay, digest_field="replay_digest")
+        or replay.get("execution_count") != 2
+        or replay.get("freeze_digest") != freeze.get("freeze_digest")
+        or replay.get("ownership_receipt_digest") != ownership.get("receipt_digest")
+        or replay.get("canonical_manifests_identical") is not True
+        or replay.get("receipt_files_byte_identical") is not True
+        or replay.get("output_digests_identical") is not True
+        or replay.get("index_sets_identical") is not True
+        or replay.get("protected_source_records_byte_identical") is not True
+        or replay.get("gate_passed") is not True
+    ):
+        raise GaussianExcisionHeldoutError(["heldout_ownership_replay_invalid"])
 
     manifests = {
         "obb_black": Path(obb_black_manifest_path).resolve(),
@@ -278,8 +292,9 @@ def materialize_gaussian_excision_heldout_audit(
         baseline_comparison_pass = (
             metrics["owned"]["silhouette_missing_pixel_count"]
             <= metrics["obb"]["silhouette_missing_pixel_count"]
-            and metrics["owned"]["protected_significant_pixel_count"]
-            <= metrics["obb"]["protected_significant_pixel_count"]
+            and metrics["owned"]["silhouette_largest_missing_component_pixels"]
+            <= metrics["obb"]["silhouette_largest_missing_component_pixels"]
+            and metrics["owned"]["protected_alpha_sum"] < metrics["obb"]["protected_alpha_sum"]
         )
         sheet = output / "contact_sheets" / f"{camera_id}.png"
         _contact_sheet(
@@ -287,7 +302,10 @@ def materialize_gaussian_excision_heldout_audit(
                 ("original", Image.open(source_images[camera_id]).convert("RGB")),
                 ("exact mask", mask_review),
                 ("OBB removed-only", Image.open(frames["obb_black"][camera_id]).convert("RGB")),
-                ("contribution removed-only", Image.open(frames["owned_black"][camera_id]).convert("RGB")),
+                (
+                    "contribution removed-only",
+                    Image.open(frames["owned_black"][camera_id]).convert("RGB"),
+                ),
                 ("retained scene", Image.open(frames["retained_scene"][camera_id]).convert("RGB")),
                 ("ambiguity heatmap", _heatmap(alphas["ambiguous"])),
             ],
@@ -301,14 +319,14 @@ def materialize_gaussian_excision_heldout_audit(
                 "layers": metrics,
                 "ownership_gate_passed": owned_pass,
                 "at_least_as_good_as_obb_passed": baseline_comparison_pass,
+                "residual_upper_bound_layer": "ambiguous",
+                "protected_contribution_comparison": "strict_alpha_sum",
                 "contact_sheet": _record(sheet, output),
             }
         )
 
     heldout_rows = [row for row in rows if row["split"] == "heldout"]
-    deterministic = bool(
-        (ownership.get("determinism") or {}).get("quantized_contribution_arrays_identical")
-    )
+    deterministic = bool(replay.get("gate_passed"))
     passed = bool(
         deterministic
         and heldout_rows
@@ -328,6 +346,7 @@ def materialize_gaussian_excision_heldout_audit(
         ),
         "freeze_digest": freeze["freeze_digest"],
         "ownership_receipt_digest": ownership.get("receipt_digest"),
+        "ownership_replay_digest": replay.get("replay_digest"),
         "heldout_camera_ids": sorted(heldout),
         "policy": {
             "significant_alpha_threshold": threshold,
@@ -337,15 +356,26 @@ def materialize_gaussian_excision_heldout_audit(
             "alpha_method": "paired_identical_rgb_over_black_and_white.v1",
         },
         "render_manifests": {
-            name: {"path": str(path), "sha256": _sha256(path)}
-            for name, path in manifests.items()
+            name: {"path": str(path), "sha256": _sha256(path)} for name, path in manifests.items()
         },
         "camera_results": rows,
         "determinism_gate_passed": deterministic,
+        "determinism": {
+            "two_materializations_identical": deterministic,
+            "canonical_manifests_identical": replay.get("canonical_manifests_identical"),
+            "receipt_files_byte_identical": replay.get("receipt_files_byte_identical"),
+            "output_digests_identical": replay.get("output_digests_identical"),
+            "index_sets_identical": replay.get("index_sets_identical"),
+            "raw_gpu_contribution_arrays_identical": replay.get(
+                "raw_gpu_contribution_arrays_identical"
+            ),
+        },
         "heldout_gate_passed": passed,
         "replacement_coverage_sweep_authorized": passed,
         "smallest_missing_capability": (
-            None if passed else "calibrated_gaussian_ownership_separation_without_protected_scene_deletion"
+            None
+            if passed
+            else "calibrated_gaussian_ownership_separation_without_protected_scene_deletion"
         ),
         "claim_ceiling": "public_scene_gaussian_ownership_heldout_audit_not_physical_truth",
     }

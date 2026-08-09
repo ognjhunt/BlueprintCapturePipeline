@@ -32,9 +32,8 @@ from .gaussian_splat_decode import (
 FREEZE_SCHEMA = "adp009b_gaussian_excision_audit_freeze.v1"
 CONTRIBUTION_EVIDENCE_SCHEMA = "adp009b_gaussian_excision_contribution_evidence.v1"
 OWNERSHIP_RECEIPT_SCHEMA = "adp009b_gaussian_excision_ownership_receipt.v1"
-OWNERSHIP_AGGREGATION_POLICY_SCHEMA = (
-    "adp009b_gaussian_ownership_aggregation_policy.v1"
-)
+OWNERSHIP_REPLAY_SCHEMA = "adp009b_gaussian_excision_ownership_replay.v1"
+OWNERSHIP_AGGREGATION_POLICY_SCHEMA = "adp009b_gaussian_ownership_aggregation_policy.v1"
 CONTRIBUTION_CLASS_ORDER = ("protected", "target_core", "uncertain")
 
 
@@ -214,10 +213,8 @@ def _projected_mesh_mask(
         raise GaussianExcisionAuditError(["excision_target_mesh_behind_camera"])
     pixels = np.column_stack(
         [
-            float(intrinsics["fx"]) * camera_points[:, 0] / depth
-            + float(intrinsics["cx"]),
-            float(intrinsics["fy"]) * camera_points[:, 1] / depth
-            + float(intrinsics["cy"]),
+            float(intrinsics["fx"]) * camera_points[:, 0] / depth + float(intrinsics["cx"]),
+            float(intrinsics["fy"]) * camera_points[:, 1] / depth + float(intrinsics["cy"]),
         ]
     )
     pixels *= supersample
@@ -286,9 +283,7 @@ def materialize_excision_audit_freeze(
             raise GaussianExcisionAuditError([f"excision_camera_artifact_missing:{camera_id}"])
         with Image.open(outer_path) as image:
             outer = np.asarray(image.convert("L"), dtype=np.uint8) >= 128
-        core = _projected_mesh_mask(
-            world, faces, camera, supersample=supersample
-        ) >= 128
+        core = _projected_mesh_mask(world, faces, camera, supersample=supersample) >= 128
         if core.shape != outer.shape or np.any(core & ~outer):
             raise GaussianExcisionAuditError(
                 [f"excision_registered_core_not_inside_safety_envelope:{camera_id}"]
@@ -326,12 +321,8 @@ def materialize_excision_audit_freeze(
         cameras, projected_target_fraction=target_fractions
     )
     baseline_method = historical_baseline.get("method")
-    baseline_min = np.asarray(
-        historical_baseline.get("center_aabb_min_m"), dtype=np.float64
-    )
-    baseline_max = np.asarray(
-        historical_baseline.get("center_aabb_max_m"), dtype=np.float64
-    )
+    baseline_min = np.asarray(historical_baseline.get("center_aabb_min_m"), dtype=np.float64)
+    baseline_max = np.asarray(historical_baseline.get("center_aabb_max_m"), dtype=np.float64)
     expected_baseline_count = historical_baseline.get("selected_gaussian_count")
     if (
         baseline_method != "center_inside_registered_target_aabb"
@@ -349,9 +340,7 @@ def materialize_excision_audit_freeze(
         np.all((splat.xyz >= baseline_min) & (splat.xyz <= baseline_max), axis=1)
     ).astype(np.int64)
     if len(baseline_indices) != expected_baseline_count:
-        raise GaussianExcisionAuditError(
-            ["excision_historical_baseline_count_mismatch"]
-        )
+        raise GaussianExcisionAuditError(["excision_historical_baseline_count_mismatch"])
     baseline_path = output / "historical_obb_source_indices.npy"
     np.save(baseline_path, baseline_indices, allow_pickle=False)
     bounds_min, bounds_max = splat.aabb()
@@ -521,9 +510,7 @@ def classify_excision_ownership(
     minimum = parsed["minimum_per_view_contribution"]
     protected_count = np.sum(protected >= minimum, axis=0).astype(np.int16)
     core_count = np.sum(core >= minimum, axis=0).astype(np.int16)
-    visible_count = np.sum((protected + core + uncertain) >= minimum, axis=0).astype(
-        np.int16
-    )
+    visible_count = np.sum((protected + core + uncertain) >= minimum, axis=0).astype(np.int16)
     protected_total = protected.sum(axis=0)
     core_total = core.sum(axis=0)
     denominator = protected_total + core_total
@@ -575,10 +562,7 @@ def classify_excision_ownership(
     owned = (
         (core_fraction >= parsed["owned_min_core_fraction"])
         & (core_count >= int(policy["minimum_core_camera_count"]))
-        & (
-            protected_count
-            <= int(policy["maximum_protected_camera_count_for_owned"])
-        )
+        & (protected_count <= int(policy["maximum_protected_camera_count_for_owned"]))
         & (geometry >= parsed["minimum_geometry_score_owned"])
         & (score >= parsed["graph_owned_min_score"])
     )
@@ -609,19 +593,13 @@ def _load_contribution_array(path: Path, *, expected_shape: tuple[int, int, int]
     try:
         with np.load(path, allow_pickle=False) as archive:
             if "per_view_class_contribution" not in archive:
-                raise GaussianExcisionAuditError(
-                    ["excision_contribution_array_key_missing"]
-                )
+                raise GaussianExcisionAuditError(["excision_contribution_array_key_missing"])
             value = np.asarray(archive["per_view_class_contribution"], dtype=np.float64)
     except (OSError, ValueError) as exc:
         if isinstance(exc, GaussianExcisionAuditError):
             raise
         raise GaussianExcisionAuditError(["excision_contribution_array_invalid"]) from exc
-    if (
-        value.shape != expected_shape
-        or not np.isfinite(value).all()
-        or np.any(value < 0.0)
-    ):
+    if value.shape != expected_shape or not np.isfinite(value).all() or np.any(value < 0.0):
         raise GaussianExcisionAuditError(["excision_contribution_array_shape_invalid"])
     return value
 
@@ -654,8 +632,7 @@ def materialize_excision_ownership(
         raise GaussianExcisionAuditError(["excision_bound_json_invalid"]) from exc
     if (
         freeze.get("schema_version") != FREEZE_SCHEMA
-        or freeze.get("freeze_digest")
-        != canonical_digest(freeze, digest_field="freeze_digest")
+        or freeze.get("freeze_digest") != canonical_digest(freeze, digest_field="freeze_digest")
         or freeze.get("status") != "frozen_before_excision_execution"
     ):
         raise GaussianExcisionAuditError(["excision_freeze_invalid"])
@@ -686,9 +663,7 @@ def materialize_excision_ownership(
         "depth_anything_3_used",
     ):
         if method.get(key) != frozen_method.get(key):
-            raise GaussianExcisionAuditError(
-                [f"excision_contribution_method_mismatch:{key}"]
-            )
+            raise GaussianExcisionAuditError([f"excision_contribution_method_mismatch:{key}"])
     if method.get("released_code_executed") is not True:
         raise GaussianExcisionAuditError(["excision_released_contribution_not_executed"])
 
@@ -707,10 +682,8 @@ def materialize_excision_ownership(
     if (
         not baseline_path.is_file()
         or baseline_path.is_symlink()
-        or baseline_path.stat().st_size
-        != baseline_binding.get("indices", {}).get("size_bytes")
-        or _sha256(baseline_path)
-        != baseline_binding.get("indices", {}).get("sha256")
+        or baseline_path.stat().st_size != baseline_binding.get("indices", {}).get("size_bytes")
+        or _sha256(baseline_path) != baseline_binding.get("indices", {}).get("sha256")
     ):
         raise GaussianExcisionAuditError(["excision_historical_obb_indices_changed"])
     repetitions = manifest.get("repetitions")
@@ -745,9 +718,7 @@ def materialize_excision_ownership(
                 decimals=decimals,
             )
         )
-    arrays_identical = all(
-        np.array_equal(arrays[0], value) for value in arrays[1:]
-    )
+    arrays_identical = all(np.array_equal(arrays[0], value) for value in arrays[1:])
     aggregation_policy: dict[str, Any] | None = None
     if not arrays_identical:
         if aggregation_policy_path is None:
@@ -763,25 +734,18 @@ def materialize_excision_ownership(
             ) from exc
         if (
             not isinstance(aggregation_policy, dict)
-            or aggregation_policy.get("schema_version")
-            != OWNERSHIP_AGGREGATION_POLICY_SCHEMA
+            or aggregation_policy.get("schema_version") != OWNERSHIP_AGGREGATION_POLICY_SCHEMA
             or aggregation_policy.get("aggregation_policy_digest")
-            != canonical_digest(
-                aggregation_policy, digest_field="aggregation_policy_digest"
-            )
+            != canonical_digest(aggregation_policy, digest_field="aggregation_policy_digest")
             or aggregation_policy.get("status")
             != "frozen_after_calibration_before_heldout_evaluation"
             or aggregation_policy.get("freeze_digest") != freeze["freeze_digest"]
-            or aggregation_policy.get("contribution_manifest_digest")
-            != manifest["manifest_digest"]
+            or aggregation_policy.get("contribution_manifest_digest") != manifest["manifest_digest"]
             or aggregation_policy.get("quantization_decimals") != decimals
-            or aggregation_policy.get("rule")
-            != "unanimous_owned_and_retained_else_ambiguous"
+            or aggregation_policy.get("rule") != "unanimous_owned_and_retained_else_ambiguous"
             or aggregation_policy.get("heldout_cameras_accessed") is not False
         ):
-            raise GaussianExcisionAuditError(
-                ["excision_ownership_aggregation_policy_invalid"]
-            )
+            raise GaussianExcisionAuditError(["excision_ownership_aggregation_policy_invalid"])
 
     scale = freeze["scale_and_bounds"]
     repetition_results = [
@@ -918,16 +882,10 @@ def materialize_excision_ownership(
             "repetition_count": len(arrays),
             "quantization_decimals": decimals,
             "quantized_contribution_arrays_identical": arrays_identical,
-            "label_disagreement_count": int(
-                np.any(label_stack != label_stack[0], axis=0).sum()
-            ),
-            "aggregation_rule": (
-                None if arrays_identical else aggregation_policy.get("rule")
-            ),
+            "label_disagreement_count": int(np.any(label_stack != label_stack[0], axis=0).sum()),
+            "aggregation_rule": (None if arrays_identical else aggregation_policy.get("rule")),
             "aggregation_policy_digest": (
-                None
-                if arrays_identical
-                else aggregation_policy.get("aggregation_policy_digest")
+                None if arrays_identical else aggregation_policy.get("aggregation_policy_digest")
             ),
             "disputed_gaussians_forced_ambiguous": not arrays_identical,
         },
@@ -947,16 +905,203 @@ def materialize_excision_ownership(
     return receipt
 
 
+def materialize_excision_ownership_replay(
+    *,
+    ownership_receipt_paths: Sequence[str | Path],
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Verify two ownership materializations are identical at the output seam.
+
+    Released GPU accumulation remains visible as diagnostic evidence.  The
+    requested reproducibility boundary is the deterministic materializer:
+    identical frozen evidence must produce identical canonical manifests,
+    immutable index sets, artifact digests, and byte-exact retained records.
+    """
+
+    if len(ownership_receipt_paths) != 2:
+        raise GaussianExcisionAuditError(
+            ["excision_ownership_replay_exactly_two_executions_required"]
+        )
+    receipt_paths = [Path(value).expanduser().resolve() for value in ownership_receipt_paths]
+    receipts: list[dict[str, Any]] = []
+    receipt_file_digests: list[str] = []
+    output_digest_maps: list[dict[str, str]] = []
+    index_sets: list[dict[str, np.ndarray]] = []
+    required_index_names = ("owned_indices", "retained_indices", "ambiguous_indices")
+    required_output_names = {
+        *required_index_names,
+        "historical_obb_indices",
+        "ownership_labels",
+        "owned_gaussians",
+        "retained_scene_gaussians",
+        "ambiguous_gaussians",
+        "historical_obb_gaussians",
+        "core_fraction",
+        "geometry_score",
+        "neighborhood_score",
+        "core_camera_count",
+        "protected_camera_count",
+        "visible_camera_count",
+    }
+    for receipt_path in receipt_paths:
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            raise GaussianExcisionAuditError(["excision_ownership_replay_receipt_missing"])
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise GaussianExcisionAuditError(["excision_ownership_replay_receipt_invalid"]) from exc
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("schema_version") != OWNERSHIP_RECEIPT_SCHEMA
+            or receipt.get("receipt_digest")
+            != canonical_digest(receipt, digest_field="receipt_digest")
+            or receipt.get("heldout_cameras_accessed_for_classification") is not False
+            or receipt.get("replacement_usd_inserted") is not False
+        ):
+            raise GaussianExcisionAuditError(["excision_ownership_replay_receipt_invalid"])
+        ownership = receipt.get("ownership") or {}
+        source_count = ownership.get("source_gaussian_count")
+        if (
+            isinstance(source_count, bool)
+            or not isinstance(source_count, int)
+            or source_count < 1
+            or ownership.get("exhaustive") is not True
+            or ownership.get("pairwise_disjoint") is not True
+            or (receipt.get("preservation") or {})
+            .get("retained_scene", {})
+            .get("retained_rows_byte_exact")
+            is not True
+        ):
+            raise GaussianExcisionAuditError(["excision_ownership_replay_partition_invalid"])
+        outputs = receipt.get("outputs")
+        if not isinstance(outputs, Mapping) or set(outputs) != required_output_names:
+            raise GaussianExcisionAuditError(["excision_ownership_replay_outputs_invalid"])
+        digest_map: dict[str, str] = {}
+        arrays: dict[str, np.ndarray] = {}
+        for name in sorted(required_output_names):
+            binding = outputs.get(name)
+            relative_path = binding.get("relative_path") if isinstance(binding, Mapping) else None
+            artifact_path = receipt_path.parent / str(relative_path or "")
+            if (
+                not isinstance(relative_path, str)
+                or not relative_path
+                or not artifact_path.is_file()
+                or artifact_path.is_symlink()
+                or artifact_path.stat().st_size != binding.get("size_bytes")
+                or _sha256(artifact_path) != binding.get("sha256")
+            ):
+                raise GaussianExcisionAuditError(
+                    [f"excision_ownership_replay_output_changed:{name}"]
+                )
+            digest_map[name] = str(binding["sha256"])
+            if name in required_index_names:
+                try:
+                    values = np.asarray(np.load(artifact_path, allow_pickle=False))
+                except (OSError, ValueError) as exc:
+                    raise GaussianExcisionAuditError(
+                        [f"excision_ownership_replay_index_invalid:{name}"]
+                    ) from exc
+                if (
+                    values.ndim != 1
+                    or values.dtype.kind not in {"i", "u"}
+                    or (len(values) and int(values[0]) < 0)
+                    or (len(values) and int(values[-1]) >= source_count)
+                    or np.any(values[1:] <= values[:-1])
+                ):
+                    raise GaussianExcisionAuditError(
+                        [f"excision_ownership_replay_index_invalid:{name}"]
+                    )
+                arrays[name] = values.astype(np.int64, copy=False)
+        combined = np.concatenate([arrays[name] for name in required_index_names])
+        if len(combined) != source_count or len(np.unique(combined)) != source_count:
+            raise GaussianExcisionAuditError(["excision_ownership_replay_partition_invalid"])
+        receipts.append(receipt)
+        receipt_file_digests.append(_sha256(receipt_path))
+        output_digest_maps.append(digest_map)
+        index_sets.append(arrays)
+
+    invariant_fields = (
+        "freeze_digest",
+        "contribution_manifest_digest",
+        "method",
+        "camera_split",
+        "source_standard_splat",
+        "ownership",
+        "determinism",
+        "preservation",
+        "outputs",
+        "heldout_cameras_accessed_for_classification",
+        "replacement_usd_inserted",
+        "claim_ceiling",
+        "receipt_digest",
+    )
+    canonical_manifests_identical = all(
+        receipts[0].get(field) == receipts[1].get(field) for field in invariant_fields
+    )
+    receipt_files_byte_identical = receipt_file_digests[0] == receipt_file_digests[1]
+    output_digests_identical = output_digest_maps[0] == output_digest_maps[1]
+    index_sets_identical = all(
+        np.array_equal(index_sets[0][name], index_sets[1][name]) for name in required_index_names
+    )
+    passed = bool(
+        canonical_manifests_identical
+        and receipt_files_byte_identical
+        and output_digests_identical
+        and index_sets_identical
+    )
+    output = Path(output_root).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    replay: dict[str, Any] = {
+        "schema_version": OWNERSHIP_REPLAY_SCHEMA,
+        "program_id": "arm-decision-proof-v1",
+        "adp_item": "ADP-009B",
+        "status": ("ownership_replay_identical" if passed else "ownership_replay_nondeterministic"),
+        "execution_count": 2,
+        "freeze_digest": receipts[0]["freeze_digest"],
+        "contribution_manifest_digest": receipts[0]["contribution_manifest_digest"],
+        "ownership_receipt_digest": receipts[0]["receipt_digest"],
+        "execution_receipt_file_sha256": receipt_file_digests,
+        "canonical_manifests_identical": canonical_manifests_identical,
+        "receipt_files_byte_identical": receipt_files_byte_identical,
+        "output_digests_identical": output_digests_identical,
+        "index_sets_identical": index_sets_identical,
+        "protected_source_records_byte_identical": all(
+            (receipt.get("preservation") or {})
+            .get("retained_scene", {})
+            .get("retained_rows_byte_exact")
+            is True
+            for receipt in receipts
+        ),
+        "raw_gpu_contribution_arrays_identical": all(
+            (receipt.get("determinism") or {}).get("quantized_contribution_arrays_identical")
+            is True
+            for receipt in receipts
+        ),
+        "classification_label_disagreement_count": max(
+            int((receipt.get("determinism") or {}).get("label_disagreement_count", -1))
+            for receipt in receipts
+        ),
+        "gate_passed": passed,
+        "claim_ceiling": "deterministic_replay_of_frozen_ownership_materialization",
+    }
+    replay["replay_digest"] = canonical_digest(replay, digest_field="replay_digest")
+    replay_path = output / f"{OWNERSHIP_REPLAY_SCHEMA}.json"
+    replay_path.write_text(canonical_json(replay) + "\n", encoding="utf-8")
+    return replay
+
+
 __all__ = [
     "CONTRIBUTION_EVIDENCE_SCHEMA",
     "CONTRIBUTION_CLASS_ORDER",
     "FREEZE_SCHEMA",
     "GaussianExcisionAuditError",
     "OWNERSHIP_RECEIPT_SCHEMA",
+    "OWNERSHIP_REPLAY_SCHEMA",
     "OWNERSHIP_AGGREGATION_POLICY_SCHEMA",
     "classify_excision_ownership",
     "materialize_excision_audit_freeze",
     "materialize_excision_ownership",
+    "materialize_excision_ownership_replay",
     "metric_geometry_score",
     "select_maximally_diverse_holdout_pair",
 ]

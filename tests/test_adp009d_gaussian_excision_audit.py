@@ -22,9 +22,11 @@ from blueprint_pipeline.public_scene_gaussian_excision_audit import (
     FREEZE_SCHEMA,
     OWNERSHIP_AGGREGATION_POLICY_SCHEMA,
     OWNERSHIP_RECEIPT_SCHEMA,
+    OWNERSHIP_REPLAY_SCHEMA,
     classify_excision_ownership,
     materialize_excision_audit_freeze,
     materialize_excision_ownership,
+    materialize_excision_ownership_replay,
     select_maximally_diverse_holdout_pair,
 )
 
@@ -89,9 +91,7 @@ def test_diverse_holdout_split_is_outcome_blind_and_deterministic() -> None:
     ]
     fractions = {str(row["camera_id"]): 0.2 for row in cameras}
 
-    first = select_maximally_diverse_holdout_pair(
-        cameras, projected_target_fraction=fractions
-    )
+    first = select_maximally_diverse_holdout_pair(cameras, projected_target_fraction=fractions)
     second = select_maximally_diverse_holdout_pair(
         list(reversed(cameras)), projected_target_fraction=fractions
     )
@@ -167,10 +167,7 @@ def _record(path: Path, root: Path) -> dict[str, object]:
 
 
 def _provider_runner_module():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "scripts/adp_gaussian_excision_provider_runner.py"
-    )
+    path = Path(__file__).resolve().parents[1] / "scripts/adp_gaussian_excision_provider_runner.py"
     spec = importlib.util.spec_from_file_location(
         "adp_gaussian_excision_provider_runner_test", path
     )
@@ -213,9 +210,7 @@ def test_provider_runner_import_preflight_reports_full_missing_set(
         if module_name == "cv2":
             raise ModuleNotFoundError("No module named 'cv2'", name="cv2")
         if module_name == "simple_knn._C":
-            raise ModuleNotFoundError(
-                "No module named 'simple_knn'", name="simple_knn"
-            )
+            raise ModuleNotFoundError("No module named 'simple_knn'", name="simple_knn")
         if module_name == "scene.gaussian_model":
             raise RuntimeError("fixture compiled extension incompatibility")
         return object()
@@ -234,9 +229,7 @@ def test_provider_runner_import_preflight_reports_full_missing_set(
         "scene.gaussian_model",
     ]
     assert result["missing_module_names"] == ["cv2", "simple_knn"]
-    assert result["blockers"] == [
-        "gaussian_excision_runtime_import_closure_incomplete"
-    ]
+    assert result["blockers"] == ["gaussian_excision_runtime_import_closure_incomplete"]
 
 
 def test_gaussian_excision_runtime_closure_pins_all_released_dependencies() -> None:
@@ -259,9 +252,7 @@ def test_provider_output_recognizes_gaussian_excision_result(tmp_path: Path) -> 
             json.dumps(
                 {
                     "status": "blocked",
-                    "blockers": [
-                        "gaussian_excision_runtime_import_closure_incomplete"
-                    ],
+                    "blockers": ["gaussian_excision_runtime_import_closure_incomplete"],
                 }
             ),
         )
@@ -299,9 +290,7 @@ def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None
     assert result["retry_cap"] == 0
 
 
-def test_canonical_allocator_binds_gaussian_excision_bundle(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_canonical_allocator_binds_gaussian_excision_bundle(monkeypatch, tmp_path: Path) -> None:
     bundle = tmp_path / "bundle.zip"
     bundle.write_bytes(b"immutable-gaussian-excision-runtime")
     bundle_digest = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
@@ -339,9 +328,7 @@ def test_canonical_allocator_binds_gaussian_excision_bundle(
         ),
         encoding="utf-8",
     )
-    avoidlist_digest = "sha256:" + hashlib.sha256(
-        avoidlist_path.read_bytes()
-    ).hexdigest()
+    avoidlist_digest = "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
     monkeypatch.setattr(
         allocator,
         "_control_plane_checkout_blockers",
@@ -399,10 +386,7 @@ def test_canonical_allocator_binds_gaussian_excision_bundle(
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["status"] == "admitted"
     assert admission["allocation_binding"]["bundle_sha256"] == bundle_digest
-    assert (
-        admission["allocation_binding"]["machine_avoidlist_sha256"]
-        == avoidlist_digest
-    )
+    assert admission["allocation_binding"]["machine_avoidlist_sha256"] == avoidlist_digest
     assert admission["heldout_cameras_accessed_for_classification"] is False
     assert observed["execute"] is False
     assert observed["machine_avoidlist_path"] == avoidlist_path
@@ -422,16 +406,12 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
             "provider_output_put_url.txt",
             "provider_output_get_url.txt",
         ):
-            (staging / name).write_text(
-                "https://example.com/private", encoding="utf-8"
-            )
+            (staging / name).write_text("https://example.com/private", encoding="utf-8")
         return {"status": "completed"}
 
     def fake_arm(**kwargs):
         events.append("watchdog")
-        return {"status": "armed"}, SimpleNamespace(
-            started_instance_id_path=started_path
-        )
+        return {"status": "armed"}, SimpleNamespace(started_instance_id_path=started_path)
 
     def fake_adapter(**kwargs):
         events.append("adapter")
@@ -455,17 +435,13 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
                 ),
             )
         (output_zip.parent / "vast_teardown_manifest.json").write_text(
-            json.dumps(
-                {"vast_instance_ids": [7], "continuing_spend_from_this_run": False}
-            ),
+            json.dumps({"vast_instance_ids": [7], "continuing_spend_from_this_run": False}),
             encoding="utf-8",
         )
         return {"status": "completed", "blockers": [], "estimated_cost_usd": 0.2}
 
     monkeypatch.setattr(excision_vast, "_remaining_minutes", lambda **kwargs: 60)
-    monkeypatch.setattr(
-        excision_vast, "stage_wam_provider_bundle_object_store", fake_stage
-    )
+    monkeypatch.setattr(excision_vast, "stage_wam_provider_bundle_object_store", fake_stage)
     monkeypatch.setattr(excision_vast, "arm_independent_vast_watchdog", fake_arm)
     monkeypatch.setattr(excision_vast, "run_vast_provider_adapter", fake_adapter)
     monkeypatch.setattr(
@@ -511,9 +487,7 @@ def test_vast_adapter_preflights_and_routes_gaussian_excision_root_bundle(
         "adp_gaussian_excision_provider_manifest.json": "{}",
         "execution_authority.json": "{}",
         "flashsplat_source.zip": source_zip.read_bytes(),
-        "input/scene_standard.ply": (
-            "ply\nformat binary_little_endian 1.0\nend_header\n"
-        ),
+        "input/scene_standard.ply": ("ply\nformat binary_little_endian 1.0\nend_header\n"),
         "input/cameras.v1.json": "{}",
         "freeze/adp009b_gaussian_excision_audit_freeze.v1.json": json.dumps(
             {
@@ -575,9 +549,7 @@ def test_vast_adapter_preflights_and_routes_gaussian_excision_root_bundle(
         provider_output_put_url="https://example.com/private-output",
     )
     assert "provider_runtime_bundle_required_entries_missing" in failed["blockers"]
-    assert failed["missing_zip_entries"] == [
-        "freeze/masks/heldout_front.protected.png"
-    ]
+    assert failed["missing_zip_entries"] == ["freeze/masks/heldout_front.protected.png"]
 
 
 def test_freeze_builds_independent_core_uncertain_and_protected_masks(
@@ -586,7 +558,7 @@ def test_freeze_builds_independent_core_uncertain_and_protected_masks(
     source = _splat(tmp_path / "scene.ply")
     collision = tmp_path / "collision.usda"
     collision.write_text(
-        '''#usda 1.0
+        """#usda 1.0
 (
     defaultPrim = "Root"
     metersPerUnit = 1
@@ -601,7 +573,7 @@ def Xform "Root"
         int[] faceVertexIndices = [0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 1, 5, 6, 1, 6, 2, 2, 6, 7, 2, 7, 3, 3, 7, 4, 3, 4, 0]
     }
 }
-''',
+""",
         encoding="utf-8",
     )
     cameras = [
@@ -660,10 +632,7 @@ def Xform "Root"
     assert freeze["scale_and_bounds"]["source_gaussian_count"] == 4
     assert freeze["contribution_method"]["depth_anything_3_used"] is False
     assert freeze["historical_baseline"]["selected_gaussian_count"] == 4
-    assert all(
-        row["target_core_is_subset_of_historical_outer_mask"]
-        for row in freeze["masks"]
-    )
+    assert all(row["target_core_is_subset_of_historical_outer_mask"] for row in freeze["masks"])
     assert (tmp_path / "freeze" / f"{FREEZE_SCHEMA}.json").is_file()
 
     calibration = freeze["camera_split"]["calibration_camera_ids"]
@@ -688,9 +657,7 @@ def Xform "Root"
         },
         "repetitions": repetitions,
     }
-    manifest["manifest_digest"] = canonical_digest(
-        manifest, digest_field="manifest_digest"
-    )
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     manifest_path = gpu_root / f"{CONTRIBUTION_EVIDENCE_SCHEMA}.json"
     manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
 
@@ -699,6 +666,19 @@ def Xform "Root"
         contribution_manifest_path=manifest_path,
         source_standard_splat_path=source,
         output_root=tmp_path / "ownership",
+    )
+    replayed_receipt = materialize_excision_ownership(
+        freeze_path=tmp_path / "freeze" / f"{FREEZE_SCHEMA}.json",
+        contribution_manifest_path=manifest_path,
+        source_standard_splat_path=source,
+        output_root=tmp_path / "ownership-replay",
+    )
+    replay = materialize_excision_ownership_replay(
+        ownership_receipt_paths=[
+            tmp_path / "ownership" / f"{OWNERSHIP_RECEIPT_SCHEMA}.json",
+            tmp_path / "ownership-replay" / f"{OWNERSHIP_RECEIPT_SCHEMA}.json",
+        ],
+        output_root=tmp_path / "replay-verification",
     )
 
     assert receipt["schema_version"] == OWNERSHIP_RECEIPT_SCHEMA
@@ -711,21 +691,22 @@ def Xform "Root"
         "exhaustive": True,
         "pairwise_disjoint": True,
     }
-    assert all(
-        row["retained_rows_byte_exact"] is True
-        for row in receipt["preservation"].values()
-    )
+    assert all(row["retained_rows_byte_exact"] is True for row in receipt["preservation"].values())
+    assert replayed_receipt == receipt
+    assert replay["schema_version"] == OWNERSHIP_REPLAY_SCHEMA
+    assert replay["gate_passed"] is True
+    assert replay["canonical_manifests_identical"] is True
+    assert replay["receipt_files_byte_identical"] is True
+    assert replay["output_digests_identical"] is True
+    assert replay["index_sets_identical"] is True
+    assert replay["protected_source_records_byte_identical"] is True
 
     jittered = evidence.copy()
     jittered[0, 1, 0] += 0.000002
     jittered_path = gpu_root / "contribution_1.npz"
-    np.savez_compressed(
-        jittered_path, per_view_class_contribution=jittered
-    )
+    np.savez_compressed(jittered_path, per_view_class_contribution=jittered)
     manifest["repetitions"][1] = _record(jittered_path, gpu_root)
-    manifest["manifest_digest"] = canonical_digest(
-        manifest, digest_field="manifest_digest"
-    )
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
     aggregation_policy = {
         "schema_version": OWNERSHIP_AGGREGATION_POLICY_SCHEMA,
@@ -740,9 +721,7 @@ def Xform "Root"
         aggregation_policy, digest_field="aggregation_policy_digest"
     )
     aggregation_policy_path = tmp_path / "aggregation-policy.json"
-    aggregation_policy_path.write_text(
-        canonical_json(aggregation_policy) + "\n", encoding="utf-8"
-    )
+    aggregation_policy_path.write_text(canonical_json(aggregation_policy) + "\n", encoding="utf-8")
 
     aggregated = materialize_excision_ownership(
         freeze_path=tmp_path / "freeze" / f"{FREEZE_SCHEMA}.json",
@@ -759,9 +738,7 @@ def Xform "Root"
         "quantized_contribution_arrays_identical": False,
         "label_disagreement_count": 0,
         "aggregation_rule": "unanimous_owned_and_retained_else_ambiguous",
-        "aggregation_policy_digest": aggregation_policy[
-            "aggregation_policy_digest"
-        ],
+        "aggregation_policy_digest": aggregation_policy["aggregation_policy_digest"],
         "disputed_gaussians_forced_ambiguous": True,
     }
 
@@ -790,7 +767,9 @@ def Xform "Root"
     )
     authority_path = tmp_path / "authority.json"
     authority_path.write_text(canonical_json(authority) + "\n", encoding="utf-8")
-    monkeypatch.setattr(excision_vast, "_git", lambda *args: "" if args[-2:] == ("status", "--short") else "fixture")
+    monkeypatch.setattr(
+        excision_vast, "_git", lambda *args: "" if args[-2:] == ("status", "--short") else "fixture"
+    )
     monkeypatch.setattr(
         excision_vast,
         "_source_identity",
