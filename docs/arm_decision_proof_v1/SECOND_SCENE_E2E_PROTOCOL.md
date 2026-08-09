@@ -4,8 +4,14 @@ Status: scene and task frozen before learned outcomes. InteriorGS/SAGE scene
 `840796`, refrigerator instance `123`, and the upper-door open task are frozen
 for construction by
 [`manifests/second_scene_840796_scene_task_freeze.v1.json`](manifests/second_scene_840796_scene_task_freeze.v1.json).
-This does not authorize scenario materialization or evaluation; every remaining
-construction, native robot, camera, and control gate still fails closed.
+Execution authority is separately bound by
+[`manifests/second_scene_840796_execution_authority.v2.json`](manifests/second_scene_840796_execution_authority.v2.json).
+It authorizes private processing of the minimum derived Aura input and the
+derived SAGE articulated source on at most two concurrent paid resources under
+a combined USD 12 hard cap. It does not authorize uploading or redistributing
+raw InteriorGS PLY, label, or structure bytes. Scenario materialization and
+evaluation still fail closed until construction, native robot, camera, and
+control gates pass.
 
 Backlog item: **ADP-009D**. Gate: **public-scene day 28**. The observed
 completion artifact must be one sealed, digest-bound, development-only Task
@@ -103,6 +109,36 @@ No failed control becomes a learned-policy failure. No manual mask, one-off
 scene edit, fake receipt, caller-asserted success, automatic paid retry, or
 flattering interpretation may qualify.
 
+## Parallel execution contract
+
+The customer pipeline is a dependency graph rather than a serial script. Once
+rights, exact inputs, and the scene/task freeze are immutable, the following
+read-only or independently mutating branches may run concurrently:
+
+- released-code appearance removal/inpainting;
+- Joint Agent articulation-topology construction;
+- coarse Franka base/workspace and camera feasibility against frozen observed
+  bounds, followed by mandatory exact requalification against the admitted
+  replacement;
+- exact candidate checkpoint/runtime provisioning without policy execution;
+- review-media, scorer, reset, and scenario-cell infrastructure preparation.
+
+After one exact construction join, independent resolved scenario cells may run
+their controls concurrently on isolated simulator replicas. Within each cell,
+zero-action must still precede scripted-positive. Only a cell whose two controls
+pass may admit learned execution. `pi05_droid` and `groot_n17_droid` may then run
+concurrently on two byte-identical isolated replicas of that admitted cell;
+neither may observe the other's outcome. Lossless-frame hashing, video encoding,
+receipt validation, and portable-index generation may overlap later episodes.
+
+The serial safety boundaries are rights and freeze before disclosure, exact
+construction before final placement/IK/contact qualification, both controls
+before either learned candidate in each cell, settle before scoring, and all
+terminal receipts plus provider-zero before sealing. More GPUs cannot shorten a
+single Aura optimization or a single simulator episode; prebuilt immutable
+images, local artifact/model caches, and warm runtime pools remove the dominant
+cold-start overhead without changing these joins.
+
 ## Retained candidate outcomes
 
 Candidate `840076` was rejected because the best SAGE door collider represents
@@ -158,14 +194,27 @@ reconciliation capacity for all 223 source components, selects NIM
 `google/gemma-4-31b-it`, sets prediction completion retries to zero, and keeps
 `owned_core` publication disabled until the Stage 2 topology is reviewed.
 
-Remote execution would be fail-closed for two independent reasons: the
-InteriorGS rights receipt does not authorize disclosure of scene-derived bytes
-or renders to that provider, and this goal contains no fresh paid budget.
-Additionally, the exact upstream environment cannot perform its own dry-run on
-Apple Silicon macOS because release `0.5.2` pins `usd-exchange==2.3.0`, which
-publishes Linux and Windows wheels but no macOS arm64 wheel. This local platform
-gap does not authorize a substitute environment or an unpinned vendor patch;
-an eventual admitted execution must use the exact released code on a supported
-Linux environment. For `840411`, the earlier geometric rejection makes that
-execution unnecessary and prevents spending on a candidate a local gate can
-settle.
+The user subsequently authorized private scene-derived uploads, USD 12 total
+paid spend, and a second concurrent GPU. The v2 authority retains the publisher
+boundary: raw InteriorGS PLY, label, and structure bytes remain local and may not
+be redistributed. The exact derived SAGE component assembly and the minimum
+Aura adapter input are the only scene-derived provider inputs.
+
+One exact released-code Linux Joint Agent attempt ran with zero completion
+retries. It abstained before inference because the local OVRTX service's 64x64
+warmup did not become ready while the wrapper forced path tracing with 128
+sensor updates. The provider instance was destroyed and its staged objects were
+removed. The reusable bundle now binds OVRTX `rt2` with 32 updates, matching the
+released in-process construction-render defaults; it labels those images
+construction previews, never policy inputs or evaluation-authorized renders.
+No automatic paid retry is authorized. Separately, the returned-artifact
+contract now requires the candidate topology, optimized source, owned-core USD,
+diagnostics, and validation to survive the provider ZIP, and the watchdog can
+close its own run while an explicitly authorized sibling GPU remains active.
+
+The exact upstream environment still cannot dry-run natively on Apple Silicon
+macOS because release `0.5.2` pins `usd-exchange==2.3.0`, which publishes Linux
+and Windows wheels but no macOS arm64 wheel. That platform gap does not authorize
+an unpinned vendor patch. For `840411`, the earlier geometric rejection makes
+Joint Agent execution unnecessary and prevents spending on a candidate a local
+gate already settled.
