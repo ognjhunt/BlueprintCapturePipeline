@@ -89,6 +89,7 @@ def render_splat_at_exact_cameras(
     repo_root: str | Path | None = None,
     node: str = "node",
     graphics_backend: str = "swiftshader",
+    background_rgb: int = 0x0B0B10,
     warmup_ms: int = 2500,
     settle_frames: int = 6,
     settle_ms: int = 100,
@@ -107,6 +108,12 @@ def render_splat_at_exact_cameras(
     splat = Path(splat_path)
     output = Path(output_dir)
     errors: list[str] = []
+    if (
+        isinstance(background_rgb, bool)
+        or not isinstance(background_rgb, int)
+        or not 0 <= background_rgb <= 0xFFFFFF
+    ):
+        errors.append("render_background_rgb_invalid")
     if shutil.which(node) is None:
         errors.append("render_node_runtime_unavailable")
     if not harness.is_file() or not entry.is_file():
@@ -191,6 +198,8 @@ def render_splat_at_exact_cameras(
         str(settle_ms),
         "--graphics-backend",
         str(graphics_backend),
+        "--bg",
+        f"0x{background_rgb:06x}",
     ]
     try:
         process = subprocess.run(
@@ -253,6 +262,7 @@ def render_splat_at_exact_cameras(
             "render_entry_digest": _sha256_file(entry),
             "node_version": node_version,
             "graphics_backend": str(graphics_backend),
+            "background_rgb": f"#{background_rgb:06x}",
             "warmup_ms": warmup_ms,
             "settle_frames": settle_frames,
             "settle_ms": settle_ms,

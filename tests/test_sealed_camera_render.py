@@ -74,6 +74,40 @@ def test_transform_camera_into_provider_frame_inverts_alignment() -> None:
         )
 
 
+@pytest.mark.parametrize("background_rgb", [-1, 0x1000000, True, "black"])
+def test_exact_camera_render_rejects_unbound_background_rgb(
+    tmp_path: Path, background_rgb: object
+) -> None:
+    splat = tmp_path / "scene.ply"
+    _write_standard_3dgs_ply(splat, [(0.0, 0.0, 2.0, 1.0, 1.0, 1.0)])
+
+    with pytest.raises(SealedCameraRenderError) as exc:
+        render_splat_at_exact_cameras(
+            splat_path=splat,
+            cameras=[
+                {
+                    "camera_id": "fixture",
+                    "T_world_camera_provider_frame": np.eye(4).tolist(),
+                    "intrinsics": {
+                        "fx": 32.0,
+                        "fy": 32.0,
+                        "cx": 16.0,
+                        "cy": 16.0,
+                        "width": 32,
+                        "height": 32,
+                    },
+                }
+            ],
+            output_dir=tmp_path / "render",
+            provider_splat_import_receipt_digest=DIGEST,
+            alignment_digest=DIGEST,
+            camera_set_label="fixture",
+            background_rgb=background_rgb,  # type: ignore[arg-type]
+        )
+
+    assert exc.value.codes == ("render_background_rgb_invalid",)
+
+
 @pytest.mark.slow
 def test_exact_camera_render_places_known_gaussians_at_predicted_pixels(tmp_path: Path) -> None:
     splat = tmp_path / "scene.ply"
@@ -111,9 +145,11 @@ def test_exact_camera_render_places_known_gaussians_at_predicted_pixels(tmp_path
         provider_splat_import_receipt_digest=DIGEST,
         alignment_digest=DIGEST,
         camera_set_label="fixture_exact_check",
+        background_rgb=0x102030,
     )
     assert manifest["status"] == "rendered_exact_cameras"
     assert manifest["render_count"] == 1
+    assert manifest["renderer_identity"]["background_rgb"] == "#102030"
     frame = np.asarray(
         Image.open(tmp_path / "render" / manifest["renders"][0]["relative_path"]).convert("RGB")
     ).astype(np.float64)
