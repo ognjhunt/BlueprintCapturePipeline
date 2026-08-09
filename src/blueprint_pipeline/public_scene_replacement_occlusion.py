@@ -286,6 +286,65 @@ def coverage_safe_ambiguous(
     return safe
 
 
+def select_direct_calibration_evidence_expansion(
+    candidate_indices: np.ndarray,
+    owned: np.ndarray,
+    protected_camera_count: np.ndarray,
+    core_camera_count: np.ndarray,
+    core_fraction: np.ndarray,
+    geometry_score: np.ndarray,
+    *,
+    minimum_core_camera_count: int,
+    minimum_core_fraction: float,
+    minimum_geometry_score: float,
+) -> np.ndarray:
+    """Select non-owned candidates supported directly by calibration evidence.
+
+    This deliberately ignores a neighborhood-smoothed score: smoothing may
+    make an appliance-edge Gaussian inherit nearby background uncertainty even
+    when its own evidence is target-only in multiple calibration views.
+    Held-out pixels and replacement outcomes are not inputs to this selector.
+    """
+
+    indices = np.asarray(candidate_indices, dtype=np.int64)
+    owned_values = np.asarray(owned, dtype=bool)
+    protected = np.asarray(protected_camera_count)
+    core_count = np.asarray(core_camera_count)
+    fraction = np.asarray(core_fraction, dtype=np.float64)
+    geometry = np.asarray(geometry_score, dtype=np.float64)
+    size = owned_values.size
+    if (
+        indices.ndim != 1
+        or len(set(indices.tolist())) != indices.size
+        or np.any(indices < 0)
+        or np.any(indices >= size)
+        or any(
+            values.ndim != 1 or values.size != size
+            for values in (protected, core_count, fraction, geometry)
+        )
+        or not np.isfinite(fraction).all()
+        or not np.isfinite(geometry).all()
+        or np.any(protected < 0)
+        or np.any(core_count < 0)
+        or isinstance(minimum_core_camera_count, bool)
+        or not isinstance(minimum_core_camera_count, int)
+        or minimum_core_camera_count < 1
+        or not 0.0 <= minimum_core_fraction <= 1.0
+        or not 0.0 <= minimum_geometry_score <= 1.0
+    ):
+        raise ReplacementOcclusionError(
+            ["replacement_occlusion_direct_evidence_input_invalid"]
+        )
+    selected = indices[
+        (~owned_values[indices])
+        & (protected[indices] == 0)
+        & (core_count[indices] >= minimum_core_camera_count)
+        & (fraction[indices] >= minimum_core_fraction)
+        & (geometry[indices] >= minimum_geometry_score)
+    ]
+    return selected.astype(np.int64, copy=False)
+
+
 def evaluate_depth_coverage(
     removal_alpha: np.ndarray,
     replacement_depth_m: np.ndarray,
@@ -637,6 +696,7 @@ __all__ = [
     "coverage_safe_ambiguous",
     "evaluate_depth_coverage",
     "materialize_replacement_occlusion_cutout",
+    "select_direct_calibration_evidence_expansion",
 ]
 
 

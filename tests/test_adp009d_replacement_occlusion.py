@@ -23,6 +23,7 @@ from blueprint_pipeline.public_scene_replacement_occlusion import (
     classify_gaussian_contributions,
     coverage_safe_ambiguous,
     materialize_replacement_occlusion_cutout,
+    select_direct_calibration_evidence_expansion,
 )
 
 
@@ -298,3 +299,18 @@ def test_request_rejects_caller_asserted_inpainting_outcome() -> None:
             }
         )
     assert "replacement_occlusion_caller_outcome_forbidden" in exc.value.codes
+
+
+def test_direct_evidence_expansion_ignores_neighbor_score_and_outcomes() -> None:
+    selected = select_direct_calibration_evidence_expansion(
+        np.array([1, 2, 3, 4]),
+        np.array([False, False, True, False, False]),
+        np.array([0, 0, 0, 1, 0]),
+        np.array([0, 2, 3, 4, 1]),
+        np.array([0.0, 0.99, 1.0, 1.0, 1.0]),
+        np.array([0.0, 0.9, 1.0, 1.0, 1.0]),
+        minimum_core_camera_count=2,
+        minimum_core_fraction=0.9,
+        minimum_geometry_score=0.5,
+    )
+    assert selected.tolist() == [1]
