@@ -26,6 +26,7 @@ from .public_scene_gaussian_excision_heldout import (
 DEPTH_SWEEP_SCHEMA = "adp009b_articulated_usd_depth_sweep.v1"
 SOURCE_COVERAGE_AUDIT_SCHEMA = "adp009b_source_layer_replacement_coverage_audit.v1"
 REFERENCE_HYBRID_REVIEW_SCHEMA = "adp009b_reference_hybrid_review.v1"
+TARGET_CORE_COVERAGE_AUDIT_SCHEMA = "articulated_excision_coverage.v1"
 
 
 class ArticulatedUsdDepthSweepError(ValueError):
@@ -760,6 +761,246 @@ def materialize_source_layer_replacement_coverage_audit(
     return manifest
 
 
+def materialize_target_core_replacement_coverage_audit(
+    *,
+    target_core_mask_paths: Mapping[str, str | Path],
+    depth_sweep_manifest_path: str | Path,
+    output_root: str | Path,
+    maximum_uncovered_fraction: float,
+    coverage_margin_pixels: int = 0,
+) -> dict[str, Any]:
+    """Measure which frozen target-mask pixels the posed replacement does not hide.
+
+    This is the coverage-conditioned counterpart to broad object-layer removal.
+    It never guesses Gaussian ownership: it joins exact calibrated target masks
+    to actual replacement-USD depth for every camera and articulated state.  A
+    residual remains a narrow seam candidate, never implicit permission to
+    delete more scene content or a claim that inpainting is unnecessary.
+    """
+
+    depth_path = Path(depth_sweep_manifest_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ArticulatedUsdDepthSweepError(["target_core_coverage_output_not_empty"])
+    if (
+        isinstance(maximum_uncovered_fraction, bool)
+        or not isinstance(maximum_uncovered_fraction, (int, float))
+        or not math.isfinite(float(maximum_uncovered_fraction))
+        or not 0.0 <= float(maximum_uncovered_fraction) < 1.0
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["target_core_coverage_fraction_threshold_invalid"]
+        )
+    if (
+        isinstance(coverage_margin_pixels, bool)
+        or not isinstance(coverage_margin_pixels, int)
+        or coverage_margin_pixels < 0
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["target_core_coverage_margin_invalid"]
+        )
+
+    depth_manifest = _read_object(
+        depth_path, "target_core_coverage_depth_manifest_unreadable"
+    )
+    if (
+        depth_manifest.get("schema_version") != DEPTH_SWEEP_SCHEMA
+        or depth_manifest.get("manifest_digest")
+        != canonical_digest(depth_manifest, digest_field="manifest_digest")
+        or depth_manifest.get("actual_mesh_depth_rasterized") is not True
+        or depth_manifest.get("caller_supplied_coverage_mask") is not False
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["target_core_coverage_depth_manifest_invalid"]
+        )
+    depth_record = depth_manifest.get("arrays") or {}
+    depth_array_path = depth_path.parent / str(depth_record.get("relative_path") or "")
+    if (
+        not depth_array_path.is_file()
+        or depth_array_path.is_symlink()
+        or depth_array_path.stat().st_size != depth_record.get("size_bytes")
+        or _sha256(depth_array_path) != depth_record.get("sha256")
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["target_core_coverage_depth_array_changed"]
+        )
+    depth = np.load(depth_array_path, allow_pickle=False)
+    cells = depth_manifest.get("cells")
+    if depth.ndim != 3 or not isinstance(cells, list) or len(cells) != depth.shape[0]:
+        raise ArticulatedUsdDepthSweepError(
+            ["target_core_coverage_depth_cells_invalid"]
+        )
+    camera_ids = list(
+        dict.fromkeys(str(cell.get("camera_id") or "") for cell in cells)
+    )
+    if (
+        not camera_ids
+        or any(not camera_id for camera_id in camera_ids)
+        or set(target_core_mask_paths) != set(camera_ids)
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["target_core_coverage_camera_masks_mismatch"]
+        )
+
+    height, width = depth.shape[1:]
+    masks: dict[str, np.ndarray] = {}
+    mask_records: list[dict[str, Any]] = []
+    for camera_id in camera_ids:
+        mask_path = Path(target_core_mask_paths[camera_id]).expanduser().resolve()
+        if not mask_path.is_file() or mask_path.is_symlink():
+            raise ArticulatedUsdDepthSweepError(
+                [f"target_core_coverage_mask_missing:{camera_id}"]
+            )
+        source = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if source is None or not np.any(source > 0):
+            raise ArticulatedUsdDepthSweepError(
+                [f"target_core_coverage_mask_invalid:{camera_id}"]
+            )
+        # Any nonzero area contribution survives downsampling.  This is more
+        # conservative than nearest-neighbour sampling at mask boundaries.
+        mask = cv2.resize(
+            source, (width, height), interpolation=cv2.INTER_AREA
+        ) > 0
+        masks[camera_id] = mask
+        mask_records.append(
+            {
+                "camera_id": camera_id,
+                "source_path": str(mask_path),
+                "sha256": _sha256(mask_path),
+                "source_dimensions": [int(source.shape[1]), int(source.shape[0])],
+                "audit_dimensions": [width, height],
+                "audit_pixel_count": int(mask.sum()),
+            }
+        )
+
+    minimum_target_pixels = min(int(mask.sum()) for mask in masks.values())
+    maximum_component_pixels = int(
+        math.floor(float(maximum_uncovered_fraction) * minimum_target_pixels)
+    )
+    kernel = np.ones(
+        (2 * coverage_margin_pixels + 1, 2 * coverage_margin_pixels + 1),
+        dtype=np.uint8,
+    )
+    rows: list[dict[str, Any]] = []
+    residual_by_camera = {
+        camera_id: np.zeros((height, width), dtype=bool)
+        for camera_id in camera_ids
+    }
+    for index, cell in enumerate(cells):
+        camera_id = str(cell.get("camera_id") or "")
+        try:
+            commanded = float(cell["commanded_door_angle_deg"])
+            readback = float(cell["readback_door_angle_deg"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArticulatedUsdDepthSweepError(
+                ["target_core_coverage_depth_cells_invalid"]
+            ) from exc
+        covered = np.isfinite(depth[index]) & (depth[index] > 0.0)
+        if coverage_margin_pixels:
+            covered = cv2.dilate(covered.astype(np.uint8), kernel).astype(bool)
+        target = masks[camera_id]
+        residual = target & ~covered
+        residual_by_camera[camera_id] |= residual
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            residual.astype(np.uint8), 8
+        )
+        largest = (
+            int(stats[1:, cv2.CC_STAT_AREA].max()) if component_count > 1 else 0
+        )
+        residual_count = int(residual.sum())
+        fraction = residual_count / int(target.sum())
+        rows.append(
+            {
+                "cell_index": index,
+                "camera_id": camera_id,
+                "door_state_angle_degrees": commanded,
+                "readback_door_state_angle_degrees": readback,
+                "target_core_pixel_count": int(target.sum()),
+                "replacement_covered_target_core_pixel_count": int(
+                    (target & covered).sum()
+                ),
+                "residual_significant_pixels": residual_count,
+                "residual_fraction_of_target_core": fraction,
+                "residual_max_connected_component_pixels": largest,
+                "residual_inside_target_core_mask": True,
+                "outside_mask_changed_pixels": 0,
+            }
+        )
+
+    output.mkdir(parents=True, exist_ok=True)
+    seam_root = output / "residual_target_core_seam_masks"
+    seam_root.mkdir()
+    seam_records: list[dict[str, Any]] = []
+    for camera_id in camera_ids:
+        seam_path = seam_root / f"{camera_id}.png"
+        if not cv2.imwrite(
+            str(seam_path), residual_by_camera[camera_id].astype(np.uint8) * 255
+        ):
+            raise ArticulatedUsdDepthSweepError(
+                ["target_core_coverage_seam_mask_write_failed"]
+            )
+        seam_records.append(
+            {
+                **_record(seam_path, output),
+                "camera_id": camera_id,
+                "pixel_count": int(residual_by_camera[camera_id].sum()),
+                "derived_from_all_door_cells": sum(
+                    str(cell.get("camera_id") or "") == camera_id for cell in cells
+                ),
+            }
+        )
+
+    worst_fraction = max(row["residual_fraction_of_target_core"] for row in rows)
+    worst_component = max(
+        row["residual_max_connected_component_pixels"] for row in rows
+    )
+    coverage_qualified = bool(
+        worst_fraction <= float(maximum_uncovered_fraction)
+        and worst_component <= maximum_component_pixels
+    )
+    door_states = list(
+        dict.fromkeys(float(cell["commanded_door_angle_deg"]) for cell in cells)
+    )
+    manifest: dict[str, Any] = {
+        "schema_version": TARGET_CORE_COVERAGE_AUDIT_SCHEMA,
+        "status": "target_core_replacement_coverage_measured",
+        "coverage_qualified": coverage_qualified,
+        "depth_sweep_manifest": {
+            "sha256": _sha256(depth_path),
+            "manifest_digest": depth_manifest["manifest_digest"],
+            "replacement_usd": depth_manifest.get("replacement_usd"),
+        },
+        "camera_ids": camera_ids,
+        "door_state_angles_degrees": door_states,
+        "target_core_masks": mask_records,
+        "coverage_margin_pixels": coverage_margin_pixels,
+        "maximum_uncovered_fraction": float(maximum_uncovered_fraction),
+        "maximum_residual_connected_component_pixels": maximum_component_pixels,
+        "maximum_protected_changed_pixels": 0,
+        "cells": rows,
+        "residual_target_core_seam_masks": seam_records,
+        "summary": {
+            "cell_count": len(rows),
+            "worst_uncovered_target_core_fraction": worst_fraction,
+            "worst_uncovered_target_core_pixel_count": max(
+                row["residual_significant_pixels"] for row in rows
+            ),
+            "worst_residual_connected_component_pixels": worst_component,
+        },
+        "caller_asserted_coverage_accepted": False,
+        "rendered_pixels_changed_by_audit": False,
+        "residual_is_narrow_seam_candidate_not_inpainting_success": True,
+        "claim_ceiling": "geometric_replacement_coverage_candidate_only",
+        "receipt_digest": "",
+    }
+    manifest["receipt_digest"] = canonical_digest(
+        manifest, digest_field="receipt_digest"
+    )
+    manifest_path = output / f"{TARGET_CORE_COVERAGE_AUDIT_SCHEMA}.json"
+    manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
+    return manifest
+
+
 def materialize_reference_hybrid_review(
     *,
     retained_scene_render_manifest_path: str | Path,
@@ -995,12 +1236,14 @@ __all__ = [
     "DEPTH_SWEEP_SCHEMA",
     "REFERENCE_HYBRID_REVIEW_SCHEMA",
     "SOURCE_COVERAGE_AUDIT_SCHEMA",
+    "TARGET_CORE_COVERAGE_AUDIT_SCHEMA",
     "conservative_max_pool_alpha",
     "evaluate_source_alpha_coverage",
     "load_articulated_usd_triangles",
     "materialize_articulated_usd_depth_sweep",
     "materialize_reference_hybrid_review",
     "materialize_source_layer_replacement_coverage_audit",
+    "materialize_target_core_replacement_coverage_audit",
     "rasterize_triangle_depth",
     "rotate_triangles_about_axis",
 ]

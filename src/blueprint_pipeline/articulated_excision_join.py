@@ -30,6 +30,9 @@ from .decision_evidence_contracts import canonical_digest
 
 JOIN_SCHEMA_VERSION = "articulated_excision_join.v1"
 COVERAGE_SCHEMA_VERSION = "articulated_excision_coverage.v1"
+COVERAGE_CONDITIONED_CUTOUT_SCHEMA_VERSION = (
+    "adp009b_coverage_conditioned_cutout.v1"
+)
 _REQUIRED_DOOR_CLASSES = frozenset(
     {"replacement_body", "replacement_lower_door", "franka_base"}
 )
@@ -102,6 +105,128 @@ def _matrix4(value: Any) -> list[list[float]] | None:
     return rows
 
 
+def compile_coverage_conditioned_cutout_receipt(
+    *,
+    bound_cutout_candidate: Mapping[str, Any],
+    coverage_receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Admit byte-exact deletion only when the posed replacement covers the target.
+
+    This receipt intentionally does not rename a conservative deletion set as
+    factual Gaussian ownership.  It binds an immutable cutout, exact retained
+    rows, and an independently computed all-camera/all-state USD coverage
+    audit.  Any uncovered pixels remain explicit seam candidates.
+    """
+
+    errors: list[str] = []
+    cutout = _canonical(
+        bound_cutout_candidate,
+        digest_field="receipt_digest",
+        error="coverage_conditioned_cutout_candidate_digest_invalid",
+        errors=errors,
+    )
+    coverage = _canonical(
+        coverage_receipt,
+        digest_field="receipt_digest",
+        error="coverage_conditioned_cutout_coverage_digest_invalid",
+        errors=errors,
+    )
+    if cutout:
+        if cutout.get("schema_version") != "adp009b_bound_index_union_candidate.v1":
+            errors.append("coverage_conditioned_cutout_candidate_schema_invalid")
+        if cutout.get("status") != (
+            "bound_cutout_materialized_pending_coverage_and_seam_gates"
+        ):
+            errors.append("coverage_conditioned_cutout_candidate_status_invalid")
+        counts = cutout.get("counts")
+        preservation = cutout.get("preservation")
+        outputs = cutout.get("outputs")
+        if not isinstance(counts, Mapping):
+            errors.append("coverage_conditioned_cutout_counts_invalid")
+            counts = {}
+        if not isinstance(preservation, Mapping):
+            errors.append("coverage_conditioned_cutout_preservation_invalid")
+            preservation = {}
+        if not isinstance(outputs, Mapping):
+            errors.append("coverage_conditioned_cutout_outputs_invalid")
+            outputs = {}
+        source = counts.get("source")
+        deleted = counts.get("deleted_total")
+        retained = counts.get("retained_total")
+        if (
+            any(
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                for value in (source, deleted, retained)
+            )
+            or int(deleted or 0) + int(retained or 0) != int(source or -1)
+        ):
+            errors.append("coverage_conditioned_cutout_counts_invalid")
+        if (
+            preservation.get("retained_rows_byte_exact") is not True
+            or preservation.get("retained_order_matches_source") is not True
+            or preservation.get("retained_vertex_count") != retained
+            or preservation.get("source_vertex_count") != source
+        ):
+            errors.append("coverage_conditioned_cutout_preservation_invalid")
+        for name in (
+            "deleted_source_indices",
+            "retained_source_indices",
+            "retained_scene_gaussians",
+        ):
+            record = outputs.get(name)
+            if not isinstance(record, Mapping) or not _sha256_field(
+                record.get("sha256")
+            ):
+                errors.append(f"coverage_conditioned_cutout_output_invalid:{name}")
+        selection = cutout.get("selection")
+        if (
+            not isinstance(selection, Mapping)
+            or selection.get("caller_asserted_coverage") is not False
+            or selection.get("learned_policy_outcomes_used") is not False
+            or selection.get("heldout_pixels_used_to_select_indices") is not False
+        ):
+            errors.append("coverage_conditioned_cutout_selection_invalid")
+    if coverage:
+        if coverage.get("schema_version") != COVERAGE_SCHEMA_VERSION:
+            errors.append("coverage_conditioned_cutout_coverage_schema_invalid")
+        if coverage.get("coverage_qualified") is not True:
+            errors.append("coverage_conditioned_cutout_coverage_not_qualified")
+        if coverage.get("caller_asserted_coverage_accepted") is not False:
+            errors.append("coverage_conditioned_cutout_caller_assertion_forbidden")
+        if coverage.get("rendered_pixels_changed_by_audit") is not False:
+            errors.append("coverage_conditioned_cutout_pixel_mutation_forbidden")
+    if errors:
+        raise ArticulatedExcisionJoinError(errors)
+
+    counts = cutout["counts"]
+    outputs = cutout["outputs"]
+    receipt: dict[str, Any] = {
+        "schema_version": COVERAGE_CONDITIONED_CUTOUT_SCHEMA_VERSION,
+        "status": "coverage_conditioned_cutout_admitted",
+        "cutout_method": "byte_exact_deletion_plus_actual_usd_coverage",
+        "bound_cutout_candidate_digest": cutout["receipt_digest"],
+        "source_gaussian_count": counts["source"],
+        "deleted_gaussian_count": counts["deleted_total"],
+        "retained_scene_gaussian_count": counts["retained_total"],
+        "deleted_index_set_sha256": outputs["deleted_source_indices"]["sha256"],
+        "retained_index_set_sha256": outputs["retained_source_indices"]["sha256"],
+        "retained_scene_ply_sha256": outputs["retained_scene_gaussians"]["sha256"],
+        "retained_rows_byte_exact": True,
+        "retained_order_matches_source": True,
+        "coverage_receipt_digest": coverage["receipt_digest"],
+        "coverage_qualified": True,
+        "uncovered_pixels_are_explicit_seam_candidates": True,
+        "broad_inpainting_authorized": False,
+        "learned_policy_outcomes_used": False,
+        "factual_gaussian_ownership_claimed": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return receipt
+
+
 def compile_articulated_excision_join(
     *,
     ownership_receipt: Mapping[str, Any],
@@ -149,12 +274,21 @@ def compile_articulated_excision_join(
         error="articulated_excision_join_ownership_receipt_digest_invalid",
         errors=errors,
     )
+    coverage_conditioned_ownership = bool(
+        ownership.get("schema_version")
+        == COVERAGE_CONDITIONED_CUTOUT_SCHEMA_VERSION
+    )
     if ownership:
-        for field in (
-            "owned_index_set_sha256",
-            "ambiguous_index_set_sha256",
-            "retained_scene_ply_sha256",
-        ):
+        required_digest_fields = (
+            ("deleted_index_set_sha256", "retained_scene_ply_sha256")
+            if coverage_conditioned_ownership
+            else (
+                "owned_index_set_sha256",
+                "ambiguous_index_set_sha256",
+                "retained_scene_ply_sha256",
+            )
+        )
+        for field in required_digest_fields:
             if not _sha256_field(ownership.get(field)):
                 errors.append(
                     f"articulated_excision_join_ownership_field_invalid:{field}"
@@ -170,7 +304,18 @@ def compile_articulated_excision_join(
             or not 0 < retained_count <= source_count
         ):
             errors.append("articulated_excision_join_ownership_counts_invalid")
-        if ownership.get("heldout_audit_passed") is not True:
+        if coverage_conditioned_ownership:
+            if (
+                ownership.get("status") != "coverage_conditioned_cutout_admitted"
+                or ownership.get("coverage_qualified") is not True
+                or ownership.get("retained_rows_byte_exact") is not True
+                or ownership.get("learned_policy_outcomes_used") is not False
+                or ownership.get("factual_gaussian_ownership_claimed") is not False
+            ):
+                errors.append(
+                    "articulated_excision_join_coverage_conditioned_cutout_invalid"
+                )
+        elif ownership.get("heldout_audit_passed") is not True:
             errors.append("articulated_excision_join_heldout_audit_not_passed")
 
     removal = _canonical(
@@ -338,6 +483,12 @@ def compile_articulated_excision_join(
                 if residual_total == 0
                 else "narrow_mask_contained_seam_repair_only"
             )
+        if coverage_conditioned_ownership and ownership.get(
+            "coverage_receipt_digest"
+        ) != coverage.get("receipt_digest"):
+            errors.append(
+                "articulated_excision_join_cutout_coverage_binding_mismatch"
+            )
 
     if errors:
         raise ArticulatedExcisionJoinError(errors)
@@ -348,8 +499,10 @@ def compile_articulated_excision_join(
         "inpainting_policy": inpainting_policy,
         "bindings": {
             "ownership_receipt_digest": ownership.get("receipt_digest"),
+            "cutout_method": ownership.get("cutout_method", "three_way_ownership"),
             "owned_index_set_sha256": ownership.get("owned_index_set_sha256"),
             "ambiguous_index_set_sha256": ownership.get("ambiguous_index_set_sha256"),
+            "deleted_index_set_sha256": ownership.get("deleted_index_set_sha256"),
             "retained_scene_ply_sha256": ownership.get("retained_scene_ply_sha256"),
             "collider_removal_receipt_digest": removal.get("receipt_digest"),
             "removed_prim_path": removal.get("removed_prim_path"),
@@ -377,6 +530,16 @@ def compile_articulated_excision_join(
         decision, digest_field="receipt_digest"
     )
     return decision
+
+
+__all__ = [
+    "ArticulatedExcisionJoinError",
+    "COVERAGE_CONDITIONED_CUTOUT_SCHEMA_VERSION",
+    "COVERAGE_SCHEMA_VERSION",
+    "JOIN_SCHEMA_VERSION",
+    "compile_articulated_excision_join",
+    "compile_coverage_conditioned_cutout_receipt",
+]
 
 
 __all__ = [

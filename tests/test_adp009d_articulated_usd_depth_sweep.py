@@ -17,6 +17,7 @@ from blueprint_pipeline.articulated_usd_depth_sweep import (
     materialize_articulated_usd_depth_sweep,
     materialize_reference_hybrid_review,
     materialize_source_layer_replacement_coverage_audit,
+    materialize_target_core_replacement_coverage_audit,
     rasterize_triangle_depth,
     rotate_triangles_about_axis,
 )
@@ -290,3 +291,76 @@ def test_reference_hybrid_review_changes_only_actual_usd_silhouette(
     assert receipt["cell_count"] == 1
     assert len(receipt["contact_sheets"]) == 1
     assert receipt["manifest_digest"].startswith("sha256:")
+
+
+@pytest.mark.parametrize("scene_id", ["840313", "840796"])
+def test_target_core_coverage_uses_actual_usd_depth_for_both_fixtures(
+    tmp_path: Path, scene_id: str
+) -> None:
+    usd = _fixture_usd(tmp_path / "fixture.usda")
+    depth_root = tmp_path / "depth"
+    materialize_articulated_usd_depth_sweep(
+        usd_path=usd,
+        cameras=[_camera()],
+        door_angles_deg=[0.0],
+        moving_link_path="/Asset/door",
+        hinge_origin_asset_m=[0.0, 0.0, 0.0],
+        hinge_axis_asset=[0.0, 0.0, 1.0],
+        T_world_asset=np.eye(4).tolist(),
+        output_root=depth_root,
+        resolution_scale=1.0,
+    )
+    depth = np.load(depth_root / "replacement_depth_sweep.npy")[0]
+    target = (np.isfinite(depth) & (depth > 0.0)).astype(np.uint8) * 255
+    # One measured fringe pixel remains outside the replacement silhouette.
+    target[0, 0] = 255
+    mask = tmp_path / f"{scene_id}.target_core.png"
+    assert cv2.imwrite(str(mask), target)
+
+    receipt = materialize_target_core_replacement_coverage_audit(
+        target_core_mask_paths={"external": mask},
+        depth_sweep_manifest_path=depth_root
+        / "adp009b_articulated_usd_depth_sweep.v1.json",
+        output_root=tmp_path / "coverage",
+        maximum_uncovered_fraction=0.25,
+    )
+
+    assert receipt["schema_version"] == "articulated_excision_coverage.v1"
+    assert receipt["coverage_qualified"] is True
+    assert receipt["cells"][0]["residual_significant_pixels"] == 1
+    assert receipt["cells"][0]["outside_mask_changed_pixels"] == 0
+    assert receipt["residual_is_narrow_seam_candidate_not_inpainting_success"] is True
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    assert (tmp_path / "coverage/residual_target_core_seam_masks/external.png").is_file()
+
+
+def test_target_core_coverage_fails_closed_on_camera_mask_mismatch(
+    tmp_path: Path,
+) -> None:
+    usd = _fixture_usd(tmp_path / "fixture.usda")
+    depth_root = tmp_path / "depth"
+    materialize_articulated_usd_depth_sweep(
+        usd_path=usd,
+        cameras=[_camera()],
+        door_angles_deg=[0.0],
+        moving_link_path="/Asset/door",
+        hinge_origin_asset_m=[0.0, 0.0, 0.0],
+        hinge_axis_asset=[0.0, 0.0, 1.0],
+        T_world_asset=np.eye(4).tolist(),
+        output_root=depth_root,
+        resolution_scale=1.0,
+    )
+
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="target_core_coverage_camera_masks_mismatch",
+    ):
+        materialize_target_core_replacement_coverage_audit(
+            target_core_mask_paths={},
+            depth_sweep_manifest_path=depth_root
+            / "adp009b_articulated_usd_depth_sweep.v1.json",
+            output_root=tmp_path / "coverage",
+            maximum_uncovered_fraction=0.05,
+        )

@@ -9,6 +9,7 @@ from blueprint_pipeline.articulated_excision_join import (
     COVERAGE_SCHEMA_VERSION,
     JOIN_SCHEMA_VERSION,
     compile_articulated_excision_join,
+    compile_coverage_conditioned_cutout_receipt,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -130,6 +131,41 @@ def _coverage(
             "cells": cells,
             "maximum_residual_connected_component_pixels": 4,
             "maximum_protected_changed_pixels": 0,
+            "coverage_qualified": True,
+            "caller_asserted_coverage_accepted": False,
+            "rendered_pixels_changed_by_audit": False,
+            "receipt_digest": "",
+        },
+        "receipt_digest",
+    )
+
+
+def _bound_cutout() -> dict:
+    return _digest(
+        {
+            "schema_version": "adp009b_bound_index_union_candidate.v1",
+            "status": "bound_cutout_materialized_pending_coverage_and_seam_gates",
+            "counts": {
+                "source": 100,
+                "deleted_total": 10,
+                "retained_total": 90,
+            },
+            "outputs": {
+                "deleted_source_indices": {"sha256": "sha256:" + "3" * 64},
+                "retained_source_indices": {"sha256": "sha256:" + "4" * 64},
+                "retained_scene_gaussians": {"sha256": "sha256:" + "5" * 64},
+            },
+            "preservation": {
+                "retained_rows_byte_exact": True,
+                "retained_order_matches_source": True,
+                "retained_vertex_count": 90,
+                "source_vertex_count": 100,
+            },
+            "selection": {
+                "caller_asserted_coverage": False,
+                "heldout_pixels_used_to_select_indices": False,
+                "learned_policy_outcomes_used": False,
+            },
             "receipt_digest": "",
         },
         "receipt_digest",
@@ -169,6 +205,44 @@ def test_join_permits_only_narrow_contained_seam_repair() -> None:
 
     assert decision["status"] == "join_admitted"
     assert decision["inpainting_policy"] == "narrow_mask_contained_seam_repair_only"
+
+
+def test_join_accepts_coverage_conditioned_cutout_without_claiming_ownership() -> None:
+    coverage = _coverage(residual=3, contained=True)
+    cutout = compile_coverage_conditioned_cutout_receipt(
+        bound_cutout_candidate=_bound_cutout(),
+        coverage_receipt=coverage,
+    )
+
+    decision = _join(
+        ownership_receipt=cutout,
+        coverage_receipt=coverage,
+    )
+
+    assert cutout["factual_gaussian_ownership_claimed"] is False
+    assert cutout["broad_inpainting_authorized"] is False
+    assert decision["status"] == "join_admitted"
+    assert decision["inpainting_policy"] == "narrow_mask_contained_seam_repair_only"
+    assert decision["bindings"]["cutout_method"] == (
+        "byte_exact_deletion_plus_actual_usd_coverage"
+    )
+
+
+def test_coverage_conditioned_cutout_rejects_unqualified_coverage() -> None:
+    coverage = _coverage()
+    coverage["coverage_qualified"] = False
+    coverage["receipt_digest"] = canonical_digest(
+        coverage, digest_field="receipt_digest"
+    )
+
+    with pytest.raises(
+        ArticulatedExcisionJoinError,
+        match="coverage_conditioned_cutout_coverage_not_qualified",
+    ):
+        compile_coverage_conditioned_cutout_receipt(
+            bound_cutout_candidate=_bound_cutout(),
+            coverage_receipt=coverage,
+        )
 
 
 def test_join_blocks_uncontained_or_oversized_residue() -> None:
