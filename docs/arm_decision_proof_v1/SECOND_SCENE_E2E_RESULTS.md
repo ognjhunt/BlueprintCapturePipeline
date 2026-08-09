@@ -162,10 +162,11 @@ because no episode was admitted.
 | `e41483749` | Skip unretained Aura trajectory rendering. |
 | `a3eebc13e` | Derive Aura reference index from the released runtime camera order. |
 | `117bcb06b` | Retain and propagate Aura runtime reference-binding abstentions. |
-| terminal commit | Seal terminal manifests, results, media index, and the corrected next action. |
+| `cf75480a3` | Seal terminal manifests, results, media index, and the corrected next action. |
 
 Before every commit, the required focused repository gate and Ruff gate passed.
-The final verification result is recorded with the terminal commit.
+The terminal evidence gate passed 1,007 tests with 1 skipped and 9,150
+deselected in 103.90 seconds; Ruff passed over `src/` and `tests/`.
 
 ## Claim ledger
 
