@@ -1,0 +1,162 @@
+{
+  "schema_version": "adp009b_gaussian_excision_audit_preregistration.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009B",
+  "status": "frozen_before_excision_execution",
+  "scene": {
+    "publisher_scene_id": "840796",
+    "target_instance_id": "123",
+    "target_semantic_label": "refrigerator",
+    "source_revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+    "collision_revision": "3ba75cc7887b62bf84211d5db08adfa64d691597"
+  },
+  "authoritative_external_freeze": {
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/gaussian_excision/840796_v2/freeze/adp009b_gaussian_excision_audit_freeze.v1.json",
+    "size_bytes": 15117,
+    "sha256": "sha256:e3ca233df801af14e3949ede38d8bc6a42333af89239e98a7d7a156afddc4796",
+    "freeze_digest": "sha256:2ef5adba73b9b09089450bbeee0ff695977155365130c1e9584e2070c49750aa"
+  },
+  "inputs": {
+    "source_standard_splat": {
+      "size_bytes": 140106417,
+      "sha256": "sha256:a8dd5baebb98d03e184ead9f352b83a44e248a175103e0bf180c97a07be73a34"
+    },
+    "source_collision": {
+      "size_bytes": 23988263,
+      "sha256": "sha256:7bfc6e4b6909f7057fa1983ac228e5d7511d7053745d8b6f467aecfea0c7194e"
+    },
+    "camera_contract": {
+      "size_bytes": 3145,
+      "sha256": "sha256:0154d9f0c217e9ca9334c80f7a54537f7c3617371c90a3af9bc6e3c5d5cc3b03"
+    },
+    "source_gaussian_count": 593665,
+    "target_collision_prim_path": "/Root/ZC2DFJJVAIJFUPTUJQ888888",
+    "meters_per_unit": 1.0,
+    "up_axis": "Z",
+    "interiorgs_to_sage_transform": [
+      [1.0, 0.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0, 0.0],
+      [0.0, 0.0, 1.0, 0.0],
+      [0.0, 0.0, 0.0, 1.0]
+    ]
+  },
+  "camera_split": {
+    "method": "maximum_normalized_position_angle_and_quarter_scale_diversity.v1",
+    "calibration_camera_ids": [
+      "front_medium",
+      "front_working",
+      "left_translate",
+      "low_right",
+      "raised_left",
+      "right_translate"
+    ],
+    "heldout_camera_ids": ["far_left", "far_right"],
+    "selected_position_distance_m": 2.350531854709,
+    "selected_view_direction_distance_deg": 78.16219700532,
+    "selected_projected_target_fraction_distance": 0.02387714386,
+    "outcome_fields_accessed": false
+  },
+  "mask_method": {
+    "target_core": "exact_registered_sage_target_triangle_projection",
+    "uncertain": "historical_outer_mask_minus_registered_sage_target_core",
+    "protected": "outside_historical_outer_mask",
+    "renderer": "blueprint_deterministic_cpu_triangle_union_rasterizer.v1",
+    "supersample": 2,
+    "binary_threshold_8bit": 128,
+    "collision_mask_is_exact_appearance_silhouette": false,
+    "historical_outer_mask_is_final_ownership_authority": false
+  },
+  "mask_digests": {
+    "far_left": {
+      "target_core": "sha256:3225e44643acd03cf7379a12a0c44510095bc2b15d9a08fea14fb2928bf55392",
+      "uncertain": "sha256:70276795bbce9f7d928328f50ab71cc195b1ba4943247eb4854ddcb63ca0e3a0",
+      "protected": "sha256:527ee4e5180e8d88f8b2d50a64db6707d297b1b2bb1d68954f3c6b593854815e"
+    },
+    "far_right": {
+      "target_core": "sha256:433beb611265369284654e65aead2ac2f72928ae1c0b1c27454507fba583d1dc",
+      "uncertain": "sha256:7e760c588f729181cd5e6dfb3e775d23b3a89b0097457839b3577a641715ed80",
+      "protected": "sha256:2defa5b12e75cd5e6dedb915b189886af26e723cf8623408a973801f2226fbe5"
+    },
+    "front_medium": {
+      "target_core": "sha256:1bd9835ba38fcc3da8c6066e6be950944e37def5ec5e91270f8ddc291a9a4065",
+      "uncertain": "sha256:8fece1669a1c25f16bb643d0c88e504888ca4d8236fee4171e170a639f9a4b75",
+      "protected": "sha256:8af0c126be60b2e89877dbde1512303fcbe8960feb866f6b4b8946f8a2f9a732"
+    },
+    "front_working": {
+      "target_core": "sha256:b2fec605917414bea9aaca67bf57f200607c816737df22b3f262e5889388ccad",
+      "uncertain": "sha256:d405366c942ffd635f95907c7ab39ec73460939f07c7f265781ecb1b07c64c6f",
+      "protected": "sha256:13a5186fd37b8109fe6b6174fa8d6ab4d93252ee56529eaae44bf760695f5497"
+    },
+    "left_translate": {
+      "target_core": "sha256:f88a11dfddd82aa9f82700c41739b0f1f9e0c2e379b5567bdce9a5a84509e2ff",
+      "uncertain": "sha256:eba2b61fa2021b3da8458f11c946c0a9fb42e62bcb5ec62c16f23a4ddab0ccf5",
+      "protected": "sha256:41b150e73aad821b80e0521ebf24ff93d714b06f6078776a800d5d8982fb22ff"
+    },
+    "low_right": {
+      "target_core": "sha256:ce65280946d49a7f3e2c38933c4ff694a1f7f75603449c58a789c5466405e8f9",
+      "uncertain": "sha256:8064c3f6b169eb6cf65b81b78fca8c412ecb3d2c1866a9f126da8ba2d6e876c6",
+      "protected": "sha256:60bd15899c03bfd7944d7820a11058a7625952840423f2463f1737fc281d2caf"
+    },
+    "raised_left": {
+      "target_core": "sha256:e619c43ee9f39ec44d75c0516d49bcacb82226ae5e033c578250fd74fcd6c9b6",
+      "uncertain": "sha256:24c9b2e797b6c68a032276662f4585a42eafd3e9080be77df987238057f9e9d9",
+      "protected": "sha256:39d4ceb870b664f8e724e18f39d6e5494b2282e43e7678014f6b17cdb2024913"
+    },
+    "right_translate": {
+      "target_core": "sha256:7b9d7fefd06099d007e7d549babceda09540a936887278a1433643e5be1d6049",
+      "uncertain": "sha256:de2badf5a2bbf617fea10acc2c5910bbfc220c4658d7c94eb52477f1a6132d68",
+      "protected": "sha256:47bde432fa40b3d79fe9bf049e78af1c43435447c871343dc316adfc2fc7fbe7"
+    }
+  },
+  "contribution_method": {
+    "name": "FlashSplat",
+    "repository": "https://github.com/florinshen/FlashSplat",
+    "commit": "3e3b14786333bf0163ba1b8541e86a3765112d7d",
+    "rasterizer_repository": "https://github.com/florinshen/flashsplat-rasterization",
+    "rasterizer_commit": "189c483ffa33dd6d5661343ce496df0c6eb80a0c",
+    "contribution_semantics": "front_to_back_transmittance_times_alpha",
+    "source_modified": false,
+    "depth_anything_3_used": false
+  },
+  "policy": {
+    "minimum_per_view_contribution": 0.00392156862745098,
+    "owned_min_core_fraction": 0.98,
+    "retained_max_core_fraction": 0.2,
+    "minimum_core_camera_count": 2,
+    "maximum_protected_camera_count_for_owned": 0,
+    "minimum_geometry_score_owned": 0.5,
+    "geometry_sigma_extent": 3.0,
+    "geometry_margin_m": 0.02,
+    "neighbor_count": 12,
+    "neighbor_iterations": 4,
+    "neighbor_radius_m": 0.12,
+    "neighbor_blend": 0.35,
+    "graph_owned_min_score": 0.95,
+    "graph_retained_max_score": 0.2,
+    "heldout_significant_alpha_threshold": 0.00392156862745098,
+    "heldout_rasterization_band_pixels": 2,
+    "heldout_maximum_residual_connected_component_pixels": 4,
+    "heldout_maximum_protected_significant_pixels": 0,
+    "deterministic_repetitions": 2,
+    "contribution_quantization_decimals": 6
+  },
+  "historical_baseline": {
+    "method": "center_inside_registered_target_aabb",
+    "center_aabb_min_m": [
+      1.617248143733499,
+      1.1292180586542502,
+      2.441406195430318e-09
+    ],
+    "center_aabb_max_m": [
+      2.3311802562665007,
+      1.82921814134575,
+      1.6318699975585937
+    ],
+    "selected_gaussian_count": 3791,
+    "used_as_ground_truth": false,
+    "evaluated_with_identical_heldout_cameras_and_metrics": true
+  },
+  "replacement_usd_inserted": false,
+  "learned_policy_outcomes_observed": false,
+  "claim_ceiling": "frozen_public_scene_gaussian_excision_audit_inputs_not_excision_result"
+}
