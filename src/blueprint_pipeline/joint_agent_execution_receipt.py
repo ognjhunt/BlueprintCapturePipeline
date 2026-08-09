@@ -162,6 +162,21 @@ def materialize_joint_agent_execution_receipt(
         retained.append(_file_record(path, root, role=role))
     if observed_roles != set(REQUIRED_RETAINED_ARTIFACT_ROLES):
         raise JointAgentExecutionReceiptError(["joint_agent_retained_artifact_set_incomplete"])
+    retained_by_role = {row["role"]: row for row in retained}
+    expected_role_digests = {
+        "articulation_candidates": runtime.get("candidates_sha256"),
+        "candidate_bounds": runtime.get("candidate_bounds_sha256"),
+        "deterministic_articulation_review": runtime.get("review_receipt_sha256"),
+        "owned_core_rigged_asset": runtime.get("rigged_usdz_sha256"),
+    }
+    if any(
+        not isinstance(expected, str)
+        or retained_by_role[role]["sha256"] != expected
+        for role, expected in expected_role_digests.items()
+    ):
+        raise JointAgentExecutionReceiptError(
+            ["joint_agent_runtime_retained_artifact_cross_join_invalid"]
+        )
 
     authored_joint_paths = runtime.get("authored_joint_paths")
     if (
@@ -225,4 +240,3 @@ def materialize_joint_agent_execution_receipt(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
     return receipt
-

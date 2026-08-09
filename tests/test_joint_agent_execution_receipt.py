@@ -82,6 +82,20 @@ def _fixture(tmp_path: Path, *, scene_id: str, target_id: str) -> dict[str, Path
         "candidate_bounds_sha256": "sha256:" + "2" * 64,
         "review_receipt_sha256": "sha256:" + "3" * 64,
     }
+    runtime["candidates_sha256"] = next(
+        row["sha256"] for row in rows if row["role"] == "articulation_candidates"
+    )
+    runtime["candidate_bounds_sha256"] = next(
+        row["sha256"] for row in rows if row["role"] == "candidate_bounds"
+    )
+    runtime["review_receipt_sha256"] = next(
+        row["sha256"]
+        for row in rows
+        if row["role"] == "deterministic_articulation_review"
+    )
+    runtime["rigged_usdz_sha256"] = next(
+        row["sha256"] for row in rows if row["role"] == "owned_core_rigged_asset"
+    )
     runtime_path = runtime_root / "adp_joint_agent_result.json"
     _write(runtime_path, runtime)
     teardown = {"status": "completed", "continuing_spend_from_this_run": False}
@@ -165,6 +179,26 @@ def test_rejects_nonzero_provider_state(tmp_path: Path) -> None:
 
     with pytest.raises(
         JointAgentExecutionReceiptError, match="joint_agent_provider_run_not_completed"
+    ):
+        materialize_joint_agent_execution_receipt(
+            packet_path=paths["packet"],
+            bundle_receipt_path=paths["bundle"],
+            runtime_result_path=paths["runtime"],
+            run_result_path=paths["run"],
+            evidence_root=paths["evidence"],
+            repo_root=paths["repo"],
+        )
+
+
+def test_rejects_runtime_to_retained_review_digest_mismatch(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path, scene_id="840796", target_id="123")
+    runtime = json.loads(paths["runtime"].read_text(encoding="utf-8"))
+    runtime["review_receipt_sha256"] = "sha256:" + "0" * 64
+    _write(paths["runtime"], runtime)
+
+    with pytest.raises(
+        JointAgentExecutionReceiptError,
+        match="joint_agent_runtime_retained_artifact_cross_join_invalid",
     ):
         materialize_joint_agent_execution_receipt(
             packet_path=paths["packet"],
