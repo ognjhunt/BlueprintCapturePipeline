@@ -79,6 +79,120 @@ def retain_joint_agent_artifacts(
     return rows
 
 
+def retain_available_joint_agent_artifacts(
+    *,
+    output_root: Path,
+    artifacts: Mapping[str, Path],
+) -> list[dict[str, Any]]:
+    """Retain whichever construction artifacts exist on a failure path.
+
+    A blocked review or publication must still return the model topology
+    evidence that already exists, because only ``runtime_output`` survives the
+    provider teardown ZIP. Missing files are skipped rather than raised so a
+    partial failure cannot also destroy the retention of its own evidence.
+    """
+
+    present = {
+        role: source.resolve()
+        for role, source in artifacts.items()
+        if not source.resolve().is_symlink()
+        and source.resolve().is_file()
+        and source.resolve().stat().st_size > 0
+    }
+    if not present:
+        return []
+    return retain_joint_agent_artifacts(output_root=output_root, artifacts=present)
+
+
+def _load_optimize_usd_local():
+    from world_understanding.functions.graphics.scene_optimizer_local import (
+        optimize_usd_local,
+    )
+
+    return optimize_usd_local
+
+
+def scene_optimizer_probe(*, output_root: Path) -> list[str]:
+    """Run one tiny splitMeshes optimization and retain its real diagnostics.
+
+    The released OptimizeUSDTask quarantines every exception into the bare
+    string "USD optimization failed" (v10 retained exactly that and nothing
+    else). Calling the underlying scene_optimizer_local entrypoint directly
+    surfaces the subprocess's stdout/stderr, which this probe retains in
+    scene_optimizer_probe.log before any paid model work begins.
+    """
+
+    import tempfile
+
+    log = output_root / "scene_optimizer_probe.log"
+    try:
+        optimize_usd_local = _load_optimize_usd_local()
+        from pxr import Sdf as _Sdf, Usd as _Usd, UsdGeom as _UsdGeom
+
+        with tempfile.TemporaryDirectory(prefix="so_probe_") as tmp:
+            probe_source = Path(tmp) / "probe.usda"
+            stage = _Usd.Stage.CreateNew(str(probe_source))
+            _UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            _UsdGeom.SetStageUpAxis(stage, _UsdGeom.Tokens.z)
+            root = _UsdGeom.Xform.Define(stage, "/Probe")
+            stage.SetDefaultPrim(root.GetPrim())
+            mesh = _UsdGeom.Mesh.Define(stage, "/Probe/mesh")
+            mesh.CreatePointsAttr(
+                [(0, 0, 0), (1, 0, 0), (0, 1, 0), (2, 0, 0), (3, 0, 0), (2, 1, 0)]
+            )
+            mesh.CreateFaceVertexCountsAttr([3, 3])
+            mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3, 4, 5])
+            for index in (0, 1):
+                subset = _UsdGeom.Subset.Define(
+                    stage, f"/Probe/mesh/component_{index}"
+                )
+                subset.CreateElementTypeAttr().Set(_UsdGeom.Tokens.face)
+                subset.CreateIndicesAttr().Set([index])
+                subset.CreateFamilyNameAttr().Set("blueprint_connected_components")
+                subset.GetPrim().SetMetadata(
+                    "customData", {"probe": True}
+                )
+            del _Sdf
+            stage.GetRootLayer().Save()
+            result = optimize_usd_local(
+                probe_source,
+                Path(tmp) / "probe_optimized.usdc",
+                {
+                    "scene_optimizer_settings": {
+                        "enable_deinstance": False,
+                        "enable_split_meshes": True,
+                        "enable_deduplicate": False,
+                    }
+                },
+            )
+        result_error = str((result or {}).get("error") or "")
+        operations = list((result or {}).get("operations_executed") or [])
+        if result_error or not operations:
+            # v11 proved the worker can return an error payload without the
+            # launcher raising; a probe result carrying an error or zero
+            # executed operations is a failure, never a pass.
+            log.write_text(
+                "scene_optimizer_probe_failed\n"
+                + json.dumps(result, indent=2, sort_keys=True, default=str)
+                + "\n",
+                encoding="utf-8",
+            )
+            return ["joint_agent_scene_optimizer_probe_failed"]
+        log.write_text(
+            "scene_optimizer_probe_ok\n"
+            + json.dumps(result, indent=2, sort_keys=True, default=str)
+            + "\n",
+            encoding="utf-8",
+        )
+        return []
+    except Exception as exc:
+        log.write_text(
+            f"scene_optimizer_probe_failed\n{type(exc).__name__}: {exc}\n",
+            encoding="utf-8",
+        )
+        return ["joint_agent_scene_optimizer_probe_failed"]
+
+
 def _run(command: list[str], log_name: str) -> dict[str, Any]:
     started = dt.datetime.now(dt.timezone.utc)
     process = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=7200)
@@ -158,6 +272,9 @@ def main() -> int:
             raise ValueError("joint_agent_review_contract_digest_invalid")
         if not os.environ.get("NVIDIA_API_KEY"):
             raise ValueError("joint_agent_nvidia_api_key_missing")
+        probe_blockers = scene_optimizer_probe(output_root=OUTPUT)
+        if probe_blockers:
+            return _result(probe_blockers)
         config_path = ROOT / "joint_agent.yaml"
         python = str(ROOT / "content_agents_source/.venv/bin/python")
         cli = [python, "-m", "joint_agent.cli", "run", str(config_path)]
@@ -175,7 +292,24 @@ def main() -> int:
                 joint_agent_inference_executed=False,
             )
         candidates = _load(candidates_path)
-        bounds = _candidate_bounds(optimized_path, candidates)
+        partial_artifacts: dict[str, Path] = {
+            "articulation_candidates": candidates_path,
+            "optimized_source": optimized_path,
+        }
+        partial_rows = retain_available_joint_agent_artifacts(
+            output_root=OUTPUT, artifacts=partial_artifacts
+        )
+        try:
+            bounds = _candidate_bounds(optimized_path, candidates)
+        except Exception as exc:
+            return _result(
+                [f"joint_agent_candidate_bounds_measurement_failed:{type(exc).__name__}"],
+                dry_run=dry,
+                inference=inference,
+                joint_agent_inference_executed=True,
+                candidates_sha256=_sha256(candidates_path),
+                retained_artifacts=partial_rows,
+            )
         (OUTPUT / "joint_candidate_bounds.json").write_text(
             json.dumps(bounds, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -193,6 +327,7 @@ def main() -> int:
                 joint_agent_inference_executed=True,
                 candidates_sha256=_sha256(candidates_path),
                 candidate_bounds_sha256=_sha256(OUTPUT / "joint_candidate_bounds.json"),
+                retained_artifacts=partial_rows,
             )
         review_path = OUTPUT / "joint_agent_articulation_review.json"
         review_path.write_text(json.dumps(review, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -203,6 +338,17 @@ def main() -> int:
         rigged = ROOT / "runtime_output/joint_agent_work/joint_rigger/rigged.usdz"
         if publication["returncode"] != 0 or not rigged.is_file():
             blockers.append("joint_agent_owned_core_publication_failed")
+            partial_rows = retain_available_joint_agent_artifacts(
+                output_root=OUTPUT,
+                artifacts={
+                    **partial_artifacts,
+                    "owned_core_rigged_asset": rigged,
+                    "owned_core_diagnostics": ROOT
+                    / "runtime_output/joint_agent_work/joint_rigger/joint_rigger_diagnostics.json",
+                    "owned_core_validation": ROOT
+                    / "runtime_output/joint_agent_work/joint_rigger/joint_rigger_validation.json",
+                },
+            )
             return _result(
                 blockers,
                 dry_run=dry,
@@ -211,6 +357,7 @@ def main() -> int:
                 joint_agent_inference_executed=True,
                 owned_core_publication_executed=False,
                 review_receipt_sha256=_sha256(review_path),
+                retained_artifacts=partial_rows,
             )
         stage = Usd.Stage.Open(str(rigged))
         joint_paths = [

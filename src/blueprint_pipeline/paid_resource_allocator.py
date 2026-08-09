@@ -1698,6 +1698,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("maximum_concurrent_paid_instances") != 2
                 ):
                     blockers.append("adp_joint_agent_concurrent_authority_binding_invalid")
+            joint_avoidlist_path: Path | None = None
+            joint_avoidlist_sha256: str | None = None
+            if args.adp_machine_avoidlist:
+                joint_avoidlist_path = (
+                    Path(args.adp_machine_avoidlist).expanduser().resolve()
+                )
+                try:
+                    joint_avoidlist = _load(joint_avoidlist_path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("adp_joint_agent_machine_avoidlist_invalid")
+                else:
+                    if (
+                        joint_avoidlist.get("schema_version")
+                        != "vast_machine_avoidlist.v1"
+                        or not isinstance(joint_avoidlist.get("machine_ids"), list)
+                        or any(
+                            not isinstance(machine_id, int) or machine_id <= 0
+                            for machine_id in joint_avoidlist["machine_ids"]
+                        )
+                    ):
+                        blockers.append("adp_joint_agent_machine_avoidlist_invalid")
+                    joint_avoidlist_sha256 = (
+                        "sha256:"
+                        + hashlib.sha256(joint_avoidlist_path.read_bytes()).hexdigest()
+                    )
             receipt_sha256 = (
                 "sha256:" + hashlib.sha256(receipt_path.read_bytes()).hexdigest()
                 if receipt_path and receipt_path.is_file()
@@ -1728,6 +1753,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                 "allowed_active_vast_instance_ids": allowed_active_instance_ids,
+                "machine_avoidlist_sha256": joint_avoidlist_sha256,
                 "retry_cap": 0,
             }
             allocation_binding_digest = (
@@ -1796,6 +1822,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     public_image=ADP_JOINT_AGENT_IMAGE,
                     allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                    machine_avoidlist_path=joint_avoidlist_path,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

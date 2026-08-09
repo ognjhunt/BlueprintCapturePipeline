@@ -1,0 +1,674 @@
+{
+  "blockers": [],
+  "claim_boundary": {
+    "analytic_projection_not_rendered_frames": true,
+    "lossless_media_binding_owned_by_episode_contract": true,
+    "native_render_verification_required": true,
+    "overview_is_review_only_and_never_scores": true,
+    "physical_equivalence_proven": false
+  },
+  "door_state_angles_degrees": [
+    0.0,
+    5.0,
+    10.0,
+    15.0,
+    20.0,
+    25.0,
+    30.0,
+    35.0,
+    40.0,
+    45.0,
+    50.0,
+    55.0
+  ],
+  "external_camera": {
+    "aim_policy": "fixed_aim_at_closed_handle_midpoint",
+    "camera_id": "external_x1.7_y2.3",
+    "minimum_handle_pixels": 2011.039,
+    "per_state_visibility": [
+      {
+        "angle_degrees": 0.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2011.039,
+        "handle_world_m": [
+          2.0937,
+          1.8068,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 5.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2214.972,
+        "handle_world_m": [
+          2.093841,
+          1.848411,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 10.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2442.657,
+        "handle_world_m": [
+          2.090354,
+          1.889876,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 15.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2696.209,
+        "handle_world_m": [
+          2.083268,
+          1.930879,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 20.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2977.177,
+        "handle_world_m": [
+          2.072634,
+          1.971108,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 25.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 3285.995,
+        "handle_world_m": [
+          2.058534,
+          2.010258,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 30.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 3621.143,
+        "handle_world_m": [
+          2.041077,
+          2.048029,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 35.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 3977.996,
+        "handle_world_m": [
+          2.020393,
+          2.084136,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 40.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 4347.356,
+        "handle_world_m": [
+          1.996642,
+          2.118302,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 45.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 4713.864,
+        "handle_world_m": [
+          1.970003,
+          2.150268,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 50.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 5054.753,
+        "handle_world_m": [
+          1.940679,
+          2.179791,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 55.0,
+        "camera_position_world_m": [
+          1.7,
+          2.3,
+          1.45
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 5339.825,
+        "handle_world_m": [
+          1.908894,
+          2.206646,
+          1.0225
+        ],
+        "moving_door_visible": true
+      }
+    ],
+    "policy_input": true,
+    "position_world_m": [
+      1.7,
+      2.3,
+      1.45
+    ],
+    "role": "policy_input",
+    "scores_episode": false
+  },
+  "franka_base_xy_world_m": [
+    1.75,
+    1.99
+  ],
+  "handle_arc_radius_m": 0.476979,
+  "handle_closed_midpoint_world_m": [
+    2.0937,
+    1.8068,
+    1.0225
+  ],
+  "hinge_origin_world_m": [
+    1.617248144,
+    1.829218141,
+    1.2859256235
+  ],
+  "image": {
+    "frame_margin_fraction": 0.05,
+    "height": 180,
+    "minimum_handle_pixels": 24,
+    "vertical_fov_degrees": 55.0,
+    "width": 320
+  },
+  "overview_camera": {
+    "aim_policy": "fixed_aim_at_base_handle_midpoint_for_human_review",
+    "camera_id": "overview_wide",
+    "handle_contract_applied": false,
+    "per_state_visibility": [
+      {
+        "angle_degrees": 0.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 270.274,
+        "handle_world_m": [
+          2.0937,
+          1.8068,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 5.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 279.015,
+        "handle_world_m": [
+          2.093841,
+          1.848411,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 10.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 287.06,
+        "handle_world_m": [
+          2.090354,
+          1.889876,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 15.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 294.414,
+        "handle_world_m": [
+          2.083268,
+          1.930879,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 20.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 300.985,
+        "handle_world_m": [
+          2.072634,
+          1.971108,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 25.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 306.386,
+        "handle_world_m": [
+          2.058534,
+          2.010258,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 30.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 310.468,
+        "handle_world_m": [
+          2.041077,
+          2.048029,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 35.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 313.108,
+        "handle_world_m": [
+          2.020393,
+          2.084136,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 40.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 314.224,
+        "handle_world_m": [
+          1.996642,
+          2.118302,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 45.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 313.789,
+        "handle_world_m": [
+          1.970003,
+          2.150268,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 50.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 312.547,
+        "handle_world_m": [
+          1.940679,
+          2.179791,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 55.0,
+        "camera_position_world_m": [
+          3.05,
+          3.3,
+          1.9
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 309.805,
+        "handle_world_m": [
+          1.908894,
+          2.206646,
+          1.0225
+        ],
+        "moving_door_visible": true
+      }
+    ],
+    "policy_input": false,
+    "position_world_m": [
+      3.05,
+      3.3,
+      1.9
+    ],
+    "requirement": "moving_door_visible_at_every_state_for_human_review",
+    "role": "review_only",
+    "scores_episode": false
+  },
+  "receipt_digest": "sha256:cd958b8d46510059b3a12bca317c3aaf479da99255bfe691d99fbe27d0c212c9",
+  "rejected_candidates": [],
+  "schema_version": "articulated_task_camera_resolution.v1",
+  "status": "cameras_locally_resolved",
+  "wrist_camera": {
+    "aim_policy": "rigid_wrist_mount_tracking_the_moving_handle",
+    "camera_id": "wrist",
+    "grasp_region_half_extents_m": [
+      0.03,
+      0.022,
+      0.026
+    ],
+    "height_offset_m": 0.1,
+    "minimum_handle_pixels": 2310.158,
+    "per_state_visibility": [
+      {
+        "angle_degrees": 0.0,
+        "camera_position_world_m": [
+          2.0937,
+          2.0268,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2310.158,
+        "handle_world_m": [
+          2.0937,
+          1.8068,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 5.0,
+        "camera_position_world_m": [
+          2.074667,
+          2.067574,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2374.592,
+        "handle_world_m": [
+          2.093841,
+          1.848411,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 10.0,
+        "camera_position_world_m": [
+          2.052152,
+          2.106533,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2505.735,
+        "handle_world_m": [
+          2.090354,
+          1.889876,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 15.0,
+        "camera_position_world_m": [
+          2.026327,
+          2.143382,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2669.106,
+        "handle_world_m": [
+          2.083268,
+          1.930879,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 20.0,
+        "camera_position_world_m": [
+          1.997389,
+          2.17784,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2810.202,
+        "handle_world_m": [
+          2.072634,
+          1.971108,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 25.0,
+        "camera_position_world_m": [
+          1.965558,
+          2.209645,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2926.023,
+        "handle_world_m": [
+          2.058534,
+          2.010258,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 30.0,
+        "camera_position_world_m": [
+          1.931077,
+          2.238555,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 3013.981,
+        "handle_world_m": [
+          2.041077,
+          2.048029,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 35.0,
+        "camera_position_world_m": [
+          1.894206,
+          2.264349,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 3071.97,
+        "handle_world_m": [
+          2.020393,
+          2.084136,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 40.0,
+        "camera_position_world_m": [
+          1.855228,
+          2.286832,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 3098.434,
+        "handle_world_m": [
+          1.996642,
+          2.118302,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 45.0,
+        "camera_position_world_m": [
+          1.814439,
+          2.305832,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 3092.407,
+        "handle_world_m": [
+          1.970003,
+          2.150268,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 50.0,
+        "camera_position_world_m": [
+          1.772149,
+          2.321205,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 3053.562,
+        "handle_world_m": [
+          1.940679,
+          2.179791,
+          1.0225
+        ],
+        "moving_door_visible": true
+      },
+      {
+        "angle_degrees": 55.0,
+        "camera_position_world_m": [
+          1.72868,
+          2.332833,
+          1.1225
+        ],
+        "handle_inside_frame_margin": true,
+        "handle_pixels": 2982.226,
+        "handle_world_m": [
+          1.908894,
+          2.206646,
+          1.0225
+        ],
+        "moving_door_visible": true
+      }
+    ],
+    "policy_input": true,
+    "role": "policy_input",
+    "scores_episode": false,
+    "standoff_m": 0.22
+  }
+}

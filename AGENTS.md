@@ -133,6 +133,18 @@ dependent step as blocked instead of guessing.
   canonical secret integration, and any spend or upload has the required
   authority. Third-party dataset nonredistribution terms still fail closed;
   user preference cannot waive a publisher's license or another owner's rights.
+- Agents whose job is creating or iterating CAD/SimReady objects must use the
+  harness-installed CAD skill set: `cad`, `cad-viewer`, `urdf`, `sdf`, `srdf`,
+  `step-parts`, `implicit-cad`, `dxf`, `gcode`
+  (earthtojake/text-to-cad @ `4fd71ea7`, MIT) and `multi-agent-cad`
+  (Pan-Chera/Multi-Agent-CAD @ `42737c40`, MIT, build123d). Pinned clones and
+  the usage contract live in
+  [`docs/cad_authoring_skills_harness_2026-08-09.md`](docs/cad_authoring_skills_harness_2026-08-09.md).
+  Their outputs are `development_only` candidate geometry: retain
+  script+parameters+kernel+export together, pass the independent deterministic
+  validators, never promote generated geometry over observed source-derived
+  geometry, and require a component admission packet before any ADP evidence
+  use.
 - Choose the partner and its actual stack before choosing a permanent robot,
   simulator, provider, or reconstruction backend. Build from scratch as little
   as possible and use thin adapters.

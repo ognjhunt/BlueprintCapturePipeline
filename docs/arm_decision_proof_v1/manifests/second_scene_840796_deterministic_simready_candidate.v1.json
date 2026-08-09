@@ -1,0 +1,493 @@
+{
+  "adp_item": "ADP-009D",
+  "authoring": {
+    "fixed_base_required_at_insertion": true,
+    "generated_interior": {
+      "inset_m": 0.04,
+      "prim_path": "/Asset/cabinet/generated_interior",
+      "style": "solid_inset_block_v1"
+    },
+    "handle": {
+      "minimum_protrusion_m": 0.012,
+      "prim_path": "/Asset/upper_door/component_004",
+      "source": "observed_source_component_group"
+    },
+    "output_usd_sha256": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1",
+    "receipt_digest": "sha256:c060aa5caff510ae9c17e843870fab8a0acd8ecce1abe8a28a6b14bfa448f4c8",
+    "status": "simready_candidate_statically_admitted",
+    "support_link_prim_path": "/Asset/cabinet",
+    "task_door_link_prim_path": "/Asset/upper_door",
+    "task_joint_prim_path": "/Asset/joints/upper_door_hinge"
+  },
+  "claim_boundary": {
+    "generated_geometry_is_observed_site_truth": false,
+    "joint_agent_output": false,
+    "native_simulator_qualified": false,
+    "physical_equivalence_proven": false,
+    "statically_admitted_candidate_only": true
+  },
+  "comparison_arm_note": "Joint Agent owned-core remains the protocol topology qualifier; this is the evidence-ladder deterministic parametric CAD comparison arm built from the digest-bound source components, frozen seam/hinge/limits, and the sealed handle-band observation.",
+  "construction_path": "deterministic_parametric_from_frozen_observations",
+  "derived_topology": {
+    "component_partition": [
+      {
+        "aabb_max": [
+          0.355462,
+          0.306317,
+          1.632497
+        ],
+        "aabb_min": [
+          -0.357538,
+          0.19891,
+          0.920497
+        ],
+        "component": "component_000",
+        "link": "upper_door",
+        "role": "door_slab"
+      },
+      {
+        "aabb_max": [
+          0.343462,
+          0.19891,
+          1.620497
+        ],
+        "aabb_min": [
+          -0.345538,
+          0.178412,
+          0.933497
+        ],
+        "component": "component_001",
+        "link": "upper_door",
+        "role": "door_slab"
+      },
+      {
+        "aabb_max": [
+          0.355462,
+          0.306317,
+          0.917497
+        ],
+        "aabb_min": [
+          -0.358538,
+          0.19891,
+          0.032497
+        ],
+        "component": "component_002",
+        "link": "lower_door",
+        "role": "door_slab"
+      },
+      {
+        "aabb_max": [
+          0.343462,
+          0.19891,
+          0.903497
+        ],
+        "aabb_min": [
+          -0.346538,
+          0.178412,
+          0.044497
+        ],
+        "component": "component_003",
+        "link": "lower_door",
+        "role": "door_slab"
+      },
+      {
+        "aabb_max": [
+          0.242462,
+          0.348951,
+          1.041497
+        ],
+        "aabb_min": [
+          -0.002538,
+          0.306317,
+          1.004497
+        ],
+        "component": "component_004",
+        "link": "upper_door",
+        "role": "handle_hardware"
+      },
+      {
+        "aabb_max": [
+          0.242462,
+          0.348951,
+          0.834497
+        ],
+        "aabb_min": [
+          -0.002538,
+          0.306317,
+          0.797497
+        ],
+        "component": "component_005",
+        "link": "lower_door",
+        "role": "handle_hardware"
+      },
+      {
+        "aabb_max": [
+          0.277462,
+          0.348951,
+          0.831497
+        ],
+        "aabb_min": [
+          0.183462,
+          0.342392,
+          0.801497
+        ],
+        "component": "component_006",
+        "link": "lower_door",
+        "role": "handle_hardware"
+      },
+      {
+        "aabb_max": [
+          0.277462,
+          0.348951,
+          1.037497
+        ],
+        "aabb_min": [
+          0.182462,
+          0.342392,
+          1.007497
+        ],
+        "component": "component_007",
+        "link": "upper_door",
+        "role": "handle_hardware"
+      },
+      {
+        "aabb_max": [
+          0.355462,
+          0.177593,
+          1.632497
+        ],
+        "aabb_min": [
+          -0.357538,
+          -0.350422,
+          0.022497
+        ],
+        "component": "component_008",
+        "link": "cabinet",
+        "role": "cabinet_shell"
+      },
+      {
+        "aabb_max": [
+          -0.346538,
+          0.192351,
+          1.019497
+        ],
+        "aabb_min": [
+          -0.353538,
+          0.186611,
+          0.999497
+        ],
+        "component": "component_009",
+        "link": "upper_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.346538,
+          0.192351,
+          1.513497
+        ],
+        "aabb_min": [
+          -0.353538,
+          0.186611,
+          1.493497
+        ],
+        "component": "component_010",
+        "link": "upper_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.346538,
+          0.192351,
+          0.834497
+        ],
+        "aabb_min": [
+          -0.353538,
+          0.185791,
+          0.814497
+        ],
+        "component": "component_011",
+        "link": "lower_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.343538,
+          0.19481,
+          1.008497
+        ],
+        "aabb_min": [
+          -0.356538,
+          0.176773,
+          1.002497
+        ],
+        "component": "component_012",
+        "link": "upper_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          0.277462,
+          0.343212,
+          1.038497
+        ],
+        "aabb_min": [
+          0.183462,
+          0.306317,
+          1.006497
+        ],
+        "component": "component_013",
+        "link": "upper_door",
+        "role": "handle_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.343538,
+          0.19481,
+          0.824497
+        ],
+        "aabb_min": [
+          -0.356538,
+          0.176773,
+          0.818497
+        ],
+        "component": "component_014",
+        "link": "lower_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          0.277462,
+          0.343212,
+          0.832497
+        ],
+        "aabb_min": [
+          0.183462,
+          0.306317,
+          0.800497
+        ],
+        "component": "component_015",
+        "link": "lower_door",
+        "role": "handle_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.343538,
+          0.20137,
+          0.831497
+        ],
+        "aabb_min": [
+          -0.356538,
+          0.184152,
+          0.824497
+        ],
+        "component": "component_016",
+        "link": "lower_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.343538,
+          0.20137,
+          1.015497
+        ],
+        "aabb_min": [
+          -0.356538,
+          0.184152,
+          1.009497
+        ],
+        "component": "component_017",
+        "link": "upper_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.343538,
+          0.19481,
+          1.502497
+        ],
+        "aabb_min": [
+          -0.356538,
+          0.176773,
+          1.496497
+        ],
+        "component": "component_018",
+        "link": "upper_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.343538,
+          0.20137,
+          1.509497
+        ],
+        "aabb_min": [
+          -0.356538,
+          0.184152,
+          1.503497
+        ],
+        "component": "component_019",
+        "link": "upper_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.298538,
+          -0.299589,
+          0.021497
+        ],
+        "aabb_min": [
+          -0.338538,
+          -0.332384,
+          0.001497
+        ],
+        "component": "component_020",
+        "link": "cabinet",
+        "role": "cabinet_shell"
+      },
+      {
+        "aabb_max": [
+          -0.298538,
+          0.162014,
+          0.021497
+        ],
+        "aabb_min": [
+          -0.339538,
+          0.129218,
+          0.001497
+        ],
+        "component": "component_021",
+        "link": "cabinet",
+        "role": "cabinet_shell"
+      },
+      {
+        "aabb_max": [
+          0.336462,
+          0.162014,
+          0.021497
+        ],
+        "aabb_min": [
+          0.296462,
+          0.128399,
+          0.001497
+        ],
+        "component": "component_022",
+        "link": "cabinet",
+        "role": "cabinet_shell"
+      },
+      {
+        "aabb_max": [
+          0.336462,
+          -0.299588,
+          0.021497
+        ],
+        "aabb_min": [
+          0.296462,
+          -0.332384,
+          0.001497
+        ],
+        "component": "component_023",
+        "link": "cabinet",
+        "role": "cabinet_shell"
+      },
+      {
+        "aabb_max": [
+          0.352462,
+          0.181692,
+          0.143497
+        ],
+        "aabb_min": [
+          -0.354538,
+          0.177592,
+          0.025497
+        ],
+        "component": "component_024",
+        "link": "cabinet",
+        "role": "cabinet_shell"
+      },
+      {
+        "aabb_max": [
+          -0.343538,
+          0.20137,
+          0.168497
+        ],
+        "aabb_min": [
+          -0.356538,
+          0.183332,
+          0.162497
+        ],
+        "component": "component_025",
+        "link": "lower_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.343538,
+          0.19481,
+          0.161497
+        ],
+        "aabb_min": [
+          -0.356538,
+          0.176773,
+          0.155497
+        ],
+        "component": "component_026",
+        "link": "lower_door",
+        "role": "hinge_hardware"
+      },
+      {
+        "aabb_max": [
+          -0.346538,
+          0.192351,
+          0.171497
+        ],
+        "aabb_min": [
+          -0.353538,
+          0.185791,
+          0.153497
+        ],
+        "component": "component_027",
+        "link": "lower_door",
+        "role": "hinge_hardware"
+      }
+    ],
+    "door_z_intervals_m": {
+      "lower_door": [
+        0.032497,
+        0.917497
+      ],
+      "upper_door": [
+        0.920497,
+        1.632497
+      ]
+    },
+    "output_usd_sha256": "sha256:63c0feef2f03a99a43f75f0692b7487f5049e912d8379b1411173af58f396a49",
+    "partition_parameters": {
+      "door_back_plane_y_m": 0.176,
+      "door_face_plane_y_m": 0.32,
+      "hinge_column_x_maximum_m": -0.3385380911827087,
+      "hinge_pivot_asset_xy_m": [
+        -0.3569660560000001,
+        0.35000004099999993
+      ],
+      "joint_limits_rad": [
+        0.0,
+        1.5707963267948966
+      ],
+      "seam_z_m": 0.9399812489142184,
+      "slab_minimum_x_span_fraction": 0.85
+    },
+    "receipt_digest": "sha256:3691c5c2162f2aae525d9ef3aa0c06cd006bd20e7afc065f8897cb33974fe1b4",
+    "source_asset_sha256": "sha256:4e0986e79b9d358de7e3289c0179eeaa4ec94b035e2133d2ea309298b525a4c3",
+    "status": "deterministic_topology_candidate_constructed"
+  },
+  "handle_band_observation_receipt_digest": "sha256:9748301b2ab3ba30666b7d19166ad199ba7af4fa114395e23992425eb1b8a6dd",
+  "output_directory": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1",
+  "physics_validation_receipt_digest": "sha256:4a2303ada5b844d9fa13af91be35b0585a6ba3b6aeb19e3d6ee69a727bdfcde0",
+  "program_id": "arm-decision-proof-v1",
+  "publisher_scene_id": "840796",
+  "receipt_digest": "sha256:c0f4f33fabe30e9b64da9093662d09b526eca7ee3e4d25832331d1bfed9df1d4",
+  "schema_version": "second_scene_deterministic_simready_candidate.v1",
+  "target_instance_id": "123",
+  "topology_validation_receipt_digest": "sha256:b4d0f35306e9cf337697cb7bf884b2cb684b9833e02dd52c329e8eb91c10c609"
+}

@@ -708,6 +708,342 @@ def evaluate_revolute_member_sweep_against_sage_meshes(
     return result
 
 
+DOOR_STATE_CLEARANCE_SCHEMA_VERSION = "articulated_door_state_clearance.v1"
+DOOR_STATE_MINIMUM_COUNT = 12
+_STATIC_OBSTACLE_CLASSES = ("replacement_body", "replacement_lower_door", "franka_base")
+
+
+def _axis_aligned_box_triangles(
+    minimum: Sequence[float], maximum: Sequence[float]
+) -> list[list[list[float]]]:
+    corners = [
+        [minimum[0] if sx == 0 else maximum[0],
+         minimum[1] if sy == 0 else maximum[1],
+         minimum[2] if sz == 0 else maximum[2]]
+        for sx in (0, 1)
+        for sy in (0, 1)
+        for sz in (0, 1)
+    ]
+    quads = (
+        (0, 1, 3, 2),
+        (4, 6, 7, 5),
+        (0, 4, 5, 1),
+        (2, 3, 7, 6),
+        (0, 2, 6, 4),
+        (1, 5, 7, 3),
+    )
+    triangles: list[list[list[float]]] = []
+    for quad in quads:
+        triangles.append([corners[quad[0]], corners[quad[1]], corners[quad[2]]])
+        triangles.append([corners[quad[0]], corners[quad[2]], corners[quad[3]]])
+    return triangles
+
+
+def evaluate_frozen_door_state_clearance(
+    *,
+    sage_collision_usd_path: str | Path,
+    obstacle_inventory: Mapping[str, Any],
+    hinge_origin_world_m: Sequence[float],
+    closed_endpoint_world_m: Sequence[float],
+    member_vertical_interval_m: Sequence[float],
+    member_half_thickness_m: float,
+    door_state_angles_degrees: Sequence[float],
+    required_maximum_angle_degrees: float,
+    static_box_obstacles: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Test the frozen discrete door states against SAGE and bound static boxes.
+
+    The continuous exact sweep already narrows AABB false positives; this
+    matrix pins the preregistered door states themselves (closed through the
+    admitted open range) and additionally accepts labeled static boxes for the
+    authored replacement body, the locked lower door, and the resolved Franka
+    base. Classes that are not yet bound stay explicit in the claim boundary so
+    scenario admission can fail closed on missing self-geometry rather than
+    silently treating an unbound class as clear.
+    """
+
+    try:
+        from pxr import Usd, UsdGeom, UsdPhysics
+    except ImportError as exc:
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_mesh_sweep_openusd_runtime_missing"]
+        ) from exc
+
+    errors: list[str] = []
+    states: list[float] = []
+    for value in door_state_angles_degrees:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            errors.append("door_state_angles_invalid")
+            break
+        states.append(float(value))
+    if len(states) < DOOR_STATE_MINIMUM_COUNT:
+        errors.append(
+            f"door_state_angles_below_minimum_count:{len(states)}<{DOOR_STATE_MINIMUM_COUNT}"
+        )
+    if any(late <= early for early, late in zip(states, states[1:])):
+        errors.append("door_state_angles_not_strictly_increasing")
+    if states and states[0] != 0.0:
+        errors.append("door_state_angles_must_start_closed")
+    try:
+        required_maximum = float(required_maximum_angle_degrees)
+    except (TypeError, ValueError):
+        required_maximum = math.inf
+        errors.append("door_state_required_maximum_invalid")
+    if states and states[-1] < required_maximum:
+        errors.append(
+            "door_state_angles_do_not_reach_required_maximum:"
+            f"{states[-1]!r}<{required_maximum!r}"
+        )
+
+    boxes: list[dict[str, Any]] = []
+    for index, row in enumerate(static_box_obstacles):
+        if not isinstance(row, Mapping):
+            errors.append(f"door_state_static_box_invalid:{index}")
+            continue
+        label = str(row.get("label") or "")
+        obstacle_class = str(row.get("obstacle_class") or "")
+        minimum = _finite_vector(
+            row.get("aabb_min"), 3, f"door_state_static_box_invalid:{index}"
+        )
+        maximum = _finite_vector(
+            row.get("aabb_max"), 3, f"door_state_static_box_invalid:{index}"
+        )
+        if (
+            not label
+            or obstacle_class not in _STATIC_OBSTACLE_CLASSES
+            or any(minimum[axis] >= maximum[axis] for axis in range(3))
+        ):
+            errors.append(f"door_state_static_box_invalid:{index}")
+            continue
+        boxes.append(
+            {
+                "label": label,
+                "obstacle_class": obstacle_class,
+                "aabb_min": minimum,
+                "aabb_max": maximum,
+                "triangles": [
+                    (
+                        triangle,
+                        [min(point[axis] for point in triangle) for axis in range(3)],
+                        [max(point[axis] for point in triangle) for axis in range(3)],
+                    )
+                    for triangle in _axis_aligned_box_triangles(minimum, maximum)
+                ],
+            }
+        )
+    if errors:
+        raise ArticulatedWorkspaceClearanceError(errors)
+
+    inventory = json.loads(json.dumps(obstacle_inventory))
+    obstacles_from_sage_sweep_inventory(inventory)
+    collision = Path(sage_collision_usd_path).expanduser().resolve()
+    if not collision.is_file() or collision.is_symlink():
+        raise ArticulatedWorkspaceClearanceError(["sage_mesh_sweep_collision_usd_missing"])
+    if inventory["source"]["sage_collision_usd_sha256"] != _sha256(collision):
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_mesh_sweep_collision_source_digest_mismatch"]
+        )
+    hinge = _finite_vector(hinge_origin_world_m, 3, "sweep_hinge_invalid")
+    endpoint = _finite_vector(closed_endpoint_world_m, 3, "sweep_endpoint_invalid")
+    vertical = _finite_vector(
+        member_vertical_interval_m, 2, "sweep_vertical_interval_invalid"
+    )
+    try:
+        half_thickness = float(member_half_thickness_m)
+    except (TypeError, ValueError) as exc:
+        raise ArticulatedWorkspaceClearanceError(["sweep_parameter_invalid"]) from exc
+    if (
+        vertical[0] >= vertical[1]
+        or not math.isfinite(half_thickness)
+        or half_thickness <= 0.0
+    ):
+        raise ArticulatedWorkspaceClearanceError(["sweep_parameter_invalid"])
+    radius = math.hypot(endpoint[0] - hinge[0], endpoint[1] - hinge[1])
+    if radius <= 0.0:
+        raise ArticulatedWorkspaceClearanceError(["sweep_member_radius_invalid"])
+    source_angle = math.atan2(endpoint[1] - hinge[1], endpoint[0] - hinge[0])
+
+    stage = Usd.Stage.Open(str(collision), load=Usd.Stage.LoadAll)
+    if stage is None:
+        raise ArticulatedWorkspaceClearanceError(
+            ["sage_mesh_sweep_collision_usd_open_failed"]
+        )
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    mesh_triangles: list[
+        tuple[str, list[tuple[list[list[float]], list[float], list[float]]]]
+    ] = []
+    for row in inventory["obstacles"]:
+        prim_path = str(row["source_prim_path"])
+        prim = stage.GetPrimAtPath(prim_path)
+        if (
+            not prim.IsValid()
+            or not prim.IsA(UsdGeom.Mesh)
+            or not prim.HasAPI(UsdPhysics.CollisionAPI)
+        ):
+            raise ArticulatedWorkspaceClearanceError(
+                [f"sage_mesh_sweep_obstacle_prim_invalid:{prim_path}"]
+            )
+        mesh = UsdGeom.Mesh(prim)
+        local_points = mesh.GetPointsAttr().Get(Usd.TimeCode.Default()) or []
+        counts = [int(value) for value in (mesh.GetFaceVertexCountsAttr().Get() or [])]
+        indices = [int(value) for value in (mesh.GetFaceVertexIndicesAttr().Get() or [])]
+        transform = xform_cache.GetLocalToWorldTransform(prim)
+        world_points = [
+            [float(value) for value in transform.Transform(point)]
+            for point in local_points
+        ]
+        triangles: list[list[list[float]]] = []
+        cursor = 0
+        for count in counts:
+            face = indices[cursor : cursor + count]
+            cursor += count
+            if count < 3:
+                continue
+            for offset in range(1, count - 1):
+                triangles.append(
+                    [
+                        world_points[face[0]],
+                        world_points[face[offset]],
+                        world_points[face[offset + 1]],
+                    ]
+                )
+        mesh_triangles.append(
+            (
+                prim_path,
+                [
+                    (
+                        triangle,
+                        [min(point[axis] for point in triangle) for axis in range(3)],
+                        [max(point[axis] for point in triangle) for axis in range(3)],
+                    )
+                    for triangle in triangles
+                ],
+            )
+        )
+
+    z_center = 0.5 * (vertical[0] + vertical[1])
+    half_extents = [0.5 * radius, half_thickness, 0.5 * (vertical[1] - vertical[0])]
+    door_state_rows: list[dict[str, Any]] = []
+    first_contact: dict[str, Any] | None = None
+    for angle_degrees in states:
+        angle = source_angle + math.radians(angle_degrees)
+        radial = [math.cos(angle), math.sin(angle), 0.0]
+        tangent = [-math.sin(angle), math.cos(angle), 0.0]
+        center = [
+            hinge[0] + 0.5 * radius * radial[0],
+            hinge[1] + 0.5 * radius * radial[1],
+            z_center,
+        ]
+        door_world_half_extents = [
+            abs(radial[0]) * half_extents[0] + abs(tangent[0]) * half_extents[1],
+            abs(radial[1]) * half_extents[0] + abs(tangent[1]) * half_extents[1],
+            half_extents[2],
+        ]
+        door_minimum = [center[axis] - door_world_half_extents[axis] for axis in range(3)]
+        door_maximum = [center[axis] + door_world_half_extents[axis] for axis in range(3)]
+
+        def _prism_hits(
+            triangle_rows: list[tuple[list[list[float]], list[float], list[float]]],
+        ) -> bool:
+            for triangle, triangle_minimum, triangle_maximum in triangle_rows:
+                if any(
+                    min(door_maximum[axis], triangle_maximum[axis])
+                    < max(door_minimum[axis], triangle_minimum[axis])
+                    for axis in range(3)
+                ):
+                    continue
+                local_triangle = []
+                for point in triangle:
+                    relative = [point[index] - center[index] for index in range(3)]
+                    local_triangle.append(
+                        [_dot(relative, radial), _dot(relative, tangent), relative[2]]
+                    )
+                if _triangle_intersects_axis_aligned_box(local_triangle, half_extents):
+                    return True
+            return False
+
+        sage_contacts = sorted(
+            prim_path
+            for prim_path, triangle_rows in mesh_triangles
+            if _prism_hits(triangle_rows)
+        )
+        box_contacts = [
+            {"label": box["label"], "obstacle_class": box["obstacle_class"]}
+            for box in boxes
+            if _prism_hits(box["triangles"])
+        ]
+        clear = not sage_contacts and not box_contacts
+        if not clear and first_contact is None:
+            if sage_contacts:
+                first_contact = {
+                    "angle_degrees": angle_degrees,
+                    "source": sage_contacts[0],
+                    "obstacle_class": "sage_static_scene",
+                }
+            else:
+                first_contact = {
+                    "angle_degrees": angle_degrees,
+                    "source": box_contacts[0]["label"],
+                    "obstacle_class": box_contacts[0]["obstacle_class"],
+                }
+        door_state_rows.append(
+            {
+                "angle_degrees": angle_degrees,
+                "sage_contact_prim_paths": sage_contacts,
+                "static_box_contacts": box_contacts,
+                "clear": clear,
+            }
+        )
+
+    bound_classes = sorted({box["obstacle_class"] for box in boxes})
+    result: dict[str, Any] = {
+        "schema_version": DOOR_STATE_CLEARANCE_SCHEMA_VERSION,
+        "status": (
+            "blocked_by_door_state_contact"
+            if first_contact
+            else "door_state_matrix_clearance_candidate_only"
+        ),
+        "source": {
+            "sage_collision_usd_sha256": _sha256(collision),
+            "obstacle_inventory_receipt_digest": inventory["receipt_digest"],
+        },
+        "sweep": {
+            "hinge_origin_world_m": hinge,
+            "closed_endpoint_world_m": endpoint,
+            "member_vertical_interval_m": vertical,
+            "member_radius_m": radius,
+            "member_half_thickness_m": half_thickness,
+            "required_maximum_angle_degrees": required_maximum,
+        },
+        "door_state_rows": door_state_rows,
+        "static_box_obstacles": [
+            {
+                "label": box["label"],
+                "obstacle_class": box["obstacle_class"],
+                "aabb_min": box["aabb_min"],
+                "aabb_max": box["aabb_max"],
+            }
+            for box in boxes
+        ],
+        "static_obstacle_classes_bound": bound_classes,
+        "first_contact": first_contact,
+        "claim_boundary": {
+            "triangle_prism_intersection_tested": True,
+            "full_stage_inventory_is_bound_broadphase": True,
+            "clear_result_is_not_native_dynamic_qualification": True,
+            "replacement_self_geometry_bound": any(
+                obstacle_class in {"replacement_body", "replacement_lower_door"}
+                for obstacle_class in bound_classes
+            ),
+            "franka_base_bound": "franka_base" in bound_classes,
+            "ik_or_contact_qualified": False,
+        },
+        "receipt_digest": "",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    return result
+
+
 def validate_articulated_workspace_clearance(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate a retained clearance receipt without rerunning geometry."""
 
@@ -731,6 +1067,51 @@ def validate_articulated_workspace_clearance(value: Mapping[str, Any]) -> dict[s
         payload, digest_field="receipt_digest"
     ):
         errors.append("sweep_clearance_digest_invalid")
+    if errors:
+        raise ArticulatedWorkspaceClearanceError(errors)
+    return payload
+
+
+def validate_door_state_clearance(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a retained twelve-door-state clearance receipt."""
+
+    payload = json.loads(json.dumps(value))
+    errors: list[str] = []
+    if payload.get("schema_version") != DOOR_STATE_CLEARANCE_SCHEMA_VERSION:
+        errors.append("door_state_clearance_schema_invalid")
+    status = payload.get("status")
+    if status not in {
+        "blocked_by_door_state_contact",
+        "door_state_matrix_clearance_candidate_only",
+    }:
+        errors.append("door_state_clearance_status_invalid")
+    rows = payload.get("door_state_rows")
+    if not isinstance(rows, list) or len(rows) < DOOR_STATE_MINIMUM_COUNT:
+        errors.append("door_state_clearance_rows_invalid")
+        rows = []
+    first_contact = payload.get("first_contact")
+    any_unclear = any(
+        not row.get("clear") for row in rows if isinstance(row, Mapping)
+    )
+    if status == "blocked_by_door_state_contact" and (
+        not isinstance(first_contact, Mapping) or not any_unclear
+    ):
+        errors.append("door_state_clearance_contact_missing")
+    if status == "door_state_matrix_clearance_candidate_only" and (
+        first_contact is not None or any_unclear
+    ):
+        errors.append("door_state_clearance_unexpected_contact")
+    boundary = payload.get("claim_boundary")
+    if not isinstance(boundary, Mapping) or (
+        boundary.get("triangle_prism_intersection_tested") is not True
+        or boundary.get("clear_result_is_not_native_dynamic_qualification")
+        is not True
+    ):
+        errors.append("door_state_clearance_exact_evidence_missing")
+    if payload.get("receipt_digest") != canonical_digest(
+        payload, digest_field="receipt_digest"
+    ):
+        errors.append("door_state_clearance_digest_invalid")
     if errors:
         raise ArticulatedWorkspaceClearanceError(errors)
     return payload
@@ -780,10 +1161,12 @@ __all__ = [
     "SAGE_OBSTACLE_INVENTORY_SCHEMA_VERSION",
     "SAGE_MESH_SWEEP_SCHEMA_VERSION",
     "evaluate_revolute_member_sweep",
+    "evaluate_frozen_door_state_clearance",
     "evaluate_revolute_member_sweep_against_sage_meshes",
     "inventory_sage_sweep_obstacles",
     "load_bound_collision_obstacle",
     "obstacles_from_sage_sweep_inventory",
     "validate_articulated_workspace_clearance",
+    "validate_door_state_clearance",
     "validate_sage_mesh_sweep",
 ]

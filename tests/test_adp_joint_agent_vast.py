@@ -263,6 +263,17 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     )
     authority_path = tmp_path / "authority.json"
     authority_path.write_text(json.dumps(authority), encoding="utf-8")
+    optimizer_zip = tmp_path / "scene_optimizer_core.zip"
+    with zipfile.ZipFile(optimizer_zip, "w") as archive:
+        for subdir in ("python", "lib", "extraLibs", "usdpy"):
+            archive.writestr(f"{subdir}/.keep", subdir)
+    optimizer_digest = "sha256:" + __import__("hashlib").sha256(
+        optimizer_zip.read_bytes()
+    ).hexdigest()
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast.SCENE_OPTIMIZER_CORE_SHA256",
+        optimizer_digest,
+    )
 
     receipt = build_joint_agent_vast_bundle(
         repo_root=repo,
@@ -272,11 +283,23 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         freeze_path=freeze_path,
         scope_amendment_path=scope_amendment_path,
         nim_preflight_path=nim_preflight_path,
+        scene_optimizer_core_zip_path=optimizer_zip,
         job_dir=tmp_path / "bundle",
         generated_at="2026-08-08T00:00:00+00:00",
     )
 
     assert receipt["status"] == "ready"
+    assert receipt["scene_optimizer_core"] == {
+        "role": "released_code_public_build_resource",
+        "package": "scene_optimizer_core_usd_25.11_py_3.12",
+        "release": "NVIDIA-Omniverse/usd-optimize v1.0.3",
+        "license": "Apache-2.0",
+        "sha256": optimizer_digest,
+        "size_bytes": optimizer_zip.stat().st_size,
+    }
+    assert (
+        tmp_path / "bundle/provider_runtime/scene_optimizer_core.zip"
+    ).is_file()
     assert receipt["provider_bundle_kind"] == "adp_joint_agent"
     assert receipt["input_usd_sha256"] == source_digest
     assert receipt["renderer"]["scene_bytes_leave_vast_instance"] is False
@@ -300,6 +323,8 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         in runtime_script
     )
     assert 'export OVRTX_RENDER_MODE="pt"' not in runtime_script
+    assert 'export WU_SO_PACKAGE_DIR=' in runtime_script
+    assert "joint_agent_scene_optimizer_core_missing" in runtime_script
     assert receipt["blueprint_source"]["commit"] == "a" * 40
     assert receipt["completion_retries"] == 0
     assert receipt["scope_amendment_digest"] == scope_amendment["amendment_digest"]
@@ -612,6 +637,14 @@ def test_builder_preflight_failure_leaves_no_partial_output(
         "blueprint_pipeline.adp_joint_agent_vast._blueprint_identity",
         lambda value: {"commit": "a" * 40, "tree": "b" * 40, "dirty": False},
     )
+    optimizer_zip = tmp_path / "scene_optimizer_core.zip"
+    with zipfile.ZipFile(optimizer_zip, "w") as archive:
+        for subdir in ("python", "lib", "extraLibs", "usdpy"):
+            archive.writestr(f"{subdir}/.keep", subdir)
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast.SCENE_OPTIMIZER_CORE_SHA256",
+        "sha256:" + __import__("hashlib").sha256(optimizer_zip.read_bytes()).hexdigest(),
+    )
     destination = tmp_path / "bundle"
 
     with pytest.raises(ValueError, match="release mismatch"):
@@ -623,7 +656,215 @@ def test_builder_preflight_failure_leaves_no_partial_output(
             freeze_path=freeze_path,
             scope_amendment_path=scope_amendment_path,
             nim_preflight_path=nim_preflight_path,
+            scene_optimizer_core_zip_path=optimizer_zip,
             job_dir=destination,
         )
 
     assert not destination.exists()
+
+
+def test_provider_runner_retains_available_artifacts_and_skips_missing(
+    tmp_path: Path,
+) -> None:
+    runner = _provider_runner_module()
+    work = tmp_path / "provider_runtime/runtime_output/joint_agent_work"
+    work.mkdir(parents=True)
+    present = work / "articulation_candidates.json"
+    present.write_text('{"candidates": []}', encoding="utf-8")
+    output = tmp_path / "provider_return"
+
+    rows = runner.retain_available_joint_agent_artifacts(
+        output_root=output,
+        artifacts={
+            "articulation_candidates": present,
+            "optimized_source": work / "missing_optimized.usdc",
+        },
+    )
+
+    assert [row["role"] for row in rows] == ["articulation_candidates"]
+    retained = output / rows[0]["relative_path"]
+    assert retained.is_file()
+    assert rows[0]["sha256"] == runner._sha256(retained)
+
+
+def test_provider_runner_review_failure_retains_topology_evidence(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runner = _provider_runner_module()
+    root = tmp_path / "provider_runtime"
+    output = tmp_path / "runtime_output"
+    root.mkdir(parents=True)
+    manifest = {"status": "ready"}
+    (root / "adp_joint_agent_provider_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    contract = {
+        "schema_version": "joint_agent_task_topology_review_contract.v1",
+        "minimum_assembly_joint_count": 1,
+        "maximum_assembly_joint_count": 4,
+        "commanded_task_joint_count": 1,
+        "required_articulation_root_count": 1,
+        "non_task_joint_mode": "locked_at_frozen_reset_with_native_readback",
+        "non_task_joint_motion_tolerance": 0.001,
+        "allowed_joint_types": ["revolute", "prismatic"],
+        "target_joint_type": "revolute",
+        "target_axis_world": [0.0, 0.0, 1.0],
+        "target_axis_absolute_dot_minimum": 0.99,
+        "target_moving_z_interval_m": [0.94, 1.632],
+        "minimum_target_z_overlap_fraction": 0.85,
+        "task_joint_id": "upper_hinge",
+        "freeze_digest": "sha256:" + "2" * 64,
+        "scope_amendment_digest": "sha256:" + "3" * 64,
+        "contract_digest": "",
+    }
+    contract["contract_digest"] = canonical_digest(
+        contract, digest_field="contract_digest"
+    )
+    (root / "joint_review_contract.json").write_text(
+        json.dumps(contract), encoding="utf-8"
+    )
+    candidates_path = (
+        root / "runtime_output/joint_agent_work/articulation_candidates/articulation_candidates.json"
+    )
+    optimized_path = (
+        root / "runtime_output/joint_agent_work/optimize_usd/articulated_source_optimized.usdc"
+    )
+
+    def fake_run(command: list[str], log_name: str) -> dict:
+        output.mkdir(parents=True, exist_ok=True)
+        if log_name == "joint_agent_inference.log":
+            candidates_path.parent.mkdir(parents=True, exist_ok=True)
+            candidates_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "joint-agent-stage2-v0",
+                        "candidates": [
+                            {
+                                "candidate_id": "upper",
+                                "joint_type_hint": "revolute",
+                                "review_status": "needs_more_context",
+                                "unresolved_reason_codes": [],
+                                "motion_axis_world": [0.0, 0.0, 1.0],
+                                "moving_part_prims": ["/Asset/upper"],
+                            }
+                        ],
+                        "summary": {"candidate_count": 1},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            optimized_path.parent.mkdir(parents=True, exist_ok=True)
+            optimized_path.write_bytes(b"fixture-optimized-usd")
+        log = output / log_name
+        log.write_text("fixture", encoding="utf-8")
+        return {
+            "returncode": 0,
+            "started_at": "start",
+            "ended_at": "end",
+            "duration_seconds": 0.0,
+            "log_path": str(log),
+            "log_sha256": runner._sha256(log),
+        }
+
+    monkeypatch.setattr(runner, "ROOT", root)
+    monkeypatch.setattr(runner, "OUTPUT", output)
+    monkeypatch.setattr(runner, "_run", fake_run)
+    monkeypatch.setattr(runner, "scene_optimizer_probe", lambda *, output_root: [])
+    monkeypatch.setattr(
+        runner,
+        "_candidate_bounds",
+        lambda stage_path, document: {
+            "upper": {
+                "status": "measured_from_optimized_usd",
+                "moving_part_prims": ["/Asset/upper"],
+                "aabb_min": [0.0, 0.0, 0.94],
+                "aabb_max": [1.0, 1.0, 1.632],
+            }
+        },
+    )
+    monkeypatch.setenv("NVIDIA_API_KEY", "hermetic-test-placeholder")
+
+    assert runner.main() == 2
+
+    result = json.loads((output / "adp_joint_agent_result.json").read_text())
+    assert result["status"] == "blocked"
+    assert any(
+        blocker.startswith("joint_agent_deterministic_review_failed:")
+        for blocker in result["blockers"]
+    )
+    rows = {row["role"]: row for row in result["retained_artifacts"]}
+    assert set(rows) == {"articulation_candidates", "optimized_source"}
+    for row in rows.values():
+        retained = output / row["relative_path"]
+        assert retained.is_file()
+        assert row["sha256"] == runner._sha256(retained)
+
+
+def test_output_zip_inspection_recognizes_joint_agent_runtime_result(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.wam_provider_output import (
+        inspect_provider_runtime_output_zip,
+    )
+
+    output_zip = tmp_path / "vast_provider_runtime_output.zip"
+    with zipfile.ZipFile(output_zip, "w") as archive:
+        archive.writestr(
+            "adp_joint_agent_result.json",
+            json.dumps({"status": "completed", "blockers": []}),
+        )
+
+    inspection = inspect_provider_runtime_output_zip(output_zip)
+
+    assert inspection["runtime_result_present"] is True
+    assert inspection["runtime_result_status"] == "completed"
+
+
+def test_runtime_script_probes_ovrtx_daemon_before_service() -> None:
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp_joint_agent_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "ovrtx_daemon_probe.log" in script
+    assert "joint_agent_ovrtx_daemon_probe_failed" in script
+    assert script.index("ovrtx_daemon_probe.log") < script.index(
+        "uvicorn service.main:app"
+    )
+    assert "env -u PYTHONPATH" in script
+
+
+def test_scene_optimizer_probe_retains_real_failure_diagnostics(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runner = _provider_runner_module()
+
+    def _failing_loader():
+        def _optimize(*args, **kwargs):
+            raise RuntimeError(
+                "Scene Optimizer subprocess failed (exit code 127)\n"
+                "--- stderr (last 2000) ---\nlibExample.so: cannot open shared object file"
+            )
+
+        return _optimize
+
+    monkeypatch.setattr(runner, "_load_optimize_usd_local", _failing_loader)
+    blockers = runner.scene_optimizer_probe(output_root=tmp_path)
+
+    assert blockers == ["joint_agent_scene_optimizer_probe_failed"]
+    log = (tmp_path / "scene_optimizer_probe.log").read_text(encoding="utf-8")
+    assert "cannot open shared object file" in log
+
+    def _passing_loader():
+        def _optimize(input_path, output_path, config):
+            assert Path(input_path).is_file()
+            settings = config["scene_optimizer_settings"]
+            assert settings["enable_split_meshes"] is True
+            return {"status": "completed", "operations_executed": ["splitMeshes"]}
+
+        return _optimize
+
+    monkeypatch.setattr(runner, "_load_optimize_usd_local", _passing_loader)
+    assert runner.scene_optimizer_probe(output_root=tmp_path) == []
+    log = (tmp_path / "scene_optimizer_probe.log").read_text(encoding="utf-8")
+    assert "scene_optimizer_probe_ok" in log

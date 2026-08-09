@@ -64,6 +64,32 @@ WU_OVRTX_LOCK_DIR="${SOURCE_DIR}/.ovrtx_locks" \
   write_missing_result "joint_agent_ovrtx_runtime_probe_failed"; exit 2;
 }
 
+# The released optimize_usd step needs the pinned public Scene Optimizer Core
+# package as its local backend; v8 failed closed here when it was absent. The
+# bundle ships the exact digest-bound zip, so no provider-side network fetch.
+# Extraction must go through unzip: the package carries 35 shared-library
+# symlink entries, and python -m zipfile materializes those as tiny text
+# stubs, which v11 retained as "libtbb.so.12: file too short".
+export WU_SO_PACKAGE_DIR="${SOURCE_DIR}/.build-resources/scene_optimizer_core"
+mkdir -p "${WU_SO_PACKAGE_DIR}"
+command -v unzip >/dev/null 2>&1 || {
+  write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
+}
+unzip -q -o "${SCRIPT_DIR}/scene_optimizer_core.zip" -d "${WU_SO_PACKAGE_DIR}" || {
+  write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
+}
+chmod -R u+rwX "${WU_SO_PACKAGE_DIR}" || true
+find "${WU_SO_PACKAGE_DIR}" -type f -name "*.so*" -exec chmod +x {} + 2>/dev/null || true
+for so_subdir in python lib extraLibs usdpy; do
+  if [ ! -d "${WU_SO_PACKAGE_DIR}/${so_subdir}" ]; then
+    write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
+  fi
+done
+broken_so_stub_count=$(find "${WU_SO_PACKAGE_DIR}" -type f -name "*.so*" -size -1k | wc -l)
+if [ "${broken_so_stub_count}" -ne 0 ]; then
+  write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
+fi
+
 export PYTHONPATH="${SCRIPT_DIR}/blueprint_src:${SOURCE_DIR}:${SOURCE_DIR}/apps/ovrtx_rendering_api"
 export RENDER_ENDPOINT="http://127.0.0.1:8001"
 # These are Joint Agent construction previews, not evaluation-authorized scene
@@ -75,6 +101,30 @@ export OVRTX_NUM_SENSOR_UPDATES="32"
 export DISPLAY=:99
 Xvfb :99 -screen 0 1920x1080x24 >"${OUTPUT_DIR}/xvfb.log" 2>&1 &
 xvfb_pid=$!
+sleep 2
+
+# v9 (machine 31726) hung inside the OvRTX daemon for the full poll window
+# with its stderr drained invisibly at the service's warn level. Probe the
+# exact failing operation directly - ovrtx Renderer construction in the
+# isolated venv - with stderr retained, so a host that cannot run OvRTX fails
+# fast with diagnosable evidence instead of a silent 15-minute timeout.
+{
+  echo "=== nvidia-smi ==="; nvidia-smi 2>&1 || true
+  echo "=== vulkan icd files ==="; ls -la /usr/share/vulkan/icd.d/ /etc/vulkan/icd.d/ 2>&1 || true
+  echo "=== ovrtx renderer probe ==="
+} > "${OUTPUT_DIR}/ovrtx_daemon_probe.log" 2>&1
+if ! timeout 300 env -u PYTHONPATH "${WU_OVRTX_VENV_DIR}/bin/python" - >> "${OUTPUT_DIR}/ovrtx_daemon_probe.log" 2>&1 <<'PY'
+import ovrtx
+
+renderer = ovrtx.Renderer()
+print("ovrtx_renderer_constructed_ok", flush=True)
+PY
+then
+  kill "${xvfb_pid}" >/dev/null 2>&1 || true
+  write_missing_result "joint_agent_ovrtx_daemon_probe_failed"
+  exit 2
+fi
+
 "${SOURCE_DIR}/.venv/bin/python" -m uvicorn service.main:app \
   --host 127.0.0.1 --port 8001 >"${OUTPUT_DIR}/ovrtx_service.log" 2>&1 &
 renderer_pid=$!
