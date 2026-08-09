@@ -852,7 +852,21 @@ def _author_flattened_cousin(
     if "SimReady_Metadata" not in metadata:
         raise Adp009dHarnessError(["cousin_simready_metadata_missing"])
     authored.GetRootLayer().customLayerData = metadata
+    # Flatten writes the composed root layer's absolute path into the output
+    # doc string, which would bind the materialization digest to the checkout
+    # directory: verified only where it was authored, failed everywhere else.
+    # Identity must be a property of the sealed inputs alone.
+    authored.GetRootLayer().documentation = (
+        "adp009d cousin flattened from the sealed base and recipe overlay; "
+        "source identity is carried by the manifest, not by paths"
+    )
     authored.GetRootLayer().Save()
+    authored_text = output_path.read_bytes()
+    for source_root in {str(base_path.parent), str(overlay_path.parent), str(output_path.parent)}:
+        if source_root.encode("utf-8") in authored_text:
+            raise Adp009dHarnessError(
+                [f"cousin_authored_usd_embeds_absolute_path:{source_root}"]
+            )
 
     verify = Usd.Stage.Open(str(output_path))
     if verify is None:

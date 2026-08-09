@@ -1,23 +1,33 @@
 {
-  "schema_version": "adp009d_cousin_manifest.v1",
-  "program_id": "arm-decision-proof-v1",
+  "admission_status": "static_candidate",
+  "base_asset": {
+    "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
+    "root": "repo",
+    "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+    "size_bytes": 20705128
+  },
+  "base_asset_sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+  "blockers": [
+    "static_validation_receipt_binding_required",
+    "native_ovphysx_drop_contact_settle_missing",
+    "scripted_positive_control_missing"
+  ],
+  "canonical_anchor": false,
+  "claim_ceiling": [
+    "development_only",
+    "simulator_stimulus_only",
+    "visual_material_cousin_not_geometric_generalization",
+    "no_physical_material_claim"
+  ],
+  "collider": {
+    "contact_material_prim": "/canned_beverage/materials/contact",
+    "geometry_changed": false,
+    "kind": "unchanged triangle mesh from approved match-v2 asset",
+    "prim_path": "/canned_beverage/colliders/body_collider"
+  },
+  "cousin_digest": "sha256:a7b22358088baf217d2598cf0f4de147145772cc3009f409352f8af604832da5",
   "cousin_id": "adp009d_visual_material_cousin",
   "cousin_type": "visual_material",
-  "canonical_anchor": false,
-  "base_asset_sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
-  "usd_sha256": "sha256:ffb417ee44f531ac66b3d48a9bc0d5b800c1e35fa93d6e90422fe55f468866ef",
-  "base_asset": {
-    "root": "repo",
-    "relative_path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
-    "size_bytes": 20705128,
-    "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec"
-  },
-  "overlay_asset": {
-    "root": "repo",
-    "relative_path": "docs/arm_decision_proof_v1/assets/adp009d_840313_visual_material_cousin.usda",
-    "size_bytes": 1360,
-    "sha256": "sha256:ffb417ee44f531ac66b3d48a9bc0d5b800c1e35fa93d6e90422fe55f468866ef"
-  },
   "dimensions_m": {
     "diameter": 0.062189452028690084,
     "height": 0.1694279937744141,
@@ -28,18 +38,38 @@
     ],
     "source": "unchanged approved match-v2 geometry extent"
   },
+  "grasp_clearance": {
+    "diameter_through_body_m": 0.062189452028690084,
+    "native_robotiq_contact_probe": "pending",
+    "status": "inherited_static_geometry_only"
+  },
+  "material_provenance": {
+    "base_visual_geometry_changed": false,
+    "diffuse_color": [
+      0.12,
+      0.32,
+      0.82
+    ],
+    "kind": "Blueprint-authored UsdPreviewSurface override",
+    "shader_prim": "/canned_beverage/materials/green_can_shader"
+  },
   "materialization": {
-    "method": "usd_flatten_and_bake_v1",
     "expected_self_contained_usd": {
       "filename": "adp009d_visual_material_cousin.usda",
-      "size_bytes": 20705565,
-      "sha256": "sha256:ba3cfbd91411bad3800899fc6708e3fe27321bee068db2934de49ffa7a7d247a"
+      "sha256": "sha256:fe998f3fd70efd52bdb1e9c9886f6fd9588abedf5d4a64401eaca651221d57be",
+      "size_bytes": 20705514
     },
-    "sealed_base_mutated": false,
-    "recipe_overlay_mutated_at_runtime": false
+    "method": "usd_flatten_and_bake_v1",
+    "recipe_overlay_mutated_at_runtime": false,
+    "sealed_base_mutated": false
+  },
+  "overlay_asset": {
+    "relative_path": "docs/arm_decision_proof_v1/assets/adp009d_840313_visual_material_cousin.usda",
+    "root": "repo",
+    "sha256": "sha256:ffb417ee44f531ac66b3d48a9bc0d5b800c1e35fa93d6e90422fe55f468866ef",
+    "size_bytes": 1360
   },
   "physics": {
-    "mass_kg": 0.355,
     "center_of_mass_m": [
       0.0,
       0.0,
@@ -50,57 +80,27 @@
       0.0009350253597009403,
       0.00017162155249852556
     ],
-    "static_friction": 0.5,
     "dynamic_friction": 0.4,
+    "mass_kg": 0.355,
     "restitution": 0.1,
-    "source": "unchanged approved match-v2 frozen authoring priors, not measurements"
+    "source": "unchanged approved match-v2 frozen authoring priors, not measurements",
+    "static_friction": 0.5
   },
-  "collider": {
-    "prim_path": "/canned_beverage/colliders/body_collider",
-    "kind": "unchanged triangle mesh from approved match-v2 asset",
-    "geometry_changed": false,
-    "contact_material_prim": "/canned_beverage/materials/contact"
-  },
-  "material_provenance": {
-    "kind": "Blueprint-authored UsdPreviewSurface override",
-    "shader_prim": "/canned_beverage/materials/green_can_shader",
-    "diffuse_color": [
-      0.12,
-      0.32,
-      0.82
-    ],
-    "base_visual_geometry_changed": false
-  },
+  "program_id": "arm-decision-proof-v1",
   "rights": {
+    "base_asset_boundary": "Base match-v2 source provenance and noncommercial public-scene limits remain controlling",
     "overlay_author": "Blueprint",
     "overlay_rights": "Blueprint-authored configuration",
-    "base_asset_boundary": "Base match-v2 source provenance and noncommercial public-scene limits remain controlling",
     "redistribution_allowed": false
   },
+  "schema_version": "adp009d_cousin_manifest.v1",
   "static_validation": {
-    "status": "external_observed_receipt_required",
+    "first_attempt_blocker": "cousin_package_isolation_and_metadata_invalid_preserved_in_attempt_evidence",
+    "geometry_or_physics_failure_observed": false,
     "profile": "Prop-Robotics-Physx",
     "profile_version": "2.0.0",
-    "validator_source_commit": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3",
-    "first_attempt_blocker": "cousin_package_isolation_and_metadata_invalid_preserved_in_attempt_evidence",
-    "geometry_or_physics_failure_observed": false
+    "status": "external_observed_receipt_required",
+    "validator_source_commit": "a1e9dd68ee2d107f74dc6cd6da875b54ad3f8fd3"
   },
-  "grasp_clearance": {
-    "status": "inherited_static_geometry_only",
-    "diameter_through_body_m": 0.062189452028690084,
-    "native_robotiq_contact_probe": "pending"
-  },
-  "admission_status": "static_candidate",
-  "blockers": [
-    "static_validation_receipt_binding_required",
-    "native_ovphysx_drop_contact_settle_missing",
-    "scripted_positive_control_missing"
-  ],
-  "claim_ceiling": [
-    "development_only",
-    "simulator_stimulus_only",
-    "visual_material_cousin_not_geometric_generalization",
-    "no_physical_material_claim"
-  ],
-  "cousin_digest": "sha256:3b01ec64277171584115b0d94472c29bb7e32be5e1be1fd936fd3bc4c13912de"
+  "usd_sha256": "sha256:ffb417ee44f531ac66b3d48a9bc0d5b800c1e35fa93d6e90422fe55f468866ef"
 }
