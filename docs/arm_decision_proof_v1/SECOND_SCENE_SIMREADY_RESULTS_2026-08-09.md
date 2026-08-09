@@ -321,6 +321,16 @@ purpose.
 A flat colour is not a texture pass and the receipts say so. The interior
 remains generated candidate geometry; it was never observed.
 
+`accept_agent_enriched_asset` now decides whether any agent output may replace
+the candidate. Nothing in the earlier runs checked this: one pass applied
+per-component mass to twenty-six prims and another rebound every surface, with
+no verification that the joint graph, the authored link masses, or the
+reachable interior survived. Agents may add materials, textures and priors
+freely; changing the joint graph, moving an authored link mass, sealing the
+interior, or dropping a render binding rejects the enrichment. And
+`interior_exposure` is now a required articulated construction gate, so a
+sealed twin cannot reach scenario materialization at all.
+
 Render-ready candidate `sha256:81b1796a...`, manifest resealed at
 `sha256:68d78ba6...`. The local config preflight passes on the rebuilt bundle
 `sha256:9d2d9221...`.
