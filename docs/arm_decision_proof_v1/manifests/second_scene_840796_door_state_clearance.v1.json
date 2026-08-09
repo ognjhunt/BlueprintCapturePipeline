@@ -1,0 +1,113 @@
+{
+  "claim_boundary": {
+    "clear_result_is_not_native_dynamic_qualification": true,
+    "franka_base_bound": false,
+    "full_stage_inventory_is_bound_broadphase": true,
+    "ik_or_contact_qualified": false,
+    "replacement_self_geometry_bound": false,
+    "triangle_prism_intersection_tested": true
+  },
+  "door_state_rows": [
+    {
+      "angle_degrees": 0.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 5.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 10.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 15.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 20.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 25.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 30.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 35.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 40.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 45.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 50.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    },
+    {
+      "angle_degrees": 55.0,
+      "clear": true,
+      "sage_contact_prim_paths": [],
+      "static_box_contacts": []
+    }
+  ],
+  "first_contact": null,
+  "receipt_digest": "sha256:d9ec490f65030e0e61dc37dd6432ee96d548830ea7aacca866445bb5ccec33e1",
+  "schema_version": "articulated_door_state_clearance.v1",
+  "source": {
+    "obstacle_inventory_receipt_digest": "sha256:31806c4bd2320b9786a949f054385649af6af6162fe6a558b71f27d7ea45f34e",
+    "sage_collision_usd_sha256": "sha256:7bfc6e4b6909f7057fa1983ac228e5d7511d7053745d8b6f467aecfea0c7194e"
+  },
+  "static_box_obstacles": [],
+  "static_obstacle_classes_bound": [],
+  "status": "door_state_matrix_clearance_candidate_only",
+  "sweep": {
+    "closed_endpoint_world_m": [
+      2.331180256,
+      1.829218141,
+      1.2859256235
+    ],
+    "hinge_origin_world_m": [
+      1.617248144,
+      1.829218141,
+      1.2859256235
+    ],
+    "member_half_thickness_m": 0.05,
+    "member_radius_m": 0.7139321120000002,
+    "member_vertical_interval_m": [
+      0.939981249,
+      1.631869998
+    ],
+    "required_maximum_angle_degrees": 55.0
+  }
+}
