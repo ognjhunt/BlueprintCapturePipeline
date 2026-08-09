@@ -618,7 +618,10 @@ def materialize_source_layer_replacement_coverage_audit(
     np.save(alpha_path, alpha_array, allow_pickle=False)
     review_root = output / "review_contact_sheets"
     review_root.mkdir()
+    seam_root = output / "uncovered_source_support_masks"
+    seam_root.mkdir()
     review_records = []
+    seam_records = []
     kernel_size = 2 * coverage_margin_pixels + 1
     kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
     for camera_index, camera_id in enumerate(camera_ids):
@@ -639,6 +642,26 @@ def materialize_source_layer_replacement_coverage_audit(
             }
         )
         source = alpha_array[camera_index]
+        uncovered_union = np.zeros(source.shape, dtype=bool)
+        for cell_index in cell_indices:
+            finite = np.isfinite(depth[cell_index]) & (depth[cell_index] > 0.0)
+            covered = cv2.erode(
+                finite.astype(np.uint8), kernel, iterations=1
+            ).astype(bool)
+            uncovered_union |= (source >= significant_alpha_threshold) & ~covered
+        seam_path = seam_root / f"{camera_id}.png"
+        if not cv2.imwrite(str(seam_path), uncovered_union.astype(np.uint8) * 255):
+            raise ArticulatedUsdDepthSweepError(
+                ["source_coverage_seam_mask_write_failed"]
+            )
+        seam_records.append(
+            {
+                **_record(seam_path, output),
+                "camera_id": camera_id,
+                "pixel_count": int(uncovered_union.sum()),
+                "derived_from_all_door_cells": len(cell_indices),
+            }
+        )
         base = black_by_camera[camera_id].astype(np.float32)
         base += (1.0 - source[..., None]) * 230.0
         panels = []
@@ -706,6 +729,8 @@ def materialize_source_layer_replacement_coverage_audit(
         "coverage_margin_pixels": coverage_margin_pixels,
         "source_alpha": _record(alpha_path, output),
         "review_contact_sheets": review_records,
+        "uncovered_source_support_masks": seam_records,
+        "uncovered_source_support_masks_are_inpainting_authority": False,
         "cells": rows,
         "summary": {
             "cell_count": len(rows),

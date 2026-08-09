@@ -235,3 +235,8 @@ def test_source_layer_coverage_audit_binds_render_pair_and_depth(
     assert (tmp_path / "audit/source_alpha_by_camera.npy").is_file()
     assert len(receipt["review_contact_sheets"]) == 1
     assert (tmp_path / "audit/review_contact_sheets/external.png").is_file()
+    assert len(receipt["uncovered_source_support_masks"]) == 1
+    assert (
+        tmp_path / "audit/uncovered_source_support_masks/external.png"
+    ).is_file()
+    assert receipt["uncovered_source_support_masks_are_inpainting_authority"] is False
