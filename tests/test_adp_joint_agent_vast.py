@@ -627,3 +627,139 @@ def test_builder_preflight_failure_leaves_no_partial_output(
         )
 
     assert not destination.exists()
+
+
+def test_provider_runner_retains_available_artifacts_and_skips_missing(
+    tmp_path: Path,
+) -> None:
+    runner = _provider_runner_module()
+    work = tmp_path / "provider_runtime/runtime_output/joint_agent_work"
+    work.mkdir(parents=True)
+    present = work / "articulation_candidates.json"
+    present.write_text('{"candidates": []}', encoding="utf-8")
+    output = tmp_path / "provider_return"
+
+    rows = runner.retain_available_joint_agent_artifacts(
+        output_root=output,
+        artifacts={
+            "articulation_candidates": present,
+            "optimized_source": work / "missing_optimized.usdc",
+        },
+    )
+
+    assert [row["role"] for row in rows] == ["articulation_candidates"]
+    retained = output / rows[0]["relative_path"]
+    assert retained.is_file()
+    assert rows[0]["sha256"] == runner._sha256(retained)
+
+
+def test_provider_runner_review_failure_retains_topology_evidence(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runner = _provider_runner_module()
+    root = tmp_path / "provider_runtime"
+    output = tmp_path / "runtime_output"
+    root.mkdir(parents=True)
+    manifest = {"status": "ready"}
+    (root / "adp_joint_agent_provider_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    contract = {
+        "schema_version": "joint_agent_task_topology_review_contract.v1",
+        "minimum_assembly_joint_count": 1,
+        "maximum_assembly_joint_count": 4,
+        "commanded_task_joint_count": 1,
+        "required_articulation_root_count": 1,
+        "non_task_joint_mode": "locked_at_frozen_reset_with_native_readback",
+        "non_task_joint_motion_tolerance": 0.001,
+        "allowed_joint_types": ["revolute", "prismatic"],
+        "target_joint_type": "revolute",
+        "target_axis_world": [0.0, 0.0, 1.0],
+        "target_axis_absolute_dot_minimum": 0.99,
+        "target_moving_z_interval_m": [0.94, 1.632],
+        "minimum_target_z_overlap_fraction": 0.85,
+        "task_joint_id": "upper_hinge",
+        "freeze_digest": "sha256:" + "2" * 64,
+        "scope_amendment_digest": "sha256:" + "3" * 64,
+        "contract_digest": "",
+    }
+    contract["contract_digest"] = canonical_digest(
+        contract, digest_field="contract_digest"
+    )
+    (root / "joint_review_contract.json").write_text(
+        json.dumps(contract), encoding="utf-8"
+    )
+    candidates_path = (
+        root / "runtime_output/joint_agent_work/articulation_candidates/articulation_candidates.json"
+    )
+    optimized_path = (
+        root / "runtime_output/joint_agent_work/optimize_usd/articulated_source_optimized.usdc"
+    )
+
+    def fake_run(command: list[str], log_name: str) -> dict:
+        output.mkdir(parents=True, exist_ok=True)
+        if log_name == "joint_agent_inference.log":
+            candidates_path.parent.mkdir(parents=True, exist_ok=True)
+            candidates_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "joint-agent-stage2-v0",
+                        "candidates": [
+                            {
+                                "candidate_id": "upper",
+                                "joint_type_hint": "revolute",
+                                "review_status": "needs_more_context",
+                                "unresolved_reason_codes": [],
+                                "motion_axis_world": [0.0, 0.0, 1.0],
+                                "moving_part_prims": ["/Asset/upper"],
+                            }
+                        ],
+                        "summary": {"candidate_count": 1},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            optimized_path.parent.mkdir(parents=True, exist_ok=True)
+            optimized_path.write_bytes(b"fixture-optimized-usd")
+        log = output / log_name
+        log.write_text("fixture", encoding="utf-8")
+        return {
+            "returncode": 0,
+            "started_at": "start",
+            "ended_at": "end",
+            "duration_seconds": 0.0,
+            "log_path": str(log),
+            "log_sha256": runner._sha256(log),
+        }
+
+    monkeypatch.setattr(runner, "ROOT", root)
+    monkeypatch.setattr(runner, "OUTPUT", output)
+    monkeypatch.setattr(runner, "_run", fake_run)
+    monkeypatch.setattr(
+        runner,
+        "_candidate_bounds",
+        lambda stage_path, document: {
+            "upper": {
+                "status": "measured_from_optimized_usd",
+                "moving_part_prims": ["/Asset/upper"],
+                "aabb_min": [0.0, 0.0, 0.94],
+                "aabb_max": [1.0, 1.0, 1.632],
+            }
+        },
+    )
+    monkeypatch.setenv("NVIDIA_API_KEY", "hermetic-test-placeholder")
+
+    assert runner.main() == 2
+
+    result = json.loads((output / "adp_joint_agent_result.json").read_text())
+    assert result["status"] == "blocked"
+    assert any(
+        blocker.startswith("joint_agent_deterministic_review_failed:")
+        for blocker in result["blockers"]
+    )
+    rows = {row["role"]: row for row in result["retained_artifacts"]}
+    assert set(rows) == {"articulation_candidates", "optimized_source"}
+    for row in rows.values():
+        retained = output / row["relative_path"]
+        assert retained.is_file()
+        assert row["sha256"] == runner._sha256(retained)

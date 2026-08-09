@@ -79,6 +79,31 @@ def retain_joint_agent_artifacts(
     return rows
 
 
+def retain_available_joint_agent_artifacts(
+    *,
+    output_root: Path,
+    artifacts: Mapping[str, Path],
+) -> list[dict[str, Any]]:
+    """Retain whichever construction artifacts exist on a failure path.
+
+    A blocked review or publication must still return the model topology
+    evidence that already exists, because only ``runtime_output`` survives the
+    provider teardown ZIP. Missing files are skipped rather than raised so a
+    partial failure cannot also destroy the retention of its own evidence.
+    """
+
+    present = {
+        role: source.resolve()
+        for role, source in artifacts.items()
+        if not source.resolve().is_symlink()
+        and source.resolve().is_file()
+        and source.resolve().stat().st_size > 0
+    }
+    if not present:
+        return []
+    return retain_joint_agent_artifacts(output_root=output_root, artifacts=present)
+
+
 def _run(command: list[str], log_name: str) -> dict[str, Any]:
     started = dt.datetime.now(dt.timezone.utc)
     process = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=7200)
@@ -175,7 +200,24 @@ def main() -> int:
                 joint_agent_inference_executed=False,
             )
         candidates = _load(candidates_path)
-        bounds = _candidate_bounds(optimized_path, candidates)
+        partial_artifacts: dict[str, Path] = {
+            "articulation_candidates": candidates_path,
+            "optimized_source": optimized_path,
+        }
+        partial_rows = retain_available_joint_agent_artifacts(
+            output_root=OUTPUT, artifacts=partial_artifacts
+        )
+        try:
+            bounds = _candidate_bounds(optimized_path, candidates)
+        except Exception as exc:
+            return _result(
+                [f"joint_agent_candidate_bounds_measurement_failed:{type(exc).__name__}"],
+                dry_run=dry,
+                inference=inference,
+                joint_agent_inference_executed=True,
+                candidates_sha256=_sha256(candidates_path),
+                retained_artifacts=partial_rows,
+            )
         (OUTPUT / "joint_candidate_bounds.json").write_text(
             json.dumps(bounds, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -193,6 +235,7 @@ def main() -> int:
                 joint_agent_inference_executed=True,
                 candidates_sha256=_sha256(candidates_path),
                 candidate_bounds_sha256=_sha256(OUTPUT / "joint_candidate_bounds.json"),
+                retained_artifacts=partial_rows,
             )
         review_path = OUTPUT / "joint_agent_articulation_review.json"
         review_path.write_text(json.dumps(review, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -203,6 +246,17 @@ def main() -> int:
         rigged = ROOT / "runtime_output/joint_agent_work/joint_rigger/rigged.usdz"
         if publication["returncode"] != 0 or not rigged.is_file():
             blockers.append("joint_agent_owned_core_publication_failed")
+            partial_rows = retain_available_joint_agent_artifacts(
+                output_root=OUTPUT,
+                artifacts={
+                    **partial_artifacts,
+                    "owned_core_rigged_asset": rigged,
+                    "owned_core_diagnostics": ROOT
+                    / "runtime_output/joint_agent_work/joint_rigger/joint_rigger_diagnostics.json",
+                    "owned_core_validation": ROOT
+                    / "runtime_output/joint_agent_work/joint_rigger/joint_rigger_validation.json",
+                },
+            )
             return _result(
                 blockers,
                 dry_run=dry,
@@ -211,6 +265,7 @@ def main() -> int:
                 joint_agent_inference_executed=True,
                 owned_core_publication_executed=False,
                 review_receipt_sha256=_sha256(review_path),
+                retained_artifacts=partial_rows,
             )
         stage = Usd.Stage.Open(str(rigged))
         joint_paths = [
