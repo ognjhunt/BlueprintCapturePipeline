@@ -1,0 +1,44 @@
+{
+  "schema_version": "adp_task_evaluation_run_abstention.v1",
+  "program_id": "arm-decision-proof-v1",
+  "status": "typed_evidence_backed_abstention",
+  "scene_id": "840796",
+  "target_instance_id": "123",
+  "task_id": "840796_refrigerator_upper_door_open_v1",
+  "task_kind": "articulated_open_close",
+  "freeze_digest": "sha256:0774b7072bb1a0fd0929fde81cd48aaff384af4608772f31d603c2324f97d03f",
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "smallest_missing_capability": "calibrated_gaussian_ownership_separation_without_protected_scene_deletion",
+  "all_terminal_construction_blockers": [
+    "gaussian_ownership_abstained:calibrated_gaussian_ownership_separation_without_protected_scene_deletion",
+    "released_code_inpainting_abstained:aurafusion360_interiorgs_visual_artifact_rejection",
+    "joint_agent_topology_execution_abstained:joint_agent_local_ovrtx_renderer_not_ready"
+  ],
+  "stage_receipts": {
+    "appearance_component": "sha256:0df34654cb917e278c6a3473bf626fb76002a8ea6477e2069d9a57e376f06569",
+    "collision_component": "sha256:e215e215808dca084ab9db733b4a52643652413d9ebee41b497b5ffef0f7ddb6",
+    "inpainting_inputs": "sha256:14835d010e3f15b610ff33ee8ae56f0daf8fa01b96aefe17db5ec36852a46f29",
+    "aura_execution": "sha256:25815f77415073913d332a9022ad3c1983aa0b567451b8c1a4b8f8d8f5041c00",
+    "aura_visual_abstention": "sha256:74e41db595ec181886c20bc455cc56f1560de3e0fff2638bb5d5f65fb48d7559",
+    "joint_agent_execution": "sha256:05158fccee3933c85c3ca2538817080867f14dd518b45fbb102d36917427b564",
+    "gaussian_excision_freeze": "sha256:2ef5adba73b9b09089450bbeee0ff695977155365130c1e9584e2070c49750aa",
+    "gaussian_contribution": "sha256:9c67bb7b4ba8486005a1d77185152557de4c8f053136e8bf95b2d1e533d4a975",
+    "gaussian_ownership": "sha256:94244e32553a008ad540a2b6654079c09e897c545e437cf69d089e3ea741cbee",
+    "gaussian_heldout_audit": "sha256:a4ab16cbbb6630dc3e9dcb4c8ceee4cbb90de298aba0dd416bff5241057e6336"
+  },
+  "prior_terminal_receipt_digest": "sha256:54c252e9477cc441b26d0e7b3a1ec4909e85bd79bca087ba9232160f64e643aa",
+  "controls_executed": false,
+  "learned_candidate_episodes_executed": false,
+  "comparison_exists": false,
+  "episode_media_exists": false,
+  "automatic_paid_retry_executed": false,
+  "replacement_coverage_sweep_authorized": false,
+  "provider_zero_after_terminal_paid_attempt": true,
+  "retained_total_spend_usd": 4.439528,
+  "next_action": "freeze a new outcome-unseen confirmation camera pair, implement a calibration-only iterative ambiguous-promotion rule, and confirm it once before replacement-depth coverage",
+  "claim_ceiling": "public_dataset_construction_rehearsal_only; no partner capture, real_site_fidelity, deployment readiness, physical performance, or learned_policy_comparison",
+  "receipt_digest": "sha256:d7b37673ab1bd3041e8d904e672b05213d718ae0e1f457c8538bca8564728ac1"
+}

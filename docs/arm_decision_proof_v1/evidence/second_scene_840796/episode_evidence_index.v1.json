@@ -1,7 +1,7 @@
 {
   "episode_count": 0,
   "episodes": [],
-  "index_digest": "sha256:52c9e895211040f3e6fe4b5cd08540742e970fab915beec5ac2539bde2229d7a",
+  "index_digest": "sha256:51c9cba8b4469fe60772f5609932c3c3aa1358d75e2f5b988f21af473bf08c92",
   "overview_is_review_only": true,
   "required_camera_ids": [
     "external",
@@ -20,6 +20,7 @@
   "scores_are_deterministic_simulator_state": true,
   "typed_abstention": {
     "all_terminal_construction_blockers": [
+      "gaussian_ownership_abstained:calibrated_gaussian_ownership_separation_without_protected_scene_deletion",
       "released_code_inpainting_abstained:aurafusion360_interiorgs_visual_artifact_rejection",
       "joint_agent_topology_execution_abstained:joint_agent_local_ovrtx_renderer_not_ready"
     ],
@@ -30,27 +31,31 @@
     ],
     "claim_ceiling": "public_dataset_construction_rehearsal_only; no partner capture, real_site_fidelity, deployment readiness, physical performance, or learned_policy_comparison",
     "comparison_exists": false,
-    "construction_run_digest": "sha256:dfd4b35f33afb4f7d1c8fc66ff1fc7fc72d3bf03374dc7da9c64cd9df5638ce5",
     "controls_executed": false,
     "episode_media_exists": false,
     "freeze_digest": "sha256:0774b7072bb1a0fd0929fde81cd48aaff384af4608772f31d603c2324f97d03f",
     "learned_candidate_episodes_executed": false,
-    "next_action": "select or implement a released-code inpainting correction that preserves outside-mask scene content; require retained inpaint-init and SDEdit frames before any fresh paid authority",
+    "next_action": "freeze a new outcome-unseen confirmation camera pair, implement a calibration-only iterative ambiguous-promotion rule, and confirm it once before replacement-depth coverage",
+    "prior_terminal_receipt_digest": "sha256:54c252e9477cc441b26d0e7b3a1ec4909e85bd79bca087ba9232160f64e643aa",
     "program_id": "arm-decision-proof-v1",
-    "receipt_digest": "sha256:54c252e9477cc441b26d0e7b3a1ec4909e85bd79bca087ba9232160f64e643aa",
+    "provider_zero_after_terminal_paid_attempt": true,
+    "receipt_digest": "sha256:d7b37673ab1bd3041e8d904e672b05213d718ae0e1f457c8538bca8564728ac1",
+    "replacement_coverage_sweep_authorized": false,
+    "retained_total_spend_usd": 4.439528,
     "scene_id": "840796",
     "schema_version": "adp_task_evaluation_run_abstention.v1",
-    "smallest_missing_capability": "released_code_inpainting_abstained:aurafusion360_interiorgs_visual_artifact_rejection",
+    "smallest_missing_capability": "calibrated_gaussian_ownership_separation_without_protected_scene_deletion",
     "stage_receipts": {
       "appearance_component": "sha256:0df34654cb917e278c6a3473bf626fb76002a8ea6477e2069d9a57e376f06569",
-      "articulated_source_asset": "sha256:14696cb1dd047e24d1c74fd8767efb3a07ee740368c5805501de7abb630f9882",
       "aura_execution": "sha256:25815f77415073913d332a9022ad3c1983aa0b567451b8c1a4b8f8d8f5041c00",
       "aura_visual_abstention": "sha256:74e41db595ec181886c20bc455cc56f1560de3e0fff2638bb5d5f65fb48d7559",
       "collision_component": "sha256:e215e215808dca084ab9db733b4a52643652413d9ebee41b497b5ffef0f7ddb6",
-      "inpainting_adapter": "sha256:bfdc2500d324b44e014c030b6c2bb3e6593e4f5d9797d70f7e637ae654e48893",
+      "gaussian_contribution": "sha256:9c67bb7b4ba8486005a1d77185152557de4c8f053136e8bf95b2d1e533d4a975",
+      "gaussian_excision_freeze": "sha256:2ef5adba73b9b09089450bbeee0ff695977155365130c1e9584e2070c49750aa",
+      "gaussian_heldout_audit": "sha256:a4ab16cbbb6630dc3e9dcb4c8ceee4cbb90de298aba0dd416bff5241057e6336",
+      "gaussian_ownership": "sha256:94244e32553a008ad540a2b6654079c09e897c545e437cf69d089e3ea741cbee",
       "inpainting_inputs": "sha256:14835d010e3f15b610ff33ee8ae56f0daf8fa01b96aefe17db5ec36852a46f29",
-      "joint_agent_execution": "sha256:05158fccee3933c85c3ca2538817080867f14dd518b45fbb102d36917427b564",
-      "joint_agent_packet": "sha256:53deb1ad7fa36484fca4081ed181299c594c48b2d9851f87de829f0dd6563153"
+      "joint_agent_execution": "sha256:05158fccee3933c85c3ca2538817080867f14dd518b45fbb102d36917427b564"
     },
     "status": "typed_evidence_backed_abstention",
     "target_instance_id": "123",

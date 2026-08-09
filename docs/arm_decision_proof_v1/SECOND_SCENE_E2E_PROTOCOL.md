@@ -73,7 +73,7 @@ revolute or prismatic joints and exactly one commanded task joint; separable
 fixed and moving links; locked non-task joints; an observed
 handle/contact region; exact removable source collision; bounded Franka reach;
 selection-view coverage; external, wrist, and review observability; and an exact
-released-code inpainting path. NVIDIA USD Content Agents Joint Agent `0.5.2`
+released-code removal path with conditional seam-only inpainting. NVIDIA USD Content Agents Joint Agent `0.5.2`
 must publish and read back the accepted topology through `owned_core`, while
 Blueprint independently authors and dynamically verifies the rigid bodies,
 masses, inertias, colliders, drives, joint state, contact, limits, containment,
@@ -92,9 +92,13 @@ native applied-parameter receipts must be computed from retained artifacts.
    candidates before learned-policy execution.
 3. Survey the complete known topology, then render task close-ups under an
    evaluation-authorized renderer manifest distinct from reconnaissance.
-4. Remove the exact articulated visual partition and all replaced source colliders,
-   run the exact released inpainting path or abstain, and insert a separately
-   derived articulated replacement.
+4. Classify source Gaussians as owned, retained, or ambiguous from released-code
+   alpha-times-transmittance evidence without using held-out cameras. Admit
+   deletion only after the frozen held-out ownership gate passes. Then remove
+   the exact source collider, insert the separately derived articulated
+   replacement, and delete only replacement-depth-covered ambiguous Gaussians.
+   Run a released seam-only inpainting backend only for measured uncovered
+   residue; otherwise record `inpainting_not_required`.
 5. Resolve Franka placement, precontact/contact/travel/release/retreat IK phases,
    joint limits, containment, contacts, stability, and three-camera
    observability with native readback.
@@ -191,6 +195,41 @@ failure, and retreat complete. The exact prompt, limits, resets, failure rungs,
 16 seeds, and two candidate IDs are in the freeze digest. The visible source
 handle is observed, but its exact 3D replacement contact volume remains a
 construction gate rather than an asserted measurement.
+
+## Gaussian ownership and replacement-coverage boundary
+
+The replacement-first amendment does not ask Aura or another image model to
+invent the refrigerator's physical geometry. The exact articulated USD owns
+visible replacement geometry, articulation, collision, and physics. Source
+appearance removal is a separate, fail-closed operation:
+
+1. Freeze eight calibrated source masks and withhold the maximally diverse
+   `far_left` and `far_right` cameras before classification.
+2. On the remaining six cameras, execute released FlashSplat commit
+   `3e3b14786333bf0163ba1b8541e86a3765112d7d` with rasterizer commit
+   `189c483ffa33dd6d5661343ce496df0c6eb80a0c` and retain per-Gaussian
+   front-to-back alpha-times-transmittance contribution.
+3. Materialize exhaustive, disjoint `owned`, `retained`, and `ambiguous` index
+   sets. Preserve every retained source row byte-for-byte. Any disagreement
+   between deterministic repetitions is forced to `ambiguous` under a policy
+   frozen before held-out evaluation.
+4. Recover removed-layer alpha from digest-bound exact-camera black/white
+   render pairs. On both held-out cameras, require complete refrigerator-mask
+   silhouette, zero significant contribution outside the two-pixel band, no
+   ambiguous residual above `1/255` with a connected component larger than four
+   pixels, exact repetition determinism, and performance at least as good as the
+   frozen 3,791-Gaussian OBB baseline.
+5. Only a passing ownership receipt authorizes the eight-camera by twelve-door-
+   state replacement-depth sweep. That sweep may delete an ambiguous Gaussian
+   only if its observed contribution is hidden by actual USD depth in every
+   cell where it is visible. A caller mask or visual judgment cannot assert
+   coverage.
+
+The held-out pair is single-use. Once viewed, it may explain a failure but may
+not be used to tune a new threshold and then be reported as unbiased proof. An
+engineering iteration on this scene therefore requires newly frozen views for
+confirmation. The USD may not be inserted merely to hide a failed ownership
+result.
 
 ## Joint Agent construction boundary
 

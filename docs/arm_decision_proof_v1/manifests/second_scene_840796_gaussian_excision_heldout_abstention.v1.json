@@ -1,0 +1,93 @@
+{
+  "schema_version": "second_scene_840796_gaussian_excision_heldout_abstention.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009B",
+  "status": "abstained_calibrated_gaussian_ownership_separation_insufficient",
+  "scene": {
+    "publisher_scene_id": "840796",
+    "target_instance_id": "123",
+    "target_semantic_label": "refrigerator"
+  },
+  "method": {
+    "name": "FlashSplat",
+    "source_commit": "3e3b14786333bf0163ba1b8541e86a3765112d7d",
+    "rasterizer_commit": "189c483ffa33dd6d5661343ce496df0c6eb80a0c",
+    "contribution_semantics": "front_to_back_transmittance_times_alpha",
+    "ownership_aggregation": "unanimous_owned_and_retained_else_ambiguous",
+    "alpha_audit": "paired_identical_rgb_over_black_and_white.v1",
+    "depth_anything_3_used": false,
+    "heldout_cameras_accessed_for_classification": false
+  },
+  "frozen_inputs": {
+    "source_standard_splat_sha256": "sha256:a8dd5baebb98d03e184ead9f352b83a44e248a175103e0bf180c97a07be73a34",
+    "freeze_digest": "sha256:2ef5adba73b9b09089450bbeee0ff695977155365130c1e9584e2070c49750aa",
+    "contribution_manifest_digest": "sha256:9c67bb7b4ba8486005a1d77185152557de4c8f053136e8bf95b2d1e533d4a975",
+    "ownership_receipt_digest": "sha256:94244e32553a008ad540a2b6654079c09e897c545e437cf69d089e3ea741cbee",
+    "aggregation_policy_digest": "sha256:1306f8a360499d922971c2907ccbc735ca1b914f905a16d085a6f60536c1fba9"
+  },
+  "ownership": {
+    "source_gaussian_count": 593665,
+    "owned_count": 2436,
+    "retained_count": 587007,
+    "ambiguous_count": 4222,
+    "historical_obb_count": 3791,
+    "exhaustive": true,
+    "pairwise_disjoint": true,
+    "retained_rows_byte_exact": true
+  },
+  "determinism": {
+    "repetition_count": 2,
+    "classification_label_disagreement_count": 0,
+    "quantized_contribution_arrays_identical": false,
+    "gate_passed": false
+  },
+  "heldout_policy": {
+    "camera_ids": [
+      "far_left",
+      "far_right"
+    ],
+    "significant_alpha_threshold": 0.00392156862745098,
+    "rasterization_band_pixels": 2,
+    "maximum_protected_significant_pixels": 0,
+    "maximum_residual_connected_component_pixels": 4
+  },
+  "heldout_results": [
+    {
+      "camera_id": "far_left",
+      "owned_silhouette_recall": 0.8808862875969744,
+      "owned_silhouette_missing_pixel_count": 140057,
+      "owned_largest_missing_component_pixels": 101147,
+      "owned_protected_significant_pixel_count": 4256,
+      "ambiguous_inside_mask_largest_component_pixels": 1089831,
+      "obb_silhouette_recall": 0.9154594302218185,
+      "obb_protected_significant_pixel_count": 3080,
+      "ownership_gate_passed": false,
+      "at_least_as_good_as_obb_passed": false,
+      "contact_sheet_sha256": "sha256:e7c3c6adb454a9dfbfc2e36bfa65539d311a098a8f11b50a10c2daefb4a88660"
+    },
+    {
+      "camera_id": "far_right",
+      "owned_silhouette_recall": 0.8545826790876254,
+      "owned_silhouette_missing_pixel_count": 183463,
+      "owned_largest_missing_component_pixels": 110319,
+      "owned_protected_significant_pixel_count": 4618,
+      "ambiguous_inside_mask_largest_component_pixels": 1145765,
+      "obb_silhouette_recall": 0.9096978435057477,
+      "obb_protected_significant_pixel_count": 1422,
+      "ownership_gate_passed": false,
+      "at_least_as_good_as_obb_passed": false,
+      "contact_sheet_sha256": "sha256:ee529b2c896aa6f99b237245cc21b1e2109bd9d920b4312e4f8be12cd76fc992"
+    }
+  ],
+  "evidence": {
+    "runtime_receipt_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/gaussian_excision/840796_v2/heldout_audit_v1/evaluation/adp009b_gaussian_excision_heldout_audit.v1.json",
+    "runtime_receipt_file_sha256": "sha256:c2cc4f5b4faa14efc46ffaeb793c46197453c4e3f017d10137e06e808a2b92eb",
+    "runtime_receipt_digest": "sha256:a4ab16cbbb6630dc3e9dcb4c8ceee4cbb90de298aba0dd416bff5241057e6336",
+    "contact_sheet_root": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/gaussian_excision/840796_v2/heldout_audit_v1/evaluation/contact_sheets"
+  },
+  "replacement_coverage_sweep_authorized": false,
+  "smallest_missing_capability": "calibrated_gaussian_ownership_separation_without_protected_scene_deletion",
+  "forbidden_inference": "Do not delete all ambiguous Gaussians, tune against the revealed heldout pair, insert the USD as a visual cover-up, or claim a fridge-free scene from this result.",
+  "claim_ceiling": "public_scene_gaussian_ownership_heldout_abstention_not_physical_truth",
+  "manifest_digest": "sha256:0686154274342a574fd7c097fab14b9958e6a876948461b0e3ae232e4fbf874e"
+}
