@@ -912,6 +912,7 @@ def build_native_microcheck_bundle(
         "adp009d_episode_batch.py",
         "adp009d_isaac_episode_adapter.py",
         "adp009d_task_scoring.py",
+        "adp_task_scoring.py",
         "episode_visual_evidence.py",
         "adp009d_policy_server_worker.py",
         "adp009d_groot_worker_identity.py",

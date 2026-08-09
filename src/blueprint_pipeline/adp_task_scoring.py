@@ -11,8 +11,14 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .adp009d_task_scoring import TaskScoringError, score_task_episode
-from .decision_evidence_contracts import canonical_digest
+try:  # flat provider-bundle layout
+    from adp009d_task_scoring import TaskScoringError, score_task_episode
+except ModuleNotFoundError:  # repository package
+    from .adp009d_task_scoring import TaskScoringError, score_task_episode
+try:  # flat provider-bundle layout
+    from decision_evidence_contracts import canonical_digest
+except ModuleNotFoundError:  # repository package
+    from .decision_evidence_contracts import canonical_digest
 
 
 TASK_SPEC_SCHEMA_VERSION = "adp_task_spec.v1"
@@ -28,6 +34,17 @@ OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION = "joint_limit_or_containment_violation"
 OUTCOME_COLLISION_FAILURE = "robot_or_scene_collision_failure"
 OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE = "release_or_retreat_incomplete"
 OUTCOME_OPENED_AND_SETTLED = "opened_and_settled"
+
+_ARTICULATED_OUTCOME_RANK = {
+    OUTCOME_NEVER_MOVED: 0,
+    OUTCOME_NON_TASK_JOINT_MOVED: 0,
+    OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION: 0,
+    OUTCOME_COLLISION_FAILURE: 0,
+    OUTCOME_MOVED_BELOW_THRESHOLD: 1,
+    OUTCOME_OPENED_THEN_REBOUNDED: 2,
+    OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE: 3,
+    OUTCOME_OPENED_AND_SETTLED: 4,
+}
 
 
 class TaskNeutralScoringError(ValueError):
@@ -314,6 +331,7 @@ def score_articulated_task_episode(
         "task_kind": TASK_KIND_ARTICULATED_OPEN_CLOSE,
         "task_succeeded": task_succeeded,
         "outcome": outcome,
+        "outcome_rank": _ARTICULATED_OUTCOME_RANK[outcome],
         "measurements": {
             "sample_count": len(normalized),
             "first_step_index": normalized[0]["step_index"],

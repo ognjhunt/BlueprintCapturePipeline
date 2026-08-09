@@ -61,7 +61,7 @@ def _receipt(
         }
     receipt = {
         "schema_version": (
-            "adp009d_policy_episode.v2" if learned else "adp009d_control_episode.v2"
+            "adp009d_policy_episode.v3" if learned else "adp009d_control_episode.v2"
         ),
         "episode_id": episode_id,
         ("candidate_id" if learned else "control_id"): subject_id,

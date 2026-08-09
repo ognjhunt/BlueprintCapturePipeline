@@ -125,6 +125,69 @@ def _run(environment=None, policy=None, **overrides):
     return run_policy_episode(**kwargs)
 
 
+def _articulated_task_spec(*, maximum_action_steps: int = 32) -> dict:
+    return {
+        "schema_version": "adp_task_spec.v1",
+        "task_kind": "articulated_open_close",
+        "task_id": "840796_refrigerator_upper_door_open_v1",
+        "target_joint_id": "refrigerator_upper_door_hinge",
+        "joint_reset_positions_rad": {
+            "refrigerator_upper_door_hinge": 0.0,
+            "refrigerator_lower_door_hinge": 0.0,
+        },
+        "target_success_interval_rad": [0.785398163, 0.959931089],
+        "joint_hard_limits_rad": {
+            "refrigerator_upper_door_hinge": [0.0, 1.570796327],
+            "refrigerator_lower_door_hinge": [0.0, 1.570796327],
+        },
+        "settle_window_samples": 6,
+        "maximum_settled_target_speed_rad_s": 0.05,
+        "non_task_joint_motion_tolerance_rad": 0.001,
+        "movement_epsilon_rad": 0.0001,
+        "reset_tolerance_rad": 0.0001,
+        "control_frequency_hz": 15,
+        "maximum_action_steps": maximum_action_steps,
+    }
+
+
+class _ArticulatedEnvironment(_Environment):
+    """Second fixture: native joint state, without any canned-object fields."""
+
+    def __init__(self):
+        super().__init__()
+        self._last_gripper_command = _MEASURED.open_command
+
+    def reset(self) -> None:
+        super().reset()
+        self._last_gripper_command = _MEASURED.open_command
+
+    def step(self, isaac_action):
+        super().step(isaac_action)
+        self._last_gripper_command = float(isaac_action[7])
+
+    def read_object_sample(self):
+        raise AssertionError("articulated episode must not read canned-object state")
+
+    def read_task_sample(self):
+        upper = min(0.9, 0.9 * self._t / 16.0)
+        return {
+            "joint_positions_rad": {
+                "refrigerator_upper_door_hinge": upper,
+                "refrigerator_lower_door_hinge": 0.0,
+            },
+            "joint_velocities_rad_s": {
+                "refrigerator_upper_door_hinge": 0.0 if self._t >= 16 else 0.01,
+                "refrigerator_lower_door_hinge": 0.0,
+            },
+            "task_contact_active": self._last_gripper_command != _MEASURED.open_command,
+            "joint_limit_violation": False,
+            "containment_violation": False,
+            "robot_collision_failure": False,
+            "scene_collision_failure": False,
+            "retreat_completed": self._t >= 24,
+        }
+
+
 def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     """The whole point: observation, query, execution and scoring in one path."""
 
@@ -175,6 +238,42 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
     )
+
+
+def test_same_policy_episode_loop_scores_second_scene_native_articulation_state() -> None:
+    environment = _ArticulatedEnvironment()
+
+    receipt = _run(
+        environment,
+        task_spec=_articulated_task_spec(),
+        destination_position_world_m=None,
+        prompt="Open the upper refrigerator door, release it, and retreat.",
+    )
+
+    assert receipt["task_kind"] == "articulated_open_close"
+    assert receipt["destination_position_world_m"] is None
+    assert receipt["score"]["outcome"] == "opened_and_settled"
+    assert receipt["score"]["outcome_rank"] == 4
+    assert receipt["score"]["judgement_source"] == (
+        "deterministic_native_simulator_joint_state"
+    )
+    assert environment.reset_count == 1
+    assert len(environment.steps) == receipt["environment_steps"]
+
+
+def test_policy_episode_rejects_actions_beyond_frozen_articulated_budget() -> None:
+    environment = _ArticulatedEnvironment()
+
+    with pytest.raises(
+        PolicyEpisodeError, match="policy_episode_action_budget_exceeds_task_spec"
+    ):
+        _run(
+            environment,
+            task_spec=_articulated_task_spec(maximum_action_steps=31),
+            destination_position_world_m=None,
+        )
+
+    assert environment.reset_count == 0
 
 
 def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:

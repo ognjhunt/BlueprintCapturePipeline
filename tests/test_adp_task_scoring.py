@@ -101,6 +101,7 @@ def test_articulated_scripted_positive_requires_release_retreat_and_settle() -> 
     report = score_task_episode_from_spec(task_spec=_articulated_spec(), samples=samples)
 
     assert report["outcome"] == OUTCOME_OPENED_AND_SETTLED
+    assert report["outcome_rank"] == 4
     assert report["task_succeeded"] is True
     assert all(report["predicates"].values())
 
@@ -117,6 +118,7 @@ def test_opened_then_rebounded_cannot_pass() -> None:
     report = score_task_episode_from_spec(task_spec=_articulated_spec(), samples=samples)
 
     assert report["outcome"] == OUTCOME_OPENED_THEN_REBOUNDED
+    assert report["outcome_rank"] == 2
     assert report["task_succeeded"] is False
 
 
@@ -138,6 +140,7 @@ def test_stable_open_without_release_or_retreat_has_its_frozen_failure_rung(
     report = score_task_episode_from_spec(task_spec=_articulated_spec(), samples=samples)
 
     assert report["outcome"] == OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE
+    assert report["outcome_rank"] == 3
     assert report["task_succeeded"] is False
 
 

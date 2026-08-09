@@ -1444,6 +1444,7 @@ def test_shipped_modules_import_in_the_flat_provider_layout() -> None:
     for name in (
         "adp009d_policy_episode",
         "adp009d_isaac_episode_adapter",
+        "adp_task_scoring",
     ):
         source = (root / f"{name}.py").read_text(encoding="utf-8")
         assert "try:  # flat provider-bundle layout" in source

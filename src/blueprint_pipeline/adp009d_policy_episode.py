@@ -24,6 +24,7 @@ Three properties are load-bearing and enforced rather than assumed:
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from collections import deque
@@ -75,15 +76,33 @@ except ModuleNotFoundError:  # repository package
     )
 try:  # flat provider-bundle layout
     from adp009d_task_scoring import (
+        SUPPORT_PLANE_Z_M,
         SETTLE_WINDOW_SAMPLES,
         TaskScoringError,
-        score_task_episode,
     )
 except ModuleNotFoundError:  # repository package
     from .adp009d_task_scoring import (
+        SUPPORT_PLANE_Z_M,
         SETTLE_WINDOW_SAMPLES,
         TaskScoringError,
-        score_task_episode,
+    )
+try:  # flat provider-bundle layout
+    from adp_task_scoring import (
+        TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TASK_KIND_RIGID_PICK_PLACE,
+        TASK_SPEC_SCHEMA_VERSION,
+        TaskNeutralScoringError,
+        score_task_episode_from_spec,
+        validate_articulated_task_spec,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp_task_scoring import (
+        TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TASK_KIND_RIGID_PICK_PLACE,
+        TASK_SPEC_SCHEMA_VERSION,
+        TaskNeutralScoringError,
+        score_task_episode_from_spec,
+        validate_articulated_task_spec,
     )
 try:  # flat provider-bundle layout
     from decision_evidence_contracts import canonical_digest
@@ -104,7 +123,7 @@ except ModuleNotFoundError:  # repository package
         persist_observation_frame,
     )
 
-EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v2"
+EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v3"
 
 # This is a numerical-motion threshold, not a task-success threshold.  It only
 # separates a changing simulator joint state from float noise so a can outcome
@@ -150,6 +169,9 @@ class EpisodeEnvironment(Protocol):
     def read_object_sample(self) -> Mapping[str, Any]:
         """Deterministic object state: ``can_pose_world`` and optional grasp evidence."""
 
+    def read_task_sample(self) -> Mapping[str, Any]:
+        """Task-neutral deterministic state for a non-rigid task spec."""
+
     def joint_limits(self) -> Sequence[Sequence[float]]:
         """Seven ``(lower, upper)`` arm joint limits, in radians."""
 
@@ -162,7 +184,11 @@ class DroidPolicyClient(Protocol):
 
 
 def _sample_with_index(
-    raw: Mapping[str, Any], step_index: int, previous_index: int | None
+    raw: Mapping[str, Any],
+    step_index: int,
+    previous_index: int | None,
+    *,
+    required_field: str | None = "can_pose_world",
 ) -> dict[str, Any]:
     if previous_index is not None and step_index <= previous_index:
         raise PolicyEpisodeError(
@@ -170,8 +196,78 @@ def _sample_with_index(
         )
     sample = dict(raw)
     sample["step_index"] = step_index
-    if "can_pose_world" not in sample:
-        raise PolicyEpisodeError([f"{BLOCKER_ENVIRONMENT_CONTRACT}:can_pose_world_missing"])
+    if required_field is not None and required_field not in sample:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{required_field}_missing"]
+        )
+    return sample
+
+
+def _resolved_task_spec(
+    *,
+    task_spec: Mapping[str, Any] | None,
+    destination_position_world_m: Sequence[float] | None,
+    settle_window_samples: int,
+    max_policy_queries: int,
+    open_loop_horizon: int,
+) -> dict[str, Any]:
+    """Resolve the legacy rigid call or validate an explicit task-neutral spec."""
+
+    if task_spec is None:
+        if destination_position_world_m is None:
+            raise PolicyEpisodeError(["policy_episode_destination_missing"])
+        return {
+            "schema_version": TASK_SPEC_SCHEMA_VERSION,
+            "task_kind": TASK_KIND_RIGID_PICK_PLACE,
+            "destination_position_world_m": [
+                float(value) for value in destination_position_world_m
+            ],
+            "support_plane_z_m": SUPPORT_PLANE_Z_M,
+            "settle_window_samples": int(settle_window_samples),
+            "require_sealed_start_pose": True,
+        }
+    try:
+        resolved = json.loads(json.dumps(dict(task_spec), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise PolicyEpisodeError(["policy_episode_task_spec_invalid"]) from exc
+    kind = resolved.get("task_kind")
+    if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
+        try:
+            validate_articulated_task_spec(resolved)
+        except TaskNeutralScoringError as exc:
+            raise PolicyEpisodeError(exc.errors) from exc
+    elif kind != TASK_KIND_RIGID_PICK_PLACE:
+        raise PolicyEpisodeError(["policy_episode_task_kind_unsupported"])
+    if int(resolved.get("settle_window_samples", -1)) != int(
+        settle_window_samples
+    ):
+        raise PolicyEpisodeError(["policy_episode_settle_window_task_spec_mismatch"])
+    expected_hz = resolved.get("control_frequency_hz")
+    if expected_hz is not None and float(expected_hz) != float(DROID_CONTROL_HZ):
+        raise PolicyEpisodeError(["policy_episode_control_frequency_task_spec_mismatch"])
+    maximum_steps = resolved.get("maximum_action_steps")
+    if maximum_steps is not None and int(max_policy_queries) * int(
+        open_loop_horizon
+    ) > int(maximum_steps):
+        raise PolicyEpisodeError(["policy_episode_action_budget_exceeds_task_spec"])
+    return resolved
+
+
+def _read_task_sample(
+    environment: EpisodeEnvironment, *, task_kind: str
+) -> Mapping[str, Any]:
+    if task_kind == TASK_KIND_RIGID_PICK_PLACE:
+        return environment.read_object_sample()
+    reader = getattr(environment, "read_task_sample", None)
+    if not callable(reader):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:read_task_sample_missing"]
+        )
+    sample = reader()
+    if not isinstance(sample, Mapping):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:task_sample_invalid"]
+        )
     return sample
 
 
@@ -440,9 +536,10 @@ def run_policy_episode(
     environment: EpisodeEnvironment,
     policy: DroidPolicyClient,
     candidate_id: str,
-    destination_position_world_m: Sequence[float],
+    destination_position_world_m: Sequence[float] | None = None,
     prompt: str,
     gripper: GripperConvention,
+    task_spec: Mapping[str, Any] | None = None,
     max_policy_queries: int = DEFAULT_MAX_POLICY_QUERIES,
     settle_window_samples: int = SETTLE_WINDOW_SAMPLES,
     open_loop_horizon: int = DROID_OPEN_LOOP_HORIZON,
@@ -475,6 +572,14 @@ def run_policy_episode(
     policy_action_space = str(
         getattr(policy, "action_space", ACTION_SPACE_JOINT_VELOCITY)
     )
+    resolved_task_spec = _resolved_task_spec(
+        task_spec=task_spec,
+        destination_position_world_m=destination_position_world_m,
+        settle_window_samples=int(settle_window_samples),
+        max_policy_queries=int(max_policy_queries),
+        open_loop_horizon=int(open_loop_horizon),
+    )
+    task_kind = str(resolved_task_spec["task_kind"])
 
     media_root = (
         Path(media_output_dir).expanduser().resolve()
@@ -514,7 +619,18 @@ def run_policy_episode(
     samples: list[dict[str, Any]] = []
     previous_index: int | None = None
     step_index = 0
-    samples.append(_sample_with_index(environment.read_object_sample(), step_index, previous_index))
+    samples.append(
+        _sample_with_index(
+            _read_task_sample(environment, task_kind=task_kind),
+            step_index,
+            previous_index,
+            required_field=(
+                "can_pose_world"
+                if task_kind == TASK_KIND_RIGID_PICK_PLACE
+                else "joint_positions_rad"
+            ),
+        )
+    )
     previous_index = step_index
     timings_seconds["reset_and_initial_state"] += time.monotonic() - phase_started
 
@@ -678,7 +794,16 @@ def run_policy_episode(
                 )
             phase_started = time.monotonic()
             samples.append(
-                _sample_with_index(environment.read_object_sample(), step_index, previous_index)
+                _sample_with_index(
+                    _read_task_sample(environment, task_kind=task_kind),
+                    step_index,
+                    previous_index,
+                    required_field=(
+                        "can_pose_world"
+                        if task_kind == TASK_KIND_RIGID_PICK_PLACE
+                        else "joint_positions_rad"
+                    ),
+                )
             )
             timings_seconds["object_state_sample"] += time.monotonic() - phase_started
             previous_index = step_index
@@ -753,7 +878,16 @@ def run_policy_episode(
             timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         phase_started = time.monotonic()
         samples.append(
-            _sample_with_index(environment.read_object_sample(), step_index, previous_index)
+            _sample_with_index(
+                _read_task_sample(environment, task_kind=task_kind),
+                step_index,
+                previous_index,
+                required_field=(
+                    "can_pose_world"
+                    if task_kind == TASK_KIND_RIGID_PICK_PLACE
+                    else "joint_positions_rad"
+                ),
+            )
         )
         timings_seconds["object_state_sample"] += time.monotonic() - phase_started
         previous_index = step_index
@@ -762,10 +896,9 @@ def run_policy_episode(
         raise PolicyEpisodeError([BLOCKER_NO_SETTLE_WINDOW])
 
     phase_started = time.monotonic()
-    score = score_task_episode(
+    score = score_task_episode_from_spec(
+        task_spec=resolved_task_spec,
         samples=samples,
-        destination_position_world_m=destination_position_world_m,
-        settle_window_samples=int(settle_window_samples),
     )
     timings_seconds["deterministic_scoring"] += time.monotonic() - phase_started
     motion_evidence, commanded_action_magnitudes = _motion_and_command_evidence(
@@ -870,6 +1003,9 @@ def run_policy_episode(
     receipt: dict[str, Any] = {
         "schema_version": EPISODE_SCHEMA_VERSION,
         "candidate_id": candidate_id,
+        "task_kind": task_kind,
+        "task_spec": resolved_task_spec,
+        "task_spec_digest": canonical_digest(resolved_task_spec),
         "prompt": str(prompt),
         "policy_queries": len(queries),
         "max_policy_queries": int(max_policy_queries),
@@ -880,7 +1016,11 @@ def run_policy_episode(
         "observation_adapter_schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
         "action_space": commanded_action_magnitudes["source_action_space"],
         "observation_conversion": describe_observation_conversion(candidate_id),
-        "destination_position_world_m": [float(v) for v in destination_position_world_m],
+        "destination_position_world_m": (
+            [float(v) for v in destination_position_world_m]
+            if destination_position_world_m is not None
+            else None
+        ),
         "queries": queries,
         "motion_evidence": motion_evidence,
         "commanded_action_magnitudes": commanded_action_magnitudes,

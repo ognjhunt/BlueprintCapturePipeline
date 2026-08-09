@@ -40,7 +40,7 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v8"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v9"
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -294,6 +294,7 @@ class IsaacEpisodeAdapter:
             [str], tuple[Sequence[float], Sequence[float]] | None
         ]
         | None = None,
+        task_sample_callback: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -314,7 +315,12 @@ class IsaacEpisodeAdapter:
         )
         self._scripted_pose_action_callback = scripted_pose_action_callback
         self._camera_pose_callback = camera_pose_callback
+        self._task_sample_callback = task_sample_callback
         self._control_step_index = 0
+        if self._can is None and self._task_sample_callback is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_task_state_source_missing"]
+            )
         if (
             not math.isfinite(self._gripper_closed_width_m)
             or not math.isfinite(self._gripper_open_width_m)
@@ -547,6 +553,10 @@ class IsaacEpisodeAdapter:
         }
 
     def read_object_sample(self) -> dict[str, Any]:
+        if self._can is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_rigid_task_object_missing"]
+            )
         pose = self._to_torch(self._can.data.root_pose_w)[0]
         controlled_body_pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self._end_effector_index, :7
@@ -571,6 +581,25 @@ class IsaacEpisodeAdapter:
             (left[axis] + right[axis]) / 2.0 for axis in range(3)
         ]
         return sample
+
+    def read_task_sample(self) -> dict[str, Any]:
+        """Read non-rigid task state through the runtime's native-state seam.
+
+        The adapter does not know a generated asset's joint names or topology.
+        The runtime resolves those from the sealed asset and supplies this
+        callback; the task-neutral scorer independently validates every field.
+        """
+
+        if self._task_sample_callback is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_task_sample_callback_missing"]
+            )
+        sample = self._task_sample_callback()
+        if not isinstance(sample, Mapping):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_task_sample_callback_invalid"]
+            )
+        return dict(sample)
 
     # -- internals ----------------------------------------------------------
 

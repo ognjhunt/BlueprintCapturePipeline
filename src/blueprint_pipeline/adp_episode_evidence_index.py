@@ -32,6 +32,7 @@ REQUIRED_CAMERA_IDS = ("external", "wrist", "overview")
 ALLOWED_RECEIPT_SCHEMAS = {
     "adp009d_control_episode.v2",
     "adp009d_policy_episode.v2",
+    "adp009d_policy_episode.v3",
 }
 
 

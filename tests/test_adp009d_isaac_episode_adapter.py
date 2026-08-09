@@ -315,6 +315,56 @@ def test_policy_inputs_carry_both_views_as_uint8_rgb() -> None:
     }
 
 
+def test_articulated_fixture_reads_native_task_state_without_a_canned_object() -> None:
+    observed = {
+        "joint_positions_rad": {
+            "refrigerator_upper_door_hinge": 0.9,
+            "refrigerator_lower_door_hinge": 0.0,
+        },
+        "joint_velocities_rad_s": {
+            "refrigerator_upper_door_hinge": 0.0,
+            "refrigerator_lower_door_hinge": 0.0,
+        },
+        "task_contact_active": False,
+        "joint_limit_violation": False,
+        "containment_violation": False,
+        "robot_collision_failure": False,
+        "scene_collision_failure": False,
+        "retreat_completed": True,
+    }
+    adapter = IsaacEpisodeAdapter(
+        env=_Env(),
+        robot=_Robot(),
+        approved_can=None,
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
+        task_sample_callback=lambda: observed,
+    )
+
+    assert adapter.read_task_sample() == observed
+    with pytest.raises(
+        IsaacEpisodeAdapterError, match="isaac_episode_rigid_task_object_missing"
+    ):
+        adapter.read_object_sample()
+
+
+def test_adapter_requires_rigid_object_or_native_task_state_source() -> None:
+    with pytest.raises(
+        IsaacEpisodeAdapterError, match="isaac_episode_task_state_source_missing"
+    ):
+        IsaacEpisodeAdapter(
+            env=_Env(),
+            robot=_Robot(),
+            approved_can=None,
+            action_dim=8,
+            reset_seed=20260806,
+            to_torch=_to_torch,
+            gripper_closed_width_m=0.0,
+            gripper_open_width_m=0.06,
+        )
 def test_isaac_xyzw_quaternion_is_converted_before_nvidia_frame_correction() -> None:
     """Regression for decoding pinned IsaacLab body poses in the wrong order."""
 
