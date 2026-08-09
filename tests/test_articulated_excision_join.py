@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import json
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +33,7 @@ T_WORLD_ASSET = [
     [0.0, 0.0, 1.0, 2e-09],
     [0.0, 0.0, 0.0, 1.0],
 ]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _digest(payload: dict, field: str) -> dict:
@@ -331,3 +334,36 @@ def test_join_requires_finite_transform() -> None:
     assert any(
         "expected_transform_invalid" in error for error in excinfo.value.errors
     )
+
+
+def test_checked_in_840796_construction_manifest_is_digest_bound() -> None:
+    path = (
+        REPO_ROOT
+        / "docs/arm_decision_proof_v1/manifests"
+        / "second_scene_840796_coverage_conditioned_construction.v1.json"
+    )
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+
+    assert manifest["manifest_digest"] == canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    assert manifest["status"] == (
+        "construction_join_admitted_native_qualification_unobserved"
+    )
+    assert {
+        binding["role"] for binding in manifest["construction_bindings"]
+    } == {
+        "byte_exact_gaussian_cutout_union",
+        "actual_usd_target_core_coverage",
+        "eight_camera_twelve_state_hybrid_review",
+        "source_collider_subtree_removal",
+        "articulated_replacement_usd",
+        "construction_join",
+    }
+    assert manifest["claim_boundary"] == {
+        "all_deleted_gaussians_factually_owned_by_source_object": False,
+        "hidden_background_recovered": False,
+        "native_simulator_qualified": False,
+        "physical_equivalence_proven": False,
+        "construction_join_admitted": True,
+    }

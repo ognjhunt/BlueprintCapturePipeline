@@ -540,11 +540,3 @@ __all__ = [
     "compile_articulated_excision_join",
     "compile_coverage_conditioned_cutout_receipt",
 ]
-
-
-__all__ = [
-    "ArticulatedExcisionJoinError",
-    "COVERAGE_SCHEMA_VERSION",
-    "JOIN_SCHEMA_VERSION",
-    "compile_articulated_excision_join",
-]

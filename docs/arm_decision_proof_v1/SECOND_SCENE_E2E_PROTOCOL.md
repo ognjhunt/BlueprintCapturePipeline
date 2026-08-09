@@ -1,6 +1,7 @@
 # Second-scene Arm Decision Proof v1 rehearsal protocol
 
-Status: scene and task frozen before learned outcomes. InteriorGS/SAGE scene
+Status: scene and task frozen before learned outcomes; construction joined;
+terminal completion path B sealed at the first native-simulator gate. InteriorGS/SAGE scene
 `840796`, refrigerator instance `123`, and the upper-door open task are frozen
 for construction by
 [`manifests/second_scene_840796_scene_task_freeze.v1.json`](manifests/second_scene_840796_scene_task_freeze.v1.json).
@@ -10,8 +11,7 @@ It authorizes private processing of the minimum derived Aura input and the
 derived SAGE articulated source on at most two concurrent paid resources under
 a combined USD 12 hard cap. It does not authorize uploading or redistributing
 raw InteriorGS PLY, label, or structure bytes. Scenario materialization and
-evaluation still fail closed until construction, native robot, camera, and
-control gates pass.
+evaluation still fail closed until native robot, camera, and control gates pass.
 
 Backlog item: **ADP-009D**. Gate: **public-scene day 28**. The observed
 completion artifact must be one sealed, digest-bound, development-only Task
@@ -92,13 +92,17 @@ native applied-parameter receipts must be computed from retained artifacts.
    candidates before learned-policy execution.
 3. Survey the complete known topology, then render task close-ups under an
    evaluation-authorized renderer manifest distinct from reconnaissance.
-4. Classify source Gaussians as owned, retained, or ambiguous from released-code
-   alpha-times-transmittance evidence without using held-out cameras. Admit
-   deletion only after the frozen held-out ownership gate passes. Then remove
-   the exact source collider, insert the separately derived articulated
-   replacement, and delete only replacement-depth-covered ambiguous Gaussians.
-   Run a released seam-only inpainting backend only for measured uncovered
-   residue; otherwise record `inpainting_not_required`.
+4. Build a target-only deletion ladder from calibrated target masks and retained
+   alpha-times-transmittance evidence. Preserve every nonselected PLY record
+   byte-for-byte. For each candidate rung, render the actual articulated USD
+   through every registered camera and every frozen door state, then measure
+   target-core residue outside USD depth. A rung is admissible only when the
+   residual fraction and connected component remain below preregistered bounds
+   and every residual pixel stays inside the target mask. Remove the exact
+   source collider subtree and join the separately derived articulated USD.
+   Run a released seam-only inpainting backend only for measured visible seams;
+   otherwise record `inpainting_not_required`. A broad generative replacement
+   can never own geometry, articulation, collision, physics, or untouched pixels.
 5. Resolve Franka placement, precontact/contact/travel/release/retreat IK phases,
    joint limits, containment, contacts, stability, and three-camera
    observability with native readback.
@@ -196,40 +200,38 @@ failure, and retreat complete. The exact prompt, limits, resets, failure rungs,
 handle is observed, but its exact 3D replacement contact volume remains a
 construction gate rather than an asserted measurement.
 
-## Gaussian ownership and replacement-coverage boundary
+## Coverage-conditioned Gaussian removal boundary
 
-The replacement-first amendment does not ask Aura or another image model to
-invent the refrigerator's physical geometry. The exact articulated USD owns
-visible replacement geometry, articulation, collision, and physics. Source
-appearance removal is a separate, fail-closed operation:
+The replacement-first method does not require factual ownership of every
+refrigerator-looking Gaussian. Its purpose is narrower: remove enough source
+appearance that the replacement USD is not double-exposed, while protecting
+observed kitchen appearance. The exact articulated USD remains the sole owner
+of visible replacement geometry, articulation, collision, and physics.
 
-1. Freeze eight calibrated source masks and withhold the maximally diverse
-   `far_left` and `far_right` cameras before classification.
-2. On the remaining six cameras, execute released FlashSplat commit
-   `3e3b14786333bf0163ba1b8541e86a3765112d7d` with rasterizer commit
-   `189c483ffa33dd6d5661343ce496df0c6eb80a0c` and retain per-Gaussian
-   front-to-back alpha-times-transmittance contribution.
-3. Materialize exhaustive, disjoint `owned`, `retained`, and `ambiguous` index
-   sets. Preserve every retained source row byte-for-byte. Any disagreement
-   between deterministic repetitions is forced to `ambiguous` under a policy
-   frozen before held-out evaluation.
-4. Recover removed-layer alpha from digest-bound exact-camera black/white
-   render pairs. On both held-out cameras, require complete refrigerator-mask
-   silhouette, zero significant contribution outside the two-pixel band, no
-   ambiguous residual above `1/255` with a connected component larger than four
-   pixels, exact repetition determinism, and performance at least as good as the
-   frozen 3,791-Gaussian OBB baseline.
-5. Only a passing ownership receipt authorizes the eight-camera by twelve-door-
-   state replacement-depth sweep. That sweep may delete an ambiguous Gaussian
-   only if its observed contribution is hidden by actual USD depth in every
-   cell where it is visible. A caller mask or visual judgment cannot assert
-   coverage.
+The earlier three-way FlashSplat ownership audit remains retained diagnostic
+evidence. It proved that deleting the whole ambiguous set was unsafe, but it did
+not prove that an exact same-volume USD could not cover a conservative cutout.
+The protocol therefore adds a preregistered target-only ladder:
 
-The held-out pair is single-use. Once viewed, it may explain a failure but may
-not be used to tune a new threshold and then be reported as unbiased proof. An
-engineering iteration on this scene therefore requires newly frozen views for
-confirmation. The USD may not be inserted merely to hide a failed ownership
-result.
+1. Build candidate index sets only from calibrated target-mask contribution
+   evidence; no held-out result may change a rung after evaluation.
+2. Delete those indices from the source PLY and prove every retained record is
+   byte-identical and in original order.
+3. Render the actual replacement USD, not a proxy box, in all eight cameras and
+   at twelve door states from 0 through 55 degrees.
+4. Compare target-core source contribution with actual USD depth. The frozen
+   admission limits are at most 5% uncovered target-core pixels, a residual
+   connected component no larger than the derived 1,609-pixel bound, and zero
+   residual outside the target mask.
+5. Delete the exact SAGE source collider subtree and verify the composed
+   inventories of all unrelated prims, attributes, and relationships are
+   unchanged.
+6. Admit only narrow mask-contained seam repair. Do not run broad inpainting
+   when the USD covers the removed volume; do not let an image model change
+   untouched pixels or author physical content.
+
+This is a geometric coverage claim, not a claim that all deleted Gaussians were
+factually refrigerator-owned or that hidden background was recovered.
 
 ## Joint Agent construction boundary
 
@@ -246,17 +248,23 @@ boundary: raw InteriorGS PLY, label, and structure bytes remain local and may no
 be redistributed. The exact derived SAGE component assembly and the minimum
 Aura adapter input are the only scene-derived provider inputs.
 
-One exact released-code Linux Joint Agent attempt ran with zero completion
-retries. It abstained before inference because the local OVRTX service's 64x64
-warmup did not become ready while the wrapper forced path tracing with 128
-sensor updates. The provider instance was destroyed and its staged objects were
-removed. The reusable bundle now binds OVRTX `rt2` with 32 updates, matching the
-released in-process construction-render defaults; it labels those images
-construction previews, never policy inputs or evaluation-authorized renders.
-No automatic paid retry is authorized. Separately, the returned-artifact
-contract now requires the candidate topology, optimized source, owned-core USD,
-diagnostics, and validation to survive the provider ZIP, and the watchdog can
-close its own run while an explicitly authorized sibling GPU remains active.
+Released-code Joint/Content Agent attempts are retained even when they return no
+asset. They may qualify an agent-produced comparison arm only after exact
+returned topology and native physics validation. They are not allowed to block
+the evidence-ladder deterministic parametric asset when that asset independently
+binds the frozen observations, joint limits, handle band, topology, material,
+mass, inertia, collision, and rights.
+
+The currently admitted construction asset is the deterministic articulated
+USDA with digest
+`sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1`.
+It contains cabinet, upper door, locked lower door, generated interior, handle,
+two revolute joints, colliders, mass and inertia authoring. Static admission is
+not native simulator qualification and is not physical equivalence. The first
+native diagnostic must open these exact bytes, read the prim and joint topology,
+apply reset and target states, settle, and retain observed joint/contact state.
+If provider startup fails before the USD opens, the result is an infrastructure
+null and controls, policies, and simulator claims remain forbidden.
 
 The exact upstream environment still cannot dry-run natively on Apple Silicon
 macOS because release `0.5.2` pins `usd-exchange==2.3.0`, which publishes Linux

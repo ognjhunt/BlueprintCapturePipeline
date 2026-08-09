@@ -1,0 +1,83 @@
+{
+  "schema_version": "second_scene_coverage_conditioned_construction.v1",
+  "program_id": "arm-decision-proof-v1",
+  "scene_id": "840796",
+  "target_instance_id": "123",
+  "task_id": "840796_refrigerator_upper_door_open_v1",
+  "freeze_digest": "sha256:0774b7072bb1a0fd0929fde81cd48aaff384af4608772f31d603c2324f97d03f",
+  "status": "construction_join_admitted_native_qualification_unobserved",
+  "evidence_root": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804",
+  "source_bindings": {
+    "interiorgs_ply_sha256": "sha256:1b8d0ff463a9a68d83ad10b5a49c3c5be9819b692005162382eaf30c733a8fdf",
+    "sage_collision_sha256": "sha256:7bfc6e4b6909f7057fa1983ac228e5d7511d7053745d8b6f467aecfea0c7194e",
+    "source_target_collider_prim": "/Root/ZC2DFJJVAIJFUPTUJQ888888"
+  },
+  "construction_bindings": [
+    {
+      "role": "byte_exact_gaussian_cutout_union",
+      "relative_path": "gaussian_excision/840796_v2/target_only_expansion_ladder_v1/rung_01_core95/union/adp009b_bound_index_union_candidate.v1.json",
+      "size_bytes": 2646,
+      "sha256": "sha256:8f9ba39ff0ccb6fb1d083f4145f894d0e63a20abf1361c2341cbe13a552fb860",
+      "receipt_digest": "sha256:5a27c306d5fa9fa19ef0c6e566dfffa6a89eacc50fe50b30021033342b99ab53"
+    },
+    {
+      "role": "actual_usd_target_core_coverage",
+      "relative_path": "gaussian_excision/840796_v2/target_only_expansion_ladder_v1/rung_01_core95/target_core_replacement_coverage_v1/articulated_excision_coverage.v1.json",
+      "size_bytes": 45656,
+      "sha256": "sha256:8ed67c4d29db107d5c5aa97a8e9f2cc6da4461557be578c598a2a96006e3b6bd",
+      "receipt_digest": "sha256:3322d2b48905212e4852a6548e059c6a8b417019fbe3ed63538f1d04da70ab62"
+    },
+    {
+      "role": "eight_camera_twelve_state_hybrid_review",
+      "relative_path": "gaussian_excision/840796_v2/target_only_expansion_ladder_v1/rung_01_core95/reference_hybrid_review_v1/adp009b_reference_hybrid_review.v1.json",
+      "size_bytes": 30505,
+      "sha256": "sha256:b20891425cb9ef9e025e0c41488ab22360f2fe0e1013cee6a55aa115a2cfb511",
+      "manifest_digest": "sha256:48d0129b430659d217c7bc7684cb34708bfef40d8accb782a2c1ec2f251d4745"
+    },
+    {
+      "role": "source_collider_subtree_removal",
+      "relative_path": "second_scene_840796_e2e/scene_construction_v1/source_collider_subtree_removal.v1.json",
+      "size_bytes": 1750,
+      "sha256": "sha256:dd476ea05c17e78ec5ffc6a76e4a404714da6d565c0135e299c572ec65af43f9",
+      "receipt_digest": "sha256:085c04def2052b3c49f4bb047394c9a11ddecbdbd63d2bdbc0f08a471e69ba82"
+    },
+    {
+      "role": "articulated_replacement_usd",
+      "relative_path": "simready_candidate/840796_deterministic_v1/simready_candidate_deterministic.usda",
+      "size_bytes": 86756,
+      "sha256": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1",
+      "topology_receipt_digest": "sha256:b4d0f35306e9cf337697cb7bf884b2cb684b9833e02dd52c329e8eb91c10c609",
+      "physics_receipt_digest": "sha256:4a2303ada5b844d9fa13af91be35b0585a6ba3b6aeb19e3d6ee69a727bdfcde0"
+    },
+    {
+      "role": "construction_join",
+      "relative_path": "second_scene_840796_e2e/scene_construction_v1/articulated_excision_join.v1.json",
+      "size_bytes": 2038,
+      "sha256": "sha256:28ad02c9ff56137a904ceb47e71df8f32906b40844eb52f1581d0115d2f77120",
+      "receipt_digest": "sha256:9e00db25948105db00ce2d0de63acd2fc0225c777d718330ea9a77dc7c18f8dc"
+    }
+  ],
+  "measured_coverage": {
+    "camera_count": 8,
+    "door_state_count": 12,
+    "maximum_uncovered_target_core_fraction": 0.028953981964478046,
+    "maximum_allowed_uncovered_target_core_fraction": 0.05,
+    "maximum_residual_connected_component_pixels": 989,
+    "maximum_allowed_connected_component_pixels": 1609,
+    "residual_outside_target_mask_pixels": 0
+  },
+  "world_alignment": {
+    "translation_m": [1.9742142, 1.4792181, 0.0],
+    "rotation": "identity",
+    "scale": [1.0, 1.0, 1.0]
+  },
+  "inpainting_disposition": "narrow_mask_contained_seam_repair_only_if_measured_visible_residue",
+  "claim_boundary": {
+    "all_deleted_gaussians_factually_owned_by_source_object": false,
+    "hidden_background_recovered": false,
+    "native_simulator_qualified": false,
+    "physical_equivalence_proven": false,
+    "construction_join_admitted": true
+  },
+  "manifest_digest": "sha256:a09cc42aa6901b169f75397507edf9a7c98d55e422b1e245322caf8e243033b9"
+}
