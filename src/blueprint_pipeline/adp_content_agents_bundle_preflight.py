@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 from .adp_content_agents_vast import SOURCE_COMMIT, SOURCE_TREE
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .provider_archive import ProviderArchiveError, extract_provider_archive
 
 
 SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v1"
@@ -79,16 +80,12 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _safe_extract(archive_path: Path, destination: Path) -> None:
-    root = destination.resolve()
     try:
-        with zipfile.ZipFile(archive_path) as archive:
-            for member in archive.infolist():
-                target = (destination / member.filename).resolve()
-                if target != root and root not in target.parents:
-                    raise ContentAgentsBundlePreflightError("bundle_zip_path_traversal")
-            archive.extractall(destination)
-    except zipfile.BadZipFile as exc:
-        raise ContentAgentsBundlePreflightError("bundle_zip_invalid") from exc
+        extract_provider_archive(archive_path, destination)
+    except ProviderArchiveError as exc:
+        raise ContentAgentsBundlePreflightError(
+            f"bundle_zip_extraction_invalid:{exc}"
+        ) from exc
 
 
 def _secret() -> str:

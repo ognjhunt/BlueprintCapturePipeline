@@ -23,6 +23,10 @@ from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .public_scene_simready_native import materialize_native_probe
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
+from .provider_bundle_rehearsal import (
+    provider_bundle_rehearsal_blockers,
+    rehearse_provider_bundle_entrypoint,
+)
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
@@ -442,6 +446,10 @@ def build_content_agents_vast_bundle(
         scripts / "adp_content_agents_provider_runner.py",
         runtime / "adp_content_agents_provider_runner.py",
     )
+    shutil.copy2(
+        repo / "src/blueprint_pipeline/provider_archive.py",
+        runtime / "provider_archive.py",
+    )
     native_probe: dict[str, Any] | None = None
     if variant["variant"] == "match_v2":
         native_probe = materialize_native_probe(
@@ -540,11 +548,19 @@ def build_content_agents_vast_bundle(
     write_json(runtime / "adp_content_agents_provider_manifest.json", readiness)
     bundle_path = job / "adp_content_agents_provider_runtime_bundle.zip"
     _deterministic_zip(runtime, bundle_path)
+    rehearsal = rehearse_provider_bundle_entrypoint(
+        bundle_path=bundle_path,
+        entrypoint_relative_path=(
+            "provider_runtime/run_adp_content_agents_provider_runtime.sh"
+        ),
+        evidence_path=job / "adp_content_agents_exact_bundle_rehearsal.json",
+    )
     receipt = {
         **readiness,
         "bundle_path": str(bundle_path),
         "bundle_sha256": _sha256(bundle_path),
         "bundle_size_bytes": bundle_path.stat().st_size,
+        "exact_bundle_entrypoint_rehearsal": rehearsal,
     }
     write_json(job / "adp_content_agents_bundle_receipt.json", receipt)
     return receipt
@@ -659,6 +675,13 @@ def run_content_agents_vast(
         bundle.get("status") != "ready"
         or not bundle_path.is_file()
         or _sha256(bundle_path) != bundle.get("bundle_sha256")
+        or provider_bundle_rehearsal_blockers(
+            bundle.get("exact_bundle_entrypoint_rehearsal"),
+            bundle_sha256=str(bundle.get("bundle_sha256") or ""),
+            entrypoint_relative_path=(
+                "provider_runtime/run_adp_content_agents_provider_runtime.sh"
+            ),
+        )
     ):
         raise ValueError("adp_content_agents_prepared_bundle_binding_invalid")
     if not execute:

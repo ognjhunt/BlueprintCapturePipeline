@@ -18,6 +18,10 @@ from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
+from .provider_bundle_rehearsal import (
+    provider_bundle_rehearsal_blockers,
+    rehearse_provider_bundle_entrypoint,
+)
 from .public_scene_gaussian_excision_audit import FREEZE_SCHEMA
 from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
@@ -260,6 +264,10 @@ def build_gaussian_excision_vast_bundle(
         "adp_gaussian_excision_provider_runner.py",
     ):
         shutil.copy2(scripts / name, runtime / name)
+    shutil.copy2(
+        repo / "src/blueprint_pipeline/provider_archive.py",
+        runtime / "provider_archive.py",
+    )
     entrypoint = runtime / "run_adp_gaussian_excision_provider_runtime.sh"
     entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR)
     source_archive = runtime / "flashsplat_source.zip"
@@ -301,11 +309,17 @@ def build_gaussian_excision_vast_bundle(
     write_json(runtime / "adp_gaussian_excision_provider_manifest.json", manifest)
     bundle = destination / "adp_gaussian_excision_provider_runtime_bundle.zip"
     _deterministic_zip(runtime, bundle)
+    rehearsal = rehearse_provider_bundle_entrypoint(
+        bundle_path=bundle,
+        entrypoint_relative_path="run_adp_gaussian_excision_provider_runtime.sh",
+        evidence_path=destination / "adp_gaussian_excision_exact_bundle_rehearsal.json",
+    )
     receipt = {
         **manifest,
         "bundle_path": str(bundle),
         "bundle_sha256": _sha256(bundle),
         "bundle_size_bytes": bundle.stat().st_size,
+        "exact_bundle_entrypoint_rehearsal": rehearsal,
     }
     write_json(destination / "adp_gaussian_excision_bundle_receipt.json", receipt)
     return receipt
@@ -425,6 +439,11 @@ def run_gaussian_excision_vast(
         or bundle.get("provider_bundle_kind") != PROVIDER_BUNDLE_KIND
         or not bundle_path.is_file()
         or _sha256(bundle_path) != bundle.get("bundle_sha256")
+        or provider_bundle_rehearsal_blockers(
+            bundle.get("exact_bundle_entrypoint_rehearsal"),
+            bundle_sha256=str(bundle.get("bundle_sha256") or ""),
+            entrypoint_relative_path="run_adp_gaussian_excision_provider_runtime.sh",
+        )
     ):
         raise ValueError("gaussian_excision_prepared_bundle_binding_invalid")
     if not execute:

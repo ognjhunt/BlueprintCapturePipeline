@@ -31,9 +31,47 @@ PY
 
 rm -rf "${SOURCE_DIR}"
 mkdir -p "${SOURCE_DIR}"
-python3 -m zipfile -e "${SCRIPT_DIR}/content_agents_source.zip" "${SOURCE_DIR}" || {
+python3 "${SCRIPT_DIR}/provider_archive.py" \
+  "${SCRIPT_DIR}/content_agents_source.zip" "${SOURCE_DIR}" \
+  --receipt "${OUTPUT_DIR}/joint_agent_source_extraction.json" || {
   write_missing_result "joint_agent_source_archive_extract_failed"; exit 2;
 }
+
+# Preserve Scene Optimizer Core's shared-library symlinks exactly. Python's
+# standard zipfile extraction turns those entries into tiny text files.
+export WU_SO_PACKAGE_DIR="${SOURCE_DIR}/.build-resources/scene_optimizer_core"
+mkdir -p "${WU_SO_PACKAGE_DIR}"
+python3 "${SCRIPT_DIR}/provider_archive.py" \
+  "${SCRIPT_DIR}/scene_optimizer_core.zip" "${WU_SO_PACKAGE_DIR}" \
+  --receipt "${OUTPUT_DIR}/joint_agent_scene_optimizer_extraction.json" || {
+  write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
+}
+for so_subdir in python lib extraLibs usdpy; do
+  if [ ! -d "${WU_SO_PACKAGE_DIR}/${so_subdir}" ]; then
+    write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
+  fi
+done
+
+if [ "${BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL:-0}" = "1" ]; then
+  python3 - "${OUTPUT_DIR}/provider_bundle_rehearsal.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps({
+    "schema_version": "provider_bundle_entrypoint_rehearsal.v1",
+    "status": "passed",
+    "entrypoint": "run_adp_joint_agent_provider_runtime.sh",
+    "archive_extraction_executed": True,
+    "gpu_runtime_started": False,
+    "paid_inference_performed": False,
+    "provider_mutations_performed": 0,
+    "stopped_before": "dependency_install_renderer_and_joint_agent_execution",
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  exit 0
+fi
+
 python3 -m pip install --disable-pip-version-check --no-cache-dir uv==0.10.7 || {
   write_missing_result "joint_agent_uv_install_failed"; exit 2;
 }
@@ -64,27 +102,8 @@ WU_OVRTX_LOCK_DIR="${SOURCE_DIR}/.ovrtx_locks" \
   write_missing_result "joint_agent_ovrtx_runtime_probe_failed"; exit 2;
 }
 
-# The released optimize_usd step needs the pinned public Scene Optimizer Core
-# package as its local backend; v8 failed closed here when it was absent. The
-# bundle ships the exact digest-bound zip, so no provider-side network fetch.
-# Extraction must go through unzip: the package carries 35 shared-library
-# symlink entries, and python -m zipfile materializes those as tiny text
-# stubs, which v11 retained as "libtbb.so.12: file too short".
-export WU_SO_PACKAGE_DIR="${SOURCE_DIR}/.build-resources/scene_optimizer_core"
-mkdir -p "${WU_SO_PACKAGE_DIR}"
-command -v unzip >/dev/null 2>&1 || {
-  write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
-}
-unzip -q -o "${SCRIPT_DIR}/scene_optimizer_core.zip" -d "${WU_SO_PACKAGE_DIR}" || {
-  write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
-}
 chmod -R u+rwX "${WU_SO_PACKAGE_DIR}" || true
 find "${WU_SO_PACKAGE_DIR}" -type f -name "*.so*" -exec chmod +x {} + 2>/dev/null || true
-for so_subdir in python lib extraLibs usdpy; do
-  if [ ! -d "${WU_SO_PACKAGE_DIR}/${so_subdir}" ]; then
-    write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;
-  fi
-done
 broken_so_stub_count=$(find "${WU_SO_PACKAGE_DIR}" -type f -name "*.so*" -size -1k | wc -l)
 if [ "${broken_so_stub_count}" -ne 0 ]; then
   write_missing_result "joint_agent_scene_optimizer_core_missing"; exit 2;

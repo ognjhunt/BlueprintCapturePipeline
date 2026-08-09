@@ -32,9 +32,30 @@ PY
 
 rm -rf "${SOURCE_DIR}"
 mkdir -p "${SOURCE_DIR}"
-python3 -m zipfile -e "${RUNTIME_DIR}/flashsplat_source.zip" "${SOURCE_DIR}" || {
+python3 "${RUNTIME_DIR}/provider_archive.py" \
+  "${RUNTIME_DIR}/flashsplat_source.zip" "${SOURCE_DIR}" \
+  --receipt "${OUTPUT_DIR}/flashsplat_source_extraction.json" || {
   write_missing_result "gaussian_excision_source_archive_extract_failed"; exit 2;
 }
+if [ "${BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL:-0}" = "1" ]; then
+  python3 - "${OUTPUT_DIR}/provider_bundle_rehearsal.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps({
+    "schema_version": "provider_bundle_entrypoint_rehearsal.v1",
+    "status": "passed",
+    "entrypoint": "run_adp_gaussian_excision_provider_runtime.sh",
+    "archive_extraction_executed": True,
+    "gpu_runtime_started": False,
+    "paid_inference_performed": False,
+    "provider_mutations_performed": 0,
+    "stopped_before": "dependency_install_and_cuda_execution",
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  exit 0
+fi
 python3 -m pip install --disable-pip-version-check --no-cache-dir uv==0.10.7 || {
   write_missing_result "gaussian_excision_uv_install_failed"; exit 2;
 }

@@ -18,6 +18,7 @@ from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .provider_bundle_rehearsal import rehearse_provider_bundle_entrypoint
 
 
 REQUEST_SCHEMA = "articulated_native_diagnostic_request.v1"
@@ -213,6 +214,35 @@ set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 mkdir -p "$OUT_DIR"
+if [ "${BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL:-0}" = "1" ]; then
+  for required in \
+    "$RUNTIME_DIR/assets/articulated_task_asset.usda" \
+    "$RUNTIME_DIR/articulated_native_diagnostic_request.v1.json" \
+    "$RUNTIME_DIR/articulated_native_diagnostic_runtime.py" \
+    "$RUNTIME_DIR/adp009d_franka_eval_harness_manifest.v1.json"; do
+    if [ ! -s "$required" ]; then
+      echo "missing exact-bundle rehearsal member: $required" >&2
+      exit 2
+    fi
+  done
+  python3 - "$OUT_DIR/provider_bundle_rehearsal.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps({
+    "schema_version": "provider_bundle_entrypoint_rehearsal.v1",
+    "status": "passed",
+    "entrypoint": "run_adp_arena_provider_runtime.sh",
+    "archive_extraction_executed": True,
+    "gpu_runtime_started": False,
+    "paid_inference_performed": False,
+    "provider_mutations_performed": 0,
+    "stopped_before": "isaac_sim_startup",
+}, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+PY
+  exit 0
+fi
 write_articulated_native_missing_result() {
   reason="$1"
   if [ ! -s "$OUT_DIR/adp009d_native_microcheck.json" ]; then
@@ -353,11 +383,17 @@ def build_articulated_native_diagnostic_bundle(
             archive.writestr(
                 info, path.read_bytes(), compress_type=zipfile.ZIP_STORED
             )
+    rehearsal = rehearse_provider_bundle_entrypoint(
+        bundle_path=bundle_path,
+        entrypoint_relative_path="provider_runtime/run_adp_arena_provider_runtime.sh",
+        evidence_path=job / "articulated_native_exact_bundle_rehearsal.json",
+    )
     receipt = {
         **manifest,
         "bundle_path": str(bundle_path),
         "bundle_sha256": _sha256(bundle_path),
         "bundle_size_bytes": bundle_path.stat().st_size,
+        "exact_bundle_entrypoint_rehearsal": rehearsal,
     }
     write_json(job / "articulated_native_diagnostic_bundle_receipt.json", receipt)
     return receipt

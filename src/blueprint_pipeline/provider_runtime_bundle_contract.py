@@ -228,6 +228,9 @@ def provider_runtime_contract_blockers(
         entrypoint_valid = (
             "adp_content_agents_runner_failed_without_runtime_result" in entrypoint_text
             and "blocked_adp_content_agents_process_exited_without_result" in entrypoint_text
+            and "provider_archive.py" in entrypoint_text
+            and "BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL" in entrypoint_text
+            and "python3 -m zipfile -e" not in entrypoint_text
         )
         runner_valid = all(
             token in runner_text
@@ -251,6 +254,9 @@ def provider_runtime_contract_blockers(
             and "joint_agent_scene_optimizer_core_missing" in entrypoint_text
             and "ovrtx_daemon_probe.log" in entrypoint_text
             and "joint_agent_ovrtx_daemon_probe_failed" in entrypoint_text
+            and "provider_archive.py" in entrypoint_text
+            and "BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL" in entrypoint_text
+            and "python3 -m zipfile -e" not in entrypoint_text
         )
         runner_valid = all(
             token in runner_text
@@ -333,6 +339,9 @@ def provider_runtime_contract_blockers(
             in entrypoint_text
             and "torch==2.5.1" in entrypoint_text
             and "--no-build-isolation" in entrypoint_text
+            and "provider_archive.py" in entrypoint_text
+            and "BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL" in entrypoint_text
+            and "python3 -m zipfile -e" not in entrypoint_text
         )
         runner_valid = all(
             token in runner_text

@@ -26,6 +26,10 @@ from .nvidia_nim_model_preflight import (
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
+from .provider_bundle_rehearsal import (
+    provider_bundle_rehearsal_blockers,
+    rehearse_provider_bundle_entrypoint,
+)
 from .public_scene_execution_authority import validate_public_scene_execution_authority
 from .usd_content_joint_agent_packet import inspect_joint_agent_checkout
 from .vast_independent_watchdog_control import (
@@ -348,6 +352,10 @@ def build_joint_agent_vast_bundle(
         scripts / "adp_joint_agent_provider_runner.py",
         runtime / "adp_joint_agent_provider_runner.py",
     )
+    shutil.copy2(
+        repo / "src/blueprint_pipeline/provider_archive.py",
+        runtime / "provider_archive.py",
+    )
     for name in (
         "__init__.py",
         "decision_evidence_contracts.py",
@@ -420,11 +428,17 @@ def build_joint_agent_vast_bundle(
     write_json(runtime / "adp_joint_agent_provider_manifest.json", manifest)
     bundle = destination / "adp_joint_agent_provider_runtime_bundle.zip"
     _deterministic_zip(runtime, bundle)
+    rehearsal = rehearse_provider_bundle_entrypoint(
+        bundle_path=bundle,
+        entrypoint_relative_path="provider_runtime/run_adp_joint_agent_provider_runtime.sh",
+        evidence_path=destination / "adp_joint_agent_exact_bundle_rehearsal.json",
+    )
     receipt = {
         **manifest,
         "bundle_path": str(bundle),
         "bundle_sha256": _sha256(bundle),
         "bundle_size_bytes": bundle.stat().st_size,
+        "exact_bundle_entrypoint_rehearsal": rehearsal,
     }
     write_json(destination / "adp_joint_agent_bundle_receipt.json", receipt)
     return receipt
@@ -579,6 +593,13 @@ def run_joint_agent_vast(
         bundle.get("status") != "ready"
         or not bundle_path.is_file()
         or _sha256(bundle_path) != bundle.get("bundle_sha256")
+        or provider_bundle_rehearsal_blockers(
+            bundle.get("exact_bundle_entrypoint_rehearsal"),
+            bundle_sha256=str(bundle.get("bundle_sha256") or ""),
+            entrypoint_relative_path=(
+                "provider_runtime/run_adp_joint_agent_provider_runtime.sh"
+            ),
+        )
     ):
         raise ValueError("adp_joint_agent_prepared_bundle_binding_invalid")
     if not execute:

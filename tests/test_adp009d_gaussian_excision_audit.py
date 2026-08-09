@@ -269,11 +269,23 @@ def _prepared_excision_bundle(tmp_path: Path) -> dict[str, object]:
     path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("provider_runtime/fixture", "fixture")
+    digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     return {
         "status": "ready",
         "provider_bundle_kind": excision_vast.PROVIDER_BUNDLE_KIND,
         "bundle_path": str(path),
-        "bundle_sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        "bundle_sha256": digest,
+        "exact_bundle_entrypoint_rehearsal": {
+            "status": "passed",
+            "bundle_sha256": digest,
+            "entrypoint_relative_path": (
+                "run_adp_gaussian_excision_provider_runtime.sh"
+            ),
+            "returncode": 0,
+            "gpu_runtime_started": False,
+            "paid_inference_performed": False,
+            "provider_mutations_performed": 0,
+        },
     }
 
 
@@ -781,10 +793,15 @@ def Xform "Root"
             "source_modified": False,
         },
     )
+    def write_fixture_source_archive(source: Path, destination: Path) -> None:
+        del source
+        with zipfile.ZipFile(destination, "w") as archive:
+            archive.writestr("README.md", "fixture-source")
+
     monkeypatch.setattr(
         excision_vast,
         "_write_source_archive",
-        lambda source, destination: destination.write_bytes(b"fixture-source"),
+        write_fixture_source_archive,
     )
     bundle = excision_vast.build_gaussian_excision_vast_bundle(
         repo_root=Path(__file__).resolve().parents[1],

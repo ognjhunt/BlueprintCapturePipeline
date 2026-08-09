@@ -380,7 +380,22 @@ def _prepared_bundle(tmp_path: Path) -> dict:
     with zipfile.ZipFile(bundle, "w") as archive:
         archive.writestr("provider_runtime/fixture", "fixture")
     digest = "sha256:" + __import__("hashlib").sha256(bundle.read_bytes()).hexdigest()
-    return {"status": "ready", "bundle_path": str(bundle), "bundle_sha256": digest}
+    return {
+        "status": "ready",
+        "bundle_path": str(bundle),
+        "bundle_sha256": digest,
+        "exact_bundle_entrypoint_rehearsal": {
+            "status": "passed",
+            "bundle_sha256": digest,
+            "entrypoint_relative_path": (
+                "provider_runtime/run_adp_joint_agent_provider_runtime.sh"
+            ),
+            "returncode": 0,
+            "gpu_runtime_started": False,
+            "paid_inference_performed": False,
+            "provider_mutations_performed": 0,
+        },
+    }
 
 
 def test_run_dry_run_is_zero_mutation_and_requires_bound_bundle(tmp_path: Path) -> None:
