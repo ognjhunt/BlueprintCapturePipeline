@@ -416,6 +416,137 @@ def write_standard_3dgs_ply(splat: SplatData, path: str | Path) -> Path:
     return path
 
 
+def write_standard_3dgs_ply_subset_exact(
+    source: str | Path,
+    destination: str | Path,
+    retained_indices: Sequence[int] | np.ndarray,
+) -> Path:
+    """Copy selected standard-PLY vertex rows without decoding or rewriting them.
+
+    The header's vertex count necessarily changes. Every retained vertex row is
+    otherwise copied byte-for-byte, in the caller-provided order. This is the
+    preservation primitive for object cutouts where float round-tripping is too
+    weak an evidence boundary.
+    """
+
+    source_path = Path(source)
+    destination_path = Path(destination)
+    with source_path.open("rb") as handle:
+        header_lines: list[bytes] = []
+        while True:
+            line = handle.readline()
+            if not line:
+                raise ValueError("unexpected EOF in PLY header")
+            header_lines.append(line)
+            if line.strip() == b"end_header":
+                break
+        body_offset = handle.tell()
+
+    with source_path.open("rb") as handle:
+        fmt, count, props, parsed_offset = _parse_ply_header(handle)
+    if fmt != "binary_little_endian":
+        raise ValueError(f"unsupported PLY format '{fmt}' (need binary_little_endian)")
+    if parsed_offset != body_offset:
+        raise ValueError("standard PLY header offset mismatch")
+    if any(ptype not in _FLOAT_PLY_TYPES for ptype, _ in props):
+        raise ValueError("non-float vertex property; not a standard 3DGS float PLY")
+    names = {name for _, name in props}
+    missing = [name for name in _REQUIRED_3DGS_PROPS if name not in names]
+    if missing:
+        raise ValueError(f"missing 3dgs properties: {missing}")
+
+    indices = np.asarray(retained_indices)
+    if indices.ndim != 1 or indices.dtype.kind not in {"i", "u"}:
+        raise ValueError("retained indices must be a one-dimensional integer array")
+    indices = indices.astype(np.int64, copy=False)
+    if indices.size and (int(indices.min()) < 0 or int(indices.max()) >= count):
+        raise ValueError("retained index outside source vertex range")
+    if indices.size > 1 and np.any(indices[1:] <= indices[:-1]):
+        raise ValueError("retained indices must be strictly increasing")
+
+    row_size = 4 * len(props)
+    expected_size = body_offset + count * row_size
+    if source_path.stat().st_size != expected_size:
+        raise ValueError("standard PLY contains trailing or truncated vertex bytes")
+    rows = np.memmap(
+        source_path,
+        dtype=np.uint8,
+        mode="r",
+        offset=body_offset,
+        shape=(count, row_size),
+    )
+    rewritten_header: list[bytes] = []
+    replaced_count = False
+    for line in header_lines:
+        if line.startswith(b"element vertex "):
+            newline = b"\r\n" if line.endswith(b"\r\n") else b"\n"
+            rewritten_header.append(f"element vertex {indices.size}".encode("ascii") + newline)
+            replaced_count = True
+        else:
+            rewritten_header.append(line)
+    if not replaced_count:
+        raise ValueError("PLY header missing vertex element")
+
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    with destination_path.open("wb") as handle:
+        handle.writelines(rewritten_header)
+        for start in range(0, indices.size, 16384):
+            handle.write(np.asarray(rows[indices[start : start + 16384]]).tobytes(order="C"))
+    return destination_path
+
+
+def verify_standard_3dgs_ply_subset_exact(
+    source: str | Path,
+    subset: str | Path,
+    retained_indices: Sequence[int] | np.ndarray,
+) -> dict[str, int | bool]:
+    """Prove that ``subset`` contains exactly the requested raw source rows."""
+
+    source_path = Path(source)
+    subset_path = Path(subset)
+    with source_path.open("rb") as handle:
+        _, source_count, source_props, source_offset = _parse_ply_header(handle)
+    with subset_path.open("rb") as handle:
+        _, subset_count, subset_props, subset_offset = _parse_ply_header(handle)
+    if source_props != subset_props:
+        raise ValueError("subset PLY property layout changed")
+    indices = np.asarray(retained_indices, dtype=np.int64)
+    if indices.ndim != 1 or subset_count != indices.size:
+        raise ValueError("subset PLY vertex count mismatch")
+    if indices.size and (int(indices.min()) < 0 or int(indices.max()) >= source_count):
+        raise ValueError("retained index outside source vertex range")
+    row_size = 4 * len(source_props)
+    source_rows = np.memmap(
+        source_path,
+        dtype=np.uint8,
+        mode="r",
+        offset=source_offset,
+        shape=(source_count, row_size),
+    )
+    subset_rows = np.memmap(
+        subset_path,
+        dtype=np.uint8,
+        mode="r",
+        offset=subset_offset,
+        shape=(subset_count, row_size),
+    )
+    exact = True
+    for start in range(0, indices.size, 16384):
+        stop = min(start + 16384, indices.size)
+        if not np.array_equal(source_rows[indices[start:stop]], subset_rows[start:stop]):
+            exact = False
+            break
+    return {
+        "source_vertex_count": int(source_count),
+        "retained_vertex_count": int(subset_count),
+        "row_size_bytes": int(row_size),
+        "retained_rows_byte_exact": exact,
+        "retained_order_matches_source": bool(
+            indices.size < 2 or np.all(indices[1:] > indices[:-1])
+        ),
+    }
+
+
 def find_splat_transform_cli(repo_root: str | Path | None = None) -> Path | None:
     root = Path(repo_root) if repo_root else Path(__file__).resolve().parents[2]
     cli = root / SPLAT_TRANSFORM_CLI_REL
