@@ -1,8 +1,9 @@
 # ADP-009D overnight results — 2026-08-08
 
 Status: learned-policy P0-P4 canaries completed; the frozen canonical
-scripted-positive control remains open, so no further learned-policy run is
-admitted. Broader ADP qualification also remains open.
+scripted-positive control remains open after v97, so no further learned-policy
+run is admitted. The convergence-aware v4 control plan is published and awaits
+one controls-only canary. Broader ADP qualification also remains open.
 
 Scope: ADP-009D, public-scene day-28 Franka construction rehearsal. Every
 result in this document remains `development_only`. Simulator state is the
@@ -13,7 +14,7 @@ one policy is generally better.
 ## What landed
 
 The branch advanced from the overnight handoff at `54f70c8e0` to
-`d14252947`. The changes fall into six evidence-bearing groups:
+`521f6537a`. The changes fall into six evidence-bearing groups:
 
 - **P0, interpretable action delivery:** `c9103d311`, `b9a3b30ac`,
   `7b901349a`. Episode receipts retain reset/end joints, maximum joint motion,
@@ -50,7 +51,8 @@ The branch advanced from the overnight handoff at `54f70c8e0` to
   update is no longer accepted as a camera fix.
 - **Frozen scenario matrix and fail-closed native controls:** `46e5d2e99`,
   `2086690c1`, `a350153b5`, `adee2091a`, `db9559137`, `3127e461c`,
-  `04db82770`, `47c83b41d`, `b97c13afd`, `8aeeb1203`, `5b1bb7e11`. The
+  `04db82770`, `47c83b41d`, `b97c13afd`, `8aeeb1203`, `5b1bb7e11`,
+  `521f6537a`. The
   policy-neutral 128-cell matrix
   binds identical cells and seeds to both candidates and both controls. Every
   episode retains external, wrist, and overview media. The positive control
@@ -69,7 +71,12 @@ The branch advanced from the overnight handoff at `54f70c8e0` to
   producing a terminal bundle receipt and make camera aiming orientation-first:
   every servo step resolves the rigid-mount look-at from the current live body
   pose while holding that live position, rather than pulling the gripper back
-  toward an unreachable reset translation.
+  toward an unreachable reset translation. The v4 control plan replaces fixed
+  IK phase lengths with bounded convergence: motion phases have a 240-step hard
+  ceiling, grasp and release retain a 30-step minimum dwell, and phase arrival
+  requires three consecutive samples within 0.02 m. Receipts distinguish
+  `stable_arrival` from `maximum_steps_exhausted` and retain the executed
+  minimum, maximum, stability count, and terminal error.
 
 Other supporting changes are `a78e70dde` and `f98622f67` for the frames-only
 Aura comparison, `790b95eec` for explicit concurrent-GPU authority without
@@ -82,8 +89,8 @@ PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode
 .venv/bin/ruff check src/ tests/
 ```
 
-The latest live wrist-aim correction passed `970 passed, 1 skipped, 9052
-deselected` in the required filtered lane. Ruff was clean.
+The latest convergence-aware control correction passed `973 passed, 1 skipped,
+9052 deselected` in the required filtered lane. Ruff was clean.
 
 ## Scientific findings through v84
 
@@ -199,8 +206,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v96
-ledgers add `$8.105864`, for `$19.104163` total and `$5.895837` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v97
+ledgers add `$8.224745`, for `$19.223044` total and `$5.776956` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -250,15 +257,16 @@ they are evidence that concurrency failed closed.
 | v94 rigid-mount aim attempt | `$0.149134` | Blocked before Isaac startup and before either control. The launch omitted the explicit controls mode, and the diagnostic bundle then lacked the task-destination receipt that the task-centred overview loads unconditionally. No frames or control outcome exist. Commit `5b1bb7e11` ships that frozen receipt in every bundle and rejects ambiguous paid requests unless diagnostic-only, controls, or a policy mode is explicit. |
 | v95 explicit rigid-mount controls | `$0.087379` | The bundle correctly bound controls-only mode, the canonical scenario, the frozen control plan, and the task destination. RTX 6000 Ada instance `47225330` on machine `137572` passed heartbeat, GPU, and Isaac smoke, then the provider host exited during dependency installation before any terminal bundle marker or output ZIP. No Isaac receipt, frame, or control outcome exists. Commit `0191571a0` classifies this as `provider_instance_exited_before_bundle_terminal_marker` and records the machine for future exclusion. No candidate was provisioned or queried. |
 | v96 quarantined-host rigid-mount controls | `$0.238731` | Excluding machine `137572`, L40S instance `47226744` returned a valid native receipt with controls explicitly requested and no candidate queried. The fixed-point solver converged in eight iterations to a `0.000002832` degree predicted residual, but the fixed reset-position plus large target orientation was not a reachable six-DoF pose: reset arrival error was `0.048708 m` and translation-fallback errors were `0.182-0.239 m`. All 240 object holds were safe, yet all 166 wrist-visible samples remained clipped at the top edge, so `no_safe_wrist_observable_episode_start` and `scenario_controls_receipt_missing` correctly blocked both controls. Commit `d14252947` replaces the fixed-position aim with a live, orientation-priority servo. No policy outcome exists. |
+| v97 live-orientation-priority controls | `$0.118881` | L40S instance `47229363` returned both controls with complete external/wrist/overview media and no candidate queried. The zero-action negative passed as `never_moved`. The scripted positive advanced through the safe wrist start and moved monotonically toward pregrasp for all 80 fixed steps, reducing grasp-frame error from `0.320352 m` to `0.146733 m`, but correctly stopped before descend/grasp with `scripted_control_phase_not_reached:pregrasp:error_m=0.146733`. Both Jacobian row blocks were world-to-root, rank remained six, the final live wrist-target position error was `0.002877 m`, and joint-limit margins remained healthy. This rules out wrong-axis motion, dead action delivery, and the previous wrist-start fault; it identifies the fixed phase budget as the next harness defect. No policy outcome exists. Commit `521f6537a` replaces fixed IK phase lengths with bounded stable convergence. |
 
 All completed paid attempts were followed by an API ownership/zero check. v86
 through v95 were each launched from provider zero as the sole active instance;
 after each automatic teardown a fresh Vast API query returned `active: 0 []`.
-v96 ran under exact concurrent-instance authority while a separately owned
+v96 and v97 ran under exact concurrent-instance authority while a separately owned
 Aura/InteriorGS instance `47226054` was active. Only v96's instance `47226744`
-was torn down; the post-teardown inventory proved this goal owned zero instances
-and that the one explicitly allowed external instance remained. It was not
-modified or charged to this ledger.
+and v97's instance `47229363` were torn down; each post-teardown inventory proved
+this goal owned zero instances and that the one explicitly allowed external
+instance remained. It was not modified or charged to this ledger.
 
 ## Scenario-family and control-harness progress after v85
 
@@ -460,8 +468,24 @@ five-percent visibility margin or object-safety gates. During the camera-aim
 waypoint, each IK step now recomputes the rigid-mount orientation from the live
 body pose and holds that current live translation. The receipt distinguishes
 this orientation-priority command from the preregistered reset position and
-retains bounded solver updates. This requires one controls-only canonical
-canary before either learned candidate may run again.
+retains bounded solver updates.
+
+v97 exercised that correction and reached the controls for the first time from
+a live-aimed, non-border-clipped wrist start. The scripted arm reduced pregrasp
+error on every one of its 80 steps and ended with no joint-limit margin below
+`0.683 rad`; the target remained inside the frozen `0.855 m` base-reach bound.
+Its last 20 steps reduced error by about `0.002048 m/step`, projecting arrival
+roughly 62 steps beyond the old ceiling. Because it had not reached the 0.02 m
+tolerance, the phase gate correctly prevented descend and gripper closure.
+
+Commit `521f6537a` encodes that observed correction as
+`adp009d_control_plan.v4`. Each IK phase now runs until three consecutive
+in-tolerance samples or its hard maximum, whichever comes first; grasp and
+release still dwell for at least 30 steps. Hermetic coverage proves a
+v97-like slow phase can run past 80 steps then stop early, a transient arrival
+does not pass, a nonconverging phase exhausts exactly 240 steps, and the legacy
+v3 plan is rejected. This requires one controls-only canonical canary before
+either learned candidate may run again.
 
 ## What remains open
 
@@ -483,15 +507,15 @@ canary before either learned candidate may run again.
 
 ## Single next action
 
-From provider ownership zero at clean immutable commit `d14252947`, run only the
+From provider ownership zero at clean immutable commit `521f6537a`, run only the
 checked-in canonical scenario's zero-action negative and deterministic
 scripted-positive control pair, explicitly binding `--adp009d-controls` and
 `docs/arm_decision_proof_v1/manifests/adp009d_canonical_scenario_instance.v1.json`.
 Do not query either learned policy. Verify that
 the wrist aim selects a non-border-clipped start while retaining live
 body-derived camera calibration, that the IK binding reports world-to-root
-rotation for both Jacobian row blocks, and that pregrasp converges along the
-commanded task direction. If the scripted positive does not place the exact
+rotation for both Jacobian row blocks, and that every IK phase records either
+stable arrival or maximum exhaustion. If the scripted positive does not place the exact
 SimReady can, retain the overview/external/wrist videos and typed receipt, tear
 down to provider ownership zero with no unexpected instances, and fix the
 harness locally before any learned-policy spend.
