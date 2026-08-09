@@ -372,6 +372,41 @@ material at `(0.90, 0.91, 0.92)`; its physics material is the agent-assigned
 refrigerator is closed in every frame of the scan - so all of it stays tagged
 `generated_candidate_geometry`.
 
+## Native Isaac: the lane could not express an articulated probe
+
+Three launch attempts, all blocked before allocation at zero spend. Each was
+the transport working correctly, and each exposed a layer built for the rigid
+can that a hinged door cannot satisfy: the container image was pinned
+separately here instead of reusing the lane's digest; the probe set was
+hardcoded to `drop`, `slide`, `tip`, `gripper`; and the entry contract required
+the rigid probe's manifests.
+
+All three are generalized. The probe set is validated against the set the
+digest-bound bundle declares, defaulting to the rigid four so nothing existing
+is relaxed - a test pins that the rigid default still rejects an articulated
+result. The articulated bundle occupies the lane's transport slots, fills its
+manifest set with articulated equivalents, and conforms to its crash-fallback
+contract so a silent process exit still writes a typed result. The worker runs
+a blank physics stage before the asset, keeping "the runtime is broken"
+distinguishable from "the asset is broken", and records each readback's
+observed value rather than only a verdict.
+
+## Harness generality
+
+Roughly fifteen 840313 hardcodings have been found one paid run at a time.
+A guard test now parses every module in the articulated and suppression lane,
+strips docstrings, and fails if executable code names a scene id, an instance
+id, a specific object, or a fixed default prim path. Docstrings stay exempt:
+recording which run motivated a contract is worth keeping; depending on that
+run at runtime is not.
+
+It found two live defects. The render-material scope hardcoded
+`/Asset/Looks/Render` and now hangs off the stage's default prim, covered by an
+oven fixture rooted at `/Oven`. The Isaac worker fell back to driving `/Asset`
+when no articulation root was found, which would have turned "this asset has
+no articulation root" into an unrelated lookup failure on a paid provider; it
+now fails with that exact reason.
+
 ## Smallest next action
 
 Run the blank-stage Isaac/PhysX diagnostic against
