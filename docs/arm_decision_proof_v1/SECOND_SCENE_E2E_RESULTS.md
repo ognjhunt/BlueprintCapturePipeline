@@ -2,17 +2,19 @@
 
 Status: **terminal completion path B — typed, evidence-backed abstention before
 SimReady construction**. Scene/task selection, registration, exact removal
-inputs, one released Aura execution, and one Joint Agent execution attempt are
-sealed. The Aura run used a reference-camera index inconsistent with the
-released runtime's filename-sorted camera order; the Joint Agent run reached no
-model inference because its bounded OVRTX warmup did not complete. Therefore no
+inputs, two released Aura executions, and one Joint Agent execution attempt are
+sealed. The first Aura run used a reference-camera index inconsistent with the
+released runtime's filename-sorted camera order. One explicitly authorized,
+zero-retry correction used the right camera but produced severe multiview visual
+artifacts and outside-mask scene damage. The Joint Agent run reached no model
+inference because its bounded OVRTX warmup did not complete. Therefore no
 articulated SimReady replacement exists, the scripted-positive control is not
 admissible, and neither frozen learned candidate was evaluated. This is an
 upstream construction result, not a policy null.
 
 The terminal receipt is
-`manifests/second_scene_840796_task_evaluation_abstention.v1.json`, digest
-`sha256:a32fb5c762e4fbeb46bb24f8b1308e765dc18f972438d6dde55d4452e36c83fa`.
+`manifests/second_scene_840796_task_evaluation_abstention.v2.json`, digest
+`sha256:54c252e9477cc441b26d0e7b3a1ec4909e85bd79bca087ba9232160f64e643aa`.
 
 ## Frozen selection and task
 
@@ -77,7 +79,7 @@ has 493,872 surfels, 126,432,821 bytes, digest
 `sha256:4da6fd6ef384dc4b344cde6474b28d5faa66ffb9ef430bac5e6c6b5c611a7f57`,
 plus eight exact-camera PNGs.
 
-The run does **not** qualify removal. Its adapter configured `front_medium` as
+The first run does **not** qualify removal. Its adapter configured `front_medium` as
 reference index 0, while the released Aura COLMAP loader sorts camera names and
 places `front_medium` at index 2. The retained front view also visibly contains
 large translucent/smeared geometry in the removed-refrigerator region. No
@@ -88,6 +90,25 @@ Outside a 16-pixel-dilated target mask, the measured eight-view aggregate is
 and 0.14463770 fraction of pixels with maximum-channel change above 20/255.
 This retrospective measurement has no admission effect and no frozen quality
 threshold.
+
+The corrected adapter digest is
+`sha256:bfdc2500d324b44e014c030b6c2bb3e6593e4f5d9797d70f7e637ae654e48893`.
+It binds the released filename-sorted order and `front_medium` index 2 and
+suppresses the unretained 240-frame trajectory. All eight released stages exited
+zero. The final point cloud has 1,134,299 vertices, 290,382,134 bytes, digest
+`sha256:0febc280ed539a2d1ffac11a00bf07ae62bfd09a81659caf614dc8cefe1ca965`.
+This fixes the camera-index defect but **does not fix the Aura result**.
+
+All eight final renders are unusable: four contain large black/rainbow Gaussian
+explosions; the others contain large smears and semantic hallucinations,
+including a person-like figure in the removed volume. The exact-camera locality
+receipt measured 21.500983 dB mean outside-mask PSNR, 0.95173965 windowed SSIM,
+0.03423921 mean absolute error, and 0.15807323 of preserved pixels changing by
+more than 20/255. Per-view PSNR spans 19.013–23.318 dB. Because thresholds were
+not frozen before this retry, those metrics have no success-admission effect;
+the digest-bound visual rejection independently keeps the claim ceiling at
+`rejected_visual_candidate_only`. The run did not retain inpaint-init renders or
+SDEdit images, so the exact failing stage cannot be localized retrospectively.
 
 The Joint Agent is bound to USD Content Agents v0.5.2, commit
 `36dbf3f274f8e256637230a05a085853f65cc175`, with a 28-component source asset and packet digest
@@ -102,21 +123,40 @@ Its smallest blocker is `joint_agent_local_ovrtx_renderer_not_ready`.
 |---|---:|---|---:|---|
 | Local selection, topology survey, registration, exact SAGE sweep, masks, source extraction, packet construction, compilers, and hermetic regressions | Local | Retained by digest-bound manifests and tests | USD 0 | Local only |
 | Aura `second_scene_840796_v4_execute`, Vast 47226054 | Paid | Released workflow completed; quality abstention at runtime reference-camera binding | USD 2.372684 adapter estimate | Instance destroyed; staged objects absent; provider inventory empty |
+| Aura corrected `second_scene_840796_v5_retry_execute`, Vast 47244918 | Paid, explicitly authorized attempt 2 | Released workflow completed with correct reference binding; rejected for Gaussian explosions, hallucination, multiview inconsistency, and outside-mask damage | USD 1.774042 adapter estimate, below USD 3.50 attempt cap | Instance destroyed; staged objects absent; independent watchdog terminal; provider inventory `[]` |
 | Joint Agent `840796_v7_execute`, Vast 47232529 | Paid | Typed null before inference: `joint_agent_local_ovrtx_renderer_not_ready` | USD 0.133936 exact retained cost | Instance destroyed; staged objects absent; continuing spend false |
 
-Combined retained spend is USD 2.506620 using the Aura adapter estimate, below
+Corrected-retry local preflight retained two non-paid nulls rather than hiding
+them. The first bundle build supplied the SAM2 package subdirectory instead of
+the repository root and failed before upload or provider mutation. The corrected
+build produced a 495 MB bundle, digest
+`sha256:931f764210cd87d21428e8719c3978d260d98f157a0dbb17d04b5e4a97491581`.
+The first allocator dry-run used a mistyped full commit SHA and failed closed
+with zero provider mutations; the exact-SHA dry-run then admitted the immutable
+commit, input digests, watchdog, TTL, cap, and attempt authority. Provider API
+inventory was `[]` immediately before launch and after teardown.
+
+Combined retained spend is USD 4.280662 using the two Aura adapter estimates,
+below the original USD 12 goal authority; the corrected attempt also remained
+below its separate USD 3.50 cap. The first Aura run's
 the USD 12 authority. Vast's terminal budget ledger explicitly reports
 `actual_cost_usd: null` and
 `actual_cost_source: not_available_from_instance_probe_api`; a filtered invoice
 query immediately after teardown returned no posted line. Therefore an exact
-Aura billed amount is unresolved rather than fabricated. There were no paid
-retries. Final provider inventory was `[]`.
+Aura billed amount is unresolved rather than fabricated. There was exactly one
+freshly authorized paid Aura retry and no automatic retry. Final provider
+inventory was `[]`.
 
 Aura stage runtimes were 42.20 s reference generation, 3,868.85 s training,
 1,144.42 s render, 1,080.78 s removal, 9.54 s SAM2, 1,373.16 s inpaint init,
 155.01 s SDEdit, and 3,769.74 s fine-tuning. The run exposed four unretained
 240-frame trajectory exports. Commit `e41483749` disables those optional exports
 for future adapters while retaining all exact-camera evidence.
+
+Corrected-run stage runtimes were 61.66 s reference generation, 3,746.67 s
+training, 29.77 s rendering, 36.78 s removal, 7.84 s SAM2, 146.81 s inpaint
+initialization, 140.02 s SDEdit, and 2,422.85 s fine-tuning. The terminal
+fine-tune loss was 0.089397. Runtime completion is not visual qualification.
 
 ## Controls, candidates, media, and seal
 
@@ -133,13 +173,16 @@ Retained media and navigation:
 - Aura after frames, native render manifest, locality receipt, point cloud, and
   stage logs:
   `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/aura_interiorgs/second_scene_840796_v4_execute/immutable_execution`
+- Corrected Aura frames, point cloud, logs, exact-camera locality receipt, and
+  corrected Big-LaMa reference:
+  `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/aura_interiorgs/second_scene_840796_v5_retry_execute`
 - Reconnaissance survey and target closeups:
   `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/selection_inspection_second_scene/840796`
 - Finder-friendly terminal evidence index:
   `evidence/second_scene_840796/OPEN_ME_episode_evidence_index.html`
 - Authoritative index:
   `evidence/second_scene_840796/episode_evidence_index.v1.json`, digest
-  `sha256:6f0a4b5a5f3c728e57e8997c34a8360d2e9598c3e1cc9f2f9395afaca6a93bc4`
+  `sha256:52c9e895211040f3e6fe4b5cd08540742e970fab915beec5ac2539bde2229d7a`
 
 The index truthfully contains zero episode videos or scores and names the
 pre-episode abstention. External, wrist, and overview videos do not exist
@@ -163,18 +206,20 @@ because no episode was admitted.
 | `a3eebc13e` | Derive Aura reference index from the released runtime camera order. |
 | `117bcb06b` | Retain and propagate Aura runtime reference-binding abstentions. |
 | `cf75480a3` | Seal terminal manifests, results, media index, and the corrected next action. |
+| `1dc2877ff` | Bind the exact corrected Aura adapter, one-attempt authority, cap, TTL, and no-retry rule. |
+| `141d54ca0` | Seal the corrected execution and visual rejection; retain future inpaint-init/SDEdit evidence; propagate the rejection through the terminal run. |
 
 Before every commit, the required focused repository gate and Ruff gate passed.
-The terminal evidence gate passed 1,007 tests with 1 skipped and 9,150
-deselected in 103.90 seconds; Ruff passed over `src/` and `tests/`.
+The corrected-result gate passed 1,016 tests with 1 skipped and 9,151
+deselected in 56.53 seconds; Ruff passed over `src/` and `tests/`.
 
 ## Claim ledger
 
 | Classification | Claims |
 |---|---|
-| Implemented | Outcome-blind scene selection; topology-first survey; exact SAGE sweep admission; bounded 1–4-joint task scoring with one commanded joint; task-neutral controls and learned episode contracts; private paid-resource admission; zero-retry execution receipts; portable zero-episode abstention index; parallel customer DAG; runtime-sorted Aura reference binding; elimination of unretained trajectory renders. |
+| Implemented | Outcome-blind scene selection; topology-first survey; exact SAGE sweep admission; bounded 1–4-joint task scoring with one commanded joint; task-neutral controls and learned episode contracts; private paid-resource admission; zero-retry execution receipts; portable zero-episode abstention index; parallel customer DAG; runtime-sorted Aura reference binding; elimination of unretained trajectory renders; digest-bound visual rejection; future inpaint-init and SDEdit intermediate retention; full-resolution locality memory bounding. |
 | Simulator-qualified | None for scene 840796. No native articulated replacement or control cell was admitted. |
-| Blocked or abstained | Aura output abstained at `aurafusion360_runtime_reference_camera_binding_mismatch`; Joint Agent abstained at `joint_agent_local_ovrtx_renderer_not_ready`; SimReady replacement, Franka/IK/contact/camera gates, controls, matrix, both policies, episode media, comparison, and replay seal were not reached. |
+| Blocked or abstained | Corrected Aura output abstained at `aurafusion360_interiorgs_visual_artifact_rejection`; exact failure-stage localization is unavailable because that completed run predates intermediate retention. Joint Agent abstained at `joint_agent_local_ovrtx_renderer_not_ready`; SimReady replacement, Franka/IK/contact/camera gates, controls, matrix, both policies, episode media, comparison, and replay seal were not reached. |
 | Physically unresolved | Appearance/collision registration as physical truth; hidden refrigerator/background truth; replacement physical equivalence; real refrigerator/Franka performance; partner fidelity; deployment readiness; physical candidate ranking. |
 
 Exact claim ceiling: a private public-dataset construction rehearsal with two
@@ -182,6 +227,8 @@ retained upstream nulls. It does not qualify a partner capture, real-site
 fidelity, deployment readiness, physical performance, or a learned-policy
 comparison.
 
-Single next action: regenerate the sealed Aura adapter using the now-landed
-runtime-sorted camera order and unretained-media suppression; any new paid
-execution is a retry and requires fresh explicit zero-retry authority.
+Single next action: select or implement a released-code inpainting correction
+that preserves observed scene content outside the target mask, and require the
+now-landed inpaint-init/SDEdit intermediate evidence contract before requesting
+any fresh paid authority. The consumed one-attempt authority permits no further
+retry.
