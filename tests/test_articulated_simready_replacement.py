@@ -870,3 +870,37 @@ def test_derived_topology_partitions_and_passes_full_authoring_chain(
     assert receipt["handle"]["source"] == "observed_source_component"
     assert receipt["topology_validation"]["status"] == "topology_statically_admitted"
     assert receipt["physics_validation"]["status"] == "physics_statically_admitted"
+
+
+def test_agent_enriched_asset_must_keep_blueprint_authored_link_masses(
+    tmp_path: Path,
+) -> None:
+    """A SimReady pass may add priors; it may not overwrite authored masses.
+
+    The 840796 Content Agents run preserved the authored 62/11/11 kg link
+    masses and added per-component MassAPI with zero values. Zero component
+    masses are tolerable only while the rigid-body links keep their authored
+    values, so the physics gate must catch a link whose mass the agent moved.
+    """
+
+    asset = _apply_physics(_author_topology(tmp_path / "asset.usda"))
+    stage = Usd.Stage.Open(str(asset))
+    for path, mass in (
+        ("/Asset/cabinet", 60.0),
+        ("/Asset/upper_door", 8.0),
+        ("/Asset/lower_door", 10.0),
+    ):
+        assert UsdPhysics.MassAPI(stage.GetPrimAtPath(path)).GetMassAttr().Get() == mass
+
+    # An agent that rewrites a link mass outside the admitted range is caught.
+    UsdPhysics.MassAPI(stage.GetPrimAtPath("/Asset/upper_door")).GetMassAttr().Set(0.0)
+    stage.GetRootLayer().Save()
+
+    with pytest.raises(ArticulatedSimReadyReplacementError) as excinfo:
+        validate_articulated_replacement_physics(
+            replacement_usd_path=asset, contract=_physics_contract()
+        )
+
+    assert any(
+        "link_mass_missing_or_out_of_range" in error for error in excinfo.value.errors
+    )

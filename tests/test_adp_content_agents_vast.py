@@ -393,7 +393,12 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
     bbox_log.write_text(bundle_preflight.USD_BBOX_MARKER, encoding="utf-8")
     executions["usd_default_purpose_bbox"] = {
         "entrypoint": "python",
-        "arguments": ["-c", bundle_preflight.USD_BBOX_SCRIPT],
+        "arguments": [
+            "-c",
+            bundle_preflight.usd_bbox_script(
+                "adp009a_840313_canned_beverage_control.usda"
+            ),
+        ],
         "secret_environment_names_passed_by_name": [],
         "returncode": 0,
         "required_marker": bundle_preflight.USD_BBOX_MARKER,
@@ -421,7 +426,8 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
         "content_agents_source_tree": content_agents.SOURCE_TREE,
         "local_container_image": {
             "reference": bundle_preflight.LOCAL_IMAGE,
-            "id": bundle_preflight.LOCAL_IMAGE_ID,
+            "id": next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS)),
+            "recipe": dict(bundle_preflight.LOCAL_IMAGE_RECIPE),
             "platform": bundle_preflight.LOCAL_IMAGE_PLATFORM,
         },
         "model_access": {
@@ -647,6 +653,10 @@ def _executable_preflight_fixture(tmp_path: Path) -> tuple[Path, str]:
         )
         for member in bundle_preflight.CONFIG_MEMBERS.values():
             archive.writestr(member, "project:\n  name: exact-bundle-test\n")
+        archive.writestr(
+            "provider_runtime/input/adp009a_840313_canned_beverage_control.usda",
+            '#usda 1.0\ndef Xform "canned_beverage" {}\n',
+        )
     bundle_receipt = tmp_path / "exact-bundle-receipt.json"
     write_json(
         bundle_receipt,
@@ -685,7 +695,7 @@ def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
             stdout = json.dumps(
                 [
                     {
-                        "Id": bundle_preflight.LOCAL_IMAGE_ID,
+                        "Id": next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS)),
                         "Os": "linux",
                         "Architecture": "arm64",
                     }
@@ -774,7 +784,7 @@ def test_exact_bundle_preflight_fails_before_receipt_when_any_cli_fails(
                 json.dumps(
                     [
                         {
-                            "Id": bundle_preflight.LOCAL_IMAGE_ID,
+                            "Id": next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS)),
                             "Os": "linux",
                             "Architecture": "arm64",
                         }
@@ -816,3 +826,411 @@ def test_exact_bundle_preflight_fails_before_receipt_when_any_cli_fails(
         )
 
     assert not (evidence / "adp_content_agents_bundle_config_preflight.json").exists()
+
+
+ARTICULATED_MANIFEST_RELATIVE_PATH = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "second_scene_840796_deterministic_simready_candidate.v1.json"
+)
+
+
+def _articulated_evidence(tmp_path: Path):
+    repo = tmp_path / "repo"
+    evidence = tmp_path / "evidence"
+    (repo / "docs/arm_decision_proof_v1/manifests").mkdir(parents=True)
+    candidate_dir = evidence / "simready_candidate/840796_deterministic_v1"
+    candidate_dir.mkdir(parents=True)
+    candidate = candidate_dir / "simready_candidate_deterministic.usda"
+    candidate.write_text('#usda 1.0\ndef Xform "Asset" {}\n', encoding="utf-8")
+    snapshot = candidate_dir / "candidate_reference.png"
+    snapshot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"articulated-reference")
+    manifest = {
+        "schema_version": "second_scene_deterministic_simready_candidate.v1",
+        "publisher_scene_id": "840796",
+        "target_instance_id": "123",
+        "construction_path": "deterministic_parametric_from_frozen_observations",
+        "authoring": {
+            "status": "simready_candidate_statically_admitted",
+            "output_usd_sha256": content_agents._sha256(candidate),
+            "task_joint_prim_path": "/Asset/joints/upper_door_hinge",
+        },
+        "evidence_relative_paths": {
+            "candidate_usd": "simready_candidate/840796_deterministic_v1/"
+            "simready_candidate_deterministic.usda",
+            "reference_image": "simready_candidate/840796_deterministic_v1/"
+            "candidate_reference.png",
+        },
+        "reference_image_sha256": content_agents._sha256(snapshot),
+        "topology_validation_receipt_digest": "sha256:" + "1" * 64,
+        "physics_validation_receipt_digest": "sha256:" + "2" * 64,
+        "receipt_digest": "",
+    }
+    manifest["receipt_digest"] = canonical_digest(manifest, digest_field="receipt_digest")
+    write_json(repo / ARTICULATED_MANIFEST_RELATIVE_PATH, manifest)
+    return repo, evidence, snapshot, candidate
+
+
+def test_articulated_variant_binds_statically_admitted_candidate(tmp_path: Path) -> None:
+    repo, evidence, snapshot, candidate = _articulated_evidence(tmp_path)
+
+    resolved = content_agents._resolve_input_variant(
+        repo=repo,
+        evidence_root=evidence,
+        reference_source=snapshot,
+        variant="articulated_v1",
+    )
+
+    assert resolved["variant"] == "articulated_v1"
+    assert resolved["usd_source"] == candidate
+    assert resolved["config_prefix"] == "adp009d_content_agents_articulated_"
+    assert resolved["candidate_receipt_digest"].startswith("sha256:")
+    assert resolved["task_joint_prim_path"] == "/Asset/joints/upper_door_hinge"
+    assert "interiorgs_dataset_bytes" in resolved["reference_image_authority"]
+
+
+def test_articulated_variant_rejects_changed_candidate_bytes(tmp_path: Path) -> None:
+    repo, evidence, snapshot, candidate = _articulated_evidence(tmp_path)
+    candidate.write_text('#usda 1.0\ndef Xform "Tampered" {}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source_identity_mismatch"):
+        content_agents._resolve_input_variant(
+            repo=repo,
+            evidence_root=evidence,
+            reference_source=snapshot,
+            variant="articulated_v1",
+        )
+
+
+def test_articulated_variant_rejects_unadmitted_candidate(tmp_path: Path) -> None:
+    repo, evidence, snapshot, _candidate = _articulated_evidence(tmp_path)
+    manifest = json.loads(
+        (repo / ARTICULATED_MANIFEST_RELATIVE_PATH).read_text(encoding="utf-8")
+    )
+    manifest["authoring"]["status"] = "blocked"
+    manifest["receipt_digest"] = ""
+    manifest["receipt_digest"] = canonical_digest(
+        manifest, digest_field="receipt_digest"
+    )
+    write_json(repo / ARTICULATED_MANIFEST_RELATIVE_PATH, manifest)
+
+    with pytest.raises(ValueError, match="candidate_receipt_not_eligible"):
+        content_agents._resolve_input_variant(
+            repo=repo,
+            evidence_root=evidence,
+            reference_source=snapshot,
+            variant="articulated_v1",
+        )
+
+
+def test_articulated_configs_preserve_articulation() -> None:
+    """No SimReady pass may re-derive geometry or rebuild the articulation."""
+
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    for name in ("material", "texture", "physics"):
+        text = (
+            assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
+        ).read_text(encoding="utf-8")
+        assert "840313" not in text
+        assert "840796" in text
+        assert "apply_joint_rigger" not in text
+        if "optimize_usd:" in text:
+            block = text.split("optimize_usd:", 1)[1][:120]
+            assert "enabled: false" in block
+    physics = (
+        assets / "adp009d_content_agents_articulated_physics.vast.yaml"
+    ).read_text(encoding="utf-8")
+    assert "mass_scale_policy: skip_mass" in physics
+
+
+def test_articulated_bundle_input_names_match_its_configs(tmp_path: Path) -> None:
+    """A variant's runtime input filenames must match what its configs load."""
+
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    for name in ("material", "texture", "physics"):
+        text = (
+            assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
+        ).read_text(encoding="utf-8")
+        assert (
+            "../input/adp009d_840796_articulated_refrigerator_candidate.usda" in text
+        )
+    material = (
+        assets / "adp009d_content_agents_articulated_material.vast.yaml"
+    ).read_text(encoding="utf-8")
+    assert (
+        "../input/adp009d_840796_articulated_refrigerator_candidate_reference.png"
+        in material
+    )
+
+
+def test_articulated_configs_ship_byte_identical(tmp_path: Path) -> None:
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    sources = {
+        f"{agent}_agent.yaml": assets
+        / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
+        for agent in ("material", "texture", "physics")
+    }
+    destination = tmp_path / "configs"
+    destination.mkdir()
+
+    hashes = content_agents._materialize_remote_configs(
+        config_sources=sources, destination=destination, variant="articulated_v1"
+    )
+
+    for name, source in sources.items():
+        assert (destination / name).read_bytes() == source.read_bytes()
+        assert hashes[name] == content_agents._sha256(source)
+
+
+def _articulated_runtime_configs(tmp_path: Path) -> dict:
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    destination = tmp_path / "configs"
+    destination.mkdir()
+    sources = {
+        f"{agent}_agent.yaml": assets
+        / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
+        for agent in ("material", "texture", "physics")
+    }
+    content_agents._materialize_remote_configs(
+        config_sources=sources, destination=destination, variant="articulated_v1"
+    )
+    return {name: destination / name for name in sources}
+
+
+def test_remote_config_contract_accepts_the_articulated_target_prims(
+    tmp_path: Path,
+) -> None:
+    """The contract guards runtime failure modes, not one scene's prim paths."""
+
+    content_agents._validate_remote_configs(
+        source=Path("/private/tmp/usd-content-agents-0.5.2-20260808"),
+        config_sources=_articulated_runtime_configs(tmp_path),
+    )
+
+
+def test_remote_config_contract_rejects_inconsistent_texture_targets(
+    tmp_path: Path,
+) -> None:
+    configs = _articulated_runtime_configs(tmp_path)
+    import yaml as _yaml
+
+    payload = _yaml.safe_load(configs["texture_agent.yaml"].read_text())
+    payload["target_prims"] = ["/Asset/lower_door/component_002"]
+    configs["texture_agent.yaml"].write_text(_yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(ValueError, match="remote_config_contract_invalid"):
+        content_agents._validate_remote_configs(
+            source=Path("/private/tmp/usd-content-agents-0.5.2-20260808"),
+            config_sources=configs,
+        )
+
+
+def test_articulated_input_normalization_preserves_joints_and_purposes(
+    tmp_path: Path,
+) -> None:
+    """The articulated candidate needs its own NVIDIA-compat normalization."""
+
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    source = tmp_path / "candidate.usda"
+    stage = Usd.Stage.CreateNew(str(source))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    asset = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(asset.GetPrim())
+    UsdPhysics.ArticulationRootAPI.Apply(asset.GetPrim())
+    for link in ("cabinet", "upper_door"):
+        UsdGeom.Xform.Define(stage, f"/Asset/{link}")
+        mesh = UsdGeom.Mesh.Define(stage, f"/Asset/{link}/geom")
+        mesh.CreatePointsAttr(
+            [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+        )
+        mesh.CreateFaceVertexCountsAttr([4])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        mesh.GetPurposeAttr().Set(UsdGeom.Tokens.render)
+    joint = UsdPhysics.RevoluteJoint.Define(stage, "/Asset/joints/upper_door_hinge")
+    joint.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+    joint.CreateBody1Rel().SetTargets(["/Asset/upper_door"])
+    joint.CreateAxisAttr().Set("Z")
+    stage.GetRootLayer().Save()
+
+    result = content_agents._materialize_content_agents_input(
+        source, tmp_path / "runtime_input.usda", variant="articulated_v1"
+    )
+
+    assert result["source_input_usd_sha256"] == content_agents._sha256(source)
+    assert result["default_purpose_bbox_nonempty"] is True
+    assert result["articulation_preserved"] is True
+    assert result["joint_count"] == 1
+    reopened = Usd.Stage.Open(str(tmp_path / "runtime_input.usda"))
+    assert str(reopened.GetDefaultPrim().GetPath()) == "/Asset"
+    assert (
+        len([p for p in reopened.Traverse() if p.IsA(UsdPhysics.Joint)]) == 1
+    )
+    for prim in reopened.Traverse():
+        if prim.IsA(UsdGeom.Mesh):
+            assert UsdGeom.Mesh(prim).ComputePurpose() == UsdGeom.Tokens.default_
+
+
+def test_local_preflight_image_admission_is_recipe_bound(monkeypatch) -> None:
+    """A rebuild of the reviewed recipe is admissible; a stray image is not."""
+
+    import subprocess as _subprocess
+
+    admitted_id = next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS))
+
+    def _inspect(command, **kwargs):
+        image_id = admitted_id if "admitted" in command[-1] else "sha256:" + "f" * 64
+        return _subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                [{"Id": image_id, "Os": "linux", "Architecture": "arm64"}]
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(bundle_preflight.subprocess, "run", _inspect)
+
+    record = bundle_preflight._inspect_image(docker="docker", image="admitted")
+    assert record["id"] == admitted_id
+    assert record["recipe"]["dockerfile_sha256"].startswith("sha256:")
+    assert record["recipe"]["base_image"].startswith("ghcr.io/astral-sh/uv:")
+
+    with pytest.raises(
+        bundle_preflight.ContentAgentsBundlePreflightError,
+        match="local_preflight_image_identity_mismatch",
+    ):
+        bundle_preflight._inspect_image(docker="docker", image="stray")
+
+
+def test_local_preflight_image_recipe_matches_checked_in_dockerfile() -> None:
+    dockerfile = (
+        ROOT
+        / "docs/arm_decision_proof_v1/assets"
+        / "adp009a_usd_content_agents_linux_arm64.Dockerfile"
+    )
+    observed = "sha256:" + hashlib.sha256(dockerfile.read_bytes()).hexdigest()
+    for recipe in bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS.values():
+        assert recipe["dockerfile_sha256"] == observed
+        assert recipe["content_agents_source_tree"] == content_agents.SOURCE_TREE
+
+
+def test_usd_bbox_probe_script_is_derived_from_the_bundle_input() -> None:
+    script = bundle_preflight.usd_bbox_script(
+        "adp009d_840796_articulated_refrigerator_candidate.usda"
+    )
+
+    assert "adp009d_840796_articulated_refrigerator_candidate.usda" in script
+    assert "canned_beverage" not in script
+    assert "GetDefaultPrim" in script
+    assert "ComputePurpose()==UsdGeom.Tokens.default_" in script
+
+
+def test_bundle_preflight_accepts_any_admitted_variant_input_names(
+    tmp_path: Path,
+) -> None:
+    """Required entries must not hardcode one variant's input filenames."""
+
+    bundle = tmp_path / "articulated-bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for member in (
+            "provider_runtime/run_adp_content_agents_provider_runtime.sh",
+            "provider_runtime/adp_content_agents_provider_runner.py",
+            "provider_runtime/adp_content_agents_provider_manifest.json",
+            "provider_runtime/content_agents_source.zip",
+            "provider_runtime/configs/material_agent.yaml",
+            "provider_runtime/configs/texture_agent.yaml",
+            "provider_runtime/configs/physics_agent.yaml",
+        ):
+            archive.writestr(member, "{}")
+        archive.writestr(
+            "provider_runtime/input/"
+            "adp009d_840796_articulated_refrigerator_candidate.usda",
+            '#usda 1.0\n',
+        )
+        archive.writestr(
+            "provider_runtime/input/"
+            "adp009d_840796_articulated_refrigerator_candidate_reference.png",
+            b"\x89PNG\r\n\x1a\n",
+        )
+
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="fixed",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_content_agents",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.com/bundle.zip?signature=redacted",
+        provider_output_put_url="https://example.com/output.zip?signature=redacted",
+    )
+
+    assert "provider_runtime_bundle_required_entries_missing" not in (
+        preflight.get("blockers") or []
+    )
+
+
+def test_bundle_preflight_still_requires_one_input_usd_and_reference(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "no-input-bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for member in (
+            "provider_runtime/run_adp_content_agents_provider_runtime.sh",
+            "provider_runtime/adp_content_agents_provider_runner.py",
+            "provider_runtime/adp_content_agents_provider_manifest.json",
+            "provider_runtime/content_agents_source.zip",
+            "provider_runtime/configs/material_agent.yaml",
+            "provider_runtime/configs/texture_agent.yaml",
+            "provider_runtime/configs/physics_agent.yaml",
+        ):
+            archive.writestr(member, "{}")
+
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="fixed",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_content_agents",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.com/bundle.zip?signature=redacted",
+        provider_output_put_url="https://example.com/output.zip?signature=redacted",
+    )
+
+    assert "provider_runtime_bundle_required_entries_missing" in (
+        preflight.get("blockers") or []
+    )
+
+
+def test_articulated_agent_configs_describe_the_articulated_object() -> None:
+    """A config carried over from another scene silently mis-classifies.
+
+    The first 840796 material pass returned Car_Paint_Green for a pale
+    off-white refrigerator because the prompts, derived from the 840313 packet,
+    still asked the model to classify a bright green beverage can. The model was
+    answering the question it was given.
+    """
+
+    assets = ROOT / "docs/arm_decision_proof_v1/assets"
+    foreign = ("beverage", "canned", "green can", "soda")
+    for name in ("material", "texture", "physics"):
+        text = (
+            assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
+        ).read_text(encoding="utf-8")
+        lowered = text.lower()
+        assert "refrigerator" in lowered, name
+        for token in foreign:
+            assert token not in lowered, f"{name} config still mentions {token!r}"
+
+
+def test_articulated_texture_config_targets_a_real_render_material() -> None:
+    """The texture stage needs a material that is actually bound in the asset."""
+
+    text = (
+        ROOT
+        / "docs/arm_decision_proof_v1/assets"
+        / "adp009d_content_agents_articulated_texture.vast.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "material_path: /Asset/Looks/Render/" in text
+    assert "physics_materials" not in text

@@ -2102,8 +2102,9 @@ def _blueprint_bundle_preflight(
         "provider_runtime/adp_content_agents_provider_runner.py",
         "provider_runtime/adp_content_agents_provider_manifest.json",
         "provider_runtime/content_agents_source.zip",
-        "provider_runtime/input/adp009a_840313_canned_beverage_control.usda",
-        "provider_runtime/input/adp009a_840313_canned_beverage_control_reference.png",
+        # Input filenames follow the admitted variant, so the entry contract
+        # requires exactly one input USD and one reference image by shape
+        # rather than by one scene's names (checked below).
         "provider_runtime/configs/material_agent.yaml",
         "provider_runtime/configs/texture_agent.yaml",
         "provider_runtime/configs/physics_agent.yaml",
@@ -2480,6 +2481,23 @@ def _blueprint_bundle_preflight(
                     f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
                 )
             missing_entries = sorted(required_entries - set(zip_entries))
+            if provider_bundle_kind == "adp_content_agents":
+                input_usds = [
+                    entry
+                    for entry in zip_entries
+                    if entry.startswith("provider_runtime/input/")
+                    and entry.endswith(".usda")
+                ]
+                input_references = [
+                    entry
+                    for entry in zip_entries
+                    if entry.startswith("provider_runtime/input/")
+                    and entry.endswith("_reference.png")
+                ]
+                if len(input_usds) != 1 or len(input_references) != 1:
+                    missing_entries = sorted(
+                        {*missing_entries, "provider_runtime/input/<variant>.usda"}
+                    )
             wam_registered_alternative_present = (
                 provider_bundle_kind == "wam"
                 and wam_registered_alternative_inputs_present(

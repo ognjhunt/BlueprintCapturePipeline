@@ -22,8 +22,35 @@ from .provider_archive import ProviderArchiveError, extract_provider_archive
 
 SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v1"
 LOCAL_IMAGE = "blueprint/adp009a-content-agents:0.5.2"
-LOCAL_IMAGE_ID = "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574"
 LOCAL_IMAGE_PLATFORM = "linux/arm64"
+# A container build is not bit-reproducible: the base tag moves and uv
+# re-resolves. Pinning one build output made the gate unrepeatable once that
+# image was gone. Each admitted image ID is therefore recorded together with
+# the recipe that produced it - the checked-in Dockerfile bytes, the base
+# image, and the pinned Content Agents source tree - so a rebuild of the
+# reviewed recipe can be admitted explicitly while a stray image still fails
+# closed.
+LOCAL_IMAGE_RECIPE = {
+    "dockerfile_relative_path": (
+        "docs/arm_decision_proof_v1/assets/"
+        "adp009a_usd_content_agents_linux_arm64.Dockerfile"
+    ),
+    "dockerfile_sha256": (
+        "sha256:9992a691a70c59448d2b11bb89213324405b93b3ffb50cb96e7c7141b4c3610e"
+    ),
+    "base_image": "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
+    "content_agents_source_tree": "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3",
+}
+LOCAL_IMAGE_ADMITTED_IDS = {
+    # Original reviewed build (2026-08-06 tranche).
+    "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574": (
+        LOCAL_IMAGE_RECIPE
+    ),
+    # Rebuild of the same recipe on 2026-08-09 after the first image was gone.
+    "sha256:574b6650842081226da7e63e403e535bd7258aaa83b4f1b805882d067d181703": (
+        LOCAL_IMAGE_RECIPE
+    ),
+}
 SECRET_ENV_NAMES = ("OPENAI_API_KEY",)
 REQUIRED_MODELS = ("gpt-4.1", "gpt-image-1")
 ORCHESTRATOR_REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,16 +71,29 @@ DRY_RUN_MARKERS = {
 }
 MATERIAL_VALIDATE_MARKER = "Pipeline completed successfully"
 USD_BBOX_MARKER = "BLUEPRINT_CONTENT_AGENTS_DEFAULT_PURPOSE_BBOX_OK"
-USD_BBOX_SCRIPT = (
-    "from pxr import Usd,UsdGeom;"
-    "s=Usd.Stage.Open('/bundle/provider_runtime/input/"
-    "adp009a_840313_canned_beverage_control.usda');"
-    "p=UsdGeom.Mesh.Get(s,'/canned_beverage/visuals/body');"
-    "r=UsdGeom.BBoxCache(Usd.TimeCode.Default(),[UsdGeom.Tokens.default_])"
-    ".ComputeWorldBound(p.GetPrim()).ComputeAlignedRange();"
-    "assert p.ComputePurpose()==UsdGeom.Tokens.default_ and not r.IsEmpty();"
-    f"print('{USD_BBOX_MARKER}')"
-)
+def usd_bbox_script(input_usd_name: str) -> str:
+    """Assert NVIDIA 0.5.2 can bound the bundle's own input at default purpose.
+
+    The property is variant-neutral: every mesh must compute the default
+    purpose and the default prim must have a non-empty default-purpose world
+    bound. Naming one scene's prim path made this probe unusable for any other
+    admitted input.
+    """
+
+    return (
+        "from pxr import Usd,UsdGeom;"
+        f"s=Usd.Stage.Open('/bundle/provider_runtime/input/{input_usd_name}');"
+        "d=s.GetDefaultPrim();"
+        "assert d.IsValid();"
+        "ms=[q for q in s.Traverse() if q.IsA(UsdGeom.Mesh)];"
+        "assert ms;"
+        "assert all("
+        "UsdGeom.Mesh(q).ComputePurpose()==UsdGeom.Tokens.default_ for q in ms);"
+        "r=UsdGeom.BBoxCache(Usd.TimeCode.Default(),[UsdGeom.Tokens.default_])"
+        ".ComputeWorldBound(d).ComputeAlignedRange();"
+        "assert not r.IsEmpty();"
+        f"print('{USD_BBOX_MARKER}')"
+    )
 
 
 class ContentAgentsBundlePreflightError(ValueError):
@@ -131,6 +171,20 @@ def _redact(value: str, secrets: Sequence[str]) -> str:
     return redacted
 
 
+def _admitted_local_image_record(value: Any) -> bool:
+    """Accept only a recorded image whose ID and recipe are both admitted."""
+
+    if not isinstance(value, Mapping):
+        return False
+    recipe = LOCAL_IMAGE_ADMITTED_IDS.get(str(value.get("id")))
+    return bool(
+        recipe is not None
+        and value.get("reference") == LOCAL_IMAGE
+        and value.get("platform") == LOCAL_IMAGE_PLATFORM
+        and dict(value.get("recipe") or {}) == dict(recipe)
+    )
+
+
 def _inspect_image(*, docker: str, image: str) -> dict[str, Any]:
     result = subprocess.run(
         [docker, "image", "inspect", image],
@@ -148,9 +202,15 @@ def _inspect_image(*, docker: str, image: str) -> dict[str, Any]:
         raise ContentAgentsBundlePreflightError("local_preflight_image_inspect_invalid")
     value = dict(values[0])
     platform = f"{value.get('Os')}/{value.get('Architecture')}"
-    if value.get("Id") != LOCAL_IMAGE_ID or platform != LOCAL_IMAGE_PLATFORM:
+    recipe = LOCAL_IMAGE_ADMITTED_IDS.get(str(value.get("Id")))
+    if recipe is None or platform != LOCAL_IMAGE_PLATFORM:
         raise ContentAgentsBundlePreflightError("local_preflight_image_identity_mismatch")
-    return {"reference": image, "id": str(value["Id"]), "platform": platform}
+    return {
+        "reference": image,
+        "id": str(value["Id"]),
+        "platform": platform,
+        "recipe": dict(recipe),
+    }
 
 
 def _orchestrator_source_identity() -> dict[str, Any]:
@@ -343,7 +403,15 @@ def materialize_bundle_config_preflight(
             "log_size_bytes": validation_log.stat().st_size,
             "log_sha256": _sha256_file(validation_log),
         }
-        bbox_arguments = ["-c", USD_BBOX_SCRIPT]
+        input_names = sorted(
+            path.name
+            for path in (expanded / "provider_runtime/input").glob("*.usda")
+        )
+        if len(input_names) != 1:
+            raise ContentAgentsBundlePreflightError(
+                "usd_default_purpose_bbox_input_ambiguous"
+            )
+        bbox_arguments = ["-c", usd_bbox_script(input_names[0])]
         bbox_command = [
             docker,
             "run",
@@ -439,12 +507,7 @@ def validate_bundle_config_preflight(
         or preflight.get("bundle_path") != str(bundle_path)
         or preflight.get("content_agents_source_commit") != SOURCE_COMMIT
         or preflight.get("content_agents_source_tree") != SOURCE_TREE
-        or preflight.get("local_container_image")
-        != {
-            "reference": LOCAL_IMAGE,
-            "id": LOCAL_IMAGE_ID,
-            "platform": LOCAL_IMAGE_PLATFORM,
-        }
+        or not _admitted_local_image_record(preflight.get("local_container_image"))
         or preflight.get("model_access")
         != {
             "provider": "openai",
@@ -550,9 +613,18 @@ def validate_bundle_config_preflight(
             blockers.append(
                 "adp_content_agents_config_preflight_log_outside_evidence:usd_default_purpose_bbox"
             )
+        # The probe script is derived from the bundle's own input name, so the
+        # validator re-derives it from the recorded arguments rather than a
+        # single scene's constant.
+        recorded_arguments = list(bbox_row.get("arguments") or [])
+        recorded_script = recorded_arguments[1] if len(recorded_arguments) == 2 else ""
+        input_name = ""
+        marker = "/bundle/provider_runtime/input/"
+        if marker in recorded_script:
+            input_name = recorded_script.split(marker, 1)[1].split("'", 1)[0]
         expected_bbox = {
             "entrypoint": "python",
-            "arguments": ["-c", USD_BBOX_SCRIPT],
+            "arguments": ["-c", usd_bbox_script(input_name)] if input_name else [],
             "secret_environment_names_passed_by_name": [],
             "returncode": 0,
             "required_marker": USD_BBOX_MARKER,

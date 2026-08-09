@@ -367,3 +367,131 @@ def test_checked_in_840796_construction_manifest_is_digest_bound() -> None:
         "physical_equivalence_proven": False,
         "construction_join_admitted": True,
     }
+
+
+def _suppression(**overrides) -> dict:
+    payload = {
+        "schema_version": "gaussian_suppression_volume.v1",
+        "status": "suppression_volume_bound",
+        "task_id": "refrigerator_upper_door_open",
+        "canonical_scan_sha256": "sha256:" + "1" * 64,
+        "canonical_scan_vertex_count": 593665,
+        "suppressed_index_count": 4424,
+        "suppressed_index_digest": "sha256:" + "2" * 64,
+        "retained_index_count": 589241,
+        "canonical_scan_modified": False,
+        "receipt_digest": "",
+    }
+    payload.update(overrides)
+    return _digest(payload, "receipt_digest")
+
+
+def test_join_defaults_to_the_deletion_mode_it_was_sealed_with() -> None:
+    decision = _join()
+
+    assert decision["suppression"]["mode"] == "deletion"
+    assert decision["suppression"]["canonical_scan_modified"] is True
+    assert decision["suppression"]["reversible"] is False
+
+
+def test_join_accepts_render_time_suppression_with_the_same_gates() -> None:
+    decision = _join(
+        suppression_mode="render_time",
+        suppression_receipts=[_suppression()],
+    )
+
+    assert decision["status"] == "join_admitted"
+    assert decision["inpainting_policy"] == "inpainting_not_required"
+    assert decision["suppression"]["mode"] == "render_time"
+    assert decision["suppression"]["canonical_scan_modified"] is False
+    assert decision["suppression"]["reversible"] is True
+    assert decision["suppression"]["task_ids"] == ["refrigerator_upper_door_open"]
+    assert decision["bindings"]["suppression_receipt_digests"] == [
+        _suppression()["receipt_digest"]
+    ]
+
+
+def test_join_binds_every_task_volume_for_a_multi_object_site() -> None:
+    decision = _join(
+        suppression_mode="package_time",
+        suppression_receipts=[
+            _suppression(),
+            _suppression(
+                task_id="oven_door_open",
+                suppressed_index_count=1200,
+                suppressed_index_digest="sha256:" + "3" * 64,
+                retained_index_count=592465,
+            ),
+        ],
+    )
+
+    assert decision["suppression"]["mode"] == "package_time"
+    assert decision["suppression"]["task_ids"] == [
+        "oven_door_open",
+        "refrigerator_upper_door_open",
+    ]
+    assert len(decision["bindings"]["suppression_receipt_digests"]) == 2
+
+
+def test_join_rejects_a_suppression_mode_without_receipts() -> None:
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(suppression_mode="render_time", suppression_receipts=[])
+
+    assert any(
+        "suppression_receipts_missing" in error for error in excinfo.value.errors
+    )
+
+
+def test_join_rejects_a_suppression_receipt_that_edited_the_scan() -> None:
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(
+            suppression_mode="render_time",
+            suppression_receipts=[_suppression(canonical_scan_modified=True)],
+        )
+
+    assert any(
+        "suppression_canonical_scan_modified" in error for error in excinfo.value.errors
+    )
+
+
+def test_join_rejects_volumes_bound_to_different_scans() -> None:
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(
+            suppression_mode="render_time",
+            suppression_receipts=[
+                _suppression(),
+                _suppression(
+                    task_id="oven_door_open",
+                    canonical_scan_sha256="sha256:" + "9" * 64,
+                ),
+            ],
+        )
+
+    assert any(
+        "suppression_canonical_scan_mismatch" in error for error in excinfo.value.errors
+    )
+
+
+def test_join_rejects_an_unknown_suppression_mode() -> None:
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(suppression_mode="hand_edited", suppression_receipts=[_suppression()])
+
+    assert any(
+        "suppression_mode_unsupported" in error for error in excinfo.value.errors
+    )
+
+
+def test_suppression_mode_does_not_relax_any_existing_gate() -> None:
+    """Switching how the object is hidden must not weaken coverage admission."""
+
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(
+            suppression_mode="render_time",
+            suppression_receipts=[_suppression()],
+            coverage_receipt=_coverage(residual=91),
+        )
+
+    assert any(
+        "residual_component_above_threshold" in error
+        for error in excinfo.value.errors
+    )

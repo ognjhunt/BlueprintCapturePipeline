@@ -1,0 +1,101 @@
+{
+  "adp_item": "ADP-009D",
+  "articulation_preserved": {
+    "articulation_root_prim_paths": [
+      "/Asset"
+    ],
+    "assembly_joint_count": 2,
+    "blueprint_link_masses_kg": {
+      "/Asset/cabinet": 62.0,
+      "/Asset/lower_door": 11.0,
+      "/Asset/upper_door": 11.0
+    },
+    "blueprint_link_masses_unchanged": true,
+    "non_task_joint_prim_paths": [
+      "/Asset/joints/lower_door_hinge"
+    ],
+    "task_joint_prim_path": "/Asset/joints/upper_door_hinge"
+  },
+  "claim_boundary": {
+    "agent_physics_priors_are_advisory_not_measured": true,
+    "generated_geometry_is_observed_site_truth": false,
+    "native_simulator_qualified": false,
+    "physical_equivalence_proven": false,
+    "statically_admitted_candidate_only": true
+  },
+  "content_agents_pass": {
+    "material_agent_blocker": "material_agent_pipeline_execution_failed",
+    "material_agent_executed": false,
+    "physics_agent_executed": true,
+    "physics_agent_pipeline_status": "completed_successfully",
+    "runner_blocker": "adp_content_agents_runner_failed_without_runtime_result",
+    "runner_terminal_status": "blocked",
+    "texture_agent_blocker": "texture_plan_contains_zero_executable_jobs_unbound_material_path",
+    "texture_agent_executed": false,
+    "validation_agent_executed": true,
+    "validation_agent_failed_count": 0
+  },
+  "handle_prim_paths": [
+    "/Asset/upper_door/component_004",
+    "/Asset/upper_door/component_007",
+    "/Asset/upper_door/component_013"
+  ],
+  "native_probe_spec_digest": "sha256:52c6e567540f15a078c4097b43af50ce2782beedb75d50d10d1eb6bd275da7bb",
+  "physics_validation_receipt_digest": "sha256:dafe26ffccdbb76cd7a600c0529b7b09a21d4c53e37aff9e01056618ef9d1e00",
+  "program_id": "arm-decision-proof-v1",
+  "provenance_chain": {
+    "blueprint_authored_candidate_sha256": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1",
+    "content_agents_bundle_sha256": "sha256:224a9445b5b0b7ce1740bcc12ad85ca82a64fe14669b39636446e91581777c2c",
+    "content_agents_release": "NVIDIA USD Content Agents v0.5.2 @36dbf3f274f8e256637230a05a085853f65cc175",
+    "orchestrator_commit": "3e4a6ec7489c3a7e3642f4d30e64d24ec285e777",
+    "source_asset_sha256": "sha256:4e0986e79b9d358de7e3289c0179eeaa4ec94b035e2133d2ea309298b525a4c3"
+  },
+  "publisher_scene_id": "840796",
+  "receipt_digest": "sha256:0bdfc8556d5088ccc56ef4bc8f284d38bf1dd72fbd9bd71f8b349f31ae48f875",
+  "schema_version": "second_scene_simready_articulated_candidate.v1",
+  "simready_additions": {
+    "component_mass_api_without_value_or_zero": [
+      "/Asset/cabinet/component_008",
+      "/Asset/cabinet/component_020",
+      "/Asset/cabinet/component_021",
+      "/Asset/cabinet/component_022",
+      "/Asset/cabinet/component_023",
+      "/Asset/cabinet/component_024",
+      "/Asset/cabinet/generated_interior",
+      "/Asset/lower_door/component_002",
+      "/Asset/lower_door/component_003",
+      "/Asset/lower_door/component_005",
+      "/Asset/lower_door/component_006",
+      "/Asset/lower_door/component_011",
+      "/Asset/lower_door/component_015",
+      "/Asset/lower_door/component_016",
+      "/Asset/lower_door/component_025",
+      "/Asset/lower_door/component_026",
+      "/Asset/upper_door/component_000",
+      "/Asset/upper_door/component_004",
+      "/Asset/upper_door/component_007",
+      "/Asset/upper_door/component_009",
+      "/Asset/upper_door/component_010",
+      "/Asset/upper_door/component_012",
+      "/Asset/upper_door/component_013",
+      "/Asset/upper_door/component_017",
+      "/Asset/upper_door/component_018",
+      "/Asset/upper_door/component_019"
+    ],
+    "material_binding_api_prims": 27,
+    "physics_mass_api_prims": 29,
+    "physics_materials_authored": [
+      "/Asset/Looks/PhysMat_sf0_40_df0_30_r0_40",
+      "/Asset/Looks/PhysMat_sf0_50_df0_35_r0_30",
+      "/Asset/Looks/PhysMat_sf0_60_df0_45_r0_30",
+      "/Asset/Looks/PhysMat_sf0_60_df0_50_r0_30",
+      "/Asset/Looks/PhysMat_sf0_80_df0_70_r0_80",
+      "/Asset/Looks/PhysMat_sf0_90_df0_80_r0_80"
+    ]
+  },
+  "simready_usd_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_simready_v1/simready_articulated_refrigerator_840796.usda",
+  "simready_usd_sha256": "sha256:a673d2e4797498db21597aadca998daa4ecf7cf509b7d6a62165adc4924c32be",
+  "status": "simready_candidate_statically_admitted",
+  "target_instance_id": "123",
+  "topology_validation_receipt_digest": "sha256:c9bed8afc8b446d588b00a84fae28f69ce4043cf067f87da420e5c3afd04aae7"
+}

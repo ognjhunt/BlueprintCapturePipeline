@@ -12,13 +12,15 @@
       "prim_path": "/Asset/upper_door/component_004",
       "source": "observed_source_component_group"
     },
-    "output_usd_sha256": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1",
+    "output_usd_sha256": "sha256:81b1796ac9725c5cc1707f7afb21186bfcf18871872c3276a3d26f621100ffc5",
     "receipt_digest": "sha256:c060aa5caff510ae9c17e843870fab8a0acd8ecce1abe8a28a6b14bfa448f4c8",
+    "render_ready_supersedes": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1",
     "status": "simready_candidate_statically_admitted",
     "support_link_prim_path": "/Asset/cabinet",
     "task_door_link_prim_path": "/Asset/upper_door",
     "task_joint_prim_path": "/Asset/joints/upper_door_hinge"
   },
+  "candidate_usd_sha256": "sha256:81b1796ac9725c5cc1707f7afb21186bfcf18871872c3276a3d26f621100ffc5",
   "claim_boundary": {
     "generated_geometry_is_observed_site_truth": false,
     "joint_agent_output": false,
@@ -481,13 +483,30 @@
     "source_asset_sha256": "sha256:4e0986e79b9d358de7e3289c0179eeaa4ec94b035e2133d2ea309298b525a4c3",
     "status": "deterministic_topology_candidate_constructed"
   },
+  "evidence_relative_paths": {
+    "candidate_usd": "simready_candidate/840796_deterministic_v1/simready_candidate_render_ready.usda",
+    "reference_image": "simready_candidate/840796_deterministic_v1/candidate_reference.png"
+  },
   "handle_band_observation_receipt_digest": "sha256:9748301b2ab3ba30666b7d19166ad199ba7af4fa114395e23992425eb1b8a6dd",
   "output_directory": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1",
-  "physics_validation_receipt_digest": "sha256:4a2303ada5b844d9fa13af91be35b0585a6ba3b6aeb19e3d6ee69a727bdfcde0",
+  "physics_validation_receipt_digest": "sha256:ff41d2e8959f4e62710445e65c6f134dd85a1ff934f0f46105eaba9b56b13282",
   "program_id": "arm-decision-proof-v1",
   "publisher_scene_id": "840796",
-  "receipt_digest": "sha256:c0f4f33fabe30e9b64da9093662d09b526eca7ee3e4d25832331d1bfed9df1d4",
+  "receipt_digest": "sha256:68d78ba647412a497ac432adf63e9b759c0e360e0c62cbe5d016e3eba8372bf2",
+  "reference_image_authority": "blueprint_deterministic_render_of_sage_derived_candidate_not_interiorgs_dataset_bytes",
+  "reference_image_sha256": "sha256:0e79487f1ff0a2ba43d8e33fa5aa74cf42a40089f169f41bb4bf679d29010450",
+  "render_readiness": {
+    "aperture_cut": true,
+    "flat_colour_is_not_a_texture_pass": true,
+    "interior_exposed_fraction": 1.0,
+    "observed_albedo": [
+      0.81,
+      0.782,
+      0.762
+    ],
+    "render_materials_bound": 4
+  },
   "schema_version": "second_scene_deterministic_simready_candidate.v1",
   "target_instance_id": "123",
-  "topology_validation_receipt_digest": "sha256:b4d0f35306e9cf337697cb7bf884b2cb684b9833e02dd52c329e8eb91c10c609"
+  "topology_validation_receipt_digest": "sha256:eb398a0e23f67bf749a0fa89aaa4ef2c90237c3730608e402d0e3e0cb62a1039"
 }
