@@ -20,6 +20,7 @@ from blueprint_pipeline.public_scene_gaussian_excision_audit import (
     CONTRIBUTION_CLASS_ORDER,
     CONTRIBUTION_EVIDENCE_SCHEMA,
     FREEZE_SCHEMA,
+    OWNERSHIP_AGGREGATION_POLICY_SCHEMA,
     OWNERSHIP_RECEIPT_SCHEMA,
     classify_excision_ownership,
     materialize_excision_audit_freeze,
@@ -714,6 +715,55 @@ def Xform "Root"
         row["retained_rows_byte_exact"] is True
         for row in receipt["preservation"].values()
     )
+
+    jittered = evidence.copy()
+    jittered[0, 1, 0] += 0.000002
+    jittered_path = gpu_root / "contribution_1.npz"
+    np.savez_compressed(
+        jittered_path, per_view_class_contribution=jittered
+    )
+    manifest["repetitions"][1] = _record(jittered_path, gpu_root)
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
+    aggregation_policy = {
+        "schema_version": OWNERSHIP_AGGREGATION_POLICY_SCHEMA,
+        "status": "frozen_after_calibration_before_heldout_evaluation",
+        "freeze_digest": freeze["freeze_digest"],
+        "contribution_manifest_digest": manifest["manifest_digest"],
+        "quantization_decimals": POLICY["contribution_quantization_decimals"],
+        "rule": "unanimous_owned_and_retained_else_ambiguous",
+        "heldout_cameras_accessed": False,
+    }
+    aggregation_policy["aggregation_policy_digest"] = canonical_digest(
+        aggregation_policy, digest_field="aggregation_policy_digest"
+    )
+    aggregation_policy_path = tmp_path / "aggregation-policy.json"
+    aggregation_policy_path.write_text(
+        canonical_json(aggregation_policy) + "\n", encoding="utf-8"
+    )
+
+    aggregated = materialize_excision_ownership(
+        freeze_path=tmp_path / "freeze" / f"{FREEZE_SCHEMA}.json",
+        contribution_manifest_path=manifest_path,
+        source_standard_splat_path=source,
+        output_root=tmp_path / "ownership-aggregated",
+        aggregation_policy_path=aggregation_policy_path,
+    )
+
+    assert aggregated["ownership"] == receipt["ownership"]
+    assert aggregated["determinism"] == {
+        "repetition_count": 2,
+        "quantization_decimals": 6,
+        "quantized_contribution_arrays_identical": False,
+        "label_disagreement_count": 0,
+        "aggregation_rule": "unanimous_owned_and_retained_else_ambiguous",
+        "aggregation_policy_digest": aggregation_policy[
+            "aggregation_policy_digest"
+        ],
+        "disputed_gaussians_forced_ambiguous": True,
+    }
 
     authority = {
         "schema_version": excision_vast.AUTHORITY_SCHEMA,

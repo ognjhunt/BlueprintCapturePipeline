@@ -1,0 +1,49 @@
+{
+  "schema_version": "adp009b_gaussian_ownership_aggregation_policy.v1",
+  "status": "frozen_after_calibration_before_heldout_evaluation",
+  "publisher_scene_id": "840796",
+  "target_instance_id": "123",
+  "freeze_digest": "sha256:2ef5adba73b9b09089450bbeee0ff695977155365130c1e9584e2070c49750aa",
+  "contribution_manifest_digest": "sha256:9c67bb7b4ba8486005a1d77185152557de4c8f053136e8bf95b2d1e533d4a975",
+  "source_repetitions": [
+    "sha256:21239d9a6bae4022d22ed7ff3b0861cbaf2341a18847694f8f1d7bfb087983bb",
+    "sha256:aeb8f5558b031282b45a9fd2fce417645ae63e94880bc7f4edc269eb458e1140"
+  ],
+  "adaptation_scope": "calibration_only_before_any_heldout_render_or_metric",
+  "calibration_observation": {
+    "quantized_contribution_arrays_identical": false,
+    "quantization_decimals": 6,
+    "different_entry_count": 155316,
+    "different_entry_fraction": 0.014534571966793843,
+    "maximum_absolute_contribution_difference": 0.18945300000086718,
+    "independent_classification_owned_counts": [
+      2436,
+      2436
+    ],
+    "independent_classification_retained_counts": [
+      587007,
+      587007
+    ],
+    "independent_classification_ambiguous_counts": [
+      4222,
+      4222
+    ],
+    "final_label_disagreement_count": 0
+  },
+  "quantization_decimals": 6,
+  "rule": "unanimous_owned_and_retained_else_ambiguous",
+  "owned_definition": "classified_owned_in_every_bound_repetition",
+  "retained_definition": "classified_retained_in_every_bound_repetition",
+  "ambiguous_definition": "all_remaining_gaussians_including_any_cross_repetition_disagreement",
+  "single_repetition_selection_allowed": false,
+  "thresholds_changed_after_observation": false,
+  "masks_changed_after_observation": false,
+  "camera_split_changed_after_observation": false,
+  "heldout_cameras_accessed": false,
+  "heldout_camera_ids": [
+    "far_left",
+    "far_right"
+  ],
+  "claim_boundary": "calibration_adapted_conservative_ownership_candidate_pending_first_heldout_evaluation",
+  "aggregation_policy_digest": "sha256:1306f8a360499d922971c2907ccbc735ca1b914f905a16d085a6f60536c1fba9"
+}

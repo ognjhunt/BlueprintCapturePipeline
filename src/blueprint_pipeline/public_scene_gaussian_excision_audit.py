@@ -32,6 +32,9 @@ from .gaussian_splat_decode import (
 FREEZE_SCHEMA = "adp009b_gaussian_excision_audit_freeze.v1"
 CONTRIBUTION_EVIDENCE_SCHEMA = "adp009b_gaussian_excision_contribution_evidence.v1"
 OWNERSHIP_RECEIPT_SCHEMA = "adp009b_gaussian_excision_ownership_receipt.v1"
+OWNERSHIP_AGGREGATION_POLICY_SCHEMA = (
+    "adp009b_gaussian_ownership_aggregation_policy.v1"
+)
 CONTRIBUTION_CLASS_ORDER = ("protected", "target_core", "uncertain")
 
 
@@ -629,6 +632,7 @@ def materialize_excision_ownership(
     contribution_manifest_path: str | Path,
     source_standard_splat_path: str | Path,
     output_root: str | Path,
+    aggregation_policy_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Create exact three-way index sets from two deterministic GPU repetitions."""
 
@@ -741,23 +745,75 @@ def materialize_excision_ownership(
                 decimals=decimals,
             )
         )
-    if any(not np.array_equal(arrays[0], value) for value in arrays[1:]):
-        raise GaussianExcisionAuditError(
-            ["excision_quantized_contribution_repetitions_nondeterministic"]
-        )
+    arrays_identical = all(
+        np.array_equal(arrays[0], value) for value in arrays[1:]
+    )
+    aggregation_policy: dict[str, Any] | None = None
+    if not arrays_identical:
+        if aggregation_policy_path is None:
+            raise GaussianExcisionAuditError(
+                ["excision_quantized_contribution_repetitions_nondeterministic"]
+            )
+        policy_path = Path(aggregation_policy_path).expanduser().resolve()
+        try:
+            aggregation_policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise GaussianExcisionAuditError(
+                ["excision_ownership_aggregation_policy_invalid"]
+            ) from exc
+        if (
+            not isinstance(aggregation_policy, dict)
+            or aggregation_policy.get("schema_version")
+            != OWNERSHIP_AGGREGATION_POLICY_SCHEMA
+            or aggregation_policy.get("aggregation_policy_digest")
+            != canonical_digest(
+                aggregation_policy, digest_field="aggregation_policy_digest"
+            )
+            or aggregation_policy.get("status")
+            != "frozen_after_calibration_before_heldout_evaluation"
+            or aggregation_policy.get("freeze_digest") != freeze["freeze_digest"]
+            or aggregation_policy.get("contribution_manifest_digest")
+            != manifest["manifest_digest"]
+            or aggregation_policy.get("quantization_decimals") != decimals
+            or aggregation_policy.get("rule")
+            != "unanimous_owned_and_retained_else_ambiguous"
+            or aggregation_policy.get("heldout_cameras_accessed") is not False
+        ):
+            raise GaussianExcisionAuditError(
+                ["excision_ownership_aggregation_policy_invalid"]
+            )
 
     scale = freeze["scale_and_bounds"]
-    result = classify_excision_ownership(
-        arrays[0],
-        xyz=splat.xyz,
-        log_scales=splat.scales,
-        target_aabb_min_m=scale["target_world_aabb_min_m"],
-        target_aabb_max_m=scale["target_world_aabb_max_m"],
-        policy=freeze["policy"],
-    )
-    owned = np.flatnonzero(result["owned"]).astype(np.int64)
-    retained = np.flatnonzero(result["retained"]).astype(np.int64)
-    ambiguous = np.flatnonzero(result["ambiguous"]).astype(np.int64)
+    repetition_results = [
+        classify_excision_ownership(
+            array,
+            xyz=splat.xyz,
+            log_scales=splat.scales,
+            target_aabb_min_m=scale["target_world_aabb_min_m"],
+            target_aabb_max_m=scale["target_world_aabb_max_m"],
+            policy=freeze["policy"],
+        )
+        for array in arrays
+    ]
+    result = repetition_results[0]
+    repetition_labels = []
+    for row in repetition_results:
+        labels = np.full(splat.count, 1, dtype=np.uint8)
+        labels[row["owned"]] = 0
+        labels[row["ambiguous"]] = 2
+        repetition_labels.append(labels)
+    label_stack = np.stack(repetition_labels, axis=0)
+    if arrays_identical:
+        owned_mask = result["owned"]
+        retained_mask = result["retained"]
+        ambiguous_mask = result["ambiguous"]
+    else:
+        owned_mask = np.all(label_stack == 0, axis=0)
+        retained_mask = np.all(label_stack == 1, axis=0)
+        ambiguous_mask = ~(owned_mask | retained_mask)
+    owned = np.flatnonzero(owned_mask).astype(np.int64)
+    retained = np.flatnonzero(retained_mask).astype(np.int64)
+    ambiguous = np.flatnonzero(ambiguous_mask).astype(np.int64)
     if not len(owned):
         raise GaussianExcisionAuditError(["excision_owned_set_empty"])
     try:
@@ -839,7 +895,11 @@ def materialize_excision_ownership(
         "schema_version": OWNERSHIP_RECEIPT_SCHEMA,
         "program_id": "arm-decision-proof-v1",
         "adp_item": "ADP-009B",
-        "status": "three_way_ownership_materialized_heldout_not_evaluated",
+        "status": (
+            "three_way_ownership_materialized_heldout_not_evaluated"
+            if arrays_identical
+            else "three_way_ownership_materialized_by_frozen_conservative_aggregation_heldout_not_evaluated"
+        ),
         "freeze_digest": freeze["freeze_digest"],
         "contribution_manifest_digest": manifest["manifest_digest"],
         "method": method,
@@ -857,7 +917,19 @@ def materialize_excision_ownership(
         "determinism": {
             "repetition_count": len(arrays),
             "quantization_decimals": decimals,
-            "quantized_contribution_arrays_identical": True,
+            "quantized_contribution_arrays_identical": arrays_identical,
+            "label_disagreement_count": int(
+                np.any(label_stack != label_stack[0], axis=0).sum()
+            ),
+            "aggregation_rule": (
+                None if arrays_identical else aggregation_policy.get("rule")
+            ),
+            "aggregation_policy_digest": (
+                None
+                if arrays_identical
+                else aggregation_policy.get("aggregation_policy_digest")
+            ),
+            "disputed_gaussians_forced_ambiguous": not arrays_identical,
         },
         "preservation": exact,
         "outputs": {
@@ -881,6 +953,7 @@ __all__ = [
     "FREEZE_SCHEMA",
     "GaussianExcisionAuditError",
     "OWNERSHIP_RECEIPT_SCHEMA",
+    "OWNERSHIP_AGGREGATION_POLICY_SCHEMA",
     "classify_excision_ownership",
     "materialize_excision_audit_freeze",
     "materialize_excision_ownership",
