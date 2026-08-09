@@ -418,7 +418,8 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
         "content_agents_source_tree": content_agents.SOURCE_TREE,
         "local_container_image": {
             "reference": bundle_preflight.LOCAL_IMAGE,
-            "id": bundle_preflight.LOCAL_IMAGE_ID,
+            "id": next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS)),
+            "recipe": dict(bundle_preflight.LOCAL_IMAGE_RECIPE),
             "platform": bundle_preflight.LOCAL_IMAGE_PLATFORM,
         },
         "model_access": {
@@ -682,7 +683,7 @@ def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
             stdout = json.dumps(
                 [
                     {
-                        "Id": bundle_preflight.LOCAL_IMAGE_ID,
+                        "Id": next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS)),
                         "Os": "linux",
                         "Architecture": "arm64",
                     }
@@ -771,7 +772,7 @@ def test_exact_bundle_preflight_fails_before_receipt_when_any_cli_fails(
                 json.dumps(
                     [
                         {
-                            "Id": bundle_preflight.LOCAL_IMAGE_ID,
+                            "Id": next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS)),
                             "Os": "linux",
                             "Architecture": "arm64",
                         }
@@ -1056,3 +1057,47 @@ def test_articulated_input_normalization_preserves_joints_and_purposes(
     for prim in reopened.Traverse():
         if prim.IsA(UsdGeom.Mesh):
             assert UsdGeom.Mesh(prim).ComputePurpose() == UsdGeom.Tokens.default_
+
+
+def test_local_preflight_image_admission_is_recipe_bound(monkeypatch) -> None:
+    """A rebuild of the reviewed recipe is admissible; a stray image is not."""
+
+    import subprocess as _subprocess
+
+    admitted_id = next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS))
+
+    def _inspect(command, **kwargs):
+        image_id = admitted_id if "admitted" in command[-1] else "sha256:" + "f" * 64
+        return _subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                [{"Id": image_id, "Os": "linux", "Architecture": "arm64"}]
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(bundle_preflight.subprocess, "run", _inspect)
+
+    record = bundle_preflight._inspect_image(docker="docker", image="admitted")
+    assert record["id"] == admitted_id
+    assert record["recipe"]["dockerfile_sha256"].startswith("sha256:")
+    assert record["recipe"]["base_image"].startswith("ghcr.io/astral-sh/uv:")
+
+    with pytest.raises(
+        bundle_preflight.ContentAgentsBundlePreflightError,
+        match="local_preflight_image_identity_mismatch",
+    ):
+        bundle_preflight._inspect_image(docker="docker", image="stray")
+
+
+def test_local_preflight_image_recipe_matches_checked_in_dockerfile() -> None:
+    dockerfile = (
+        ROOT
+        / "docs/arm_decision_proof_v1/assets"
+        / "adp009a_usd_content_agents_linux_arm64.Dockerfile"
+    )
+    observed = "sha256:" + hashlib.sha256(dockerfile.read_bytes()).hexdigest()
+    for recipe in bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS.values():
+        assert recipe["dockerfile_sha256"] == observed
+        assert recipe["content_agents_source_tree"] == content_agents.SOURCE_TREE

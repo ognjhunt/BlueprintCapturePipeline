@@ -21,8 +21,35 @@ from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v1"
 LOCAL_IMAGE = "blueprint/adp009a-content-agents:0.5.2"
-LOCAL_IMAGE_ID = "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574"
 LOCAL_IMAGE_PLATFORM = "linux/arm64"
+# A container build is not bit-reproducible: the base tag moves and uv
+# re-resolves. Pinning one build output made the gate unrepeatable once that
+# image was gone. Each admitted image ID is therefore recorded together with
+# the recipe that produced it - the checked-in Dockerfile bytes, the base
+# image, and the pinned Content Agents source tree - so a rebuild of the
+# reviewed recipe can be admitted explicitly while a stray image still fails
+# closed.
+LOCAL_IMAGE_RECIPE = {
+    "dockerfile_relative_path": (
+        "docs/arm_decision_proof_v1/assets/"
+        "adp009a_usd_content_agents_linux_arm64.Dockerfile"
+    ),
+    "dockerfile_sha256": (
+        "sha256:9992a691a70c59448d2b11bb89213324405b93b3ffb50cb96e7c7141b4c3610e"
+    ),
+    "base_image": "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
+    "content_agents_source_tree": "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3",
+}
+LOCAL_IMAGE_ADMITTED_IDS = {
+    # Original reviewed build (2026-08-06 tranche).
+    "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574": (
+        LOCAL_IMAGE_RECIPE
+    ),
+    # Rebuild of the same recipe on 2026-08-09 after the first image was gone.
+    "sha256:574b6650842081226da7e63e403e535bd7258aaa83b4f1b805882d067d181703": (
+        LOCAL_IMAGE_RECIPE
+    ),
+}
 SECRET_ENV_NAMES = ("OPENAI_API_KEY",)
 REQUIRED_MODELS = ("gpt-4.1", "gpt-image-1")
 ORCHESTRATOR_REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -134,6 +161,20 @@ def _redact(value: str, secrets: Sequence[str]) -> str:
     return redacted
 
 
+def _admitted_local_image_record(value: Any) -> bool:
+    """Accept only a recorded image whose ID and recipe are both admitted."""
+
+    if not isinstance(value, Mapping):
+        return False
+    recipe = LOCAL_IMAGE_ADMITTED_IDS.get(str(value.get("id")))
+    return bool(
+        recipe is not None
+        and value.get("reference") == LOCAL_IMAGE
+        and value.get("platform") == LOCAL_IMAGE_PLATFORM
+        and dict(value.get("recipe") or {}) == dict(recipe)
+    )
+
+
 def _inspect_image(*, docker: str, image: str) -> dict[str, Any]:
     result = subprocess.run(
         [docker, "image", "inspect", image],
@@ -151,9 +192,15 @@ def _inspect_image(*, docker: str, image: str) -> dict[str, Any]:
         raise ContentAgentsBundlePreflightError("local_preflight_image_inspect_invalid")
     value = dict(values[0])
     platform = f"{value.get('Os')}/{value.get('Architecture')}"
-    if value.get("Id") != LOCAL_IMAGE_ID or platform != LOCAL_IMAGE_PLATFORM:
+    recipe = LOCAL_IMAGE_ADMITTED_IDS.get(str(value.get("Id")))
+    if recipe is None or platform != LOCAL_IMAGE_PLATFORM:
         raise ContentAgentsBundlePreflightError("local_preflight_image_identity_mismatch")
-    return {"reference": image, "id": str(value["Id"]), "platform": platform}
+    return {
+        "reference": image,
+        "id": str(value["Id"]),
+        "platform": platform,
+        "recipe": dict(recipe),
+    }
 
 
 def _orchestrator_source_identity() -> dict[str, Any]:
@@ -442,12 +489,7 @@ def validate_bundle_config_preflight(
         or preflight.get("bundle_path") != str(bundle_path)
         or preflight.get("content_agents_source_commit") != SOURCE_COMMIT
         or preflight.get("content_agents_source_tree") != SOURCE_TREE
-        or preflight.get("local_container_image")
-        != {
-            "reference": LOCAL_IMAGE,
-            "id": LOCAL_IMAGE_ID,
-            "platform": LOCAL_IMAGE_PLATFORM,
-        }
+        or not _admitted_local_image_record(preflight.get("local_container_image"))
         or preflight.get("model_access")
         != {
             "provider": "openai",
