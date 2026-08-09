@@ -53,6 +53,10 @@ from .public_scene_aura_adapter import (
     SCHEMA_VERSION as ADAPTER_SCHEMA,
 )
 from .vast_provider_adapter import run_vast_provider_adapter
+from .vast_independent_watchdog_control import (
+    arm_independent_vast_watchdog,
+    close_independent_vast_watchdog,
+)
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
@@ -598,6 +602,22 @@ def run_aura_interiorgs_vast(
     provider_run = job / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     adapter: dict[str, Any] = {}
+    watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
+        job_dir=job,
+        max_live_minutes=remaining_minutes,
+        generated_at=utc_now_iso(),
+    )
+    if watchdog_handle is None:
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "independent_watchdog": watchdog_handoff,
+            "blockers": ["aura_interiorgs_independent_watchdog_not_armed"],
+        }
     try:
         with _authority_environment():
             adapter = run_vast_provider_adapter(
@@ -645,6 +665,7 @@ def run_aura_interiorgs_vast(
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 vast_launch_lock_file=job.parent / "aura_interiorgs_paid_launch.lock",
                 instance_label_prefix="blueprint-adp-aura-interiorgs-",
+                started_instance_id_path=watchdog_handle.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
@@ -659,6 +680,24 @@ def run_aura_interiorgs_vast(
     extracted = _extract_provider_output(output_zip, job / "immutable_execution")
     execution = dict(extracted.get("execution") or {})
     teardown = _read_json(provider_run / "vast_teardown_manifest.json")
+    instance_ids = [
+        int(value)
+        for value in (
+            teardown.get("vast_instance_ids") or adapter.get("vast_instance_ids") or []
+        )
+        if isinstance(value, int) and value > 0
+    ]
+    watchdog_close = close_independent_vast_watchdog(
+        job_dir=job,
+        handle=watchdog_handle,
+        instance_ids=instance_ids,
+        provider_teardown_completed=(
+            teardown.get("continuing_spend_from_this_run") is False
+        ),
+        provider_allocation_impossible=(
+            not instance_ids and adapter.get("provider_create_attempted") is not True
+        ),
+    )
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
     if execution.get("status") != "completed":
         blockers.extend(execution.get("blockers") or ["aura_interiorgs_edit_not_completed"])
@@ -666,6 +705,11 @@ def run_aura_interiorgs_vast(
         blockers.append("aura_interiorgs_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
         blockers.append("aura_interiorgs_object_store_provider_zero_not_proven")
+    if watchdog_close.get("status") not in {
+        "provider_terminal",
+        "cancelled_no_allocation",
+    }:
+        blockers.append("aura_interiorgs_independent_watchdog_not_closed")
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
@@ -680,6 +724,7 @@ def run_aura_interiorgs_vast(
         "retry_cap": 0,
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+        "independent_watchdog": watchdog_close,
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }

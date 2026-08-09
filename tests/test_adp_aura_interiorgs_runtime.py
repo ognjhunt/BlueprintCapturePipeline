@@ -1,7 +1,9 @@
 import importlib.util
 import hashlib
+import json
 import os
 import sys
+from types import SimpleNamespace
 import zipfile
 from pathlib import Path
 
@@ -9,6 +11,11 @@ import pytest
 
 from blueprint_pipeline import adp_aura_interiorgs_vast as bundle
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 
 
 def _load_runner():
@@ -60,6 +67,101 @@ def test_aura_bundle_preflights_all_released_runtime_sources(tmp_path: Path) -> 
         )
 
     assert not (tmp_path / "provider_runtime.zip").exists()
+
+
+def test_aura_live_run_arms_watchdog_before_provider_create_and_closes_after_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"immutable-bundle")
+    prepared = {
+        "status": "ready",
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+    }
+    grant = require_paid_resource_admission(
+        build_paid_lane_admission(resource_class="vast_provider_adapter"),
+        resource_class="vast_provider_adapter",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+    observed: dict[str, object] = {}
+    started_id = tmp_path / "watchdog/started_vast_instance_id.txt"
+    handle = SimpleNamespace(started_instance_id_path=started_id)
+    monkeypatch.setattr(bundle, "_remaining_minutes", lambda **_kwargs: 240)
+    def fake_stage(**kwargs: object) -> dict[str, object]:
+        staging = Path(str(kwargs["job_dir"]))
+        staging.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text("https://example.test/object\n", encoding="utf-8")
+        return {"status": "completed"}
+
+    monkeypatch.setattr(bundle, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(
+        bundle,
+        "cleanup_staged_wam_provider_objects",
+        lambda _path: {"all_objects_absent": True},
+    )
+    monkeypatch.setattr(
+        bundle,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: (
+            {"status": "armed", "watchdog_armed_before_allocation": True},
+            handle,
+        ),
+    )
+
+    def fake_provider(**kwargs: object) -> dict[str, object]:
+        observed["started_instance_id_path"] = kwargs["started_instance_id_path"]
+        provider_job = Path(str(kwargs["job_dir"]))
+        provider_job.mkdir(parents=True, exist_ok=True)
+        (provider_job / "vast_teardown_manifest.json").write_text(
+            json.dumps(
+                {
+                    "vast_instance_ids": [7],
+                    "continuing_spend_from_this_run": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": "completed",
+            "vast_instance_ids": [7],
+            "blockers": [],
+            "estimated_cost_usd": 0.1,
+        }
+
+    monkeypatch.setattr(bundle, "run_vast_provider_adapter", fake_provider)
+    monkeypatch.setattr(
+        bundle,
+        "_extract_provider_output",
+        lambda _path, _destination: {
+            "execution": {"status": "completed", "blockers": []},
+            "blockers": [],
+            "result_path": "result.json",
+        },
+    )
+
+    def fake_close(**kwargs: object) -> dict[str, object]:
+        observed["close"] = kwargs
+        return {"status": "provider_terminal", "provider_absence_confirmed": True}
+
+    monkeypatch.setattr(bundle, "close_independent_vast_watchdog", fake_close)
+
+    result = bundle.run_aura_interiorgs_vast(
+        job_dir=tmp_path / "run",
+        paid_resource_admission_grant=grant,
+        execute=True,
+        prepared_bundle=prepared,
+    )
+
+    assert result["status"] == "completed", result
+    assert observed["started_instance_id_path"] == started_id
+    assert observed["close"]["instance_ids"] == [7]  # type: ignore[index]
+    assert observed["close"]["provider_teardown_completed"] is True  # type: ignore[index]
 
 
 def test_aura_adapter_overlay_preserves_publisher_tree(tmp_path: Path) -> None:
