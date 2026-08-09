@@ -1121,3 +1121,79 @@ def test_usd_bbox_probe_script_is_derived_from_the_bundle_input() -> None:
     assert "canned_beverage" not in script
     assert "GetDefaultPrim" in script
     assert "ComputePurpose()==UsdGeom.Tokens.default_" in script
+
+
+def test_bundle_preflight_accepts_any_admitted_variant_input_names(
+    tmp_path: Path,
+) -> None:
+    """Required entries must not hardcode one variant's input filenames."""
+
+    bundle = tmp_path / "articulated-bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for member in (
+            "provider_runtime/run_adp_content_agents_provider_runtime.sh",
+            "provider_runtime/adp_content_agents_provider_runner.py",
+            "provider_runtime/adp_content_agents_provider_manifest.json",
+            "provider_runtime/content_agents_source.zip",
+            "provider_runtime/configs/material_agent.yaml",
+            "provider_runtime/configs/texture_agent.yaml",
+            "provider_runtime/configs/physics_agent.yaml",
+        ):
+            archive.writestr(member, "{}")
+        archive.writestr(
+            "provider_runtime/input/"
+            "adp009d_840796_articulated_refrigerator_candidate.usda",
+            '#usda 1.0\n',
+        )
+        archive.writestr(
+            "provider_runtime/input/"
+            "adp009d_840796_articulated_refrigerator_candidate_reference.png",
+            b"\x89PNG\r\n\x1a\n",
+        )
+
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="fixed",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_content_agents",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.com/bundle.zip?signature=redacted",
+        provider_output_put_url="https://example.com/output.zip?signature=redacted",
+    )
+
+    assert "provider_runtime_bundle_required_entries_missing" not in (
+        preflight.get("blockers") or []
+    )
+
+
+def test_bundle_preflight_still_requires_one_input_usd_and_reference(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "no-input-bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for member in (
+            "provider_runtime/run_adp_content_agents_provider_runtime.sh",
+            "provider_runtime/adp_content_agents_provider_runner.py",
+            "provider_runtime/adp_content_agents_provider_manifest.json",
+            "provider_runtime/content_agents_source.zip",
+            "provider_runtime/configs/material_agent.yaml",
+            "provider_runtime/configs/texture_agent.yaml",
+            "provider_runtime/configs/physics_agent.yaml",
+        ):
+            archive.writestr(member, "{}")
+
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="fixed",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_content_agents",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.com/bundle.zip?signature=redacted",
+        provider_output_put_url="https://example.com/output.zip?signature=redacted",
+    )
+
+    assert "provider_runtime_bundle_required_entries_missing" in (
+        preflight.get("blockers") or []
+    )
