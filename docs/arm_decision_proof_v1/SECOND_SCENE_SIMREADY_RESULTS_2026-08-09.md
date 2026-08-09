@@ -271,6 +271,60 @@ What this does **not** change: the residual seam band is the same 2.9%, the
 Gaussian-ownership question remains unsolved and unsolvable by deletion, and
 nothing here is native qualification.
 
+## Correcting the Content Agents account, and the one root cause behind it
+
+Reading the retained 840796 logs closely changes what was recorded earlier.
+The Material Agent did not fail at its work: it completed inference on 29
+prims and created materials. It failed on a *preview render*, and one blank
+render took the pipeline down with it. The Texture Agent rejected its plan for
+a related reason. Both trace to a single fact - the candidate carried no bound
+render material, so every OVRTX preview came back blank.
+
+That had a second and worse consequence. With nothing to look at, the
+classifier answered the question it was asked, and the prompts carried over
+from the 840313 packet still said "classify the bright green beverage can". It
+returned `Car_Paint_Green` for a pale off-white refrigerator. That is a config
+defect on our side, not a model failure.
+
+So the corrected agent ledger for run `840796_v4` is: Physics **succeeded**,
+Validation **completed with zero failures**, Material **succeeded at inference
+and was killed by a render**, Texture **rejected for a missing bound
+material**, Joint **never reached inference** across five earlier attempts.
+
+## The twin was sealed, and now it is not
+
+`evaluate_interior_exposure` casts rays inward through the aperture the open
+door leaves behind and reports what they hit first. On the twin as sealed:
+**169 of 169 samples hit `/Asset/cabinet/component_008`**, exposed fraction
+`0.0`. The interior prim existed at `y <= 0.142`, but the carcass front face at
+`y = 0.178` stood in front of it. The asset had one articulation root, correct
+joints and limits, clean colliders and a required generated interior - every
+gate we had - and still showed a flat wall when the door opened.
+
+`cut_support_link_aperture` clips the aperture rectangle out of the support
+link's outward faces and retriangulates the remainder. Two invariants keep it
+safe on a physics-qualified asset: existing points are never moved or dropped,
+so a convex-hull collider is unchanged by construction, and only the support
+link is ever cut. Applied to 840796: 27 faces removed, 67 added, 5.6% of
+surface area, collider approximations unchanged, articulation preserved, and
+**interior exposure moves to 169 of 169**. Both static validators still admit
+the opened asset.
+
+`ensure_render_material_scaffold` then authors what the texture stage needs:
+four bound `UsdPreviewSurface` materials - door shell, cabinet shell, handle
+metal, interior liner - seeded with the measured front-door albedo
+`(0.810, 0.782, 0.762)` sampled from the splats the volume removed. Physics
+bindings are proven unchanged, including the subtle case a test caught, where
+an all-purpose render binding silently becomes the fallback for the physics
+purpose.
+
+A flat colour is not a texture pass and the receipts say so. The interior
+remains generated candidate geometry; it was never observed.
+
+Render-ready candidate `sha256:81b1796a...`, manifest resealed at
+`sha256:68d78ba6...`. The local config preflight passes on the rebuilt bundle
+`sha256:9d2d9221...`.
+
 ## Smallest next action
 
 Run the blank-stage Isaac/PhysX diagnostic against
