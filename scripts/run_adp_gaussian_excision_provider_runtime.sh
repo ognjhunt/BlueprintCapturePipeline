@@ -59,11 +59,13 @@ export CUDA_HOME=/usr/local/cuda
 }
 "${UV_BIN}" pip install --python "${RUNTIME_PY}" --no-build-isolation \
   "${SOURCE_DIR}/submodules/diff-gaussian-rasterization" \
-  "${SOURCE_DIR}/submodules/flashsplat-rasterization" || {
+  "${SOURCE_DIR}/submodules/flashsplat-rasterization" \
+  "${SOURCE_DIR}/submodules/simple-knn" || {
   write_missing_result "gaussian_excision_cuda_extensions_failed"; exit 2;
 }
 "${UV_BIN}" pip install --python "${RUNTIME_PY}" \
-  numpy==1.26.4 pillow==10.2.0 plyfile==1.1.3 || {
+  numpy==1.26.4 pillow==10.2.0 plyfile==1.1.3 \
+  opencv-python-headless==4.11.0.86 || {
   write_missing_result "gaussian_excision_runtime_dependencies_failed"; exit 2;
 }
 "${UV_BIN}" pip freeze --python "${RUNTIME_PY}" > "${OUTPUT_DIR}/pip-freeze.txt"

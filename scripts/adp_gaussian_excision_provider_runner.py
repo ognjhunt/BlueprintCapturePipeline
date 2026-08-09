@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 from PIL import Image
@@ -23,6 +24,22 @@ SOURCE_REPOSITORY = "https://github.com/florinshen/FlashSplat"
 SOURCE_COMMIT = "3e3b14786333bf0163ba1b8541e86a3765112d7d"
 RASTERIZER_REPOSITORY = "https://github.com/florinshen/flashsplat-rasterization"
 RASTERIZER_COMMIT = "189c483ffa33dd6d5661343ce496df0c6eb80a0c"
+RUNTIME_IMPORT_PREFLIGHT_SCHEMA = (
+    "adp009b_gaussian_excision_runtime_import_preflight.v1"
+)
+RUNTIME_IMPORT_MODULES = (
+    "numpy",
+    "PIL",
+    "plyfile",
+    "cv2",
+    "torch",
+    "diff_gaussian_rasterization",
+    "flashsplat_rasterization",
+    "simple_knn._C",
+    "gaussian_renderer",
+    "scene.cameras",
+    "scene.gaussian_model",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -56,6 +73,69 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("gaussian_excision_json_not_object")
     return value
+
+
+def runtime_import_preflight(
+    *,
+    source_dir: Path,
+    importer: Callable[[str], Any] = importlib.import_module,
+) -> dict[str, Any]:
+    """Probe the complete pinned execution import set without short-circuiting."""
+
+    source_text = str(source_dir)
+    if source_text not in sys.path:
+        sys.path.insert(0, source_text)
+    rows = []
+    for module_name in RUNTIME_IMPORT_MODULES:
+        try:
+            importer(module_name)
+            rows.append(
+                {
+                    "module": module_name,
+                    "status": "imported",
+                    "error_type": None,
+                    "missing_module_name": None,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - retain every import failure
+            rows.append(
+                {
+                    "module": module_name,
+                    "status": "blocked",
+                    "error_type": type(exc).__name__,
+                    "missing_module_name": (
+                        str(exc.name)
+                        if isinstance(exc, ModuleNotFoundError) and exc.name
+                        else None
+                    ),
+                }
+            )
+    blocked = [row for row in rows if row["status"] != "imported"]
+    result = {
+        "schema_version": RUNTIME_IMPORT_PREFLIGHT_SCHEMA,
+        "status": "passed" if not blocked else "blocked",
+        "required_modules": list(RUNTIME_IMPORT_MODULES),
+        "imports": rows,
+        "failed_import_count": len(blocked),
+        "failed_modules": [row["module"] for row in blocked],
+        "missing_module_names": sorted(
+            {
+                str(row["missing_module_name"])
+                for row in blocked
+                if row["missing_module_name"]
+            }
+        ),
+        "all_imports_attempted": len(rows) == len(RUNTIME_IMPORT_MODULES),
+        "blockers": (
+            []
+            if not blocked
+            else ["gaussian_excision_runtime_import_closure_incomplete"]
+        ),
+    }
+    result["preflight_digest"] = _canonical_digest(
+        result, field="preflight_digest"
+    )
+    return result
 
 
 def camera_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
@@ -250,17 +330,58 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     output = Path(arguments.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    source_dir = Path(arguments.source_dir).resolve()
+    import_preflight = runtime_import_preflight(source_dir=source_dir)
+    import_preflight_path = (
+        output / "adp009b_gaussian_excision_runtime_import_preflight.json"
+    )
+    import_preflight_path.write_text(
+        _canonical_json(import_preflight) + "\n", encoding="utf-8"
+    )
+    import_preflight_record = _record(import_preflight_path, output)
+    if import_preflight["status"] != "passed":
+        result = {
+            "schema_version": RESULT_SCHEMA,
+            "status": "blocked",
+            "blockers": list(import_preflight["blockers"]),
+            "runtime_import_preflight": import_preflight_record,
+            "failed_import_count": import_preflight["failed_import_count"],
+            "failed_modules": import_preflight["failed_modules"],
+            "missing_module_names": import_preflight["missing_module_names"],
+            "released_code_executed": False,
+            "heldout_cameras_accessed_for_classification": False,
+            "provider_zero_required_after_return": True,
+            "depth_anything_3_used": False,
+            "retry_cap": 0,
+            "raw_secret_values_recorded": False,
+        }
+        result["result_digest"] = _canonical_digest(result, field="result_digest")
+        (output / "adp009b_gaussian_excision_result.json").write_text(
+            _canonical_json(result) + "\n", encoding="utf-8"
+        )
+        return 2
     try:
-        execute(
+        result = execute(
             runtime_dir=Path(arguments.runtime_dir).resolve(),
-            source_dir=Path(arguments.source_dir).resolve(),
+            source_dir=source_dir,
             output_dir=output,
+        )
+        result["runtime_import_preflight"] = import_preflight_record
+        result["result_digest"] = _canonical_digest(result, field="result_digest")
+        (output / "adp009b_gaussian_excision_result.json").write_text(
+            _canonical_json(result) + "\n", encoding="utf-8"
         )
     except Exception as exc:  # noqa: BLE001 - paid worker must retain typed failure
         result = {
             "schema_version": RESULT_SCHEMA,
             "status": "blocked",
             "blockers": [f"gaussian_excision_runtime_failed:{type(exc).__name__}"],
+            "runtime_import_preflight": import_preflight_record,
+            "missing_module_name": (
+                str(exc.name)
+                if isinstance(exc, ModuleNotFoundError) and exc.name
+                else None
+            ),
             "released_code_executed": False,
             "heldout_cameras_accessed_for_classification": False,
             "provider_zero_required_after_return": True,

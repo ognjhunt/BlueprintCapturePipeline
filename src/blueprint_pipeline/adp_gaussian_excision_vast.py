@@ -46,6 +46,9 @@ DIFF_RASTERIZER_PATH = "submodules/diff-gaussian-rasterization"
 DIFF_RASTERIZER_COMMIT = "8829d14f814fccdaf840b7b0f3021a616583c0a1"
 GLM_PATH = "submodules/diff-gaussian-rasterization/third_party/glm"
 GLM_COMMIT = "5c46b9c07008ae65cb81ab79cd677ecc1934b903"
+SIMPLE_KNN_PATH = "submodules/simple-knn"
+SIMPLE_KNN_REPOSITORY = "https://gitlab.inria.fr/bkerbl/simple-knn.git"
+SIMPLE_KNN_COMMIT = "86710c2d4b46680c02301765dd79e465819c8f19"
 DEFAULT_IMAGE = (
     "docker.io/nvidia/cuda@"
     "sha256:5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749"
@@ -54,6 +57,7 @@ EXPECTED_SUBMODULES = {
     RASTERIZER_PATH: RASTERIZER_COMMIT,
     DIFF_RASTERIZER_PATH: DIFF_RASTERIZER_COMMIT,
     GLM_PATH: GLM_COMMIT,
+    SIMPLE_KNN_PATH: SIMPLE_KNN_COMMIT,
 }
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/gaussian-excision"
 _VAST_MUTATION_ENV = (

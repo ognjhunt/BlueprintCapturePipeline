@@ -188,6 +188,8 @@ def provider_runtime_contract_blockers(
             and "adp009d_aura_native_live_camera_result.json" in entrypoint_text
             and "torch==2.5.1" in entrypoint_text
             and "--no-build-isolation" in entrypoint_text
+            and "submodules/simple-knn" in entrypoint_text
+            and "opencv-python-headless==4.11.0.86" in entrypoint_text
         )
         runner_valid = all(
             token in runner_text
@@ -315,6 +317,9 @@ def provider_runtime_contract_blockers(
                 "heldout_cameras_accessed_for_classification",
                 "provider_zero_required_after_return",
                 "depth_anything_3_used",
+                "runtime_import_preflight",
+                "all_imports_attempted",
+                "missing_module_names",
             )
         )
         runner_blocker = "provider_runner_missing_adp_gaussian_excision_contract"

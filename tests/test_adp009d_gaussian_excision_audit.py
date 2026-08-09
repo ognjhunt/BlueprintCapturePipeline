@@ -15,6 +15,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest, can
 from blueprint_pipeline import adp_gaussian_excision_vast as excision_vast
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import vast_provider_adapter as vast_adapter
+from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
 from blueprint_pipeline.public_scene_gaussian_excision_audit import (
     CONTRIBUTION_CLASS_ORDER,
     CONTRIBUTION_EVIDENCE_SCHEMA,
@@ -197,6 +198,78 @@ def test_provider_runner_camera_and_zone_conversion_are_exact(tmp_path: Path) ->
     assert runner.load_class_labels(mask_root, "front").tolist() == [
         [0.0, 1.0],
         [2.0, 2.0],
+    ]
+
+
+def test_provider_runner_import_preflight_reports_full_missing_set(
+    tmp_path: Path,
+) -> None:
+    runner = _provider_runner_module()
+    attempted = []
+
+    def importer(module_name: str) -> object:
+        attempted.append(module_name)
+        if module_name == "cv2":
+            raise ModuleNotFoundError("No module named 'cv2'", name="cv2")
+        if module_name == "simple_knn._C":
+            raise ModuleNotFoundError(
+                "No module named 'simple_knn'", name="simple_knn"
+            )
+        if module_name == "scene.gaussian_model":
+            raise RuntimeError("fixture compiled extension incompatibility")
+        return object()
+
+    result = runner.runtime_import_preflight(
+        source_dir=tmp_path,
+        importer=importer,
+    )
+
+    assert attempted == list(runner.RUNTIME_IMPORT_MODULES)
+    assert result["all_imports_attempted"] is True
+    assert result["failed_import_count"] == 3
+    assert result["failed_modules"] == [
+        "cv2",
+        "simple_knn._C",
+        "scene.gaussian_model",
+    ]
+    assert result["missing_module_names"] == ["cv2", "simple_knn"]
+    assert result["blockers"] == [
+        "gaussian_excision_runtime_import_closure_incomplete"
+    ]
+
+
+def test_gaussian_excision_runtime_closure_pins_all_released_dependencies() -> None:
+    assert excision_vast.EXPECTED_SUBMODULES[excision_vast.SIMPLE_KNN_PATH] == (
+        excision_vast.SIMPLE_KNN_COMMIT
+    )
+    entrypoint = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp_gaussian_excision_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
+    assert "submodules/simple-knn" in entrypoint
+    assert "opencv-python-headless==4.11.0.86" in entrypoint
+
+
+def test_provider_output_recognizes_gaussian_excision_result(tmp_path: Path) -> None:
+    output_zip = tmp_path / "gaussian-excision-output.zip"
+    with zipfile.ZipFile(output_zip, "w") as archive:
+        archive.writestr(
+            "adp009b_gaussian_excision_result.json",
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": [
+                        "gaussian_excision_runtime_import_closure_incomplete"
+                    ],
+                }
+            ),
+        )
+
+    inspection = inspect_provider_runtime_output_zip(output_zip)
+    assert inspection["runtime_result_present"] is True
+    assert inspection["runtime_result_status"] == "blocked"
+    assert inspection["runtime_result"]["blockers"] == [
+        "gaussian_excision_runtime_import_closure_incomplete"
     ]
 
 
