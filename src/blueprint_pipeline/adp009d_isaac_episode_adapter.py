@@ -40,7 +40,7 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v7"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v8"
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -74,6 +74,66 @@ class IsaacEpisodeAdapterError(RuntimeError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted({str(e) for e in errors if str(e)}))
         super().__init__(";".join(self.errors))
+
+
+def bounded_absolute_joint_setpoint(
+    *,
+    measured_joint_positions_rad: Sequence[float],
+    desired_joint_positions_rad: Sequence[float],
+    previous_commanded_joint_positions_rad: Sequence[float],
+    max_command_slew_per_step_rad: float,
+    max_setpoint_lead_rad: float,
+) -> list[float]:
+    """Advance an absolute-position command without starving a slow actuator.
+
+    ``max_command_slew_per_step_rad`` limits how far the command itself can move
+    in one control step.  ``max_setpoint_lead_rad`` independently limits how far
+    that command may get ahead of measured state.  Conflating those two limits
+    kept the live v98 command permanently 0.03 rad from measured state: the
+    actuator moved, but the target could never accumulate enough lead to reach
+    the Cartesian goal within the frozen phase horizon.
+
+    The returned value is the closest point to the desired IK solution in the
+    intersection of both per-joint safety intervals.  An empty intersection is
+    a reset/state discontinuity and fails closed rather than silently jumping.
+    """
+
+    try:
+        measured = [float(value) for value in measured_joint_positions_rad]
+        desired = [float(value) for value in desired_joint_positions_rad]
+        previous = [float(value) for value in previous_commanded_joint_positions_rad]
+        max_slew = float(max_command_slew_per_step_rad)
+        max_lead = float(max_setpoint_lead_rad)
+    except (TypeError, ValueError) as exc:
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_joint_setpoint_contract_invalid"]
+        ) from exc
+    if (
+        not measured
+        or len(measured) != len(desired)
+        or len(measured) != len(previous)
+        or not all(math.isfinite(value) for value in (*measured, *desired, *previous))
+        or not math.isfinite(max_slew)
+        or not math.isfinite(max_lead)
+        or max_slew <= 0.0
+        or max_lead < max_slew
+    ):
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_joint_setpoint_contract_invalid"]
+        )
+
+    command: list[float] = []
+    for measured_value, desired_value, previous_value in zip(
+        measured, desired, previous, strict=True
+    ):
+        lower = max(previous_value - max_slew, measured_value - max_lead)
+        upper = min(previous_value + max_slew, measured_value + max_lead)
+        if lower > upper + 1.0e-12:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_joint_setpoint_constraints_infeasible"]
+            )
+        command.append(min(max(desired_value, lower), upper))
+    return command
 
 
 def controlled_body_pose_for_grasp_frame_target(
@@ -227,6 +287,7 @@ class IsaacEpisodeAdapter:
         gripper_closed_width_m: float,
         gripper_open_width_m: float,
         reset_callback: Callable[[], None] | None = None,
+        scripted_pose_controller_reset_callback: Callable[[], None] | None = None,
         simulation_step_seconds: float | None = None,
         scripted_pose_action_callback: Callable[..., Sequence[float]] | None = None,
         camera_pose_callback: Callable[
@@ -243,6 +304,9 @@ class IsaacEpisodeAdapter:
         self._gripper_closed_width_m = float(gripper_closed_width_m)
         self._gripper_open_width_m = float(gripper_open_width_m)
         self._reset_callback = reset_callback
+        self._scripted_pose_controller_reset_callback = (
+            scripted_pose_controller_reset_callback
+        )
         self._simulation_step_seconds = (
             None
             if simulation_step_seconds is None
@@ -283,6 +347,8 @@ class IsaacEpisodeAdapter:
             self._reset_callback()
         else:
             self._env.reset(seed=self._reset_seed)
+        if self._scripted_pose_controller_reset_callback is not None:
+            self._scripted_pose_controller_reset_callback()
         self._control_step_index = 0
 
     def joint_limits(self) -> list[list[float]]:
@@ -360,6 +426,7 @@ class IsaacEpisodeAdapter:
         target_quaternion_world_xyzw: Sequence[float] | None,
         gripper_command: float,
         max_joint_delta_rad: float,
+        max_joint_setpoint_lead_rad: float,
     ) -> list[float]:
         """Resolve one deterministic pose-servo step through the injected native IK."""
 
@@ -376,6 +443,7 @@ class IsaacEpisodeAdapter:
             ),
             gripper_command=float(gripper_command),
             max_joint_delta_rad=float(max_joint_delta_rad),
+            max_joint_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
         )
         action = [float(value) for value in values]
         if len(action) != self._action_dim or not all(
@@ -648,6 +716,7 @@ __all__ = [
     "GRIPPER_WIDTH_SOURCE",
     "IsaacEpisodeAdapter",
     "IsaacEpisodeAdapterError",
+    "bounded_absolute_joint_setpoint",
     "controlled_body_pose_for_grasp_frame_target",
     "describe_adapter",
     "rgb_from_camera_output",

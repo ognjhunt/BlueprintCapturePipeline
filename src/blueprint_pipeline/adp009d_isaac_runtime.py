@@ -2161,6 +2161,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             try:
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
                 from adp009d_isaac_episode_adapter import (
+                    bounded_absolute_joint_setpoint,
                     controlled_body_pose_for_grasp_frame_target,
                 )
                 from adp009d_droid_action_execution import GripperConvention
@@ -2271,6 +2272,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 # as a policy that chose to do nothing.
                 _restore_wrist_observable_episode_start()
                 control_ik_call_counter = [0]
+                control_ik_last_commanded_joint_positions_rad: list[
+                    list[float] | None
+                ] = [None]
+
+                def _reset_scripted_pose_controller_state() -> None:
+                    control_ik_last_commanded_joint_positions_rad[0] = None
 
                 def _scripted_pose_action_callback(
                     *,
@@ -2278,6 +2285,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     target_quaternion_world_xyzw,
                     gripper_command,
                     max_joint_delta_rad,
+                    max_joint_setpoint_lead_rad,
                 ):
                     """One bounded native differential-IK action for a control phase."""
 
@@ -2344,10 +2352,27 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         jacobian,
                         current_arm,
                     )
-                    bounded_target = current_arm + torch.clamp(
-                        joint_target - current_arm,
-                        -float(max_joint_delta_rad),
-                        float(max_joint_delta_rad),
+                    current_arm_values = [float(value) for value in current_arm[0]]
+                    joint_target_values = [float(value) for value in joint_target[0]]
+                    previous_command_values = (
+                        current_arm_values
+                        if control_ik_last_commanded_joint_positions_rad[0] is None
+                        else control_ik_last_commanded_joint_positions_rad[0]
+                    )
+                    bounded_target_values = bounded_absolute_joint_setpoint(
+                        measured_joint_positions_rad=current_arm_values,
+                        desired_joint_positions_rad=joint_target_values,
+                        previous_commanded_joint_positions_rad=previous_command_values,
+                        max_command_slew_per_step_rad=float(max_joint_delta_rad),
+                        max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+                    )
+                    control_ik_last_commanded_joint_positions_rad[0] = list(
+                        bounded_target_values
+                    )
+                    bounded_target = torch.tensor(
+                        [bounded_target_values],
+                        device=env.unwrapped.device,
+                        dtype=current_arm.dtype,
                     )
                     callback_index = control_ik_call_counter[0]
                     control_ik_call_counter[0] += 1
@@ -2397,6 +2422,17 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                     float(value)
                                     for value in (bounded_target - current_arm)[0]
                                 ],
+                                "command_slew_from_previous_rad": [
+                                    bounded_target_values[index]
+                                    - previous_command_values[index]
+                                    for index in range(len(bounded_target_values))
+                                ],
+                                "max_command_slew_per_step_rad": float(
+                                    max_joint_delta_rad
+                                ),
+                                "max_setpoint_lead_rad": float(
+                                    max_joint_setpoint_lead_rad
+                                ),
                             }
                         )
                     scripted_action = torch.zeros_like(action)
@@ -2420,6 +2456,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     reset_callback=_restore_wrist_observable_episode_start,
                     simulation_step_seconds=float(cfg.sim.dt * cfg.decimation),
                     scripted_pose_action_callback=_scripted_pose_action_callback,
+                    scripted_pose_controller_reset_callback=(
+                        _reset_scripted_pose_controller_state
+                    ),
                     camera_pose_callback=lambda camera_name: (
                         _wrist_camera_evidence_pose()
                         if camera_name == "wrist_camera"
@@ -2501,7 +2540,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         scenario_instance = json.loads(
                             scenario_instance_path.read_text(encoding="utf-8")
                         )
-                        control_plan_path = runtime / "adp009d_control_plan.v4.json"
+                        control_plan_path = runtime / "adp009d_control_plan.v5.json"
                         if not control_plan_path.is_file():
                             raise RuntimeError("adp009d_control_plan_missing")
                         expected_control_plan = json.loads(

@@ -176,9 +176,11 @@ class _ControlEnvironment:
         target_quaternion_world_xyzw,
         gripper_command,
         max_joint_delta_rad,
+        max_joint_setpoint_lead_rad,
     ):
         assert target_quaternion_world_xyzw == [1.0, 0.0, 0.0, 0.0]
         assert max_joint_delta_rad == 0.03
+        assert max_joint_setpoint_lead_rad == 0.20
         self.pending_target = [float(value) for value in target_position_world_m]
         self.pending_gripper = float(gripper_command)
         target_joints = [
@@ -347,7 +349,7 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
         for row in positive["phase_arrivals"]
         if row["phase_id"] in {"grasp", "release"}
     } == {"grasp": 30, "release": 30}
-    assert (tmp_path / "adp009d_control_plan.v4.json").is_file()
+    assert (tmp_path / "adp009d_control_plan.v5.json").is_file()
     assert negative["action_trace"][0]["isaac_action"][:7] == negative[
         "action_trace"
     ][0]["observed_joint_position_before_rad"]

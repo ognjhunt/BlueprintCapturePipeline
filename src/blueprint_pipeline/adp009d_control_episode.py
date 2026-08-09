@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v4"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v5"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -68,6 +68,10 @@ CONTROLLED_BODY_ORIENTATION_STRATEGY = "horizontal_support_top_down_task_orienta
 CONTROLLED_BODY_QUATERNION_WORLD_XYZW = [1.0, 0.0, 0.0, 0.0]
 PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
+# Absolute-position actuators need a target that can accumulate ahead of a
+# slowly moving measured state.  This is a separate ceiling from command slew:
+# v98 used the 0.03-rad slew as the lead ceiling and starved the controller.
+MAX_JOINT_SETPOINT_LEAD_RAD = 0.20
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
 MOTION_PHASE_MINIMUM_STEPS = 1
 MOTION_PHASE_MAXIMUM_STEPS = 240
@@ -120,6 +124,7 @@ class ControlEnvironment(Protocol):
         target_quaternion_world_xyzw: Sequence[float] | None,
         gripper_command: float,
         max_joint_delta_rad: float,
+        max_joint_setpoint_lead_rad: float,
     ) -> Sequence[float]: ...
 
 
@@ -272,6 +277,7 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
             phase["arrival_tolerance_m"] = PHASE_ARRIVAL_TOLERANCE_M
             phase["arrival_stability_steps"] = PHASE_ARRIVAL_STABILITY_STEPS
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
+        phase["max_joint_setpoint_lead_rad"] = MAX_JOINT_SETPOINT_LEAD_RAD
 
     plan: dict[str, Any] = {
         "schema_version": CONTROL_PLAN_SCHEMA_VERSION,
@@ -460,6 +466,7 @@ def run_control_episode(
                 "target_position_world_m": None,
                 "target_quaternion_world_xyzw": None,
                 "max_joint_delta_rad": MAX_JOINT_DELTA_PER_STEP_RAD,
+                "max_joint_setpoint_lead_rad": MAX_JOINT_SETPOINT_LEAD_RAD,
             }
         ]
     else:
@@ -490,6 +497,9 @@ def run_control_episode(
                     ],
                     gripper_command=gripper_command,
                     max_joint_delta_rad=float(phase["max_joint_delta_rad"]),
+                    max_joint_setpoint_lead_rad=float(
+                        phase["max_joint_setpoint_lead_rad"]
+                    ),
                 )
             environment.step(action)
             step_index += 1
@@ -703,7 +713,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v4.json", plan)
+    _write_json(output / "adp009d_control_plan.v5.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(
@@ -757,6 +767,8 @@ __all__ = [
     "CONTROL_EPISODE_SCHEMA_VERSION",
     "CONTROL_PAIR_SCHEMA_VERSION",
     "CONTROL_PLAN_SCHEMA_VERSION",
+    "MAX_JOINT_DELTA_PER_STEP_RAD",
+    "MAX_JOINT_SETPOINT_LEAD_RAD",
     "ControlEpisodeError",
     "SCRIPTED_POSITIVE",
     "ZERO_ACTION_NEGATIVE",

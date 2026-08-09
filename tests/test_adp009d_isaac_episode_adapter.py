@@ -16,12 +16,60 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     GRIPPER_PHYSICAL_FULL_OPENING_M,
     IsaacEpisodeAdapter,
     IsaacEpisodeAdapterError,
+    bounded_absolute_joint_setpoint,
     controlled_body_pose_for_grasp_frame_target,
     describe_adapter,
     rgb_from_camera_output,
     rotation_row_major_from_quaternion_xyzw,
     validate_adapter_bindings,
 )
+
+
+@pytest.mark.parametrize(
+    ("fixture_id", "desired"),
+    (
+        ("840313_rigid_pick_place", [0.5, -0.5, 0.25, -0.25, 0.4, -0.4, 0.1]),
+        ("840796_articulated_open", [-0.4, 0.35, -0.3, 0.2, -0.15, 0.45, -0.1]),
+    ),
+)
+def test_absolute_setpoint_slew_accumulates_lead_for_both_scene_fixtures(
+    fixture_id: str,
+    desired: list[float],
+) -> None:
+    del fixture_id
+    measured = [0.0] * 7
+    previous = list(measured)
+    commands = []
+
+    for _ in range(10):
+        command = bounded_absolute_joint_setpoint(
+            measured_joint_positions_rad=measured,
+            desired_joint_positions_rad=desired,
+            previous_commanded_joint_positions_rad=previous,
+            max_command_slew_per_step_rad=0.03,
+            max_setpoint_lead_rad=0.20,
+        )
+        assert max(abs(a - b) for a, b in zip(command, previous, strict=True)) <= 0.03
+        assert max(abs(a - b) for a, b in zip(command, measured, strict=True)) <= 0.20
+        commands.append(command)
+        previous = command
+
+    assert max(abs(value) for value in commands[0]) == pytest.approx(0.03)
+    assert max(abs(value) for value in commands[-1]) == pytest.approx(0.20)
+
+
+def test_absolute_setpoint_contract_rejects_an_infeasible_reset_discontinuity() -> None:
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_joint_setpoint_constraints_infeasible",
+    ):
+        bounded_absolute_joint_setpoint(
+            measured_joint_positions_rad=[1.0],
+            desired_joint_positions_rad=[1.0],
+            previous_commanded_joint_positions_rad=[0.0],
+            max_command_slew_per_step_rad=0.03,
+            max_setpoint_lead_rad=0.20,
+        )
 
 
 def test_grasp_frame_target_retains_the_measured_full_tool_offset() -> None:
@@ -108,7 +156,7 @@ def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -
     assert "scripted_control_task_orientation_missing" in callback
     assert "target_body_quaternion_world_xyzw=(" in callback
     assert "target_quaternion_world_xyzw" in callback
-    assert 'runtime / "adp009d_control_plan.v4.json"' in callback
+    assert 'runtime / "adp009d_control_plan.v5.json"' in callback
 
 
 class _Tensor(list):
@@ -421,9 +469,11 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
         target_quaternion_world_xyzw=[1.0, 0.0, 0.0, 0.0],
         gripper_command=0.0,
         max_joint_delta_rad=0.03,
+        max_joint_setpoint_lead_rad=0.20,
     )
     assert scripted_action == [0.2] * 7 + [0.0]
     assert calls[0]["max_joint_delta_rad"] == 0.03
+    assert calls[0]["max_joint_setpoint_lead_rad"] == 0.20
     metadata = adapter.read_control_observation_metadata()
     assert metadata["simulation_time_s"] == 0.0
     assert metadata["timestamp_ns"] == 0
@@ -435,6 +485,27 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
         [0.0, 0.0, 1.0, 3.0],
         [0.0, 0.0, 0.0, 1.0],
     ]
+
+
+def test_reset_clears_stateful_scripted_pose_controller() -> None:
+    resets: list[str] = []
+    adapter = IsaacEpisodeAdapter(
+        env=_Env(),
+        robot=_Robot(),
+        approved_can=_Can(),
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
+        simulation_step_seconds=1.0 / 15.0,
+        scripted_pose_controller_reset_callback=lambda: resets.append("reset"),
+    )
+
+    adapter.reset()
+    adapter.reset()
+
+    assert resets == ["reset", "reset"]
 
 
 def test_control_metadata_uses_live_wrist_mount_pose_callback() -> None:
