@@ -21,6 +21,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp009d_ovrtx",
     "adp009d_aura_native",
     "adp_content_agents",
+    "adp_joint_agent",
     "adp_aura_smoke",
     "adp_aura_interiorgs",
     "adp_inpaint360_interiorgs",
@@ -215,6 +216,24 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp_content_agents_runtime_contract"
+    elif provider_bundle_kind == "adp_joint_agent":
+        entrypoint_valid = (
+            "adp_joint_agent_runner_failed_without_runtime_result" in entrypoint_text
+            and "blocked_adp_joint_agent_process_exited_without_result" in entrypoint_text
+            and "apps/ovrtx_rendering_api" in entrypoint_text
+            and "gpu_initialized" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp_joint_agent_result.json",
+                "joint_agent_inference_executed",
+                "owned_core_publication_executed",
+                "review_joint_agent_articulation",
+                "UsdPhysics.Joint",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp_joint_agent_runtime_contract"
     elif provider_bundle_kind == "adp_aura_smoke":
         entrypoint_valid = (
             "adp_aura_smoke_runner_failed_without_runtime_result" in entrypoint_text
