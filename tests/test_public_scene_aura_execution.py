@@ -54,7 +54,13 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
             "target_semantic_label": "canned_beverage",
             "camera_count": 2,
             "input_receipt_digest": "sha256:" + "c" * 64,
+            "reference_camera_id": "view_b",
+            "reference_camera_index": 1,
         },
+        "artifacts": [
+            {"relative_path": "data/Other-360/840313_ins160/images/view_a.png"},
+            {"relative_path": "data/Other-360/840313_ins160/images/view_b.png"},
+        ],
         "source": source,
         "receipt_digest": "",
     }
@@ -164,7 +170,29 @@ def test_aura_execution_receipt_hashes_observed_files_without_self_admission(
     assert receipt["claim_boundary"]["released_method_execution_completed"] is True
     assert receipt["claim_boundary"]["successful_inpainting_admitted"] is False
     assert receipt["blockers"] == ["aurafusion360_interiorgs_quality_admission_missing"]
+    assert receipt["quality"]["runtime_reference_camera_binding_valid"] is True
     assert canonical_digest(receipt, digest_field="receipt_digest") == receipt["receipt_digest"]
+
+
+def test_aura_execution_retains_runtime_reference_camera_index_mismatch(
+    tmp_path: Path,
+) -> None:
+    paths = _fixture(tmp_path)
+    adapter = json.loads(paths["adapter"].read_text())
+    adapter["scene"]["reference_camera_index"] = 0
+    adapter["receipt_digest"] = canonical_digest(adapter, digest_field="receipt_digest")
+    _write(paths["adapter"], adapter)
+
+    receipt = _materialize(paths)
+
+    assert receipt["status"] == "executed_candidate"
+    assert receipt["quality"]["runtime_reference_camera_binding_observed"] is True
+    assert receipt["quality"]["runtime_reference_camera_binding_valid"] is False
+    assert receipt["quality"]["configured_reference_index"] == 0
+    assert receipt["quality"]["expected_runtime_sorted_reference_index"] == 1
+    assert receipt["blockers"] == [
+        "aurafusion360_runtime_reference_camera_binding_mismatch"
+    ]
 
 
 def test_aura_execution_receipt_accepts_legacy_v1_frame_path_field(

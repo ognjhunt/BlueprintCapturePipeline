@@ -348,7 +348,16 @@ def compile_articulated_public_scene_state(
     if aura_execution is None:
         blockers.append("released_code_inpainting_execution_missing")
     elif (aura_execution.get("quality") or {}).get("status") != "admitted":
-        blockers.append("released_code_inpainting_quality_admission_missing")
+        aura_blockers = aura_execution.get("blockers") or []
+        aura_blocker = str(aura_blockers[0]) if aura_blockers else ""
+        blockers.append(
+            "released_code_inpainting_quality_admission_missing"
+            if aura_blocker in {
+                "",
+                "aurafusion360_interiorgs_quality_admission_missing",
+            }
+            else f"released_code_inpainting_abstained:{aura_blocker}"
+        )
     if joint_execution is None:
         blockers.append(
             "joint_agent_topology_execution_abstained:"

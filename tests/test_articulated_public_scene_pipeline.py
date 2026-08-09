@@ -246,6 +246,23 @@ def test_observed_execution_receipts_replace_caller_asserted_packet_flags() -> N
     assert result["stage_receipts"]["joint_agent_execution"] == joint["receipt_digest"]
 
 
+def test_propagates_observed_aura_reference_binding_abstention() -> None:
+    inputs = _inputs()
+    inputs["execution_authority"] = _authority(inputs)
+    aura, joint = _executions(inputs)
+    aura["blockers"] = ["aurafusion360_runtime_reference_camera_binding_mismatch"]
+    aura["receipt_digest"] = canonical_digest(aura, digest_field="receipt_digest")
+    inputs["aura_execution_receipt"] = aura
+    inputs["joint_agent_execution_receipt"] = joint
+
+    result = compile_articulated_public_scene_state(**inputs)
+
+    assert result["smallest_blocker"] == (
+        "released_code_inpainting_abstained:"
+        "aurafusion360_runtime_reference_camera_binding_mismatch"
+    )
+
+
 def test_rejects_cross_scene_joint_agent_execution_receipt() -> None:
     inputs = _inputs()
     inputs["execution_authority"] = _authority(inputs)

@@ -147,6 +147,29 @@ def materialize_aura_execution_receipt(
 
     scene = adapter.get("scene") or {}
     source = adapter.get("source") or {}
+    camera_ids = sorted(
+        Path(str(row.get("relative_path") or "")).stem
+        for row in (adapter.get("artifacts") or [])
+        if str(row.get("relative_path") or "").startswith("data/Other-360/")
+        and "/images/" in str(row.get("relative_path") or "")
+        and str(row.get("relative_path") or "").endswith(".png")
+    )
+    reference_camera_id = str(scene.get("reference_camera_id") or "")
+    configured_reference_index = scene.get("reference_camera_index")
+    reference_binding_observed = bool(
+        camera_ids
+        and len(camera_ids) == int(scene.get("camera_count") or 0)
+        and reference_camera_id in camera_ids
+        and isinstance(configured_reference_index, int)
+    )
+    expected_reference_index = (
+        camera_ids.index(reference_camera_id) if reference_binding_observed else None
+    )
+    reference_binding_valid = (
+        configured_reference_index == expected_reference_index
+        if reference_binding_observed
+        else None
+    )
     if (
         runtime.get("scene_id") != scene.get("publisher_scene_id")
         or runtime.get("target_instance_id") != scene.get("target_instance_id")
@@ -277,6 +300,11 @@ def materialize_aura_execution_receipt(
             "hidden_background_truth_available": False,
             "quantitative_locality_measurement_observed": False,
             "human_visual_review_observed": False,
+            "runtime_reference_camera_binding_observed": reference_binding_observed,
+            "runtime_reference_camera_binding_valid": reference_binding_valid,
+            "reference_camera_id": reference_camera_id or None,
+            "configured_reference_index": configured_reference_index,
+            "expected_runtime_sorted_reference_index": expected_reference_index,
         },
         "claim_boundary": {
             "released_method_execution_completed": True,
@@ -286,7 +314,13 @@ def materialize_aura_execution_receipt(
             "simready_replacement_inserted": False,
             "output_claim_ceiling": "visual_candidate_only",
         },
-        "blockers": ["aurafusion360_interiorgs_quality_admission_missing"],
+        "blockers": [
+            (
+                "aurafusion360_runtime_reference_camera_binding_mismatch"
+                if reference_binding_valid is False
+                else "aurafusion360_interiorgs_quality_admission_missing"
+            )
+        ],
         "raw_secret_values_recorded": False,
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
