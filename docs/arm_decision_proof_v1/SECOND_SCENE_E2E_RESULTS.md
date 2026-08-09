@@ -209,6 +209,8 @@ exist because no episode was admitted.
 | `a06116755` | Coverage-conditioned cutout admission, exact source-collider subtree removal, and construction join. |
 | `ee75b523a` | Task-neutral canonical asset and articulated joint-state scenario constraints. |
 | `79780b3de` | API-derived provider-zero receipt and native-gate terminal abstention seal. |
+| `5b878b79d` | Final protocol/results, checked-in construction manifest, and portable evidence bindings. |
+| `fa1e4b025` | Fix the generic Vast startup state machine so `No such container` cannot terminate an instance still reported as `loading`; slow-lane regression covers loading-to-running recovery. |
 
 Every reusable fix has a focused hermetic regression. Before each commit, the
 required selector and Ruff gate passed. Latest pre-document code gate: `1,067`
@@ -228,6 +230,8 @@ rehearsal with a statically admitted SimReady candidate and an unobserved native
 diagnostic. It does not qualify a partner capture, real-site fidelity,
 deployment readiness, physical performance, or a learned-policy comparison.
 
-Single next action: **repair and hermetically test the generic Vast container-
-heartbeat/startup path, then authorize exactly one new zero-retry native
-articulated diagnostic on the same immutable construction bytes.**
+Single next action: **grant fresh retry-specific authority for exactly one new
+zero-retry native articulated diagnostic on the same immutable construction
+bytes.** The generic Vast loading-state defect exposed by v3 is fixed and
+hermetically tested at `fa1e4b025`; the original no-automatic-retry rule remains
+in force.
