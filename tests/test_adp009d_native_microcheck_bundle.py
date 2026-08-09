@@ -160,6 +160,7 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     assert "provider_runtime/assets/approved_can.usda" in names
     assert f"provider_runtime/assets/{APPROVED_CAN_ADAPTER_FILENAME}" in names
     assert "provider_runtime/assets/sage_collision.usd" in names
+    assert "provider_runtime/adp009d_task_destination.v1.json" in names
     assert f"provider_runtime/assets/{TASK_COLLISION_DERIVATIVE_FILENAME}" in names
     assert f"provider_runtime/assets/{TASK_COLLISION_MANIFEST_FILENAME}" in names
     derivative_root = Path(first["bundle_path"]).parent / "provider_runtime/assets"
@@ -898,7 +899,9 @@ def test_allocator_routes_microcheck_only_through_canonical_grant(
 
     monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
 
-    assert allocator.main(_allocator_args(tmp_path, execute=execute)) == 0
+    assert allocator.main(
+        _allocator_args(tmp_path, execute=execute) + ["--adp009d-diagnostic-only"]
+    ) == 0
     assert observed["execute"] is execute
     assert (
         isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is execute
@@ -907,6 +910,33 @@ def test_allocator_routes_microcheck_only_through_canonical_grant(
     assert admission["probe_kind"] == PROBE_KIND
     assert admission["retry_cap"] == 0
     assert admission["candidate_policy_queried"] is False
+    assert admission["allocation_binding"]["diagnostic_only_requested"] is True
+
+
+def test_allocator_refuses_an_ambiguous_paid_microcheck_without_an_execution_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v94 omitted the controls flag and paid for a request with no work mode."""
+
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+
+    assert allocator.main(_allocator_args(tmp_path, execute=False)) == 2
+    assert called is False
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert result["provider_mutations_performed"] == 0
+    assert "adp009d_execution_mode_missing" in result["blockers"]
 
 
 def test_allocator_controls_fail_closed_without_scenario_instance(
@@ -1060,6 +1090,7 @@ def test_allocator_binds_concurrent_instance_authority_through_transport(
 
     monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
     args = _allocator_args(tmp_path, execute=False) + [
+        "--adp009d-diagnostic-only",
         "--adp-allowed-active-vast-instance-id",
         "47190772",
     ]

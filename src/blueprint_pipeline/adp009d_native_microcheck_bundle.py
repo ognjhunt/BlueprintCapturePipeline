@@ -926,24 +926,28 @@ def build_native_microcheck_bundle(
         "decision_evidence_contracts.py",
     ):
         shutil.copy2(source_dir / module_name, runtime / module_name)
-    if policy_candidate_id or run_controls:
-        # The destination is frozen before any outcome exists; ship the receipt
-        # itself rather than recomputing it on the worker, so the episode is
-        # scored against exactly the value that was sealed.
-        from .adp009d_task_destination import DESTINATION_SCHEMA_VERSION
+    # The task-centred overview camera is configured before the runtime decides
+    # whether this request is diagnostic-only, controls-only, or policy-bearing.
+    # Therefore every runnable bundle needs the same frozen destination receipt,
+    # even when neither a policy nor controls were requested.  v94 paid for the
+    # old conditional omission and failed before Isaac startup.
+    #
+    # Ship the receipt itself rather than recomputing it on the worker, so all
+    # modes share exactly the preregistered value sealed before any outcome.
+    from .adp009d_task_destination import DESTINATION_SCHEMA_VERSION
 
-        destination_receipt = json.loads(
-            (
-                Path(__file__).resolve().parents[2]
-                / "docs/arm_decision_proof_v1/adp009d_task_destination.v1.json"
-            ).read_text(encoding="utf-8")
-        )
-        if destination_receipt.get("schema_version") != DESTINATION_SCHEMA_VERSION:
-            raise ValueError("adp009d_task_destination_schema_unexpected")
-        (runtime / "adp009d_task_destination.v1.json").write_text(
-            json.dumps(destination_receipt, indent=1, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+    destination_receipt = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "docs/arm_decision_proof_v1/adp009d_task_destination.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    if destination_receipt.get("schema_version") != DESTINATION_SCHEMA_VERSION:
+        raise ValueError("adp009d_task_destination_schema_unexpected")
+    (runtime / "adp009d_task_destination.v1.json").write_text(
+        json.dumps(destination_receipt, indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     if run_controls:
         from .adp009d_control_episode import materialize_control_plan
 
