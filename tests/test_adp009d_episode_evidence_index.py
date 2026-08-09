@@ -184,3 +184,37 @@ def test_portable_episode_index_rejects_overview_as_policy_input(tmp_path: Path)
                 "scenario_suite_digest": "sha256:frozen-suite",
             },
         )
+
+
+def test_portable_index_represents_terminal_abstention_without_fake_episodes(
+    tmp_path: Path,
+) -> None:
+    abstention = {
+        "schema_version": "adp_task_evaluation_run_abstention.v1",
+        "status": "typed_evidence_backed_abstention",
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "smallest_missing_capability": "joint_agent_local_ovrtx_renderer_not_ready",
+        "controls_executed": False,
+        "learned_candidate_episodes_executed": False,
+        "receipt_digest": "",
+    }
+    abstention["receipt_digest"] = canonical_digest(
+        abstention, digest_field="receipt_digest"
+    )
+
+    result = materialize_episode_evidence_index(
+        run_root=tmp_path,
+        episode_receipt_paths=[],
+        run_identity={
+            "scene_id": "840796",
+            "task_id": "upper_refrigerator_door_open",
+            "scenario_suite_digest": "not_materialized_before_abstention",
+        },
+        abstention_receipt=abstention,
+    )
+
+    assert result["index"]["episode_count"] == 0
+    assert result["index"]["typed_abstention"] == abstention
+    html = (tmp_path / HTML_FILENAME).read_text(encoding="utf-8")
+    assert "No control or learned-policy episode exists" in html
+    assert "joint_agent_local_ovrtx_renderer_not_ready" in html

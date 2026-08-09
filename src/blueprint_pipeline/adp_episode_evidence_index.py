@@ -29,6 +29,7 @@ INDEX_SCHEMA_VERSION = "adp_manipulation_episode_evidence_index.v1"
 INDEX_FILENAME = "episode_evidence_index.v1.json"
 HTML_FILENAME = "OPEN_ME_episode_evidence_index.html"
 REQUIRED_CAMERA_IDS = ("external", "wrist", "overview")
+ABSTENTION_SCHEMA_VERSION = "adp_task_evaluation_run_abstention.v1"
 ALLOWED_RECEIPT_SCHEMAS = {
     "adp009d_control_episode.v2",
     "adp_task_control_episode.v1",
@@ -198,25 +199,37 @@ def _render_html(payload: Mapping[str, Any]) -> str:
             "</tr>"
         )
     identity = payload["run_identity"]
-    return (
-        "<!doctype html>\n<html><head><meta charset=\"utf-8\">"
-        "<title>ADP episode evidence index</title>"
-        "<style>body{font-family:-apple-system,sans-serif;margin:2rem}"
-        "table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:.5rem}"
-        "th{background:#f4f4f4;text-align:left}</style></head><body>"
-        "<h1>ADP episode evidence index</h1>"
-        f"<p>Scene: {html.escape(str(identity['scene_id']))} &middot; "
-        f"Task: {html.escape(str(identity['task_id']))}</p>"
-        "<p>Videos are derived review media. Scores come only from deterministic "
-        "simulator state. Overview is review-only and was not a policy input.</p>"
-        "<table><thead><tr><th>Episode</th><th>Kind</th><th>Subject</th>"
-        "<th>Outcome</th><th>Success</th><th>Videos</th><th>Frames</th>"
-        "<th>Receipt</th></tr></thead><tbody>"
-        + "".join(rows)
-        + "</tbody></table>"
-        f"<p>Authoritative JSON digest: {html.escape(payload['index_digest'])}</p>"
-        f'<p><a href="{INDEX_FILENAME}">Open authoritative JSON index</a></p>'
-        "</body></html>\n"
+    abstention = payload.get("typed_abstention")
+    abstention_html = (
+        "<h2>Typed abstention</h2>"
+        f"<p>No control or learned-policy episode exists. Smallest missing "
+        f"capability: <code>{html.escape(str(abstention['smallest_missing_capability']))}</code>. "
+        "This is an evidence gap, not a policy result.</p>"
+        if isinstance(abstention, Mapping)
+        else ""
+    )
+    return "".join(
+        [
+            "<!doctype html>\n<html><head><meta charset=\"utf-8\">",
+            "<title>ADP episode evidence index</title>",
+            "<style>body{font-family:-apple-system,sans-serif;margin:2rem}",
+            "table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:.5rem}",
+            "th{background:#f4f4f4;text-align:left}</style></head><body>",
+            "<h1>ADP episode evidence index</h1>",
+            f"<p>Scene: {html.escape(str(identity['scene_id']))} &middot; ",
+            f"Task: {html.escape(str(identity['task_id']))}</p>",
+            "<p>Videos are derived review media. Scores come only from deterministic ",
+            "simulator state. Overview is review-only and was not a policy input.</p>",
+            abstention_html,
+            "<table><thead><tr><th>Episode</th><th>Kind</th><th>Subject</th>",
+            "<th>Outcome</th><th>Success</th><th>Videos</th><th>Frames</th>",
+            "<th>Receipt</th></tr></thead><tbody>",
+            "".join(rows),
+            "</tbody></table>",
+            f"<p>Authoritative JSON digest: {html.escape(payload['index_digest'])}</p>",
+            f'<p><a href="{INDEX_FILENAME}">Open authoritative JSON index</a></p>',
+            "</body></html>\n",
+        ]
     )
 
 
@@ -225,6 +238,7 @@ def materialize_episode_evidence_index(
     run_root: str | Path,
     episode_receipt_paths: Sequence[str | Path],
     run_identity: Mapping[str, Any],
+    abstention_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Verify episode evidence and emit portable JSON plus HTML navigation."""
 
@@ -235,8 +249,35 @@ def materialize_episode_evidence_index(
     for required in ("scene_id", "task_id", "scenario_suite_digest"):
         if not str(identity.get(required) or ""):
             raise EpisodeEvidenceIndexError(f"episode_index_identity_missing:{required}")
-    if not episode_receipt_paths:
+    if not episode_receipt_paths and abstention_receipt is None:
         raise EpisodeEvidenceIndexError("episode_index_receipts_missing")
+
+    abstention = None
+    if abstention_receipt is not None:
+        try:
+            abstention = json.loads(
+                json.dumps(dict(abstention_receipt), allow_nan=False)
+            )
+        except (TypeError, ValueError) as exc:
+            raise EpisodeEvidenceIndexError(
+                "episode_index_abstention_invalid"
+            ) from exc
+        if (
+            abstention.get("schema_version") != ABSTENTION_SCHEMA_VERSION
+            or abstention.get("status") != "typed_evidence_backed_abstention"
+            or abstention.get("receipt_digest")
+            != canonical_digest(abstention, digest_field="receipt_digest")
+            or not str(abstention.get("smallest_missing_capability") or "")
+            or abstention.get("controls_executed") is not False
+            or abstention.get("learned_candidate_episodes_executed") is not False
+            or abstention.get("candidate_ids")
+            != ["pi05_droid", "groot_n17_droid"]
+        ):
+            raise EpisodeEvidenceIndexError("episode_index_abstention_invalid")
+        if episode_receipt_paths:
+            raise EpisodeEvidenceIndexError(
+                "episode_index_abstention_with_episode_receipts_forbidden"
+            )
 
     rows = []
     for raw_path in episode_receipt_paths:
@@ -260,6 +301,7 @@ def materialize_episode_evidence_index(
         "overview_is_review_only": True,
         "scores_are_deterministic_simulator_state": True,
         "review_videos_are_not_physical_truth": True,
+        "typed_abstention": abstention,
         "index_digest": "",
     }
     payload["index_digest"] = canonical_digest(payload, digest_field="index_digest")
@@ -293,6 +335,7 @@ def materialize_episode_evidence_index(
 
 __all__ = [
     "EpisodeEvidenceIndexError",
+    "ABSTENTION_SCHEMA_VERSION",
     "HTML_FILENAME",
     "INDEX_FILENAME",
     "INDEX_SCHEMA_VERSION",
