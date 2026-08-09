@@ -156,6 +156,18 @@ EPISODE_START_RESTORE_MAX_STEPS = (
     + len(APPROACH_STANDOFF_HEIGHTS_M) * APPROACH_STEPS_PER_WAYPOINT
     + EPISODE_START_RESTORE_SETTLE_STEPS
 )
+
+
+def approved_can_visual_center_world() -> list[float]:
+    """Observed visual centre of the exact can, not its support-plane root."""
+
+    return [
+        CAN_AXIS_XY_M[0],
+        CAN_AXIS_XY_M[1],
+        SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0,
+    ]
+
+
 BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START = "no_safe_wrist_observable_episode_start"
 BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH = "wrist_episode_start_restore_joint_mismatch"
 BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED = "wrist_episode_start_restore_object_moved"
@@ -773,16 +785,15 @@ def rigid_offset_in_body_frame(
 ) -> tuple[list[float], list[float]]:
     """Express a child's world pose as a constant offset in a body's frame.
 
-    Arena parents the wrist camera under the Robotiq gripper base, which is not
-    an articulation body -- PhysX never writes a pose for it, so the camera keeps
-    its authored transform while the arm moves.  A live run measured the hand
-    travelling 0.27 m while every recorded wrist pose stayed byte-identical.
+    Arena parents the wrist camera under the Robotiq gripper base.  The rendered
+    hierarchy follows that live articulation body, but v92 established that the
+    sensor buffer and direct USD query both retained their initialization pose
+    while Fabric moved the articulation for rendering.
 
     Rather than re-author Arena's rig, the offset is measured once at the reset
     pose, where the authored transform is still the true one, and re-applied from
-    the live body pose at each capture.  This assumes the gripper base is rigidly
-    fixed to the body it hangs from, which holds: the fingers articulate, the
-    base does not.
+    the live gripper-base body pose at each capture.  The camera-to-base mount is
+    rigid; only the fingers articulate below it.
     """
 
     body_inverse = _quat_conjugate(body_quaternion_world_xyzw)
@@ -992,6 +1003,7 @@ __all__ = [
     "WRIST_POSE_CAUSE_PRIM_DETACHED",
     "WRIST_POSE_CAUSE_STALE_BUFFER",
     "WRIST_POSE_CAUSE_UNDETERMINED",
+    "approved_can_visual_center_world",
     "apply_rigid_offset",
     "approach_waypoints_world",
     "camera_aim_body_quaternion_xyzw",

@@ -31,10 +31,13 @@ try:  # flat provider-bundle layout, where this file runs as a script
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
+        apply_rigid_offset,
         approach_waypoints_world,
+        approved_can_visual_center_world,
         camera_aim_body_quaternion_xyzw,
         external_task_camera_offset_plan,
         pose_world_to_base,
+        rigid_offset_in_body_frame,
         select_wrist_observable_episode_start,
         semantic_target_observability,
         summarize_wrist_approach_capture,
@@ -54,10 +57,13 @@ except ModuleNotFoundError:  # imported as part of the repository package
         EPISODE_START_OBJECT_OFFSET_TOLERANCE_M,
         EPISODE_START_RESTORE_MAX_STEPS,
         SUPPORT_HEIGHT_M,
+        apply_rigid_offset,
         approach_waypoints_world,
+        approved_can_visual_center_world,
         camera_aim_body_quaternion_xyzw,
         external_task_camera_offset_plan,
         pose_world_to_base,
+        rigid_offset_in_body_frame,
         select_wrist_observable_episode_start,
         semantic_target_observability,
         summarize_wrist_approach_capture,
@@ -761,6 +767,8 @@ def _save_camera(
     frame_index: int,
     sim_time: float,
     require_metric_depth: bool = True,
+    pose_override: tuple[list[float], list[float]] | None = None,
+    pose_source: str = "isaac_sensor_buffer",
 ) -> dict[str, Any]:
     import numpy as np
     from PIL import Image
@@ -829,8 +837,19 @@ def _save_camera(
         np.save(depth_path, depth, allow_pickle=False)
     np.save(semantic_path, semantic, allow_pickle=False)
     intrinsic = _to_torch(camera.data.intrinsic_matrices)[0]
-    pos_w = _to_torch(camera.data.pos_w)[0]
-    quat_w_opengl = _to_torch(camera.data.quat_w_opengl)[0]
+    if pose_override is None:
+        pos_w = _jsonable(_to_torch(camera.data.pos_w)[0])
+        quat_w_opengl = _jsonable(_to_torch(camera.data.quat_w_opengl)[0])
+    else:
+        pos_w = [float(value) for value in pose_override[0]]
+        quat_w_opengl = [float(value) for value in pose_override[1]]
+    prim_diagnostics = _camera_prim_diagnostics(camera)
+    prim_diagnostics.update(
+        {
+            "evidence_pose_source": pose_source,
+            "evidence_world_translation_m": list(pos_w),
+        }
+    )
     return {
         "camera_id": name,
         "frame_index": frame_index,
@@ -873,9 +892,10 @@ def _save_camera(
             "foreground_semantic_pixel_fraction": float((semantic > 1).mean()),
         },
         "intrinsic_matrix": _jsonable(intrinsic),
-        "position_world_m": _jsonable(pos_w),
-        "quaternion_world_opengl_xyzw": _jsonable(quat_w_opengl),
-        "prim_diagnostics": _camera_prim_diagnostics(camera),
+        "position_world_m": list(pos_w),
+        "quaternion_world_opengl_xyzw": list(quat_w_opengl),
+        "pose_source": pose_source,
+        "prim_diagnostics": prim_diagnostics,
         "device": str(camera.data.output["rgb"].device),
         "dlpack_ownership": "isaac_camera_tensor_read_only_copy_retained",
         "synchronization": "environment_step_completed_before_copy",
@@ -1703,20 +1723,51 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             reset_camera_quaternion = [
                 float(v) for v in _to_torch(wrist_camera.data.quat_w_opengl)[0]
             ]
+            wrist_mount_position_body, wrist_mount_quaternion_body = (
+                rigid_offset_in_body_frame(
+                    body_position_world=[float(value) for value in reset_body_pose[:3]],
+                    body_quaternion_world_xyzw=[
+                        float(value) for value in reset_body_pose[3:7]
+                    ],
+                    child_position_world=reset_camera_position,
+                    child_quaternion_world_xyzw=reset_camera_quaternion,
+                )
+            )
+
+            def _wrist_camera_evidence_pose() -> tuple[list[float], list[float]]:
+                """Pose of the rendered rigid mount from the live articulation body."""
+
+                live_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
+                return apply_rigid_offset(
+                    body_position_world=[float(value) for value in live_body_pose[:3]],
+                    body_quaternion_world_xyzw=[
+                        float(value) for value in live_body_pose[3:7]
+                    ],
+                    offset_position_body=wrist_mount_position_body,
+                    offset_quaternion_body_xyzw=wrist_mount_quaternion_body,
+                )
+
+            wrist_camera_driven = True
+            camera_aim_target_world = approved_can_visual_center_world()
             camera_aim_quaternion = camera_aim_body_quaternion_xyzw(
                 body_quaternion_world_xyzw=[float(v) for v in reset_body_pose[3:7]],
                 camera_position_world=reset_camera_position,
                 camera_quaternion_world_opengl_xyzw=reset_camera_quaternion,
-                target_position_world=[float(v) for v in canonical_hold_can_pose[:3]],
+                target_position_world=camera_aim_target_world,
             )
             camera_aim_plan = {
                 "strategy": "rotate_mounted_opengl_optical_axis_to_can_center",
                 "camera_position_world_m": reset_camera_position,
                 "camera_quaternion_world_opengl_xyzw": reset_camera_quaternion,
-                "target_position_world_m": [float(v) for v in canonical_hold_can_pose[:3]],
+                "target_position_world_m": camera_aim_target_world,
                 "target_body_quaternion_world_xyzw": camera_aim_quaternion,
                 "max_steps": CAMERA_AIM_MAX_STEPS,
                 "camera_mount_reauthored": False,
+                "camera_pose_evidence_source": (
+                    "live_articulation_body_times_reset_rigid_mount_offset"
+                ),
+                "wrist_mount_position_body_m": wrist_mount_position_body,
+                "wrist_mount_quaternion_body_xyzw": wrist_mount_quaternion_body,
             }
             # Isaac Lab e57379c drops the root row from the jacobian stack for a
             # fixed-base articulation, so the jacobian index is offset by one.
@@ -1965,6 +2016,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     }
                 )
                 for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
+                    wrist_pose_override = (
+                        _wrist_camera_evidence_pose()
+                        if camera_name == "wrist_camera"
+                        else None
+                    )
                     approach_frames.append(
                         _save_camera(
                             output,
@@ -1977,6 +2033,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 * cfg.decimation
                             ),
                             require_metric_depth=(camera_name != "external_camera_2"),
+                            pose_override=wrist_pose_override,
+                            pose_source=(
+                                "live_articulation_body_times_reset_rigid_mount_offset"
+                                if wrist_pose_override is not None
+                                else "isaac_sensor_buffer"
+                            ),
                         )
                     )
                 _phase(
@@ -2299,6 +2361,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     reset_callback=_restore_wrist_observable_episode_start,
                     simulation_step_seconds=float(cfg.sim.dt * cfg.decimation),
                     scripted_pose_action_callback=_scripted_pose_action_callback,
+                    camera_pose_callback=lambda camera_name: (
+                        _wrist_camera_evidence_pose()
+                        if camera_name == "wrist_camera"
+                        else None
+                    ),
                 )
                 convention = GripperConvention(
                     closed_command=float(gripper_probe["closed_command"]),

@@ -437,6 +437,47 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
     ]
 
 
+def test_control_metadata_uses_live_wrist_mount_pose_callback() -> None:
+    """A moving render mount must not retain Isaac's initialization-only pose."""
+
+    calls: list[str] = []
+
+    def camera_pose(camera_name: str):
+        calls.append(camera_name)
+        if camera_name == "wrist_camera":
+            return [4.0, 5.0, 6.0], [0.0, 0.0, 0.0, 1.0]
+        return None
+
+    adapter = IsaacEpisodeAdapter(
+        env=_Env(),
+        robot=_Robot(),
+        approved_can=_Can(),
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
+        simulation_step_seconds=1.0 / 15.0,
+        camera_pose_callback=camera_pose,
+    )
+
+    metadata = adapter.read_control_observation_metadata()
+
+    assert calls == ["external_camera", "wrist_camera", "external_camera_2"]
+    assert metadata["calibrations"]["wrist"]["world_pose_source"] == (
+        "runtime_camera_pose_callback"
+    )
+    assert metadata["calibrations"]["wrist"]["world_from_camera"] == [
+        [1.0, 0.0, 0.0, 4.0],
+        [0.0, 1.0, 0.0, 5.0],
+        [0.0, 0.0, 1.0, 6.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    assert metadata["calibrations"]["external"]["world_pose_source"] == (
+        "isaac_sensor_buffer"
+    )
+
+
 def test_reset_callback_can_restore_a_wrist_observable_episode_start() -> None:
     env = _Env()
     calls: list[str] = []

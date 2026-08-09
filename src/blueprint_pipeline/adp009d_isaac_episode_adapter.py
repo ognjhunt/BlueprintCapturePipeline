@@ -40,7 +40,7 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v6"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v7"
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -229,6 +229,10 @@ class IsaacEpisodeAdapter:
         reset_callback: Callable[[], None] | None = None,
         simulation_step_seconds: float | None = None,
         scripted_pose_action_callback: Callable[..., Sequence[float]] | None = None,
+        camera_pose_callback: Callable[
+            [str], tuple[Sequence[float], Sequence[float]] | None
+        ]
+        | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -245,6 +249,7 @@ class IsaacEpisodeAdapter:
             else float(simulation_step_seconds)
         )
         self._scripted_pose_action_callback = scripted_pose_action_callback
+        self._camera_pose_callback = camera_pose_callback
         self._control_step_index = 0
         if (
             not math.isfinite(self._gripper_closed_width_m)
@@ -408,9 +413,28 @@ class IsaacEpisodeAdapter:
                 self._to_torch(camera.data.intrinsic_matrices)
             )[0]
             position = _as_array(self._to_torch(camera.data.pos_w))[0]
-            quaternion = _as_array(
-                self._to_torch(camera.data.quat_w_opengl)
-            )[0]
+            quaternion = _as_array(self._to_torch(camera.data.quat_w_opengl))[0]
+            world_pose_source = "isaac_sensor_buffer"
+            if self._camera_pose_callback is not None:
+                override = self._camera_pose_callback(camera_name)
+                if override is not None:
+                    position = _as_array(override[0])
+                    quaternion = _as_array(override[1])
+                    world_pose_source = "runtime_camera_pose_callback"
+            if (
+                position.shape != (3,)
+                or quaternion.shape != (4,)
+                or not all(math.isfinite(float(value)) for value in position)
+                or not all(math.isfinite(float(value)) for value in quaternion)
+                or abs(
+                    math.sqrt(sum(float(value) ** 2 for value in quaternion))
+                    - 1.0
+                )
+                > 1.0e-5
+            ):
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_camera_world_pose_invalid:{camera_name}"]
+                )
             rotation = rotation_row_major_from_quaternion_xyzw(quaternion)
             world_from_camera = [
                 [rotation[row * 3 + column] for column in range(3)]
@@ -436,6 +460,7 @@ class IsaacEpisodeAdapter:
                 "resolution": [width, height],
                 "near_m": float(clipping_range[0]),
                 "far_m": float(clipping_range[1]),
+                "world_pose_source": world_pose_source,
             }
             source_devices[camera_id] = str(
                 getattr(output["rgb"], "device", self._env.unwrapped.device)

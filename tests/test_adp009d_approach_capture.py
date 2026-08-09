@@ -6,6 +6,7 @@ import pytest
 from blueprint_pipeline.adp009d_approach_capture import (
     APPROACH_CAPTURE_FRAME_BASE,
     APPROACH_STANDOFF_HEIGHTS_M,
+    APPROVED_CAN_TOP_ABOVE_SUPPORT_M,
     BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START,
     BLOCKER_EXTERNAL_TASK_OBJECT_NOT_VISIBLE,
     BLOCKER_EPISODE_START_RESTORE_EXTERNAL_OBJECT_NOT_VISIBLE,
@@ -17,6 +18,7 @@ from blueprint_pipeline.adp009d_approach_capture import (
     CAN_AXIS_XY_M,
     SUPPORT_HEIGHT_M,
     approach_waypoints_world,
+    approved_can_visual_center_world,
     camera_aim_body_quaternion_xyzw,
     external_task_camera_eye_position,
     external_task_camera_offset_plan,
@@ -71,6 +73,16 @@ def test_waypoints_descend_over_the_can_axis_and_clear_its_top() -> None:
         assert waypoint["capture_frame_index"] == APPROACH_CAPTURE_FRAME_BASE + index
     # Frame indices must not collide with the 40-frame hold capture.
     assert min(w["capture_frame_index"] for w in waypoints) > 40
+
+
+def test_wrist_aim_targets_the_observed_can_center_not_its_support_root() -> None:
+    target = approved_can_visual_center_world()
+
+    assert target[:2] == list(CAN_AXIS_XY_M)
+    assert target[2] == pytest.approx(
+        SUPPORT_HEIGHT_M + APPROVED_CAN_TOP_ABOVE_SUPPORT_M / 2.0
+    )
+    assert target[2] > SUPPORT_HEIGHT_M
 
 
 def test_world_to_base_conversion_matches_a_rotated_translated_base() -> None:
@@ -716,7 +728,8 @@ def test_runtime_records_stage_transform_on_every_capture() -> None:
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
 
     source = Path(runtime.__file__).read_text(encoding="utf-8")
-    assert '"prim_diagnostics": _camera_prim_diagnostics(camera)' in source
+    assert "prim_diagnostics = _camera_prim_diagnostics(camera)" in source
+    assert '"prim_diagnostics": prim_diagnostics' in source
     assert "ComputeLocalToWorldTransform" in source
     # Established stage accessor for this runtime.
     assert "omni.usd.get_context().get_stage()" in source
@@ -800,11 +813,10 @@ def test_runtime_records_the_achieved_end_effector_pose_per_waypoint() -> None:
 
 
 def test_rigid_offset_round_trips_a_camera_through_a_moving_body() -> None:
-    """A camera on a non-articulation prim must be driven from its parent body.
+    """A camera with stale pose buffers must be derived from its live body.
 
-    Arena parents the wrist camera under the Robotiq gripper base, which PhysX
-    never writes a pose for.  A live run measured the hand travelling 0.27 m
-    while every recorded wrist pose stayed byte-identical.
+    v92 rendered the mount moving with the Robotiq gripper base while both the
+    sensor buffer and direct USD query stayed byte-identical.
     """
 
     from blueprint_pipeline.adp009d_approach_capture import (
@@ -891,8 +903,8 @@ def test_rigid_offset_rotates_the_camera_with_the_body() -> None:
     assert live_quat[3] == pytest.approx(half, abs=1e-9)
 
 
-def test_runtime_refreshes_pose_metadata_without_reauthoring_the_mount() -> None:
-    """v79 rendered motion but retained the initialization pose for every frame."""
+def test_runtime_derives_wrist_pose_metadata_from_the_live_rigid_mount() -> None:
+    """v92 proved the sensor/USD pose stayed stale while the render mount moved."""
 
     from pathlib import Path
 
@@ -901,8 +913,12 @@ def test_runtime_refreshes_pose_metadata_without_reauthoring_the_mount() -> None
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     code = [line for line in source.splitlines() if not line.strip().startswith("#")]
     assert not [line for line in code if "set_world_poses(" in line]
-    assert not [line for line in code if "apply_rigid_offset(" in line]
+    assert [line for line in code if "apply_rigid_offset(" in line]
     assert "camera_cfg.update_latest_camera_pose = True" in source
+    assert "rigid_offset_in_body_frame(" in source
+    assert "_wrist_camera_evidence_pose()" in source
+    assert 'camera_pose_callback=lambda camera_name:' in source
+    assert "approved_can_visual_center_world()" in source
     assert "camera_aim_body_quaternion_xyzw(" in source
     assert '"purpose": "camera_aim_in_place"' in source
     # The stale-pose gate remains fail closed if the configured refresh ever
