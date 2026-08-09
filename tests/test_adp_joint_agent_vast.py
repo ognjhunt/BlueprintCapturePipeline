@@ -21,6 +21,11 @@ from blueprint_pipeline.adp_joint_agent_vast import (
 )
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.nvidia_nim_model_preflight import (
+    DEFAULT_ENDPOINT as NIM_ENDPOINT,
+    DEFAULT_MODEL as NIM_MODEL,
+    SCHEMA_VERSION as NIM_SCHEMA_VERSION,
+)
 from blueprint_pipeline.usd_content_joint_agent_packet import JOINT_AGENT_IDENTITY
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
@@ -123,6 +128,25 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     )
     scope_amendment_path = tmp_path / "scope_amendment.json"
     scope_amendment_path.write_text(json.dumps(scope_amendment), encoding="utf-8")
+    nim_preflight = {
+        "schema_version": NIM_SCHEMA_VERSION,
+        "status": "qualified",
+        "endpoint": NIM_ENDPOINT,
+        "model": NIM_MODEL,
+        "http_status": 200,
+        "credential_validated": True,
+        "required_model_present": True,
+        "paid_inference_performed": False,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+        "blockers": [],
+        "receipt_digest": "",
+    }
+    nim_preflight["receipt_digest"] = canonical_digest(
+        nim_preflight, digest_field="receipt_digest"
+    )
+    nim_preflight_path = tmp_path / "nim_preflight.json"
+    nim_preflight_path.write_text(json.dumps(nim_preflight), encoding="utf-8")
     authority = {
         "authorization_digest": "",
         "joint_agent_source_asset_digest": source_digest,
@@ -161,6 +185,7 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         execution_authority_path=authority_path,
         freeze_path=freeze_path,
         scope_amendment_path=scope_amendment_path,
+        nim_preflight_path=nim_preflight_path,
         job_dir=tmp_path / "bundle",
         generated_at="2026-08-08T00:00:00+00:00",
     )
@@ -172,6 +197,7 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     assert receipt["blueprint_source"]["commit"] == "a" * 40
     assert receipt["completion_retries"] == 0
     assert receipt["scope_amendment_digest"] == scope_amendment["amendment_digest"]
+    assert receipt["nim_preflight_receipt_digest"] == nim_preflight["receipt_digest"]
     review_contract = json.loads(
         (tmp_path / "bundle/provider_runtime/joint_review_contract.json").read_text()
     )
@@ -256,6 +282,7 @@ def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
         "automatic_paid_retry_allowed": False,
         "provider_zero_required_after_return": True,
         "scope_amendment_digest": "sha256:" + "1" * 64,
+        "nim_preflight_receipt_digest": "sha256:" + "2" * 64,
         "blockers": [],
         "bundle_path": str(bundle),
         "bundle_sha256": bundle_digest,
@@ -416,6 +443,25 @@ def test_builder_preflight_failure_leaves_no_partial_output(
     )
     scope_amendment_path = tmp_path / "scope_amendment.json"
     scope_amendment_path.write_text(json.dumps(scope_amendment), encoding="utf-8")
+    nim_preflight = {
+        "schema_version": NIM_SCHEMA_VERSION,
+        "status": "qualified",
+        "endpoint": NIM_ENDPOINT,
+        "model": NIM_MODEL,
+        "http_status": 200,
+        "credential_validated": True,
+        "required_model_present": True,
+        "paid_inference_performed": False,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+        "blockers": [],
+        "receipt_digest": "",
+    }
+    nim_preflight["receipt_digest"] = canonical_digest(
+        nim_preflight, digest_field="receipt_digest"
+    )
+    nim_preflight_path = tmp_path / "nim_preflight.json"
+    nim_preflight_path.write_text(json.dumps(nim_preflight), encoding="utf-8")
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     monkeypatch.setattr(
@@ -440,6 +486,7 @@ def test_builder_preflight_failure_leaves_no_partial_output(
             execution_authority_path=authority_path,
             freeze_path=freeze_path,
             scope_amendment_path=scope_amendment_path,
+            nim_preflight_path=nim_preflight_path,
             job_dir=destination,
         )
 

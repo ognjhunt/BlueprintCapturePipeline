@@ -1443,6 +1443,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 scope_digest = str(
                     prepared_bundle.get("scope_amendment_digest") or ""
                 )
+                nim_preflight_digest = str(
+                    prepared_bundle.get("nim_preflight_receipt_digest") or ""
+                )
                 if (
                     prepared_bundle.get("status") != "ready"
                     or prepared_bundle.get("provider_bundle_kind")
@@ -1458,6 +1461,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or len(scope_digest) != 71
                     or not scope_digest.startswith("sha256:")
                     or any(character not in "0123456789abcdef" for character in scope_digest[7:])
+                    or len(nim_preflight_digest) != 71
+                    or not nim_preflight_digest.startswith("sha256:")
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in nim_preflight_digest[7:]
+                    )
                     or not bundle_path.is_file()
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
@@ -1480,6 +1489,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "scope_amendment_digest": (
                     prepared_bundle.get("scope_amendment_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "nim_preflight_receipt_digest": (
+                    prepared_bundle.get("nim_preflight_receipt_digest")
                     if prepared_bundle
                     else None
                 ),

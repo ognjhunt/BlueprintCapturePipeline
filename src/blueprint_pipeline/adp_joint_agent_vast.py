@@ -19,6 +19,11 @@ import yaml
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .nvidia_nim_model_preflight import (
+    DEFAULT_ENDPOINT as NIM_DEFAULT_ENDPOINT,
+    DEFAULT_MODEL as NIM_DEFAULT_MODEL,
+    SCHEMA_VERSION as NIM_PREFLIGHT_SCHEMA_VERSION,
+)
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .public_scene_execution_authority import validate_public_scene_execution_authority
@@ -177,6 +182,7 @@ def build_joint_agent_vast_bundle(
     execution_authority_path: str | Path,
     freeze_path: str | Path,
     scope_amendment_path: str | Path,
+    nim_preflight_path: str | Path,
     job_dir: str | Path,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -206,6 +212,25 @@ def build_joint_agent_vast_bundle(
         digest_field="amendment_digest",
         error="adp_joint_agent_scope_amendment_invalid",
     )
+    nim_preflight = _canonical_receipt(
+        Path(nim_preflight_path).expanduser().resolve(),
+        digest_field="receipt_digest",
+        error="adp_joint_agent_nim_preflight_invalid",
+    )
+    if (
+        nim_preflight.get("schema_version") != NIM_PREFLIGHT_SCHEMA_VERSION
+        or nim_preflight.get("status") != "qualified"
+        or nim_preflight.get("endpoint") != NIM_DEFAULT_ENDPOINT
+        or nim_preflight.get("model") != NIM_DEFAULT_MODEL
+        or nim_preflight.get("http_status") != 200
+        or nim_preflight.get("credential_validated") is not True
+        or nim_preflight.get("required_model_present") is not True
+        or nim_preflight.get("paid_inference_performed") is not False
+        or nim_preflight.get("provider_mutations_performed") != 0
+        or nim_preflight.get("raw_secret_values_recorded") is not False
+        or nim_preflight.get("blockers") not in ([], None)
+    ):
+        raise ValueError("adp_joint_agent_nim_preflight_not_qualified")
     destination = Path(job_dir).expanduser().resolve()
     if destination.exists() and any(destination.iterdir()):
         raise ValueError("adp_joint_agent_bundle_job_dir_not_empty")
@@ -275,6 +300,7 @@ def build_joint_agent_vast_bundle(
     write_json(runtime / "joint_review_contract.json", review)
     write_json(runtime / "execution_authority.json", authority)
     write_json(runtime / "joint_agent_packet.json", packet)
+    write_json(runtime / "nvidia_nim_model_preflight.json", nim_preflight)
 
     subprocess.run(
         ["git", "archive", "--format=zip", f"--output={runtime / 'content_agents_source.zip'}", "HEAD"],
@@ -322,6 +348,7 @@ def build_joint_agent_vast_bundle(
         "execution_authority_digest": authority["authorization_digest"],
         "freeze_digest": freeze["freeze_digest"],
         "scope_amendment_digest": scope_amendment["amendment_digest"],
+        "nim_preflight_receipt_digest": nim_preflight["receipt_digest"],
         "config_sha256": _sha256(runtime / "joint_agent.yaml"),
         "review_contract_digest": review["contract_digest"],
         "renderer": {
@@ -633,6 +660,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--execution-authority", required=True)
     parser.add_argument("--freeze", required=True)
     parser.add_argument("--scope-amendment", required=True)
+    parser.add_argument("--nim-preflight", required=True)
     parser.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
     receipt = build_joint_agent_vast_bundle(
@@ -642,6 +670,7 @@ def main(argv: list[str] | None = None) -> int:
         execution_authority_path=args.execution_authority,
         freeze_path=args.freeze,
         scope_amendment_path=args.scope_amendment,
+        nim_preflight_path=args.nim_preflight,
         job_dir=args.job_dir,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))
