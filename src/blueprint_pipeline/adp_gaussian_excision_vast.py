@@ -4,22 +4,37 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 import shutil
 import stat
 import subprocess
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .public_scene_gaussian_excision_audit import FREEZE_SCHEMA
+from .vast_independent_watchdog_control import (
+    arm_independent_vast_watchdog,
+    close_independent_vast_watchdog,
+)
+from .vast_provider_adapter import run_vast_provider_adapter
+from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
+from .wam_provider_object_store import (
+    cleanup_staged_wam_provider_objects,
+    stage_wam_provider_bundle_object_store,
+)
 
 
 PROBE_KIND = "adp-gaussian-excision"
 PROVIDER_BUNDLE_KIND = "adp_gaussian_excision"
 SCHEMA_VERSION = "adp009b_gaussian_excision_vast_bundle.v1"
+RESULT_SCHEMA_VERSION = "adp009b_gaussian_excision_vast_run.v1"
 AUTHORITY_SCHEMA = "public_scene_gaussian_excision_execution_authority.v1"
 SOURCE_REPOSITORY = "https://github.com/florinshen/FlashSplat"
 SOURCE_COMMIT = "3e3b14786333bf0163ba1b8541e86a3765112d7d"
@@ -40,6 +55,12 @@ EXPECTED_SUBMODULES = {
     DIFF_RASTERIZER_PATH: DIFF_RASTERIZER_COMMIT,
     GLM_PATH: GLM_COMMIT,
 }
+DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/gaussian-excision"
+_VAST_MUTATION_ENV = (
+    "BLUEPRINT_ALLOW_VAST_API_CALLS",
+    "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
+)
+_VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
 
 def _sha256(path: Path) -> str:
@@ -166,6 +187,8 @@ def _validate_authority(
         or any(authority.get(key) is not True for key in required_true)
         or any(authority.get(key) is not False for key in required_false)
         or authority.get("retention_policy") != "bounded_to_goal_then_provider_zero"
+        or authority.get("hard_attempt_spend_cap_usd") != 1.5
+        or authority.get("maximum_single_resource_ttl_seconds") != 3600
         or authority.get("maximum_paid_attempts") != 1
         or authority.get("maximum_automatic_retries") != 0
     ):
@@ -255,6 +278,9 @@ def build_gaussian_excision_vast_bundle(
         "source_archive_sha256": _sha256(source_archive),
         "freeze_digest": freeze["freeze_digest"],
         "execution_authority_digest": authority["authorization_digest"],
+        "hard_cap_usd": authority["hard_attempt_spend_cap_usd"],
+        "hard_ttl_seconds": authority["maximum_single_resource_ttl_seconds"],
+        "maximum_paid_attempts": authority["maximum_paid_attempts"],
         "standard_splat_sha256": _sha256(runtime / "input" / "scene_standard.ply"),
         "camera_contract_sha256": _sha256(runtime / "input" / "cameras.v1.json"),
         "calibration_camera_ids": freeze["camera_split"]["calibration_camera_ids"],
@@ -281,6 +307,328 @@ def build_gaussian_excision_vast_bundle(
     return receipt
 
 
+def _remaining_minutes(
+    *, job: Path, hard_cap_usd: float, hard_ttl_seconds: int, max_hourly_rate_usd: float
+) -> int:
+    ledger_path = job / "gaussian_excision_vast_session_budget.json"
+    if ledger_path.is_file():
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("gaussian_excision_budget_ledger_invalid") from exc
+    else:
+        ledger = {}
+    attempts = [
+        row for row in ledger.get("attempts", []) if isinstance(row, Mapping)
+    ]
+    prior_seconds = sum(attempt_runtime_seconds(row) for row in attempts)
+    prior_cost = sum(attempt_estimated_cost(row) for row in attempts)
+    return max(
+        0,
+        min(
+            math.floor(max(0.0, hard_ttl_seconds - prior_seconds) / 60.0),
+            math.floor(
+                max(0.0, hard_cap_usd - prior_cost)
+                * 60.0
+                / max_hourly_rate_usd
+            ),
+        ),
+    )
+
+
+def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
+    result_name = "adp009b_gaussian_excision_result.json"
+    result_path = destination / result_name
+    blockers: list[str] = []
+    if not path.is_file():
+        return {
+            "status": "blocked",
+            "execution": {},
+            "result_path": str(result_path),
+            "blockers": ["gaussian_excision_provider_output_zip_missing"],
+        }
+    ensure_dir(destination)
+    root = destination.resolve()
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for member in archive.infolist():
+                target = (destination / member.filename).resolve()
+                if target != root and root not in target.parents:
+                    blockers.append("gaussian_excision_provider_output_zip_path_traversal")
+            if not blockers:
+                archive.extractall(destination)
+    except (OSError, zipfile.BadZipFile):
+        blockers.append("gaussian_excision_provider_output_zip_invalid")
+    try:
+        execution = (
+            json.loads(result_path.read_text(encoding="utf-8"))
+            if result_path.is_file()
+            else {}
+        )
+    except (OSError, json.JSONDecodeError):
+        execution = {}
+    if not isinstance(execution, dict) or not execution:
+        execution = {}
+        blockers.append("gaussian_excision_provider_result_missing")
+    return {
+        "status": "completed" if not blockers else "blocked",
+        "execution": execution,
+        "result_path": str(result_path),
+        "blockers": sorted(set(blockers)),
+    }
+
+
+@contextmanager
+def _authority_environment():
+    names = (*_VAST_MUTATION_ENV, _VAST_SINGLE_ATTEMPT_ENV)
+    previous = {name: os.environ.get(name) for name in names}
+    try:
+        for name in _VAST_MUTATION_ENV:
+            os.environ[name] = "1"
+        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = "0"
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def run_gaussian_excision_vast(
+    *,
+    job_dir: str | Path,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+    prepared_bundle: Mapping[str, Any],
+    max_hourly_rate_usd: float = 0.60,
+    hard_cap_usd: float = 1.50,
+    hard_ttl_seconds: int = 3600,
+    public_image: str = DEFAULT_IMAGE,
+    allowed_active_instance_ids: Sequence[int] = (),
+) -> dict[str, Any]:
+    """Execute exactly one contribution attempt with watchdog and provider zero."""
+
+    job = Path(job_dir).expanduser().resolve()
+    ensure_dir(job)
+    bundle = dict(prepared_bundle)
+    bundle_path = Path(str(bundle.get("bundle_path") or "")).resolve()
+    if public_image != DEFAULT_IMAGE:
+        raise ValueError("gaussian_excision_container_image_not_frozen")
+    if (
+        bundle.get("status") != "ready"
+        or bundle.get("provider_bundle_kind") != PROVIDER_BUNDLE_KIND
+        or not bundle_path.is_file()
+        or _sha256(bundle_path) != bundle.get("bundle_sha256")
+    ):
+        raise ValueError("gaussian_excision_prepared_bundle_binding_invalid")
+    if not execute:
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "dry_run_ready",
+            "bundle": bundle,
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "blockers": [],
+        }
+        write_json(job / "gaussian_excision_vast_result.json", result)
+        return result
+    if paid_resource_admission_grant is None:
+        raise ValueError("gaussian_excision_paid_resource_admission_grant_missing")
+    remaining_minutes = _remaining_minutes(
+        job=job,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+    )
+    if remaining_minutes < 30:
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "blockers": ["gaussian_excision_budget_below_minimum_live_window"],
+        }
+    staging_dir = job / "object_store_staging"
+    staging = stage_wam_provider_bundle_object_store(
+        job_dir=staging_dir,
+        bundle_path=str(bundle_path),
+        key_prefix=DEFAULT_KEY_PREFIX,
+        expiration_seconds=max(hard_ttl_seconds + 1800, 7200),
+    )
+    if staging.get("status") != "completed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "blockers": staging.get("blockers")
+            or ["gaussian_excision_object_store_staging_blocked"],
+        }
+    provider_run = job / "vast_provider_run"
+    output_zip = provider_run / "vast_provider_runtime_output.zip"
+    watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
+        job_dir=job,
+        max_live_minutes=remaining_minutes,
+        generated_at=utc_now_iso(),
+        allowed_active_instance_ids=allowed_active_instance_ids,
+    )
+    if watchdog_handle is None:
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "independent_watchdog": watchdog_handoff,
+            "blockers": ["gaussian_excision_independent_watchdog_not_armed"],
+        }
+    adapter: dict[str, Any] = {}
+    try:
+        with _authority_environment():
+            adapter = run_vast_provider_adapter(
+                job_dir=provider_run,
+                mode="live-startup-probe",
+                allow_vast_api_call=True,
+                allow_instance_launch=True,
+                max_hourly_rate=max_hourly_rate_usd,
+                target_spend_usd=hard_cap_usd,
+                hard_cap_usd=hard_cap_usd,
+                max_live_minutes=remaining_minutes,
+                session_max_live_minutes=hard_ttl_seconds // 60,
+                public_image=public_image,
+                isaac_image=public_image,
+                ngc_image_login_mode="never",
+                provider_bundle=bundle_path,
+                provider_bundle_url=(staging_dir / "provider_bundle_url.txt")
+                .read_text(encoding="utf-8")
+                .strip(),
+                provider_output_put_url=(
+                    staging_dir / "provider_output_put_url.txt"
+                )
+                .read_text(encoding="utf-8")
+                .strip(),
+                provider_output_get_url=(
+                    staging_dir / "provider_output_get_url.txt"
+                )
+                .read_text(encoding="utf-8")
+                .strip(),
+                provider_runtime_output_zip=output_zip,
+                enable_isaac_smoke=False,
+                enable_blueprint_bundle=True,
+                provider_bundle_kind=PROVIDER_BUNDLE_KIND,
+                vast_launch_mode="ssh_direct",
+                allow_cold_isaac_image_pull=False,
+                disk_gb=64,
+                min_gpu_ram_mb=16_000,
+                poll_interval_seconds=10,
+                startup_timeout_seconds=min(3600, remaining_minutes * 60),
+                heartbeat_no_progress_seconds=1200,
+                session_budget_ledger_path=job
+                / "gaussian_excision_vast_session_budget.json",
+                verify_staging_urls=True,
+                require_known_supported_isaac_driver=False,
+                preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000", "A100"),
+                prefer_isaac_rt=False,
+                allowed_active_instance_ids=allowed_active_instance_ids,
+                vast_launch_lock_file=job.parent
+                / "gaussian_excision_paid_launch.lock",
+                instance_label_prefix="blueprint-adp-gaussian-excision-",
+                started_instance_id_path=watchdog_handle.started_instance_id_path,
+                forward_hf_token=False,
+                paid_resource_admission_grant=paid_resource_admission_grant,
+            )
+    except (OSError, RuntimeError, ValueError) as exc:
+        adapter = {
+            "status": "blocked",
+            "blockers": [f"gaussian_excision_vast_adapter_failed:{type(exc).__name__}"],
+            "raw_secret_values_recorded": False,
+        }
+    finally:
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+    extracted_root = job / "immutable_execution"
+    extracted = _extract_provider_output(output_zip, extracted_root)
+    execution = dict(extracted.get("execution") or {})
+    teardown_path = provider_run / "vast_teardown_manifest.json"
+    try:
+        teardown = (
+            json.loads(teardown_path.read_text(encoding="utf-8"))
+            if teardown_path.is_file()
+            else {}
+        )
+    except (OSError, json.JSONDecodeError):
+        teardown = {}
+    instance_ids = [
+        int(value)
+        for value in (
+            teardown.get("vast_instance_ids")
+            or adapter.get("vast_instance_ids")
+            or []
+        )
+        if isinstance(value, int) and value > 0
+    ]
+    watchdog_close = close_independent_vast_watchdog(
+        job_dir=job,
+        handle=watchdog_handle,
+        instance_ids=instance_ids,
+        provider_teardown_completed=teardown.get("continuing_spend_from_this_run")
+        is False,
+        provider_allocation_impossible=(
+            not instance_ids and adapter.get("provider_create_attempted") is not True
+        ),
+    )
+    blockers = list(adapter.get("blockers") or []) + list(
+        extracted.get("blockers") or []
+    )
+    if execution.get("status") != "completed":
+        blockers.extend(
+            execution.get("blockers") or ["gaussian_excision_execution_not_completed"]
+        )
+    elif (
+        execution.get("released_code_executed") is not True
+        or execution.get("heldout_cameras_accessed_for_classification") is not False
+        or execution.get("provider_zero_required_after_return") is not True
+        or execution.get("depth_anything_3_used") is not False
+        or not isinstance(execution.get("contribution_manifest"), Mapping)
+    ):
+        blockers.append("gaussian_excision_execution_contract_invalid")
+    if teardown.get("continuing_spend_from_this_run") is not False:
+        blockers.append("gaussian_excision_vast_provider_zero_not_proven")
+    if cleanup.get("all_objects_absent") is not True:
+        blockers.append("gaussian_excision_object_store_provider_zero_not_proven")
+    if watchdog_close.get("status") not in {
+        "provider_terminal",
+        "cancelled_no_allocation",
+    }:
+        blockers.append("gaussian_excision_independent_watchdog_not_closed")
+    result = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "completed" if not blockers else "blocked",
+        "bundle_sha256": bundle["bundle_sha256"],
+        "execution_result_path": extracted.get("result_path"),
+        "adapter_result_path": str(
+            provider_run / "vast_provider_adapter_result.json"
+        ),
+        "teardown_manifest_path": str(teardown_path),
+        "estimated_cost_usd": adapter.get("estimated_cost_usd"),
+        "hard_cap_usd": hard_cap_usd,
+        "hard_ttl_seconds": hard_ttl_seconds,
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": teardown.get(
+            "continuing_spend_from_this_run"
+        ),
+        "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+        "independent_watchdog": watchdog_close,
+        "blockers": sorted(set(str(item) for item in blockers if str(item))),
+        "raw_secret_values_recorded": False,
+    }
+    write_json(job / "gaussian_excision_vast_result.json", result)
+    return result
+
+
 __all__: Sequence[str] = (
     "AUTHORITY_SCHEMA",
     "DEFAULT_IMAGE",
@@ -289,4 +637,5 @@ __all__: Sequence[str] = (
     "SOURCE_COMMIT",
     "SOURCE_TREE",
     "build_gaussian_excision_vast_bundle",
+    "run_gaussian_excision_vast",
 )

@@ -160,6 +160,13 @@ from .adp_joint_agent_vast import (
     SOURCE_TREE as ADP_JOINT_AGENT_SOURCE_TREE,
     run_joint_agent_vast,
 )
+from .adp_gaussian_excision_vast import (
+    DEFAULT_IMAGE as ADP_GAUSSIAN_EXCISION_IMAGE,
+    PROBE_KIND as ADP_GAUSSIAN_EXCISION_PROBE_KIND,
+    PROVIDER_BUNDLE_KIND as ADP_GAUSSIAN_EXCISION_PROVIDER_BUNDLE_KIND,
+    SOURCE_TREE as ADP_GAUSSIAN_EXCISION_SOURCE_TREE,
+    run_gaussian_excision_vast,
+)
 from .adp_aura_author_smoke_vast import (
     DEFAULT_IMAGE as ADP_AURA_SMOKE_IMAGE,
     PREREQUISITE_RECEIPT_DIGEST as ADP_AURA_PREREQUISITE_RECEIPT_DIGEST,
@@ -1030,6 +1037,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_SIMREADY_ISAAC_PROBE_KIND,
             ADP_CONTENT_AGENTS_PROBE_KIND,
             ADP_JOINT_AGENT_PROBE_KIND,
+            ADP_GAUSSIAN_EXCISION_PROBE_KIND,
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,
             ADP_INPAINT360_INTERIORGS_PROBE_KIND,
@@ -1163,6 +1171,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-content-agents-bundle-receipt")
     gpu.add_argument("--adp-content-agents-config-preflight-receipt")
     gpu.add_argument("--adp-joint-agent-bundle-receipt")
+    gpu.add_argument("--adp-gaussian-excision-bundle-receipt")
     gpu.add_argument("--adp-aura-bundle-receipt")
     gpu.add_argument("--adp-aura-interiorgs-bundle-receipt")
     gpu.add_argument("--adp-aura-attempt-authority")
@@ -1413,6 +1422,186 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == ADP_GAUSSIAN_EXCISION_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "adp_gaussian_excision_bundle_receipt",
+                    "adp_job_dir",
+                )
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            blockers = [*missing, *control_blockers, *source_blockers]
+            if args.provider != "vast":
+                blockers.append("gaussian_excision_provider_must_be_vast")
+            if args.adp_max_hourly_rate_usd <= 0 or args.adp_max_hourly_rate_usd > 0.60:
+                blockers.append("gaussian_excision_max_hourly_rate_invalid")
+            if args.adp_max_spend_usd != 1.50:
+                blockers.append("gaussian_excision_hard_cap_mismatch")
+            if args.adp_hard_ttl_seconds != 3600:
+                blockers.append("gaussian_excision_hard_ttl_mismatch")
+            if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
+                blockers.append("gaussian_excision_allowed_active_instance_id_invalid")
+            prepared_bundle: dict[str, Any] | None = None
+            receipt_path: Path | None = None
+            if args.adp_gaussian_excision_bundle_receipt:
+                receipt_path = Path(
+                    args.adp_gaussian_excision_bundle_receipt
+                ).expanduser().resolve()
+                if not receipt_path.is_file():
+                    blockers.append("gaussian_excision_bundle_receipt_missing")
+                else:
+                    try:
+                        prepared_bundle = _load(receipt_path)
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        blockers.append("gaussian_excision_bundle_receipt_invalid")
+            bundle_path: Path | None = None
+            if prepared_bundle is not None:
+                bundle_path = Path(
+                    str(prepared_bundle.get("bundle_path") or "")
+                ).expanduser().resolve()
+                observed_bundle_sha256 = (
+                    "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+                    if bundle_path.is_file()
+                    else ""
+                )
+                released = prepared_bundle.get("released_code") or {}
+                if (
+                    prepared_bundle.get("status") != "ready"
+                    or prepared_bundle.get("provider_bundle_kind")
+                    != ADP_GAUSSIAN_EXCISION_PROVIDER_BUNDLE_KIND
+                    or prepared_bundle.get("container_image")
+                    != ADP_GAUSSIAN_EXCISION_IMAGE
+                    or prepared_bundle.get("blueprint_commit")
+                    != expected_source_commit
+                    or released.get("tree") != ADP_GAUSSIAN_EXCISION_SOURCE_TREE
+                    or released.get("source_modified") is not False
+                    or prepared_bundle.get("hard_cap_usd") != 1.50
+                    or prepared_bundle.get("hard_ttl_seconds") != 3600
+                    or prepared_bundle.get("maximum_paid_attempts") != 1
+                    or prepared_bundle.get("automatic_paid_retry_allowed") is not False
+                    or prepared_bundle.get("provider_zero_required_after_return") is not True
+                    or prepared_bundle.get("raw_interiorgs_downloaded_bytes_included")
+                    is not False
+                    or prepared_bundle.get(
+                        "private_scene_derived_standard_splat_included"
+                    )
+                    is not True
+                    or prepared_bundle.get("blockers") not in ([], None)
+                    or not bundle_path.is_file()
+                    or observed_bundle_sha256
+                    != prepared_bundle.get("bundle_sha256")
+                ):
+                    blockers.append("gaussian_excision_bundle_binding_invalid")
+            receipt_sha256 = (
+                "sha256:" + hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+                if receipt_path and receipt_path.is_file()
+                else None
+            )
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": ADP_GAUSSIAN_EXCISION_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get(
+                    "orchestrator_source_commit"
+                ),
+                "expected_source_commit": expected_source_commit or None,
+                "bundle_receipt_sha256": receipt_sha256,
+                "bundle_sha256": (
+                    prepared_bundle.get("bundle_sha256")
+                    if prepared_bundle
+                    else None
+                ),
+                "freeze_digest": (
+                    prepared_bundle.get("freeze_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "execution_authority_digest": (
+                    prepared_bundle.get("execution_authority_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
+                "retry_cap": 0,
+            }
+            allocation_binding_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(
+                        allocation_binding, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                ).hexdigest()
+            )
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter",
+                blockers=sorted(set(blockers)),
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": ADP_GAUSSIAN_EXCISION_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": "user_authorized_gaussian_ownership_gpu_audit",
+                    "private_scene_derived_input_only": True,
+                    "raw_interiorgs_downloaded_bytes_uploaded": False,
+                    "heldout_cameras_accessed_for_classification": False,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if blockers or prepared_bundle is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": sorted(set(blockers)),
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_gaussian_excision_vast(
+                    job_dir=args.adp_job_dir,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    prepared_bundle=prepared_bundle,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    public_image=ADP_GAUSSIAN_EXCISION_IMAGE,
+                    allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == ADP_JOINT_AGENT_PROBE_KIND:
             missing = [
                 name

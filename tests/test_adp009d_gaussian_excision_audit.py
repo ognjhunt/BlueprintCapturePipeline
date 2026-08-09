@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import zipfile
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -12,6 +13,7 @@ import numpy as np
 from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline import adp_gaussian_excision_vast as excision_vast
+from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.public_scene_gaussian_excision_audit import (
     CONTRIBUTION_CLASS_ORDER,
     CONTRIBUTION_EVIDENCE_SCHEMA,
@@ -197,6 +199,202 @@ def test_provider_runner_camera_and_zone_conversion_are_exact(tmp_path: Path) ->
     ]
 
 
+def _prepared_excision_bundle(tmp_path: Path) -> dict[str, object]:
+    path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("provider_runtime/fixture", "fixture")
+    return {
+        "status": "ready",
+        "provider_bundle_kind": excision_vast.PROVIDER_BUNDLE_KIND,
+        "bundle_path": str(path),
+        "bundle_sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
+def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None:
+    result = excision_vast.run_gaussian_excision_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=None,
+        execute=False,
+        prepared_bundle=_prepared_excision_bundle(tmp_path),
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["provider_mutations_performed"] == 0
+    assert result["retry_cap"] == 0
+
+
+def test_canonical_allocator_binds_gaussian_excision_bundle(
+    monkeypatch, tmp_path: Path
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    bundle.write_bytes(b"immutable-gaussian-excision-runtime")
+    bundle_digest = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
+    receipt = {
+        "status": "ready",
+        "provider_bundle_kind": excision_vast.PROVIDER_BUNDLE_KIND,
+        "container_image": excision_vast.DEFAULT_IMAGE,
+        "blueprint_commit": "a" * 40,
+        "released_code": {
+            "tree": excision_vast.SOURCE_TREE,
+            "source_modified": False,
+        },
+        "hard_cap_usd": 1.5,
+        "hard_ttl_seconds": 3600,
+        "maximum_paid_attempts": 1,
+        "automatic_paid_retry_allowed": False,
+        "provider_zero_required_after_return": True,
+        "raw_interiorgs_downloaded_bytes_included": False,
+        "private_scene_derived_standard_splat_included": True,
+        "freeze_digest": "sha256:" + "1" * 64,
+        "execution_authority_digest": "sha256:" + "2" * 64,
+        "blockers": [],
+        "bundle_path": str(bundle),
+        "bundle_sha256": bundle_digest,
+    }
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: (
+            [],
+            {"orchestrator_source_commit": "a" * 40, "checkout_clean": True},
+        ),
+    )
+    observed = {}
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_gaussian_excision_vast", fake_run)
+    arguments = [
+        "gpu-canary",
+        "--probe-kind",
+        excision_vast.PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "adapter.json"),
+        "--pod-name",
+        "adp-gaussian-excision",
+        "--expected-source-commit",
+        "a" * 40,
+        "--adp-gaussian-excision-bundle-receipt",
+        str(receipt_path),
+        "--adp-job-dir",
+        str(tmp_path / "run"),
+        "--adp-max-hourly-rate-usd",
+        "0.60",
+        "--adp-max-spend-usd",
+        "1.50",
+        "--adp-hard-ttl-seconds",
+        "3600",
+    ]
+
+    assert allocator.main(arguments) == 0
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["status"] == "admitted"
+    assert admission["allocation_binding"]["bundle_sha256"] == bundle_digest
+    assert admission["heldout_cameras_accessed_for_classification"] is False
+    assert observed["execute"] is False
+
+
+def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
+    monkeypatch, tmp_path: Path
+) -> None:
+    events = []
+    started_path = tmp_path / "started_instance.txt"
+    staging = tmp_path / "job/object_store_staging"
+
+    def fake_stage(**kwargs):
+        staging.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text(
+                "https://example.com/private", encoding="utf-8"
+            )
+        return {"status": "completed"}
+
+    def fake_arm(**kwargs):
+        events.append("watchdog")
+        return {"status": "armed"}, SimpleNamespace(
+            started_instance_id_path=started_path
+        )
+
+    def fake_adapter(**kwargs):
+        events.append("adapter")
+        assert kwargs["provider_bundle_kind"] == "adp_gaussian_excision"
+        output_zip = Path(kwargs["provider_runtime_output_zip"])
+        output_zip.parent.mkdir(parents=True)
+        with zipfile.ZipFile(output_zip, "w") as archive:
+            archive.writestr(
+                "adp009b_gaussian_excision_result.json",
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "blockers": [],
+                        "released_code_executed": True,
+                        "heldout_cameras_accessed_for_classification": False,
+                        "provider_zero_required_after_return": True,
+                        "depth_anything_3_used": False,
+                        "contribution_manifest": {"relative_path": "manifest.json"},
+                    }
+                ),
+            )
+        (output_zip.parent / "vast_teardown_manifest.json").write_text(
+            json.dumps(
+                {"vast_instance_ids": [7], "continuing_spend_from_this_run": False}
+            ),
+            encoding="utf-8",
+        )
+        return {"status": "completed", "blockers": [], "estimated_cost_usd": 0.2}
+
+    monkeypatch.setattr(excision_vast, "_remaining_minutes", lambda **kwargs: 60)
+    monkeypatch.setattr(
+        excision_vast, "stage_wam_provider_bundle_object_store", fake_stage
+    )
+    monkeypatch.setattr(excision_vast, "arm_independent_vast_watchdog", fake_arm)
+    monkeypatch.setattr(excision_vast, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(
+        excision_vast,
+        "cleanup_staged_wam_provider_objects",
+        lambda value: {"all_objects_absent": True},
+    )
+    monkeypatch.setattr(
+        excision_vast,
+        "close_independent_vast_watchdog",
+        lambda **kwargs: {"status": "provider_terminal"},
+    )
+
+    result = excision_vast.run_gaussian_excision_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=_prepared_excision_bundle(tmp_path),
+    )
+
+    assert events == ["watchdog", "adapter"]
+    assert result["status"] == "completed"
+    assert result["continuing_spend_from_this_run"] is False
+
+
 def test_freeze_builds_independent_core_uncertain_and_protected_masks(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -348,6 +546,8 @@ def Xform "Root"
         "model_training_authorized": False,
         "automatic_paid_retry_authorized": False,
         "retention_policy": "bounded_to_goal_then_provider_zero",
+        "hard_attempt_spend_cap_usd": 1.5,
+        "maximum_single_resource_ttl_seconds": 3600,
         "maximum_paid_attempts": 1,
         "maximum_automatic_retries": 0,
     }
