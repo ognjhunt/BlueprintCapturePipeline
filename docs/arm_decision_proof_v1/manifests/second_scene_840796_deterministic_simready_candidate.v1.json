@@ -19,6 +19,7 @@
     "task_door_link_prim_path": "/Asset/upper_door",
     "task_joint_prim_path": "/Asset/joints/upper_door_hinge"
   },
+  "candidate_usd_sha256": "sha256:81b1796ac9725c5cc1707f7afb21186bfcf18871872c3276a3d26f621100ffc5",
   "claim_boundary": {
     "generated_geometry_is_observed_site_truth": false,
     "joint_agent_output": false,
@@ -482,18 +483,29 @@
     "status": "deterministic_topology_candidate_constructed"
   },
   "evidence_relative_paths": {
-    "candidate_usd": "simready_candidate/840796_deterministic_v1/simready_candidate_deterministic.usda",
+    "candidate_usd": "simready_candidate/840796_deterministic_v1/simready_candidate_render_ready.usda",
     "reference_image": "simready_candidate/840796_deterministic_v1/candidate_reference.png"
   },
   "handle_band_observation_receipt_digest": "sha256:9748301b2ab3ba30666b7d19166ad199ba7af4fa114395e23992425eb1b8a6dd",
   "output_directory": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1",
-  "physics_validation_receipt_digest": "sha256:4a2303ada5b844d9fa13af91be35b0585a6ba3b6aeb19e3d6ee69a727bdfcde0",
+  "physics_validation_receipt_digest": "sha256:ff41d2e8959f4e62710445e65c6f134dd85a1ff934f0f46105eaba9b56b13282",
   "program_id": "arm-decision-proof-v1",
   "publisher_scene_id": "840796",
-  "receipt_digest": "sha256:9777e53008fa8d013d80a41c53688b5fee8c06c47d7f82aa2c00ee818b4d4aec",
+  "receipt_digest": "sha256:150933274faeae7f55627c89e6ddbd4d10fa1ac2f6b9ed876b6d9d024b2411cb",
   "reference_image_authority": "blueprint_deterministic_render_of_sage_derived_candidate_not_interiorgs_dataset_bytes",
   "reference_image_sha256": "sha256:0e79487f1ff0a2ba43d8e33fa5aa74cf42a40089f169f41bb4bf679d29010450",
+  "render_readiness": {
+    "aperture_cut": true,
+    "flat_colour_is_not_a_texture_pass": true,
+    "interior_exposed_fraction": 1.0,
+    "observed_albedo": [
+      0.81,
+      0.782,
+      0.762
+    ],
+    "render_materials_bound": 4
+  },
   "schema_version": "second_scene_deterministic_simready_candidate.v1",
   "target_instance_id": "123",
-  "topology_validation_receipt_digest": "sha256:b4d0f35306e9cf337697cb7bf884b2cb684b9833e02dd52c329e8eb91c10c609"
+  "topology_validation_receipt_digest": "sha256:eb398a0e23f67bf749a0fa89aaa4ef2c90237c3730608e402d0e3e0cb62a1039"
 }

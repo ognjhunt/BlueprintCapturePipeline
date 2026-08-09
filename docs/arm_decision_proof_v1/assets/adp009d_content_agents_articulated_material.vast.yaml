@@ -5,6 +5,9 @@ project:
   working_dir: .material
 input:
   usd_path: ../input/adp009d_840796_articulated_refrigerator_candidate.usda
+  # The candidate now carries bound UsdPreviewSurface materials. Without
+  # them every OVRTX preview render came back blank, which both starved the
+  # classifier and hard-failed the render step.
   reference_images:
     - ../input/adp009d_840796_articulated_refrigerator_candidate_reference.png
 output:
@@ -60,13 +63,16 @@ steps:
     include_prim_path_context: true
     prompts:
       vlm_system: |
-        Identify the visible real-world material of this single rigid beverage can.
+        Identify the visible real-world material of each part of this
+        two-door domestic refrigerator: painted sheet-metal door and cabinet
+        panels, metal handles, and the moulded interior liner.
         Use the multi-view renders and the supplied Blueprint-owned CAD reference.
         Select only from the provided material library. Do not treat the prompt,
         prim path, or frozen physics priors as measurement truth.
         Available materials: {materials_list}
         Respond as <reasoning>brief reasoning</reasoning><answer>{{"material": "material name"}}</answer>.
-      vlm_user: "Classify the visible material of the bright green beverage can."
+      vlm_user: "Classify the visible material of this pale off-white painted
+        domestic refrigerator part."
   predict:
     enabled: true
     prediction_batch_size: 1

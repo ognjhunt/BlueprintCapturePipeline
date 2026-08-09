@@ -23,9 +23,10 @@ target_prims:
   - /Asset/upper_door/component_000
 material_textures:
   door_shell:
-    prompt: matte pale-pink painted refrigerator door panel, smooth even finish, no branding, no text
+    prompt: matte pale off-white painted refrigerator door panel, smooth even
+      finish, faint vertical brushed grain, no branding, no text, no logos
     opacity: 1.0
-    material_path: /Asset/physics_materials/door_shell_texture
+    material_path: /Asset/Looks/Render/door_shell
     prim_paths:
       - /Asset/upper_door/component_000
 auto_prompt:

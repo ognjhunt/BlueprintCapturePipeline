@@ -1197,3 +1197,37 @@ def test_bundle_preflight_still_requires_one_input_usd_and_reference(
     assert "provider_runtime_bundle_required_entries_missing" in (
         preflight.get("blockers") or []
     )
+
+
+def test_articulated_agent_configs_describe_the_articulated_object() -> None:
+    """A config carried over from another scene silently mis-classifies.
+
+    The first 840796 material pass returned Car_Paint_Green for a pale
+    off-white refrigerator because the prompts, derived from the 840313 packet,
+    still asked the model to classify a bright green beverage can. The model was
+    answering the question it was given.
+    """
+
+    assets = ROOT / "docs/arm_decision_proof_v1/assets"
+    foreign = ("beverage", "canned", "green can", "soda")
+    for name in ("material", "texture", "physics"):
+        text = (
+            assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
+        ).read_text(encoding="utf-8")
+        lowered = text.lower()
+        assert "refrigerator" in lowered, name
+        for token in foreign:
+            assert token not in lowered, f"{name} config still mentions {token!r}"
+
+
+def test_articulated_texture_config_targets_a_real_render_material() -> None:
+    """The texture stage needs a material that is actually bound in the asset."""
+
+    text = (
+        ROOT
+        / "docs/arm_decision_proof_v1/assets"
+        / "adp009d_content_agents_articulated_texture.vast.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "material_path: /Asset/Looks/Render/" in text
+    assert "physics_materials" not in text
