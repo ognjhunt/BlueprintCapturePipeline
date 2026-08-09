@@ -1,0 +1,97 @@
+{
+  "candidate_usd_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1/simready_candidate_deterministic.usda",
+  "candidate_usd_sha256": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1",
+  "claim_boundary": {
+    "frozen_before_execution": true,
+    "native_simulator_qualified": false,
+    "physical_equivalence_proven": false,
+    "spec_is_not_a_result": true
+  },
+  "expected": {
+    "articulation_root_prim_path": "/Asset",
+    "assembly_joint_count": 2,
+    "candidate_world_bound_max_m": [
+      0.3554620146751404,
+      0.3489513695240021,
+      1.6324970722198486
+    ],
+    "candidate_world_bound_min_m": [
+      -0.35853809118270874,
+      -0.35042229294776917,
+      0.0014969737967476249
+    ],
+    "commanded_sweep_degrees": [
+      0.0,
+      5.0,
+      10.0,
+      15.0,
+      20.0,
+      25.0,
+      30.0,
+      35.0,
+      40.0,
+      45.0,
+      50.0,
+      55.0
+    ],
+    "joint_types": {
+      "/Asset/joints/lower_door_hinge": "revolute",
+      "/Asset/joints/upper_door_hinge": "revolute"
+    },
+    "locked_joint_motion_tolerance_rad": 0.001,
+    "locked_joint_prim_paths": [
+      "/Asset/joints/lower_door_hinge"
+    ],
+    "maximum_commanded_degrees": 55.0,
+    "reset_joint_positions_rad": {
+      "/Asset/joints/lower_door_hinge": 0.0,
+      "/Asset/joints/upper_door_hinge": 0.0
+    },
+    "task_joint_axis": "Z",
+    "task_joint_limits_deg": [
+      0.0,
+      90.0
+    ],
+    "task_joint_prim_path": "/Asset/joints/upper_door_hinge"
+  },
+  "receipt_digest": "sha256:52c6e567540f15a078c4097b43af50ce2782beedb75d50d10d1eb6bd275da7bb",
+  "required_readbacks": [
+    "articulation_root_identity",
+    "joint_count_and_types",
+    "task_joint_identity",
+    "locked_joint_identity",
+    "joint_axis_and_limits",
+    "locked_joint_motion_within_tolerance",
+    "commanded_sweep_reaches_maximum",
+    "contact_stability",
+    "no_initial_penetration",
+    "reset_replay_within_tolerance",
+    "deterministic_final_state"
+  ],
+  "schema_version": "articulated_native_probe_spec.v1",
+  "settle": {
+    "control_frequency_hz": 15.0,
+    "fixed_step_seconds": 0.008333333333333333,
+    "samples": 40,
+    "window_seconds": 2.6666666666666665
+  },
+  "spec_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1/native_probe_v1/articulated_native_probe_spec.json",
+  "stages": {
+    "articulation_stage": {
+      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1/native_probe_v1/articulation_stage.usda",
+      "purpose": "reference_the_exact_candidate_and_add_only_a_physics_scene",
+      "sha256": "sha256:dbd25f15df7bdef528f2f0b87e30c9b192546c2587c24f655f56c008561f8cd5"
+    },
+    "blank_stage": {
+      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1/native_probe_v1/blank_physics_stage.usda",
+      "purpose": "prove_the_runtime_can_bring_up_a_physics_scene_before_the_asset",
+      "sha256": "sha256:a6fac34ace72541955766439b4212ca525a97e88fd4232aaa8d0ffaca7dbc029"
+    },
+    "candidate_copy": {
+      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1/native_probe_v1/simready_candidate_deterministic.usda",
+      "purpose": "immutable_probe_input_copy",
+      "sha256": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1"
+    }
+  },
+  "status": "frozen_not_executed"
+}
