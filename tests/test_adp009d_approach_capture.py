@@ -170,6 +170,101 @@ def test_camera_aim_refuses_a_target_at_the_camera_origin() -> None:
         )
 
 
+def test_rigid_mount_camera_aim_accounts_for_camera_position_swing() -> None:
+    """v93's one-shot aim left the can clipped against the image top edge."""
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        apply_rigid_offset,
+        solve_rigid_mount_camera_aim,
+    )
+
+    body_position = [3.4681746928393387, -3.1697866897883302, 0.7484458672401548]
+    body_quaternion = [
+        -0.5000003054737467,
+        -0.5000001862644553,
+        0.49999976903193577,
+        -0.499999739229613,
+    ]
+    mount_position = [
+        0.010997542936674404,
+        -0.03101206713744055,
+        -0.07399032768695175,
+    ]
+    mount_quaternion = [
+        0.4198868084065459,
+        -0.5699144837283656,
+        -0.5758936469182312,
+        0.4089487234504179,
+    ]
+    target = [3.4681748, -3.3100837, 0.6109650138348479]
+    camera_position, camera_quaternion = apply_rigid_offset(
+        body_position_world=body_position,
+        body_quaternion_world_xyzw=body_quaternion,
+        offset_position_body=mount_position,
+        offset_quaternion_body_xyzw=mount_quaternion,
+    )
+    one_shot = camera_aim_body_quaternion_xyzw(
+        body_quaternion_world_xyzw=body_quaternion,
+        camera_position_world=camera_position,
+        camera_quaternion_world_opengl_xyzw=camera_quaternion,
+        target_position_world=target,
+    )
+    one_shot_camera_position, one_shot_camera_quaternion = apply_rigid_offset(
+        body_position_world=body_position,
+        body_quaternion_world_xyzw=one_shot,
+        offset_position_body=mount_position,
+        offset_quaternion_body_xyzw=mount_quaternion,
+    )
+
+    def optical_axis_error_degrees(position: list[float], quaternion: list[float]) -> float:
+        from blueprint_pipeline import adp009d_approach_capture as capture
+
+        forward = np.asarray(capture._quat_rotate(quaternion, (0.0, 0.0, -1.0)))
+        direction = np.asarray(target) - np.asarray(position)
+        direction /= np.linalg.norm(direction)
+        return float(np.degrees(np.arccos(np.clip(np.dot(forward, direction), -1.0, 1.0))))
+
+    assert optical_axis_error_degrees(
+        one_shot_camera_position, one_shot_camera_quaternion
+    ) == pytest.approx(8.675954583, abs=1.0e-6)
+
+    solved = solve_rigid_mount_camera_aim(
+        body_position_world=body_position,
+        body_quaternion_world_xyzw=body_quaternion,
+        offset_position_body=mount_position,
+        offset_quaternion_body_xyzw=mount_quaternion,
+        target_position_world=target,
+    )
+
+    assert solved["converged"] is True
+    assert solved["iterations"] <= 8
+    assert solved["residual_angle_degrees"] <= solved["tolerance_degrees"]
+    assert optical_axis_error_degrees(
+        solved["camera_position_world_m"],
+        solved["camera_quaternion_world_opengl_xyzw"],
+    ) <= 1.0e-5
+
+
+def test_rigid_mount_camera_aim_rejects_an_unbounded_solver() -> None:
+    from blueprint_pipeline.adp009d_approach_capture import (
+        ApproachCaptureError,
+        solve_rigid_mount_camera_aim,
+    )
+
+    with pytest.raises(
+        ApproachCaptureError,
+        match="wrist_camera_aim_solver_configuration_invalid",
+    ):
+        solve_rigid_mount_camera_aim(
+            body_position_world=[0.0, 0.0, 0.0],
+            body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+            offset_position_body=[0.0, 0.0, 0.1],
+            offset_quaternion_body_xyzw=[0.0, 0.0, 0.0, 1.0],
+            target_position_world=[0.0, 0.0, 1.0],
+            max_iterations=0,
+        )
+
+
 def test_external_task_camera_preserves_the_view_ray_at_fixed_distance() -> None:
     eye = external_task_camera_eye_position(
         current_position_world=[4.0, -2.0, 1.0],
@@ -919,7 +1014,8 @@ def test_runtime_derives_wrist_pose_metadata_from_the_live_rigid_mount() -> None
     assert "_wrist_camera_evidence_pose()" in source
     assert 'camera_pose_callback=lambda camera_name:' in source
     assert "approved_can_visual_center_world()" in source
-    assert "camera_aim_body_quaternion_xyzw(" in source
+    assert "solve_rigid_mount_camera_aim(" in source
+    assert '"rigid_mount_aim_solution": camera_aim_solution' in source
     assert '"purpose": "camera_aim_in_place"' in source
     # The stale-pose gate remains fail closed if the configured refresh ever
     # regresses or the reported pose still does not move.

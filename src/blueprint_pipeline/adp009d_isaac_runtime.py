@@ -34,10 +34,10 @@ try:  # flat provider-bundle layout, where this file runs as a script
         apply_rigid_offset,
         approach_waypoints_world,
         approved_can_visual_center_world,
-        camera_aim_body_quaternion_xyzw,
         external_task_camera_offset_plan,
         pose_world_to_base,
         rigid_offset_in_body_frame,
+        solve_rigid_mount_camera_aim,
         select_wrist_observable_episode_start,
         semantic_target_observability,
         summarize_wrist_approach_capture,
@@ -60,10 +60,10 @@ except ModuleNotFoundError:  # imported as part of the repository package
         apply_rigid_offset,
         approach_waypoints_world,
         approved_can_visual_center_world,
-        camera_aim_body_quaternion_xyzw,
         external_task_camera_offset_plan,
         pose_world_to_base,
         rigid_offset_in_body_frame,
+        solve_rigid_mount_camera_aim,
         select_wrist_observable_episode_start,
         semantic_target_observability,
         summarize_wrist_approach_capture,
@@ -1749,14 +1749,18 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
 
             wrist_camera_driven = True
             camera_aim_target_world = approved_can_visual_center_world()
-            camera_aim_quaternion = camera_aim_body_quaternion_xyzw(
+            camera_aim_solution = solve_rigid_mount_camera_aim(
+                body_position_world=[float(v) for v in reset_body_pose[:3]],
                 body_quaternion_world_xyzw=[float(v) for v in reset_body_pose[3:7]],
-                camera_position_world=reset_camera_position,
-                camera_quaternion_world_opengl_xyzw=reset_camera_quaternion,
+                offset_position_body=wrist_mount_position_body,
+                offset_quaternion_body_xyzw=wrist_mount_quaternion_body,
                 target_position_world=camera_aim_target_world,
             )
+            camera_aim_quaternion = camera_aim_solution[
+                "body_quaternion_world_xyzw"
+            ]
             camera_aim_plan = {
-                "strategy": "rotate_mounted_opengl_optical_axis_to_can_center",
+                "strategy": "solve_rigid_mount_opengl_optical_axis_to_can_center",
                 "camera_position_world_m": reset_camera_position,
                 "camera_quaternion_world_opengl_xyzw": reset_camera_quaternion,
                 "target_position_world_m": camera_aim_target_world,
@@ -1768,6 +1772,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 ),
                 "wrist_mount_position_body_m": wrist_mount_position_body,
                 "wrist_mount_quaternion_body_xyzw": wrist_mount_quaternion_body,
+                "rigid_mount_aim_solution": camera_aim_solution,
             }
             # Isaac Lab e57379c drops the root row from the jacobian stack for a
             # fixed-base articulation, so the jacobian index is offset by one.

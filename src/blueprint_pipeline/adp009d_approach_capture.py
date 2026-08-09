@@ -820,6 +820,102 @@ def apply_rigid_offset(
     return position_world, quaternion_world
 
 
+def solve_rigid_mount_camera_aim(
+    *,
+    body_position_world: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
+    offset_position_body: Sequence[float],
+    offset_quaternion_body_xyzw: Sequence[float],
+    target_position_world: Sequence[float],
+    max_iterations: int = 20,
+    tolerance_degrees: float = 1.0e-5,
+) -> dict[str, Any]:
+    """Aim an offset rigid camera while accounting for its rotational swing.
+
+    A one-shot look-at rotation is only exact when the camera is colocated with
+    the controlled body.  A wrist camera has a non-zero mount offset, so body
+    rotation changes both its orientation *and* its world position.  Solve that
+    coupling as a bounded fixed point: rebuild the camera pose from the proposed
+    body orientation, then correct the remaining optical-axis error.
+
+    The bounded iteration and explicit residual keep the admission gate
+    fail-closed for unusual mounts or targets where the fixed point does not
+    converge.  The camera mount itself is never re-authored.
+    """
+
+    if (
+        not isinstance(max_iterations, int)
+        or isinstance(max_iterations, bool)
+        or max_iterations < 1
+        or not math.isfinite(float(tolerance_degrees))
+        or tolerance_degrees <= 0.0
+    ):
+        raise ApproachCaptureError(["wrist_camera_aim_solver_configuration_invalid"])
+
+    body_quaternion = [float(value) for value in body_quaternion_world_xyzw]
+    residual_angle_degrees = math.inf
+    camera_position: list[float] = []
+    camera_quaternion: list[float] = []
+    for iteration in range(1, max_iterations + 1):
+        camera_position, camera_quaternion = apply_rigid_offset(
+            body_position_world=body_position_world,
+            body_quaternion_world_xyzw=body_quaternion,
+            offset_position_body=offset_position_body,
+            offset_quaternion_body_xyzw=offset_quaternion_body_xyzw,
+        )
+        body_quaternion = camera_aim_body_quaternion_xyzw(
+            body_quaternion_world_xyzw=body_quaternion,
+            camera_position_world=camera_position,
+            camera_quaternion_world_opengl_xyzw=camera_quaternion,
+            target_position_world=target_position_world,
+        )
+        camera_position, camera_quaternion = apply_rigid_offset(
+            body_position_world=body_position_world,
+            body_quaternion_world_xyzw=body_quaternion,
+            offset_position_body=offset_position_body,
+            offset_quaternion_body_xyzw=offset_quaternion_body_xyzw,
+        )
+        target_delta = [
+            float(target_position_world[index]) - camera_position[index]
+            for index in range(3)
+        ]
+        target_norm = math.sqrt(sum(value * value for value in target_delta))
+        if target_norm <= 1.0e-12:
+            raise ApproachCaptureError(["wrist_camera_aim_pose_invalid"])
+        target_direction = [value / target_norm for value in target_delta]
+        camera_forward = _quat_rotate(camera_quaternion, (0.0, 0.0, -1.0))
+        forward_norm = math.sqrt(sum(value * value for value in camera_forward))
+        dot = max(
+            -1.0,
+            min(
+                1.0,
+                sum(
+                    camera_forward[index] * target_direction[index] / forward_norm
+                    for index in range(3)
+                ),
+            ),
+        )
+        residual_angle_degrees = math.degrees(math.acos(dot))
+        if residual_angle_degrees <= tolerance_degrees:
+            return {
+                "schema_version": "adp009d_rigid_mount_camera_aim_solution.v1",
+                "body_quaternion_world_xyzw": body_quaternion,
+                "camera_position_world_m": camera_position,
+                "camera_quaternion_world_opengl_xyzw": camera_quaternion,
+                "iterations": iteration,
+                "residual_angle_degrees": residual_angle_degrees,
+                "tolerance_degrees": float(tolerance_degrees),
+                "converged": True,
+            }
+
+    raise ApproachCaptureError(
+        [
+            "wrist_camera_aim_solution_not_converged",
+            f"wrist_camera_aim_residual_degrees:{residual_angle_degrees:.9f}",
+        ]
+    )
+
+
 def _max_travel_m(positions: Sequence[Sequence[float]]) -> float:
     """Largest displacement of any sample from the first sample."""
 
@@ -1009,6 +1105,7 @@ __all__ = [
     "camera_aim_body_quaternion_xyzw",
     "classify_wrist_pose_discrepancy",
     "rigid_offset_in_body_frame",
+    "solve_rigid_mount_camera_aim",
     "pose_world_to_base",
     "world_to_base_rotation_row_major_xyzw",
     "select_wrist_observable_episode_start",
