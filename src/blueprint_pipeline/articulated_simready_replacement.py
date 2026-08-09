@@ -15,6 +15,7 @@ site truth.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -867,7 +868,7 @@ def author_articulated_simready_replacement(
     rigged_topology_usd_path: str | Path,
     output_usd_path: str | Path,
     topology_contract: Mapping[str, Any],
-    physics_contract: Mapping[str, Any],
+    physics_contract_template: Mapping[str, Any],
     authoring_spec: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Deterministically author physics onto an owned-core topology candidate.
@@ -1186,6 +1187,33 @@ def author_articulated_simready_replacement(
         raise ArticulatedSimReadyReplacementError(
             ["articulated_authoring_output_export_failed"]
         )
+
+    template = json.loads(json.dumps(dict(physics_contract_template)))
+    for field in ("task_door_envelope_m", "non_task_door_envelope_m", "support_envelope_m"):
+        envelope = template.get(field)
+        if (
+            not isinstance(envelope, Mapping)
+            or _finite_vector(envelope.get("aabb_min"), 3) is None
+            or _finite_vector(envelope.get("aabb_max"), 3) is None
+        ):
+            raise ArticulatedSimReadyReplacementError(
+                [f"articulated_authoring_template_envelope_invalid:{field}"]
+            )
+    physics_contract: dict[str, Any] = {
+        key: value
+        for key, value in template.items()
+        if key
+        not in {"task_door_envelope_m", "non_task_door_envelope_m", "support_envelope_m"}
+    }
+    physics_contract["task_door_link"] = task_door_path
+    physics_contract["support_link"] = support_link_path
+    physics_contract["required_generated_interior_links"] = [support_link_path]
+    envelopes: dict[str, Any] = {support_link_path: template["support_envelope_m"]}
+    envelopes[task_door_path] = template["task_door_envelope_m"]
+    for door_path in door_link_paths:
+        if door_path != task_door_path:
+            envelopes[door_path] = template["non_task_door_envelope_m"]
+    physics_contract["link_collider_envelopes_m"] = envelopes
 
     topology_validation = validate_articulated_replacement_topology(
         replacement_usd_path=output, contract=topology_contract

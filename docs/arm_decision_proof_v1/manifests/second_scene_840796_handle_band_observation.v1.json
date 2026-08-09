@@ -1,0 +1,553 @@
+{
+  "adp_item": "ADP-009D",
+  "aggregate": {
+    "lower_door_handle": {
+      "authoritative_reason": "zero_lateral_parallax_frontal_camera",
+      "authoritative_view": "target_123_view_04",
+      "observed_world_x_interval_m": [
+        1.97718703147237,
+        2.2487056392821763
+      ],
+      "observed_world_z_interval_m": [
+        0.8017006711384062,
+        0.8565620890983896
+      ],
+      "off_axis_maximum_z_deviation_m": 0.038609943392992396
+    },
+    "upper_door_handle": {
+      "authoritative_reason": "zero_lateral_parallax_frontal_camera",
+      "authoritative_view": "target_123_view_04",
+      "observed_world_x_interval_m": [
+        1.9770131828505488,
+        2.2494475136372993
+      ],
+      "observed_world_z_interval_m": [
+        1.0050886707865736,
+        1.0577740525806225
+      ],
+      "off_axis_maximum_z_deviation_m": 0.059458208915191046
+    }
+  },
+  "claim_boundary": {
+    "appearance_pixels_are_not_metric_authority": true,
+    "final_contact_volume_requires_native_readback": true,
+    "physical_site_metrology": false,
+    "publisher_frame_synthetic_consistency_only": true
+  },
+  "front_plane": {
+    "axis": 1,
+    "value_m": 1.829218141
+  },
+  "member_seam_world_z_m": 0.9399812489142184,
+  "per_view_receipts": {
+    "lower_door_handle": {
+      "target_123_view_03": {
+        "band_pixels": {
+          "bottom_v": 482,
+          "left_u": 445,
+          "right_u": 504,
+          "top_v": 446
+        },
+        "camera_spec": {
+          "fov": 55.0,
+          "pos": [
+            2.593245057,
+            2.973690789,
+            1.570236871
+          ],
+          "target": [
+            1.9742142,
+            1.4792181,
+            0.815935
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "claim_boundary": {
+          "physical_equivalence_proven": false,
+          "physical_site_metrology": false,
+          "protrusion_depth_observed": false,
+          "publisher_frame_synthetic_consistency_only": true
+        },
+        "front_plane": {
+          "axis": 1,
+          "value_m": 1.829218141
+        },
+        "image_path_name": "target_123_view_03.png",
+        "image_sha256": "sha256:c37444a3acc75161bd8f89c23a237f8d8e2b75cbd52c836acfaeea326cd841f1",
+        "observed_world_x_interval_m": [
+          2.134960249135826,
+          2.2538658988027915
+        ],
+        "observed_world_z_interval_m": [
+          0.7967450788896909,
+          0.8761198842504364
+        ],
+        "receipt_digest": "sha256:de4103fec5e9a7190cd1c87c1506c0abe006fafb11b6410972a9fbbb51e4b5b8",
+        "schema_version": "articulated_front_plane_handle_band_observation.v1",
+        "search_x_interval_m": [
+          1.617248144,
+          2.331180256
+        ],
+        "search_z_interval_m": [
+          0.59,
+          0.93
+        ],
+        "status": "observed_candidate_contact_band",
+        "thresholds": {
+          "brightness_minimum_255": 200.0,
+          "minimum_band_pixels": 3,
+          "minimum_column_fraction": 0.5,
+          "minimum_row_fraction": 0.06,
+          "saturation_maximum_255": 12.0
+        }
+      },
+      "target_123_view_04": {
+        "band_pixels": {
+          "bottom_v": 464,
+          "left_u": 373,
+          "right_u": 510,
+          "top_v": 440
+        },
+        "camera_spec": {
+          "fov": 55.0,
+          "pos": [
+            1.9742142,
+            3.096823683,
+            1.570236871
+          ],
+          "target": [
+            1.9742142,
+            1.4792181,
+            0.815935
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "claim_boundary": {
+          "physical_equivalence_proven": false,
+          "physical_site_metrology": false,
+          "protrusion_depth_observed": false,
+          "publisher_frame_synthetic_consistency_only": true
+        },
+        "front_plane": {
+          "axis": 1,
+          "value_m": 1.829218141
+        },
+        "image_path_name": "target_123_view_04.png",
+        "image_sha256": "sha256:01ec0a19fe64362ee481ca87527ca048c5cfa74100a36a156f57e4d70e72f854",
+        "observed_world_x_interval_m": [
+          1.97718703147237,
+          2.2487056392821763
+        ],
+        "observed_world_z_interval_m": [
+          0.8017006711384062,
+          0.8565620890983896
+        ],
+        "receipt_digest": "sha256:3415a3cb5a0cee6421651cf4962c846808f3fb174869fa4a0ba4538c0670a027",
+        "schema_version": "articulated_front_plane_handle_band_observation.v1",
+        "search_x_interval_m": [
+          1.617248144,
+          2.331180256
+        ],
+        "search_z_interval_m": [
+          0.59,
+          0.93
+        ],
+        "status": "observed_candidate_contact_band",
+        "thresholds": {
+          "brightness_minimum_255": 200.0,
+          "minimum_band_pixels": 3,
+          "minimum_column_fraction": 0.5,
+          "minimum_row_fraction": 0.06,
+          "saturation_maximum_255": 12.0
+        }
+      },
+      "target_123_view_05": {
+        "band_pixels": {
+          "bottom_v": 452,
+          "left_u": 338,
+          "right_u": 367,
+          "top_v": 414
+        },
+        "camera_spec": {
+          "fov": 55.0,
+          "pos": [
+            1.355183343,
+            2.973690789,
+            1.570236871
+          ],
+          "target": [
+            1.9742142,
+            1.4792181,
+            0.815935
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "claim_boundary": {
+          "physical_equivalence_proven": false,
+          "physical_site_metrology": false,
+          "protrusion_depth_observed": false,
+          "publisher_frame_synthetic_consistency_only": true
+        },
+        "front_plane": {
+          "axis": 1,
+          "value_m": 1.829218141
+        },
+        "image_path_name": "target_123_view_05.png",
+        "image_sha256": "sha256:c84b3cbf9b53c5812644350b416582bf3e51863b0c7398edead4cf190befb72a",
+        "observed_world_x_interval_m": [
+          2.1588753031220307,
+          2.2332880844830783
+        ],
+        "observed_world_z_interval_m": [
+          0.7630907277454138,
+          0.8574034963545911
+        ],
+        "receipt_digest": "sha256:f8e826f116a8791c3500f0f2ee28b097a548bcb30aa8bb742e48449bca0375e0",
+        "schema_version": "articulated_front_plane_handle_band_observation.v1",
+        "search_x_interval_m": [
+          1.617248144,
+          2.331180256
+        ],
+        "search_z_interval_m": [
+          0.59,
+          0.93
+        ],
+        "status": "observed_candidate_contact_band",
+        "thresholds": {
+          "brightness_minimum_255": 200.0,
+          "minimum_band_pixels": 3,
+          "minimum_column_fraction": 0.5,
+          "minimum_row_fraction": 0.06,
+          "saturation_maximum_255": 12.0
+        }
+      }
+    },
+    "upper_door_handle": {
+      "target_123_view_03": {
+        "band_pixels": {
+          "bottom_v": 385,
+          "left_u": 439,
+          "right_u": 544,
+          "top_v": 352
+        },
+        "camera_spec": {
+          "fov": 55.0,
+          "pos": [
+            2.593245057,
+            2.973690789,
+            1.570236871
+          ],
+          "target": [
+            1.9742142,
+            1.4792181,
+            0.815935
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "claim_boundary": {
+          "physical_equivalence_proven": false,
+          "physical_site_metrology": false,
+          "protrusion_depth_observed": false,
+          "publisher_frame_synthetic_consistency_only": true
+        },
+        "front_plane": {
+          "axis": 1,
+          "value_m": 1.829218141
+        },
+        "image_path_name": "target_123_view_03.png",
+        "image_sha256": "sha256:c37444a3acc75161bd8f89c23a237f8d8e2b75cbd52c836acfaeea326cd841f1",
+        "observed_world_x_interval_m": [
+          2.053305015096867,
+          2.2570928471155214
+        ],
+        "observed_world_z_interval_m": [
+          0.9966346425123912,
+          1.061909641977699
+        ],
+        "receipt_digest": "sha256:99956a9bcb39317b6ba2ab8a2e934808ef6c0818ddf6b5238a259bb3a5c7f7a4",
+        "schema_version": "articulated_front_plane_handle_band_observation.v1",
+        "search_x_interval_m": [
+          1.617248144,
+          2.331180256
+        ],
+        "search_z_interval_m": [
+          0.95,
+          1.29
+        ],
+        "status": "observed_candidate_contact_band",
+        "thresholds": {
+          "brightness_minimum_255": 200.0,
+          "minimum_band_pixels": 3,
+          "minimum_column_fraction": 0.5,
+          "minimum_row_fraction": 0.06,
+          "saturation_maximum_255": 12.0
+        }
+      },
+      "target_123_view_04": {
+        "band_pixels": {
+          "bottom_v": 371,
+          "left_u": 364,
+          "right_u": 510,
+          "top_v": 345
+        },
+        "camera_spec": {
+          "fov": 55.0,
+          "pos": [
+            1.9742142,
+            3.096823683,
+            1.570236871
+          ],
+          "target": [
+            1.9742142,
+            1.4792181,
+            0.815935
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "claim_boundary": {
+          "physical_equivalence_proven": false,
+          "physical_site_metrology": false,
+          "protrusion_depth_observed": false,
+          "publisher_frame_synthetic_consistency_only": true
+        },
+        "front_plane": {
+          "axis": 1,
+          "value_m": 1.829218141
+        },
+        "image_path_name": "target_123_view_04.png",
+        "image_sha256": "sha256:01ec0a19fe64362ee481ca87527ca048c5cfa74100a36a156f57e4d70e72f854",
+        "observed_world_x_interval_m": [
+          1.9770131828505488,
+          2.2494475136372993
+        ],
+        "observed_world_z_interval_m": [
+          1.0050886707865736,
+          1.0577740525806225
+        ],
+        "receipt_digest": "sha256:da42729bc83520b99a4ac5166cb9a1fb0bdc114e2d7bd58c89712df71c0c67a3",
+        "schema_version": "articulated_front_plane_handle_band_observation.v1",
+        "search_x_interval_m": [
+          1.617248144,
+          2.331180256
+        ],
+        "search_z_interval_m": [
+          0.95,
+          1.29
+        ],
+        "status": "observed_candidate_contact_band",
+        "thresholds": {
+          "brightness_minimum_255": 200.0,
+          "minimum_band_pixels": 3,
+          "minimum_column_fraction": 0.5,
+          "minimum_row_fraction": 0.06,
+          "saturation_maximum_255": 12.0
+        }
+      },
+      "target_123_view_05": {
+        "band_pixels": {
+          "bottom_v": 365,
+          "left_u": 269,
+          "right_u": 313,
+          "top_v": 324
+        },
+        "camera_spec": {
+          "fov": 55.0,
+          "pos": [
+            1.355183343,
+            2.973690789,
+            1.570236871
+          ],
+          "target": [
+            1.9742142,
+            1.4792181,
+            0.815935
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "claim_boundary": {
+          "physical_equivalence_proven": false,
+          "physical_site_metrology": false,
+          "protrusion_depth_observed": false,
+          "publisher_frame_synthetic_consistency_only": true
+        },
+        "front_plane": {
+          "axis": 1,
+          "value_m": 1.829218141
+        },
+        "image_path_name": "target_123_view_05.png",
+        "image_sha256": "sha256:c84b3cbf9b53c5812644350b416582bf3e51863b0c7398edead4cf190befb72a",
+        "observed_world_x_interval_m": [
+          2.2707674864507057,
+          2.3854544612230484
+        ],
+        "observed_world_z_interval_m": [
+          0.9456304618713826,
+          1.0400159776770121
+        ],
+        "receipt_digest": "sha256:7c54f1b382c18d217e30bea9cf3c19fca52f7d6779aceab3ed206fa80e40b5dd",
+        "schema_version": "articulated_front_plane_handle_band_observation.v1",
+        "search_x_interval_m": [
+          1.617248144,
+          2.331180256
+        ],
+        "search_z_interval_m": [
+          0.95,
+          1.29
+        ],
+        "status": "observed_candidate_contact_band",
+        "thresholds": {
+          "brightness_minimum_255": 200.0,
+          "minimum_band_pixels": 3,
+          "minimum_column_fraction": 0.5,
+          "minimum_row_fraction": 0.06,
+          "saturation_maximum_255": 12.0
+        }
+      }
+    }
+  },
+  "program_id": "arm-decision-proof-v1",
+  "protrusion_depth_m": {
+    "reason": "front-view band observation cannot measure depth; off-axis x shifts bound it loosely but occlusion confounds a deterministic estimate",
+    "status": "candidate_parameter_not_observed"
+  },
+  "publisher_scene_id": "840796",
+  "receipt_digest": "sha256:9748301b2ab3ba30666b7d19166ad199ba7af4fa114395e23992425eb1b8a6dd",
+  "schema_version": "second_scene_handle_band_observation.v1",
+  "selected_thresholds": {
+    "brightness_minimum_255": 200.0,
+    "saturation_maximum_255": 12.0,
+    "selection_rule": "loosest operating point where both bands remain a single handle-shaped run before the mask merges door-edge highlights; stability shown in threshold_sensitivity"
+  },
+  "target_instance_id": "123",
+  "threshold_sensitivity_frontal_view": {
+    "lower_door_handle": [
+      {
+        "brightness_minimum_255": 210.0,
+        "observed_world_x_interval_m": [
+          1.9791705565995104,
+          2.1357914251440366
+        ],
+        "observed_world_z_interval_m": [
+          0.8017006711384063,
+          0.8543106857622729
+        ],
+        "saturation_maximum_255": 10.0
+      },
+      {
+        "brightness_minimum_255": 200.0,
+        "observed_world_x_interval_m": [
+          1.97718703147237,
+          2.2487056392821763
+        ],
+        "observed_world_z_interval_m": [
+          0.8017006711384062,
+          0.8565620890983896
+        ],
+        "saturation_maximum_255": 12.0
+      },
+      {
+        "brightness_minimum_255": 190.0,
+        "observed_world_x_interval_m": [
+          1.975205471319902,
+          2.2487963556128725
+        ],
+        "observed_world_z_interval_m": [
+          0.7993766909483566,
+          0.8565620890983897
+        ],
+        "saturation_maximum_255": 14.0
+      },
+      {
+        "brightness_minimum_255": 185.0,
+        "observed_world_x_interval_m": [
+          1.975205471319902,
+          2.2487963556128725
+        ],
+        "observed_world_z_interval_m": [
+          0.7993766909483566,
+          0.8565620890983897
+        ],
+        "saturation_maximum_255": 16.0
+      }
+    ],
+    "upper_door_handle": [
+      {
+        "brightness_minimum_255": 210.0,
+        "observed_world_x_interval_m": [
+          1.9788791714175813,
+          2.247581525070267
+        ],
+        "observed_world_z_interval_m": [
+          1.0071467845876403,
+          1.0557789741198165
+        ],
+        "saturation_maximum_255": 10.0
+      },
+      {
+        "brightness_minimum_255": 200.0,
+        "observed_world_x_interval_m": [
+          1.9770131828505488,
+          2.2494475136372993
+        ],
+        "observed_world_z_interval_m": [
+          1.0050886707865736,
+          1.0577740525806225
+        ],
+        "saturation_maximum_255": 12.0
+      },
+      {
+        "brightness_minimum_255": 190.0,
+        "observed_world_x_interval_m": [
+          2.14044456437608,
+          2.2444546247678177
+        ],
+        "observed_world_z_interval_m": [
+          1.0050886707865736,
+          1.0874074475077335
+        ],
+        "saturation_maximum_255": 14.0
+      },
+      {
+        "brightness_minimum_255": 185.0,
+        "observed_world_x_interval_m": [
+          2.149568300333128,
+          2.2442038465446577
+        ],
+        "observed_world_z_interval_m": [
+          1.003027973704716,
+          1.095218102928189
+        ],
+        "saturation_maximum_255": 16.0
+      }
+    ]
+  },
+  "views_used": [
+    "target_123_view_03",
+    "target_123_view_04",
+    "target_123_view_05"
+  ]
+}

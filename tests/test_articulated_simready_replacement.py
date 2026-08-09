@@ -603,12 +603,39 @@ def _rigged_topology_fixture(path: Path, *, include_handle_component: bool = Tru
     return path
 
 
+def _physics_template() -> dict:
+    contract = {
+        key: value
+        for key, value in _physics_contract().items()
+        if key
+        not in {
+            "link_collider_envelopes_m",
+            "task_door_link",
+            "support_link",
+            "required_generated_interior_links",
+        }
+    }
+    contract["task_door_envelope_m"] = {
+        "aabb_min": [-0.36, 0.28, UPPER_INTERVAL[0] - 0.005],
+        "aabb_max": [0.36, 0.46, UPPER_INTERVAL[1] + 0.005],
+    }
+    contract["non_task_door_envelope_m"] = {
+        "aabb_min": [-0.36, 0.28, LOWER_INTERVAL[0] - 0.005],
+        "aabb_max": [0.36, 0.46, LOWER_INTERVAL[1] + 0.005],
+    }
+    contract["support_envelope_m"] = {
+        "aabb_min": [-0.36, -0.36, -0.005],
+        "aabb_max": [0.36, 0.305, 1.64],
+    }
+    return contract
+
+
 def _authoring_arguments(tmp_path: Path, rigged: Path) -> dict:
     return {
         "rigged_topology_usd_path": rigged,
         "output_usd_path": tmp_path / "simready_candidate.usda",
         "topology_contract": _contract(),
-        "physics_contract": _physics_contract(),
+        "physics_contract_template": _physics_template(),
         "authoring_spec": {
             "support_link_mass_kg": 62.0,
             "door_link_mass_kg": 9.0,
