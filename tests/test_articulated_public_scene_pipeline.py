@@ -111,6 +111,63 @@ def _inputs() -> dict:
     }
 
 
+def _authority(inputs: dict) -> dict:
+    source = inputs["articulated_source_receipt"]
+    value = {
+        "schema_version": "public_scene_execution_authority.v1",
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "authority_reference": "goal-user-message-2026-08-08",
+        "authorized_by": "fixture-owner",
+        "authorized_on": "2026-08-08",
+        "publisher_scene_id": inputs["freeze"]["scene"]["publisher_scene_id"],
+        "target_instance_id": inputs["freeze"]["scene"]["target_instance_id"],
+        "freeze_digest": inputs["freeze"]["freeze_digest"],
+        "prior_rights_authority_digest": "sha256:" + "1" * 64,
+        "interiorgs_terms_text_digest": "sha256:" + "2" * 64,
+        "aura_adapter_receipt_digest": inputs["aura_adapter_receipt"][
+            "receipt_digest"
+        ],
+        "joint_agent_source_receipt_digest": source["receipt_digest"],
+        "joint_agent_source_asset_digest": source["output_asset"]["sha256"],
+        "provider_scope": [
+            "vast",
+            "nvidia_nim",
+            "nvidia_remote_renderer",
+            "object_store",
+        ],
+        "purpose_scope": [
+            "released_code_inpainting",
+            "articulation_topology_inference",
+            "native_simulator_qualification",
+            "two_candidate_policy_evaluation",
+        ],
+        "hard_total_spend_cap_usd": 12.0,
+        "maximum_single_resource_ttl_seconds": 14400,
+        "remote_upload_authorized": True,
+        "paid_compute_authorized": True,
+        "derived_aura_adapter_upload_authorized": True,
+        "sage_cc_by_nc_derived_asset_upload_authorized": True,
+        "one_instance_at_a_time": True,
+        "provider_zero_required_before_and_after": True,
+        "teardown_required": True,
+        "raw_interiorgs_downloaded_bytes_upload_authorized": False,
+        "public_disclosure_authorized": False,
+        "model_training_authorized": False,
+        "commercial_use_authorized": False,
+        "automatic_paid_retry_authorized": False,
+        "retention_policy": "bounded_to_goal_then_provider_zero",
+        "dataset_claim": (
+            "internal_noncommercial_private_processing_authority_only;"
+            "does_not_change_publisher_nonredistribution_terms"
+        ),
+        "authorization_digest": "",
+    }
+    value["authorization_digest"] = canonical_digest(
+        value, digest_field="authorization_digest"
+    )
+    return value
+
+
 def test_non_agent_pipeline_stops_at_exact_rights_boundary() -> None:
     result = compile_articulated_public_scene_state(**_inputs())
 
@@ -125,6 +182,35 @@ def test_non_agent_pipeline_stops_at_exact_rights_boundary() -> None:
         "same_non_agent_stage_contracts_as_interactive_rehearsal"
     ]
     assert result["run_digest"] == canonical_digest(result, digest_field="run_digest")
+
+
+def test_bound_authority_removes_only_rights_and_budget_blockers() -> None:
+    inputs = _inputs()
+    inputs["execution_authority"] = _authority(inputs)
+
+    result = compile_articulated_public_scene_state(**inputs)
+
+    assert result["blockers"] == [
+        "released_code_inpainting_execution_missing",
+        "joint_agent_topology_execution_missing",
+    ]
+    assert result["execution_authority"]["hard_total_spend_cap_usd"] == 12.0
+
+
+def test_authority_cannot_cross_join_another_scene() -> None:
+    inputs = _inputs()
+    authority = _authority(inputs)
+    authority["publisher_scene_id"] = "840999"
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    inputs["execution_authority"] = authority
+
+    with pytest.raises(
+        ArticulatedPublicScenePipelineError,
+        match="execution_authority_scene_join_invalid",
+    ):
+        compile_articulated_public_scene_state(**inputs)
 
 
 @pytest.mark.parametrize(

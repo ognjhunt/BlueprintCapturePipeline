@@ -18,6 +18,9 @@ import subprocess
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .public_scene_execution_authority import (
+    validate_public_scene_execution_authority,
+)
 from .second_scene_freeze import validate_second_scene_freeze
 
 
@@ -118,6 +121,7 @@ def compile_articulated_public_scene_state(
     articulated_source_receipt: Mapping[str, Any],
     joint_agent_packet: Mapping[str, Any],
     repository_commit: str,
+    execution_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Join validated construction artifacts and choose the next finite gate."""
 
@@ -155,6 +159,11 @@ def compile_articulated_public_scene_state(
         field="packet_digest",
         schema="usd_content_joint_agent_packet.v1",
         error_prefix="joint_agent_packet",
+    )
+    authority = (
+        validate_public_scene_execution_authority(execution_authority)
+        if execution_authority is not None
+        else None
     )
 
     scene_id, target_id = _scene_target(frozen)
@@ -211,19 +220,36 @@ def compile_articulated_public_scene_state(
         character not in "0123456789abcdef" for character in repository_commit
     ):
         errors.append("repository_commit_invalid")
+    if authority is not None:
+        if authority.get("publisher_scene_id") != scene_id:
+            errors.append("execution_authority_scene_join_invalid")
+        if authority.get("target_instance_id") != target_id:
+            errors.append("execution_authority_target_join_invalid")
+        if authority.get("freeze_digest") != frozen.get("freeze_digest"):
+            errors.append("execution_authority_freeze_join_invalid")
+        if authority.get("aura_adapter_receipt_digest") != aura.get("receipt_digest"):
+            errors.append("execution_authority_aura_join_invalid")
+        if authority.get("joint_agent_source_receipt_digest") != source.get(
+            "receipt_digest"
+        ):
+            errors.append("execution_authority_joint_source_receipt_join_invalid")
+        if authority.get("joint_agent_source_asset_digest") != source_asset.get(
+            "sha256"
+        ):
+            errors.append("execution_authority_joint_source_asset_join_invalid")
     if errors:
         raise ArticulatedPublicScenePipelineError(errors)
 
     rights = frozen.get("rights") if isinstance(frozen.get("rights"), Mapping) else {}
     blockers: list[str] = []
-    if rights.get("external_provider_upload_authorized") is not True:
+    if authority is None and rights.get("external_provider_upload_authorized") is not True:
         blockers.append("external_scene_derived_byte_disclosure_authority_missing")
     joint_admission = (
         joint.get("execution_admission")
         if isinstance(joint.get("execution_admission"), Mapping)
         else {}
     )
-    if joint_admission.get("paid_execution_authorized") is not True:
+    if authority is None and joint_admission.get("paid_execution_authorized") is not True:
         blockers.append("fresh_paid_joint_agent_execution_authority_missing")
     aura_execution = aura.get("execution") if isinstance(aura.get("execution"), Mapping) else {}
     if aura_execution.get("aurafusion360_interiorgs_executed") is not True:
@@ -248,6 +274,17 @@ def compile_articulated_public_scene_state(
             "freeze_digest": frozen["freeze_digest"],
         },
         "repository": {"commit": repository_commit},
+        "execution_authority": (
+            {
+                "authorization_digest": authority["authorization_digest"],
+                "hard_total_spend_cap_usd": authority["hard_total_spend_cap_usd"],
+                "maximum_single_resource_ttl_seconds": authority[
+                    "maximum_single_resource_ttl_seconds"
+                ],
+            }
+            if authority is not None
+            else None
+        ),
         "frozen_candidates": list(frozen["candidate_ids"]),
         "stage_receipts": {
             "appearance_component": appearance_admission["receipt_digest"],
@@ -325,6 +362,7 @@ def compile_articulated_public_scene_run(
     aura_adapter_receipt_path: str | Path,
     articulated_source_receipt_path: str | Path,
     joint_agent_packet_path: str | Path,
+    execution_authority_path: str | Path | None,
     output_path: str | Path,
 ) -> dict[str, Any]:
     """Filesystem entrypoint used by local and GPU control planes."""
@@ -354,6 +392,11 @@ def compile_articulated_public_scene_run(
         articulated_source_receipt=_load(articulated_source_receipt_path),
         joint_agent_packet=_load(joint_agent_packet_path),
         repository_commit=_git_commit(repo),
+        execution_authority=(
+            _load(execution_authority_path)
+            if execution_authority_path is not None
+            else None
+        ),
     )
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -371,6 +414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--aura-adapter-receipt", required=True)
     parser.add_argument("--articulated-source-receipt", required=True)
     parser.add_argument("--joint-agent-packet", required=True)
+    parser.add_argument("--execution-authority")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     result = compile_articulated_public_scene_run(
@@ -382,6 +426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         aura_adapter_receipt_path=args.aura_adapter_receipt,
         articulated_source_receipt_path=args.articulated_source_receipt,
         joint_agent_packet_path=args.joint_agent_packet,
+        execution_authority_path=args.execution_authority,
         output_path=args.output,
     )
     print(canonical_json(result))
