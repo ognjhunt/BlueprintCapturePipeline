@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
-from pxr import Usd, UsdGeom
+from pxr import Usd, UsdGeom, UsdPhysics
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
@@ -292,9 +292,69 @@ def _write_executable(path: Path, source: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _materialize_content_agents_input(source: Path, destination: Path) -> dict[str, Any]:
+def _materialize_articulated_content_agents_input(
+    source: Path, destination: Path
+) -> dict[str, Any]:
+    """Normalize the articulated candidate for NVIDIA 0.5.2 without re-deriving it.
+
+    The can control needs a grasp-curve extent fix and a render-purpose clear on
+    one visual. The articulated candidate has neither; what it does need is
+    every mesh readable at default purpose so the agents' bounds and dataset
+    stages work, with the articulation left exactly as authored.
+    """
+
+    shutil.copy2(source, destination)
+    stage = Usd.Stage.Open(str(destination))
+    if stage is None or not stage.GetDefaultPrim().IsValid():
+        raise ValueError("adp_content_agents_input_default_prim_invalid")
+    cleared: list[str] = []
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        if mesh.ComputePurpose() != UsdGeom.Tokens.default_:
+            mesh.GetPurposeAttr().Clear()
+            cleared.append(str(prim.GetPath()))
+    stage.GetRootLayer().Save()
+    reopened = Usd.Stage.Open(str(destination))
+    if reopened is None:
+        raise ValueError("adp_content_agents_input_reopen_failed")
+    joints = [prim for prim in reopened.Traverse() if prim.IsA(UsdPhysics.Joint)]
+    roots = [
+        prim
+        for prim in reopened.Traverse()
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+    ]
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    bounds = cache.ComputeWorldBound(reopened.GetDefaultPrim()).ComputeAlignedRange()
+    if bounds.IsEmpty() or not joints or len(roots) != 1:
+        raise ValueError("adp_content_agents_input_articulation_invalid")
+    for prim in reopened.Traverse():
+        if prim.IsA(UsdGeom.Mesh) and UsdGeom.Mesh(prim).ComputePurpose() != (
+            UsdGeom.Tokens.default_
+        ):
+            raise ValueError("adp_content_agents_input_default_purpose_bbox_invalid")
+    return {
+        "source_input_usd_sha256": _sha256(source),
+        "normalized_input_usd_sha256": _sha256(destination),
+        "transformations": [
+            "clear_non_default_mesh_purposes_for_nvidia_0_5_2_bbox",
+        ],
+        "cleared_purpose_prims": sorted(cleared),
+        "default_purpose_bbox_nonempty": True,
+        "articulation_preserved": True,
+        "joint_count": len(joints),
+        "articulation_root_count": len(roots),
+    }
+
+
+def _materialize_content_agents_input(
+    source: Path, destination: Path, *, variant: str = "control_v1"
+) -> dict[str, Any]:
     """Derive the exact NVIDIA-compatible USD without mutating canonical bytes."""
 
+    if variant == "articulated_v1":
+        return _materialize_articulated_content_agents_input(source, destination)
     shutil.copy2(source, destination)
     stage = Usd.Stage.Open(str(destination))
     if stage is None or stage.GetDefaultPrim().GetPath() != "/canned_beverage":
@@ -349,7 +409,13 @@ def _validate_remote_configs(
     texture = dict(payloads.get("texture_agent.yaml") or {})
     physics = dict(payloads.get("physics_agent.yaml") or {})
     texture_config = dict(texture.get("texture") or {})
-    texture_spec = dict((texture.get("material_textures") or {}).get("green_can") or {})
+    # Exactly one material spec per config; its key is scene-specific.
+    texture_material_specs = dict(texture.get("material_textures") or {})
+    texture_spec = (
+        dict(next(iter(texture_material_specs.values())))
+        if len(texture_material_specs) == 1
+        else {}
+    )
     physics_steps = dict(physics.get("steps") or {})
     material_steps = dict(material.get("steps") or {})
     material_predict = dict(material_steps.get("predict") or {})
@@ -367,16 +433,30 @@ def _validate_remote_configs(
     physics_rendering_modes = set(
         (physics_dataset.get("renderer") or {}).get("rendering_modes", {})
     )
+    # Target prims are scene-specific and bound by digests elsewhere; this
+    # contract guards known paid-runtime failure modes. It therefore requires
+    # the texture UV scope, declared targets, and the single material spec to
+    # name the same non-empty absolute prims rather than one scene's paths.
+    texture_targets = texture_config.get("uv_target_prim_paths")
+    if len(texture_material_specs) != 1:
+        raise ValueError("adp_content_agents_remote_config_contract_invalid")
+    texture_targets_consistent = (
+        isinstance(texture_targets, list)
+        and bool(texture_targets)
+        and all(
+            isinstance(item, str) and item.startswith("/") for item in texture_targets
+        )
+        and texture.get("target_prims") == texture_targets
+        and texture_spec.get("prim_paths") == texture_targets
+        and isinstance(texture_spec.get("material_path"), str)
+        and str(texture_spec.get("material_path")).startswith("/")
+    )
     if (
         not material_path.is_file()
         or (material.get("materials") or {}).get("path")
         != "../content_agents_source/apps/material_agent/data/materials/"
         "material_libs_default/materials.yaml"
-        or texture_config.get("uv_target_prim_paths")
-        != ["/canned_beverage/visuals/body"]
-        or texture_spec.get("material_path")
-        != "/canned_beverage/materials/green_can"
-        or texture_spec.get("prim_paths") != ["/canned_beverage/visuals/body"]
+        or not texture_targets_consistent
         or texture_config.get("image_gen")
         != {"backend": "openai", "model": "gpt-image-1"}
         or material_validation.get("on_failure") != "warn"
@@ -567,7 +647,9 @@ def build_content_agents_vast_bundle(
         runtime_usd_name = "adp009a_840313_canned_beverage_control.usda"
         reference_name = "adp009a_840313_canned_beverage_control_reference.png"
     input_normalization = _materialize_content_agents_input(
-        usd_source, runtime / "input" / runtime_usd_name
+        usd_source,
+        runtime / "input" / runtime_usd_name,
+        variant=str(variant["variant"]),
     )
     shutil.copy2(reference_source, runtime / "input" / reference_name)
 

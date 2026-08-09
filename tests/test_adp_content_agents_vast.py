@@ -966,3 +966,93 @@ def test_articulated_configs_ship_byte_identical(tmp_path: Path) -> None:
     for name, source in sources.items():
         assert (destination / name).read_bytes() == source.read_bytes()
         assert hashes[name] == content_agents._sha256(source)
+
+
+def _articulated_runtime_configs(tmp_path: Path) -> dict:
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    destination = tmp_path / "configs"
+    destination.mkdir()
+    sources = {
+        f"{agent}_agent.yaml": assets
+        / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
+        for agent in ("material", "texture", "physics")
+    }
+    content_agents._materialize_remote_configs(
+        config_sources=sources, destination=destination, variant="articulated_v1"
+    )
+    return {name: destination / name for name in sources}
+
+
+def test_remote_config_contract_accepts_the_articulated_target_prims(
+    tmp_path: Path,
+) -> None:
+    """The contract guards runtime failure modes, not one scene's prim paths."""
+
+    content_agents._validate_remote_configs(
+        source=Path("/private/tmp/usd-content-agents-0.5.2-20260808"),
+        config_sources=_articulated_runtime_configs(tmp_path),
+    )
+
+
+def test_remote_config_contract_rejects_inconsistent_texture_targets(
+    tmp_path: Path,
+) -> None:
+    configs = _articulated_runtime_configs(tmp_path)
+    import yaml as _yaml
+
+    payload = _yaml.safe_load(configs["texture_agent.yaml"].read_text())
+    payload["target_prims"] = ["/Asset/lower_door/component_002"]
+    configs["texture_agent.yaml"].write_text(_yaml.safe_dump(payload, sort_keys=False))
+
+    with pytest.raises(ValueError, match="remote_config_contract_invalid"):
+        content_agents._validate_remote_configs(
+            source=Path("/private/tmp/usd-content-agents-0.5.2-20260808"),
+            config_sources=configs,
+        )
+
+
+def test_articulated_input_normalization_preserves_joints_and_purposes(
+    tmp_path: Path,
+) -> None:
+    """The articulated candidate needs its own NVIDIA-compat normalization."""
+
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    source = tmp_path / "candidate.usda"
+    stage = Usd.Stage.CreateNew(str(source))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    asset = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(asset.GetPrim())
+    UsdPhysics.ArticulationRootAPI.Apply(asset.GetPrim())
+    for link in ("cabinet", "upper_door"):
+        UsdGeom.Xform.Define(stage, f"/Asset/{link}")
+        mesh = UsdGeom.Mesh.Define(stage, f"/Asset/{link}/geom")
+        mesh.CreatePointsAttr(
+            [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+        )
+        mesh.CreateFaceVertexCountsAttr([4])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        mesh.GetPurposeAttr().Set(UsdGeom.Tokens.render)
+    joint = UsdPhysics.RevoluteJoint.Define(stage, "/Asset/joints/upper_door_hinge")
+    joint.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+    joint.CreateBody1Rel().SetTargets(["/Asset/upper_door"])
+    joint.CreateAxisAttr().Set("Z")
+    stage.GetRootLayer().Save()
+
+    result = content_agents._materialize_content_agents_input(
+        source, tmp_path / "runtime_input.usda", variant="articulated_v1"
+    )
+
+    assert result["source_input_usd_sha256"] == content_agents._sha256(source)
+    assert result["default_purpose_bbox_nonempty"] is True
+    assert result["articulation_preserved"] is True
+    assert result["joint_count"] == 1
+    reopened = Usd.Stage.Open(str(tmp_path / "runtime_input.usda"))
+    assert str(reopened.GetDefaultPrim().GetPath()) == "/Asset"
+    assert (
+        len([p for p in reopened.Traverse() if p.IsA(UsdPhysics.Joint)]) == 1
+    )
+    for prim in reopened.Traverse():
+        if prim.IsA(UsdGeom.Mesh):
+            assert UsdGeom.Mesh(prim).ComputePurpose() == UsdGeom.Tokens.default_
