@@ -153,16 +153,27 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
             "heldout_maximum_residual_connected_component_pixels": 4,
             "heldout_maximum_protected_significant_pixels": 0,
         },
+        "historical_baseline": {"selected_gaussian_count": 4},
     }
     freeze["freeze_digest"] = canonical_digest(freeze, digest_field="freeze_digest")
     freeze_path = tmp_path / "freeze.json"
     _write_json(freeze_path, freeze)
     ownership: dict[str, object] = {
+        "schema_version": "adp009b_gaussian_excision_ownership_receipt.v1",
         "freeze_digest": freeze["freeze_digest"],
         "heldout_cameras_accessed_for_classification": False,
-        "receipt_digest": "sha256:" + "a" * 64,
+        "ownership": {
+            "source_gaussian_count": 12,
+            "owned_count": 4,
+            "retained_count": 4,
+            "ambiguous_count": 4,
+            "historical_obb_count": 4,
+            "exhaustive": True,
+            "pairwise_disjoint": True,
+        },
         "determinism": {"quantized_contribution_arrays_identical": should_pass},
     }
+    ownership["receipt_digest"] = canonical_digest(ownership, digest_field="receipt_digest")
     ownership_path = tmp_path / "ownership.json"
     _write_json(ownership_path, ownership)
     replay: dict[str, object] = {

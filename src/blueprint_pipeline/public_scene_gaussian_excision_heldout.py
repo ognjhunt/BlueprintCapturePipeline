@@ -209,10 +209,21 @@ def materialize_gaussian_excision_heldout_audit(
     if (
         freeze.get("schema_version") != "adp009b_gaussian_excision_audit_freeze.v1"
         or freeze.get("freeze_digest") != canonical_digest(freeze, digest_field="freeze_digest")
+        or ownership.get("schema_version") != "adp009b_gaussian_excision_ownership_receipt.v1"
+        or ownership.get("receipt_digest")
+        != canonical_digest(ownership, digest_field="receipt_digest")
         or ownership.get("freeze_digest") != freeze.get("freeze_digest")
         or ownership.get("heldout_cameras_accessed_for_classification") is not False
     ):
         raise GaussianExcisionHeldoutError(["heldout_freeze_or_ownership_join_invalid"])
+    ownership_counts = ownership.get("ownership") or {}
+    baseline_count = (freeze.get("historical_baseline") or {}).get("selected_gaussian_count")
+    if (
+        ownership_counts.get("exhaustive") is not True
+        or ownership_counts.get("pairwise_disjoint") is not True
+        or ownership_counts.get("historical_obb_count") != baseline_count
+    ):
+        raise GaussianExcisionHeldoutError(["heldout_ownership_partition_invalid"])
     if (
         replay.get("schema_version") != OWNERSHIP_REPLAY_SCHEMA
         or replay.get("replay_digest") != canonical_digest(replay, digest_field="replay_digest")
@@ -282,19 +293,45 @@ def materialize_gaussian_excision_heldout_audit(
                 significant_alpha_threshold=threshold,
                 rasterization_band_pixels=band,
             )
-        owned_pass = (
-            metrics["owned"]["silhouette_missing_pixel_count"] == 0
-            and metrics["owned"]["protected_significant_pixel_count"] <= maximum_protected
-            and metrics["ambiguous"]["inside_mask_significant_pixel_count"] == 0
-            and metrics["ambiguous"]["inside_mask_largest_significant_component_pixels"]
-            <= maximum_component
+        gates = {
+            "removed_only_reproduces_silhouette": metrics["owned"]["silhouette_missing_pixel_count"]
+            == 0,
+            "removed_only_protected_spill_within_limit": metrics["owned"][
+                "protected_significant_pixel_count"
+            ]
+            <= maximum_protected,
+            "residual_alpha_at_most_threshold": metrics["ambiguous"][
+                "inside_mask_significant_pixel_count"
+            ]
+            == 0,
+            "residual_component_within_limit": metrics["ambiguous"][
+                "inside_mask_largest_significant_component_pixels"
+            ]
+            <= maximum_component,
+            "residue_at_least_as_good_as_obb": (
+                metrics["owned"]["silhouette_missing_pixel_count"]
+                <= metrics["obb"]["silhouette_missing_pixel_count"]
+                and metrics["owned"]["silhouette_largest_missing_component_pixels"]
+                <= metrics["obb"]["silhouette_largest_missing_component_pixels"]
+            ),
+            "protected_contribution_strictly_less_than_obb": metrics["owned"]["protected_alpha_sum"]
+            < metrics["obb"]["protected_alpha_sum"],
+        }
+        owned_pass = all(
+            gates[name]
+            for name in (
+                "removed_only_reproduces_silhouette",
+                "removed_only_protected_spill_within_limit",
+                "residual_alpha_at_most_threshold",
+                "residual_component_within_limit",
+            )
         )
-        baseline_comparison_pass = (
-            metrics["owned"]["silhouette_missing_pixel_count"]
-            <= metrics["obb"]["silhouette_missing_pixel_count"]
-            and metrics["owned"]["silhouette_largest_missing_component_pixels"]
-            <= metrics["obb"]["silhouette_largest_missing_component_pixels"]
-            and metrics["owned"]["protected_alpha_sum"] < metrics["obb"]["protected_alpha_sum"]
+        baseline_comparison_pass = all(
+            gates[name]
+            for name in (
+                "residue_at_least_as_good_as_obb",
+                "protected_contribution_strictly_less_than_obb",
+            )
         )
         sheet = output / "contact_sheets" / f"{camera_id}.png"
         _contact_sheet(
@@ -317,6 +354,7 @@ def materialize_gaussian_excision_heldout_audit(
                 "camera_id": camera_id,
                 "split": "heldout" if camera_id in heldout else "calibration_review_only",
                 "layers": metrics,
+                "gates": gates,
                 "ownership_gate_passed": owned_pass,
                 "at_least_as_good_as_obb_passed": baseline_comparison_pass,
                 "residual_upper_bound_layer": "ambiguous",
@@ -327,8 +365,14 @@ def materialize_gaussian_excision_heldout_audit(
 
     heldout_rows = [row for row in rows if row["split"] == "heldout"]
     deterministic = bool(replay.get("gate_passed"))
+    partition_passed = bool(
+        ownership_counts.get("exhaustive") and ownership_counts.get("pairwise_disjoint")
+    )
+    protected_records_passed = bool(replay.get("protected_source_records_byte_identical"))
     passed = bool(
         deterministic
+        and partition_passed
+        and protected_records_passed
         and heldout_rows
         and all(
             row["ownership_gate_passed"] and row["at_least_as_good_as_obb_passed"]
@@ -360,6 +404,8 @@ def materialize_gaussian_excision_heldout_audit(
         },
         "camera_results": rows,
         "determinism_gate_passed": deterministic,
+        "partition_gate_passed": partition_passed,
+        "protected_records_gate_passed": protected_records_passed,
         "determinism": {
             "two_materializations_identical": deterministic,
             "canonical_manifests_identical": replay.get("canonical_manifests_identical"),
