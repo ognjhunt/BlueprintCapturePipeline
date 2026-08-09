@@ -12,7 +12,7 @@ one policy is generally better.
 ## What landed
 
 The branch advanced from the overnight handoff at `54f70c8e0` to
-`47c83b41d`. The changes fall into six evidence-bearing groups:
+`b97c13afd`. The changes fall into six evidence-bearing groups:
 
 - **P0, interpretable action delivery:** `c9103d311`, `b9a3b30ac`,
   `7b901349a`. Episode receipts retain reset/end joints, maximum joint motion,
@@ -49,13 +49,16 @@ The branch advanced from the overnight handoff at `54f70c8e0` to
   update is no longer accepted as a camera fix.
 - **Frozen scenario matrix and fail-closed native controls:** `46e5d2e99`,
   `2086690c1`, `a350153b5`, `adee2091a`, `db9559137`, `3127e461c`,
-  `04db82770`, `47c83b41d`. The policy-neutral 128-cell matrix binds identical
-  cells and seeds to both candidates and both controls. Every episode retains
-  external, wrist, and overview media. The positive control now targets the
-  measured finger-midpoint frame, gates every IK phase on arrival, and
-  expresses the raw world-aligned PhysX Jacobian in the yawed robot root before
-  pairing it with root-frame Cartesian errors. A blocked control can now seal
-  its IK receipt without recursively including the receipt's own digest.
+  `04db82770`, `47c83b41d`, `b97c13afd`. The policy-neutral 128-cell matrix
+  binds identical cells and seeds to both candidates and both controls. Every
+  episode retains external, wrist, and overview media. The positive control
+  now targets the measured finger-midpoint frame, gates every IK phase on
+  arrival, and expresses the raw world-aligned PhysX Jacobian in the yawed
+  robot root before pairing it with root-frame Cartesian errors. A blocked
+  control can seal its IK receipt without recursively including the receipt's
+  own digest. Wrist calibration is derived from the live gripper-base pose and
+  the measured rigid mount when Isaac's sensor/USD pose remains frozen, and the
+  aim target is the observed can centre rather than its support-plane root.
 
 Other supporting changes are `a78e70dde` and `f98622f67` for the frames-only
 Aura comparison, `790b95eec` for explicit concurrent-GPU authority without
@@ -68,7 +71,7 @@ PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode
 .venv/bin/ruff check src/ tests/
 ```
 
-The latest closeout correction passed `963 passed, 1 skipped, 9052
+The latest wrist-evidence correction passed `965 passed, 1 skipped, 9052
 deselected` in the required filtered lane. Ruff was clean.
 
 ## Scientific findings through v84
@@ -185,8 +188,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v91
-ledgers add `$7.362320`, for `$18.360619` total and `$6.639381` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v92
+ledgers add `$7.500352`, for `$18.498651` total and `$6.501349` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -231,9 +234,10 @@ they are evidence that concurrency failed closed.
 | v89 measured grasp frame + overview gate | `$0.234044` | The task-centered overview passed with 111 exact-can semantic pixels inside the frame margin and both controls sealed all six videos. Zero-action passed as `never_moved`; scripted positive again failed as `never_moved`. The measured tool offset reduced the descend error, but holding the camera-aimed body orientation made the pregrasp body pose unreachable. No policy verdict. |
 | v90 task orientation + phase gate | `$0.108621` | Zero-action passed. The scripted positive correctly aborted after the 80-step pregrasp instead of advancing or closing, with `scripted_control_phase_not_reached:pregrasp:error_m=0.331908` and `never_moved`. Its intended mostly world -Y motion appeared mostly as world +X, exposing a world-Jacobian/root-error frame mismatch. All six videos were retained. No candidate was provisioned or queried; no policy verdict. |
 | v91 Jacobian root-frame gate | `$0.106024` estimated | The corrected approach completed waypoints -1 and 0 and then blocked at waypoint 1, but the runtime crashed while sealing the diagnostic receipt because its local digest helper rejected `digest_field`. Four diagnostic frames per external/wrist/overview camera show the arm moving toward the exact can and the wrist reacquiring it. No control receipt or control outcome was retained, no candidate was provisioned or queried, and no policy verdict can be drawn. Commit `47c83b41d` fixes and hermetically tests the receipt closeout before any retry. |
+| v92 control receipt closeout | `$0.138032` estimated | The closeout fix worked and retained the exact failure: `no_safe_wrist_observable_episode_start` plus `scenario_controls_receipt_missing`. The corrected Jacobian binding was sealed with both row blocks rotated world-to-root. The rendered wrist view moved and observed up to 5,771 exact-can pixels, but both Isaac's sensor pose and direct USD pose stayed frozen while Fabric moved the articulation; the can was also clipped at the top because the aim targeted its support-plane root. No control ran, no candidate was provisioned or queried, and no policy verdict exists. Commit `b97c13afd` derives wrist calibration from the live rigid mount and aims at the observed can centre. |
 
 All completed paid attempts were followed by an API provider-zero check. v86,
-v87, v88, v89, v90, and v91 were each launched from provider zero as the sole
+v87, v88, v89, v90, v91, and v92 were each launched from provider zero as the sole
 active instance; after each automatic teardown a fresh Vast API query returned
 `active: 0 []`.
 
@@ -381,6 +385,19 @@ runtime digest contract match the repository contract, excludes the self-digest
 field without mutating the receipt, and covers the exact blocked-control shape
 hermetically. One controls-only canonical canary remains required.
 
+v92 proved that closeout and separated the next two harness faults. The
+corrected root-frame binding was sealed, the approach arm moved, and the wrist
+render observed up to 5,771 exact-can pixels. The render changed with the live
+gripper, but the sensor-reported and direct USD camera positions both remained
+byte-stable while Fabric drove the articulation, making the calibration stale.
+The exact-can mask also remained clipped against the top edge because the aim
+target used the can's root on the support plane rather than the centre of its
+observed 0.169 m height. Commit `b97c13afd` measures the rigid camera offset at
+reset, composes every retained wrist calibration from the live gripper-base
+body, and targets the observed can centre. The episode adapter carries the same
+live pose callback into every control frame. This is locally proven and still
+requires a controls-only canonical canary.
+
 ## What remains open
 
 - The P4 result is intentionally underpowered and single-cell. Its comparison
@@ -401,12 +418,13 @@ hermetically. One controls-only canonical canary remains required.
 
 ## Single next action
 
-From provider zero at clean immutable commit `47c83b41d`, run only the
+From provider zero at clean immutable commit `b97c13afd`, run only the
 checked-in canonical scenario's zero-action negative and deterministic
 scripted-positive control pair. Do not query either learned policy. Verify that
-the retained IK binding reports world-to-root rotation for both Jacobian row
-blocks and that the newly sealable receipt exposes the exact waypoint/phase
-failure or proves pregrasp convergence along the commanded task direction. If
-the scripted positive does not place the exact SimReady can, retain the
-overview/external/wrist videos and typed receipt, tear down to provider zero,
-and fix the harness locally before any learned-policy spend.
+the wrist aim selects a non-border-clipped start while retaining live
+body-derived camera calibration, that the IK binding reports world-to-root
+rotation for both Jacobian row blocks, and that pregrasp converges along the
+commanded task direction. If the scripted positive does not place the exact
+SimReady can, retain the overview/external/wrist videos and typed receipt, tear
+down to provider zero, and fix the harness locally before any learned-policy
+spend.
