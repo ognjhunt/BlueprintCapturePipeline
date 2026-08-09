@@ -10,6 +10,7 @@ from blueprint_pipeline.adp_task_scoring import (
     OUTCOME_NON_TASK_JOINT_MOVED,
     OUTCOME_OPENED_AND_SETTLED,
     OUTCOME_OPENED_THEN_REBOUNDED,
+    OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE,
     TaskNeutralScoringError,
     score_task_episode_from_spec,
 )
@@ -116,6 +117,27 @@ def test_opened_then_rebounded_cannot_pass() -> None:
     report = score_task_episode_from_spec(task_spec=_articulated_spec(), samples=samples)
 
     assert report["outcome"] == OUTCOME_OPENED_THEN_REBOUNDED
+    assert report["task_succeeded"] is False
+
+
+@pytest.mark.parametrize(("contact_active", "retreat_completed"), [(True, True), (False, False)])
+def test_stable_open_without_release_or_retreat_has_its_frozen_failure_rung(
+    contact_active: bool, retreat_completed: bool
+) -> None:
+    samples = [
+        _sample(0, 0.0),
+        _sample(1, 0.9),
+        _sample(2, 0.9),
+        _sample(3, 0.9),
+        _sample(4, 0.9),
+    ]
+    for sample in samples[-3:]:
+        sample["task_contact_active"] = contact_active
+        sample["retreat_completed"] = retreat_completed
+
+    report = score_task_episode_from_spec(task_spec=_articulated_spec(), samples=samples)
+
+    assert report["outcome"] == OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE
     assert report["task_succeeded"] is False
 
 

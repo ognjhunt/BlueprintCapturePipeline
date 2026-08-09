@@ -26,6 +26,7 @@ OUTCOME_OPENED_THEN_REBOUNDED = "opened_then_rebounded"
 OUTCOME_NON_TASK_JOINT_MOVED = "non_task_joint_moved"
 OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION = "joint_limit_or_containment_violation"
 OUTCOME_COLLISION_FAILURE = "robot_or_scene_collision_failure"
+OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE = "release_or_retreat_incomplete"
 OUTCOME_OPENED_AND_SETTLED = "opened_and_settled"
 
 
@@ -292,6 +293,14 @@ def score_articulated_task_episode(
         outcome = OUTCOME_COLLISION_FAILURE
     elif not non_task_locked:
         outcome = OUTCOME_NON_TASK_JOINT_MOVED
+    elif settle_in_interval and settle_speed_ok and (
+        not released_in_settle or not retreat_completed
+    ):
+        # Reaching and stably holding the requested angle is materially farther
+        # than a rebound, but the task contract still requires release and
+        # retreat.  Keep that failure rung distinct so neither a policy nor a
+        # human reviewer can promote an assisted/unfinished open to success.
+        outcome = OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE
     elif reached_success_interval:
         outcome = OUTCOME_OPENED_THEN_REBOUNDED
     elif maximum_displacement > float(spec["movement_epsilon_rad"]):
@@ -393,6 +402,7 @@ __all__ = [
     "OUTCOME_NON_TASK_JOINT_MOVED",
     "OUTCOME_OPENED_AND_SETTLED",
     "OUTCOME_OPENED_THEN_REBOUNDED",
+    "OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE",
     "TASK_KIND_ARTICULATED_OPEN_CLOSE",
     "TASK_KIND_RIGID_PICK_PLACE",
     "TASK_SPEC_SCHEMA_VERSION",
