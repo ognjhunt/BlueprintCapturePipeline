@@ -200,6 +200,30 @@ failure, and retreat complete. The exact prompt, limits, resets, failure rungs,
 handle is observed, but its exact 3D replacement contact volume remains a
 construction gate rather than an asserted measurement.
 
+## Frozen held-out Gaussian ownership audit
+
+The eight refrigerator masks and six-calibration/two-held-out split remain
+immutable. FlashSplat contribution evidence is classified with the frozen
+geometry and neighborhood policy into owned, retained, and ambiguous sets. The
+materializer must be executed twice from identical bound evidence; the gate
+requires identical canonical receipts, index arrays, and all output digests.
+Raw GPU float reproducibility remains a separately reported diagnostic and may
+not replace output-seam replay evidence.
+
+On each held-out camera, the owned-only layer must cover every exact-mask pixel,
+must have zero significant alpha outside the frozen two-pixel band, and the
+ambiguous layer supplies the conservative residual upper bound: no pixel above
+`1/255` alpha and no connected component above four pixels. Against the exact
+3,791-Gaussian OBB baseline, owned-only must have no worse missing-pixel count or
+largest missing component and must have strictly lower protected alpha sum.
+All non-owned source records must remain byte-identical. Every camera receives
+the six-panel lossless contact sheet and one generated HTML review index binds
+all eight.
+
+A failed first held-out evaluation is terminal for this frozen classifier. The
+held-out pair may not become tuning data and a later USD coverage result may not
+be used to relabel ownership.
+
 ## Coverage-conditioned Gaussian removal boundary
 
 The replacement-first method does not require factual ownership of every
@@ -208,9 +232,10 @@ appearance that the replacement USD is not double-exposed, while protecting
 observed kitchen appearance. The exact articulated USD remains the sole owner
 of visible replacement geometry, articulation, collision, and physics.
 
-The earlier three-way FlashSplat ownership audit remains retained diagnostic
-evidence. It proved that deleting the whole ambiguous set was unsafe, but it did
-not prove that an exact same-volume USD could not cover a conservative cutout.
+The three-way FlashSplat ownership audit remains retained diagnostic evidence.
+Its held-out failure proved that the classifier could not safely separate the
+complete refrigerator silhouette, but it did not prove that an exact
+same-volume USD could not cover a conservative cutout.
 The protocol therefore adds a preregistered target-only ladder:
 
 1. Build candidate index sets only from calibrated target-mask contribution

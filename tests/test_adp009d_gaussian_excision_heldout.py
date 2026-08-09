@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -250,3 +251,41 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
     index = index_path.read_text(encoding="utf-8")
     assert "original | exact mask | OBB removed-only" in index
     assert all(camera_id in index for camera_id in camera_ids)
+
+
+def test_checked_in_840796_abstention_seals_failed_science_and_passed_integrity() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "docs/arm_decision_proof_v1/manifests"
+        / "second_scene_840796_gaussian_excision_heldout_abstention.v2.json"
+    )
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+
+    assert receipt["manifest_digest"] == canonical_digest(receipt, digest_field="manifest_digest")
+    assert receipt["status"] == ("abstained_calibrated_gaussian_ownership_separation_insufficient")
+    assert receipt["determinism"]["gate_passed"] is True
+    assert receipt["determinism"]["raw_gpu_contribution_arrays_identical"] is False
+    assert receipt["ownership"]["exhaustive"] is True
+    assert receipt["ownership"]["pairwise_disjoint"] is True
+    assert (
+        receipt["ownership"]["owned_count"]
+        + receipt["ownership"]["retained_count"]
+        + receipt["ownership"]["ambiguous_count"]
+        == receipt["ownership"]["source_gaussian_count"]
+    )
+    assert receipt["overall_gates"] == {
+        "determinism_gate_passed": True,
+        "partition_gate_passed": True,
+        "protected_records_gate_passed": True,
+        "heldout_gate_passed": False,
+        "replacement_coverage_sweep_authorized_by_ownership_test": False,
+    }
+    assert len(receipt["heldout_results"]) == 2
+    assert all(not any(row["gates"].values()) for row in receipt["heldout_results"])
+    assert receipt["evidence"]["contact_sheet_count"] == 8
+    assert (
+        receipt["later_coverage_relationship"][
+            "later_sweep_does_not_convert_this_ownership_failure_to_a_pass"
+        ]
+        is True
+    )

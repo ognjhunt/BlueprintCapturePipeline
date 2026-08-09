@@ -1,0 +1,133 @@
+{
+  "schema_version": "second_scene_840796_gaussian_excision_heldout_abstention.v2",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009B",
+  "status": "abstained_calibrated_gaussian_ownership_separation_insufficient",
+  "scene": {
+    "publisher_scene_id": "840796",
+    "target_instance_id": "123",
+    "target_semantic_label": "refrigerator"
+  },
+  "method": {
+    "name": "FlashSplat",
+    "source_commit": "3e3b14786333bf0163ba1b8541e86a3765112d7d",
+    "rasterizer_commit": "189c483ffa33dd6d5661343ce496df0c6eb80a0c",
+    "contribution_semantics": "front_to_back_transmittance_times_alpha",
+    "ownership_aggregation": "unanimous_owned_and_retained_else_ambiguous",
+    "alpha_audit": "paired_identical_rgb_over_black_and_white.v1",
+    "depth_anything_3_used": false,
+    "heldout_cameras_accessed_for_classification": false
+  },
+  "frozen_inputs": {
+    "source_standard_splat_sha256": "sha256:a8dd5baebb98d03e184ead9f352b83a44e248a175103e0bf180c97a07be73a34",
+    "freeze_digest": "sha256:2ef5adba73b9b09089450bbeee0ff695977155365130c1e9584e2070c49750aa",
+    "contribution_manifest_digest": "sha256:9c67bb7b4ba8486005a1d77185152557de4c8f053136e8bf95b2d1e533d4a975",
+    "ownership_receipt_digest": "sha256:94244e32553a008ad540a2b6654079c09e897c545e437cf69d089e3ea741cbee",
+    "aggregation_policy_digest": "sha256:1306f8a360499d922971c2907ccbc735ca1b914f905a16d085a6f60536c1fba9"
+  },
+  "ownership": {
+    "source_gaussian_count": 593665,
+    "owned_count": 2436,
+    "retained_count": 587007,
+    "ambiguous_count": 4222,
+    "historical_obb_count": 3791,
+    "exhaustive": true,
+    "pairwise_disjoint": true,
+    "protected_source_records_byte_identical": true
+  },
+  "determinism": {
+    "ownership_execution_count": 2,
+    "canonical_manifests_identical": true,
+    "receipt_files_byte_identical": true,
+    "output_digests_identical": true,
+    "index_sets_identical": true,
+    "classification_label_disagreement_count": 0,
+    "raw_gpu_contribution_arrays_identical": false,
+    "ownership_replay_digest": "sha256:69006901150ffc860fd9220392df8a1b18a4a03b315142ea7e683f9e78d25239",
+    "ownership_replay_file_sha256": "sha256:fe877f84a45b886159916899de723d195bdebd616680eda133916a42b91807b8",
+    "gate_passed": true
+  },
+  "heldout_policy": {
+    "camera_ids": [
+      "far_left",
+      "far_right"
+    ],
+    "significant_alpha_threshold": 0.00392156862745098,
+    "rasterization_band_pixels": 2,
+    "maximum_protected_significant_pixels": 0,
+    "maximum_residual_connected_component_pixels": 4,
+    "baseline_protected_comparison": "strict_alpha_sum_less_than"
+  },
+  "heldout_results": [
+    {
+      "camera_id": "far_left",
+      "owned_silhouette_recall": 0.8808862875969744,
+      "owned_silhouette_missing_pixel_count": 140057,
+      "owned_largest_missing_component_pixels": 101147,
+      "owned_protected_significant_pixel_count": 4256,
+      "owned_protected_alpha_sum": 222.98822021484375,
+      "ambiguous_inside_mask_significant_pixel_count": 1089831,
+      "ambiguous_inside_mask_largest_component_pixels": 1089831,
+      "obb_silhouette_missing_pixel_count": 99405,
+      "obb_largest_missing_component_pixels": 64133,
+      "obb_protected_alpha_sum": 59.2196044921875,
+      "gates": {
+        "removed_only_reproduces_silhouette": false,
+        "removed_only_protected_spill_within_limit": false,
+        "residual_alpha_at_most_threshold": false,
+        "residual_component_within_limit": false,
+        "residue_at_least_as_good_as_obb": false,
+        "protected_contribution_strictly_less_than_obb": false
+      },
+      "contact_sheet_sha256": "sha256:e7c3c6adb454a9dfbfc2e36bfa65539d311a098a8f11b50a10c2daefb4a88660"
+    },
+    {
+      "camera_id": "far_right",
+      "owned_silhouette_recall": 0.8545826790876254,
+      "owned_silhouette_missing_pixel_count": 183463,
+      "owned_largest_missing_component_pixels": 110319,
+      "owned_protected_significant_pixel_count": 4618,
+      "owned_protected_alpha_sum": 150.98431396484375,
+      "ambiguous_inside_mask_significant_pixel_count": 1145769,
+      "ambiguous_inside_mask_largest_component_pixels": 1145765,
+      "obb_silhouette_missing_pixel_count": 113928,
+      "obb_largest_missing_component_pixels": 68298,
+      "obb_protected_alpha_sum": 25.694114685058594,
+      "gates": {
+        "removed_only_reproduces_silhouette": false,
+        "removed_only_protected_spill_within_limit": false,
+        "residual_alpha_at_most_threshold": false,
+        "residual_component_within_limit": false,
+        "residue_at_least_as_good_as_obb": false,
+        "protected_contribution_strictly_less_than_obb": false
+      },
+      "contact_sheet_sha256": "sha256:ee529b2c896aa6f99b237245cc21b1e2109bd9d920b4312e4f8be12cd76fc992"
+    }
+  ],
+  "overall_gates": {
+    "determinism_gate_passed": true,
+    "partition_gate_passed": true,
+    "protected_records_gate_passed": true,
+    "heldout_gate_passed": false,
+    "replacement_coverage_sweep_authorized_by_ownership_test": false
+  },
+  "evidence": {
+    "runtime_receipt_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/gaussian_excision/840796_v2/heldout_audit_v4/evaluation/adp009b_gaussian_excision_heldout_audit.v1.json",
+    "runtime_receipt_file_sha256": "sha256:d9f0b4c60c647745e2e66d385ce40c44fc480b6f7651213b0da3f3e32190a1b9",
+    "runtime_receipt_digest": "sha256:2438af6978b12ab68be30bee347c1793dd6147ea8c8313666e428df95297d616",
+    "contact_sheet_index_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/gaussian_excision/840796_v2/heldout_audit_v4/evaluation/OPEN_ME_gaussian_excision_contact_sheets.html",
+    "contact_sheet_index_sha256": "sha256:5091afa0dd4b7c2557b55715c3a7249ea2aa98fe5f3e192fde5d9111dd72faf3",
+    "contact_sheet_count": 8
+  },
+  "later_coverage_relationship": {
+    "later_usd_coverage_sweep_exists": true,
+    "later_sweep_is_a_separate_coverage_conditioned_method": true,
+    "later_sweep_does_not_convert_this_ownership_failure_to_a_pass": true,
+    "all_deleted_gaussians_factually_owned_claimed": false
+  },
+  "smallest_missing_capability": "calibrated_gaussian_ownership_separation_without_protected_scene_deletion",
+  "forbidden_inference": "Do not tune against the revealed heldout pair, delete all ambiguous Gaussians, or treat replacement coverage as proof of Gaussian ownership.",
+  "single_next_action": "Validate any successor ownership classifier on a fresh outcome-unseen scene or fresh preregistered confirmation cameras; do not reuse far_left or far_right as heldout evidence.",
+  "claim_ceiling": "public_scene_gaussian_ownership_heldout_abstention_not_physical_truth",
+  "manifest_digest": "sha256:1a13f112007f4a54bef96b12312b93a43df8ba0cd16f72143ca58b90d6a87de8"
+}

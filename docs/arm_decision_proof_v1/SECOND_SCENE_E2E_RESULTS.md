@@ -69,12 +69,44 @@ policy frames.
 
 ## Removal, replacement, and construction join
 
-The original FlashSplat ownership audit remains valid diagnostic evidence: an
-owned-only cutout left a refrigerator-sized shell, while deleting every
-ambiguous Gaussian would damage protected kitchen appearance. The replacement-
-first method therefore tested a frozen target-only expansion ladder against
-the actual USD's rendered depth rather than requiring factual ownership of
-every appliance-looking Gaussian.
+The frozen FlashSplat ownership test is now terminally sealed by
+[`second_scene_840796_gaussian_excision_heldout_abstention.v2.json`](manifests/second_scene_840796_gaussian_excision_heldout_abstention.v2.json),
+digest
+`sha256:1a13f112007f4a54bef96b12312b93a43df8ba0cd16f72143ca58b90d6a87de8`.
+Six calibration cameras produced per-Gaussian front-to-back `alpha *
+transmittance` totals for target-core, uncertain, and protected pixels. Geometry
+and neighborhood consistency then produced exactly `2,436` owned, `587,007`
+retained, and `4,222` ambiguous indices; the sets are exhaustive and disjoint.
+Two independent ownership materializations produced byte-identical canonical
+receipts, index sets, and artifact digests. All retained source records remained
+byte-identical. The raw GPU accumulation arrays were not bit-identical, and that
+fact remains reported; their classification label disagreement count was zero.
+
+The scientific test nevertheless **failed on both preregistered held-out
+cameras**. `far_left` owned-only recall was `0.8808863`, with `140,057` missing
+mask pixels, `4,256` protected significant pixels, and protected alpha sum
+`222.9882`; its 3,791-Gaussian OBB baseline missed `99,405` pixels with protected
+alpha sum `59.2196`. `far_right` owned-only recall was `0.8545827`, with `183,463`
+missing pixels, `4,618` protected significant pixels, and protected alpha sum
+`150.9843`; its OBB baseline missed `113,928` pixels with protected alpha sum
+`25.6941`. The conservative ambiguous-layer residue bounds contained connected
+components of `1,089,831` and `1,145,765` pixels, versus the frozen maximum of
+four. Thus silhouette, protected-spill, residual-alpha, residual-component, and
+both OBB-comparison gates all failed on both cameras. The ownership test does
+not authorize a replacement sweep.
+
+The Finder-friendly eight-camera review index is
+`/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/gaussian_excision/840796_v2/heldout_audit_v4/evaluation/OPEN_ME_gaussian_excision_contact_sheets.html`,
+digest
+`sha256:5091afa0dd4b7c2557b55715c3a7249ea2aa98fe5f3e192fde5d9111dd72faf3`.
+Every lossless sheet shows `original | exact mask | OBB removed-only |
+contribution removed-only | retained scene | ambiguity heatmap`.
+
+The later replacement-first method is a separate, explicitly
+coverage-conditioned construction claim. It tested a frozen target-only
+expansion ladder against actual USD rendered depth; it does not convert the
+ownership failure into a pass or claim factual ownership of every deleted
+Gaussian.
 
 Rung `rung_01_core95` deletes `4,422` indices and retains `589,243`; every
 retained source PLY record is byte-identical and remains in original order. The
@@ -211,6 +243,7 @@ exist because no episode was admitted.
 | `79780b3de` | API-derived provider-zero receipt and native-gate terminal abstention seal. |
 | `5b878b79d` | Final protocol/results, checked-in construction manifest, and portable evidence bindings. |
 | `fa1e4b025` | Fix the generic Vast startup state machine so `No such container` cannot terminate an instance still reported as `loading`; slow-lane regression covers loading-to-running recovery. |
+| `d25cbf13b`, `d83221355`, `8faf757c3` | Verify two ownership materializations at the actual manifest/index seam, expose every held-out gate, require strict protected-alpha improvement over OBB, and generate the eight-camera visual index. |
 
 Every reusable fix has a focused hermetic regression. Before each commit, the
 required selector and Ruff gate passed. Latest pre-document code gate: `1,067`
