@@ -1,0 +1,69 @@
+{
+  "schema_version": "public_scene_gaussian_excision_execution_authority.v1",
+  "authority_kind": "explicit_user_direction_in_current_goal",
+  "authority_reference": "codex-goal-user-messages-authorize-everything-needed-and-keep-working",
+  "authorized_by": "nijelhunt_1",
+  "authorized_on": "2026-08-09",
+  "publisher_scene_id": "840796",
+  "target_instance_id": "123",
+  "freeze_digest": "sha256:2ef5adba73b9b09089450bbeee0ff695977155365130c1e9584e2070c49750aa",
+  "parent_execution_authority_digest": "sha256:8af384522a76f953a991494d243634bc1b65fd910c55a0f472adba45cdef87fc",
+  "purpose": "released_code_gaussian_ownership_audit",
+  "provider_scope": [
+    "vast",
+    "object_store"
+  ],
+  "paid_attempt_ordinal": 3,
+  "attempt_kind": "deliberate_host_excluded_attempt_after_retained_pre_runtime_provider_failure",
+  "corrective_blueprint_commit": "bd51b42c4cc6c6f5754f0433a5afdfdaaf8c4455",
+  "prior_paid_attempts": [
+    {
+      "attempt_ordinal": 1,
+      "bundle_sha256": "sha256:797bfb8ef1b6786b78f379c9a623b54e11c3c59b62bfe81c39d23fca1fcbee3a",
+      "run_receipt_sha256": "sha256:023192eabc240d1281c8e473fe5bf308c92dc2adc3a72984dcd2fce49c50b696",
+      "estimated_cost_usd": 0.068951,
+      "status": "failed_before_scientific_execution",
+      "released_code_executed": false,
+      "continuing_spend_from_attempt": false,
+      "automatic_retry": false
+    },
+    {
+      "attempt_ordinal": 2,
+      "bundle_sha256": "sha256:fed17d8a4f838075477116b2ba238f4e47f3d4c092e367a7ad322850fa35ca57",
+      "run_receipt_sha256": "sha256:4f477024738862c5dd8a1560b1f4116ee143dcaaa8c22ed62be35aa893468f46",
+      "provider_adapter_receipt_sha256": "sha256:92ae6433850b6e7c094491356806e0b0a024cdadc869fee2b8a4d556b6dd9305",
+      "teardown_receipt_sha256": "sha256:af300cd5c3ee77107f6dfffe7dac6485ebcd933efa6d2b51e1d4c1c0f0ecb85d",
+      "provider_instance_id": 47283773,
+      "machine_id": 8207,
+      "estimated_cost_usd": 0.005121,
+      "status": "provider_container_missing_before_runtime",
+      "released_code_executed": false,
+      "continuing_spend_from_attempt": false,
+      "automatic_retry": false
+    }
+  ],
+  "correction_scope": [
+    "carry_digest_bound_machine_avoidlist_through_allocator_and_provider_offer_selection",
+    "exclude_machine_8207_already_known_bad_from_prior_isaac_and_current_gaussian_runs"
+  ],
+  "machine_avoidlist_sha256": "sha256:fbda9b6195debe17423d6b376454bef48adc658300542b2f9ce855628382fc26",
+  "private_scene_derived_standard_splat_upload_authorized": true,
+  "raw_interiorgs_downloaded_bytes_upload_authorized": false,
+  "labels_or_structure_upload_authorized": false,
+  "public_disclosure_authorized": false,
+  "model_training_authorized": false,
+  "paid_compute_authorized": true,
+  "hard_attempt_spend_cap_usd": 1.5,
+  "maximum_single_resource_ttl_seconds": 3600,
+  "maximum_paid_attempts": 1,
+  "maximum_automatic_retries": 0,
+  "automatic_paid_retry_authorized": false,
+  "provider_zero_required_before_and_after": true,
+  "teardown_required": true,
+  "retention_policy": "bounded_to_goal_then_provider_zero",
+  "combined_retained_spend_before_attempt_usd": 4.354734,
+  "combined_goal_spend_cap_usd": 12.0,
+  "dataset_claim": "internal_noncommercial_private_processing_authority_only;does_not_change_publisher_nonredistribution_terms",
+  "claim_boundary": "derived_standard_gaussian_processing_input_only;original_compressed_ply_labels_and_structure_remain_local",
+  "authorization_digest": "sha256:459605004459e2a4eb679ae44c6476010d36fc1652095a17c8150bd862b26adb"
+}
