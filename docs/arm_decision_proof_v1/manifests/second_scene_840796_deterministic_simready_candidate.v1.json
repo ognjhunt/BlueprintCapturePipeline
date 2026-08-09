@@ -481,12 +481,18 @@
     "source_asset_sha256": "sha256:4e0986e79b9d358de7e3289c0179eeaa4ec94b035e2133d2ea309298b525a4c3",
     "status": "deterministic_topology_candidate_constructed"
   },
+  "evidence_relative_paths": {
+    "candidate_usd": "simready_candidate/840796_deterministic_v1/simready_candidate_deterministic.usda",
+    "reference_image": "simready_candidate/840796_deterministic_v1/candidate_reference.png"
+  },
   "handle_band_observation_receipt_digest": "sha256:9748301b2ab3ba30666b7d19166ad199ba7af4fa114395e23992425eb1b8a6dd",
   "output_directory": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1",
   "physics_validation_receipt_digest": "sha256:4a2303ada5b844d9fa13af91be35b0585a6ba3b6aeb19e3d6ee69a727bdfcde0",
   "program_id": "arm-decision-proof-v1",
   "publisher_scene_id": "840796",
-  "receipt_digest": "sha256:c0f4f33fabe30e9b64da9093662d09b526eca7ee3e4d25832331d1bfed9df1d4",
+  "receipt_digest": "sha256:9777e53008fa8d013d80a41c53688b5fee8c06c47d7f82aa2c00ee818b4d4aec",
+  "reference_image_authority": "blueprint_deterministic_render_of_sage_derived_candidate_not_interiorgs_dataset_bytes",
+  "reference_image_sha256": "sha256:0e79487f1ff0a2ba43d8e33fa5aa74cf42a40089f169f41bb4bf679d29010450",
   "schema_version": "second_scene_deterministic_simready_candidate.v1",
   "target_instance_id": "123",
   "topology_validation_receipt_digest": "sha256:b4d0f35306e9cf337697cb7bf884b2cb684b9833e02dd52c329e8eb91c10c609"

@@ -55,6 +55,10 @@ MATCH_V2_HUMAN_REVIEW_RELATIVE_PATH = (
     "docs/arm_decision_proof_v1/manifests/"
     "adp009b_simready_match_v2_human_review_receipt.v1.json"
 )
+ARTICULATED_V1_MANIFEST_RELATIVE_PATH = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "second_scene_840796_deterministic_simready_candidate.v1.json"
+)
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/content-agents"
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
@@ -114,6 +118,75 @@ def _resolve_input_variant(
             "reference_image_sha256": REFERENCE_IMAGE_SHA256,
             "reference_image_authority": "blueprint_cad_render_not_interiorgs_dataset_bytes",
             "variant": variant,
+        }
+    if variant == "articulated_v1":
+        # The 840796 articulated candidate is scene-derived, so its bytes stay
+        # in the evidence root under the recorded rights while the repo keeps
+        # only the digest-bound manifest. The Content Agents pass may add
+        # SimReady materials and physics priors; it may never re-derive the
+        # articulation, so admission requires the statically admitted receipt.
+        if evidence_root is None:
+            raise ValueError("adp_content_agents_articulated_evidence_root_missing")
+        evidence = evidence_root.expanduser().resolve()
+        manifest = _verified_canonical_receipt(
+            _under(
+                repo / ARTICULATED_V1_MANIFEST_RELATIVE_PATH,
+                repo,
+                error="adp_content_agents_articulated_manifest_outside_repo",
+            ),
+            error="adp_content_agents_articulated_manifest_invalid",
+        )
+        authoring = manifest.get("authoring") or {}
+        relative = manifest.get("evidence_relative_paths") or {}
+        if (
+            manifest.get("schema_version")
+            != "second_scene_deterministic_simready_candidate.v1"
+            or manifest.get("publisher_scene_id") != "840796"
+            or authoring.get("status") != "simready_candidate_statically_admitted"
+            or not str(authoring.get("task_joint_prim_path") or "")
+            or not str(manifest.get("topology_validation_receipt_digest") or "")
+            or not str(manifest.get("physics_validation_receipt_digest") or "")
+        ):
+            raise ValueError(
+                "adp_content_agents_articulated_candidate_receipt_not_eligible"
+            )
+        usd_source = _under(
+            evidence / str(relative.get("candidate_usd") or ""),
+            evidence,
+            error="adp_content_agents_articulated_usd_outside_evidence",
+        )
+        expected_reference = _under(
+            evidence / str(relative.get("reference_image") or ""),
+            evidence,
+            error="adp_content_agents_articulated_reference_outside_evidence",
+        )
+        if (
+            not usd_source.is_file()
+            or _sha256(usd_source) != authoring.get("output_usd_sha256")
+            or not expected_reference.is_file()
+            or reference_source != expected_reference
+            or _sha256(reference_source) != manifest.get("reference_image_sha256")
+        ):
+            raise ValueError(
+                "adp_content_agents_articulated_source_identity_mismatch"
+            )
+        return {
+            "usd_source": usd_source,
+            "config_prefix": "adp009d_content_agents_articulated_",
+            "reference_image_sha256": manifest["reference_image_sha256"],
+            "reference_image_authority": (
+                "blueprint_render_of_sage_derived_articulated_candidate_not_"
+                "interiorgs_dataset_bytes"
+            ),
+            "variant": variant,
+            "candidate_receipt_digest": manifest["receipt_digest"],
+            "task_joint_prim_path": authoring["task_joint_prim_path"],
+            "topology_validation_receipt_digest": manifest[
+                "topology_validation_receipt_digest"
+            ],
+            "physics_validation_receipt_digest": manifest[
+                "physics_validation_receipt_digest"
+            ],
         }
     if variant != "match_v2":
         raise ValueError("adp_content_agents_input_variant_invalid")
@@ -335,7 +408,10 @@ def _materialize_remote_configs(
     config_hashes: dict[str, str] = {}
     for name, path in config_sources.items():
         target = destination / name
-        if variant == "control_v1":
+        if variant in {"control_v1", "articulated_v1"}:
+            # The articulated configs are authored per-variant and checked in
+            # already; copying them keeps the shipped bytes identical to the
+            # reviewed source instead of deriving a second representation.
             shutil.copy2(path, target)
         else:
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -458,11 +534,18 @@ def build_content_agents_vast_bundle(
             runtime / "native" / "run_ovphysx_preflight_worker.py",
         )
     assets = repo / "docs" / "arm_decision_proof_v1" / "assets"
-    config_sources = {
-        "material_agent.yaml": assets / "adp009a_content_agents_material.vast.yaml",
-        "texture_agent.yaml": assets / "adp009a_content_agents_texture.vast.yaml",
-        "physics_agent.yaml": assets / "adp009a_content_agents_physics.vast.yaml",
-    }
+    config_prefix = str(variant["config_prefix"])
+    if config_prefix == "adp009d_content_agents_articulated_":
+        config_sources = {
+            f"{agent}_agent.yaml": assets / f"{config_prefix}{agent}.vast.yaml"
+            for agent in ("material", "texture", "physics")
+        }
+    else:
+        config_sources = {
+            "material_agent.yaml": assets / "adp009a_content_agents_material.vast.yaml",
+            "texture_agent.yaml": assets / "adp009a_content_agents_texture.vast.yaml",
+            "physics_agent.yaml": assets / "adp009a_content_agents_physics.vast.yaml",
+        }
     config_hashes = _materialize_remote_configs(
         config_sources=config_sources,
         destination=runtime / "configs",
@@ -473,11 +556,19 @@ def build_content_agents_vast_bundle(
     }
     _validate_remote_configs(source=source, config_sources=runtime_configs)
     usd_source = Path(variant["usd_source"])
-    runtime_usd_name = "adp009a_840313_canned_beverage_control.usda"
+    # Each variant's configs reference their own input filenames, so the
+    # runtime input names follow the variant rather than the 840313 control.
+    if variant["variant"] == "articulated_v1":
+        runtime_usd_name = "adp009d_840796_articulated_refrigerator_candidate.usda"
+        reference_name = (
+            "adp009d_840796_articulated_refrigerator_candidate_reference.png"
+        )
+    else:
+        runtime_usd_name = "adp009a_840313_canned_beverage_control.usda"
+        reference_name = "adp009a_840313_canned_beverage_control_reference.png"
     input_normalization = _materialize_content_agents_input(
         usd_source, runtime / "input" / runtime_usd_name
     )
-    reference_name = "adp009a_840313_canned_beverage_control_reference.png"
     shutil.copy2(reference_source, runtime / "input" / reference_name)
 
     entrypoint = runtime / "run_adp_content_agents_provider_runtime.sh"

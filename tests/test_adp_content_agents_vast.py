@@ -813,3 +813,156 @@ def test_exact_bundle_preflight_fails_before_receipt_when_any_cli_fails(
         )
 
     assert not (evidence / "adp_content_agents_bundle_config_preflight.json").exists()
+
+
+ARTICULATED_MANIFEST_RELATIVE_PATH = (
+    "docs/arm_decision_proof_v1/manifests/"
+    "second_scene_840796_deterministic_simready_candidate.v1.json"
+)
+
+
+def _articulated_evidence(tmp_path: Path):
+    repo = tmp_path / "repo"
+    evidence = tmp_path / "evidence"
+    (repo / "docs/arm_decision_proof_v1/manifests").mkdir(parents=True)
+    candidate_dir = evidence / "simready_candidate/840796_deterministic_v1"
+    candidate_dir.mkdir(parents=True)
+    candidate = candidate_dir / "simready_candidate_deterministic.usda"
+    candidate.write_text('#usda 1.0\ndef Xform "Asset" {}\n', encoding="utf-8")
+    snapshot = candidate_dir / "candidate_reference.png"
+    snapshot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"articulated-reference")
+    manifest = {
+        "schema_version": "second_scene_deterministic_simready_candidate.v1",
+        "publisher_scene_id": "840796",
+        "target_instance_id": "123",
+        "construction_path": "deterministic_parametric_from_frozen_observations",
+        "authoring": {
+            "status": "simready_candidate_statically_admitted",
+            "output_usd_sha256": content_agents._sha256(candidate),
+            "task_joint_prim_path": "/Asset/joints/upper_door_hinge",
+        },
+        "evidence_relative_paths": {
+            "candidate_usd": "simready_candidate/840796_deterministic_v1/"
+            "simready_candidate_deterministic.usda",
+            "reference_image": "simready_candidate/840796_deterministic_v1/"
+            "candidate_reference.png",
+        },
+        "reference_image_sha256": content_agents._sha256(snapshot),
+        "topology_validation_receipt_digest": "sha256:" + "1" * 64,
+        "physics_validation_receipt_digest": "sha256:" + "2" * 64,
+        "receipt_digest": "",
+    }
+    manifest["receipt_digest"] = canonical_digest(manifest, digest_field="receipt_digest")
+    write_json(repo / ARTICULATED_MANIFEST_RELATIVE_PATH, manifest)
+    return repo, evidence, snapshot, candidate
+
+
+def test_articulated_variant_binds_statically_admitted_candidate(tmp_path: Path) -> None:
+    repo, evidence, snapshot, candidate = _articulated_evidence(tmp_path)
+
+    resolved = content_agents._resolve_input_variant(
+        repo=repo,
+        evidence_root=evidence,
+        reference_source=snapshot,
+        variant="articulated_v1",
+    )
+
+    assert resolved["variant"] == "articulated_v1"
+    assert resolved["usd_source"] == candidate
+    assert resolved["config_prefix"] == "adp009d_content_agents_articulated_"
+    assert resolved["candidate_receipt_digest"].startswith("sha256:")
+    assert resolved["task_joint_prim_path"] == "/Asset/joints/upper_door_hinge"
+    assert "interiorgs_dataset_bytes" in resolved["reference_image_authority"]
+
+
+def test_articulated_variant_rejects_changed_candidate_bytes(tmp_path: Path) -> None:
+    repo, evidence, snapshot, candidate = _articulated_evidence(tmp_path)
+    candidate.write_text('#usda 1.0\ndef Xform "Tampered" {}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source_identity_mismatch"):
+        content_agents._resolve_input_variant(
+            repo=repo,
+            evidence_root=evidence,
+            reference_source=snapshot,
+            variant="articulated_v1",
+        )
+
+
+def test_articulated_variant_rejects_unadmitted_candidate(tmp_path: Path) -> None:
+    repo, evidence, snapshot, _candidate = _articulated_evidence(tmp_path)
+    manifest = json.loads(
+        (repo / ARTICULATED_MANIFEST_RELATIVE_PATH).read_text(encoding="utf-8")
+    )
+    manifest["authoring"]["status"] = "blocked"
+    manifest["receipt_digest"] = ""
+    manifest["receipt_digest"] = canonical_digest(
+        manifest, digest_field="receipt_digest"
+    )
+    write_json(repo / ARTICULATED_MANIFEST_RELATIVE_PATH, manifest)
+
+    with pytest.raises(ValueError, match="candidate_receipt_not_eligible"):
+        content_agents._resolve_input_variant(
+            repo=repo,
+            evidence_root=evidence,
+            reference_source=snapshot,
+            variant="articulated_v1",
+        )
+
+
+def test_articulated_configs_preserve_articulation() -> None:
+    """No SimReady pass may re-derive geometry or rebuild the articulation."""
+
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    for name in ("material", "texture", "physics"):
+        text = (
+            assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
+        ).read_text(encoding="utf-8")
+        assert "840313" not in text
+        assert "840796" in text
+        assert "apply_joint_rigger" not in text
+        if "optimize_usd:" in text:
+            block = text.split("optimize_usd:", 1)[1][:120]
+            assert "enabled: false" in block
+    physics = (
+        assets / "adp009d_content_agents_articulated_physics.vast.yaml"
+    ).read_text(encoding="utf-8")
+    assert "mass_scale_policy: skip_mass" in physics
+
+
+def test_articulated_bundle_input_names_match_its_configs(tmp_path: Path) -> None:
+    """A variant's runtime input filenames must match what its configs load."""
+
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    for name in ("material", "texture", "physics"):
+        text = (
+            assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
+        ).read_text(encoding="utf-8")
+        assert (
+            "../input/adp009d_840796_articulated_refrigerator_candidate.usda" in text
+        )
+    material = (
+        assets / "adp009d_content_agents_articulated_material.vast.yaml"
+    ).read_text(encoding="utf-8")
+    assert (
+        "../input/adp009d_840796_articulated_refrigerator_candidate_reference.png"
+        in material
+    )
+
+
+def test_articulated_configs_ship_byte_identical(tmp_path: Path) -> None:
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    sources = {
+        f"{agent}_agent.yaml": assets
+        / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
+        for agent in ("material", "texture", "physics")
+    }
+    destination = tmp_path / "configs"
+    destination.mkdir()
+
+    hashes = content_agents._materialize_remote_configs(
+        config_sources=sources, destination=destination, variant="articulated_v1"
+    )
+
+    for name, source in sources.items():
+        assert (destination / name).read_bytes() == source.read_bytes()
+        assert hashes[name] == content_agents._sha256(source)

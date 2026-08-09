@@ -1,0 +1,66 @@
+project:
+  name: adp009d_840796_articulated_refrigerator_texture
+  session_id: adp009d_840796_articulated_refrigerator_texture
+  description: NVIDIA Texture Agent SimReady pass on the 840796 articulated refrigerator candidate; articulation is preserved, never re-derived.
+  working_dir: .texture
+input:
+  usd_path: ../input/adp009d_840796_articulated_refrigerator_candidate.usda
+texture:
+  backend: simple_image_gen
+  detail_policy: surface_only
+  uv_policy: generate_missing
+  uv_scope: target_prims
+  uv_target_prim_paths:
+    - /Asset/upper_door/component_000
+  uv_generation_mode: projection
+  uv_projection: box
+  image_gen:
+    backend: openai
+    model: gpt-image-1
+  size: 1024
+  workers: 1
+target_prims:
+  - /Asset/upper_door/component_000
+material_textures:
+  door_shell:
+    prompt: matte pale-pink painted refrigerator door panel, smooth even finish, no branding, no text
+    opacity: 1.0
+    material_path: /Asset/physics_materials/door_shell_texture
+    prim_paths:
+      - /Asset/upper_door/component_000
+auto_prompt:
+  enabled: false
+variations:
+  count: 1
+steps:
+  discover_materials:
+    enabled: true
+  prepare_uvs:
+    enabled: true
+  render_previews:
+    enabled: true
+    backend: ovrtx
+    image_width: 512
+    image_height: 512
+  generate_textures:
+    enabled: true
+    max_workers: 1
+    skip_existing: false
+  blend_textures:
+    enabled: true
+    default_opacity: 1.0
+    output_size: 1024
+  apply_textures:
+    enabled: true
+  render:
+    enabled: true
+    backend: ovrtx
+    image_width: 1024
+    image_height: 1024
+    focus_prim_paths: [/Asset/upper_door/component_000]
+    focus_camera_direction: "+x+y+z"
+    focus_camera_margin: 1.2
+    focus_camera_focal_length: 60.0
+advanced:
+  keep_temp_files: true
+  log_level: INFO
