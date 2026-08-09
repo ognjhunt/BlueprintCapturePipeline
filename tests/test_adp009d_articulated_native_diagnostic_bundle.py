@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 from typing import Any
 import zipfile
 
@@ -17,6 +18,9 @@ from blueprint_pipeline.articulated_native_diagnostic_bundle import (
     REQUEST_SCHEMA,
     build_articulated_native_diagnostic_bundle,
     build_articulated_native_diagnostic_request,
+)
+from blueprint_pipeline.articulated_native_diagnostic_runtime import (
+    _require_runtime_symbols,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.vast_provider_adapter import (
@@ -336,6 +340,52 @@ def test_paid_offer_and_post_create_gates_include_storage_in_hourly_cap(
     )
     assert binding["all_in_hourly_rate_usd"] == pytest.approx(0.86)
     assert binding["all_in_hourly_rate_under_max_hourly"] is False
+
+
+def test_runtime_capability_probe_reports_complete_missing_module_set() -> None:
+    available = {
+        name: SimpleNamespace(SingleArticulation=object, Camera=object)
+        for name in (
+            "carb",
+            "numpy",
+            "omni.timeline",
+            "omni.usd",
+            "isaacsim.core.prims",
+            "isaacsim.sensors.camera",
+            "PIL.Image",
+            "pxr.Gf",
+            "pxr.UsdGeom",
+            "pxr.UsdLux",
+            "pxr.UsdPhysics",
+            "pxr.UsdShade",
+        )
+    }
+
+    def importer(name: str) -> Any:
+        if name in {"isaacsim.core.prims", "PIL.Image", "pxr.UsdLux"}:
+            raise ModuleNotFoundError(name)
+        return available[name]
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _require_runtime_symbols(importer)
+
+    message = str(excinfo.value)
+    assert "isaacsim.core.prims.SingleArticulation:ModuleNotFoundError" in message
+    assert "PIL.Image:ModuleNotFoundError" in message
+    assert "pxr.UsdLux:ModuleNotFoundError" in message
+
+
+def test_provider_runtime_uses_isaac6_articulation_api_not_removed_dynamic_control() -> None:
+    source = Path(
+        allocator.__file__
+    ).with_name("articulated_native_diagnostic_runtime.py").read_text(encoding="utf-8")
+
+    assert "isaacsim.core.prims" in source
+    assert "SingleArticulation" in source
+    assert "omni.isaac.dynamic_control" not in source
+    assert "joint_command_started" in source
+    assert "joint_command_completed" in source
+    assert "runtime_capabilities_resolved" in source
 
 
 def test_bundle_rejects_changed_asset(tmp_path: Path) -> None:

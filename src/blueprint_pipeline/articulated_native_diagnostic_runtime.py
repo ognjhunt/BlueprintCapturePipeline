@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import math
 import sys
@@ -12,8 +13,53 @@ from pathlib import Path
 from typing import Any
 
 
+_RUNTIME_SYMBOLS = {
+    "carb": ("carb", None),
+    "numpy": ("numpy", None),
+    "timeline": ("omni.timeline", None),
+    "usd_context": ("omni.usd", None),
+    "single_articulation": ("isaacsim.core.prims", "SingleArticulation"),
+    "camera": ("isaacsim.sensors.camera", "Camera"),
+    "image": ("PIL.Image", None),
+    "gf": ("pxr.Gf", None),
+    "usd_geom": ("pxr.UsdGeom", None),
+    "usd_lux": ("pxr.UsdLux", None),
+    "usd_physics": ("pxr.UsdPhysics", None),
+    "usd_shade": ("pxr.UsdShade", None),
+}
+
+
+def _require_runtime_symbols(import_module: Any = importlib.import_module) -> dict[str, Any]:
+    """Resolve the complete Isaac-6 diagnostic dependency closure at once."""
+
+    resolved: dict[str, Any] = {}
+    missing: list[str] = []
+    for alias, (module_name, symbol_name) in _RUNTIME_SYMBOLS.items():
+        try:
+            module = import_module(module_name)
+            value = module if symbol_name is None else getattr(module, symbol_name)
+        except (AttributeError, ImportError, ModuleNotFoundError) as exc:
+            suffix = f".{symbol_name}" if symbol_name else ""
+            missing.append(f"{module_name}{suffix}:{type(exc).__name__}")
+            continue
+        resolved[alias] = value
+    if missing:
+        raise RuntimeError(
+            "articulated_native_runtime_capabilities_missing:" + ",".join(missing)
+        )
+    return resolved
+
+
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _phase(name: str, **fields: Any) -> None:
+    suffix = "".join(f":{key}={value}" for key, value in sorted(fields.items()))
+    print(
+        f"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:articulated_native_diagnostic:{name}{suffix}",
+        flush=True,
+    )
 
 
 def _camera_quaternion_wxyz(forward: Any, up: Any) -> Any:
@@ -88,6 +134,25 @@ def _quaternion_distance_degrees(first: dict[str, Any], second: dict[str, Any]) 
     return math.degrees(2.0 * math.acos(dot))
 
 
+def _usd_world_pose(stage: Any, prim_path: str, usd_geom: Any) -> dict[str, Any]:
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim or not prim.IsValid():
+        raise RuntimeError(f"articulated_native_body_prim_missing:{prim_path}")
+    matrix = usd_geom.XformCache().GetLocalToWorldTransform(prim)
+    translation = matrix.ExtractTranslation()
+    quaternion = matrix.ExtractRotationQuat()
+    imaginary = quaternion.GetImaginary()
+    return {
+        "position": [float(translation[index]) for index in range(3)],
+        "rotation_xyzw": [
+            float(imaginary[0]),
+            float(imaginary[1]),
+            float(imaginary[2]),
+            float(quaternion.GetReal()),
+        ],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset", required=True)
@@ -125,25 +190,30 @@ def main(argv: list[str] | None = None) -> int:
                 "height": height,
             }
         )
-        import carb
-        import numpy as np
-        import omni.timeline
-        import omni.usd
-        from omni.isaac.dynamic_control import _dynamic_control
-        try:
-            from isaacsim.sensors.camera import Camera
-        except ImportError:
-            from omni.isaac.sensor import Camera
-        from PIL import Image
-        from pxr import Gf, UsdGeom, UsdLux, UsdPhysics, UsdShade
+        _phase("simulation_app_started")
+        symbols = _require_runtime_symbols()
+        _phase("runtime_capabilities_resolved", count=len(symbols))
+        carb = symbols["carb"]
+        np = symbols["numpy"]
+        omni_timeline = symbols["timeline"]
+        omni_usd = symbols["usd_context"]
+        SingleArticulation = symbols["single_articulation"]
+        Camera = symbols["camera"]
+        Image = symbols["image"]
+        Gf = symbols["gf"]
+        UsdGeom = symbols["usd_geom"]
+        UsdLux = symbols["usd_lux"]
+        UsdPhysics = symbols["usd_physics"]
+        UsdShade = symbols["usd_shade"]
 
-        context = omni.usd.get_context()
+        context = omni_usd.get_context()
         context.open_stage(str(asset))
         for _ in range(30):
             app.update()
         stage = context.get_stage()
         if stage is None:
             raise RuntimeError("articulated_native_stage_open_failed")
+        _phase("stage_opened")
         articulation_spec = request["articulation"]
         runtime = request["runtime"]
         render_material_rows = []
@@ -224,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         scene = UsdPhysics.Scene.Define(stage, "/PhysicsScene")
         scene.CreateGravityDirectionAttr((0.0, 0.0, -1.0))
         scene.CreateGravityMagnitudeAttr(9.81)
-        timeline = omni.timeline.get_timeline_interface()
+        timeline = omni_timeline.get_timeline_interface()
         timeline.play()
         for _ in range(60):
             app.update()
@@ -233,22 +303,20 @@ def main(argv: list[str] | None = None) -> int:
         for _ in range(30):
             app.update()
 
-        dc = _dynamic_control.acquire_dynamic_control_interface()
-        articulation = dc.get_articulation(
-            articulation_spec["root_prim_path"]
+        articulation = SingleArticulation(
+            prim_path=articulation_spec["root_prim_path"],
+            name="blueprint_articulated_native_diagnostic",
         )
-        if articulation == _dynamic_control.INVALID_HANDLE:
+        articulation.initialize()
+        if not bool(getattr(articulation, "handles_initialized", False)):
             raise RuntimeError("articulated_native_articulation_handle_invalid")
-        dc.wake_up_articulation(articulation)
-        dof_count = int(dc.get_articulation_dof_count(articulation))
-        body_count = int(dc.get_articulation_body_count(articulation))
-        names = []
-        handles: dict[str, Any] = {}
-        for index in range(dof_count):
-            handle = dc.get_articulation_dof(articulation, index)
-            name = str(dc.get_dof_name(handle))
-            names.append(name)
-            handles[name] = handle
+        names = [str(name) for name in (articulation.dof_names or [])]
+        dof_count = int(
+            getattr(articulation, "num_dof", getattr(articulation, "num_dofs", len(names)))
+        )
+        body_names = [str(name) for name in (getattr(articulation, "body_names", None) or [])]
+        body_count = int(getattr(articulation, "num_bodies", len(body_names)))
+        handles = {name: int(articulation.get_dof_index(name)) for name in names}
         expected_names = {
             Path(articulation_spec["driven_joint_prim_path"]).name,
             *(Path(path).name for path in articulation_spec["locked_joint_prim_paths"]),
@@ -262,35 +330,45 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(
                 f"articulated_native_dof_count_mismatch:{dof_count}"
             )
+        _phase("articulation_initialized", bodies=body_count, dofs=dof_count)
         driven_name = Path(articulation_spec["driven_joint_prim_path"]).name
         locked_names = [
             Path(path).name for path in articulation_spec["locked_joint_prim_paths"]
         ]
         driven_handle = handles[driven_name]
-        fixed_body = dc.find_articulation_body(
-            articulation, Path(articulation_spec["fixed_base_body_prim_path"]).name
+        initial_fixed_pose = _usd_world_pose(
+            stage, articulation_spec["fixed_base_body_prim_path"], UsdGeom
         )
-        if fixed_body == _dynamic_control.INVALID_HANDLE:
-            raise RuntimeError("articulated_native_fixed_body_handle_invalid")
-        initial_fixed_pose = _pose_row(dc.get_rigid_body_pose(fixed_body))
         rows = []
         frame_rows = []
         frames_root = output.parent / "native_material_frames"
         frames_root.mkdir(parents=True, exist_ok=True)
         settle_steps = int(runtime["settle_steps_per_command"])
         for angle in articulation_spec["commanded_angles_degrees"]:
-            for name in locked_names:
-                dc.set_dof_position_target(handles[name], 0.0)
-                dc.set_dof_velocity_target(handles[name], 0.0)
-            dc.set_dof_position_target(driven_handle, math.radians(float(angle)))
-            dc.set_dof_velocity_target(driven_handle, 0.0)
-            dc.wake_up_articulation(articulation)
+            _phase("joint_command_started", angle_degrees=float(angle))
+            commanded_names = [driven_name, *locked_names]
+            commanded_indices = np.asarray(
+                [handles[name] for name in commanded_names], dtype=np.int64
+            )
+            articulation.set_joint_position_targets(
+                np.asarray(
+                    [math.radians(float(angle)), *([0.0] * len(locked_names))],
+                    dtype=np.float32,
+                ),
+                joint_indices=commanded_indices,
+            )
+            articulation.set_joint_velocity_targets(
+                np.zeros(len(commanded_names), dtype=np.float32),
+                joint_indices=commanded_indices,
+            )
             for _ in range(settle_steps):
                 app.update()
-            readback = math.degrees(float(dc.get_dof_position(driven_handle)))
-            velocity = float(dc.get_dof_velocity(driven_handle))
+            joint_positions = np.asarray(articulation.get_joint_positions(), dtype=float)
+            joint_velocities = np.asarray(articulation.get_joint_velocities(), dtype=float)
+            readback = math.degrees(float(joint_positions[driven_handle]))
+            velocity = float(joint_velocities[driven_handle])
             locked_readback = {
-                name: math.degrees(float(dc.get_dof_position(handles[name])))
+                name: math.degrees(float(joint_positions[handles[name]]))
                 for name in locked_names
             }
             rows.append(
@@ -337,16 +415,30 @@ def main(argv: list[str] | None = None) -> int:
                         "pixel_stddev": pixel_stddev,
                     }
                 )
+            _phase(
+                "joint_command_completed",
+                angle_degrees=float(angle),
+                frames=len(camera_objects),
+            )
         # Reset replay is a native operation, not a caller assertion.
-        dc.set_dof_position_target(driven_handle, 0.0)
-        dc.set_dof_velocity_target(driven_handle, 0.0)
-        for name in locked_names:
-            dc.set_dof_position_target(handles[name], 0.0)
-            dc.set_dof_velocity_target(handles[name], 0.0)
+        reset_indices = np.asarray(
+            [handles[name] for name in [driven_name, *locked_names]], dtype=np.int64
+        )
+        articulation.set_joint_position_targets(
+            np.zeros(len(reset_indices), dtype=np.float32),
+            joint_indices=reset_indices,
+        )
+        articulation.set_joint_velocity_targets(
+            np.zeros(len(reset_indices), dtype=np.float32),
+            joint_indices=reset_indices,
+        )
         for _ in range(settle_steps):
             app.update()
-        reset_readback = math.degrees(float(dc.get_dof_position(driven_handle)))
-        final_fixed_pose = _pose_row(dc.get_rigid_body_pose(fixed_body))
+        reset_positions = np.asarray(articulation.get_joint_positions(), dtype=float)
+        reset_readback = math.degrees(float(reset_positions[driven_handle]))
+        final_fixed_pose = _usd_world_pose(
+            stage, articulation_spec["fixed_base_body_prim_path"], UsdGeom
+        )
         translation_drift = _translation_distance(initial_fixed_pose, final_fixed_pose)
         rotation_drift = _quaternion_distance_degrees(
             initial_fixed_pose, final_fixed_pose
@@ -382,7 +474,12 @@ def main(argv: list[str] | None = None) -> int:
                 "blockers": errors,
                 "native_runtime": {
                     "isaac_sim_version": str(carb.settings.get_settings().get("/app/version") or "unknown"),
-                    "dynamic_control_api": True,
+                    "articulation_api": "isaacsim.core.prims.SingleArticulation",
+                    "legacy_dynamic_control_api_used": False,
+                    "runtime_capability_probe": {
+                        "status": "passed",
+                        "resolved_symbols": sorted(_RUNTIME_SYMBOLS),
+                    },
                 },
                 "articulation_readback": {
                     "articulation_root_prim_path": articulation_spec["root_prim_path"],
@@ -423,10 +520,12 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             }
         )
+        _phase("result_materialized", status=result["status"])
         timeline.stop()
     except Exception as exc:
         result["blockers"].append(str(exc))
         result["traceback"] = traceback.format_exc()
+        _phase("blocked", error_type=type(exc).__name__)
     finally:
         output.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
