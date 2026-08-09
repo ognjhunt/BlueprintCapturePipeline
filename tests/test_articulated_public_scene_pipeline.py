@@ -261,6 +261,10 @@ def test_propagates_observed_aura_reference_binding_abstention() -> None:
         "released_code_inpainting_abstained:"
         "aurafusion360_runtime_reference_camera_binding_mismatch"
     )
+    assert result["next_action"] == (
+        "regenerate the sealed Aura adapter with the released runtime camera order; "
+        "any new paid execution requires fresh zero-retry authority"
+    )
 
 
 def test_rejects_cross_scene_joint_agent_execution_receipt() -> None:

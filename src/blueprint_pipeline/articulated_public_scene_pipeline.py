@@ -436,20 +436,25 @@ def compile_articulated_public_scene_state(
             "obtain explicit dataset disclosure authority for the exact retained scene-derived Aura and Joint Agent inputs"
             if blockers and blockers[0] == "external_scene_derived_byte_disclosure_authority_missing"
             else (
-                "qualify the released-code inpainting candidate with exact-camera locality and retained before/after evidence"
+                "regenerate the sealed Aura adapter with the released runtime camera order; any new paid execution requires fresh zero-retry authority"
                 if blockers
-                and blockers[0] == "released_code_inpainting_quality_admission_missing"
+                and blockers[0].startswith("released_code_inpainting_abstained:")
                 else (
-                    "obtain one sealed zero-retry Joint Agent topology execution receipt"
+                    "qualify the released-code inpainting candidate with exact-camera locality and retained before/after evidence"
                     if blockers
-                    and blockers[0] == "joint_agent_topology_execution_missing"
+                    and blockers[0] == "released_code_inpainting_quality_admission_missing"
                     else (
-                        "resolve the retained Joint Agent runtime blocker without an automatic paid retry"
+                        "obtain one sealed zero-retry Joint Agent topology execution receipt"
                         if blockers
-                        and blockers[0].startswith(
-                            "joint_agent_topology_execution_abstained:"
+                        and blockers[0] == "joint_agent_topology_execution_missing"
+                        else (
+                            "resolve the retained Joint Agent runtime blocker without an automatic paid retry"
+                            if blockers
+                            and blockers[0].startswith(
+                                "joint_agent_topology_execution_abstained:"
+                            )
+                            else "materialize and independently qualify the articulated SimReady replacement"
                         )
-                        else "materialize and independently qualify the articulated SimReady replacement"
                     )
                 )
             )

@@ -139,6 +139,13 @@ single Aura optimization or a single simulator episode; prebuilt immutable
 images, local artifact/model caches, and warm runtime pools remove the dominant
 cold-start overhead without changing these joins.
 
+Aura construction must not generate the optional 240-frame trajectory when
+that trajectory is not retained by the evidence contract. Training-view renders
+remain mandatory. The released Aura COLMAP reader sorts camera records by image
+name; `reference_index` must therefore be derived and read back from that exact
+runtime order, never from caller JSON order. A mismatch is a typed construction
+abstention even when every released-code process exits zero.
+
 ## Retained candidate outcomes
 
 Candidate `840076` was rejected because the best SAGE door collider represents
