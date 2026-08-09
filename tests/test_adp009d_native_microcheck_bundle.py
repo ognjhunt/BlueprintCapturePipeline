@@ -939,6 +939,32 @@ def test_allocator_refuses_an_ambiguous_paid_microcheck_without_an_execution_mod
     assert "adp009d_execution_mode_missing" in result["blockers"]
 
 
+def test_paid_host_exit_before_control_receipt_is_avoidlisted_not_scored() -> None:
+    """v95 exited during install before a terminal bundle marker or receipt."""
+
+    from blueprint_pipeline import vast_provider_adapter as vast
+
+    blockers = vast._provider_instance_exit_blockers(
+        instance_exited=True,
+        provider_completed_or_blocked=False,
+    )
+    assert blockers == ["provider_instance_exited_before_bundle_terminal_marker"]
+    assert (
+        vast._machine_avoidlist_reason(
+            ["provider_bundle_completion_marker_missing", *blockers]
+        )
+        == "vast_provider_bundle_instance_exited_before_terminal_marker"
+    )
+    assert (
+        vast._provider_instance_exit_blockers(
+            instance_exited=True,
+            provider_completed_or_blocked=True,
+        )
+        == []
+    )
+    assert vast._machine_avoidlist_reason(["provider_output_upload_marker_missing"]) is None
+
+
 def test_allocator_controls_fail_closed_without_scenario_instance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1602,9 +1628,11 @@ def test_the_exit_is_named_rather_than_blamed_on_absent_log_progress() -> None:
         'break_reason = "no_log_progress_timeout"'
     )
     # And it blacklists the machine, like the other startup-plane failures.
-    assert '"vast_heartbeat_instance_exited",' in source
-    blockers = source[source.index("startup_control_plane_blocked = any(") :]
-    assert "vast_heartbeat_instance_exited" in blockers[:600]
+    assert (
+        adapter._machine_avoidlist_reason(["vast_heartbeat_instance_exited"])
+        == "vast_startup_control_plane_did_not_reach_onstart_heartbeat"
+    )
+    assert "_machine_avoidlist_reason(current_blockers)" in source
 
 
 def test_the_first_render_step_is_visible_in_the_phase_log() -> None:
