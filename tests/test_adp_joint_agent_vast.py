@@ -3,10 +3,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
+import zipfile
 
 import pytest
 
-from blueprint_pipeline.adp_joint_agent_vast import build_joint_agent_vast_bundle
+from blueprint_pipeline.adp_joint_agent_vast import (
+    build_joint_agent_vast_bundle,
+    run_joint_agent_vast,
+)
+from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.usd_content_joint_agent_packet import JOINT_AGENT_IDENTITY
 from blueprint_pipeline.vast_provider_adapter import (
@@ -175,6 +181,96 @@ def test_joint_agent_provider_uses_gpu_graphics_and_distinct_runtime(tmp_path: P
     assert "run_adp_joint_agent_provider_runtime.sh" in script
     assert "adp_joint_agent_provider_runtime_output.zip" in script
     assert "adp_content_agents_provider_runtime_output.zip" not in script
+
+
+def _prepared_bundle(tmp_path: Path) -> dict:
+    bundle = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("provider_runtime/fixture", "fixture")
+    digest = "sha256:" + __import__("hashlib").sha256(bundle.read_bytes()).hexdigest()
+    return {"status": "ready", "bundle_path": str(bundle), "bundle_sha256": digest}
+
+
+def test_run_dry_run_is_zero_mutation_and_requires_bound_bundle(tmp_path: Path) -> None:
+    result = run_joint_agent_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=None,
+        execute=False,
+        prepared_bundle=_prepared_bundle(tmp_path),
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["provider_mutations_performed"] == 0
+    assert result["retry_cap"] == 0
+
+
+def test_live_run_arms_watchdog_before_adapter_and_forwards_only_nvidia_key(
+    monkeypatch, tmp_path: Path
+) -> None:
+    events: list[str] = []
+    started_path = tmp_path / "started_instance.txt"
+    staging = tmp_path / "job/object_store_staging"
+
+    def fake_stage(**kwargs):
+        staging.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text("https://example.com/private", encoding="utf-8")
+        return {"status": "completed"}
+
+    def fake_arm(**kwargs):
+        events.append("watchdog")
+        return {"status": "armed"}, SimpleNamespace(started_instance_id_path=started_path)
+
+    def fake_adapter(**kwargs):
+        events.append("adapter")
+        assert kwargs["started_instance_id_path"] == started_path
+        assert kwargs["provider_bundle_kind"] == "adp_joint_agent"
+        assert kwargs["paid_resource_admission_grant"] is grant
+        assert __import__("os").environ["NVIDIA_API_KEY"] == "fixture-nvidia"
+        assert __import__("os").environ["BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"] == "NVIDIA_API_KEY"
+        output_zip = Path(kwargs["provider_runtime_output_zip"])
+        output_zip.parent.mkdir(parents=True)
+        with zipfile.ZipFile(output_zip, "w") as archive:
+            archive.writestr(
+                "adp_joint_agent_result.json",
+                json.dumps({"status": "completed", "blockers": []}),
+            )
+        write_json(
+            output_zip.parent / "vast_teardown_manifest.json",
+            {"vast_instance_ids": [7], "continuing_spend_from_this_run": False},
+        )
+        return {"status": "completed", "blockers": [], "estimated_cost_usd": 0.5}
+
+    monkeypatch.setattr("blueprint_pipeline.adp_joint_agent_vast._remaining_minutes", lambda **kwargs: 100)
+    monkeypatch.setattr("blueprint_pipeline.adp_joint_agent_vast.stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr("blueprint_pipeline.adp_joint_agent_vast.arm_independent_vast_watchdog", fake_arm)
+    monkeypatch.setattr("blueprint_pipeline.adp_joint_agent_vast.run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast.cleanup_staged_wam_provider_objects",
+        lambda value: {"all_objects_absent": True},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast.close_independent_vast_watchdog",
+        lambda **kwargs: {"status": "provider_terminal"},
+    )
+    monkeypatch.setenv("NVIDIA_API_KEY", "fixture-nvidia")
+    grant = object()
+
+    result = run_joint_agent_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=grant,  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=_prepared_bundle(tmp_path),
+    )
+
+    assert events == ["watchdog", "adapter"]
+    assert result["status"] == "completed"
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["retry_cap"] == 0
 
 
 def test_builder_preflight_failure_leaves_no_partial_output(
