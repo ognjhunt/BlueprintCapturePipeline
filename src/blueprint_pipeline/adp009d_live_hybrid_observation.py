@@ -372,6 +372,26 @@ def validate_live_hybrid_runtime_receipt(value: Mapping[str, Any]) -> dict[str, 
         errors.append("hybrid_runtime_frame_receipts_missing")
     if receipt.get("policy_frames_retained_losslessly") is not True:
         errors.append("hybrid_runtime_lossless_frames_missing")
+    dynamic_appearance = receipt.get("dynamic_usd_render_appearance")
+    if not isinstance(dynamic_appearance, Mapping):
+        errors.append("hybrid_runtime_dynamic_usd_render_appearance_missing")
+    else:
+        appearance_digest = str(
+            dynamic_appearance.get("static_appearance_receipt_digest") or ""
+        )
+        if not (
+            len(appearance_digest) == 71
+            and appearance_digest.startswith("sha256:")
+        ):
+            errors.append("hybrid_runtime_dynamic_usd_appearance_unchained")
+        if dynamic_appearance.get("usd_materials_rendered") is not True:
+            errors.append("hybrid_runtime_dynamic_usd_materials_not_rendered")
+        if dynamic_appearance.get("default_neutral_override_used") is not False:
+            errors.append("hybrid_runtime_default_neutral_material_forbidden")
+        if dynamic_appearance.get("coverage_silhouette_audit_used") is not False:
+            errors.append("hybrid_runtime_coverage_audit_as_policy_input_forbidden")
+        if dynamic_appearance.get("native_renderer_readback_observed") is not True:
+            errors.append("hybrid_runtime_dynamic_material_readback_missing")
     conformance = receipt.get("aura_renderer_conformance_receipt")
     conformance_valid = False
     try:

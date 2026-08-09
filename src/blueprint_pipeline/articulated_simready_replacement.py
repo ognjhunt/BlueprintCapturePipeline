@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .simready_render_appearance import (
+    SimReadyRenderAppearanceError,
+    bind_minimal_render_materials_to_stage,
+    inspect_simready_render_appearance,
+)
 
 
 TOPOLOGY_SCHEMA_VERSION = "articulated_replacement_topology_validation.v1"
@@ -1175,6 +1180,11 @@ def author_articulated_simready_replacement(
         raise ArticulatedSimReadyReplacementError(
             ["articulated_authoring_spec_invalid:handle"]
         )
+    render_appearance = spec.get("render_appearance")
+    if not isinstance(render_appearance, Mapping):
+        raise ArticulatedSimReadyReplacementError(
+            ["articulated_authoring_render_appearance_missing"]
+        )
 
     source_stage = Usd.Stage.Open(str(rigged))
     if source_stage is None:
@@ -1453,6 +1463,13 @@ def author_articulated_simready_replacement(
     )
     _tag(interior_mesh.GetPrim(), GENERATED_PROVENANCE_VALUE)
 
+    try:
+        appearance_authoring = bind_minimal_render_materials_to_stage(
+            stage=stage, appearance_spec=render_appearance
+        )
+    except SimReadyRenderAppearanceError as exc:
+        raise ArticulatedSimReadyReplacementError(exc.codes) from exc
+
     output.parent.mkdir(parents=True, exist_ok=True)
     if not stage.GetRootLayer().Export(str(output)):
         raise ArticulatedSimReadyReplacementError(
@@ -1492,6 +1509,10 @@ def author_articulated_simready_replacement(
     physics_validation = validate_articulated_replacement_physics(
         replacement_usd_path=output, contract=physics_contract
     )
+    try:
+        render_appearance_validation = inspect_simready_render_appearance(output)
+    except SimReadyRenderAppearanceError as exc:
+        raise ArticulatedSimReadyReplacementError(exc.codes) from exc
 
     receipt: dict[str, Any] = {
         "schema_version": AUTHORING_SCHEMA_VERSION,
@@ -1517,9 +1538,12 @@ def author_articulated_simready_replacement(
         "authoring_spec": spec,
         "topology_validation": topology_validation,
         "physics_validation": physics_validation,
+        "render_appearance_authoring": appearance_authoring,
+        "render_appearance_validation": render_appearance_validation,
         "claim_boundary": {
             "authoring_is_deterministic_code_not_vlm_inference": True,
             "native_simulator_qualified": False,
+            "native_material_render_readback_observed": False,
             "physical_equivalence_proven": False,
             "generated_geometry_is_observed_site_truth": False,
         },

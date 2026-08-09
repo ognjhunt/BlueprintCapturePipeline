@@ -1,0 +1,73 @@
+{
+  "adp_item": "ADP-009D",
+  "appearance": {
+    "generated_interior": {
+      "base_color_srgb": [
+        0.88,
+        0.88,
+        0.86
+      ],
+      "claim": "generated_candidate_unobserved",
+      "material_path": "/Asset/render_materials/generated_unobserved",
+      "prim_paths": [
+        "/Asset/cabinet/generated_interior"
+      ]
+    },
+    "observed_exterior": {
+      "base_color_srgb": [
+        0.8,
+        0.7411764705882353,
+        0.7019607843137254
+      ],
+      "estimator": "per_channel_median_srgb_v1",
+      "image_sha256": "sha256:37b410c26be9afe37e1c8ee8d51f753bcac1338b6c385dde84af514c1c6c9203",
+      "mask_sha256": "sha256:75d0bd152d5ec361e53d7dd85409869e1a16f829053d207e44372a3a8abe8bfa",
+      "masked_pixel_count": 1390969,
+      "material_path": "/Asset/render_materials/observed_exterior",
+      "metallic": 0.0,
+      "roughness": 0.35
+    }
+  },
+  "artifacts": {
+    "authoring_receipt": {
+      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v2_materialized/render_appearance_authoring_receipt.json",
+      "receipt_digest": "sha256:5afae7c8257efc0806680d882978f7baf54d7636c666556137999a66f52f6a39",
+      "sha256": "sha256:0d49eb795e42ae4261104a2c92b4160d4bf3dcfe9f947cb3f0b6c6fe7c165321",
+      "size_bytes": 11308
+    },
+    "color_observation": {
+      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v2_materialized/observed_exterior_color_observation.json",
+      "sha256": "sha256:ac3b36e339b8d1fd4bceb33f2bd685a26452271869e39d300dfa306116b201b6",
+      "size_bytes": 701
+    },
+    "materialized_asset": {
+      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v2_materialized/simready_candidate_deterministic_materialized.usda",
+      "sha256": "sha256:9f487fbee7006c6c276ce37c9e1e7e1653a465ac2fbbe15cffa63653111cc720",
+      "size_bytes": 87918
+    },
+    "source_asset": {
+      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_deterministic_v1/simready_candidate_deterministic.usda",
+      "sha256": "sha256:f626998bbb5bd48d57950c4b96d9a7452705c1b2a906df950e20ac9767e649c1"
+    }
+  },
+  "claim_boundary": {
+    "default_gray_fallback_statically_required": false,
+    "generated_interior_is_observed_site_truth": false,
+    "masked_median_color_is_texture_equivalence": false,
+    "native_material_render_readback_observed": false,
+    "physical_equivalence_proven": false,
+    "policy_evaluation_authorized": false,
+    "texture_agent_enrichment_required_for_mechanical_qualification": false
+  },
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:e951a25bcfc3ccd63306d93753ededf83a9572b6cf95b8c6acff9908adf4ad40",
+  "scene_id": "840796",
+  "schema_version": "second_scene_render_appearance_candidate.v1",
+  "static_validation": {
+    "policy_visible_gprim_count": 29,
+    "receipt_digest": "sha256:47dcf14b18343bbf9a60dc2ec94bf4e4252ba1333b5f5b6f750f3ecc777bf2e5",
+    "status": "policy_visible_render_materials_statically_admitted"
+  },
+  "status": "minimal_render_appearance_authored_native_readback_pending",
+  "task_id": "840796_refrigerator_upper_door_open_v1"
+}

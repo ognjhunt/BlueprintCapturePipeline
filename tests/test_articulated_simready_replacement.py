@@ -10,6 +10,7 @@ from blueprint_pipeline.articulated_simready_replacement import (
     ArticulatedSimReadyReplacementError,
     validate_articulated_replacement_topology,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 UPPER_INTERVAL = (0.939981249, 1.631869998)
@@ -631,7 +632,7 @@ def _physics_template() -> dict:
 
 
 def _authoring_arguments(tmp_path: Path, rigged: Path) -> dict:
-    return {
+    arguments = {
         "rigged_topology_usd_path": rigged,
         "output_usd_path": tmp_path / "simready_candidate.usda",
         "topology_contract": _contract(),
@@ -650,8 +651,40 @@ def _authoring_arguments(tmp_path: Path, rigged: Path) -> dict:
             },
             "generated_interior_inset_m": 0.04,
             "fixed_base": True,
+            "render_appearance": {
+                "observed_exterior_reference_sha256": "sha256:" + "a" * 64,
+                "observed_exterior_base_color_rgb": [0.72, 0.61, 0.60],
+                "observed_exterior_color_observation": {
+                    "schema_version": "simready_masked_color_observation.v1",
+                    "status": "masked_observed_color_measured",
+                    "image_sha256": "sha256:" + "a" * 64,
+                    "mask_sha256": "sha256:" + "b" * 64,
+                    "mask_threshold_8bit": 127,
+                    "masked_pixel_count": 100,
+                    "estimator": "per_channel_median_srgb_v1",
+                    "median_srgb": [0.72, 0.61, 0.60],
+                    "claim_boundary": {
+                        "masked_color_is_not_texture_equivalence": True,
+                        "appearance_is_lighting_dependent": True,
+                    },
+                    "receipt_digest": "sha256:" + "0" * 64,
+                },
+                "observed_exterior_roughness": 0.32,
+                "observed_exterior_metallic": 0.15,
+                "generated_surface_base_color_rgb": [0.88, 0.88, 0.86],
+                "generated_surface_roughness": 0.55,
+                "generated_surface_metallic": 0.0,
+                "generated_surface_claim": "generated_candidate_unobserved",
+            },
         },
     }
+    observation = arguments["authoring_spec"]["render_appearance"][
+        "observed_exterior_color_observation"
+    ]
+    observation["receipt_digest"] = canonical_digest(
+        observation, digest_field="receipt_digest"
+    )
+    return arguments
 
 
 def test_authoring_produces_statically_admitted_candidate(tmp_path: Path) -> None:
@@ -667,6 +700,11 @@ def test_authoring_produces_statically_admitted_candidate(tmp_path: Path) -> Non
     assert receipt["claim_boundary"]["native_simulator_qualified"] is False
     assert receipt["topology_validation"]["status"] == "topology_statically_admitted"
     assert receipt["physics_validation"]["status"] == "physics_statically_admitted"
+    assert receipt["render_appearance_validation"]["status"] == (
+        "policy_visible_render_materials_statically_admitted"
+    )
+    assert receipt["render_appearance_authoring"]["texture_agent_target_material_path"]
+    assert receipt["claim_boundary"]["native_material_render_readback_observed"] is False
     assert receipt["task_joint_prim_path"]
     assert receipt["output_usd_sha256"].startswith("sha256:")
 

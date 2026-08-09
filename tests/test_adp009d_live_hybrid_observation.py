@@ -261,6 +261,13 @@ def _runtime_receipt() -> dict:
         "observed_frame_count": 4,
         "frame_receipt_digests": ["sha256:" + "b" * 64],
         "policy_frames_retained_losslessly": True,
+        "dynamic_usd_render_appearance": {
+            "static_appearance_receipt_digest": "sha256:" + "c" * 64,
+            "usd_materials_rendered": True,
+            "default_neutral_override_used": False,
+            "coverage_silhouette_audit_used": False,
+            "native_renderer_readback_observed": True,
+        },
         "aura_renderer_conformance_receipt": conformance,
         "aura_appearance_provenance": {"asset": "sealed_aurafusion360_final_ply", "task_volume_exclusion_applied": False},
         "camera_motion_occlusion_probe_passed": True,
@@ -408,3 +415,28 @@ def test_runtime_receipt_requires_chained_appearance_provenance() -> None:
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     assert validate_live_hybrid_runtime_receipt(receipt) == receipt
+
+
+def test_runtime_receipt_rejects_gray_coverage_audit_as_policy_input() -> None:
+    receipt = _runtime_receipt()
+    receipt["dynamic_usd_render_appearance"].update(
+        {
+            "usd_materials_rendered": False,
+            "default_neutral_override_used": True,
+            "coverage_silhouette_audit_used": True,
+            "native_renderer_readback_observed": False,
+        }
+    )
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    with pytest.raises(
+        LiveHybridObservationError,
+        match=(
+            "hybrid_runtime_coverage_audit_as_policy_input_forbidden.*"
+            "hybrid_runtime_default_neutral_material_forbidden.*"
+            "hybrid_runtime_dynamic_material_readback_missing.*"
+            "hybrid_runtime_dynamic_usd_materials_not_rendered"
+        ),
+    ):
+        validate_live_hybrid_runtime_receipt(receipt)
