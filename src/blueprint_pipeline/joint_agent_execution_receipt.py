@@ -12,6 +12,7 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 
 
 SCHEMA_VERSION = "adp_joint_agent_execution_receipt.v1"
+ABSTENTION_SCHEMA_VERSION = "adp_joint_agent_execution_abstention.v1"
 RUNTIME_SCHEMA_VERSION = "adp_joint_agent_result.v1"
 RUN_SCHEMA_VERSION = "adp_joint_agent_vast_run.v1"
 PACKET_SCHEMA_VERSION = "usd_content_joint_agent_packet.v1"
@@ -250,6 +251,167 @@ def materialize_joint_agent_execution_receipt(
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    if receipt_output is not None:
+        output = _under(
+            receipt_output, repo, "joint_agent_execution_receipt_output_outside_repo"
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
+def materialize_joint_agent_execution_abstention(
+    *,
+    packet_path: str | Path,
+    bundle_receipt_path: str | Path,
+    runtime_result_path: str | Path,
+    run_result_path: str | Path,
+    evidence_root: str | Path,
+    repo_root: str | Path,
+    receipt_output: str | Path | None = None,
+) -> dict[str, Any]:
+    """Seal a zero-retry paid null at the smallest observed runtime blocker."""
+
+    evidence = Path(evidence_root).expanduser().resolve()
+    repo = Path(repo_root).expanduser().resolve()
+    if not evidence.is_dir() or not repo.is_dir():
+        raise JointAgentExecutionReceiptError(["joint_agent_approved_root_missing"])
+    packet_file = _under(packet_path, evidence, "joint_agent_packet_outside_evidence_root")
+    bundle_file = _under(
+        bundle_receipt_path, evidence, "joint_agent_bundle_receipt_outside_evidence_root"
+    )
+    runtime_file = _under(
+        runtime_result_path, evidence, "joint_agent_runtime_result_outside_evidence_root"
+    )
+    run_file = _under(
+        run_result_path, evidence, "joint_agent_run_result_outside_evidence_root"
+    )
+    packet = _read(packet_file, "joint_agent_packet_invalid")
+    bundle = _read(bundle_file, "joint_agent_bundle_receipt_invalid")
+    runtime = _read(runtime_file, "joint_agent_runtime_result_invalid")
+    run = _read(run_file, "joint_agent_run_result_invalid")
+    if (
+        packet.get("schema_version") != PACKET_SCHEMA_VERSION
+        or packet.get("packet_digest")
+        != canonical_digest(packet, digest_field="packet_digest")
+    ):
+        raise JointAgentExecutionReceiptError(["joint_agent_packet_invalid"])
+    source = packet.get("source_asset") or {}
+    if (
+        bundle.get("status") != "ready"
+        or bundle.get("packet_digest") != packet.get("packet_digest")
+        or bundle.get("input_usd_sha256") != source.get("sha256")
+        or bundle.get("completion_retries") != 0
+        or bundle.get("automatic_paid_retry_allowed") is not False
+    ):
+        raise JointAgentExecutionReceiptError(["joint_agent_bundle_binding_invalid"])
+    provider_bundle = _under(
+        str(bundle.get("bundle_path") or ""),
+        evidence,
+        "joint_agent_provider_bundle_outside_evidence_root",
+    )
+    if (
+        not provider_bundle.is_file()
+        or provider_bundle.stat().st_size != bundle.get("bundle_size_bytes")
+        or _sha256(provider_bundle) != bundle.get("bundle_sha256")
+    ):
+        raise JointAgentExecutionReceiptError(["joint_agent_provider_bundle_changed"])
+    runtime_blockers = runtime.get("blockers")
+    if (
+        runtime.get("schema_version") != RUNTIME_SCHEMA_VERSION
+        or runtime.get("status") != "blocked"
+        or not isinstance(runtime_blockers, list)
+        or not runtime_blockers
+        or any(not str(blocker) for blocker in runtime_blockers)
+        or runtime.get("joint_agent_inference_executed") is not False
+        or runtime.get("owned_core_publication_executed") is not False
+        or runtime.get("retry_cap") != 0
+    ):
+        raise JointAgentExecutionReceiptError(["joint_agent_runtime_null_invalid"])
+    run_blockers = run.get("blockers")
+    if (
+        run.get("schema_version") != RUN_SCHEMA_VERSION
+        or run.get("status") != "blocked"
+        or not isinstance(run_blockers, list)
+        or not set(str(value) for value in runtime_blockers).issubset(
+            set(str(value) for value in run_blockers)
+        )
+        or run.get("bundle_sha256") != bundle.get("bundle_sha256")
+        or run.get("retry_cap") != 0
+        or run.get("continuing_spend_from_this_run") is not False
+        or run.get("all_staged_objects_absent") is not True
+        or Path(str(run.get("execution_result_path") or "")).resolve()
+        != runtime_file
+    ):
+        raise JointAgentExecutionReceiptError(["joint_agent_provider_null_invalid"])
+    teardown_file = _under(
+        str(run.get("teardown_manifest_path") or ""),
+        evidence,
+        "joint_agent_teardown_outside_evidence_root",
+    )
+    teardown = _read(teardown_file, "joint_agent_teardown_invalid")
+    if teardown.get("continuing_spend_from_this_run") is not False:
+        raise JointAgentExecutionReceiptError(["joint_agent_provider_zero_not_proven"])
+    receipt: dict[str, Any] = {
+        "schema_version": ABSTENTION_SCHEMA_VERSION,
+        "program_id": "arm-decision-proof-v1",
+        "status": "typed_execution_abstention",
+        "source": {
+            "packet_digest": packet["packet_digest"],
+            "source_receipt_digest": source.get("source_receipt_digest"),
+            "source_asset_sha256": source.get("sha256"),
+            "connected_component_count": source.get("connected_component_count"),
+        },
+        "released_code": bundle.get("released_code"),
+        "bundle": {
+            "bundle_sha256": bundle.get("bundle_sha256"),
+            "provider_bundle": _file_record(
+                provider_bundle, evidence, role="provider_bundle"
+            ),
+            "bundle_receipt": _file_record(
+                bundle_file, evidence, role="bundle_receipt"
+            ),
+            "freeze_digest": bundle.get("freeze_digest"),
+            "review_contract_digest": bundle.get("review_contract_digest"),
+        },
+        "execution": {
+            "runtime_result": _file_record(
+                runtime_file, evidence, role="runtime_result"
+            ),
+            "inference_executed": False,
+            "owned_core_publication_executed": False,
+        },
+        "provider_run": {
+            "run_result": _file_record(run_file, evidence, role="run_result"),
+            "estimated_cost_usd": run.get("estimated_cost_usd"),
+            "hard_cap_usd": run.get("hard_cap_usd"),
+            "hard_ttl_seconds": run.get("hard_ttl_seconds"),
+            "retry_cap": 0,
+            "continuing_spend_from_this_run": False,
+            "all_staged_objects_absent": True,
+            "teardown_manifest": _file_record(
+                teardown_file, evidence, role="teardown_manifest"
+            ),
+        },
+        "smallest_missing_capability": str(runtime_blockers[0]),
+        "runtime_blockers": [str(value) for value in runtime_blockers],
+        "provider_transport_blockers": sorted(
+            set(str(value) for value in run_blockers)
+            - set(str(value) for value in runtime_blockers)
+        ),
+        "automatic_retry_executed": False,
+        "claim_boundary": {
+            "joint_agent_model_output_exists": False,
+            "owned_core_topology_exists": False,
+            "simready_asset_exists": False,
+            "physical_equivalence_proven": False,
+        },
+        "raw_secret_values_recorded": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
     if receipt_output is not None:
         output = _under(
             receipt_output, repo, "joint_agent_execution_receipt_output_outside_repo"

@@ -10,6 +10,7 @@ from blueprint_pipeline.adp_joint_agent_vast import REQUIRED_RETAINED_ARTIFACT_R
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.joint_agent_execution_receipt import (
     JointAgentExecutionReceiptError,
+    materialize_joint_agent_execution_abstention,
     materialize_joint_agent_execution_receipt,
 )
 
@@ -224,6 +225,96 @@ def test_rejects_changed_provider_bundle(tmp_path: Path) -> None:
         JointAgentExecutionReceiptError, match="joint_agent_provider_bundle_changed"
     ):
         materialize_joint_agent_execution_receipt(
+            packet_path=paths["packet"],
+            bundle_receipt_path=paths["bundle"],
+            runtime_result_path=paths["runtime"],
+            run_result_path=paths["run"],
+            evidence_root=paths["evidence"],
+            repo_root=paths["repo"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("scene_id", "target_id"), [("840313", "160"), ("840796", "123")]
+)
+def test_seals_zero_retry_joint_agent_null_for_both_scene_fixtures(
+    tmp_path: Path, scene_id: str, target_id: str
+) -> None:
+    paths = _fixture(tmp_path, scene_id=scene_id, target_id=target_id)
+    runtime = json.loads(paths["runtime"].read_text(encoding="utf-8"))
+    runtime.update(
+        {
+            "status": "blocked",
+            "blockers": ["joint_agent_local_ovrtx_renderer_not_ready"],
+            "joint_agent_inference_executed": False,
+            "owned_core_publication_executed": False,
+        }
+    )
+    _write(paths["runtime"], runtime)
+    run = json.loads(paths["run"].read_text(encoding="utf-8"))
+    run.update(
+        {
+            "status": "blocked",
+            "blockers": [
+                "joint_agent_local_ovrtx_renderer_not_ready",
+                "provider_runtime_result_missing_from_output_zip",
+            ],
+            "estimated_cost_usd": 0.133936,
+        }
+    )
+    _write(paths["run"], run)
+
+    receipt = materialize_joint_agent_execution_abstention(
+        packet_path=paths["packet"],
+        bundle_receipt_path=paths["bundle"],
+        runtime_result_path=paths["runtime"],
+        run_result_path=paths["run"],
+        evidence_root=paths["evidence"],
+        repo_root=paths["repo"],
+        receipt_output=paths["output"],
+    )
+
+    assert receipt["status"] == "typed_execution_abstention"
+    assert receipt["smallest_missing_capability"] == (
+        "joint_agent_local_ovrtx_renderer_not_ready"
+    )
+    assert receipt["provider_run"]["estimated_cost_usd"] == 0.133936
+    assert receipt["provider_run"]["continuing_spend_from_this_run"] is False
+    assert receipt["automatic_retry_executed"] is False
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def test_joint_agent_null_rejects_inference_claim_or_nonzero_provider(
+    tmp_path: Path,
+) -> None:
+    paths = _fixture(tmp_path, scene_id="840796", target_id="123")
+    runtime = json.loads(paths["runtime"].read_text(encoding="utf-8"))
+    runtime.update(
+        {
+            "status": "blocked",
+            "blockers": ["joint_agent_local_ovrtx_renderer_not_ready"],
+            "joint_agent_inference_executed": True,
+            "owned_core_publication_executed": False,
+        }
+    )
+    _write(paths["runtime"], runtime)
+    run = json.loads(paths["run"].read_text(encoding="utf-8"))
+    run.update(
+        {
+            "status": "blocked",
+            "blockers": ["joint_agent_local_ovrtx_renderer_not_ready"],
+            "continuing_spend_from_this_run": True,
+        }
+    )
+    _write(paths["run"], run)
+
+    with pytest.raises(
+        JointAgentExecutionReceiptError,
+        match="joint_agent_runtime_null_invalid",
+    ):
+        materialize_joint_agent_execution_abstention(
             packet_path=paths["packet"],
             bundle_receipt_path=paths["bundle"],
             runtime_result_path=paths["runtime"],
