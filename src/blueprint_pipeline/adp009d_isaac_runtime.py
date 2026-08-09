@@ -37,6 +37,7 @@ try:  # flat provider-bundle layout, where this file runs as a script
         external_task_camera_offset_plan,
         pose_world_to_base,
         rigid_offset_in_body_frame,
+        solve_live_rigid_mount_camera_aim_command,
         solve_rigid_mount_camera_aim,
         select_wrist_observable_episode_start,
         semantic_target_observability,
@@ -63,6 +64,7 @@ except ModuleNotFoundError:  # imported as part of the repository package
         external_task_camera_offset_plan,
         pose_world_to_base,
         rigid_offset_in_body_frame,
+        solve_live_rigid_mount_camera_aim_command,
         solve_rigid_mount_camera_aim,
         select_wrist_observable_episode_start,
         semantic_target_observability,
@@ -1854,6 +1856,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 ],
             ]
             camera_aim_plan["resolved_waypoints"] = resolved_waypoints
+            camera_aim_live_solver_updates: list[dict[str, Any]] = []
             for waypoint in resolved_waypoints:
                 position_base, quaternion_base = pose_world_to_base(
                     position_world=waypoint["position_world_m"],
@@ -1868,7 +1871,53 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 )
                 controller.reset()
                 controller.set_command(command)
-                for _ in range(int(waypoint["steps"])):
+                resolved_target_world = list(waypoint["position_world_m"])
+                position_control_mode = "fixed_preregistered_waypoint"
+                for waypoint_step in range(int(waypoint["steps"])):
+                    if waypoint["waypoint_index"] == -1:
+                        live_body_pose = _to_torch(robot.data.body_pose_w)[0, body_index]
+                        live_aim_command = solve_live_rigid_mount_camera_aim_command(
+                            body_position_world=[float(value) for value in live_body_pose[:3]],
+                            body_quaternion_world_xyzw=[
+                                float(value) for value in live_body_pose[3:7]
+                            ],
+                            offset_position_body=wrist_mount_position_body,
+                            offset_quaternion_body_xyzw=wrist_mount_quaternion_body,
+                            target_position_world=camera_aim_target_world,
+                        )
+                        resolved_target_world = live_aim_command["body_position_world_m"]
+                        position_control_mode = live_aim_command["position_control_mode"]
+                        position_base, quaternion_base = pose_world_to_base(
+                            position_world=resolved_target_world,
+                            quaternion_world_xyzw=live_aim_command[
+                                "body_quaternion_world_xyzw"
+                            ],
+                            base_position_world=[float(v) for v in base_pose[:3]],
+                            base_quaternion_world_xyzw=[float(v) for v in base_pose[3:7]],
+                        )
+                        controller.set_command(
+                            torch.tensor(
+                                [position_base + quaternion_base],
+                                device=env.unwrapped.device,
+                                dtype=torch.float32,
+                            )
+                        )
+                        if waypoint_step < 4 or waypoint_step % 20 == 0:
+                            camera_aim_live_solver_updates.append(
+                                {
+                                    "step": waypoint_step,
+                                    "body_position_world_m": resolved_target_world,
+                                    "target_body_quaternion_world_xyzw": live_aim_command[
+                                        "body_quaternion_world_xyzw"
+                                    ],
+                                    "solver_iterations": live_aim_command["solver"][
+                                        "iterations"
+                                    ],
+                                    "solver_residual_angle_degrees": live_aim_command[
+                                        "solver"
+                                    ]["residual_angle_degrees"],
+                                }
+                            )
                     _, jacobian = _jacobians_world_and_root()
                     ee_pose_w = _to_torch(robot.data.body_pose_w)[:, body_index]
                     root_pose_w = _to_torch(robot.data.root_pose_w)
@@ -1970,7 +2019,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 # a wrist that never saw the object can be told apart from a
                 # wrist that never got there.
                 achieved_world = _to_torch(robot.data.body_pose_w)[0, body_index, :3]
-                target_world = waypoint["position_world_m"]
+                target_world = resolved_target_world
                 # Measure the tool's true clearance over the can rather than
                 # inferring it from published gripper geometry: the lowest
                 # gripper body is what actually collides.
@@ -2009,6 +2058,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                             None if lowest_gripper_z is None else lowest_gripper_z - can_top_z
                         ),
                         "target_position_world_m": [float(v) for v in target_world],
+                        "preregistered_position_world_m": [
+                            float(v) for v in waypoint["position_world_m"]
+                        ],
+                        "position_control_mode": position_control_mode,
                         "achieved_position_world_m": [float(v) for v in achieved_world],
                         "position_error_m": float(
                             sum(
@@ -2057,6 +2110,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     and episode_start_selection.get("status") == "ready"
                 ):
                     break
+            camera_aim_plan["live_solver_updates"] = camera_aim_live_solver_updates
         except Exception as exc:  # noqa: BLE001 - recorded, never fatal
             approach_ik_succeeded = False
             approach_error = f"{type(exc).__name__}: {exc}"

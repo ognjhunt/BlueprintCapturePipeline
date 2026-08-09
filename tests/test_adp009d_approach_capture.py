@@ -265,6 +265,39 @@ def test_rigid_mount_camera_aim_rejects_an_unbounded_solver() -> None:
         )
 
 
+def test_live_rigid_mount_aim_holds_the_shifted_live_position() -> None:
+    """The camera servo must not pull back toward v96's unreachable reset pose."""
+
+    from blueprint_pipeline.adp009d_approach_capture import (
+        apply_rigid_offset,
+        solve_live_rigid_mount_camera_aim_command,
+    )
+
+    live_position = [0.04, -0.02, 0.03]
+    command = solve_live_rigid_mount_camera_aim_command(
+        body_position_world=live_position,
+        body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        offset_position_body=[0.08, 0.01, -0.04],
+        offset_quaternion_body_xyzw=[0.0, 0.0, 0.0, 1.0],
+        target_position_world=[0.2, -0.4, -0.1],
+    )
+
+    assert command["position_control_mode"] == "hold_current_live_body_position"
+    assert command["body_position_world_m"] == live_position
+    camera_position, camera_quaternion = apply_rigid_offset(
+        body_position_world=command["body_position_world_m"],
+        body_quaternion_world_xyzw=command["body_quaternion_world_xyzw"],
+        offset_position_body=[0.08, 0.01, -0.04],
+        offset_quaternion_body_xyzw=[0.0, 0.0, 0.0, 1.0],
+    )
+    from blueprint_pipeline import adp009d_approach_capture as capture
+
+    forward = np.asarray(capture._quat_rotate(camera_quaternion, (0.0, 0.0, -1.0)))
+    target_direction = np.asarray([0.2, -0.4, -0.1]) - np.asarray(camera_position)
+    target_direction /= np.linalg.norm(target_direction)
+    assert np.dot(forward, target_direction) == pytest.approx(1.0, abs=1.0e-10)
+
+
 def test_external_task_camera_preserves_the_view_ray_at_fixed_distance() -> None:
     eye = external_task_camera_eye_position(
         current_position_world=[4.0, -2.0, 1.0],
@@ -1016,6 +1049,8 @@ def test_runtime_derives_wrist_pose_metadata_from_the_live_rigid_mount() -> None
     assert "approved_can_visual_center_world()" in source
     assert "solve_rigid_mount_camera_aim(" in source
     assert '"rigid_mount_aim_solution": camera_aim_solution' in source
+    assert "solve_live_rigid_mount_camera_aim_command(" in source
+    assert '"position_control_mode": position_control_mode' in source
     assert '"purpose": "camera_aim_in_place"' in source
     # The stale-pose gate remains fail closed if the configured refresh ever
     # regresses or the reported pose still does not move.

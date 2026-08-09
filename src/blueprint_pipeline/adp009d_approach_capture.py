@@ -916,6 +916,39 @@ def solve_rigid_mount_camera_aim(
     )
 
 
+def solve_live_rigid_mount_camera_aim_command(
+    *,
+    body_position_world: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
+    offset_position_body: Sequence[float],
+    offset_quaternion_body_xyzw: Sequence[float],
+    target_position_world: Sequence[float],
+) -> dict[str, Any]:
+    """Build an orientation-priority camera command from the live body pose.
+
+    Holding an old body position while asking for a large wrist-camera rotation
+    can define an unreachable six-DoF end-effector pose.  The observation gate
+    only needs a safe view, so hold the *current* live position and solve the
+    rigid-mount orientation again after every servo step. Object displacement
+    and collision guards remain authoritative during the motion.
+    """
+
+    solution = solve_rigid_mount_camera_aim(
+        body_position_world=body_position_world,
+        body_quaternion_world_xyzw=body_quaternion_world_xyzw,
+        offset_position_body=offset_position_body,
+        offset_quaternion_body_xyzw=offset_quaternion_body_xyzw,
+        target_position_world=target_position_world,
+    )
+    return {
+        "schema_version": "adp009d_live_rigid_mount_camera_aim_command.v1",
+        "position_control_mode": "hold_current_live_body_position",
+        "body_position_world_m": [float(value) for value in body_position_world],
+        "body_quaternion_world_xyzw": solution["body_quaternion_world_xyzw"],
+        "solver": solution,
+    }
+
+
 def _max_travel_m(positions: Sequence[Sequence[float]]) -> float:
     """Largest displacement of any sample from the first sample."""
 
@@ -1106,6 +1139,7 @@ __all__ = [
     "classify_wrist_pose_discrepancy",
     "rigid_offset_in_body_frame",
     "solve_rigid_mount_camera_aim",
+    "solve_live_rigid_mount_camera_aim_command",
     "pose_world_to_base",
     "world_to_base_rotation_row_major_xyzw",
     "select_wrist_observable_episode_start",
