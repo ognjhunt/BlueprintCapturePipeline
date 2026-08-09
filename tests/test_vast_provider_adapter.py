@@ -2045,6 +2045,7 @@ def test_vast_adapter_mocked_live_heartbeat_gpu_and_teardown(
         allow_instance_launch=True,
         poll_interval_seconds=0,
         startup_timeout_seconds=20,
+        machine_avoidlist_path=tmp_path / "vast_machine_avoidlist.json",
     )
 
     assert result["status"] == "completed"
@@ -3431,15 +3432,24 @@ def test_vast_adapter_records_machine_avoidlist_on_heartbeat_blocker(
         allow_instance_launch=True,
         poll_interval_seconds=0,
         startup_timeout_seconds=20,
+        machine_avoidlist_path=tmp_path / "vast_machine_avoidlist.json",
     )
 
     assert result["status"] == "failed"
     assert result["continuing_spend_from_this_run"] is False
+    assert result["provider_attempt_classification"]["classification"] == (
+        "pre_execution_provider_null"
+    )
+    assert result["provider_attempt_classification"]["scientific_attempt_consumed"] is False
+    assert result["provider_attempt_classification"]["automatic_requeue_authorized"] is False
     avoidlist = _read_json(tmp_path / "vast_machine_avoidlist.json")
     assert avoidlist["machine_ids"] == [909]
     assert avoidlist["entries"][0]["instance_id"] == 990
     assert avoidlist["entries"][0]["reason"] == (
         "vast_startup_control_plane_did_not_reach_onstart_heartbeat"
+    )
+    assert avoidlist["entries"][0]["retry_policy"] == (
+        "exclude_persistently_across_sibling_jobs_until_manual_review"
     )
     offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
     assert offer["selected_offer"]["machine_id"] == 909
@@ -3512,8 +3522,9 @@ def test_vast_adapter_heartbeat_no_progress_has_startup_specific_timeout(
     log_result = startup["container_log_result"]
     assert log_result["break_reason"] == "no_log_progress_timeout"
     assert log_result["no_progress_timeout_seconds"] == 2
-    avoidlist = _read_json(tmp_path / "empty-heartbeat" / "vast_machine_avoidlist.json")
+    avoidlist = _read_json(tmp_path / "vast_machine_avoidlist.json")
     assert avoidlist["machine_ids"] == [6060]
+    assert result["machine_avoidlist_path"] == str(tmp_path / "vast_machine_avoidlist.json")
 
 
 def test_vast_adapter_accepts_downstream_markers_when_heartbeat_url_fails(
@@ -3672,6 +3683,7 @@ def test_vast_adapter_records_machine_avoidlist_on_probe_interrupt(
         allow_instance_launch=True,
         poll_interval_seconds=0,
         startup_timeout_seconds=20,
+        machine_avoidlist_path=tmp_path / "vast_machine_avoidlist.json",
     )
 
     assert result["status"] == "blocked"

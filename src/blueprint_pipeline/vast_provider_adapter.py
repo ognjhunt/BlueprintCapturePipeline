@@ -56,6 +56,7 @@ from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
+from .provider_attempt_classification import classify_provider_attempt
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
 from .provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS as VAST_PROVIDER_BUNDLE_KINDS,
@@ -316,6 +317,12 @@ def _read_mapping_json(path: Path) -> dict[str, Any]:
         return _mapping(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
+
+
+def _default_machine_avoidlist_path(job_dir: Path) -> Path:
+    """Share proven-bad hosts across sibling jobs in one bounded run root."""
+
+    return job_dir.parent / "vast_machine_avoidlist.json"
 
 
 def _number(value: Any) -> float | None:
@@ -1516,7 +1523,7 @@ def _record_machine_avoidlist_entry(
             "driver_version": (selected_offer or {}).get("driver_version"),
             "reason": reason,
             "blockers": list(blockers),
-            "retry_policy": "exclude_for_current_job_until_manual_review",
+            "retry_policy": "exclude_persistently_across_sibling_jobs_until_manual_review",
         }
         entries.append(entry)
     machine_ids = sorted(_avoidlist_machine_ids(path) | _machine_id_set([machine_id]))
@@ -5230,7 +5237,7 @@ def run_vast_provider_adapter(
     resolved_machine_avoidlist_path = (
         Path(machine_avoidlist_path).expanduser().resolve()
         if machine_avoidlist_path
-        else resolved_job_dir / "vast_machine_avoidlist.json"
+        else _default_machine_avoidlist_path(resolved_job_dir)
     )
     resolved_session_budget_ledger_path = (
         Path(session_budget_ledger_path).expanduser().resolve()
@@ -7628,6 +7635,14 @@ def run_vast_provider_adapter(
                 }
             )
         current_blockers = _string_list(base_result.get("blockers"))
+        provider_attempt = classify_provider_attempt(
+            provider_command=_mapping(
+                _read_mapping_json(
+                    resolved_job_dir / "vast_provider_command_result.json"
+                )
+            ),
+            blockers=current_blockers,
+        )
         avoidlist_reason = _machine_avoidlist_reason(current_blockers)
         if selected_offer and avoidlist_reason:
             avoidlist = _record_machine_avoidlist_entry(
@@ -7644,6 +7659,7 @@ def run_vast_provider_adapter(
                 "vast_instance_ids": instance_ids,
                 "machine_avoidlist_path": str(resolved_machine_avoidlist_path),
                 "excluded_machine_ids": sorted(excluded_machine_ids),
+                "provider_attempt_classification": provider_attempt,
                 "session_budget_summary_path": str(resolved_session_budget_ledger_path),
                 "session_budget_summary": session_budget_summary,
                 "estimated_cost_usd": estimated_cost_usd,
