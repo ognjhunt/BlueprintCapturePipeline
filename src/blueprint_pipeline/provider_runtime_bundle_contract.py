@@ -25,6 +25,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_aura_smoke",
     "adp_aura_interiorgs",
     "adp_inpaint360_interiorgs",
+    "adp_gaussian_excision",
 )
 
 
@@ -296,6 +297,27 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp_inpaint360_runtime_contract"
+    elif provider_bundle_kind == "adp_gaussian_excision":
+        entrypoint_valid = (
+            "gaussian_excision_runner_failed_without_runtime_result"
+            in entrypoint_text
+            and "blocked_gaussian_excision_process_exited_without_result"
+            in entrypoint_text
+            and "torch==2.5.1" in entrypoint_text
+            and "--no-build-isolation" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp009b_gaussian_excision_result.json",
+                "per_view_class_contribution",
+                "released_code_executed",
+                "heldout_cameras_accessed_for_classification",
+                "provider_zero_required_after_return",
+                "depth_anything_3_used",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp_gaussian_excision_contract"
     elif provider_bundle_kind == "unitree_unifolm":
         entrypoint_valid = (
             "unitree_unifolm_provider_runner_failed_without_runtime_result" in entrypoint_text

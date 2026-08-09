@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
 from pathlib import Path
+import zipfile
 
 import cv2
 import numpy as np
 
 from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
+from blueprint_pipeline import adp_gaussian_excision_vast as excision_vast
 from blueprint_pipeline.public_scene_gaussian_excision_audit import (
     CONTRIBUTION_CLASS_ORDER,
     CONTRIBUTION_EVIDENCE_SCHEMA,
@@ -158,7 +161,45 @@ def _record(path: Path, root: Path) -> dict[str, object]:
     }
 
 
-def test_freeze_builds_independent_core_uncertain_and_protected_masks(tmp_path: Path) -> None:
+def _provider_runner_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/adp_gaussian_excision_provider_runner.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "adp_gaussian_excision_provider_runner_test", path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_provider_runner_camera_and_zone_conversion_are_exact(tmp_path: Path) -> None:
+    runner = _provider_runner_module()
+    camera = _camera("front", 0.0, 0.0)
+    parameters = runner.camera_parameters(camera)
+    expected = np.linalg.inv(np.asarray(camera["T_world_camera_opencv"]))
+    assert np.allclose(parameters["R"], expected[:3, :3].T)
+    assert np.allclose(parameters["T"], expected[:3, 3])
+    mask_root = tmp_path / "masks"
+    mask_root.mkdir()
+    zones = {
+        "protected": np.asarray([[255, 0], [0, 0]], dtype=np.uint8),
+        "target_core": np.asarray([[0, 255], [0, 0]], dtype=np.uint8),
+        "uncertain": np.asarray([[0, 0], [255, 255]], dtype=np.uint8),
+    }
+    for name, values in zones.items():
+        assert cv2.imwrite(str(mask_root / f"front.{name}.png"), values)
+    assert runner.load_class_labels(mask_root, "front").tolist() == [
+        [0.0, 1.0],
+        [2.0, 2.0],
+    ]
+
+
+def test_freeze_builds_independent_core_uncertain_and_protected_masks(
+    monkeypatch, tmp_path: Path
+) -> None:
     source = _splat(tmp_path / "scene.ply")
     collision = tmp_path / "collision.usda"
     collision.write_text(
@@ -291,3 +332,61 @@ def Xform "Root"
         row["retained_rows_byte_exact"] is True
         for row in receipt["preservation"].values()
     )
+
+    authority = {
+        "schema_version": excision_vast.AUTHORITY_SCHEMA,
+        "purpose": "released_code_gaussian_ownership_audit",
+        "publisher_scene_id": "fixture",
+        "target_instance_id": "target",
+        "freeze_digest": freeze["freeze_digest"],
+        "private_scene_derived_standard_splat_upload_authorized": True,
+        "paid_compute_authorized": True,
+        "provider_zero_required_before_and_after": True,
+        "teardown_required": True,
+        "raw_interiorgs_downloaded_bytes_upload_authorized": False,
+        "public_disclosure_authorized": False,
+        "model_training_authorized": False,
+        "automatic_paid_retry_authorized": False,
+        "retention_policy": "bounded_to_goal_then_provider_zero",
+        "maximum_paid_attempts": 1,
+        "maximum_automatic_retries": 0,
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_text(canonical_json(authority) + "\n", encoding="utf-8")
+    monkeypatch.setattr(excision_vast, "_git", lambda *args: "" if args[-2:] == ("status", "--short") else "fixture")
+    monkeypatch.setattr(
+        excision_vast,
+        "_source_identity",
+        lambda source: {
+            "repository": excision_vast.SOURCE_REPOSITORY,
+            "commit": excision_vast.SOURCE_COMMIT,
+            "tree": excision_vast.SOURCE_TREE,
+            "submodules": dict(excision_vast.EXPECTED_SUBMODULES),
+            "source_modified": False,
+        },
+    )
+    monkeypatch.setattr(
+        excision_vast,
+        "_write_source_archive",
+        lambda source, destination: destination.write_bytes(b"fixture-source"),
+    )
+    bundle = excision_vast.build_gaussian_excision_vast_bundle(
+        repo_root=Path(__file__).resolve().parents[1],
+        flashsplat_root=tmp_path,
+        freeze_path=tmp_path / "freeze" / f"{FREEZE_SCHEMA}.json",
+        source_standard_splat_path=source,
+        camera_contract_path=camera_path,
+        execution_authority_path=authority_path,
+        job_dir=tmp_path / "bundle",
+        generated_at="2026-08-09T00:00:00Z",
+    )
+    assert bundle["status"] == "ready"
+    assert bundle["raw_interiorgs_downloaded_bytes_included"] is False
+    assert bundle["private_scene_derived_standard_splat_included"] is True
+    with zipfile.ZipFile(bundle["bundle_path"]) as archive:
+        assert "input/scene_standard.ply" in archive.namelist()
+        assert "freeze/masks/front.target_core.png" in archive.namelist()
+        assert "run_adp_gaussian_excision_provider_runtime.sh" in archive.namelist()
