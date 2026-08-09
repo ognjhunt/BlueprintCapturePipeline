@@ -19,7 +19,16 @@ from blueprint_pipeline.articulated_native_diagnostic_bundle import (
     build_articulated_native_diagnostic_request,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
+from blueprint_pipeline.vast_provider_adapter import (
+    _blueprint_bundle_preflight,
+    _container_missing_max_seconds,
+    _is_isaac_provider_bundle,
+    _probe_env,
+    _probe_shell_script,
+    _provider_expected_video_count,
+    _resolve_launch_mode,
+    _resolve_probe_image,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -226,6 +235,55 @@ def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
     assert preflight["blockers"] == []
     assert preflight["status"] == "passed"
     assert preflight["zip_required_entries_present"] is True
+
+
+def test_articulated_bundle_uses_complete_native_isaac_transport_closure(
+    tmp_path: Path,
+) -> None:
+    kind = "adp009d_articulated_native"
+
+    assert _is_isaac_provider_bundle(kind) is True
+    assert _provider_expected_video_count(kind) == 0
+    assert _container_missing_max_seconds(kind) == 720
+    assert (
+        _resolve_launch_mode(
+            requested="auto",
+            enable_isaac_smoke=False,
+            enable_blueprint_bundle=True,
+            provider_bundle_kind=kind,
+        )
+        == "ssh_direct"
+    )
+    assert (
+        _resolve_probe_image(
+            public_image="public",
+            isaac_image="isaac",
+            enable_isaac_smoke=False,
+            enable_blueprint_bundle=True,
+            provider_bundle_kind=kind,
+        )
+        == "isaac"
+    )
+    env = _probe_env(
+        job_dir=tmp_path,
+        enable_isaac_smoke=False,
+        provider_bundle_kind=kind,
+        forward_hf_token=False,
+    )
+    assert env["ACCEPT_EULA"] == "Y"
+    assert env["PRIVACY_CONSENT"] == "Y"
+
+    script = _probe_shell_script(
+        "https://example.com",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind=kind,
+    )
+    assert "BLUEPRINT_VAST_CUDA_RUNTIME_DEFERRED_TO_ISAAC_SIMULATION_APP" in script
+    assert "cuda_runtime_rc=0" in script
+    assert "run_adp_arena_provider_runtime.sh" in script
+    assert "adp_arena_provider_runtime_output.zip" in script
+    assert "run_wam_provider_runtime.sh" not in script
 
 
 def test_bundle_rejects_changed_asset(tmp_path: Path) -> None:
