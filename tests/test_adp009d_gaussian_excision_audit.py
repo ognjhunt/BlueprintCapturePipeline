@@ -14,6 +14,7 @@ from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline import adp_gaussian_excision_vast as excision_vast
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import vast_provider_adapter as vast_adapter
 from blueprint_pipeline.public_scene_gaussian_excision_audit import (
     CONTRIBUTION_CLASS_ORDER,
     CONTRIBUTION_EVIDENCE_SCHEMA,
@@ -393,6 +394,94 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
     assert events == ["watchdog", "adapter"]
     assert result["status"] == "completed"
     assert result["continuing_spend_from_this_run"] is False
+
+
+def test_vast_adapter_preflights_and_routes_gaussian_excision_root_bundle(
+    tmp_path: Path,
+) -> None:
+    camera_ids = ("calibration_left", "calibration_right", "heldout_front")
+    bundle = tmp_path / "adp_gaussian_excision_provider_runtime_bundle.zip"
+    source_zip = tmp_path / "flashsplat_source.zip"
+    with zipfile.ZipFile(source_zip, "w") as archive:
+        archive.writestr("README.md", "fixture released source")
+    repo = Path(__file__).resolve().parents[1]
+    members: dict[str, bytes | str] = {
+        "run_adp_gaussian_excision_provider_runtime.sh": (
+            repo / "scripts/run_adp_gaussian_excision_provider_runtime.sh"
+        ).read_text(encoding="utf-8"),
+        "adp_gaussian_excision_provider_runner.py": (
+            repo / "scripts/adp_gaussian_excision_provider_runner.py"
+        ).read_text(encoding="utf-8"),
+        "adp_gaussian_excision_provider_manifest.json": "{}",
+        "execution_authority.json": "{}",
+        "flashsplat_source.zip": source_zip.read_bytes(),
+        "input/scene_standard.ply": (
+            "ply\nformat binary_little_endian 1.0\nend_header\n"
+        ),
+        "input/cameras.v1.json": "{}",
+        "freeze/adp009b_gaussian_excision_audit_freeze.v1.json": json.dumps(
+            {
+                "camera_split": {
+                    "calibration_camera_ids": list(camera_ids[:2]),
+                    "heldout_camera_ids": list(camera_ids[2:]),
+                }
+            }
+        ),
+    }
+    members.update(
+        {
+            f"freeze/masks/{camera_id}.{zone}.png": b"fixture"
+            for camera_id in camera_ids
+            for zone in ("target_core", "protected", "uncertain")
+        }
+    )
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for name, payload in sorted(members.items()):
+            archive.writestr(name, payload)
+
+    preflight = vast_adapter._blueprint_bundle_preflight(
+        job_dir=tmp_path,
+        generated_at="2026-08-09T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_gaussian_excision",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.com/private-bundle",
+        provider_output_put_url="https://example.com/private-output",
+    )
+    assert preflight["status"] == "passed"
+    assert preflight["blockers"] == []
+    assert preflight["missing_zip_entries"] == []
+
+    probe = vast_adapter._probe_shell_script(
+        "https://example.com/heartbeat",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="adp_gaussian_excision",
+    )
+    assert "adp_gaussian_excision_provider_bundle" in probe
+    assert "run_adp_gaussian_excision_provider_runtime.sh" in probe
+    assert "BLUEPRINT_ADP_GAUSSIAN_EXCISION_OUTPUT_DIR" in probe
+    assert "run_wam_provider_runtime.sh" not in probe
+
+    incomplete = tmp_path / "incomplete.zip"
+    with zipfile.ZipFile(incomplete, "w") as archive:
+        for name, payload in sorted(members.items()):
+            if name != "freeze/masks/heldout_front.protected.png":
+                archive.writestr(name, payload)
+    failed = vast_adapter._blueprint_bundle_preflight(
+        job_dir=tmp_path / "incomplete-job",
+        generated_at="2026-08-09T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_gaussian_excision",
+        bundle_path=incomplete,
+        provider_bundle_url="https://example.com/private-bundle",
+        provider_output_put_url="https://example.com/private-output",
+    )
+    assert "provider_runtime_bundle_required_entries_missing" in failed["blockers"]
+    assert failed["missing_zip_entries"] == [
+        "freeze/masks/heldout_front.protected.png"
+    ]
 
 
 def test_freeze_builds_independent_core_uncertain_and_protected_masks(

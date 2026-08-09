@@ -2085,6 +2085,16 @@ def _blueprint_bundle_preflight(
         "provider_runtime/interiorgs_adapter.zip",
         "provider_runtime/big-lama.zip",
     }
+    adp_gaussian_excision_required_entries = {
+        "run_adp_gaussian_excision_provider_runtime.sh",
+        "adp_gaussian_excision_provider_runner.py",
+        "adp_gaussian_excision_provider_manifest.json",
+        "execution_authority.json",
+        "flashsplat_source.zip",
+        "input/scene_standard.ply",
+        "input/cameras.v1.json",
+        "freeze/adp009b_gaussian_excision_audit_freeze.v1.json",
+    }
     if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
         required_entries = isaac_required_entries
         entrypoint_member = "provider_runtime/run_isaac_realistic_runtime.sh"
@@ -2142,6 +2152,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_inpaint360_interiorgs_provider_runtime.sh"
         runner_member = "provider_runtime/adp_inpaint360_interiorgs_provider_runner.py"
         readiness_name = "adp_inpaint360_interiorgs_provider_manifest.json"
+    elif provider_bundle_kind == "adp_gaussian_excision":
+        required_entries = adp_gaussian_excision_required_entries
+        entrypoint_member = "run_adp_gaussian_excision_provider_runtime.sh"
+        runner_member = "adp_gaussian_excision_provider_runner.py"
+        readiness_name = "adp_gaussian_excision_bundle_receipt.json"
     elif provider_bundle_kind == "unitree_unifolm":
         required_entries = unitree_unifolm_required_entries
         entrypoint_member = "provider_runtime/run_unitree_unifolm_provider_runtime.sh"
@@ -2191,6 +2206,7 @@ def _blueprint_bundle_preflight(
             "adp_aura_smoke",
             "adp_aura_interiorgs",
             "adp_inpaint360_interiorgs",
+            "adp_gaussian_excision",
         }
         and not readiness_path.is_file()
     ):
@@ -2322,6 +2338,55 @@ def _blueprint_bundle_preflight(
                         ):
                             blockers.append(
                                 "adp009d_aura_native_camera_manifest_invalid"
+                            )
+                    if provider_bundle_kind == "adp_gaussian_excision":
+                        freeze_member = (
+                            "freeze/"
+                            "adp009b_gaussian_excision_audit_freeze.v1.json"
+                        )
+                        try:
+                            freeze_payload = json.loads(
+                                archive.read(freeze_member).decode("utf-8")
+                            )
+                            camera_split = _mapping(freeze_payload.get("camera_split"))
+                            camera_ids = [
+                                *_string_list(
+                                    camera_split.get("calibration_camera_ids")
+                                ),
+                                *_string_list(camera_split.get("heldout_camera_ids")),
+                            ]
+                            valid_camera_ids = (
+                                len(camera_ids) >= 3
+                                and len(camera_ids) == len(set(camera_ids))
+                                and all(
+                                    re.fullmatch(r"[a-z][a-z0-9_]{0,63}", camera_id)
+                                    for camera_id in camera_ids
+                                )
+                            )
+                            if not valid_camera_ids:
+                                blockers.append(
+                                    "adp_gaussian_excision_camera_split_invalid"
+                                )
+                            else:
+                                required_entries.update(
+                                    {
+                                        f"freeze/masks/{camera_id}.{zone}.png"
+                                        for camera_id in camera_ids
+                                        for zone in (
+                                            "target_core",
+                                            "protected",
+                                            "uncertain",
+                                        )
+                                    }
+                                )
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            json.JSONDecodeError,
+                        ):
+                            blockers.append(
+                                "adp_gaussian_excision_camera_split_invalid"
                             )
                     if (
                         provider_bundle_kind in {"isaac", "adp_simready_isaac"}
@@ -3801,6 +3866,63 @@ def _probe_shell_script(
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
                 'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_inpaint360_provider_runtime_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
+            )
+        elif provider_bundle_kind == "adp_gaussian_excision":
+            script += (
+                common_start + "RUNTIME_PY=''; "
+                "if command -v apt-get >/dev/null 2>&1; then "
+                "apt-get update >/tmp/blueprint_adp_gaussian_excision_apt_update.log 2>&1 && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip curl unzip git build-essential >/tmp/blueprint_adp_gaussian_excision_apt_install.log 2>&1; "
+                "fi; "
+                "if [ -x /usr/bin/python3 ]; then RUNTIME_PY=/usr/bin/python3; "
+                "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); fi; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
+                "else "
+                'rm -rf "$WORK_DIR/adp_gaussian_excision_provider_bundle" "$WORK_DIR/adp_gaussian_excision_provider_runtime_bundle.zip" "$WORK_DIR/adp_gaussian_excision_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp_gaussian_excision_provider_runtime_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp_gaussian_excision_provider_runtime_bundle.zip" "$WORK_DIR/adp_gaussian_excision_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/adp_gaussian_excision_provider_bundle/run_adp_gaussian_excision_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_ADP_GAUSSIAN_EXCISION_OUTPUT_DIR="$WORK_DIR/adp_gaussian_excision_provider_bundle/runtime_output"; '
+                'mkdir -p "$BLUEPRINT_ADP_GAUSSIAN_EXCISION_OUTPUT_DIR"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$WORK_DIR/adp_gaussian_excision_provider_bundle/run_adp_gaussian_excision_provider_runtime.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_ADP_GAUSSIAN_EXCISION_OUTPUT_DIR', '/workspace/adp_gaussian_excision_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'adp_gaussian_excision_provider_runtime_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        skipped = []\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file():\n"
+                "                relative = path.relative_to(output_dir).as_posix()\n"
+                "                size = path.stat().st_size\n"
+                "                if size <= 500_000_000:\n"
+                "                    archive.write(path, relative)\n"
+                "                else:\n"
+                "                    skipped.append({'path': relative, 'size_bytes': size, 'reason': 'file_exceeds_provider_output_limit'})\n"
+                "        if skipped:\n"
+                "            archive.writestr('provider_output_zip_exclusions.json', json.dumps({'schema_version': 'adp_gaussian_excision_provider_output_zip_exclusions.v1', 'skipped': skipped}, indent=2, sort_keys=True))\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_gaussian_excision_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
