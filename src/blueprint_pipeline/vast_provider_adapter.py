@@ -2020,6 +2020,14 @@ def _blueprint_bundle_preflight(
         "provider_runtime/assets/sage_collision.usd",
         "provider_runtime/assets/sage_collision_overlay.usda",
     }
+    adp009d_articulated_native_required_entries = {
+        "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "provider_runtime/adp_arena_provider_manifest.json",
+        "provider_runtime/articulated_native_diagnostic_runtime.py",
+        "provider_runtime/articulated_native_diagnostic_request.v1.json",
+        "provider_runtime/adp009d_franka_eval_harness_manifest.v1.json",
+        "provider_runtime/assets/articulated_task_asset.usda",
+    }
     adp009d_ovrtx_required_entries = {
         "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh",
         "provider_runtime/adp009d_ovrtx_provider_runner.py",
@@ -2116,6 +2124,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "adp009d_articulated_native":
+        required_entries = adp009d_articulated_native_required_entries
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/articulated_native_diagnostic_runtime.py"
+        readiness_name = "adp_arena_provider_manifest.json"
     elif provider_bundle_kind == "adp009d_ovrtx":
         required_entries = adp009d_ovrtx_required_entries
         entrypoint_member = "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh"
@@ -2200,6 +2213,7 @@ def _blueprint_bundle_preflight(
             "adp_simpler",
             "adp_arena",
             "adp009d_isaac",
+            "adp009d_articulated_native",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",

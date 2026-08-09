@@ -42,7 +42,12 @@ def run_adp009d_native_microcheck_vast(
         hard_ttl_seconds=hard_ttl_seconds,
         expected_output_filename="adp009d_native_microcheck.json",
         container_image=DEFAULT_IMAGE,
-        provider_bundle_kind="adp009d_isaac",
+        provider_bundle_kind=(
+            "adp009d_articulated_native"
+            if prepared_bundle.get("diagnostic_kind")
+            == "blank_stage_articulated_asset"
+            else "adp009d_isaac"
+        ),
         result_schema_version=RESULT_SCHEMA_VERSION,
         object_store_key_prefix=DEFAULT_KEY_PREFIX,
         instance_label_prefix="blueprint-adp009d-",

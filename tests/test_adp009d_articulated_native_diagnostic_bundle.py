@@ -10,6 +10,7 @@ import pytest
 from pxr import Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import adp009d_franka_vast as franka_vast
 from blueprint_pipeline.articulated_native_diagnostic_bundle import (
     ArticulatedNativeDiagnosticError,
     REQUEST_SCHEMA,
@@ -17,6 +18,7 @@ from blueprint_pipeline.articulated_native_diagnostic_bundle import (
     build_articulated_native_diagnostic_request,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
 
 
 def _sha256(path: Path) -> str:
@@ -158,6 +160,20 @@ def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
     assert "policy_provisioning" not in entrypoint
     assert "IsaacLab-Arena" not in entrypoint
 
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="fixed",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="adp009d_articulated_native",
+        bundle_path=Path(rows[0]["bundle_path"]),
+        provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
+        provider_output_put_url="https://example.com/output.zip?sig=redacted",
+    )
+    assert preflight["blockers"] == []
+    assert preflight["status"] == "passed"
+    assert preflight["zip_required_entries_present"] is True
+
 
 def test_bundle_rejects_changed_asset(tmp_path: Path) -> None:
     asset = _asset(tmp_path / "asset.usda")
@@ -281,3 +297,29 @@ def test_allocator_forbids_policy_in_blank_stage_articulated_mode(
         "adp009d_articulated_native_policy_or_controls_forbidden"
         in result["blockers"]
     )
+
+
+def test_transport_selects_articulated_bundle_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(franka_vast, "run_arena_native_control_vast", fake_run)
+    result = franka_vast.run_adp009d_native_microcheck_vast(
+        job_dir="job",
+        prepared_bundle={
+            "status": "ready",
+            "policy_candidate_id": None,
+            "diagnostic_kind": "blank_stage_articulated_asset",
+        },
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert observed["provider_bundle_kind"] == "adp009d_articulated_native"
+    assert observed["candidate_policy_query_expected"] is False

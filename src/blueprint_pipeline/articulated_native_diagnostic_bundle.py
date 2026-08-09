@@ -213,6 +213,25 @@ set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 mkdir -p "$OUT_DIR"
+write_articulated_native_missing_result() {
+  reason="$1"
+  if [ ! -s "$OUT_DIR/adp009d_native_microcheck.json" ]; then
+    /isaac-sim/python.sh - "$OUT_DIR/adp009d_native_microcheck.json" "$reason" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps({
+    "schema_version": "adp009d_articulated_native_diagnostic.v1",
+    "status": "blocked",
+    "candidate_policy_queried": False,
+    "candidate_outcomes_accessed": False,
+    "provider_zero_required_after_return": True,
+    "blockers": [sys.argv[2]],
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  fi
+}
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:articulated_native_diagnostic:started"
 /isaac-sim/python.sh "$RUNTIME_DIR/articulated_native_diagnostic_runtime.py" \
   --asset "$RUNTIME_DIR/assets/articulated_task_asset.usda" \
@@ -220,6 +239,9 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:articulated_native_diagnostic:started"
   --output "$OUT_DIR/adp009d_native_microcheck.json" \
   >"$OUT_DIR/articulated_native_diagnostic.log" 2>&1
 rc=$?
+if [ "$rc" -ne 0 ]; then
+  write_articulated_native_missing_result "articulated_native_runner_failed_without_runtime_result"
+fi
 cat "$OUT_DIR/articulated_native_diagnostic.log" || true
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:articulated_native_diagnostic:completed:rc=$rc"
 exit "$rc"
