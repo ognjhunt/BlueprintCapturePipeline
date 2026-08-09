@@ -114,9 +114,10 @@ provider zero with staged objects absent.
 | v10 | (torn down) | `$0.082770` | Scene Optimizer subprocess died in 0.04 s and the released task quarantines every exception into the bare string "USD optimization failed". Fix: probe the optimizer directly and retain its real stdout/stderr. |
 | v11 | (torn down) | `$0.118768` | The probe worked and named the cause: `libtbb.so.12: file too short`. `python -m zipfile` materializes the package's 35 shared-library symlinks as text stubs. Fix: extract with `unzip`, verify no sub-1 KB `.so` stubs, and treat a probe result carrying an error or zero executed operations as a failure. |
 | v12 | (torn down) | `$0.058695` | The retained provider log proves this was not an unexplained transient: the launch requested 96 GB but native `df` readback exposed a 10 GB overlay with 9.5 GB free. Installing the 2.4 GB compressed OVRTX wheel exhausted it (`No space left on device`). Fix: paid offer selection now rejects advertised capacity below an explicit request, and the immutable Joint Agent bundle performs a native 32 GiB free-space gate before any large dependency install. |
+| v13 | 47313565 | `$0.020477` | The disk fix worked: the selected offer reported 580.8 GB available, the instance delivered the requested 96 GB, native readback passed, and the optimizer package retained all 35 symlinks. The released Python editable install then failed before inference because uv bypassed the host's working package mirror and rejected `files.pythonhosted.org` with `UnknownIssuer`. Fix: freeze every local project's PEP 517 build requirements and pyproject digest, install that complete plan first, disable build isolation for the already-provisioned local projects, enable uv native TLS, and bridge the provider's configured `PIP_INDEX_URL` into `UV_DEFAULT_INDEX`. Instance destroyed, staged objects absent, provider-zero API count 0, retry cap 0. |
 
-Retained Joint Agent spend today is `$0.447647`. Combined retained program
-spend is about `$4.89` against the `$12` authority. Provider inventory was
+Retained Joint Agent spend today is `$0.468124`. Combined retained program
+spend is about `$4.91` against the `$12` authority. Provider inventory was
 `[]` before and after every launch, apart from the explicitly bound concurrent
 sibling instance during v8.
 

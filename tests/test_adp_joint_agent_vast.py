@@ -134,6 +134,26 @@ def _checkout(root: Path) -> Path:
             # the real locked checkout; this fixture injects its own identity by
             # constructing the exact release files below in the test monkeypatch.
             path.write_text(digest, encoding="utf-8")
+    build_projects = {
+        "pyproject.toml": ["hatchling<1.27.0", "uv-dynamic-versioning"],
+        "apps/joint_agent/pyproject.toml": [
+            "hatchling<1.27.0",
+            "uv-dynamic-versioning",
+        ],
+        "apps/ovrtx_rendering_api/pyproject.toml": [
+            "setuptools>=68.0",
+            "setuptools-scm>=8.0",
+        ],
+    }
+    for relative, requirements in build_projects.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "[build-system]\n"
+            f"requires = {json.dumps(requirements)}\n"
+            'build-backend = "hatchling.build"\n',
+            encoding="utf-8",
+        )
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(
         ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"],
@@ -309,6 +329,12 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         "measurement_path": "provider_runtime",
         "failure_blocker": "joint_agent_runtime_disk_headroom_insufficient",
     }
+    assert receipt["python_build_dependency_plan"]["requirements"] == [
+        "hatchling<1.27.0",
+        "setuptools-scm>=8.0",
+        "setuptools>=68.0",
+        "uv-dynamic-versioning",
+    ]
     assert receipt["input_usd_sha256"] == source_digest
     assert receipt["renderer"]["scene_bytes_leave_vast_instance"] is False
     assert receipt["renderer"] == {
@@ -862,6 +888,13 @@ def test_runtime_script_probes_ovrtx_daemon_before_service() -> None:
     assert "joint_agent_runtime_disk_headroom_insufficient" in script
     assert script.index("runtime_disk_headroom.json") < script.index(
         "pip install --disable-pip-version-check"
+    )
+    assert "UV_NATIVE_TLS=true" in script
+    assert "UV_DEFAULT_INDEX" in script
+    assert "python_build_dependency_plan.json" in script
+    assert "--no-build-isolation" in script
+    assert script.index("python_build_dependency_plan.json") < script.index(
+        "-e \"${SOURCE_DIR}\""
     )
 
 

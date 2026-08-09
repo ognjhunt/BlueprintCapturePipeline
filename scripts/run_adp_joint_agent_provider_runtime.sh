@@ -92,7 +92,28 @@ UV_BIN="$(command -v uv)"
 "${UV_BIN}" venv "${SOURCE_DIR}/.venv" --python 3.12 || {
   write_missing_result "joint_agent_python_venv_failed"; exit 2;
 }
+# uv uses its own TLS roots and default index unless explicitly bridged.  Paid
+# hosts often provide a trusted package mirror through PIP_INDEX_URL; v13 proved
+# that allowing uv to silently fall back to files.pythonhosted.org can fail with
+# UnknownIssuer even though pip itself is healthy.
+export UV_NATIVE_TLS=true
+if [ -n "${PIP_INDEX_URL:-}" ]; then
+  export UV_DEFAULT_INDEX="${PIP_INDEX_URL}"
+fi
+BUILD_REQUIREMENTS_PATH="${OUTPUT_DIR}/python_build_requirements.txt"
+python3 "${SCRIPT_DIR}/provider_python_build_plan.py" \
+  "${SCRIPT_DIR}/python_build_dependency_plan.json" \
+  "${SOURCE_DIR}" \
+  --requirements-out "${BUILD_REQUIREMENTS_PATH}" || {
+  write_missing_result "joint_agent_python_build_plan_invalid"; exit 2;
+}
+mapfile -t BUILD_REQUIREMENTS < "${BUILD_REQUIREMENTS_PATH}"
 "${UV_BIN}" pip install --python "${SOURCE_DIR}/.venv/bin/python" \
+  "${BUILD_REQUIREMENTS[@]}" || {
+  write_missing_result "joint_agent_build_dependency_install_failed"; exit 2;
+}
+"${UV_BIN}" pip install --python "${SOURCE_DIR}/.venv/bin/python" \
+  --no-build-isolation \
   -e "${SOURCE_DIR}" \
   -e "${SOURCE_DIR}/apps/joint_agent" \
   -e "${SOURCE_DIR}/apps/ovrtx_rendering_api" || {

@@ -26,6 +26,7 @@ from .nvidia_nim_model_preflight import (
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
+from .provider_python_build_plan import materialize_python_build_plan
 from .provider_bundle_rehearsal import (
     provider_bundle_rehearsal_blockers,
     rehearse_provider_bundle_entrypoint,
@@ -349,6 +350,15 @@ def build_joint_agent_vast_bundle(
         cwd=source,
         check=True,
     )
+    build_dependency_plan = materialize_python_build_plan(
+        source_root=source,
+        project_relative_paths=(
+            "pyproject.toml",
+            "apps/joint_agent/pyproject.toml",
+            "apps/ovrtx_rendering_api/pyproject.toml",
+        ),
+        destination=runtime / "python_build_dependency_plan.json",
+    )
     shutil.copy2(optimizer_zip, runtime / "scene_optimizer_core.zip")
     scripts = repo / "scripts"
     _write_executable(
@@ -366,6 +376,10 @@ def build_joint_agent_vast_bundle(
     shutil.copy2(
         repo / "src/blueprint_pipeline/provider_runtime_capacity.py",
         runtime / "provider_runtime_capacity.py",
+    )
+    shutil.copy2(
+        repo / "src/blueprint_pipeline/provider_python_build_plan.py",
+        runtime / "provider_python_build_plan.py",
     )
     for name in (
         "__init__.py",
@@ -433,6 +447,7 @@ def build_joint_agent_vast_bundle(
             "measurement_path": "provider_runtime",
             "failure_blocker": "joint_agent_runtime_disk_headroom_insufficient",
         },
+        "python_build_dependency_plan": build_dependency_plan,
         "model": {"backend": "nvidia_nim", "id": "google/gemma-4-31b-it"},
         "completion_retries": 0,
         "execution_role": "optional_construction_enrichment",
