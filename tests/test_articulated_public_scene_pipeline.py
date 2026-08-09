@@ -241,6 +241,7 @@ def test_pipeline_join_is_scene_and_task_object_neutral(
     for key in ("inpainting_input_receipt", "aura_adapter_receipt"):
         inputs[key]["scene"]["publisher_scene_id"] = scene_id
         inputs[key]["scene"]["target_instance_id"] = target_id
+    inputs["aura_adapter_receipt"]["scene"]["target_instance_id"] = f"ins{target_id}"
     inputs["inpainting_input_receipt"] = _with_digest(
         inputs["inpainting_input_receipt"], "receipt_digest"
     )
@@ -267,6 +268,18 @@ def test_pipeline_join_is_scene_and_task_object_neutral(
 
     assert result["scene"]["publisher_scene_id"] == scene_id
     assert result["scene"]["target_instance_id"] == target_id
+
+
+def test_pipeline_rejects_noncanonical_instance_prefix() -> None:
+    inputs = _inputs()
+    aura = copy.deepcopy(inputs["aura_adapter_receipt"])
+    aura["scene"]["target_instance_id"] = "instance-123"
+    inputs["aura_adapter_receipt"] = _with_digest(aura, "receipt_digest")
+
+    with pytest.raises(
+        ArticulatedPublicScenePipelineError, match="aura_target_join_invalid"
+    ):
+        compile_articulated_public_scene_state(**inputs)
 
 
 def test_pipeline_rejects_cross_scene_aura_receipt() -> None:

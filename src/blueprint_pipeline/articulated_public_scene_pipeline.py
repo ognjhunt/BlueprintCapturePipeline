@@ -78,6 +78,20 @@ def _scene_target(value: Mapping[str, Any]) -> tuple[str, str]:
     )
 
 
+def _canonical_instance_id(value: Any) -> str:
+    """Normalize the dataset ID and method-level ``ins<ID>`` representation."""
+
+    text = str(value or "")
+    if text.startswith("ins"):
+        text = text[3:]
+    return text if text.isdigit() else ""
+
+
+def _same_instance_id(left: Any, right: Any) -> bool:
+    canonical_left = _canonical_instance_id(left)
+    return bool(canonical_left and canonical_left == _canonical_instance_id(right))
+
+
 def _component_pair(
     manifest: Mapping[str, Any], receipt: Mapping[str, Any], *, role: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -184,24 +198,24 @@ def compile_articulated_public_scene_state(
             mapping.get("publisher_scene_id") or ""
         ) != scene_id:
             errors.append(f"{name}_scene_join_invalid")
-        if not isinstance(target, Mapping) or str(
-            target.get("interiorgs_instance_id") or ""
-        ) != target_id:
+        if not isinstance(target, Mapping) or not _same_instance_id(
+            target.get("interiorgs_instance_id"), target_id
+        ):
             errors.append(f"{name}_target_join_invalid")
     for name, artifact in (("inpainting", inpainting), ("aura", aura)):
         observed_scene, observed_target = _scene_target(artifact)
         if observed_scene != scene_id:
             errors.append(f"{name}_scene_join_invalid")
-        if observed_target != target_id:
+        if not _same_instance_id(observed_target, target_id):
             errors.append(f"{name}_target_join_invalid")
     if aura.get("scene", {}).get("input_receipt_digest") != inpainting.get(
         "receipt_digest"
     ):
         errors.append("aura_inpainting_input_join_invalid")
     source_target = source.get("target")
-    if not isinstance(source_target, Mapping) or str(
-        source_target.get("interiorgs_instance_id") or ""
-    ) != target_id:
+    if not isinstance(source_target, Mapping) or not _same_instance_id(
+        source_target.get("interiorgs_instance_id"), target_id
+    ):
         errors.append("articulated_source_target_join_invalid")
     source_asset = source.get("output_asset")
     joint_source = joint.get("source_asset")
@@ -223,7 +237,7 @@ def compile_articulated_public_scene_state(
     if authority is not None:
         if authority.get("publisher_scene_id") != scene_id:
             errors.append("execution_authority_scene_join_invalid")
-        if authority.get("target_instance_id") != target_id:
+        if not _same_instance_id(authority.get("target_instance_id"), target_id):
             errors.append("execution_authority_target_join_invalid")
         if authority.get("freeze_digest") != frozen.get("freeze_digest"):
             errors.append("execution_authority_freeze_join_invalid")
