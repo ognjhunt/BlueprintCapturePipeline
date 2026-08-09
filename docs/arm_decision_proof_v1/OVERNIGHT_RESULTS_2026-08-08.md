@@ -1,7 +1,8 @@
 # ADP-009D overnight results — 2026-08-08
 
-Status: overnight P0-P4 backlog completed; broader ADP qualification remains
-open.
+Status: learned-policy P0-P4 canaries completed; the frozen canonical
+scripted-positive control remains open, so no further learned-policy run is
+admitted. Broader ADP qualification also remains open.
 
 Scope: ADP-009D, public-scene day-28 Franka construction rehearsal. Every
 result in this document remains `development_only`. Simulator state is the
@@ -12,7 +13,7 @@ one policy is generally better.
 ## What landed
 
 The branch advanced from the overnight handoff at `54f70c8e0` to
-`b97c13afd`. The changes fall into six evidence-bearing groups:
+`5b1bb7e11`. The changes fall into six evidence-bearing groups:
 
 - **P0, interpretable action delivery:** `c9103d311`, `b9a3b30ac`,
   `7b901349a`. Episode receipts retain reset/end joints, maximum joint motion,
@@ -49,7 +50,8 @@ The branch advanced from the overnight handoff at `54f70c8e0` to
   update is no longer accepted as a camera fix.
 - **Frozen scenario matrix and fail-closed native controls:** `46e5d2e99`,
   `2086690c1`, `a350153b5`, `adee2091a`, `db9559137`, `3127e461c`,
-  `04db82770`, `47c83b41d`, `b97c13afd`. The policy-neutral 128-cell matrix
+  `04db82770`, `47c83b41d`, `b97c13afd`, `8aeeb1203`, `5b1bb7e11`. The
+  policy-neutral 128-cell matrix
   binds identical cells and seeds to both candidates and both controls. Every
   episode retains external, wrist, and overview media. The positive control
   now targets the measured finger-midpoint frame, gates every IK phase on
@@ -59,6 +61,10 @@ The branch advanced from the overnight handoff at `54f70c8e0` to
   own digest. Wrist calibration is derived from the live gripper-base pose and
   the measured rigid mount when Isaac's sensor/USD pose remains frozen, and the
   aim target is the observed can centre rather than its support-plane root.
+  The aim solver now accounts for the camera's rotational swing around its
+  non-zero mount offset. Every bundle carries the frozen task destination
+  required by the task-centred overview, and paid requests fail closed unless
+  diagnostic-only, controls, or learned-policy mode is explicit.
 
 Other supporting changes are `a78e70dde` and `f98622f67` for the frames-only
 Aura comparison, `790b95eec` for explicit concurrent-GPU authority without
@@ -71,7 +77,7 @@ PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode
 .venv/bin/ruff check src/ tests/
 ```
 
-The latest wrist-evidence correction passed `965 passed, 1 skipped, 9052
+The latest paid-request correction passed `968 passed, 1 skipped, 9052
 deselected` in the required filtered lane. Ruff was clean.
 
 ## Scientific findings through v84
@@ -188,8 +194,8 @@ current cycle-time bottleneck.
 
 ## Paid-run ledger
 
-The conservative retained v1-v62 total is `$10.998299`. Retained v63-v92
-ledgers add `$7.500352`, for `$18.498651` total and `$6.501349` unspent under
+The conservative retained v1-v62 total is `$10.998299`. Retained v63-v94
+ledgers add `$7.779754`, for `$18.778053` total and `$6.221947` unspent under
 the `$25` cap. v85's provider API did not expose a final billed value, so its
 ledger uses the adapter's conservative observed-runtime estimate of
 `$0.433506`. Zero-cost inventory and launch-lock blocks are included because
@@ -235,9 +241,11 @@ they are evidence that concurrency failed closed.
 | v90 task orientation + phase gate | `$0.108621` | Zero-action passed. The scripted positive correctly aborted after the 80-step pregrasp instead of advancing or closing, with `scripted_control_phase_not_reached:pregrasp:error_m=0.331908` and `never_moved`. Its intended mostly world -Y motion appeared mostly as world +X, exposing a world-Jacobian/root-error frame mismatch. All six videos were retained. No candidate was provisioned or queried; no policy verdict. |
 | v91 Jacobian root-frame gate | `$0.106024` estimated | The corrected approach completed waypoints -1 and 0 and then blocked at waypoint 1, but the runtime crashed while sealing the diagnostic receipt because its local digest helper rejected `digest_field`. Four diagnostic frames per external/wrist/overview camera show the arm moving toward the exact can and the wrist reacquiring it. No control receipt or control outcome was retained, no candidate was provisioned or queried, and no policy verdict can be drawn. Commit `47c83b41d` fixes and hermetically tests the receipt closeout before any retry. |
 | v92 control receipt closeout | `$0.138032` estimated | The closeout fix worked and retained the exact failure: `no_safe_wrist_observable_episode_start` plus `scenario_controls_receipt_missing`. The corrected Jacobian binding was sealed with both row blocks rotated world-to-root. The rendered wrist view moved and observed up to 5,771 exact-can pixels, but both Isaac's sensor pose and direct USD pose stayed frozen while Fabric moved the articulation; the can was also clipped at the top because the aim targeted its support-plane root. No control ran, no candidate was provisioned or queried, and no policy verdict exists. Commit `b97c13afd` derives wrist calibration from the live rigid mount and aims at the observed can centre. |
+| v93 live wrist mount + visual centre | `$0.130268` | Live body-derived wrist calibration worked and travelled 0.065720 m while the stale USD pose remained fixed. The exact can occupied up to 9,359 pixels, but every admitted wrist box still touched the top edge (`y_min=0`), so all 149 samples correctly failed the five-percent margin gate. No control ran and no candidate was provisioned or queried. The retained mount geometry proves the one-shot look-at left an 8.675955-degree optical-axis residual because rotating the body also swings the offset camera. Commit `8aeeb1203` replaces it with a bounded fixed-point rigid-mount aim solver. |
+| v94 rigid-mount aim attempt | `$0.149134` | Blocked before Isaac startup and before either control. The launch omitted the explicit controls mode, and the diagnostic bundle then lacked the task-destination receipt that the task-centred overview loads unconditionally. No frames or control outcome exist. Commit `5b1bb7e11` ships that frozen receipt in every bundle and rejects ambiguous paid requests unless diagnostic-only, controls, or a policy mode is explicit. |
 
 All completed paid attempts were followed by an API provider-zero check. v86,
-v87, v88, v89, v90, v91, and v92 were each launched from provider zero as the sole
+v87, v88, v89, v90, v91, v92, v93, and v94 were each launched from provider zero as the sole
 active instance; after each automatic teardown a fresh Vast API query returned
 `active: 0 []`.
 
@@ -398,6 +406,26 @@ body, and targets the observed can centre. The episode adapter carries the same
 live pose callback into every control frame. This is locally proven and still
 requires a controls-only canonical canary.
 
+v93 proved the live calibration path but not the episode-start gate. The wrist
+pose derived from the live gripper-base body travelled 0.065720 m and saw up to
+9,359 exact-can pixels. Nevertheless, every wrist mask touched the top image
+edge and correctly failed the unchanged five-percent margin requirement. The
+retained reset body, mount offset, camera quaternion, and target reproduce the
+cause locally: a one-shot look-at leaves an 8.675955-degree residual after the
+offset camera swings around the rotated body. Commit `8aeeb1203` iterates the
+rigid transform and optical-axis correction to a bounded, recorded residual;
+the exact v93 geometry converges below `1e-5` degrees in its hermetic test.
+
+v94 did not exercise that correction. The paid request accidentally selected
+neither controls nor a policy candidate, and the diagnostic bundle omitted the
+task-destination JSON that the overview camera requires before the runtime
+chooses its execution mode. It failed before Isaac startup, retained no frames,
+and cost `$0.149134`. Commit `5b1bb7e11` closes both paid-launch ambiguities:
+every bundle ships the frozen destination, and the canonical allocator rejects
+a paid ADP-009D request unless diagnostic-only, controls, or at least one
+candidate is explicit. No retry is admitted without the explicit controls flag
+and frozen scenario instance.
+
 ## What remains open
 
 - The P4 result is intentionally underpowered and single-cell. Its comparison
@@ -418,9 +446,11 @@ requires a controls-only canonical canary.
 
 ## Single next action
 
-From provider zero at clean immutable commit `b97c13afd`, run only the
+From provider zero at clean immutable commit `5b1bb7e11`, run only the
 checked-in canonical scenario's zero-action negative and deterministic
-scripted-positive control pair. Do not query either learned policy. Verify that
+scripted-positive control pair, explicitly binding `--adp009d-controls` and
+`docs/arm_decision_proof_v1/manifests/adp009d_canonical_scenario_instance.v1.json`.
+Do not query either learned policy. Verify that
 the wrist aim selects a non-border-clipped start while retaining live
 body-derived camera calibration, that the IK binding reports world-to-root
 rotation for both Jacobian row blocks, and that pregrasp converges along the
