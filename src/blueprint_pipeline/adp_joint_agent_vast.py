@@ -49,6 +49,15 @@ DEFAULT_IMAGE = (
     "sha256:cff3a0d82d2c2b47bab252d67fa9b34a20ef4c50781d98501b5c7367ea9afd10"
 )
 RESULT_SCHEMA_VERSION = "adp_joint_agent_vast_run.v1"
+REQUIRED_RETAINED_ARTIFACT_ROLES = frozenset(
+    {
+        "articulation_candidates",
+        "optimized_source",
+        "owned_core_rigged_asset",
+        "owned_core_diagnostics",
+        "owned_core_validation",
+    }
+)
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/joint-agent"
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
@@ -434,6 +443,45 @@ def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
     }
 
 
+def _retained_execution_artifact_blockers(
+    execution: Mapping[str, Any], *, extracted_root: Path
+) -> list[str]:
+    """Validate that topology outputs survived provider teardown packaging."""
+
+    rows = execution.get("retained_artifacts")
+    if not isinstance(rows, list):
+        return ["joint_agent_required_retained_artifacts_missing"]
+    by_role: dict[str, Mapping[str, Any]] = {}
+    blockers: list[str] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            blockers.append("joint_agent_retained_artifact_record_invalid")
+            continue
+        role = str(row.get("role") or "")
+        if not role or role in by_role:
+            blockers.append("joint_agent_retained_artifact_role_invalid")
+            continue
+        by_role[role] = row
+    for role in sorted(REQUIRED_RETAINED_ARTIFACT_ROLES):
+        row = by_role.get(role)
+        if row is None:
+            blockers.append(f"joint_agent_retained_artifact_missing:{role}")
+            continue
+        relative = Path(str(row.get("relative_path") or ""))
+        path = (extracted_root / relative).resolve()
+        root = extracted_root.resolve()
+        if (
+            relative.is_absolute()
+            or (path != root and root not in path.parents)
+            or path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size != row.get("size_bytes")
+            or _sha256(path) != row.get("sha256")
+        ):
+            blockers.append(f"joint_agent_retained_artifact_invalid:{role}")
+    return sorted(set(blockers))
+
+
 def _nvidia_api_key() -> str:
     value = str(os.environ.get("NVIDIA_API_KEY") or "").strip()
     if value:
@@ -628,6 +676,13 @@ def run_joint_agent_vast(
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
     if execution.get("status") != "completed":
         blockers.extend(execution.get("blockers") or ["joint_agent_execution_not_completed"])
+    else:
+        blockers.extend(
+            _retained_execution_artifact_blockers(
+                execution,
+                extracted_root=job / "immutable_execution",
+            )
+        )
     if teardown.get("continuing_spend_from_this_run") is not False:
         blockers.append("joint_agent_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:

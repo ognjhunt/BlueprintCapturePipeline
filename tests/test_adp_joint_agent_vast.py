@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import zipfile
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import adp_joint_agent_vast as joint_vast
 from blueprint_pipeline.adp_joint_agent_vast import (
     DEFAULT_IMAGE,
     PROBE_KIND,
@@ -33,6 +35,88 @@ from blueprint_pipeline.vast_provider_adapter import (
     _probe_shell_script,
     _resolve_launch_mode,
 )
+
+
+def _provider_runner_module():
+    path = Path(__file__).resolve().parents[1] / "scripts/adp_joint_agent_provider_runner.py"
+    spec = importlib.util.spec_from_file_location("adp_joint_agent_provider_runner_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_provider_runner_retains_downstream_artifacts_outside_working_tree(
+    tmp_path: Path,
+) -> None:
+    runner = _provider_runner_module()
+    work = tmp_path / "provider_runtime/runtime_output/joint_agent_work"
+    work.mkdir(parents=True)
+    sources = {
+        "articulation_candidates": work / "candidates.json",
+        "owned_core_rigged_asset": work / "rigged.usdz",
+        "owned_core_diagnostics": work / "diagnostics.json",
+    }
+    for role, path in sources.items():
+        path.write_bytes(f"retained-{role}".encode())
+    output = tmp_path / "provider_return"
+
+    rows = runner.retain_joint_agent_artifacts(
+        output_root=output,
+        artifacts=sources,
+    )
+
+    assert {row["role"] for row in rows} == set(sources)
+    for row in rows:
+        retained = output / row["relative_path"]
+        assert retained.is_file()
+        assert row["size_bytes"] == retained.stat().st_size
+        assert row["sha256"] == runner._sha256(retained)
+
+
+def test_provider_runner_fails_closed_when_required_artifact_is_missing(
+    tmp_path: Path,
+) -> None:
+    runner = _provider_runner_module()
+
+    with pytest.raises(
+        ValueError,
+        match="joint_agent_retained_artifact_invalid:owned_core_rigged_asset",
+    ):
+        runner.retain_joint_agent_artifacts(
+            output_root=tmp_path / "return",
+            artifacts={"owned_core_rigged_asset": tmp_path / "missing.usdz"},
+        )
+
+
+def test_provider_return_requires_every_digest_bound_construction_artifact(
+    tmp_path: Path,
+) -> None:
+    rows = []
+    for role in sorted(joint_vast.REQUIRED_RETAINED_ARTIFACT_ROLES):
+        path = tmp_path / "retained" / f"{role}.bin"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(role.encode())
+        rows.append(
+            {
+                "role": role,
+                "relative_path": path.relative_to(tmp_path).as_posix(),
+                "size_bytes": path.stat().st_size,
+                "sha256": joint_vast._sha256(path),
+            }
+        )
+
+    assert joint_vast._retained_execution_artifact_blockers(
+        {"retained_artifacts": rows}, extracted_root=tmp_path
+    ) == []
+
+    rows.pop()
+    assert any(
+        blocker.startswith("joint_agent_retained_artifact_missing:")
+        for blocker in joint_vast._retained_execution_artifact_blockers(
+            {"retained_artifacts": rows}, extracted_root=tmp_path
+        )
+    )
 
 
 def _checkout(root: Path) -> Path:
@@ -387,11 +471,34 @@ def test_live_run_arms_watchdog_before_adapter_and_forwards_only_nvidia_key(
         assert __import__("os").environ["BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"] == "NVIDIA_API_KEY"
         output_zip = Path(kwargs["provider_runtime_output_zip"])
         output_zip.parent.mkdir(parents=True)
+        retained_rows = []
+        retained_payloads = {}
+        for role in sorted(joint_vast.REQUIRED_RETAINED_ARTIFACT_ROLES):
+            payload = role.encode()
+            relative_path = f"retained/{role}.bin"
+            retained_payloads[relative_path] = payload
+            retained_rows.append(
+                {
+                    "role": role,
+                    "relative_path": relative_path,
+                    "size_bytes": len(payload),
+                    "sha256": "sha256:"
+                    + __import__("hashlib").sha256(payload).hexdigest(),
+                }
+            )
         with zipfile.ZipFile(output_zip, "w") as archive:
             archive.writestr(
                 "adp_joint_agent_result.json",
-                json.dumps({"status": "completed", "blockers": []}),
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "blockers": [],
+                        "retained_artifacts": retained_rows,
+                    }
+                ),
             )
+            for relative_path, payload in retained_payloads.items():
+                archive.writestr(relative_path, payload)
         write_json(
             output_zip.parent / "vast_teardown_manifest.json",
             {"vast_instance_ids": [7], "continuing_spend_from_this_run": False},

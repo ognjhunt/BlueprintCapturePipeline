@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from typing import Any, Mapping
 
@@ -39,6 +40,43 @@ def _load(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"json_mapping_required:{path.name}")
     return value
+
+
+def retain_joint_agent_artifacts(
+    *,
+    output_root: Path,
+    artifacts: Mapping[str, Path],
+) -> list[dict[str, Any]]:
+    """Copy every downstream construction input into the provider return tree.
+
+    Joint Agent's configured working directory is intentionally separate from
+    ``BLUEPRINT_ADP_JOINT_AGENT_OUTPUT_DIR``.  Merely recording an absolute
+    in-container path therefore loses the rigged USD when the provider output
+    ZIP is assembled.  This stable role-based seam makes retention explicit
+    and verifies every copy before the live instance is torn down.
+    """
+
+    retained_root = output_root / "retained"
+    retained_root.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for role, source in sorted(artifacts.items()):
+        source = source.resolve()
+        if source.is_symlink() or not source.is_file() or source.stat().st_size <= 0:
+            raise ValueError(f"joint_agent_retained_artifact_invalid:{role}")
+        suffix = "".join(source.suffixes)
+        destination = retained_root / f"{role}{suffix}"
+        shutil.copy2(source, destination)
+        if _sha256(destination) != _sha256(source):
+            raise ValueError(f"joint_agent_retained_artifact_digest_mismatch:{role}")
+        rows.append(
+            {
+                "role": role,
+                "relative_path": destination.relative_to(output_root).as_posix(),
+                "size_bytes": destination.stat().st_size,
+                "sha256": _sha256(destination),
+            }
+        )
+    return rows
 
 
 def _run(command: list[str], log_name: str) -> dict[str, Any]:
@@ -182,6 +220,18 @@ def main() -> int:
         ] if stage is not None else []
         if len(joint_paths) != review["assembly_joint_count"]:
             blockers.append("joint_agent_owned_core_joint_count_readback_mismatch")
+        diagnostics = ROOT / "runtime_output/joint_agent_work/joint_rigger/joint_rigger_diagnostics.json"
+        validation = ROOT / "runtime_output/joint_agent_work/joint_rigger/joint_rigger_validation.json"
+        retained_artifacts = retain_joint_agent_artifacts(
+            output_root=OUTPUT,
+            artifacts={
+                "articulation_candidates": candidates_path,
+                "optimized_source": optimized_path,
+                "owned_core_rigged_asset": rigged,
+                "owned_core_diagnostics": diagnostics,
+                "owned_core_validation": validation,
+            },
+        )
         return _result(
             blockers,
             dry_run=dry,
@@ -195,6 +245,7 @@ def main() -> int:
             rigged_usdz_path=str(rigged),
             rigged_usdz_sha256=_sha256(rigged),
             authored_joint_paths=joint_paths,
+            retained_artifacts=retained_artifacts,
         )
     except Exception as exc:
         return _result([f"joint_agent_runtime_exception:{type(exc).__name__}"])
