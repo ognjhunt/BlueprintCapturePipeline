@@ -188,7 +188,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         world = World(stage_units_in_meters=1.0)
         world.reset()
-        view = Articulation(prim_paths_expr=roots[0] if roots else "/Asset", name="twin")
+        if not roots:
+            # Guessing a prim path here would turn "the asset has no
+            # articulation root" into an unrelated lookup failure.
+            raise RuntimeError("articulated_isaac_no_articulation_root_to_drive")
+        view = Articulation(prim_paths_expr=roots[0], name="twin")
         world.scene.add(view)
         world.reset()
         for _ in range(30):
