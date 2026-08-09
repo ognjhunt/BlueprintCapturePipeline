@@ -33,6 +33,24 @@ except ModuleNotFoundError:  # repository package
         score_task_episode,
     )
 try:  # flat provider-bundle layout
+    from adp_task_scoring import (
+        OUTCOME_NEVER_MOVED as TASK_NEUTRAL_OUTCOME_NEVER_MOVED,
+        TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TASK_KIND_RIGID_PICK_PLACE,
+        TaskNeutralScoringError,
+        score_task_episode_from_spec,
+        validate_articulated_task_spec,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp_task_scoring import (
+        OUTCOME_NEVER_MOVED as TASK_NEUTRAL_OUTCOME_NEVER_MOVED,
+        TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TASK_KIND_RIGID_PICK_PLACE,
+        TaskNeutralScoringError,
+        score_task_episode_from_spec,
+        validate_articulated_task_spec,
+    )
+try:  # flat provider-bundle layout
     from decision_evidence_contracts import canonical_digest
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
@@ -52,6 +70,9 @@ CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v5"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
+TASK_CONTROL_PLAN_SCHEMA_VERSION = "adp_task_control_plan.v1"
+TASK_CONTROL_EPISODE_SCHEMA_VERSION = "adp_task_control_episode.v1"
+TASK_CONTROL_PAIR_SCHEMA_VERSION = "adp_task_control_pair.v1"
 
 ZERO_ACTION_NEGATIVE = "zero_action_negative"
 SCRIPTED_POSITIVE = "deterministic_scripted_positive"
@@ -760,6 +781,316 @@ def run_required_controls(
     return pair
 
 
+def _task_neutral_sample(
+    environment: ControlEnvironment, *, task_kind: str, step_index: int
+) -> dict[str, Any]:
+    if task_kind == TASK_KIND_RIGID_PICK_PLACE:
+        raw = environment.read_object_sample()
+    else:
+        reader = getattr(environment, "read_task_sample", None)
+        if not callable(reader):
+            raise ControlEpisodeError(["task_control_native_task_sample_missing"])
+        raw = reader()
+    if not isinstance(raw, Mapping):
+        raise ControlEpisodeError(["task_control_native_task_sample_invalid"])
+    sample = dict(raw)
+    if "step_index" in sample and sample["step_index"] != step_index:
+        raise ControlEpisodeError(["task_control_sample_step_mismatch"])
+    sample["step_index"] = int(step_index)
+    return sample
+
+
+def validate_task_control_plan(
+    plan: Mapping[str, Any], *, task_spec: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Validate an immutable task-neutral control trajectory before reset."""
+
+    try:
+        checked = json.loads(json.dumps(dict(plan), allow_nan=False))
+        task = json.loads(json.dumps(dict(task_spec), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ControlEpisodeError(["task_control_plan_invalid"]) from exc
+    errors: list[str] = []
+    if checked.get("schema_version") != TASK_CONTROL_PLAN_SCHEMA_VERSION:
+        errors.append("task_control_plan_schema_invalid")
+    if checked.get("plan_digest") != canonical_digest(
+        checked, digest_field="plan_digest"
+    ):
+        errors.append("task_control_plan_digest_mismatch")
+    if checked.get("task_spec_digest") != canonical_digest(task):
+        errors.append("task_control_plan_task_spec_mismatch")
+    if checked.get("trajectory_source") != "native_ik_preflight":
+        errors.append("task_control_trajectory_source_invalid")
+    planner_receipt_digest = str(checked.get("planner_receipt_digest") or "")
+    if not planner_receipt_digest.startswith("sha256:") or len(
+        planner_receipt_digest
+    ) != 71:
+        errors.append("task_control_planner_receipt_digest_invalid")
+    zero_steps = checked.get("zero_action_steps")
+    if isinstance(zero_steps, bool) or not isinstance(zero_steps, int) or zero_steps < 1:
+        errors.append("task_control_zero_action_steps_invalid")
+    actions = checked.get("scripted_positive_actions")
+    if not isinstance(actions, list) or not actions:
+        errors.append("task_control_scripted_actions_missing")
+        actions = []
+    normalized_actions: list[dict[str, Any]] = []
+    for index, raw in enumerate(actions):
+        if not isinstance(raw, Mapping):
+            errors.append(f"task_control_scripted_action_invalid:{index}")
+            continue
+        phase_id = str(raw.get("phase_id") or "")
+        values = raw.get("isaac_action")
+        try:
+            action = [float(value) for value in values]
+        except (TypeError, ValueError):
+            action = []
+        if (
+            not phase_id
+            or len(action) != 8
+            or not all(math.isfinite(value) for value in action)
+        ):
+            errors.append(f"task_control_scripted_action_invalid:{index}")
+        else:
+            normalized_actions.append(
+                {"phase_id": phase_id, "isaac_action": action}
+            )
+    kind = task.get("task_kind")
+    if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
+        try:
+            validate_articulated_task_spec(task)
+        except TaskNeutralScoringError as exc:
+            errors.extend(exc.errors)
+    elif kind != TASK_KIND_RIGID_PICK_PLACE:
+        errors.append("task_control_task_kind_unsupported")
+    settle_steps = task.get("settle_window_samples")
+    if (
+        isinstance(settle_steps, bool)
+        or not isinstance(settle_steps, int)
+        or settle_steps < 1
+    ):
+        errors.append("task_control_settle_window_invalid")
+        settle_steps = 0
+    maximum_steps = task.get("maximum_action_steps")
+    if maximum_steps is not None and (
+        isinstance(maximum_steps, bool)
+        or not isinstance(maximum_steps, int)
+        or len(normalized_actions) + int(settle_steps) > maximum_steps
+        or int(zero_steps or 0) > maximum_steps
+    ):
+        errors.append("task_control_action_budget_exceeds_task_spec")
+    if errors:
+        raise ControlEpisodeError(errors)
+    checked["scripted_positive_actions"] = normalized_actions
+    return checked
+
+
+def _run_task_control_episode(
+    *,
+    environment: ControlEnvironment,
+    task_spec: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    control_id: str,
+    gripper_open_command: float,
+    output: Path,
+    episode_id: str,
+) -> dict[str, Any]:
+    task_kind = str(task_spec["task_kind"])
+    environment.reset()
+    samples = [
+        _task_neutral_sample(environment, task_kind=task_kind, step_index=0)
+    ]
+    policy_inputs = [
+        _persist_observation(
+            environment,
+            output_dir=output,
+            episode_id=episode_id,
+            observation_index=0,
+            kind="policy-input",
+        )
+    ]
+    review_observations: list[dict[str, Any]] = []
+    actions: list[dict[str, Any]] = []
+    observation_index = 1
+    step_index = 0
+    if control_id == ZERO_ACTION_NEGATIVE:
+        trajectory = [
+            {
+                "phase_id": ZERO_ACTION_NEGATIVE,
+                "mode": "hold_current_joint_positions",
+            }
+            for _ in range(int(plan["zero_action_steps"]))
+        ]
+    else:
+        trajectory = [dict(row) for row in plan["scripted_positive_actions"]]
+        trajectory.extend(
+            {
+                "phase_id": "release_settle",
+                "mode": "hold_current_joint_positions",
+            }
+            for _ in range(int(task_spec["settle_window_samples"]))
+        )
+    for row in trajectory:
+        before = [float(value) for value in environment.read_arm_joint_positions()]
+        action = (
+            environment.hold_action(
+                gripper_command=float(gripper_open_command)
+            )
+            if row.get("mode") == "hold_current_joint_positions"
+            else row["isaac_action"]
+        )
+        action = [float(value) for value in action]
+        environment.step(action)
+        step_index += 1
+        after = [float(value) for value in environment.read_arm_joint_positions()]
+        actions.append(
+            _record_action(
+                step_index=step_index,
+                phase_id=str(row["phase_id"]),
+                action=action,
+                observed_before=before,
+                observed_after=after,
+            )
+        )
+        samples.append(
+            _task_neutral_sample(
+                environment, task_kind=task_kind, step_index=step_index
+            )
+        )
+        if step_index % CONTROL_REVIEW_FRAME_STRIDE_STEPS == 0:
+            review_observations.append(
+                _persist_observation(
+                    environment,
+                    output_dir=output,
+                    episode_id=episode_id,
+                    observation_index=observation_index,
+                    kind="review-sample",
+                )
+            )
+            observation_index += 1
+    terminal = _persist_observation(
+        environment,
+        output_dir=output,
+        episode_id=episode_id,
+        observation_index=observation_index,
+        kind="terminal-observation",
+    )
+    visual, artifacts = finalize_manipulation_evaluation_visual_evidence(
+        output_dir=output,
+        episode_id=episode_id,
+        identity={
+            "control_id": control_id,
+            "task_spec_digest": plan["task_spec_digest"],
+            "control_plan_digest": plan["plan_digest"],
+            "candidate_policy_queried": False,
+            "observation_consumer": "deterministic_control_monitor",
+        },
+        policy_input_observations=policy_inputs,
+        review_observations=review_observations,
+        terminal_observation=terminal,
+    )
+    try:
+        score = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+    except TaskNeutralScoringError as exc:
+        raise ControlEpisodeError(exc.errors) from exc
+    if control_id == ZERO_ACTION_NEGATIVE:
+        passed = (
+            score.get("status") == "scored"
+            and score.get("task_succeeded") is False
+            and score.get("outcome") == TASK_NEUTRAL_OUTCOME_NEVER_MOVED
+        )
+        blockers = [] if passed else [BLOCKER_ZERO_COMPLETED_TASK]
+    else:
+        passed = score.get("status") == "scored" and score.get("task_succeeded") is True
+        blockers = [] if passed else [f"{BLOCKER_POSITIVE_FAILED}:{score.get('outcome')}"]
+    if visual.get("status") != "complete":
+        blockers.append(BLOCKER_MEDIA_INCOMPLETE)
+        passed = False
+    receipt: dict[str, Any] = {
+        "schema_version": TASK_CONTROL_EPISODE_SCHEMA_VERSION,
+        "program_id": "arm-decision-proof-v1",
+        "control_id": control_id,
+        "episode_id": episode_id,
+        "task_kind": task_kind,
+        "task_spec_digest": plan["task_spec_digest"],
+        "control_plan_digest": plan["plan_digest"],
+        "control_passed": passed,
+        "blockers": sorted(set(blockers)),
+        "score": score,
+        "observed_outcome": score.get("outcome"),
+        "state_trace": samples,
+        "state_trace_digest": canonical_digest({"samples": samples}),
+        "action_trace": actions,
+        "action_trace_digest": canonical_digest({"actions": actions}),
+        "visual_evidence": visual,
+        "media_artifacts": artifacts,
+        "grader_authority": "deterministic_simulator_state",
+        "candidate_policy_queried": False,
+        "caller_asserted_success_accepted": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return receipt
+
+
+def run_task_neutral_controls(
+    *,
+    environment: ControlEnvironment,
+    task_spec: Mapping[str, Any],
+    control_plan: Mapping[str, Any],
+    gripper_open_command: float,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Run zero then scripted controls for rigid or articulated task state."""
+
+    task = json.loads(json.dumps(dict(task_spec), allow_nan=False))
+    plan = validate_task_control_plan(control_plan, task_spec=task)
+    output = Path(output_dir).expanduser().resolve()
+    _write_json(output / "adp_task_control_plan.v1.json", plan)
+    receipts = []
+    for control_id in REQUIRED_CONTROLS:
+        receipt = _run_task_control_episode(
+            environment=environment,
+            task_spec=task,
+            plan=plan,
+            control_id=control_id,
+            gripper_open_command=float(gripper_open_command),
+            output=output,
+            episode_id=f"{plan['cell_id']}-{control_id}",
+        )
+        receipts.append(receipt)
+        _write_json(output / f"adp_task_control_episode.{control_id}.json", receipt)
+    blockers = [
+        blocker for receipt in receipts for blocker in receipt.get("blockers", [])
+    ]
+    pair: dict[str, Any] = {
+        "schema_version": TASK_CONTROL_PAIR_SCHEMA_VERSION,
+        "program_id": "arm-decision-proof-v1",
+        "cell_id": plan["cell_id"],
+        "task_kind": task["task_kind"],
+        "task_spec_digest": plan["task_spec_digest"],
+        "control_plan_digest": plan["plan_digest"],
+        "execution_order": list(REQUIRED_CONTROLS),
+        "controls": [
+            {
+                "control_id": receipt["control_id"],
+                "control_passed": receipt["control_passed"],
+                "observed_outcome": receipt["observed_outcome"],
+                "receipt_digest": receipt["receipt_digest"],
+            }
+            for receipt in receipts
+        ],
+        "cell_admitted_for_policy_execution": not blockers,
+        "policy_execution_blockers": sorted(set(blockers)),
+        "candidate_policy_queried": False,
+        "pair_digest": "",
+    }
+    pair["pair_digest"] = canonical_digest(pair, digest_field="pair_digest")
+    _write_json(output / "adp_task_control_pair.v1.json", pair)
+    return pair
+
+
 __all__ = [
     "BLOCKER_POSITIVE_FAILED",
     "BLOCKER_PHASE_NOT_REACHED",
@@ -771,8 +1102,13 @@ __all__ = [
     "MAX_JOINT_SETPOINT_LEAD_RAD",
     "ControlEpisodeError",
     "SCRIPTED_POSITIVE",
+    "TASK_CONTROL_EPISODE_SCHEMA_VERSION",
+    "TASK_CONTROL_PAIR_SCHEMA_VERSION",
+    "TASK_CONTROL_PLAN_SCHEMA_VERSION",
     "ZERO_ACTION_NEGATIVE",
     "materialize_control_plan",
     "run_control_episode",
     "run_required_controls",
+    "run_task_neutral_controls",
+    "validate_task_control_plan",
 ]

@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+import copy
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline.adp009d_control_episode import (
+    ControlEpisodeError,
+    run_task_neutral_controls,
+)
+from blueprint_pipeline.adp009d_task_scoring import (
+    CAN_START_POSITION_M,
+    GRIPPER_FULL_OPENING_M,
+    SUPPORT_PLANE_Z_M,
+)
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+
+_DESTINATION = [
+    CAN_START_POSITION_M[0] + 0.2,
+    CAN_START_POSITION_M[1],
+    SUPPORT_PLANE_Z_M,
+]
+
+
+class _Environment:
+    def __init__(self, task_kind: str):
+        self.task_kind = task_kind
+        self.reset_count = 0
+        self.steps = []
+        self.joints = [0.0] * 7
+        self.gripper = 0.0
+
+    def reset(self):
+        self.reset_count += 1
+        self.steps = []
+        self.joints = [0.0] * 7
+        self.gripper = 0.0
+
+    def hold_action(self, *, gripper_command):
+        return [*self.joints, float(gripper_command)]
+
+    def step(self, action):
+        self.steps.append(list(action))
+        self.joints = [float(value) for value in action[:7]]
+        self.gripper = float(action[7])
+
+    def read_arm_joint_positions(self):
+        return list(self.joints)
+
+    def read_task_sample(self):
+        return {
+            "joint_positions_rad": {
+                "refrigerator_upper_door_hinge": max(0.0, self.joints[0]),
+                "refrigerator_lower_door_hinge": 0.0,
+            },
+            "joint_velocities_rad_s": {
+                "refrigerator_upper_door_hinge": 0.0,
+                "refrigerator_lower_door_hinge": 0.0,
+            },
+            "task_contact_active": self.gripper > 0.5,
+            "joint_limit_violation": False,
+            "containment_violation": False,
+            "robot_collision_failure": False,
+            "scene_collision_failure": False,
+            "retreat_completed": self.joints[1] > 0.5,
+        }
+
+    def read_object_sample(self):
+        progress = self.joints[0]
+        if progress <= 0.0:
+            position = list(CAN_START_POSITION_M)
+            width = GRIPPER_FULL_OPENING_M
+            sample = {"can_pose_world": [*position, 0.0, 0.0, 0.0, 1.0]}
+        elif progress < 1.0:
+            position = [
+                CAN_START_POSITION_M[0],
+                CAN_START_POSITION_M[1],
+                SUPPORT_PLANE_Z_M + 0.1,
+            ]
+            width = 0.07
+            sample = {
+                "can_pose_world": [*position, 0.0, 0.0, 0.0, 1.0],
+                "grasp_frame_position_world_m": position,
+                "finger_contact_forces_n": [2.5, 2.5],
+            }
+        else:
+            position = list(_DESTINATION)
+            width = GRIPPER_FULL_OPENING_M
+            sample = {"can_pose_world": [*position, 0.0, 0.0, 0.0, 1.0]}
+        sample["gripper_width_m"] = width
+        return sample
+
+
+def _task(task_kind: str) -> dict:
+    if task_kind == "rigid_pick_place":
+        return {
+            "schema_version": "adp_task_spec.v1",
+            "task_kind": task_kind,
+            "destination_position_world_m": _DESTINATION,
+            "support_plane_z_m": SUPPORT_PLANE_Z_M,
+            "settle_window_samples": 3,
+            "require_sealed_start_pose": True,
+            "maximum_action_steps": 8,
+        }
+    return {
+        "schema_version": "adp_task_spec.v1",
+        "task_kind": "articulated_open_close",
+        "target_joint_id": "refrigerator_upper_door_hinge",
+        "joint_reset_positions_rad": {
+            "refrigerator_upper_door_hinge": 0.0,
+            "refrigerator_lower_door_hinge": 0.0,
+        },
+        "target_success_interval_rad": [0.785398163, 0.959931089],
+        "joint_hard_limits_rad": {
+            "refrigerator_upper_door_hinge": [0.0, 1.570796327],
+            "refrigerator_lower_door_hinge": [0.0, 1.570796327],
+        },
+        "settle_window_samples": 3,
+        "maximum_settled_target_speed_rad_s": 0.05,
+        "non_task_joint_motion_tolerance_rad": 0.001,
+        "movement_epsilon_rad": 0.0001,
+        "reset_tolerance_rad": 0.0001,
+        "maximum_action_steps": 8,
+    }
+
+
+def _plan(task: dict) -> dict:
+    actions = (
+        [
+            {"phase_id": "lift", "isaac_action": [0.5, 0, 0, 0, 0, 0, 0, 1]},
+            {"phase_id": "place", "isaac_action": [1.0, 0, 0, 0, 0, 0, 0, 0]},
+        ]
+        if task["task_kind"] == "rigid_pick_place"
+        else [
+            {"phase_id": "open", "isaac_action": [0.9, 0, 0, 0, 0, 0, 0, 1]},
+            {"phase_id": "retreat", "isaac_action": [0.9, 1, 0, 0, 0, 0, 0, 0]},
+        ]
+    )
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "cell_id": f"{task['task_kind']}-canonical",
+        "task_spec_digest": canonical_digest(task),
+        "trajectory_source": "native_ik_preflight",
+        "planner_receipt_digest": "sha256:" + "a" * 64,
+        "zero_action_steps": 3,
+        "scripted_positive_actions": actions,
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+@pytest.mark.parametrize("task_kind", ["rigid_pick_place", "articulated_open_close"])
+def test_same_control_contract_passes_original_and_second_scene_fixtures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_kind: str
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    observation_index = {"value": 0}
+
+    def fake_observation(*_args, **kwargs):
+        row = {
+            "observation_index": observation_index["value"],
+            "kind": kwargs["kind"],
+            "views": {},
+        }
+        observation_index["value"] += 1
+        return row
+
+    monkeypatch.setattr(module, "_persist_observation", fake_observation)
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: (
+            {
+                "status": "complete",
+                "required_camera_ids": ["external", "wrist", "overview"],
+                "review_only_camera_ids": ["overview"],
+            },
+            [],
+        ),
+    )
+    task = _task(task_kind)
+    environment = _Environment(task_kind)
+
+    pair = run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=_plan(task),
+        gripper_open_command=0.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is True
+    assert pair["execution_order"] == [
+        "zero_action_negative",
+        "deterministic_scripted_positive",
+    ]
+    assert [row["observed_outcome"] for row in pair["controls"]] == [
+        "never_moved",
+        "placed" if task_kind == "rigid_pick_place" else "opened_and_settled",
+    ]
+    assert environment.reset_count == 2
+
+
+def test_task_control_plan_rejects_unbound_or_over_budget_trajectory(
+    tmp_path: Path,
+) -> None:
+    task = _task("articulated_open_close")
+    plan = _plan(task)
+    plan["scripted_positive_actions"] *= 4
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    with pytest.raises(
+        ControlEpisodeError, match="task_control_action_budget_exceeds_task_spec"
+    ):
+        run_task_neutral_controls(
+            environment=_Environment("articulated_open_close"),
+            task_spec=copy.deepcopy(task),
+            control_plan=plan,
+            gripper_open_command=0.0,
+            output_dir=tmp_path,
+        )
