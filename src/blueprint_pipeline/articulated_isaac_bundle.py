@@ -35,19 +35,20 @@ ENTRYPOINT = r'''#!/usr/bin/env bash
 set +e
 BUNDLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT_DIR="${BLUEPRINT_ISAAC_OUTPUT_DIR:-$BUNDLE_DIR/runtime_output}"
-RESULT="$OUTPUT_DIR/articulated_isaac_result.json"
+RESULT="$OUTPUT_DIR/isaac_runtime_result.json"
 mkdir -p "$OUTPUT_DIR"
-/isaac-sim/python.sh "$BUNDLE_DIR/provider_runtime/articulated_isaac_worker.py" \
+/isaac-sim/python.sh "$BUNDLE_DIR/provider_runtime/isaac_realistic_runtime_runner.py" \
   --spec "$BUNDLE_DIR/provider_runtime/native/articulated_native_probe_spec.json" \
   --output "$RESULT"
 runner_rc=$?
-if [ ! -s "$RESULT" ]; then
+write_missing_result() {
+  if [ -s "$RESULT" ]; then return 0; fi
   /isaac-sim/python.sh - "$RESULT" "$runner_rc" <<'PY'
 import json, sys
 from pathlib import Path
 Path(sys.argv[1]).write_text(json.dumps({
     "schema_version": "adp009d_articulated_isaac_result.v1",
-    "status": "blocked",
+    "status": "blocked_isaac_process_exited_without_result",
     "blockers": [f"isaac_runner_process_exited_without_runtime_result:{sys.argv[2]}"],
     "native_isaac_executed": False,
     "articulation_qualified": False,
@@ -55,7 +56,8 @@ Path(sys.argv[1]).write_text(json.dumps({
     "provider_zero_required_after_return": True
 }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
-fi
+}
+write_missing_result
 exit 0
 '''
 
@@ -136,8 +138,8 @@ def build_articulated_isaac_bundle(
     for path in staged.values():
         shutil.copy2(path, native / path.name)
     shutil.copy2(spec_path, native / PROBE_SPEC_FILENAME)
-    shutil.copy2(worker, runtime / "articulated_isaac_worker.py")
-    entrypoint = runtime / "run_articulated_isaac_runtime.sh"
+    shutil.copy2(worker, runtime / "isaac_realistic_runtime_runner.py")
+    entrypoint = runtime / "run_isaac_realistic_runtime.sh"
     entrypoint.write_text(ENTRYPOINT, encoding="utf-8")
     entrypoint.chmod(0o755)
 
@@ -171,9 +173,14 @@ def build_articulated_isaac_bundle(
         "candidate_usd_sha256": spec.get("candidate_usd_sha256"),
         "expected": expected,
         "required_readbacks": list(spec.get("required_readbacks") or []),
+        # The lane validates the returned probe set against what the bundle
+        # declares, so an articulated run is checked as strictly as a rigid one
+        # without inheriting drop/slide/tip/gripper semantics.
+        "probe_names": sorted(str(name) for name in (spec.get("required_readbacks") or [])),
+        "result_relative_path": "runtime_output/isaac_runtime_result.json",
         "relative_paths": {
-            "entrypoint": "provider_runtime/run_articulated_isaac_runtime.sh",
-            "worker": "provider_runtime/articulated_isaac_worker.py",
+            "entrypoint": "provider_runtime/run_isaac_realistic_runtime.sh",
+            "worker": "provider_runtime/isaac_realistic_runtime_runner.py",
             "probe_spec": f"provider_runtime/native/{PROBE_SPEC_FILENAME}",
         },
         "proof_boundaries": {

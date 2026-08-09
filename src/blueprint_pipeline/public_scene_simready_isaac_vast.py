@@ -119,7 +119,13 @@ def _extract_result(source: Path, destination: Path) -> dict[str, Any]:
     }
 
 
-def _execution_blockers(execution: Mapping[str, Any]) -> list[str]:
+RIGID_PROBE_NAMES = frozenset({"drop", "slide", "tip", "gripper"})
+
+
+def _execution_blockers(
+    execution: Mapping[str, Any],
+    expected_probe_names: frozenset[str] = RIGID_PROBE_NAMES,
+) -> list[str]:
     blockers: list[str] = []
     if execution.get("status") != "completed":
         blockers.extend(execution.get("blockers") or ["simready_isaac_execution_not_completed"])
@@ -134,7 +140,7 @@ def _execution_blockers(execution: Mapping[str, Any]) -> list[str]:
     probes = execution.get("probe_results")
     if not isinstance(probes, list) or {
         str(row.get("probe")) for row in probes if isinstance(row, Mapping)
-    } != {"drop", "slide", "tip", "gripper"}:
+    } != set(expected_probe_names):
         blockers.append("simready_isaac_probe_set_invalid")
     elif any(not isinstance(row, Mapping) or row.get("passed") is not True for row in probes):
         blockers.append("simready_isaac_probe_failure")
@@ -148,6 +154,7 @@ def run_simready_isaac_vast(
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
     machine_avoidlist_path: str | Path | None = None,
+    expected_probe_names: frozenset[str] | None = None,
     max_hourly_rate_usd: float = 1.0,
     hard_cap_usd: float = 3.0,
     hard_ttl_seconds: int = 10_800,
@@ -277,7 +284,17 @@ def run_simready_isaac_vast(
     blockers = [
         *(adapter.get("blockers") or []),
         *(extracted.get("blockers") or []),
-        *_execution_blockers(execution),
+        *_execution_blockers(
+            execution,
+            # An articulated bundle declares its own readbacks; validating
+            # against the bundle's set keeps the check as strict as the rigid
+            # one without assuming drop/slide/tip/gripper.
+            frozenset(
+                expected_probe_names
+                or prepared_bundle.get("probe_names")
+                or RIGID_PROBE_NAMES
+            ),
+        ),
     ]
     if teardown.get("continuing_spend_from_this_run") is not False:
         blockers.append("simready_isaac_provider_zero_not_proven")

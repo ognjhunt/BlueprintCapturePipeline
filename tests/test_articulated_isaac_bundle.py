@@ -66,8 +66,8 @@ def test_bundle_ships_the_frozen_probe_and_the_articulated_worker(
     assert receipt["probe_spec_sha256"].startswith("sha256:")
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
-    assert "provider_runtime/run_articulated_isaac_runtime.sh" in names
-    assert "provider_runtime/articulated_isaac_worker.py" in names
+    assert "provider_runtime/run_isaac_realistic_runtime.sh" in names
+    assert "provider_runtime/isaac_realistic_runtime_runner.py" in names
     assert "provider_runtime/native/articulated_native_probe_spec.json" in names
     assert "provider_runtime/native/blank_physics_stage.usda" in names
     assert "provider_runtime/native/articulation_stage.usda" in names
@@ -91,10 +91,14 @@ def test_entrypoint_writes_a_typed_result_when_isaac_dies(tmp_path: Path) -> Non
 
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         entrypoint = archive.read(
-            "provider_runtime/run_articulated_isaac_runtime.sh"
+            "provider_runtime/run_isaac_realistic_runtime.sh"
         ).decode("utf-8")
+    # conform to the Isaac lane's crash-fallback contract, which the transport
+    # preflight checks by marker before any paid mutation
+    assert "write_missing_result" in entrypoint
     assert "isaac_runner_process_exited_without_runtime_result" in entrypoint
-    assert "articulated_isaac_worker.py" in entrypoint
+    assert "blocked_isaac_process_exited_without_result" in entrypoint
+    assert "isaac_realistic_runtime_runner.py" in entrypoint
     assert "/isaac-sim/python.sh" in entrypoint
 
 
@@ -108,6 +112,7 @@ def test_bundle_binds_the_exact_probe_and_candidate_digests(tmp_path: Path) -> N
     assert receipt["expected"]["assembly_joint_count"] == 2
     assert receipt["expected"]["maximum_commanded_degrees"] == 55.0
     assert receipt["required_readbacks"] == spec["required_readbacks"]
+    assert receipt["probe_names"] == sorted(spec["required_readbacks"])
 
 
 def test_a_probe_that_was_already_executed_is_refused(tmp_path: Path) -> None:
@@ -161,3 +166,31 @@ def test_bundle_is_deterministic(tmp_path: Path) -> None:
     second = _build(tmp_path, probe_root=root, job_dir=tmp_path / "b")
 
     assert first["bundle_sha256"] == second["bundle_sha256"]
+
+
+def test_the_lane_validates_the_probe_set_the_bundle_declares() -> None:
+    """A rigid probe set must not be assumed for an articulated readback."""
+
+    from blueprint_pipeline.public_scene_simready_isaac_vast import (
+        RIGID_PROBE_NAMES,
+        _execution_blockers,
+    )
+
+    articulated = {
+        "status": "completed",
+        "native_isaac_executed": True,
+        "physical_success_established": False,
+        "source_target_collider_active": False,
+        "replacement_count": 1,
+        "probe_results": [
+            {"probe": "articulation_root_identity", "passed": True},
+            {"probe": "commanded_sweep_reaches_maximum", "passed": True},
+        ],
+    }
+    names = frozenset({"articulation_root_identity", "commanded_sweep_reaches_maximum"})
+
+    assert _execution_blockers(articulated, names) == []
+    # the rigid default still rejects it, so the check has not been weakened
+    assert "simready_isaac_probe_set_invalid" in _execution_blockers(
+        articulated, RIGID_PROBE_NAMES
+    )

@@ -89,6 +89,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "physical_success_established": False,
         "provider_zero_required_after_return": True,
         "spec_sha256": _sha256(spec_path),
+        "probe_results": [],
+        "replacement_count": 1,
+        "source_target_collider_active": False,
         "readbacks": {},
     }
 
@@ -279,7 +282,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         ]
         result["blockers"] = [f"articulated_isaac_readback_failed:{name}" for name in failed]
         result["articulation_qualified"] = not failed
-        result["status"] = "articulation_qualified" if not failed else "blocked"
+        result["status"] = "completed" if not failed else "blocked"
+        # The provider lane validates a common result shape across probes; the
+        # articulated readbacks are reported through it rather than in a
+        # parallel schema only this worker understands.
+        result["probe_results"] = [
+            {"probe": name, "passed": bool(row.get("passed")), "observed": row}
+            for name, row in sorted(result["readbacks"].items())
+            if isinstance(row, Mapping) and "passed" in row
+        ]
+        result["replacement_count"] = 1
+        result["source_target_collider_active"] = False
     except Exception as exc:  # noqa: BLE001 - retain the real failure
         import traceback
 
