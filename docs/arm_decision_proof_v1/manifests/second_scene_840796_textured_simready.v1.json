@@ -1,0 +1,66 @@
+{
+  "acceptance": {
+    "checks": {
+      "articulation_preserved": true,
+      "authored_link_masses_unchanged": true,
+      "interior_still_exposed": true,
+      "render_materials_still_bound": true
+    },
+    "physics_output_accepted": true,
+    "physics_receipt_digest": "sha256:dcd0314cfcadf04d9fae5615659b83c4557c4d0120bb6cf1b5688d5287e4889e",
+    "texture_output_accepted": true,
+    "texture_receipt_digest": "sha256:d850a90ba431072d7569c9dc3ae2bd72a5fd23ca89f05dbc5e5844ae7d8207a6"
+  },
+  "adp_item": "ADP-009D",
+  "agents": {
+    "joint_agent": "not_run_this_pass",
+    "material_agent": "completed",
+    "physics_agent": "completed",
+    "runner_terminal_status": "blocked_without_runtime_result_despite_all_four_completing",
+    "texture_agent": "completed",
+    "validation_agent": "completed_zero_failures"
+  },
+  "claim_boundary": {
+    "agent_physics_priors_are_estimates_not_measurements": true,
+    "interior_is_a_solid_inset_block_not_a_hollow_cavity": true,
+    "interior_never_observed": true,
+    "native_simulator_qualified": false,
+    "physical_equivalence_proven": false,
+    "textures_are_generated_candidate_appearance_not_observed_truth": true
+  },
+  "inputs": {
+    "aperture_cut": true,
+    "interior_exposed_fraction": 1.0,
+    "render_ready_usd_sha256": "sha256:81b1796ac9725c5cc1707f7afb21186bfcf18871872c3276a3d26f621100ffc5"
+  },
+  "outputs": {
+    "physics_usd_sha256": "sha256:1e2fe7a7da1e0b551c2ba8f4f50e5b2f19a3068a392b9507746d94fbf8ae44a5",
+    "texture_maps": [
+      "tu_2582ea0668c06b6c65ee_albedo.png",
+      "tu_2582ea0668c06b6c65ee_metalness.png",
+      "tu_2582ea0668c06b6c65ee_normal.png",
+      "tu_2582ea0668c06b6c65ee_orm.png",
+      "tu_2582ea0668c06b6c65ee_roughness.png"
+    ],
+    "textured_usd": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_simready_v4_textured/textured_output.usd",
+    "textured_usd_sha256": "sha256:5574c5f090af3823dcb344f1490038bc9fad40492854798452238dbe4356948b"
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_scene_id": "840796",
+  "receipt_digest": "sha256:01da2122890f487726c729d3706686534b61cc1f2f6740119fb1dece28fe5669",
+  "root_cause_fixed": {
+    "no_bound_render_material_made_every_ovrtx_preview_blank": true,
+    "stale_840313_prompts_classified_a_fridge_as_car_paint_green": true
+  },
+  "run": {
+    "estimated_cost_usd": 0.19232,
+    "instance_id": 47310948,
+    "job": "840796_v5_execute",
+    "provider_zero_after_teardown": true,
+    "retry_cap": 0,
+    "staged_objects_absent": true
+  },
+  "schema_version": "second_scene_840796_textured_simready.v1",
+  "status": "simready_candidate_textured_and_statically_admitted",
+  "target_instance_id": "123"
+}
