@@ -26,7 +26,12 @@ def _file_record(path: Path, *, relative_to: Path) -> dict[str, object]:
     }
 
 
-def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+def _fixture(
+    tmp_path: Path,
+    *,
+    scene_id: str = "840313",
+    target_id: str = "ins160",
+) -> tuple[Path, Path, Path, Path]:
     repo_root = tmp_path / "repo"
     data_root = tmp_path / "data"
     repo_root.mkdir()
@@ -54,7 +59,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     aura: dict[str, object] = {
         "schema_version": "adp009b_aurafusion360_execution_receipt.v1",
         "status": "executed_candidate",
-        "scene": {"publisher_scene_id": "840313", "target_instance_id": "ins160"},
+        "scene": {"publisher_scene_id": scene_id, "target_instance_id": target_id},
         "claim_boundary": {"successful_inpainting_admitted": False},
         "execution": {"final_frames": aura_frames},
         "receipt_digest": "",
@@ -65,6 +70,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     locality: dict[str, object] = {
         "schema_version": "public_scene_inpainting_locality_measurement.v1",
         "status": "measured_no_admission_effect",
+        "scene": {"publisher_scene_id": scene_id, "target_instance_id": target_id},
         "admission_effect": "none",
         "quality_pass_claimed": False,
         "thresholds_frozen_before_evaluation": False,
@@ -84,6 +90,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     native: dict[str, object] = {
         "schema_version": "adp009b_simready_native_visual_review_receipt.v1",
         "status": "rendered_native_visual_review_candidate",
+        "scene": {"publisher_scene_id": scene_id, "target_instance_id": target_id},
         "renderer_is_native_ovrtx": True,
         "background_renderer": "aurafusion360_native_2d_gaussian_rasterizer",
         "human_visual_acceptance": "pending",
@@ -109,8 +116,15 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     return repo_root, data_root, request_path, repo_root / "receipt.json"
 
 
-def test_materializes_human_acceptance_without_technical_admission(tmp_path: Path) -> None:
-    repo_root, data_root, request_path, output_path = _fixture(tmp_path)
+@pytest.mark.parametrize(
+    ("scene_id", "target_id"), [("840313", "ins160"), ("840796", "ins123")]
+)
+def test_materializes_human_acceptance_without_technical_admission(
+    tmp_path: Path, scene_id: str, target_id: str
+) -> None:
+    repo_root, data_root, request_path, output_path = _fixture(
+        tmp_path, scene_id=scene_id, target_id=target_id
+    )
 
     receipt = materialize_aura_human_review(
         request_path=request_path,
@@ -123,6 +137,11 @@ def test_materializes_human_acceptance_without_technical_admission(tmp_path: Pat
     assert receipt["technical_admission"] is False
     assert receipt["successful_inpainting_admitted"] is False
     assert receipt["hidden_background_truth_available"] is False
+    assert receipt["scene"] == {
+        "publisher_scene_id": scene_id,
+        "target_instance_id": target_id,
+        "camera_ids": [f"camera_{index}" for index in range(8)],
+    }
     assert len(receipt["bindings"]["review_files"]) == 32
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
@@ -168,6 +187,25 @@ def test_rejects_broken_aura_to_native_frame_join(tmp_path: Path) -> None:
     _write_json(native_path, native)
 
     with pytest.raises(AuraHumanReviewError, match="aura_native_camera_frame_join_invalid"):
+        materialize_aura_human_review(
+            request_path=request_path,
+            repo_root=repo_root,
+            data_root=data_root,
+            output_path=output_path,
+        )
+
+
+def test_rejects_cross_scene_native_review(tmp_path: Path) -> None:
+    repo_root, data_root, request_path, output_path = _fixture(
+        tmp_path, scene_id="840796", target_id="ins123"
+    )
+    native_path = data_root / "native.json"
+    native = json.loads(native_path.read_text(encoding="utf-8"))
+    native["scene"]["publisher_scene_id"] = "840313"
+    native["receipt_digest"] = canonical_digest(native, digest_field="receipt_digest")
+    _write_json(native_path, native)
+
+    with pytest.raises(AuraHumanReviewError, match="native_visual_review_receipt_invalid"):
         materialize_aura_human_review(
             request_path=request_path,
             repo_root=repo_root,

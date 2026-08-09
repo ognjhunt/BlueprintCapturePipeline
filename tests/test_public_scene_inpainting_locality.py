@@ -38,6 +38,10 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     manifest = {
         "schema_version": "sealed_camera_render_manifest.v1",
         "status": "rendered_exact_cameras",
+        "scene": {
+            "publisher_scene_id": "840796",
+            "target_instance_id": "ins123",
+        },
         "sealed_camera_render_manifest_digest": "sha256:" + "a" * 64,
         "renders": [
             {
@@ -64,6 +68,10 @@ def test_locality_measures_only_outside_mask_and_hashes_actual_files(tmp_path: P
     )
 
     assert receipt["status"] == "measured_no_admission_effect"
+    assert receipt["scene"] == {
+        "publisher_scene_id": "840796",
+        "target_instance_id": "ins123",
+    }
     assert receipt["aggregate"]["view_count"] == 1
     assert receipt["rows"][0]["dilated_mask_pixel_count"] == 16
     assert receipt["rows"][0]["outside_mask_pixel_count"] == 240

@@ -209,6 +209,20 @@ def _verify_recorded_file(path: Path, record: Mapping[str, Any], *, error: str) 
         raise SimReadyVisualReviewError(error)
 
 
+def _scene_binding(exact: Mapping[str, Any]) -> dict[str, str]:
+    scene = exact.get("scene")
+    if (
+        not isinstance(scene, Mapping)
+        or not str(scene.get("publisher_scene_id") or "").isdigit()
+        or not str(scene.get("target_instance_id") or "")
+    ):
+        raise SimReadyVisualReviewError("exact_camera_scene_binding_missing")
+    return {
+        "publisher_scene_id": str(scene["publisher_scene_id"]),
+        "target_instance_id": str(scene["target_instance_id"]),
+    }
+
+
 def materialize_native_visual_review(
     *,
     provider_result_path: str | Path,
@@ -240,6 +254,7 @@ def materialize_native_visual_review(
             raise SimReadyVisualReviewError(error)
     provider = _read(provider_path, error="provider_result_invalid")
     exact = _read(exact_path, error="exact_camera_manifest_invalid")
+    scene = _scene_binding(exact)
     if (
         provider.get("status") != "completed"
         or provider.get("blockers") != []
@@ -384,6 +399,7 @@ def materialize_native_visual_review(
         "schema_version": NATIVE_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
         "status": "rendered_native_visual_review_candidate",
+        "scene": scene,
         "provider_result": _record(provider_path, evidence),
         "exact_camera_manifest_digest": exact.get("sealed_camera_render_manifest_digest"),
         "renderer": "nvidia_ovrtx_0.4.0_exact_camera_object_layer",
@@ -436,6 +452,7 @@ def materialize_visual_review(
     frames = Path(frame_root).expanduser().resolve()
     replacement = _read(replacement_path, error="replacement_receipt_invalid")
     exact = _read(exact_path, error="exact_camera_manifest_invalid")
+    scene = _scene_binding(exact)
     cameras = _read(camera_path, error="camera_contract_invalid")
     if replacement.get("receipt_digest") != canonical_digest(
         replacement, digest_field="receipt_digest"
@@ -521,6 +538,7 @@ def materialize_visual_review(
         "schema_version": SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
         "status": "rendered_visual_review_candidate",
+        "scene": scene,
         "replacement_receipt_digest": replacement["receipt_digest"],
         "exact_camera_manifest_digest": exact.get("sealed_camera_render_manifest_digest"),
         "renderer": "blueprint_deterministic_cpu_triangle_rasterizer_v1",

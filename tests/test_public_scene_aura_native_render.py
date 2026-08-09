@@ -25,7 +25,12 @@ def _write_json(path: Path, value: dict) -> None:
     path.write_text(canonical_json(value) + "\n", encoding="utf-8")
 
 
-def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+def _fixture(
+    tmp_path: Path,
+    *,
+    scene_id: str = "840313",
+    target_id: str = "ins160",
+) -> tuple[Path, Path, Path, Path]:
     evidence = tmp_path / "evidence"
     artifact_root = evidence / "run/immutable_execution"
     frames = artifact_root / "artifacts/final_frames"
@@ -50,14 +55,15 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         "schema_version": ADAPTER_SCHEMA,
         "status": "prepared_unexecuted",
         "scene": {
-            "publisher_scene_id": "840313",
+            "publisher_scene_id": scene_id,
+            "target_instance_id": target_id,
             "camera_count": 2,
             "source_resolution": [4, 3],
             "input_receipt_digest": "sha256:" + "1" * 64,
         },
         "artifacts": [
-            {"relative_path": "data/Other-360/840313_ins160/images/b.png"},
-            {"relative_path": "data/Other-360/840313_ins160/images/a.png"},
+            {"relative_path": f"data/Other-360/{scene_id}_{target_id}/images/b.png"},
+            {"relative_path": f"data/Other-360/{scene_id}_{target_id}/images/a.png"},
         ],
     }
     adapter["receipt_digest"] = canonical_digest(adapter, digest_field="receipt_digest")
@@ -96,8 +102,15 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     return adapter_path, execution_path, evidence, output
 
 
-def test_materializes_actual_native_frames_in_sorted_camera_order(tmp_path: Path) -> None:
-    adapter, execution, evidence, output = _fixture(tmp_path)
+@pytest.mark.parametrize(
+    ("scene_id", "target_id"), [("840313", "ins160"), ("840796", "ins123")]
+)
+def test_materializes_actual_native_frames_in_sorted_camera_order(
+    tmp_path: Path, scene_id: str, target_id: str
+) -> None:
+    adapter, execution, evidence, output = _fixture(
+        tmp_path, scene_id=scene_id, target_id=target_id
+    )
     result = materialize_aura_native_render_manifest(
         adapter_receipt_path=adapter,
         execution_receipt_path=execution,
@@ -108,6 +121,11 @@ def test_materializes_actual_native_frames_in_sorted_camera_order(tmp_path: Path
     assert result["splat_representation"] == "2d_gaussian_surfels_scale_0_scale_1"
     assert [row["camera_id"] for row in result["renders"]] == ["a", "b"]
     assert result["renderer_identity"]["renderer_independent_of_method"] is False
+    assert result["scene"] == {
+        "publisher_scene_id": scene_id,
+        "target_instance_id": target_id,
+    }
+    assert result["camera_set_label"] == f"adp009b_{scene_id}_{target_id}_frozen_2"
     assert json.loads(output.read_text()) == result
 
 
@@ -141,4 +159,3 @@ def test_rejects_caller_reordered_frame_records(tmp_path: Path) -> None:
             output_path=output,
         )
     assert "aura_native_frame_order_invalid" in raised.value.codes
-

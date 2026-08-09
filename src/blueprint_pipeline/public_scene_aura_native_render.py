@@ -91,6 +91,21 @@ def materialize_aura_native_render_manifest(
         raise AuraNativeRenderManifestError(["aura_native_adapter_binding_mismatch"])
 
     scene = adapter.get("scene") or {}
+    execution_scene = execution.get("scene") or {}
+    scene_id = str(scene.get("publisher_scene_id") or "")
+    target_id = str(scene.get("target_instance_id") or "")
+    if (
+        not scene_id.isdigit()
+        or not (
+            target_id.isdigit()
+            or (target_id.startswith("ins") and target_id[3:].isdigit())
+        )
+        or str(execution_scene.get("publisher_scene_id") or "") != scene_id
+        or str(execution_scene.get("target_instance_id") or "") != target_id
+    ):
+        raise AuraNativeRenderManifestError(
+            ["aura_native_scene_target_binding_invalid"]
+        )
     camera_ids = sorted(
         Path(str(row.get("relative_path") or "")).stem
         for row in (adapter.get("artifacts") or [])
@@ -162,7 +177,11 @@ def materialize_aura_native_render_manifest(
         "schema_version": RENDER_MANIFEST_SCHEMA_VERSION,
         "status": "rendered_exact_cameras",
         "rendered_by": "aurafusion360_native_2d_gaussian_rasterizer",
-        "camera_set_label": "adp009b_840313_ins160_frozen_8",
+        "camera_set_label": f"adp009b_{scene_id}_{target_id}_frozen_{camera_count}",
+        "scene": {
+            "publisher_scene_id": scene_id,
+            "target_instance_id": target_id,
+        },
         "provider_splat_import_receipt_digest": execution.get("receipt_digest"),
         "provider_reconstruction_alignment_digest": scene.get("input_receipt_digest"),
         "splat_digest": point_cloud.get("sha256"),

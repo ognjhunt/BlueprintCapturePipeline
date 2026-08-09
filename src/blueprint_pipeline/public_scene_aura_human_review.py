@@ -89,11 +89,17 @@ def materialize_aura_human_review(
     native = _read(native_path)
     if aura.get("receipt_digest") != canonical_digest(aura, digest_field="receipt_digest"):
         raise AuraHumanReviewError("aura_execution_receipt_digest_mismatch")
+    aura_scene = aura.get("scene") or {}
+    scene_id = str(aura_scene.get("publisher_scene_id") or "")
+    target_id = str(aura_scene.get("target_instance_id") or "")
     if (
         aura.get("schema_version") != "adp009b_aurafusion360_execution_receipt.v1"
         or aura.get("status") != "executed_candidate"
-        or (aura.get("scene") or {}).get("publisher_scene_id") != "840313"
-        or (aura.get("scene") or {}).get("target_instance_id") != "ins160"
+        or not scene_id.isdigit()
+        or not (
+            target_id.isdigit()
+            or (target_id.startswith("ins") and target_id[3:].isdigit())
+        )
         or (aura.get("claim_boundary") or {}).get("successful_inpainting_admitted")
         is not False
     ):
@@ -109,6 +115,11 @@ def materialize_aura_human_review(
         or locality.get("quality_pass_claimed") is not False
         or locality.get("thresholds_frozen_before_evaluation") is not False
         or (locality.get("aggregate") or {}).get("view_count") != 8
+        or locality.get("scene")
+        != {
+            "publisher_scene_id": scene_id,
+            "target_instance_id": target_id,
+        }
     ):
         raise AuraHumanReviewError("aura_locality_measurement_invalid")
 
@@ -126,6 +137,11 @@ def materialize_aura_human_review(
         or native.get("technical_admission") is not False
         or not isinstance(artifacts, list)
         or len(artifacts) != 8
+        or native.get("scene")
+        != {
+            "publisher_scene_id": scene_id,
+            "target_instance_id": target_id,
+        }
     ):
         raise AuraHumanReviewError("native_visual_review_receipt_invalid")
 
@@ -168,8 +184,8 @@ def materialize_aura_human_review(
         "decision": request["decision"],
         "approval_statement": request["approval_statement"],
         "scene": {
-            "publisher_scene_id": "840313",
-            "target_instance_id": "ins160",
+            "publisher_scene_id": scene_id,
+            "target_instance_id": target_id,
             "camera_ids": camera_ids,
         },
         "bindings": {

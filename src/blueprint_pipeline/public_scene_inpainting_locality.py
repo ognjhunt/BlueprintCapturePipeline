@@ -87,6 +87,13 @@ def measure_inpainting_locality(
     render_rows = manifest.get("renders")
     if not isinstance(render_rows, list) or not render_rows:
         raise PublicSceneInpaintingLocalityError(["locality_after_renders_missing"])
+    scene = manifest.get("scene")
+    if (
+        not isinstance(scene, Mapping)
+        or not str(scene.get("publisher_scene_id") or "").isdigit()
+        or not str(scene.get("target_instance_id") or "")
+    ):
+        raise PublicSceneInpaintingLocalityError(["locality_scene_binding_missing"])
     lpips_runtime = None
     if lpips_model is not None:
         lpips_runtime = _LpipsRuntime(
@@ -193,6 +200,10 @@ def measure_inpainting_locality(
     receipt = {
         "schema_version": SCHEMA_VERSION,
         "status": "measured_no_admission_effect",
+        "scene": {
+            "publisher_scene_id": str(scene["publisher_scene_id"]),
+            "target_instance_id": str(scene["target_instance_id"]),
+        },
         "after_render_manifest_sha256": _sha256(manifest_path),
         "after_render_manifest_digest": manifest.get(
             "sealed_camera_render_manifest_digest"

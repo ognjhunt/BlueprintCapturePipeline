@@ -64,6 +64,10 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
     _write(replacement_path, replacement)
     exact = {
         "sealed_camera_render_manifest_digest": "sha256:exact",
+        "scene": {
+            "publisher_scene_id": "840796",
+            "target_instance_id": "ins123",
+        },
         "renders": [
             {
                 "camera_id": "view",
@@ -118,6 +122,7 @@ def test_visual_review_renders_digest_bound_mesh_into_exact_camera(tmp_path: Pat
     assert receipt["status"] == "rendered_visual_review_candidate"
     assert receipt["renderer_is_native_ovrtx"] is False
     assert receipt["dynamic_contact_proven"] is False
+    assert receipt["scene"]["publisher_scene_id"] == "840796"
     assert receipt["artifacts"][0]["visible_pixel_count"] > 0
     assert (tmp_path / "evidence/review/view.before_after.png").is_file()
 
