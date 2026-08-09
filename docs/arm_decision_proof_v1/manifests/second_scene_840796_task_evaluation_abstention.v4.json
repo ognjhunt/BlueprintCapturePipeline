@@ -1,0 +1,73 @@
+{
+  "schema_version": "adp_task_evaluation_run_abstention.v1",
+  "terminal_gate_schema_version": "adp_native_gate_abstention.v1",
+  "program_id": "arm-decision-proof-v1",
+  "status": "typed_evidence_backed_abstention",
+  "scene_id": "840796",
+  "target_instance_id": "123",
+  "task_id": "840796_refrigerator_upper_door_open_v1",
+  "task_kind": "articulated_open_close",
+  "freeze_digest": "sha256:0774b7072bb1a0fd0929fde81cd48aaff384af4608772f31d603c2324f97d03f",
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "smallest_missing_capability": "native_articulated_asset_diagnostic_unobserved:vast_heartbeat_container_missing",
+  "all_terminal_blockers": [
+    "adp009d_candidate_policy_query_status_missing",
+    "adp009d_provider_output_zip_missing",
+    "adp009d_runtime_not_completed",
+    "vast_heartbeat_container_missing"
+  ],
+  "construction_join": {
+    "relative_path": "scene_construction_v1/articulated_excision_join.v1.json",
+    "size_bytes": 2038,
+    "sha256": "sha256:28ad02c9ff56137a904ceb47e71df8f32906b40844eb52f1581d0115d2f77120",
+    "receipt_digest": "sha256:9e00db25948105db00ce2d0de63acd2fc0225c777d718330ea9a77dc7c18f8dc"
+  },
+  "native_adapter": {
+    "relative_path": "articulated_native_v3/adapter.execute.json",
+    "size_bytes": 1423,
+    "sha256": "sha256:4d6b5c1d60c82d4792e4a35818a4c073c1bf59fde52de6bdebba6b7ff714794d"
+  },
+  "teardown": {
+    "relative_path": "articulated_native_v3/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+    "size_bytes": 1448,
+    "sha256": "sha256:8595df335d608c39f904ee1e1d91eef92a38013f24a1e456773f00927d9cc161"
+  },
+  "provider_zero": {
+    "schema_version": "adp_paid_provider_zero.v1",
+    "provider": "vast",
+    "observed_at_utc": "2026-08-09T18:49:22.474861+00:00",
+    "api_command": [
+      "vastai",
+      "show",
+      "instances",
+      "--raw"
+    ],
+    "api_confirmed": true,
+    "global_live_resource_count": 0,
+    "provider_zero": true,
+    "inventory": [],
+    "stderr_present": false,
+    "raw_secret_values_recorded": false,
+    "provider_zero_digest": "sha256:039c0a509390e1599012532aa003647545e077e8e9c6dbe7640b2b36790ecd3b"
+  },
+  "paid_attempt": {
+    "attempt_number": 1,
+    "estimated_cost_usd": 0.007044,
+    "hard_cap_usd": 0.8,
+    "hard_ttl_seconds": 3600,
+    "automatic_retry_executed": false
+  },
+  "native_asset_opened": false,
+  "native_simulator_qualification_observed": false,
+  "controls_executed": false,
+  "learned_candidate_episodes_executed": false,
+  "episode_media_exists": false,
+  "comparison_exists": false,
+  "automatic_paid_retry_executed": false,
+  "claim_ceiling": "public_dataset_construction_rehearsal_only; no partner capture, real_site_fidelity, deployment readiness, physical performance, native_asset_qualification, control outcome, or learned_policy_comparison",
+  "next_action": "repair and hermetically test the generic Vast container-heartbeat startup path, then authorize one new zero-retry native articulated diagnostic",
+  "receipt_digest": "sha256:ab8c5256ccf4de64d75f7f7356064088df3bd1b7988f983bb0e7cd88e1229e9c"
+}

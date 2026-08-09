@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import subprocess
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -12,10 +16,264 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 SCHEMA_VERSION = "adp_task_evaluation_run_abstention.v1"
 CONSTRUCTION_SCHEMA_VERSION = "articulated_public_scene_construction_run.v2"
 FREEZE_SCHEMA_VERSION = "second_scene_scene_task_freeze.v1"
+NATIVE_GATE_ABSTENTION_SCHEMA_VERSION = "adp_native_gate_abstention.v1"
+PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
 
 
 class TaskEvaluationAbstentionError(ValueError):
     """Fail-closed terminal abstention validation error."""
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _bound_json_file(
+    root: Path, relative_path: str, *, role: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    path = (root / relative_path).resolve()
+    if not path.is_relative_to(root) or path.is_symlink() or not path.is_file():
+        raise TaskEvaluationAbstentionError(f"native_gate_{role}_file_invalid")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationAbstentionError(
+            f"native_gate_{role}_json_invalid"
+        ) from exc
+    if not isinstance(value, dict):
+        raise TaskEvaluationAbstentionError(f"native_gate_{role}_json_invalid")
+    return value, {
+        "relative_path": relative_path,
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def collect_vast_provider_zero_receipt(
+    *,
+    command_runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    """Collect read-only, API-derived global Vast inventory evidence."""
+
+    command = ["vastai", "show", "instances", "--raw"]
+    runner = command_runner or (
+        lambda argv: subprocess.run(  # noqa: S603 - fixed argv, no shell
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    )
+    completed = runner(command)
+    try:
+        inventory = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationAbstentionError(
+            "provider_zero_api_response_invalid"
+        ) from exc
+    if completed.returncode != 0 or not isinstance(inventory, list):
+        raise TaskEvaluationAbstentionError("provider_zero_api_query_failed")
+    receipt: dict[str, Any] = {
+        "schema_version": PROVIDER_ZERO_SCHEMA_VERSION,
+        "provider": "vast",
+        "observed_at_utc": datetime.now(UTC).isoformat(),
+        "api_command": command,
+        "api_confirmed": True,
+        "global_live_resource_count": len(inventory),
+        "provider_zero": inventory == [],
+        "inventory": inventory,
+        "stderr_present": bool(completed.stderr.strip()),
+        "raw_secret_values_recorded": False,
+        "provider_zero_digest": "",
+    }
+    receipt["provider_zero_digest"] = canonical_digest(
+        receipt, digest_field="provider_zero_digest"
+    )
+    if not receipt["provider_zero"]:
+        raise TaskEvaluationAbstentionError("provider_zero_not_observed")
+    return receipt
+
+
+def materialize_native_gate_task_evaluation_abstention(
+    *,
+    scene_task_freeze: Mapping[str, Any],
+    evidence_root: str | Path,
+    construction_join_relative_path: str,
+    native_adapter_relative_path: str,
+    teardown_relative_path: str,
+    provider_zero_receipt: Mapping[str, Any],
+    output_path: str | Path | None = None,
+    repo_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Seal completion path B when native execution never reached the asset.
+
+    The blocker is derived from retained runtime and teardown bytes.  A caller
+    cannot relabel a policy failure, a failed control, or an unqualified asset
+    as infrastructure failure through this seam.
+    """
+
+    freeze = _clone(scene_task_freeze, code="task_evaluation_freeze_invalid")
+    if (
+        freeze.get("schema_version") != FREEZE_SCHEMA_VERSION
+        or freeze.get("freeze_digest")
+        != canonical_digest(freeze, digest_field="freeze_digest")
+    ):
+        raise TaskEvaluationAbstentionError("task_evaluation_freeze_invalid")
+    evidence = Path(evidence_root).expanduser().resolve()
+    if not evidence.is_dir():
+        raise TaskEvaluationAbstentionError("native_gate_evidence_root_missing")
+    construction, construction_binding = _bound_json_file(
+        evidence, construction_join_relative_path, role="construction_join"
+    )
+    adapter, adapter_binding = _bound_json_file(
+        evidence, native_adapter_relative_path, role="adapter"
+    )
+    teardown, teardown_binding = _bound_json_file(
+        evidence, teardown_relative_path, role="teardown"
+    )
+    provider_zero = _clone(
+        provider_zero_receipt, code="native_gate_provider_zero_invalid"
+    )
+    errors: list[str] = []
+    if (
+        construction.get("schema_version") != "articulated_excision_join.v1"
+        or construction.get("status") != "join_admitted"
+        or construction.get("receipt_digest")
+        != canonical_digest(construction, digest_field="receipt_digest")
+        or (construction.get("claim_boundary") or {}).get(
+            "native_simulator_qualified"
+        )
+        is not False
+    ):
+        errors.append("native_gate_construction_join_invalid")
+    adapter_blockers = set(adapter.get("blockers") or [])
+    if (
+        adapter.get("schema_version") != "adp009d_franka_vast_run.v1"
+        or adapter.get("status") != "blocked"
+        or adapter.get("native_control_result_path") is not None
+        or adapter.get("candidate_policy_query_expected") is not False
+        or adapter.get("continuing_spend_from_this_run") is not False
+        or adapter.get("all_staged_objects_absent") is not True
+        or adapter.get("retry_cap") != 0
+        or "vast_heartbeat_container_missing" not in adapter_blockers
+    ):
+        errors.append("native_gate_adapter_not_infrastructure_null")
+    try:
+        adapter_teardown = Path(str(adapter.get("teardown_manifest_path") or "")).resolve()
+        expected_teardown = (evidence / teardown_relative_path).resolve()
+        if adapter_teardown != expected_teardown:
+            errors.append("native_gate_teardown_path_mismatch")
+    except (OSError, RuntimeError, ValueError):
+        errors.append("native_gate_teardown_path_invalid")
+    if (
+        teardown.get("schema_version") != "vast_teardown_manifest.v1"
+        or teardown.get("status") != "completed"
+        or teardown.get("runner_gpu_teardown_completed") is not True
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or not teardown.get("vast_instance_ids")
+        or any(
+            action.get("status") != "completed"
+            or action.get("action") != "destroy_instance"
+            or action.get("http_status_code") != 200
+            for action in teardown.get("teardown_actions_performed") or []
+        )
+    ):
+        errors.append("native_gate_teardown_invalid")
+    if (
+        provider_zero.get("schema_version") != PROVIDER_ZERO_SCHEMA_VERSION
+        or provider_zero.get("provider") != "vast"
+        or provider_zero.get("api_command")
+        != ["vastai", "show", "instances", "--raw"]
+        or provider_zero.get("api_confirmed") is not True
+        or provider_zero.get("global_live_resource_count") != 0
+        or provider_zero.get("provider_zero") is not True
+        or provider_zero.get("inventory") != []
+        or provider_zero.get("provider_zero_digest")
+        != canonical_digest(provider_zero, digest_field="provider_zero_digest")
+    ):
+        errors.append("native_gate_provider_zero_invalid")
+    estimated_cost = adapter.get("estimated_cost_usd")
+    hard_cap = adapter.get("hard_cap_usd")
+    if (
+        not isinstance(estimated_cost, (int, float))
+        or not isinstance(hard_cap, (int, float))
+        or estimated_cost < 0
+        or estimated_cost > hard_cap
+    ):
+        errors.append("native_gate_cost_invalid")
+    if errors:
+        raise TaskEvaluationAbstentionError(";".join(sorted(set(errors))))
+
+    scene = freeze.get("scene") or {}
+    task = freeze.get("task_spec") or {}
+    receipt: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "terminal_gate_schema_version": NATIVE_GATE_ABSTENTION_SCHEMA_VERSION,
+        "program_id": "arm-decision-proof-v1",
+        "status": "typed_evidence_backed_abstention",
+        "scene_id": scene.get("publisher_scene_id"),
+        "target_instance_id": scene.get("target_instance_id"),
+        "task_id": task.get("task_id"),
+        "task_kind": task.get("task_kind"),
+        "freeze_digest": freeze["freeze_digest"],
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "smallest_missing_capability": (
+            "native_articulated_asset_diagnostic_unobserved:"
+            "vast_heartbeat_container_missing"
+        ),
+        "all_terminal_blockers": sorted(adapter_blockers),
+        "construction_join": {
+            **construction_binding,
+            "receipt_digest": construction["receipt_digest"],
+        },
+        "native_adapter": adapter_binding,
+        "teardown": teardown_binding,
+        "provider_zero": provider_zero,
+        "paid_attempt": {
+            "attempt_number": adapter["attempt_number"],
+            "estimated_cost_usd": float(estimated_cost),
+            "hard_cap_usd": float(hard_cap),
+            "hard_ttl_seconds": adapter["hard_ttl_seconds"],
+            "automatic_retry_executed": False,
+        },
+        "native_asset_opened": False,
+        "native_simulator_qualification_observed": False,
+        "controls_executed": False,
+        "learned_candidate_episodes_executed": False,
+        "episode_media_exists": False,
+        "comparison_exists": False,
+        "automatic_paid_retry_executed": False,
+        "claim_ceiling": (
+            "public_dataset_construction_rehearsal_only; no partner capture, "
+            "real_site_fidelity, deployment readiness, physical performance, "
+            "native_asset_qualification, control outcome, or learned_policy_comparison"
+        ),
+        "next_action": (
+            "repair and hermetically test the generic Vast container-heartbeat startup "
+            "path, then authorize one new zero-retry native articulated diagnostic"
+        ),
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    if output_path is not None:
+        if repo_root is None:
+            raise TaskEvaluationAbstentionError("task_evaluation_repo_root_missing")
+        repo = Path(repo_root).expanduser().resolve()
+        output = Path(output_path).expanduser().resolve()
+        if not output.is_relative_to(repo) or output.is_symlink():
+            raise TaskEvaluationAbstentionError(
+                "task_evaluation_abstention_output_outside_repo"
+            )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
 
 
 def _clone(value: Mapping[str, Any], *, code: str) -> dict[str, Any]:
@@ -137,5 +395,7 @@ def materialize_task_evaluation_abstention(
 __all__ = [
     "SCHEMA_VERSION",
     "TaskEvaluationAbstentionError",
+    "collect_vast_provider_zero_receipt",
     "materialize_task_evaluation_abstention",
+    "materialize_native_gate_task_evaluation_abstention",
 ]
