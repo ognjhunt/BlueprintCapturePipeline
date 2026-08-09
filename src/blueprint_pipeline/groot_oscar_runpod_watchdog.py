@@ -209,6 +209,32 @@ def _billable_inventory(*, provider: Any, provider_name: str, name_prefix: str) 
     return provider.billable_inventory(name_prefix=name_prefix)
 
 
+def _inventory_contains_only_allowed_resources(
+    inventory: Mapping[str, Any], *, allowed_instance_ids: set[str]
+) -> bool:
+    """Prove global inventory contains only explicitly authorized siblings."""
+
+    resources = inventory.get("resources")
+    count = inventory.get("live_resource_count")
+    if (
+        inventory.get("api_confirmed") is not True
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or not isinstance(resources, list)
+        or len(resources) != count
+    ):
+        return False
+    observed: set[str] = set()
+    for row in resources:
+        if not isinstance(row, Mapping):
+            return False
+        instance_id = str(row.get("instance_id") or "").strip()
+        if not instance_id:
+            return False
+        observed.add(instance_id)
+    return len(observed) == count and observed.issubset(allowed_instance_ids)
+
+
 def _recorded_vast_instance(*, armed: Mapping[str, Any], pod_name_prefix: str) -> dict[str, Any]:
     """Read the one Vast id owned by this watchdog's attempt directory.
 
@@ -350,6 +376,7 @@ def arm_watchdog(
     deadline_epoch: float,
     pid: int | None = None,
     provider_name: str = "runpod",
+    allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -366,6 +393,9 @@ def arm_watchdog(
         "armed_at": utc_now_iso(),
         "deadline_epoch": float(deadline_epoch),
         "provider": resolved_provider,
+        "allowed_active_instance_ids": sorted(
+            {int(value) for value in allowed_active_instance_ids}
+        ),
         "pod_name_prefix": pod_name_prefix,
         # Reconstruction executors use the provider-neutral ``name_prefix``
         # spelling while the historical watchdog contract uses
@@ -584,17 +614,26 @@ def run_watchdog(
     pod_name_prefix: str,
     deadline_epoch: float,
     provider_name: str = "runpod",
+    allowed_active_instance_ids: Sequence[int] = (),
     provider_factory: Callable[[str], Any] = get_render_provider,
     clock: Callable[[], float] = time.time,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     resolved_provider = _provider_name(provider_name)
+    allowed_ids = {
+        str(int(value))
+        for value in allowed_active_instance_ids
+        if not isinstance(value, bool) and int(value) > 0
+    }
+    if len(allowed_ids) != len(tuple(allowed_active_instance_ids)):
+        raise ValueError("watchdog_allowed_active_instance_ids_invalid")
     armed = arm_watchdog(
         out_dir=root,
         pod_name_prefix=pod_name_prefix,
         deadline_epoch=deadline_epoch,
         provider_name=resolved_provider,
+        allowed_active_instance_ids=[int(value) for value in sorted(allowed_ids)],
     )
     owner_teardown_cancel: dict[str, Any] = {}
     cancel_zero_result: dict[str, Any] = {}
@@ -668,16 +707,18 @@ def run_watchdog(
                 second_zero = {}
                 second_global_zero = {}
                 exact_contract_zero = False
-            independently_zero = (
+            independently_zero = bool(
                 all(
                     inventory.get("api_confirmed") is True
                     and inventory.get("live_resource_count") == 0
-                    for inventory in (
-                        first_zero,
-                        first_global_zero,
-                        second_zero,
-                        second_global_zero,
+                    for inventory in (first_zero, second_zero)
+                )
+                and all(
+                    _inventory_contains_only_allowed_resources(
+                        inventory,
+                        allowed_instance_ids=allowed_ids,
                     )
+                    for inventory in (first_global_zero, second_global_zero)
                 )
                 and exact_contract_zero
             )
@@ -910,12 +951,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pod-name-prefix", required=True)
     parser.add_argument("--deadline-epoch", type=float, required=True)
     parser.add_argument("--provider", choices=SUPPORTED_PROVIDERS, default="runpod")
+    parser.add_argument(
+        "--allowed-active-instance-id",
+        action="append",
+        type=int,
+        default=[],
+    )
     args = parser.parse_args(argv)
     result = run_watchdog(
         out_dir=args.out_dir,
         pod_name_prefix=args.pod_name_prefix,
         deadline_epoch=args.deadline_epoch,
         provider_name=args.provider,
+        allowed_active_instance_ids=args.allowed_active_instance_id,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "provider_terminal" else 2

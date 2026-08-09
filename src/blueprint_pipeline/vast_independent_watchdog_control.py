@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from collections.abc import Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .watchdog_owner_teardown_contract import (
@@ -34,6 +35,7 @@ class VastWatchdogHandle:
     pod_name_prefix: str
     deadline_epoch: float
     started_instance_id_path: Path
+    allowed_active_instance_ids: tuple[int, ...]
 
 
 def _safe_suffix(value: str) -> str:
@@ -55,6 +57,7 @@ def arm_independent_vast_watchdog(
     max_live_minutes: int,
     generated_at: str,
     startup_wait_seconds: float = 10.0,
+    allowed_active_instance_ids: Sequence[int] = (),
 ) -> tuple[dict[str, Any], VastWatchdogHandle | None]:
     """Start a detached name-bound watchdog and prove it is armed before create."""
 
@@ -94,6 +97,9 @@ def arm_independent_vast_watchdog(
         "--provider",
         "vast",
     ]
+    allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
+    for instance_id in allowed_ids:
+        command.extend(["--allowed-active-instance-id", str(instance_id)])
     try:
         process = subprocess.Popen(  # noqa: S603  # nosec B603 - fixed module and argv
             command,
@@ -160,6 +166,7 @@ def arm_independent_vast_watchdog(
         "pod_name_prefix": prefix,
         "watchdog_out_dir": str(out_dir),
         "started_instance_id_path": str(out_dir / "started_vast_instance_id.txt"),
+        "allowed_active_instance_ids": list(allowed_ids),
         "provider_mutations_performed": 0,
         "blockers": [] if passed else ["independent_vast_watchdog_not_armed"],
         "raw_secret_values_recorded": False,
@@ -180,6 +187,7 @@ def arm_independent_vast_watchdog(
         pod_name_prefix=prefix,
         deadline_epoch=deadline,
         started_instance_id_path=out_dir / "started_vast_instance_id.txt",
+        allowed_active_instance_ids=allowed_ids,
     )
 
 

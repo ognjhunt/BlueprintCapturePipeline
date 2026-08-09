@@ -53,6 +53,7 @@ def test_watchdog_is_armed_detached_before_allocation(
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-07-27T00:00:00+00:00",
+        allowed_active_instance_ids=[47226054],
     )
 
     assert handoff["status"] == "armed"
@@ -61,6 +62,10 @@ def test_watchdog_is_armed_detached_before_allocation(
     assert handle.process.kwargs["start_new_session"] is True
     assert handle.process.kwargs["stdin"] is control.subprocess.DEVNULL
     assert handle.pod_name_prefix.startswith("blueprint-groot-oscar-canary-vast-wam-")
+    assert handle.allowed_active_instance_ids == (47226054,)
+    assert handoff["allowed_active_instance_ids"] == [47226054]
+    index = handle.process.command.index("--allowed-active-instance-id")
+    assert handle.process.command[index + 1] == "47226054"
 
 
 def test_watchdog_exact_instance_handoff_is_atomic_and_private(tmp_path: Path) -> None:

@@ -592,6 +592,7 @@ def run_joint_agent_vast(
         job_dir=job,
         max_live_minutes=remaining_minutes,
         generated_at=utc_now_iso(),
+        allowed_active_instance_ids=allowed_active_instance_ids,
     )
     if watchdog_handle is None:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)

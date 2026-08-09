@@ -460,6 +460,7 @@ def test_live_run_arms_watchdog_before_adapter_and_forwards_only_nvidia_key(
 
     def fake_arm(**kwargs):
         events.append("watchdog")
+        assert kwargs["allowed_active_instance_ids"] == ()
         return {"status": "armed"}, SimpleNamespace(started_instance_id_path=started_path)
 
     def fake_adapter(**kwargs):
