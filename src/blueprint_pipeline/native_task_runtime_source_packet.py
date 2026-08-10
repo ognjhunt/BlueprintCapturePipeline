@@ -52,6 +52,28 @@ INSTALL_ROOTS = tuple(
     f"runtime_sources/isaaclab/source/{name}" for name in ISAACLAB_PACKAGE_NAMES
 ) + ("runtime_sources/arena",)
 RUNTIME_DEPENDENCY_WHEELS = (
+    # Arena imports Isaac Lab task configuration at builder import time.  That
+    # path requires Hydra and its complete pure-Python dependency closure;
+    # bundling only hydra-core would merely defer failure to OmegaConf or the
+    # generated ANTLR parser on the paid host.
+    {
+        "filename": "antlr4_python3_runtime-4.9.3-py3-none-any.whl",
+        "package": "antlr4-python3-runtime",
+        "version": "4.9.3",
+        "license_spdx": "BSD-3-Clause",
+    },
+    {
+        "filename": "omegaconf-2.3.0-py3-none-any.whl",
+        "package": "omegaconf",
+        "version": "2.3.0",
+        "license_spdx": "BSD-3-Clause",
+    },
+    {
+        "filename": "hydra_core-1.3.2-py3-none-any.whl",
+        "package": "hydra-core",
+        "version": "1.3.2",
+        "license_spdx": "MIT",
+    },
     {
         "filename": "gymnasium-1.2.1-py3-none-any.whl",
         "package": "gymnasium",

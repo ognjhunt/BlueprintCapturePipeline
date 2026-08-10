@@ -128,6 +128,16 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         "BSD-3-Clause",
     }
     assert verified["install_roots"][-1] == "runtime_sources/arena"
+    assert {
+        ("antlr4-python3-runtime", "4.9.3"),
+        ("omegaconf", "2.3.0"),
+        ("hydra-core", "1.3.2"),
+    }.issubset(
+        {
+            (row["package"], row["version"])
+            for row in verified["runtime_dependency_wheels"]
+        }
+    )
     assert any(path.endswith("isaaclab_teleop") for path in verified["install_roots"])
     assert any(path.endswith("isaaclab_contrib") for path in verified["install_roots"])
     assert any(path.endswith("isaaclab_newton") for path in verified["install_roots"])

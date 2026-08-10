@@ -135,7 +135,15 @@ from .native_task_arena_construction_bundle import (
     build_native_task_arena_construction_bundle,
     load_verified_native_task_arena_construction_bundle,
 )
-from .native_task_arena_vast import run_native_task_arena_vast
+from .native_task_arena_controls_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
+    build_native_task_arena_controls_bundle,
+    load_verified_native_task_arena_controls_bundle,
+)
+from .native_task_arena_vast import (
+    run_native_task_arena_controls_vast,
+    run_native_task_arena_vast,
+)
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -1051,6 +1059,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+            NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1144,6 +1153,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Receipt for the exact released Isaac Lab/Arena source packet installed "
             "before a task-neutral native construction canary."
+        ),
+    )
+    gpu.add_argument(
+        "--native-task-arena-construction-result",
+        help=(
+            "Qualified native construction result used to compile the frozen "
+            "zero-action and scripted-positive control plan."
         ),
     )
     gpu.add_argument("--adp009d-sage-collision")
@@ -2986,7 +3002,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.probe_kind == NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND:
+        if args.probe_kind in {
+            NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+            NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
+        }:
+            controls_requested = (
+                args.probe_kind == NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND
+            )
             missing = [
                 name
                 for name in (
@@ -2996,6 +3018,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if not getattr(args, name, None)
             ]
+            if controls_requested and not args.native_task_arena_construction_result:
+                missing.append("native_task_arena_construction_result")
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
             if args.execute and not args.native_task_arena_bundle_receipt:
@@ -3034,30 +3058,45 @@ def main(argv: Sequence[str] | None = None) -> int:
                         packet_receipt = json.loads(
                             packet_receipt_path.read_text(encoding="utf-8")
                         )
-                        prepared_bundle = (
-                            load_verified_native_task_arena_construction_bundle(
-                                args.native_task_arena_bundle_receipt,
-                                expected_implementation_commit=control_identity[
-                                    "orchestrator_source_commit"
-                                ],
-                                expected_packet_receipt_digest=packet_receipt.get(
-                                    "receipt_digest"
-                                ),
-                                expected_runtime_source_packet_digest=source_packet.get(
-                                    "receipt_digest"
-                                ),
-                            )
+                        bundle_loader = (
+                            load_verified_native_task_arena_controls_bundle
+                            if controls_requested
+                            else load_verified_native_task_arena_construction_bundle
                         )
-                    else:
-                        prepared_bundle = build_native_task_arena_construction_bundle(
-                            job_dir=Path(args.adp_job_dir) / "bundle",
-                            packet_dir=args.native_task_arena_packet,
-                            runtime_source_packet_receipt=(
-                                args.native_task_arena_runtime_source_packet
-                            ),
-                            implementation_commit=control_identity[
+                        prepared_bundle = bundle_loader(
+                            args.native_task_arena_bundle_receipt,
+                            expected_implementation_commit=control_identity[
                                 "orchestrator_source_commit"
                             ],
+                            expected_packet_receipt_digest=packet_receipt.get(
+                                "receipt_digest"
+                            ),
+                            expected_runtime_source_packet_digest=source_packet.get(
+                                "receipt_digest"
+                            ),
+                        )
+                    else:
+                        bundle_kwargs = {
+                            "job_dir": Path(args.adp_job_dir) / "bundle",
+                            "packet_dir": args.native_task_arena_packet,
+                            "runtime_source_packet_receipt": (
+                                args.native_task_arena_runtime_source_packet
+                            ),
+                            "implementation_commit": control_identity[
+                                "orchestrator_source_commit"
+                            ],
+                        }
+                        prepared_bundle = (
+                            build_native_task_arena_controls_bundle(
+                                **bundle_kwargs,
+                                construction_result_path=(
+                                    args.native_task_arena_construction_result
+                                ),
+                            )
+                            if controls_requested
+                            else build_native_task_arena_construction_bundle(
+                                **bundle_kwargs
+                            )
                         )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(
@@ -3066,7 +3105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
-                "probe_kind": NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+                "probe_kind": args.probe_kind,
                 "orchestrator_source_commit": control_identity.get(
                     "orchestrator_source_commit"
                 ),
@@ -3114,7 +3153,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if prepared_bundle
                     else None
                 ),
-                "execution_mode": "construction_canary",
+                "execution_mode": (
+                    "controls" if controls_requested else "construction_canary"
+                ),
                 "candidate_policy_queried": False,
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
@@ -3141,7 +3182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             paid_admission.update(
                 {
                     "program_id": "arm-decision-proof-v1",
-                    "probe_kind": NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+                    "probe_kind": args.probe_kind,
                     "control_plane_identity": control_identity,
                     "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                     "hard_cap_usd": args.adp_max_spend_usd,
@@ -3186,7 +3227,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provider_mutations_performed": 0,
                 }
             else:
-                result = run_native_task_arena_vast(
+                run_native = (
+                    run_native_task_arena_controls_vast
+                    if controls_requested
+                    else run_native_task_arena_vast
+                )
+                result = run_native(
                     job_dir=args.adp_job_dir,
                     prepared_bundle=prepared_bundle,
                     paid_resource_admission_grant=grant,

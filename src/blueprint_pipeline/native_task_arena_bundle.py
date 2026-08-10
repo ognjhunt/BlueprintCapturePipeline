@@ -252,6 +252,7 @@ def build_native_task_arena_bundle(
     expected_output_filename: str = DEFAULT_EXPECTED_OUTPUT_FILENAME,
     container_image: str = DEFAULT_IMAGE,
     runtime_source_packet_receipt: str | Path | None = None,
+    bound_runtime_inputs: Mapping[str, str | Path] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Package one exact native-task packet without reconstructing its scene."""
@@ -308,6 +309,27 @@ def build_native_task_arena_bundle(
         module_names.add(module.name)
         modules.append(module)
 
+    input_sources: list[tuple[PurePosixPath, Path]] = []
+    for relative_text, source_text in sorted((bound_runtime_inputs or {}).items()):
+        relative = PurePosixPath(str(relative_text))
+        raw_source = Path(source_text).expanduser()
+        if (
+            relative.is_absolute()
+            or relative.as_posix() in {"", ".", ".."}
+            or ".." in relative.parts
+            or relative.parts[0] == "native_task_packet"
+            or raw_source.is_symlink()
+        ):
+            raise NativeTaskArenaBundleError(
+                [f"native_task_arena_bundle_runtime_input_invalid:{relative_text}"]
+            )
+        source = raw_source.resolve()
+        if not source.is_file():
+            raise NativeTaskArenaBundleError(
+                [f"native_task_arena_bundle_runtime_input_missing:{relative.as_posix()}"]
+            )
+        input_sources.append((relative, source))
+
     job = Path(job_dir).expanduser().resolve()
     if job.exists():
         shutil.rmtree(job)
@@ -343,6 +365,18 @@ def build_native_task_arena_bundle(
             source_packet_path,
             runtime_sources / "native_task_runtime_sources.zip",
         )
+    input_rows: list[dict[str, Any]] = []
+    for relative, source in input_sources:
+        destination = runtime / "runtime_inputs" / Path(*relative.parts)
+        ensure_dir(destination.parent)
+        shutil.copy2(source, destination)
+        input_rows.append(
+            {
+                "relative_path": f"runtime_inputs/{relative.as_posix()}",
+                "size_bytes": destination.stat().st_size,
+                "sha256": _sha256(destination),
+            }
+        )
     entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
     entrypoint.write_text(
         _entrypoint(
@@ -371,6 +405,7 @@ def build_native_task_arena_bundle(
         "packet_file_count": len(packet_rows),
         "worker_source_sha256": _sha256(worker),
         "runtime_modules": module_rows,
+        "bound_runtime_inputs": input_rows,
         "runtime_source_packet": (
             {
                 "receipt_digest": runtime_source_receipt["receipt_digest"],
