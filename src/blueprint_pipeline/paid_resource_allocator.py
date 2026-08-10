@@ -1138,6 +1138,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     gpu.add_argument(
+        "--adp009d-worker-source",
+        default=None,
+        help=(
+            "Worker to run instead of the rigid micro-check. This image is the "
+            "only one carrying isaaclab and Arena, and an articulated task "
+            "needs them exactly as much as the rigid one does."
+        ),
+    )
+    gpu.add_argument(
+        "--adp009d-extra-native",
+        action="append",
+        default=[],
+        help=(
+            "A file the overridden worker needs beside it - its spec, its "
+            "imports. Repeatable. Without these the worker boots and cannot "
+            "find its own input."
+        ),
+    )
+    gpu.add_argument(
+        "--adp009d-skip-sage-derivatives",
+        action="store_true",
+        help=(
+            "Skip the task-collision derivative and the SAGE source audits. "
+            "They are keyed to two named collider prims in one specific scene, "
+            "so a different scene cannot produce them."
+        ),
+    )
+    gpu.add_argument(
         "--adp009d-diagnostic-only",
         action="store_true",
         help=(
@@ -2791,6 +2819,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         run_controls=args.adp009d_controls,
                         scenario_instance_path=args.adp009d_scenario_instance,
                         aura_particlefield_path=args.adp009d_aura_particlefield,
+                        worker_source=args.adp009d_worker_source,
+                        extra_native_paths=args.adp009d_extra_native,
+                        build_task_collision_derivative=(
+                            not args.adp009d_skip_sage_derivatives
+                        ),
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(f"adp009d_bundle_preparation_failed:{type(exc).__name__}")
