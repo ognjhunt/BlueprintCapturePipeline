@@ -13,9 +13,9 @@ import argparse
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 PINHOLE_HORIZONTAL_APERTURE_MM = 20.955
@@ -38,6 +38,17 @@ class NativeTaskArenaEnvironment:
     scene_asset_names: Mapping[str, str]
     contact_sensor_names: Mapping[str, str]
     camera_scene_names: Mapping[str, str]
+    scene_asset_names_by_entity_id: Mapping[str, str] = field(default_factory=dict)
+    scene_asset_prim_paths_by_entity_id: Mapping[str, str] = field(
+        default_factory=dict
+    )
+    entity_reset_recipes_by_entity_id: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict
+    )
+    entity_spawn_plan: Mapping[str, Any] = field(default_factory=dict)
+
+
+DeformableObjectCfgFactory = Callable[[Mapping[str, Any]], Any]
 
 
 def _validated_plan(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -99,10 +110,11 @@ def _resolve_portable_assets(
     errors: list[str] = []
     for row in relative:
         role = str(row.get("semantic_role") or "")
+        identity = str(row.get("entity_id") or role)
         relative_path = str(row["usd_path"])
         pure = PurePosixPath(relative_path)
         if pure.is_absolute() or ".." in pure.parts or not pure.name:
-            errors.append(f"native_task_arena_runtime_asset_path_invalid:{role}")
+            errors.append(f"native_task_arena_runtime_asset_path_invalid:{identity}")
             continue
         candidate = root.joinpath(*pure.parts)
         resolved = candidate.resolve()
@@ -111,17 +123,21 @@ def _resolve_portable_assets(
             expected_size = int(row["size_bytes"])
             expected_digest = str(row["sha256"])
         except (KeyError, TypeError, ValueError):
-            errors.append(f"native_task_arena_runtime_asset_identity_invalid:{role}")
+            errors.append(
+                f"native_task_arena_runtime_asset_identity_invalid:{identity}"
+            )
             continue
         if (
             _has_symlink_component(candidate, root=root)
             or outside
             or not resolved.is_file()
         ):
-            errors.append(f"native_task_arena_runtime_asset_missing:{role}")
+            errors.append(f"native_task_arena_runtime_asset_missing:{identity}")
             continue
         if resolved.stat().st_size != expected_size or _sha256(resolved) != expected_digest:
-            errors.append(f"native_task_arena_runtime_asset_identity_mismatch:{role}")
+            errors.append(
+                f"native_task_arena_runtime_asset_identity_mismatch:{identity}"
+            )
             continue
         row["usd_path"] = str(resolved)
     if errors:
@@ -252,15 +268,52 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _native_deformable_object_cfg(spawn: Mapping[str, Any]) -> Any:
+    """Build the pinned Isaac Lab config after the pure spawn join succeeds."""
+
+    from isaaclab.sim import UsdFileCfg
+    from isaaclab_physx.assets.deformable_object.deformable_object_cfg import (
+        DeformableObjectCfg,
+    )
+
+    pose = spawn["pose_world"]
+    return DeformableObjectCfg(
+        prim_path=spawn["prim_path"],
+        spawn=UsdFileCfg(
+            usd_path=spawn["usd_path"],
+            visible=bool(spawn["visible"]),
+            semantic_tags=[tuple(row) for row in spawn["semantic_tags"]],
+        ),
+        init_state=DeformableObjectCfg.InitialStateCfg(
+            pos=tuple(pose["position_world_m"]),
+            rot=tuple(pose["orientation_xyzw"]),
+        ),
+    )
+
+
 def build_native_task_arena_environment(
     scene_plan: Mapping[str, Any],
     *,
     device: str = "cuda:0",
     bundle_root: str | Path | None = None,
+    entity_authoring_manifest: Mapping[str, Any] | None = None,
+    deformable_object_cfg_factory: DeformableObjectCfgFactory | None = None,
 ) -> NativeTaskArenaEnvironment:
     """Instantiate the pinned Arena environment from one immutable plan."""
 
     plan = _validated_plan(scene_plan)
+    from blueprint_pipeline.native_task_entity_spawn_plan import (
+        NativeTaskEntitySpawnPlanError,
+        materialize_native_task_entity_spawn_plan,
+    )
+
+    try:
+        entity_spawn_plan = materialize_native_task_entity_spawn_plan(
+            scene_plan=plan,
+            authoring_manifest=entity_authoring_manifest,
+        )
+    except NativeTaskEntitySpawnPlanError as exc:
+        raise NativeTaskArenaRuntimeError(exc.errors) from exc
     runtime_objects = _resolve_portable_assets(plan, bundle_root=bundle_root)
 
     from blueprint_pipeline.native_task_arena_import_scope import (
@@ -339,7 +392,11 @@ def build_native_task_arena_environment(
     embodiment.scene_config.robot.init_state = (
         embodiment.scene_config.robot.init_state.replace(joint_pos=exact_robot_reset)
     )
-    embodiment.scene_config.robot.spawn.semantic_tags = [("class", "robot")]
+    robot_tags = [("class", "robot")]
+    robot_entity_ids = plan.get("task_entity_role_index", {}).get("robot", [])
+    if len(robot_entity_ids) == 1:
+        robot_tags.append(("entity_id", str(robot_entity_ids[0])))
+    embodiment.scene_config.robot.spawn.semantic_tags = robot_tags
 
     camera_names: dict[str, str] = {}
     for camera in plan["cameras"]:
@@ -361,31 +418,58 @@ def build_native_task_arena_environment(
         camera_names[parameters["role"]] = parameters["runtime_name"]
 
     assets: list[Any] = []
-    scene_asset_names: dict[str, str] = {}
+    scene_asset_names = dict(entity_spawn_plan["role_aliases"])
+    scene_asset_names_by_entity_id = dict(
+        entity_spawn_plan["entity_asset_names"]
+    )
+    scene_asset_prim_paths_by_entity_id = dict(
+        entity_spawn_plan["entity_prim_paths"]
+    )
+    entity_reset_recipes_by_entity_id = {
+        str(row["entity_id"]): dict(row["reset_recipe"])
+        for row in entity_spawn_plan["assets"]
+        if row.get("entity_id") and row.get("reset_recipe")
+    }
     task_object: Any | None = None
-    for row in runtime_objects:
+    task_object_runtime_name: str | None = None
+    cfg_factory = deformable_object_cfg_factory or _native_deformable_object_cfg
+    for spawn in entity_spawn_plan["assets"]:
+        source_row = runtime_objects[int(spawn["source_object_index"])]
+        row = {**spawn, "usd_path": source_row["usd_path"]}
         role = row["semantic_role"]
+        runtime_name = row["runtime_name"]
         spawn_addon: dict[str, Any] = {"visible": bool(row["visible"])}
-        if role == "task_object":
-            spawn_addon["semantic_tags"] = [("class", "task_object")]
-        obj = Object(
-            name=role,
-            prim_path=row["prim_path"],
-            object_type=ObjectType[row["object_type"]],
-            usd_path=row["usd_path"],
-            initial_pose=Pose(
-                position_xyz=tuple(row["pose_world"]["position_world_m"]),
-                rotation_xyzw=tuple(row["pose_world"]["orientation_xyzw"]),
-            ),
-            spawn_cfg_addon=spawn_addon,
-        )
-        if role == "task_object" and row["object_type"] == "ARTICULATION":
+        spawn_addon["semantic_tags"] = [
+            tuple(tag) for tag in row["semantic_tags"]
+        ]
+        if row["adapter_kind"] == "isaac_deformable_object":
+            obj = ConfigAsset(
+                name=runtime_name,
+                object_cfg=cfg_factory(row),
+            )
+        else:
+            obj = Object(
+                name=runtime_name,
+                prim_path=row["prim_path"],
+                object_type=ObjectType[row["object_type"]],
+                usd_path=row["usd_path"],
+                initial_pose=Pose(
+                    position_xyz=tuple(row["pose_world"]["position_world_m"]),
+                    rotation_xyzw=tuple(row["pose_world"]["orientation_xyzw"]),
+                ),
+                spawn_cfg_addon=spawn_addon,
+            )
+        is_articulated_target = row["object_type"] == "ARTICULATION" and role in {
+            "task_object",
+            "articulated_fixture",
+        }
+        if is_articulated_target:
             obj.object_cfg.init_state = obj.object_cfg.init_state.replace(
                 joint_pos=plan["reset"]["task_joint_positions_rad"]
             )
             task_object = obj
+            task_object_runtime_name = runtime_name
         assets.append(obj)
-        scene_asset_names[role] = role
 
     contact_sensor_names: dict[str, str] = {}
     for index, sensor in enumerate(plan["articulation"]["contact_sensors"]):
@@ -403,7 +487,7 @@ def build_native_task_arena_environment(
                 params={
                     "position_range": (0.0, 0.0),
                     "velocity_range": (0.0, 0.0),
-                    "asset_cfg": SceneEntityCfg("task_object"),
+                    "asset_cfg": SceneEntityCfg(task_object_runtime_name),
                 },
             )
         assets.append(
@@ -475,12 +559,17 @@ def build_native_task_arena_environment(
         scene_asset_names=scene_asset_names,
         contact_sensor_names=contact_sensor_names,
         camera_scene_names=camera_names,
+        scene_asset_names_by_entity_id=scene_asset_names_by_entity_id,
+        scene_asset_prim_paths_by_entity_id=scene_asset_prim_paths_by_entity_id,
+        entity_reset_recipes_by_entity_id=entity_reset_recipes_by_entity_id,
+        entity_spawn_plan=entity_spawn_plan,
     )
 
 
 __all__ = [
     "NativeTaskArenaEnvironment",
     "NativeTaskArenaRuntimeError",
+    "DeformableObjectCfgFactory",
     "build_native_task_arena_environment",
     "camera_runtime_parameters",
 ]
