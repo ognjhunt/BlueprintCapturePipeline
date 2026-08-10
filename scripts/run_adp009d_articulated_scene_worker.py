@@ -242,8 +242,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         launcher_parser = argparse.ArgumentParser(add_help=False)
         AppLauncher.add_app_launcher_args(launcher_parser)
+        # Parsed from an empty list, so the worker's own command line never
+        # reaches these - both flags must be set explicitly. Configuring a
+        # camera is not the same as enabling rendering: rt15 configured all
+        # three, built the embodiment, and Isaac then refused with "A camera
+        # was spawned without the --enable_cameras flag".
         launcher_args = launcher_parser.parse_args([])
         launcher_args.headless = True
+        launcher_args.enable_cameras = True
         app_launcher = AppLauncher(launcher_args)
         simulation_app = app_launcher.app
     except Exception as exc:  # noqa: BLE001

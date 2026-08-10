@@ -648,3 +648,38 @@ def test_worker_composes_from_the_real_bundle_layout(stubbed_arena, tmp_path):
     for row in by_role.values():
         assert Path(row["resolved_path"]).parent == assets
     assert result["phase_reached"] == "adapter_wired", result.get("blockers")
+
+
+def test_the_app_launcher_is_told_to_enable_cameras(stubbed_arena, tmp_path):
+    """Configuring a camera is not the same as enabling rendering.
+
+    rt15 configured all three cameras, built the embodiment, and then Isaac
+    refused: "A camera was spawned without the --enable_cameras flag". The
+    launcher args are parsed from an empty list - the worker's own command line
+    is not consulted for them - so headless and enable_cameras have to be set
+    explicitly, and only headless was.
+    """
+
+    seen = {}
+
+    class _RecordingLauncher(_FakeAppLauncher):
+        def __init__(self, args):
+            seen["headless"] = getattr(args, "headless", None)
+            seen["enable_cameras"] = getattr(args, "enable_cameras", None)
+            super().__init__(args)
+
+    stubbed_arena["isaaclab.app"].AppLauncher = _RecordingLauncher
+
+    runtime = _write_runtime(tmp_path)
+    output = tmp_path / "out" / "result.json"
+    _load_worker().main(
+        [
+            "--runtime-dir", str(runtime),
+            "--output-dir", str(output.parent),
+            "--spec", str(runtime / "adp009d_articulated_scene_spec.json"),
+            "--output", str(output),
+        ]
+    )
+
+    assert seen["headless"] is True
+    assert seen["enable_cameras"] is True
