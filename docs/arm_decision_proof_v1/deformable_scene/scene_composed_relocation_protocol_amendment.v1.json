@@ -1,0 +1,85 @@
+{
+  "schema_version": "adp_deformable_scene_composed_relocation_protocol_amendment.v1",
+  "program_id": "arm-decision-proof-v1",
+  "run_id": "adp-deformable-scene-e2e-v1",
+  "amends": [
+    "scene_selection_preregistration.v1.json",
+    "scene_composition_protocol_amendment.v1.json"
+  ],
+  "recorded_at": "2026-08-10T14:10:25Z",
+  "recorded_before_scene_task_freeze": true,
+  "recorded_before_learned_policy_outcome_inspection": true,
+  "learned_policy_outcomes_inspected": false,
+  "authority": "user_explicit_scope_amendment_in_active_goal_thread",
+  "bounded_change": {
+    "added_scenario_family": "held_out_composed_relocation",
+    "added_resolved_cell_count": 1,
+    "purpose": "test_composition_of_one_added_towel_twin_and_one_added_basket_twin_in_a_different_observed_scene_region",
+    "broad_randomized_campaign_authorized": false,
+    "additional_task_family_authorized": false,
+    "additional_policy_candidate_authorized": false
+  },
+  "entity_composition": {
+    "retained_source_towel_instance_id": "79",
+    "retained_source_basket_instance_id": "87",
+    "source_towel_gaussians_removed": false,
+    "source_towel_collider_removed": false,
+    "source_basket_gaussians_removed": false,
+    "source_basket_collider_removed": false,
+    "source_entities_inpainted": false,
+    "task_towel_is_separate_inserted_entity": true,
+    "task_basket_is_separate_inserted_entity": true,
+    "inserted_towel_role": "movable_deformable",
+    "inserted_basket_role": "destination_receptacle",
+    "source_entities_are_unscored_background_and_design_bases": true
+  },
+  "deterministic_randomization": {
+    "requested_semantics": "random_place_that_still_works",
+    "implementation": "enumerate_only_admissible_support_regions_then_select_one_by_frozen_seed_before_policy_outcomes",
+    "seed": 2026081001,
+    "runtime_resampling_allowed": false,
+    "policy_outcome_conditioned_selection_allowed": false,
+    "manual_post_outcome_repositioning_allowed": false,
+    "minimum_separation_from_canonical_task_region_m": 1.5,
+    "selection_tie_break": "seeded_index_over_canonical_sorted_admissible_candidates"
+  },
+  "relocated_cell_hard_gates": [
+    "support_region_is_observed_and_registered_in_exact_840873_interiorgs_sage_frame",
+    "both_inserted_entities_have_stable_support_and_no_initial_penetration",
+    "inserted_towel_and_basket_are_mutually_clear_at_reset",
+    "no_observed_obstacle_is_moved_or_removed",
+    "collision_free_franka_base_and_full_phase_ik_pass",
+    "external_and_wrist_policy_views_show_both_task_entities",
+    "overview_review_camera_shows_full_motion_and_destination",
+    "native_readback_proves_resolved_poses_and_all_cell_parameters",
+    "zero_action_fails_in_the_exact_cell",
+    "scripted_positive_succeeds_through_the_shared_action_seam_and_genuine_contacts_in_the_exact_cell",
+    "both_candidates_receive_the_identical_resolved_cell_and_seed"
+  ],
+  "failure_policy": {
+    "no_admissible_relocated_pose": "typed_composed_relocation_placement_blocker",
+    "control_failure": "harness_or_task_construction_blocker_not_policy_failure",
+    "automatic_paid_retry": false,
+    "manual_workaround": false
+  },
+  "claim_separation": {
+    "observed": [
+      "source_towel_visible_rest_state_and_bounds",
+      "source_basket_visible_exterior_open_rim_and_sage_collision_cavity",
+      "selected_support_region_appearance_and_registered_collision"
+    ],
+    "composed_not_observed": [
+      "both_inserted_entity_poses",
+      "inserted_towel_complete_geometry_and_deformable_parameters",
+      "inserted_basket_complete_hidden_geometry_material_and_empty_interior",
+      "paired_task_arrangement"
+    ],
+    "prohibited_claims": [
+      "inserted_entities_were_present_in_the_public_scene",
+      "randomized_composition_is_source_truth",
+      "generated_towel_or_basket_is_physically_equivalent_to_the_observed_source",
+      "relocated_simulator_success_is_physical_franka_or_site_performance"
+    ]
+  },
+  "claim_ceiling": "one_development_only_seed_resolved_composed_relocation_cell_not_scene_truth_or_physical_validation"
+}

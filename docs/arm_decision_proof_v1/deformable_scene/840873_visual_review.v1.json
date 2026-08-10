@@ -1,0 +1,185 @@
+{
+  "claim_boundary": {
+    "collision_cavity_establishes_hidden_appearance": false,
+    "engineered_twin_hidden_geometry_is_source_truth": false,
+    "physical_material_equivalence_proven": false,
+    "review_is_evaluation_policy_media": false,
+    "virtual_closeup_recovers_missing_source_observations": false
+  },
+  "collision_topology_receipt_digest": "sha256:4dcf34d7ffbd2141a340813afde6b020236fe6ca7320164cb20bf5f8dc9ff36a",
+  "composition_required": true,
+  "learned_policy_outcomes_inspected": false,
+  "reconnaissance_only": true,
+  "render_manifest_digest": "sha256:911de7e0386757e0a89d4b8d36b38f3610bf012ecd81d6f0ca9997832ee5e376",
+  "review_digest": "sha256:f1a84eaf198f2b3306d3f5c19f75191692577af9606a934a3d56db2e16b3aac0",
+  "reviewed_at": "2026-08-10T14:07:00Z",
+  "reviewer_id": "codex_primary_visual_review_20260810",
+  "scene_id": "840873",
+  "schema_version": "adp_deformable_scene_visual_review.v1",
+  "selected_destination_design_basis_instance_id": "87",
+  "selected_movable_instance_id": "79",
+  "source_destination_complete_interior_appearance_observed": false,
+  "source_destination_is_occupied": true,
+  "targets": [
+    {
+      "cited_frames": [
+        {
+          "camera_id": "basket_108_e00_a01",
+          "sha256": "sha256:9637ebcf39fbfc76e11cb13002c62f3151087b77ef293e1d4a08f49c9ed9eb5c",
+          "size_bytes": 1049635
+        },
+        {
+          "camera_id": "basket_108_e01_a00",
+          "sha256": "sha256:3182c01208faae74f41ba3f743a7ea4441c0edc526b4fdaabae2ff6c5e0e7337",
+          "size_bytes": 1015639
+        }
+      ],
+      "collision_component_identity_passed": false,
+      "complete_interior_appearance_observed": false,
+      "engineered_twin_design_basis_admitted": false,
+      "interior_occupied": true,
+      "material_class": "not_applicable",
+      "material_class_supported_by_observation": false,
+      "open_collision_cavity_passed": false,
+      "open_rim_observed": true,
+      "publisher_instance_id": "108",
+      "rest_state": "not_applicable",
+      "review_notes": "Views show a woven open basket substantially filled by books or boxes. Its empty interior is not observed and no exact component identity was included in the selected geometry receipt, so it is rejected.",
+      "rigid_exterior_observed": true,
+      "selection_role": "rejected_destination_candidate",
+      "source_destination_admitted": false,
+      "support_relation": "observed_container_contents",
+      "target_id": "basket_108",
+      "target_kind": "destination_receptacle"
+    },
+    {
+      "cited_frames": [
+        {
+          "camera_id": "basket_212_e00_a03",
+          "sha256": "sha256:75f67158cc1515897eab637519b12ae87740f21b966e158a577f6f59d07563ba",
+          "size_bytes": 898703
+        },
+        {
+          "camera_id": "basket_212_e01_a03",
+          "sha256": "sha256:c7e60066eb8e2b6234fa07ca18d6ef2adeae7fe6043e0e3ee3871e42af5e4830",
+          "size_bytes": 935503
+        }
+      ],
+      "collision_component_identity_passed": false,
+      "complete_interior_appearance_observed": false,
+      "engineered_twin_design_basis_admitted": false,
+      "interior_occupied": false,
+      "material_class": "not_applicable",
+      "material_class_supported_by_observation": false,
+      "open_collision_cavity_passed": false,
+      "open_rim_observed": false,
+      "publisher_instance_id": "212",
+      "rest_state": "not_applicable",
+      "review_notes": "Useful views show a closed pink lidded storage box embedded in a cubby, not an open receptacle. It is rejected.",
+      "rigid_exterior_observed": true,
+      "selection_role": "rejected_destination_candidate",
+      "source_destination_admitted": false,
+      "support_relation": "not_applicable",
+      "target_id": "basket_212",
+      "target_kind": "destination_receptacle"
+    },
+    {
+      "cited_frames": [
+        {
+          "camera_id": "basket_213_e00_a03",
+          "sha256": "sha256:915fcbf39f8e86ac143b0b7e469ae3a7ff37f8f900565d5eb2d83b371b3a9000",
+          "size_bytes": 733285
+        },
+        {
+          "camera_id": "basket_213_e01_a03",
+          "sha256": "sha256:3b2bd7b4133cc0092904c418ad947fb2ce491ceee29737aa3b6b0471c7b6c918",
+          "size_bytes": 810179
+        }
+      ],
+      "collision_component_identity_passed": false,
+      "complete_interior_appearance_observed": false,
+      "engineered_twin_design_basis_admitted": false,
+      "interior_occupied": false,
+      "material_class": "not_applicable",
+      "material_class_supported_by_observation": false,
+      "open_collision_cavity_passed": false,
+      "open_rim_observed": false,
+      "publisher_instance_id": "213",
+      "rest_state": "not_applicable",
+      "review_notes": "Useful views show a closed pink lidded storage box embedded in a cubby, not an open receptacle. It is rejected.",
+      "rigid_exterior_observed": true,
+      "selection_role": "rejected_destination_candidate",
+      "source_destination_admitted": false,
+      "support_relation": "not_applicable",
+      "target_id": "basket_213",
+      "target_kind": "destination_receptacle"
+    },
+    {
+      "cited_frames": [
+        {
+          "camera_id": "basket_87_e00_a00",
+          "sha256": "sha256:362a5580ddf73c589e95dc8fa3ae38707997899bcaed7a84e4c9ad08cf50cad3",
+          "size_bytes": 921243
+        },
+        {
+          "camera_id": "basket_87_e01_a00",
+          "sha256": "sha256:4eece7707996e8dfe05af26de37880b5e817646cd76ad1f5cdd8158ed9073ea5",
+          "size_bytes": 733332
+        }
+      ],
+      "collision_component_identity_passed": true,
+      "complete_interior_appearance_observed": false,
+      "engineered_twin_design_basis_admitted": true,
+      "interior_occupied": true,
+      "material_class": "not_applicable",
+      "material_class_supported_by_observation": false,
+      "open_collision_cavity_passed": true,
+      "open_rim_observed": true,
+      "publisher_instance_id": "87",
+      "rest_state": "not_applicable",
+      "review_notes": "Useful views show an open shallow rack or basket with a visible rim and exterior, occupied by three bottles or jars. Contents obscure most floor and wall-thickness appearance. The source basket is not admitted as the scored destination; exact SAGE component and cavity evidence may support only an independently authored empty twin.",
+      "rigid_exterior_observed": true,
+      "selection_role": "engineered_twin_design_basis",
+      "source_destination_admitted": false,
+      "support_relation": "observed_container_contents",
+      "target_id": "basket_87",
+      "target_kind": "destination_receptacle"
+    },
+    {
+      "cited_frames": [
+        {
+          "camera_id": "towel_79_e00_a00",
+          "sha256": "sha256:a477b2e7dfd6d13b3000ae104cbb7bbf578f859a674bf12254f733cf013f5d0e",
+          "size_bytes": 902017
+        },
+        {
+          "camera_id": "towel_79_e00_a01",
+          "sha256": "sha256:88a37b989042cfdd32b5d5b8501cbd4806b6c78244e61809e97db25098946091",
+          "size_bytes": 892392
+        },
+        {
+          "camera_id": "towel_79_e01_a00",
+          "sha256": "sha256:e9ef71687e766b61fdc3cd055108d4a76c0e39343f5d7c1a407dbb5d8e01f602",
+          "size_bytes": 896015
+        }
+      ],
+      "collision_component_identity_passed": true,
+      "complete_interior_appearance_observed": false,
+      "engineered_twin_design_basis_admitted": false,
+      "interior_occupied": false,
+      "material_class": "towel_or_cloth",
+      "material_class_supported_by_observation": true,
+      "open_collision_cavity_passed": false,
+      "open_rim_observed": false,
+      "publisher_instance_id": "79",
+      "rest_state": "rolled",
+      "review_notes": "Useful views show one rolled white towel in a two-over-three towel stack. The selected roll rests on observed lower towels rather than directly on the rigid counter. Several other planned closeups are blurred, occluded, or unrenderable. Fiber composition, stiffness, thickness under load, and physical material parameters are not observed.",
+      "rigid_exterior_observed": false,
+      "selection_role": "selected_movable_design_basis",
+      "source_destination_admitted": false,
+      "support_relation": "observed_deformable_stack",
+      "target_id": "towel_79",
+      "target_kind": "movable_deformable"
+    }
+  ]
+}
