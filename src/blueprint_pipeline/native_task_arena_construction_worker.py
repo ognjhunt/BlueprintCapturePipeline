@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,18 @@ DEPENDENCY_IMPORTS = (
     "omegaconf",
     "hydra",
     "hydra.core",
+    "msgpack",
+    "zmq",
+    "tensordict",
+    "importlib_metadata",
+    "zipp",
+    "orjson",
+    "pyvers",
+    "git",
+    "gitdb",
+    "smmap",
+    "rsl_rl",
+    "rsl_rl.runners",
     "pxr.Usd",
     "pxr.UsdPhysics",
     "pxr.UsdVol",
@@ -130,6 +143,7 @@ def preflight_native_dependency_matrix() -> dict[str, Any]:
                     "available": False,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
+                    "traceback": traceback.format_exc(),
                 }
             )
             blockers.append(f"native_task_dependency_missing:{name}")

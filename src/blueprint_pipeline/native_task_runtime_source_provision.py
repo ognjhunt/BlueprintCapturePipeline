@@ -34,6 +34,17 @@ TOP_LEVEL_PACKAGES = (
     "typing_extensions",
     "wcwidth",
     "h5py",
+    "msgpack",
+    "zmq",
+    "rsl_rl",
+    "tensordict",
+    "importlib_metadata",
+    "zipp",
+    "orjson",
+    "pyvers",
+    "git",
+    "gitdb",
+    "smmap",
     "isaaclab",
     "isaaclab_assets",
     "isaaclab_contrib",
@@ -89,7 +100,7 @@ def _extract_runtime_dependency_wheels(
                 interpreter, abi, platform_tag = wheel_tag.split("-", 2)
                 if (
                     interpreter != runtime_python_tag
-                    or abi != runtime_python_tag
+                    or abi not in {runtime_python_tag, "abi3"}
                     or platform_tag not in runtime_platform_tags
                 ):
                     raise RuntimeError("native_task_runtime_dependency_binary_wheel_incompatible")
@@ -130,6 +141,10 @@ def _runtime_wheel_compatibility() -> tuple[str, tuple[str, ...]]:
             major, minor = (0, 0)
         if (major, minor) >= (2, 28):
             tags.append("manylinux_2_28_x86_64")
+        if (major, minor) >= (2, 26):
+            tags.append("manylinux_2_26_x86_64")
+        if (major, minor) >= (2, 17):
+            tags.extend(("manylinux_2_17_x86_64", "manylinux2014_x86_64"))
     return python_tag, tuple(tags)
 
 
@@ -246,10 +261,13 @@ def provision_native_task_runtime_sources(
         ).expanduser().resolve()
         site_packages.mkdir(parents=True, exist_ok=True)
         path_file = site_packages / "blueprint_native_task_runtime_sources.pth"
+        # Plain .pth path rows are appended after the simulator's existing
+        # site-packages and can silently resolve a different preinstalled
+        # version.  Put the verified closure first so the receipt's wheel
+        # identities are the code that actually imports.
+        priority_paths = [str(path) for path in (dependency_target, *install_roots)]
         path_file.write_text(
-            "".join(
-                f"{path}\n" for path in (dependency_target, *install_roots)
-            ),
+            f"import sys;sys.path[:0]={priority_paths!r}\n",
             encoding="utf-8",
         )
         result["path_file"] = str(path_file)

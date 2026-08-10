@@ -132,6 +132,11 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         ("antlr4-python3-runtime", "4.9.3"),
         ("omegaconf", "2.3.0"),
         ("hydra-core", "1.3.2"),
+        ("msgpack", "1.2.1"),
+        ("pyzmq", "27.1.0"),
+        ("rsl-rl-lib", "5.0.1"),
+        ("tensordict", "0.13.0"),
+        ("GitPython", "3.1.58"),
     }.issubset(
         {
             (row["package"], row["version"])
@@ -230,7 +235,12 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
         site_packages_dir=tmp_path / "site-packages",
         python_executable="/isaac-sim/python.sh",
         runtime_python_tag="cp312",
-        runtime_platform_tags=("manylinux_2_28_x86_64",),
+        runtime_platform_tags=(
+            "manylinux_2_28_x86_64",
+            "manylinux_2_26_x86_64",
+            "manylinux_2_17_x86_64",
+            "manylinux2014_x86_64",
+        ),
         run_command=fake_run,
     )
 
@@ -251,7 +261,10 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert len(result["install_roots"]) == len(ISAACLAB_PACKAGE_NAMES) + 1
     assert Path(result["isaac_sim_link"]["path"]).readlink() == simulator
     path_lines = Path(result["path_file"]).read_text(encoding="utf-8").splitlines()
-    assert path_lines == [result["runtime_dependency_target"], *result["install_roots"]]
+    assert len(path_lines) == 1
+    assert path_lines[0].startswith("import sys;sys.path[:0]=[")
+    assert result["runtime_dependency_target"] in path_lines[0]
+    assert all(path in path_lines[0] for path in result["install_roots"])
 
 
 def test_binary_runtime_dependency_rejects_wrong_python_or_platform_before_probe(

@@ -74,6 +74,93 @@ RUNTIME_DEPENDENCY_WHEELS = (
         "version": "1.3.2",
         "license_spdx": "MIT",
     },
+    # Arena's registry imports every released policy adapter before the native
+    # builder is available.  Bind that complete import-time closure up front so
+    # a paid host cannot reveal msgpack, ZeroMQ, RSL-RL, or one of RSL-RL's
+    # import-only dependencies serially across multiple launches.
+    {
+        "filename": (
+            "msgpack-1.2.1-cp312-cp312-manylinux2014_x86_64."
+            "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+        ),
+        "package": "msgpack",
+        "version": "1.2.1",
+        "license_spdx": "Apache-2.0",
+        "pure_python": False,
+        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
+    },
+    {
+        "filename": (
+            "pyzmq-27.1.0-cp312-abi3-manylinux_2_26_x86_64."
+            "manylinux_2_28_x86_64.whl"
+        ),
+        "package": "pyzmq",
+        "version": "27.1.0",
+        "license_spdx": "BSD-3-Clause",
+        "pure_python": False,
+        "wheel_tag": "cp312-abi3-manylinux_2_28_x86_64",
+    },
+    {
+        "filename": "rsl_rl_lib-5.0.1-py3-none-any.whl",
+        "package": "rsl-rl-lib",
+        "version": "5.0.1",
+        "license_spdx": "BSD-3-Clause",
+    },
+    {
+        "filename": "tensordict-0.13.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "package": "tensordict",
+        "version": "0.13.0",
+        "license_spdx": "BSD-3-Clause",
+        "pure_python": False,
+        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
+    },
+    {
+        "filename": "importlib_metadata-9.0.0-py3-none-any.whl",
+        "package": "importlib-metadata",
+        "version": "9.0.0",
+        "license_spdx": "Apache-2.0",
+    },
+    {
+        "filename": "zipp-4.1.0-py3-none-any.whl",
+        "package": "zipp",
+        "version": "4.1.0",
+        "license_spdx": "MIT",
+    },
+    {
+        "filename": (
+            "orjson-3.11.9-cp312-cp312-manylinux_2_17_x86_64."
+            "manylinux2014_x86_64.whl"
+        ),
+        "package": "orjson",
+        "version": "3.11.9",
+        "license_spdx": "Apache-2.0 OR MIT",
+        "pure_python": False,
+        "wheel_tag": "cp312-cp312-manylinux_2_17_x86_64",
+    },
+    {
+        "filename": "pyvers-0.2.3-py3-none-any.whl",
+        "package": "pyvers",
+        "version": "0.2.3",
+        "license_spdx": "MIT",
+    },
+    {
+        "filename": "gitpython-3.1.58-py3-none-any.whl",
+        "package": "GitPython",
+        "version": "3.1.58",
+        "license_spdx": "BSD-3-Clause",
+    },
+    {
+        "filename": "gitdb-4.0.12-py3-none-any.whl",
+        "package": "gitdb",
+        "version": "4.0.12",
+        "license_spdx": "BSD-3-Clause",
+    },
+    {
+        "filename": "smmap-5.0.3-py3-none-any.whl",
+        "package": "smmap",
+        "version": "5.0.3",
+        "license_spdx": "BSD-3-Clause",
+    },
     {
         "filename": "gymnasium-1.2.1-py3-none-any.whl",
         "package": "gymnasium",
