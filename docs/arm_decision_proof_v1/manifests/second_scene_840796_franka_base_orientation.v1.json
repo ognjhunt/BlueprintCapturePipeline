@@ -1,0 +1,116 @@
+{
+  "base_position_world_m": [
+    1.75,
+    1.99,
+    0.0
+  ],
+  "bearing_interval_span_rad": 1.4277023362388475,
+  "blockers": [],
+  "claim_boundary": {
+    "collision_or_contact_qualified": false,
+    "geometry_based_orientation_candidate_only": true,
+    "native_ik_qualified": false,
+    "physical_reachability_proven": false
+  },
+  "maximum_allowed_deviation_rad": 1.5707963267948966,
+  "maximum_observed_deviation_rad": 0.7138511681194242,
+  "method": "center_of_smallest_circular_phase_bearing_interval",
+  "phase_targets": [
+    {
+      "bearing_world_rad": -0.4897156745691357,
+      "deviation_from_resolved_yaw_rad": -0.7138511681194228,
+      "distance_xy_m": 0.38947648196007945,
+      "phase_id": "door_00deg",
+      "target_position_world_m": [2.0937, 1.8068, 1.0225]
+    },
+    {
+      "bearing_world_rad": -0.3906254743967934,
+      "deviation_from_resolved_yaw_rad": -0.6147609679470807,
+      "distance_xy_m": 0.37185222629695236,
+      "phase_id": "door_05deg",
+      "target_position_world_m": [2.093841, 1.848411, 1.0225]
+    },
+    {
+      "bearing_world_rad": -0.28610520654355376,
+      "deviation_from_resolved_yaw_rad": -0.5102407000938411,
+      "distance_xy_m": 0.35477550745788533,
+      "phase_id": "door_10deg",
+      "target_position_world_m": [2.090354, 1.889876, 1.0225]
+    },
+    {
+      "bearing_world_rad": -0.17557123570286517,
+      "deviation_from_resolved_yaw_rad": -0.3997067292531522,
+      "distance_xy_m": 0.33847134659376993,
+      "phase_id": "door_15deg",
+      "target_position_world_m": [2.083268, 1.930879, 1.0225]
+    },
+    {
+      "bearing_world_rad": -0.058488728219678224,
+      "deviation_from_resolved_yaw_rad": -0.28262422176996527,
+      "distance_xy_m": 0.32318664208163045,
+      "phase_id": "door_20deg",
+      "target_position_world_m": [2.072634, 1.971108, 1.0225]
+    },
+    {
+      "bearing_world_rad": 0.06556477962611588,
+      "deviation_from_resolved_yaw_rad": -0.15857071392417144,
+      "distance_xy_m": 0.30919834365662424,
+      "phase_id": "door_25deg",
+      "target_position_world_m": [2.058534, 2.010258, 1.0225]
+    },
+    {
+      "bearing_world_rad": 0.19677973372287144,
+      "deviation_from_resolved_yaw_rad": -0.02735575982741567,
+      "distance_xy_m": 0.2968049608244445,
+      "phase_id": "door_30deg",
+      "target_position_world_m": [2.041077, 2.048029, 1.0225]
+    },
+    {
+      "bearing_world_rad": 0.33502139896442223,
+      "deviation_from_resolved_yaw_rad": 0.1108859054141349,
+      "distance_xy_m": 0.286310951493302,
+      "phase_id": "door_35deg",
+      "target_position_world_m": [2.020393, 2.084136, 1.0225]
+    },
+    {
+      "bearing_world_rad": 0.47967298150996485,
+      "deviation_from_resolved_yaw_rad": 0.25553748795967746,
+      "distance_xy_m": 0.2780174083901941,
+      "phase_id": "door_40deg",
+      "target_position_world_m": [1.996642, 2.118302, 1.0225]
+    },
+    {
+      "bearing_world_rad": 0.6295860918169606,
+      "deviation_from_resolved_yaw_rad": 0.4054505982666732,
+      "distance_xy_m": 0.27218955129284444,
+      "phase_id": "door_45deg",
+      "target_position_world_m": [1.970003, 2.150268, 1.0225]
+    },
+    {
+      "bearing_world_rad": 0.7830642122644008,
+      "deviation_from_resolved_yaw_rad": 0.5589287187141134,
+      "distance_xy_m": 0.26903364979496514,
+      "phase_id": "door_50deg",
+      "target_position_world_m": [1.940679, 2.179791, 1.0225]
+    },
+    {
+      "bearing_world_rad": 0.9379866616697116,
+      "deviation_from_resolved_yaw_rad": 0.7138511681194242,
+      "distance_xy_m": 0.26866855519766375,
+      "phase_id": "door_55deg",
+      "target_position_world_m": [1.908894, 2.206646, 1.0225]
+    }
+  ],
+  "program_id": "arm-decision-proof-v1",
+  "receipt_digest": "sha256:c35e13c5491cd05adcd3e6d2fb9abca80d0fd44562c70bbb4c6eab8bcbc24fd1",
+  "resolved_orientation_xyzw": [
+    0.0,
+    0.0,
+    0.11183331420610618,
+    0.9937269795238923
+  ],
+  "resolved_yaw_world_rad": 0.22413549355028728,
+  "schema_version": "franka_base_orientation_resolution.v1",
+  "source_receipt_digest": "sha256:cd958b8d46510059b3a12bca317c3aaf479da99255bfe691d99fbe27d0c212c9",
+  "status": "resolved_candidate"
+}
