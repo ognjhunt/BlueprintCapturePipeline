@@ -418,6 +418,42 @@ def test_joint_agent_provider_uses_gpu_graphics_and_distinct_runtime(tmp_path: P
     assert "adp_content_agents_provider_runtime_output.zip" not in script
 
 
+def test_provider_config_routes_replaceable_hosted_model_backend(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    base = {
+        "project": {"working_dir": "old"},
+        "input": {"usd_path": "old"},
+        "steps": {
+            "analyze_structure": {},
+            "predict": {},
+            "infer_articulation_candidates": {},
+            "identify_asset": {},
+            "build_dataset_usd": {},
+            "apply_joint_rigger": {},
+        },
+    }
+    path = tmp_path / "joint.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    config = joint_vast._provider_config(
+        {"config": {"path": str(path)}},
+        model_backend="openai",
+        model_id="gpt-4.1",
+    )
+
+    for step, key in (
+        ("analyze_structure", "llm"),
+        ("predict", "vlm"),
+        ("infer_articulation_candidates", "vlm"),
+    ):
+        assert config["steps"][step][key] == {
+            "backend": "openai",
+            "model": "gpt-4.1",
+        }
+
+
 def _prepared_bundle(tmp_path: Path) -> dict:
     bundle = tmp_path / "bundle.zip"
     with zipfile.ZipFile(bundle, "w") as archive:

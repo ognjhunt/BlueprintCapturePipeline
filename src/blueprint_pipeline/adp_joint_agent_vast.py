@@ -19,6 +19,10 @@ import yaml
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .hosted_model_inference_preflight import (
+    BACKENDS as HOSTED_MODEL_BACKENDS,
+    SCHEMA_VERSION as HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION,
+)
 from .nvidia_nim_model_preflight import (
     DEFAULT_ENDPOINT as NIM_DEFAULT_ENDPOINT,
     DEFAULT_MODEL as NIM_DEFAULT_MODEL,
@@ -148,7 +152,9 @@ def _deterministic_zip(root: Path, destination: Path) -> None:
             archive.writestr(info, path.read_bytes())
 
 
-def _provider_config(packet: Mapping[str, Any]) -> dict[str, Any]:
+def _provider_config(
+    packet: Mapping[str, Any], *, model_backend: str = "nim", model_id: str = NIM_DEFAULT_MODEL
+) -> dict[str, Any]:
     config_path = Path(str((packet.get("config") or {}).get("path") or ""))
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
@@ -156,6 +162,15 @@ def _provider_config(packet: Mapping[str, Any]) -> dict[str, Any]:
     config["project"]["working_dir"] = "runtime_output/joint_agent_work"
     config["input"]["usd_path"] = "input/articulated_source.usda"
     steps = config["steps"]
+    steps["analyze_structure"]["llm"] = {
+        "backend": model_backend,
+        "model": model_id,
+    }
+    steps["predict"]["vlm"] = {"backend": model_backend, "model": model_id}
+    steps["infer_articulation_candidates"]["vlm"] = {
+        "backend": model_backend,
+        "model": model_id,
+    }
     steps["identify_asset"]["renderer"] = {"backend": "remote"}
     steps["build_dataset_usd"]["renderer"] = {"backend": "remote"}
     apply = steps["apply_joint_rigger"]
@@ -218,6 +233,7 @@ def build_joint_agent_vast_bundle(
     freeze_path: str | Path,
     scope_amendment_path: str | Path,
     nim_preflight_path: str | Path,
+    model_preflight_path: str | Path | None = None,
     scene_optimizer_core_zip_path: str | Path,
     job_dir: str | Path,
     generated_at: str | None = None,
@@ -255,25 +271,50 @@ def build_joint_agent_vast_bundle(
         digest_field="amendment_digest",
         error="adp_joint_agent_scope_amendment_invalid",
     )
-    nim_preflight = _canonical_receipt(
-        Path(nim_preflight_path).expanduser().resolve(),
+    preflight_path = model_preflight_path or nim_preflight_path
+    model_preflight = _canonical_receipt(
+        Path(preflight_path).expanduser().resolve(),
         digest_field="receipt_digest",
-        error="adp_joint_agent_nim_preflight_invalid",
+        error="adp_joint_agent_model_preflight_invalid",
     )
-    if (
-        nim_preflight.get("schema_version") != NIM_PREFLIGHT_SCHEMA_VERSION
-        or nim_preflight.get("status") != "qualified"
-        or nim_preflight.get("endpoint") != NIM_DEFAULT_ENDPOINT
-        or nim_preflight.get("model") != NIM_DEFAULT_MODEL
-        or nim_preflight.get("http_status") != 200
-        or nim_preflight.get("credential_validated") is not True
-        or nim_preflight.get("required_model_present") is not True
-        or nim_preflight.get("paid_inference_performed") is not False
-        or nim_preflight.get("provider_mutations_performed") != 0
-        or nim_preflight.get("raw_secret_values_recorded") is not False
-        or nim_preflight.get("blockers") not in ([], None)
-    ):
-        raise ValueError("adp_joint_agent_nim_preflight_not_qualified")
+    if model_preflight.get("schema_version") == HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION:
+        model_backend = str(model_preflight.get("backend") or "")
+        model_id = str(model_preflight.get("model") or "")
+        expected = HOSTED_MODEL_BACKENDS.get(model_backend) or {}
+        if (
+            model_preflight.get("status") != "qualified"
+            or model_preflight.get("endpoint") != expected.get("endpoint")
+            or model_id != expected.get("model")
+            or model_preflight.get("inference_http_status") != 200
+            or model_preflight.get("credential_validated") is not True
+            or model_preflight.get("choice_count", 0) < 1
+            or model_preflight.get("inference_probe_performed") is not True
+            or model_preflight.get("provider_mutations_performed") != 0
+            or model_preflight.get("raw_secret_values_recorded") is not False
+            or model_preflight.get("blockers") not in ([], None)
+        ):
+            raise ValueError("adp_joint_agent_model_preflight_not_qualified")
+        released_backend = "nim" if model_backend == "nvidia_nim" else model_backend
+    else:
+        if (
+            model_preflight.get("schema_version") != NIM_PREFLIGHT_SCHEMA_VERSION
+            or model_preflight.get("status") != "qualified"
+            or model_preflight.get("endpoint") != NIM_DEFAULT_ENDPOINT
+            or model_preflight.get("model") != NIM_DEFAULT_MODEL
+            or model_preflight.get("http_status") != 200
+            or model_preflight.get("credential_validated") is not True
+            or model_preflight.get("required_model_present") is not True
+            or model_preflight.get("paid_inference_performed") is not False
+            or model_preflight.get("provider_mutations_performed") != 0
+            or model_preflight.get("raw_secret_values_recorded") is not False
+            or model_preflight.get("blockers") not in ([], None)
+        ):
+            raise ValueError("adp_joint_agent_nim_preflight_not_qualified")
+        model_backend, released_backend, model_id = (
+            "nvidia_nim",
+            "nim",
+            NIM_DEFAULT_MODEL,
+        )
     destination = Path(job_dir).expanduser().resolve()
     if destination.exists() and any(destination.iterdir()):
         raise ValueError("adp_joint_agent_bundle_job_dir_not_empty")
@@ -320,7 +361,9 @@ def build_joint_agent_vast_bundle(
     ensure_dir(runtime / "input")
     ensure_dir(runtime / "blueprint_src" / "blueprint_pipeline")
     shutil.copy2(source_asset, runtime / "input" / "articulated_source.usda")
-    config = _provider_config(packet)
+    config = _provider_config(
+        packet, model_backend=released_backend, model_id=model_id
+    )
     (runtime / "joint_agent.yaml").write_text(
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
     )
@@ -343,7 +386,7 @@ def build_joint_agent_vast_bundle(
     write_json(runtime / "joint_review_contract.json", review)
     write_json(runtime / "execution_authority.json", authority)
     write_json(runtime / "joint_agent_packet.json", packet)
-    write_json(runtime / "nvidia_nim_model_preflight.json", nim_preflight)
+    write_json(runtime / "model_endpoint_preflight.json", model_preflight)
 
     subprocess.run(
         ["git", "archive", "--format=zip", f"--output={runtime / 'content_agents_source.zip'}", "HEAD"],
@@ -425,7 +468,12 @@ def build_joint_agent_vast_bundle(
         ),
         "freeze_digest": freeze["freeze_digest"],
         "scope_amendment_digest": scope_amendment["amendment_digest"],
-        "nim_preflight_receipt_digest": nim_preflight["receipt_digest"],
+        "model_preflight_receipt_digest": model_preflight["receipt_digest"],
+        "nim_preflight_receipt_digest": (
+            model_preflight["receipt_digest"]
+            if model_preflight.get("schema_version") == NIM_PREFLIGHT_SCHEMA_VERSION
+            else None
+        ),
         "config_sha256": _sha256(runtime / "joint_agent.yaml"),
         "review_contract_digest": review["contract_digest"],
         "renderer": {
@@ -448,7 +496,7 @@ def build_joint_agent_vast_bundle(
             "failure_blocker": "joint_agent_runtime_disk_headroom_insufficient",
         },
         "python_build_dependency_plan": build_dependency_plan,
-        "model": {"backend": "nvidia_nim", "id": "google/gemma-4-31b-it"},
+        "model": {"backend": model_backend, "id": model_id},
         "completion_retries": 0,
         "execution_role": "optional_construction_enrichment",
         "failure_blocks_deterministic_asset_construction": False,
@@ -572,32 +620,41 @@ def _retained_execution_artifact_blockers(
     return sorted(set(blockers))
 
 
-def _nvidia_api_key() -> str:
-    value = str(os.environ.get("NVIDIA_API_KEY") or "").strip()
+def _model_api_key(backend: str) -> tuple[str, str]:
+    if backend == "openai":
+        env_name, filename = "OPENAI_API_KEY", "openai_api_key"
+    elif backend == "nvidia_nim":
+        env_name, filename = "NVIDIA_API_KEY", "ngc_api_key"
+    else:
+        raise ValueError("adp_joint_agent_model_backend_invalid")
+    value = str(os.environ.get(env_name) or "").strip()
     if value:
-        return value
-    path = Path("~/.blueprint-secrets/ngc_api_key").expanduser()
-    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+        return value, env_name
+    path = Path("~/.blueprint-secrets").expanduser() / filename
+    return (
+        path.read_text(encoding="utf-8").strip() if path.is_file() else "",
+        env_name,
+    )
 
 
 @contextmanager
-def _authority_environment():
+def _authority_environment(model_backend: str):
+    secret, secret_env = _model_api_key(model_backend)
     names = (
         *_VAST_MUTATION_ENV,
         _VAST_SINGLE_ATTEMPT_ENV,
-        "NVIDIA_API_KEY",
+        secret_env,
         "BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS",
     )
     previous = {name: os.environ.get(name) for name in names}
-    secret = _nvidia_api_key()
     if not secret:
-        raise ValueError("adp_joint_agent_nvidia_api_key_missing")
+        raise ValueError("adp_joint_agent_model_api_key_missing")
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
         os.environ[_VAST_SINGLE_ATTEMPT_ENV] = "0"
-        os.environ["NVIDIA_API_KEY"] = secret
-        os.environ["BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"] = "NVIDIA_API_KEY"
+        os.environ[secret_env] = secret
+        os.environ["BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"] = secret_env
         yield
     finally:
         for name, value in previous.items():
@@ -705,7 +762,9 @@ def run_joint_agent_vast(
         }
     adapter: dict[str, Any] = {}
     try:
-        with _authority_environment():
+        with _authority_environment(
+            str((bundle.get("model") or {}).get("backend") or "nvidia_nim")
+        ):
             adapter = run_vast_provider_adapter(
                 job_dir=provider_run,
                 mode="live-startup-probe",
@@ -819,10 +878,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--execution-authority", required=True)
     parser.add_argument("--freeze", required=True)
     parser.add_argument("--scope-amendment", required=True)
-    parser.add_argument("--nim-preflight", required=True)
+    parser.add_argument("--nim-preflight")
+    parser.add_argument("--model-preflight")
     parser.add_argument("--scene-optimizer-core", required=True)
     parser.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
+    if bool(args.nim_preflight) == bool(args.model_preflight):
+        parser.error("provide exactly one of --nim-preflight or --model-preflight")
+    preflight = args.model_preflight or args.nim_preflight
     receipt = build_joint_agent_vast_bundle(
         repo_root=args.repo_root,
         joint_agent_root=args.joint_agent_root,
@@ -830,7 +893,8 @@ def main(argv: list[str] | None = None) -> int:
         execution_authority_path=args.execution_authority,
         freeze_path=args.freeze,
         scope_amendment_path=args.scope_amendment,
-        nim_preflight_path=args.nim_preflight,
+        nim_preflight_path=preflight,
+        model_preflight_path=args.model_preflight,
         scene_optimizer_core_zip_path=args.scene_optimizer_core,
         job_dir=args.job_dir,
     )
