@@ -806,6 +806,25 @@ def test_dry_run_bundle_receipt_reloads_exact_bytes_and_rejects_tamper(
         )
 
 
+def _paid_campaign_args(
+    tmp_path: Path, *, initial_spent_usd: float = 0.0, total_cap_usd: float = 5.0
+) -> list[str]:
+    return [
+        "--adp-campaign-budget-ledger",
+        str(tmp_path / "paid-campaign-budget.json"),
+        "--adp-campaign-id",
+        "native-task-arena-fixture-campaign",
+        "--adp-campaign-authority-id",
+        "fixture-authority-usd-5",
+        "--adp-campaign-initial-spent-usd",
+        str(initial_spent_usd),
+        "--adp-campaign-total-spend-cap-usd",
+        str(total_cap_usd),
+        "--adp-campaign-initial-spend-basis",
+        "digest-bound fixture receipts",
+    ]
+
+
 @pytest.mark.parametrize("execute", [False, True])
 def test_canonical_allocator_routes_sealed_native_task_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
@@ -865,6 +884,7 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         "--adp-hard-ttl-seconds",
         "5400",
     ]
+    args.extend(_paid_campaign_args(tmp_path))
     if execute:
         args.extend(
             [
@@ -889,6 +909,12 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
     assert admission["allocation_binding"]["runtime_source_packet_receipt_digest"].startswith(
         "sha256:"
     )
+    assert admission["paid_campaign"]["campaign_id"] == (
+        "native-task-arena-fixture-campaign"
+    )
+    adapter = json.loads((tmp_path / "adapter.json").read_text())
+    assert adapter["paid_campaign"]["binding"]["reservation_max_spend_usd"] == 1.0
+    assert adapter["paid_campaign"]["open_worst_case_reservation_retained"] is execute
 
 
 @pytest.mark.parametrize("execute", [False, True])
@@ -955,6 +981,7 @@ def test_canonical_allocator_routes_qualified_native_controls_bundle(
         "--adp-hard-ttl-seconds",
         "5400",
     ]
+    args.extend(_paid_campaign_args(tmp_path))
     if execute:
         args.extend(
             [
@@ -976,3 +1003,170 @@ def test_canonical_allocator_routes_qualified_native_controls_bundle(
     assert admission["probe_kind"] == CONTROLS_PROBE_KIND
     assert admission["allocation_binding"]["execution_mode"] == "controls"
     assert admission["candidate_policy_queried"] is False
+
+
+def test_canonical_allocator_blocks_exhausted_paid_campaign_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet(tmp_path, scene_id="840313")
+    build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "frozen-bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_native_task_arena_vast",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider runner reached after campaign exhaustion")
+        ),
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "adapter.json"),
+        "--pod-name",
+        "native-task-arena",
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(_runtime_source_packet(tmp_path)),
+        "--native-task-arena-bundle-receipt",
+        str(
+            tmp_path
+            / "frozen-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+        ),
+        "--adp-job-dir",
+        str(tmp_path / "job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+        "--execute",
+    ]
+    args.extend(
+        _paid_campaign_args(tmp_path, initial_spent_usd=5.25, total_cap_usd=5.0)
+    )
+
+    assert allocator.main(args) == 2
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["status"] == "blocked"
+    assert admission["provider_mutations_performed"] == 0
+    assert admission["paid_campaign"]["preview"]["admitted"] is False
+    adapter = json.loads((tmp_path / "adapter.json").read_text())
+    assert adapter["provider_mutations_performed"] == 0
+    assert adapter["blockers"] == [
+        "native_task_arena_paid_campaign_total_spend_cap_exceeded"
+    ]
+    ledger = json.loads((tmp_path / "paid-campaign-budget.json").read_text())
+    assert ledger["cap_overrun_usd"] == 0.25
+    assert ledger["reservations"] == []
+
+
+def test_canonical_allocator_releases_reservation_when_admission_blocks_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet(tmp_path, scene_id="840313")
+    build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "frozen-bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "require_paid_resource_admission",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            allocator.PaidResourceAdmissionBlocked(["forced_admission_block"])
+        ),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_native_task_arena_vast",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider runner reached after admission block")
+        ),
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "adapter.json"),
+        "--pod-name",
+        "native-task-arena",
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(_runtime_source_packet(tmp_path)),
+        "--native-task-arena-bundle-receipt",
+        str(
+            tmp_path
+            / "frozen-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+        ),
+        "--adp-job-dir",
+        str(tmp_path / "job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+        "--execute",
+    ]
+    args.extend(_paid_campaign_args(tmp_path, initial_spent_usd=2.0))
+
+    assert allocator.main(args) == 2
+    adapter = json.loads((tmp_path / "adapter.json").read_text())
+    assert adapter["blockers"] == ["forced_admission_block"]
+    assert adapter["provider_mutations_performed"] == 0
+    assert adapter["paid_campaign"]["settlement"]["charged_usd"] == 0.0
+    assert adapter["paid_campaign"]["open_worst_case_reservation_retained"] is False
+    ledger = json.loads((tmp_path / "paid-campaign-budget.json").read_text())
+    assert ledger["committed_usd"] == 2.0
+    assert ledger["open_reservation_count"] == 0

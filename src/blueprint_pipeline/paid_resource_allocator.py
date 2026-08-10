@@ -13,6 +13,7 @@ import os
 import signal
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -71,6 +72,10 @@ from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     build_paid_lane_admission,
     require_paid_resource_admission,
+)
+from .paid_campaign_spend_budget import (
+    PaidCampaignBudgetExceeded,
+    PaidCampaignSpendBudget,
 )
 from .paid_resource_cli_arguments import add_cpu_arguments as _add_cpu_arguments
 from .hosted_model_inference_preflight import (
@@ -1227,6 +1232,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-max-spend-usd", type=float, default=2.00)
     gpu.add_argument("--adp-hard-ttl-seconds", type=int, default=7200)
     gpu.add_argument("--adp-machine-avoidlist")
+    gpu.add_argument("--adp-campaign-budget-ledger")
+    gpu.add_argument("--adp-campaign-id")
+    gpu.add_argument("--adp-campaign-authority-id")
+    gpu.add_argument("--adp-campaign-initial-spent-usd", type=float)
+    gpu.add_argument("--adp-campaign-total-spend-cap-usd", type=float)
+    gpu.add_argument("--adp-campaign-initial-spend-basis")
     gpu.add_argument(
         "--adp-allowed-active-vast-instance-id",
         action="append",
@@ -3015,9 +3026,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "native_task_arena_packet",
                     "native_task_arena_runtime_source_packet",
                     "adp_job_dir",
+                    "adp_campaign_budget_ledger",
+                    "adp_campaign_id",
+                    "adp_campaign_authority_id",
+                    "adp_campaign_initial_spend_basis",
                 )
                 if not getattr(args, name, None)
             ]
+            if args.adp_campaign_initial_spent_usd is None:
+                missing.append("adp_campaign_initial_spent_usd")
+            if args.adp_campaign_total_spend_cap_usd is None:
+                missing.append("adp_campaign_total_spend_cap_usd")
             if controls_requested and not args.native_task_arena_construction_result:
                 missing.append("native_task_arena_construction_result")
             control_blockers, control_identity = _control_plane_checkout_blockers()
@@ -3103,6 +3122,114 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "native_task_arena_bundle_preparation_failed:"
                         f"{type(exc).__name__}"
                     )
+            campaign_budget = None
+            campaign_context = None
+            campaign_reservation = None
+            if prepared_bundle is not None and not blockers:
+                reservation_material = json.dumps(
+                    {
+                        "campaign_id": args.adp_campaign_id,
+                        "probe_kind": args.probe_kind,
+                        "input_digest": prepared_bundle.get("input_digest"),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                reservation_id = (
+                    "native-task-arena:"
+                    + hashlib.sha256(reservation_material).hexdigest()
+                )
+                reservation_owner_id = "controller:" + uuid.uuid4().hex
+                try:
+                    campaign_budget = PaidCampaignSpendBudget(
+                        args.adp_campaign_budget_ledger,
+                        campaign_id=args.adp_campaign_id,
+                        authority_id=args.adp_campaign_authority_id,
+                        initial_spent_usd=args.adp_campaign_initial_spent_usd,
+                        total_spend_cap_usd=(
+                            args.adp_campaign_total_spend_cap_usd
+                        ),
+                        initial_spend_basis=args.adp_campaign_initial_spend_basis,
+                    )
+                    campaign_snapshot = campaign_budget.snapshot()
+                    campaign_preview = campaign_budget.preview(
+                        reservation_id=reservation_id,
+                        max_spend_usd=args.adp_max_spend_usd,
+                    )
+                    campaign_context = {
+                        "schema_version": "native_task_paid_campaign_binding.v1",
+                        "ledger_path": str(campaign_budget.path),
+                        "campaign_id": args.adp_campaign_id,
+                        "authority_id": args.adp_campaign_authority_id,
+                        "initial_spent_usd": args.adp_campaign_initial_spent_usd,
+                        "initial_spend_basis": (
+                            args.adp_campaign_initial_spend_basis
+                        ),
+                        "total_spend_cap_usd": (
+                            args.adp_campaign_total_spend_cap_usd
+                        ),
+                        "reservation_id": reservation_id,
+                        "reservation_owner_id": reservation_owner_id,
+                        "reservation_max_spend_usd": args.adp_max_spend_usd,
+                        "preview": campaign_preview,
+                        "snapshot_digest_before": campaign_snapshot[
+                            "snapshot_digest"
+                        ],
+                        "committed_usd_before": campaign_snapshot[
+                            "committed_usd"
+                        ],
+                        "cap_overrun_usd_before": campaign_snapshot[
+                            "cap_overrun_usd"
+                        ],
+                    }
+                    if campaign_preview["admitted"] is not True:
+                        blockers.append(
+                            "native_task_arena_"
+                            + str(campaign_preview["blocker"])
+                        )
+                except (OSError, ValueError) as exc:
+                    blockers.append(
+                        "native_task_arena_campaign_budget_invalid:"
+                        + str(exc)
+                    )
+            if (
+                args.execute
+                and prepared_bundle is not None
+                and campaign_budget is not None
+                and campaign_context is not None
+                and not blockers
+            ):
+                try:
+                    campaign_reservation = campaign_budget.reserve(
+                        reservation_id=campaign_context["reservation_id"],
+                        reservation_owner_id=campaign_context[
+                            "reservation_owner_id"
+                        ],
+                        max_spend_usd=args.adp_max_spend_usd,
+                    )
+                    reserved_snapshot = campaign_budget.snapshot()
+                    campaign_context.update(
+                        reservation=campaign_reservation,
+                        snapshot_digest_after_reservation=reserved_snapshot[
+                            "snapshot_digest"
+                        ],
+                        committed_usd_after_reservation=reserved_snapshot[
+                            "committed_usd"
+                        ],
+                    )
+                except PaidCampaignBudgetExceeded as exc:
+                    campaign_context["atomic_reservation_admission"] = (
+                        exc.admission
+                    )
+                    blockers.append(
+                        "native_task_arena_"
+                        + str(exc.admission.get("blocker"))
+                    )
+                except (OSError, ValueError) as exc:
+                    blockers.append(
+                        "native_task_arena_campaign_budget_reservation_failed:"
+                        + str(exc)
+                    )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": args.probe_kind,
@@ -3165,6 +3292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "allowed_active_vast_instance_ids": sorted(
                     set(args.adp_allowed_active_vast_instance_id)
                 ),
+                "paid_campaign": campaign_context,
             }
             allocation_binding_digest = (
                 "sha256:"
@@ -3200,6 +3328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     "allocation_binding": allocation_binding,
                     "allocation_binding_digest": allocation_binding_digest,
+                    "paid_campaign": campaign_context,
                 }
             )
             write_json(Path(args.admission_out), paid_admission)
@@ -3212,15 +3341,61 @@ def main(argv: Sequence[str] | None = None) -> int:
                         expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
                     )
                 except PaidResourceAdmissionBlocked as exc:
+                    campaign_settlement = None
+                    settlement_error = None
+                    if (
+                        campaign_budget is not None
+                        and campaign_context is not None
+                        and campaign_reservation is not None
+                    ):
+                        try:
+                            campaign_settlement = campaign_budget.settle(
+                                reservation_id=campaign_context["reservation_id"],
+                                reservation_owner_id=campaign_context[
+                                    "reservation_owner_id"
+                                ],
+                                charged_usd=0.0,
+                                cost_basis=(
+                                    "paid_admission_blocked_before_provider_mutation"
+                                ),
+                                outcome="blocked",
+                            )
+                        except (OSError, ValueError) as settle_exc:
+                            settlement_error = (
+                                "native_task_arena_campaign_budget_settlement_failed:"
+                                f"{type(settle_exc).__name__}"
+                            )
                     result = {
                         "status": "blocked",
-                        "blockers": exc.blockers,
+                        "blockers": sorted(
+                            set(
+                                [
+                                    *(blockers or exc.blockers),
+                                    *([settlement_error] if settlement_error else []),
+                                ]
+                            )
+                        ),
                         "provider_mutations_performed": 0,
+                        "paid_campaign": {
+                            "binding": campaign_context,
+                            "reservation": campaign_reservation,
+                            "settlement": campaign_settlement,
+                            "settlement_error": settlement_error,
+                            "open_worst_case_reservation_retained": bool(
+                                campaign_reservation
+                                and campaign_settlement is None
+                            ),
+                            "snapshot": (
+                                campaign_budget.snapshot()
+                                if campaign_budget is not None
+                                else None
+                            ),
+                        },
                     }
                     write_json(Path(args.adapter_output), result)
                     print(json.dumps({"success": False}, sort_keys=True))
                     return 2
-            if prepared_bundle is None:
+            if prepared_bundle is None or blockers:
                 result = {
                     "status": "blocked",
                     "blockers": sorted(set(blockers)),
@@ -3245,6 +3420,57 @@ def main(argv: Sequence[str] | None = None) -> int:
                         args.adp_allowed_active_vast_instance_id
                     ),
                 )
+            result = dict(result)
+            if campaign_budget is not None and campaign_context is not None:
+                campaign_settlement = None
+                settlement_error = None
+                if campaign_reservation is not None:
+                    retained_cost = result.get("estimated_cost_usd")
+                    cost_basis = "provider_retained_estimated_cost_after_teardown"
+                    if (
+                        retained_cost is None
+                        and result.get("provider_mutations_performed") == 0
+                    ):
+                        retained_cost = 0.0
+                        cost_basis = "zero_provider_mutations_observed"
+                    if isinstance(retained_cost, (int, float)) and not isinstance(
+                        retained_cost, bool
+                    ):
+                        try:
+                            campaign_settlement = campaign_budget.settle(
+                                reservation_id=campaign_context["reservation_id"],
+                                reservation_owner_id=campaign_context[
+                                    "reservation_owner_id"
+                                ],
+                                charged_usd=float(retained_cost),
+                                cost_basis=cost_basis,
+                                outcome=str(result.get("status") or "unknown"),
+                            )
+                        except (OSError, ValueError) as exc:
+                            settlement_error = (
+                                "native_task_arena_campaign_budget_settlement_failed:"
+                                f"{type(exc).__name__}"
+                            )
+                            result["status"] = "blocked"
+                            result["blockers"] = sorted(
+                                set(
+                                    [
+                                        *(result.get("blockers") or []),
+                                        settlement_error,
+                                    ]
+                                )
+                            )
+                result["paid_campaign"] = {
+                    "binding": campaign_context,
+                    "reservation": campaign_reservation,
+                    "settlement": campaign_settlement,
+                    "settlement_error": settlement_error,
+                    "open_worst_case_reservation_retained": bool(
+                        campaign_reservation is not None
+                        and campaign_settlement is None
+                    ),
+                    "snapshot": campaign_budget.snapshot(),
+                }
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
@@ -3309,6 +3535,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             ):
                 blockers.append(
                     "adp009d_articulated_native_policy_or_controls_forbidden"
+                )
+            if articulated_native_requested and args.execute:
+                blockers.append(
+                    "adp009d_articulated_paid_execution_retired_use_native_task_arena"
                 )
             gated_backbone_selected = "groot_n17_droid" in selected_candidates
             gated_backbone_access: dict[str, Any] | None = None
@@ -3466,7 +3696,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 except PaidResourceAdmissionBlocked as exc:
                     result = {
                         "status": "blocked",
-                        "blockers": exc.blockers,
+                        "blockers": sorted(set(blockers or exc.blockers)),
                         "provider_mutations_performed": 0,
                     }
                     write_json(Path(args.adapter_output), result)

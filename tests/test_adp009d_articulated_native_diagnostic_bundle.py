@@ -623,6 +623,40 @@ def test_allocator_forbids_policy_in_blank_stage_articulated_mode(
     )
 
 
+def test_allocator_retires_paid_articulated_one_off_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "build_articulated_native_diagnostic_bundle",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("retired paid one-off reached bundle construction")
+        ),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_adp009d_native_microcheck_vast",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("retired paid one-off reached provider runner")
+        ),
+    )
+
+    assert allocator.main([*_allocator_args(tmp_path), "--execute"]) == 2
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["status"] == "blocked"
+    assert admission["provider_mutations_performed"] == 0
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert result["blockers"] == [
+        "adp009d_articulated_paid_execution_retired_use_native_task_arena"
+    ]
+    assert result["provider_mutations_performed"] == 0
+
+
 def test_transport_selects_articulated_bundle_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
