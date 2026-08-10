@@ -52,6 +52,74 @@ def test_single_channel_semantic_ids_cover_current_arena_output_contract() -> No
     assert result["passed"] is True
 
 
+def test_single_channel_ids_resolve_replicator_rgba_tuple_label_keys() -> None:
+    """The pinned renderer can pair int32 pixels with packed-RGBA info keys."""
+
+    rgba = (240, 4, 111, 255)
+    packed_little = rgba[0] | (rgba[1] << 8) | (rgba[2] << 16) | (rgba[3] << 24)
+    packed_signed = packed_little - (1 << 32)
+    semantic = np.zeros((40, 60, 1), dtype=np.int32)
+    semantic[10:30, 20:40, 0] = packed_signed
+
+    result = measure_native_task_camera_observability(
+        semantic_ids=semantic,
+        id_to_labels={str(rgba): {"class": "task_object"}},
+        minimum_pixels=100,
+        minimum_pixel_fraction=0.01,
+    )
+
+    assert result["target_semantic_ids"] == [packed_signed]
+    assert result["pixel_count"] == 400
+    assert result["semantic_identifier_resolution"] == {
+        "scalar_target_identifier_count": 0,
+        "rgba_tuple_target_identifier_count": 1,
+        "rgba_tuple_encoding": "rgba_little_endian_int32",
+        "rgba_tuple_encoding_evidence_match_count": 1,
+        "resolution_authority": "native_integer_aov_values_and_id_to_labels",
+    }
+    assert result["passed"] is True
+
+
+def test_rgba_tuple_encoding_is_resolved_from_other_visible_labels() -> None:
+    """An off-camera target remains a measured zero instead of an endian guess."""
+
+    target = (240, 4, 111, 255)
+    scene = (1, 2, 3, 4)
+    scene_packed = scene[0] | (scene[1] << 8) | (scene[2] << 16) | (scene[3] << 24)
+    semantic = np.full((20, 20), scene_packed, dtype=np.uint32)
+
+    result = measure_native_task_camera_observability(
+        semantic_ids=semantic,
+        id_to_labels={
+            str(target): {"class": "task_object"},
+            str(scene): {"class": "scene_collision"},
+        },
+        minimum_pixels=1,
+        minimum_pixel_fraction=0.001,
+    )
+
+    target_packed = target[0] | (target[1] << 8) | (target[2] << 16) | (target[3] << 24)
+    assert result["target_semantic_ids"] == [target_packed]
+    assert result["pixel_count"] == 0
+    assert result["passed"] is False
+
+
+def test_rgba_tuple_encoding_without_native_pixel_evidence_fails_closed() -> None:
+    semantic = np.zeros((20, 20), dtype=np.int32)
+
+    with pytest.raises(NativeTaskCameraObservabilityError) as excinfo:
+        measure_native_task_camera_observability(
+            semantic_ids=semantic,
+            id_to_labels={"(240, 4, 111, 255)": {"class": "task_object"}},
+            minimum_pixels=1,
+            minimum_pixel_fraction=0.001,
+        )
+
+    assert excinfo.value.errors == (
+        "native_task_camera_semantic_tuple_encoding_unresolved",
+    )
+
+
 def test_colorized_arena_semantics_cannot_be_misread_as_class_ids() -> None:
     colorized = np.zeros((40, 60, 4), dtype=np.uint8)
 

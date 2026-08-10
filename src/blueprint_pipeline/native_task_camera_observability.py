@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -105,6 +106,127 @@ def _normalize_semantic_id_map(semantic_ids: Any) -> tuple[Any, dict[str, Any]]:
     }
 
 
+_RGBA_IDENTIFIER = re.compile(
+    r"^\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$"
+)
+
+
+def _rgba_components(identifier: Any) -> tuple[int, int, int, int] | None:
+    if isinstance(identifier, tuple) and len(identifier) == 4:
+        raw = identifier
+    elif isinstance(identifier, str):
+        match = _RGBA_IDENTIFIER.fullmatch(identifier)
+        if match is None:
+            return None
+        raw = match.groups()
+    else:
+        return None
+    try:
+        components = tuple(int(value) for value in raw)
+    except (TypeError, ValueError):
+        return None
+    if any(value < 0 or value > 255 for value in components):
+        return None
+    return components  # type: ignore[return-value]
+
+
+def _rgba_encodings(components: tuple[int, int, int, int]) -> dict[str, int]:
+    r, g, b, a = components
+    little = r | (g << 8) | (b << 16) | (a << 24)
+    big = (r << 24) | (g << 16) | (b << 8) | a
+
+    def signed(value: int) -> int:
+        return value - (1 << 32) if value >= (1 << 31) else value
+
+    return {
+        "rgba_little_endian_uint32": little,
+        "rgba_little_endian_int32": signed(little),
+        "rgba_big_endian_uint32": big,
+        "rgba_big_endian_int32": signed(big),
+    }
+
+
+def _semantic_label_ids(
+    *, semantic: Any, id_to_labels: Mapping[Any, Any], target_label: str
+) -> tuple[list[int], dict[str, Any]]:
+    """Resolve Replicator scalar or RGBA-tuple label keys to integer AOV IDs.
+
+    Some pinned Isaac/Replicator combinations return the requested one-channel
+    ``int32`` AOV while retaining RGBA tuples as the keys of ``idToLabels``.
+    The four bytes are a packed integer in that AOV, but byte order and signed
+    representation are runtime details.  Resolve them from values actually
+    present in the native frame; never guess from host endianness or RGB.
+    """
+
+    import numpy as np
+
+    observed = {int(value) for value in np.unique(semantic.astype(np.int64))}
+    parsed: list[tuple[Any, Any, tuple[int, int, int, int] | None]] = []
+    tuple_components: list[tuple[int, int, int, int]] = []
+    for identifier, entry in id_to_labels.items():
+        components = _rgba_components(identifier)
+        parsed.append((identifier, entry, components))
+        if components is not None:
+            tuple_components.append(components)
+
+    tuple_encoding: str | None = None
+    matched_count = 0
+    if tuple_components:
+        scores: dict[str, int] = {}
+        signed_suffix = "_int32" if semantic.dtype.kind == "i" else "_uint32"
+        encodings = [
+            encoding
+            for encoding in _rgba_encodings(tuple_components[0])
+            if encoding.endswith(signed_suffix)
+        ]
+        for encoding in encodings:
+            scores[encoding] = sum(
+                _rgba_encodings(components)[encoding] in observed
+                for components in tuple_components
+            )
+        matched_count = max(scores.values(), default=0)
+        winners = [
+            encoding for encoding, score in scores.items() if score == matched_count
+        ]
+        if matched_count < 1:
+            raise NativeTaskCameraObservabilityError(
+                ["native_task_camera_semantic_tuple_encoding_unresolved"]
+            )
+        if len(winners) != 1:
+            raise NativeTaskCameraObservabilityError(
+                ["native_task_camera_semantic_tuple_encoding_ambiguous"]
+            )
+        tuple_encoding = winners[0]
+
+    target_ids: list[int] = []
+    scalar_count = 0
+    tuple_count = 0
+    for identifier, entry, components in parsed:
+        label = entry.get("class") if isinstance(entry, Mapping) else entry
+        if label != target_label:
+            continue
+        if components is not None:
+            assert tuple_encoding is not None
+            target_ids.append(_rgba_encodings(components)[tuple_encoding])
+            tuple_count += 1
+            continue
+        try:
+            target_ids.append(int(identifier))
+            scalar_count += 1
+        except (TypeError, ValueError) as exc:
+            raise NativeTaskCameraObservabilityError(
+                ["native_task_camera_semantic_identifier_invalid"]
+            ) from exc
+
+    return sorted(set(target_ids)), {
+        "scalar_target_identifier_count": scalar_count,
+        "rgba_tuple_target_identifier_count": tuple_count,
+        "rgba_tuple_encoding": tuple_encoding,
+        "rgba_tuple_encoding_evidence_match_count": matched_count,
+        "resolution_authority": "native_integer_aov_values_and_id_to_labels",
+    }
+
+
 def measure_native_task_camera_observability(
     *,
     semantic_ids: Any,
@@ -131,17 +253,11 @@ def measure_native_task_camera_observability(
         raise NativeTaskCameraObservabilityError(
             ["native_task_camera_threshold_invalid"]
         )
-    target_ids: list[int] = []
-    for identifier, entry in id_to_labels.items():
-        label = entry.get("class") if isinstance(entry, Mapping) else entry
-        if label != target_label:
-            continue
-        try:
-            target_ids.append(int(identifier))
-        except (TypeError, ValueError) as exc:
-            raise NativeTaskCameraObservabilityError(
-                ["native_task_camera_semantic_identifier_invalid"]
-            ) from exc
+    target_ids, identifier_resolution = _semantic_label_ids(
+        semantic=semantic,
+        id_to_labels=id_to_labels,
+        target_label=target_label,
+    )
     mask = np.isin(semantic.astype(np.int64), target_ids)
     count = int(mask.sum())
     height, width = (int(value) for value in mask.shape)
@@ -181,6 +297,7 @@ def measure_native_task_camera_observability(
         "passed": passed,
         "measurement_authority": "native_semantic_segmentation_aov",
         "semantic_input": semantic_representation,
+        "semantic_identifier_resolution": identifier_resolution,
         "rgb_or_model_label_used": False,
     }
 
