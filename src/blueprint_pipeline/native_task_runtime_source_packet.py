@@ -161,6 +161,78 @@ RUNTIME_DEPENDENCY_WHEELS = (
         "version": "5.0.3",
         "license_spdx": "BSD-3-Clause",
     },
+    # Arena's asset registry imports the released Lightwheel-backed asset
+    # classes even when a task does not instantiate one.  Bind the SDK and its
+    # complete base dependency closure so registry import is deterministic and
+    # does not depend on whatever a paid image happens to contain.
+    {
+        "filename": "lightwheel_sdk-1.0.3-py3-none-any.whl",
+        "package": "lightwheel-sdk",
+        "version": "1.0.3",
+        "license_spdx": "Apache-2.0",
+    },
+    {
+        "filename": "requests-2.34.2-py3-none-any.whl",
+        "package": "requests",
+        "version": "2.34.2",
+        "license_spdx": "Apache-2.0",
+    },
+    {
+        "filename": (
+            "charset_normalizer-3.4.9-cp312-cp312-manylinux2014_x86_64."
+            "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+        ),
+        "package": "charset-normalizer",
+        "version": "3.4.9",
+        "license_spdx": "MIT",
+        "pure_python": False,
+        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
+    },
+    {
+        "filename": "idna-3.18-py3-none-any.whl",
+        "package": "idna",
+        "version": "3.18",
+        "license_spdx": "BSD-3-Clause",
+    },
+    {
+        "filename": "urllib3-2.7.0-py3-none-any.whl",
+        "package": "urllib3",
+        "version": "2.7.0",
+        "license_spdx": "MIT",
+    },
+    {
+        "filename": "certifi-2026.7.22-py3-none-any.whl",
+        "package": "certifi",
+        "version": "2026.7.22",
+        "license_spdx": "MPL-2.0",
+    },
+    {
+        "filename": "tqdm-4.70.0-py3-none-any.whl",
+        "package": "tqdm",
+        "version": "4.70.0",
+        "license_spdx": "MPL-2.0 AND MIT",
+    },
+    {
+        "filename": "termcolor-3.3.0-py3-none-any.whl",
+        "package": "termcolor",
+        "version": "3.3.0",
+        "license_spdx": "MIT",
+    },
+    {
+        "filename": "pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64."
+        "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "package": "PyYAML",
+        "version": "6.0.3",
+        "license_spdx": "MIT",
+        "pure_python": False,
+        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
+    },
+    {
+        "filename": "click-8.4.2-py3-none-any.whl",
+        "package": "click",
+        "version": "8.4.2",
+        "license_spdx": "BSD-3-Clause",
+    },
     {
         "filename": "gymnasium-1.2.1-py3-none-any.whl",
         "package": "gymnasium",

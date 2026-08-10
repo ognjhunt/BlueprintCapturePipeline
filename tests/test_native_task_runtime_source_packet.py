@@ -137,6 +137,9 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         ("rsl-rl-lib", "5.0.1"),
         ("tensordict", "0.13.0"),
         ("GitPython", "3.1.58"),
+        ("lightwheel-sdk", "1.0.3"),
+        ("requests", "2.34.2"),
+        ("PyYAML", "6.0.3"),
     }.issubset(
         {
             (row["package"], row["version"])
