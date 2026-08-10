@@ -520,11 +520,23 @@ def _retained_execution_artifact_blockers(
 
 
 def _nvidia_api_key() -> str:
+    """Prefer the NIM inference key over the NGC registry key.
+
+    They are different credentials for different systems. The registry key
+    lists models and returns 401 on a completion, which is how it reached a
+    paid provider and died at the agent's first model call.
+    """
+
     value = str(os.environ.get("NVIDIA_API_KEY") or "").strip()
     if value:
         return value
-    path = Path("~/.blueprint-secrets/ngc_api_key").expanduser()
-    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    for name in ("nvidia_nim_api_key", "ngc_api_key"):
+        path = Path(f"~/.blueprint-secrets/{name}").expanduser()
+        if path.is_file():
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+    return ""
 
 
 @contextmanager
