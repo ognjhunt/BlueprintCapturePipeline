@@ -1,0 +1,92 @@
+{
+  "candidate_subpart_count": 0,
+  "candidate_subpart_meshes": [],
+  "claim_boundary": {
+    "candidate_subpart_is_not_moving_link_proof": true,
+    "independent_dynamic_articulation_proven": false,
+    "joint_axis_or_limits_proven": false,
+    "physical_equivalence_proven": false,
+    "source_visual_partition_proven": false
+  },
+  "coordinate_frame": {
+    "meters_per_unit": 1.0,
+    "transform_applied": "identity",
+    "up_axis": "Z"
+  },
+  "overlapping_meshes": [
+    {
+      "aabb_iou": 0.00143251,
+      "collision_api_applied": true,
+      "face_count": 9466,
+      "mesh_coverage_fraction": 0.00143251,
+      "point_count": 5779,
+      "prim_path": "/Root/Z2F6AOBVAJ33MPTULY888888",
+      "target_coverage_fraction": 1.0,
+      "world_aabb_max_m": [
+        -4.579041588,
+        -3.085589002,
+        2.801779917
+      ],
+      "world_aabb_min_m": [
+        -5.306245252,
+        -4.789249739,
+        0.001724457
+      ]
+    },
+    {
+      "aabb_iou": 1.6742e-05,
+      "collision_api_applied": true,
+      "face_count": 44687,
+      "mesh_coverage_fraction": 1.6742e-05,
+      "point_count": 46418,
+      "prim_path": "/Root/SM_floorplan",
+      "target_coverage_fraction": 1.0,
+      "world_aabb_max_m": [
+        5.198719978,
+        4.821730137,
+        2.799999952
+      ],
+      "world_aabb_min_m": [
+        -5.615719795,
+        -4.980879784,
+        0.0
+      ]
+    }
+  ],
+  "receipt_digest": "sha256:561272933cad087c4731c731580463f5b15ddfba04d50d0f7363d1e0fbd00899",
+  "schema_version": "interiorgs_sage_collision_identity.v1",
+  "source_files": {
+    "interiorgs_labels": {
+      "path": "labels.json",
+      "sha256": "sha256:30007f1d46d37f4fd2e4c181df7fa474af081b59b56dee90d5bbf8c0bc683f2f",
+      "size_bytes": 198732
+    },
+    "sage_collision_usd": {
+      "path": "840873_collision.usd",
+      "sha256": "sha256:a3a2fb4010d4969ce8b5647d8c167209630877946fdeeddd5cee50ab371fe703",
+      "size_bytes": 20030048
+    }
+  },
+  "target": {
+    "interiorgs_instance_id": "79",
+    "semantic_label": "towel",
+    "world_aabb_max_m": [
+      -4.852891422,
+      -4.431131453,
+      1.236044157
+    ],
+    "world_aabb_min_m": [
+      -5.222948119,
+      -4.549851952,
+      1.122931964
+    ]
+  },
+  "thresholds": {
+    "maximum_part_target_coverage": 0.8,
+    "minimum_part_mesh_coverage": 0.95,
+    "minimum_part_target_coverage": 0.05,
+    "minimum_whole_object_iou": 0.85
+  },
+  "whole_object_collision_identity_passed": false,
+  "whole_object_matches": []
+}
