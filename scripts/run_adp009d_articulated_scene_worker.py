@@ -59,7 +59,6 @@ try:  # flat provider bundle
         resolve_contact_sensor_rows,
     )
     from articulated_control_verdict import seal_detent_torque
-    from franka_kinematics import solve_axis_aligned_ik
     from decision_evidence_contracts import canonical_digest
 except ModuleNotFoundError:  # repository checkout
     import sys as _sys
@@ -80,7 +79,6 @@ except ModuleNotFoundError:  # repository checkout
         resolve_contact_sensor_rows,
     )
     from blueprint_pipeline.articulated_control_verdict import seal_detent_torque
-    from blueprint_pipeline.franka_kinematics import solve_axis_aligned_ik
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
@@ -1081,10 +1079,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             _phase(result, "grasp_correction_measured")
             if any(abs(d) > 0.002 for d in delta):
                 try:
-                    from franka_kinematics import forward_kinematics as _fk
+                    from franka_kinematics import (
+                        forward_kinematics as _fk,
+                        solve_oriented_ik as _solve_full_frame,
+                    )
                 except ModuleNotFoundError:
                     from blueprint_pipeline.franka_kinematics import (
                         forward_kinematics as _fk,
+                        solve_oriented_ik as _solve_full_frame,
                     )
                 corrected_actions = []
                 solver_failures = 0
@@ -1092,11 +1094,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     q_old = a["isaac_action"][:7]
                     pos_old, rot_old = _fk(q_old)
                     tool_axis = [rot_old[0][2], rot_old[1][2], rot_old[2][2]]
-                    solved = solve_axis_aligned_ik(
+                    # Preserve each action's FULL frame, not just its tool
+                    # axis. rt55b's plan carried a deliberate roll (fingers
+                    # straddling a horizontal bar); a roll-free re-solve
+                    # would translate the grasp and destroy the very
+                    # orientation the plan exists to guarantee.
+                    finger_axis = [rot_old[0][1], rot_old[1][1], rot_old[2][1]]
+                    solved = _solve_full_frame(
                         target_position_world_m=[
                             pos_old[i] + delta[i] for i in range(3)
                         ],
                         tool_axis_world=tool_axis,
+                        finger_axis_world=finger_axis,
                         seed_joint_positions=q_old,
                     )
                     joints = solved["joint_positions_rad"]
