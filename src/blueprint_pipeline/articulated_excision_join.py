@@ -189,6 +189,8 @@ def compile_articulated_excision_join(
     ownership_receipt: Mapping[str, Any],
     collider_removal_receipt: Mapping[str, Any],
     replacement_binding: Mapping[str, Any],
+    topology_receipt: Mapping[str, Any],
+    physics_receipt: Mapping[str, Any],
     door_state_receipt: Mapping[str, Any],
     coverage_receipt: Mapping[str, Any],
     expected_T_world_asset: Sequence[Sequence[float]],
@@ -305,6 +307,40 @@ def compile_articulated_excision_join(
                 errors.append(
                     f"articulated_excision_join_replacement_field_invalid:{field}"
                 )
+        # The binding used to be asserted: three digests supplied by the caller
+        # with nothing tying them to each other. That shipped a join whose
+        # replacement digest named one candidate while the topology and physics
+        # receipts had been computed against a different one - every digest
+        # internally consistent, so no gate fired. The validators both record
+        # the asset they ran against, so the receipts themselves close it.
+        for kind, source, bound_field in (
+            ("topology", topology_receipt, "topology_receipt_digest"),
+            ("physics", physics_receipt, "physics_receipt_digest"),
+        ):
+            validated = _canonical(
+                source,
+                digest_field="receipt_digest",
+                error=(
+                    "articulated_excision_join_replacement_receipt_digest_invalid:"
+                    f"{kind}"
+                ),
+                errors=errors,
+            )
+            if not validated:
+                continue
+            if validated.get("receipt_digest") != replacement.get(bound_field):
+                errors.append(
+                    "articulated_excision_join_replacement_receipt_digest_mismatch:"
+                    f"{kind}"
+                )
+            if validated.get("replacement_usd_sha256") != replacement.get(
+                "replacement_usd_sha256"
+            ):
+                errors.append(
+                    "articulated_excision_join_replacement_receipt_asset_mismatch:"
+                    f"{kind}"
+                )
+
         observed_transform = _matrix4(replacement.get("T_world_asset"))
         if observed_transform is None:
             errors.append("articulated_excision_join_replacement_transform_invalid")

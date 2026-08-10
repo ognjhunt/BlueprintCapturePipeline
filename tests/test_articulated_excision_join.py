@@ -75,11 +75,36 @@ def _collider_removal() -> dict:
     )
 
 
+REPLACEMENT_ASSET_SHA256 = "sha256:" + "f" * 64
+
+
+def _topology_receipt(asset_digest: str = REPLACEMENT_ASSET_SHA256) -> dict:
+    return _digest(
+        {
+            "schema_version": "articulated_replacement_topology_validation.v1",
+            "status": "admitted",
+            "replacement_usd_sha256": asset_digest,
+        },
+        "receipt_digest",
+    )
+
+
+def _physics_receipt(asset_digest: str = REPLACEMENT_ASSET_SHA256) -> dict:
+    return _digest(
+        {
+            "schema_version": "articulated_replacement_physics_validation.v1",
+            "status": "admitted",
+            "replacement_usd_sha256": asset_digest,
+        },
+        "receipt_digest",
+    )
+
+
 def _replacement() -> dict:
     return {
-        "replacement_usd_sha256": "sha256:" + "f" * 64,
-        "topology_receipt_digest": "sha256:" + "1" * 64,
-        "physics_receipt_digest": "sha256:" + "2" * 64,
+        "replacement_usd_sha256": REPLACEMENT_ASSET_SHA256,
+        "topology_receipt_digest": _topology_receipt()["receipt_digest"],
+        "physics_receipt_digest": _physics_receipt()["receipt_digest"],
         "T_world_asset": [list(row) for row in T_WORLD_ASSET],
     }
 
@@ -141,6 +166,8 @@ def _join(**overrides):
         "ownership_receipt": _ownership(),
         "collider_removal_receipt": _collider_removal(),
         "replacement_binding": _replacement(),
+        "topology_receipt": _topology_receipt(),
+        "physics_receipt": _physics_receipt(),
         "door_state_receipt": _door_matrix(
             classes=["replacement_body", "replacement_lower_door", "franka_base"]
         ),
@@ -450,4 +477,103 @@ def test_suppression_still_needs_coverage_to_hold() -> None:
 
     assert any(
         "residual_component_above_threshold" in e for e in excinfo.value.errors
+    )
+
+
+def _validation_receipt(*, schema: str, asset_digest: str) -> dict:
+    """A topology or physics receipt as its validator actually emits one."""
+
+    return _digest(
+        {
+            "schema_version": schema,
+            "status": "admitted",
+            "replacement_usd_sha256": asset_digest,
+        },
+        "receipt_digest",
+    )
+
+
+def test_join_refuses_receipts_validated_against_a_different_asset():
+    """The binding must be tied to the asset the receipts were computed on.
+
+    This is the failure that shipped: a join receipt whose replacement digest
+    named one candidate while the topology and physics receipts had been
+    computed against another. Every digest in it was internally consistent, so
+    nothing caught it - the construction claim and the physics qualification
+    simply pointed at different assets.
+    """
+
+    replacement = _replacement()
+    other_asset = "sha256:" + "e" * 64
+    assert replacement["replacement_usd_sha256"] != other_asset
+
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(
+            replacement_binding=replacement,
+            topology_receipt=_validation_receipt(
+                schema="articulated_replacement_topology_validation.v1",
+                asset_digest=other_asset,
+            ),
+            physics_receipt=_validation_receipt(
+                schema="articulated_replacement_physics_validation.v1",
+                asset_digest=other_asset,
+            ),
+        )
+
+    assert any(
+        "replacement_receipt_asset_mismatch" in error for error in excinfo.value.errors
+    )
+
+
+def test_join_admits_receipts_validated_against_the_bound_asset():
+    """The same receipts, computed against the bound asset, still admit."""
+
+    replacement = _replacement()
+    asset = replacement["replacement_usd_sha256"]
+    topology = _validation_receipt(
+        schema="articulated_replacement_topology_validation.v1", asset_digest=asset
+    )
+    physics = _validation_receipt(
+        schema="articulated_replacement_physics_validation.v1", asset_digest=asset
+    )
+    replacement["topology_receipt_digest"] = topology["receipt_digest"]
+    replacement["physics_receipt_digest"] = physics["receipt_digest"]
+
+    receipt = _join(
+        replacement_binding=replacement,
+        topology_receipt=topology,
+        physics_receipt=physics,
+    )
+
+    assert receipt["status"] == "join_admitted"
+    assert receipt["bindings"]["replacement_usd_sha256"] == asset
+
+
+def test_join_refuses_a_receipt_whose_digest_is_not_the_bound_one():
+    """Passing the receipt must not let a stale digest through beside it."""
+
+    replacement = _replacement()
+    asset = replacement["replacement_usd_sha256"]
+    topology = _validation_receipt(
+        schema="articulated_replacement_topology_validation.v1", asset_digest=asset
+    )
+    physics = _validation_receipt(
+        schema="articulated_replacement_physics_validation.v1", asset_digest=asset
+    )
+    replacement["physics_receipt_digest"] = physics["receipt_digest"]
+    # A stale topology digest beside a correct receipt: the shape you get when
+    # the asset is revalidated but the binding is copied forward by hand.
+    replacement["topology_receipt_digest"] = "sha256:" + "1" * 64
+    assert replacement["topology_receipt_digest"] != topology["receipt_digest"]
+
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(
+            replacement_binding=replacement,
+            topology_receipt=topology,
+            physics_receipt=physics,
+        )
+
+    assert any(
+        "replacement_receipt_digest_mismatch" in error
+        for error in excinfo.value.errors
     )
