@@ -24,6 +24,12 @@ from .native_task_runtime_source_packet import (
 SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 TOP_LEVEL_PACKAGES = (
+    "cloudpickle",
+    "farama_notifications",
+    "gymnasium",
+    "lazy_loader",
+    "packaging",
+    "typing_extensions",
     "isaaclab",
     "isaaclab_physx",
     "isaaclab_assets",
@@ -31,6 +37,54 @@ TOP_LEVEL_PACKAGES = (
     "isaaclab_teleop",
     "isaaclab_arena",
 )
+
+
+def _extract_runtime_dependency_wheels(
+    *, extraction_root: Path, wheel_rows: Sequence[dict[str, Any]], destination: Path
+) -> list[dict[str, Any]]:
+    destination.mkdir(parents=True, exist_ok=True)
+    installed: list[dict[str, Any]] = []
+    for row in wheel_rows:
+        wheel = extraction_root / str(row["archive_path"])
+        if not wheel.is_file() or _sha256(wheel) != row.get("sha256"):
+            raise RuntimeError("native_task_runtime_dependency_wheel_identity_mismatch")
+        with zipfile.ZipFile(wheel) as archive:
+            names = archive.namelist()
+            if any(
+                Path(name).is_absolute()
+                or ".." in Path(name).parts
+                or ".data" in Path(name).parts
+                for name in names
+            ):
+                raise RuntimeError("native_task_runtime_dependency_wheel_layout_invalid")
+            wheel_metadata_names = [
+                name for name in names if name.endswith(".dist-info/WHEEL")
+            ]
+            if len(wheel_metadata_names) != 1 or (
+                "Root-Is-Purelib: true"
+                not in archive.read(wheel_metadata_names[0]).decode("utf-8")
+            ):
+                raise RuntimeError("native_task_runtime_dependency_wheel_not_pure_python")
+            for name in names:
+                if name.endswith("/"):
+                    continue
+                target = destination / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                data = archive.read(name)
+                if target.exists() and target.read_bytes() != data:
+                    raise RuntimeError(
+                        "native_task_runtime_dependency_wheel_member_conflict"
+                    )
+                target.write_bytes(data)
+        installed.append(
+            {
+                "package": row["package"],
+                "version": row["version"],
+                "wheel_sha256": row["sha256"],
+                "license_spdx": row["license_spdx"],
+            }
+        )
+    return installed
 
 
 def _sha256(path: Path) -> str:
@@ -86,6 +140,8 @@ def provision_native_task_runtime_sources(
         "package_path_probe_stdout": "",
         "package_path_probe_stderr": "",
         "isaac_sim_link": None,
+        "runtime_dependency_target": None,
+        "runtime_dependencies_installed": [],
         "all_sources_verified_before_install": False,
         "source_packages_made_importable": False,
         "dependencies_installed": False,
@@ -122,13 +178,24 @@ def provision_native_task_runtime_sources(
         else:
             link.symlink_to(simulator, target_is_directory=True)
         result["isaac_sim_link"] = {"path": str(link), "target": str(simulator)}
+        dependency_target = destination / "runtime_python_dependencies"
+        installed_dependencies = _extract_runtime_dependency_wheels(
+            extraction_root=destination,
+            wheel_rows=verified["runtime_dependency_wheels"],
+            destination=dependency_target,
+        )
+        result["runtime_dependency_target"] = str(dependency_target)
+        result["runtime_dependencies_installed"] = installed_dependencies
         site_packages = Path(
             site_packages_dir or sysconfig.get_paths()["purelib"]
         ).expanduser().resolve()
         site_packages.mkdir(parents=True, exist_ok=True)
         path_file = site_packages / "blueprint_native_task_runtime_sources.pth"
         path_file.write_text(
-            "".join(f"{path}\n" for path in install_roots), encoding="utf-8"
+            "".join(
+                f"{path}\n" for path in (dependency_target, *install_roots)
+            ),
+            encoding="utf-8",
         )
         result["path_file"] = str(path_file)
         result["path_file_sha256"] = _sha256(path_file)
@@ -163,6 +230,7 @@ def provision_native_task_runtime_sources(
             return _persist(result_path, result)
         result["status"] = "completed"
         result["source_packages_made_importable"] = True
+        result["dependencies_installed"] = True
         return _persist(result_path, result)
     except NativeTaskRuntimeSourcePacketError as exc:
         result["blockers"].extend(exc.errors)

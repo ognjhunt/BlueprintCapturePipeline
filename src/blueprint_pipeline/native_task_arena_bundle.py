@@ -377,6 +377,9 @@ def build_native_task_arena_bundle(
                 "packet_sha256": runtime_source_receipt["packet_sha256"],
                 "packet_size_bytes": runtime_source_receipt["packet_size_bytes"],
                 "install_roots": runtime_source_receipt["install_roots"],
+                "runtime_dependency_wheels": runtime_source_receipt[
+                    "runtime_dependency_wheels"
+                ],
                 "redistribution_permitted": runtime_source_receipt[
                     "redistribution_permitted"
                 ],

@@ -43,6 +43,44 @@ ISAACLAB_PACKAGE_NAMES = (
 INSTALL_ROOTS = tuple(
     f"runtime_sources/isaaclab/source/{name}" for name in ISAACLAB_PACKAGE_NAMES
 ) + ("runtime_sources/arena",)
+RUNTIME_DEPENDENCY_WHEELS = (
+    {
+        "filename": "gymnasium-1.2.1-py3-none-any.whl",
+        "package": "gymnasium",
+        "version": "1.2.1",
+        "license_spdx": "MIT",
+    },
+    {
+        "filename": "lazy_loader-0.4-py3-none-any.whl",
+        "package": "lazy_loader",
+        "version": "0.4",
+        "license_spdx": "BSD-3-Clause",
+    },
+    {
+        "filename": "cloudpickle-3.1.1-py3-none-any.whl",
+        "package": "cloudpickle",
+        "version": "3.1.1",
+        "license_spdx": "BSD-3-Clause",
+    },
+    {
+        "filename": "Farama_Notifications-0.0.4-py3-none-any.whl",
+        "package": "farama-notifications",
+        "version": "0.0.4",
+        "license_spdx": "MIT",
+    },
+    {
+        "filename": "packaging-25.0-py3-none-any.whl",
+        "package": "packaging",
+        "version": "25.0",
+        "license_spdx": "Apache-2.0 OR BSD-2-Clause",
+    },
+    {
+        "filename": "typing_extensions-4.15.0-py3-none-any.whl",
+        "package": "typing-extensions",
+        "version": "4.15.0",
+        "license_spdx": "PSF-2.0",
+    },
+)
 
 
 class NativeTaskRuntimeSourcePacketError(ValueError):
@@ -204,11 +242,57 @@ def _repository_rows(
     )
 
 
+def _runtime_dependency_rows(
+    wheel_dir: Path,
+) -> tuple[list[dict[str, Any]], list[tuple[str, bytes]]]:
+    expected = {row["filename"] for row in RUNTIME_DEPENDENCY_WHEELS}
+    observed = {path.name for path in wheel_dir.glob("*.whl")} if wheel_dir.is_dir() else set()
+    if observed != expected:
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_dependency_wheel_set_mismatch"]
+        )
+    rows: list[dict[str, Any]] = []
+    blobs: list[tuple[str, bytes]] = []
+    for contract in RUNTIME_DEPENDENCY_WHEELS:
+        path = wheel_dir / contract["filename"]
+        data = path.read_bytes()
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                wheel_members = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
+                if len(wheel_members) != 1:
+                    raise NativeTaskRuntimeSourcePacketError(
+                        ["native_task_runtime_dependency_wheel_metadata_invalid"]
+                    )
+                wheel_metadata = archive.read(wheel_members[0]).decode("utf-8")
+        except (OSError, zipfile.BadZipFile, UnicodeDecodeError) as exc:
+            raise NativeTaskRuntimeSourcePacketError(
+                ["native_task_runtime_dependency_wheel_invalid"]
+            ) from exc
+        if "Root-Is-Purelib: true" not in wheel_metadata or "Tag: py3-none-any" not in wheel_metadata:
+            raise NativeTaskRuntimeSourcePacketError(
+                ["native_task_runtime_dependency_wheel_not_pure_python"]
+            )
+        archive_path = f"runtime_dependencies/wheels/{path.name}"
+        row = {
+            **contract,
+            "source": f"https://pypi.org/project/{contract['package']}/{contract['version']}/",
+            "archive_path": archive_path,
+            "size_bytes": len(data),
+            "sha256": _sha256_bytes(data),
+            "pure_python": True,
+            "redistribution_permitted": True,
+        }
+        rows.append(row)
+        blobs.append((archive_path, data))
+    return rows, blobs
+
+
 def materialize_native_task_runtime_source_packet(
     *,
     output_dir: str | Path,
     isaaclab_repo: str | Path,
     arena_repo: str | Path,
+    dependency_wheel_dir: str | Path,
     generated_at: str | None = None,
     isaaclab_commit: str = ISAACLAB_COMMIT,
     isaaclab_tree: str = ISAACLAB_TREE,
@@ -242,12 +326,16 @@ def materialize_native_task_runtime_source_packet(
         archive_namespace="arena",
         prefixes=("LICENSE.md", "setup.py", "pyproject.toml", "extension.toml", "isaaclab_arena"),
     )
+    dependency_rows, dependency_blobs = _runtime_dependency_rows(
+        Path(dependency_wheel_dir).expanduser().resolve()
+    )
     manifest: dict[str, Any] = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at or _utc_now_iso(),
         "status": "ready",
         "repositories": [isaaclab, arena],
         "install_roots": list(INSTALL_ROOTS),
+        "runtime_dependency_wheels": dependency_rows,
         "source_file_count": isaaclab["file_count"] + arena["file_count"],
         "released_source_only": True,
         "scene_bytes_included": False,
@@ -269,6 +357,7 @@ def materialize_native_task_runtime_source_packet(
             ("native_task_runtime_source_manifest.v1.json", manifest_bytes),
             *isaaclab_blobs,
             *arena_blobs,
+            *dependency_blobs,
         ]
         for relative, data in sorted(entries):
             info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
@@ -290,6 +379,7 @@ def materialize_native_task_runtime_source_packet(
             for row in (isaaclab, arena)
         ],
         "install_roots": list(INSTALL_ROOTS),
+        "runtime_dependency_wheels": dependency_rows,
         "source_file_count": manifest["source_file_count"],
         "packet_path": str(packet_path),
         "packet_size_bytes": packet_path.stat().st_size,
@@ -372,6 +462,20 @@ def verify_native_task_runtime_source_packet(
                         continue
                     if row.get("size_bytes") != len(data) or row.get("sha256") != _sha256_bytes(data):
                         errors.append(f"native_task_runtime_source_member_identity_mismatch:{name}")
+            for row in manifest.get("runtime_dependency_wheels") or []:
+                name = str(row.get("archive_path") or "")
+                expected_names.add(name)
+                try:
+                    data = archive.read(name)
+                except KeyError:
+                    errors.append(f"native_task_runtime_dependency_wheel_missing:{name}")
+                    continue
+                if row.get("size_bytes") != len(data) or row.get("sha256") != _sha256_bytes(data):
+                    errors.append(f"native_task_runtime_dependency_wheel_identity_mismatch:{name}")
+            if manifest.get("runtime_dependency_wheels") != receipt.get(
+                "runtime_dependency_wheels"
+            ):
+                errors.append("native_task_runtime_dependency_receipt_manifest_mismatch")
             if set(names) != expected_names:
                 errors.append("native_task_runtime_source_archive_members_invalid")
     except (OSError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
@@ -390,12 +494,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--isaaclab-repo", required=True)
     parser.add_argument("--arena-repo", required=True)
+    parser.add_argument("--dependency-wheel-dir", required=True)
     parser.add_argument("--generated-at")
     args = parser.parse_args(argv)
     receipt = materialize_native_task_runtime_source_packet(
         output_dir=args.output_dir,
         isaaclab_repo=args.isaaclab_repo,
         arena_repo=args.arena_repo,
+        dependency_wheel_dir=args.dependency_wheel_dir,
         generated_at=args.generated_at,
     )
     print(json.dumps(receipt, sort_keys=True))
@@ -418,6 +524,7 @@ __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "NativeTaskRuntimeSourcePacketError",
     "SCHEMA_VERSION",
+    "RUNTIME_DEPENDENCY_WHEELS",
     "materialize_native_task_runtime_source_packet",
     "main",
     "verify_native_task_runtime_source_packet",

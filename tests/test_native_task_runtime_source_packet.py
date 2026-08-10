@@ -11,6 +11,7 @@ import pytest
 from blueprint_pipeline import native_task_runtime_source_packet as source_packet
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_PACKAGE_NAMES,
+    RUNTIME_DEPENDENCY_WHEELS,
     NativeTaskRuntimeSourcePacketError,
     materialize_native_task_runtime_source_packet,
     verify_native_task_runtime_source_packet,
@@ -75,12 +76,32 @@ def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
         output_dir=tmp_path / output_name,
         isaaclab_repo=isaaclab,
         arena_repo=arena,
+        dependency_wheel_dir=_wheelhouse(tmp_path),
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,
         arena_commit=arena_commit,
         arena_tree=arena_tree,
     )
+
+
+def _wheelhouse(root: Path) -> Path:
+    wheelhouse = root / "wheelhouse"
+    wheelhouse.mkdir(exist_ok=True)
+    for contract in RUNTIME_DEPENDENCY_WHEELS:
+        path = wheelhouse / contract["filename"]
+        if path.is_file():
+            continue
+        distribution = contract["filename"].split("-", 1)[0]
+        dist_info = f"{distribution}-{contract['version']}.dist-info"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(
+                f"{dist_info}/WHEEL",
+                "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+            )
+            archive.writestr(f"{dist_info}/METADATA", "Metadata-Version: 2.1\n")
+            archive.writestr(f"{distribution}/__init__.py", "FIXTURE = True\n")
+    return wheelhouse
 
 
 def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
@@ -107,6 +128,9 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
             archive.read("native_task_runtime_source_manifest.v1.json")
         )
         assert manifest["source_file_count"] == verified["source_file_count"]
+        assert len(manifest["runtime_dependency_wheels"]) == len(
+            RUNTIME_DEPENDENCY_WHEELS
+        )
 
 
 def test_source_packet_rejects_revision_and_archive_tamper(tmp_path: Path) -> None:
@@ -131,6 +155,7 @@ def test_source_packet_rejects_revision_and_archive_tamper(tmp_path: Path) -> No
             output_dir=tmp_path / "wrong-packet",
             isaaclab_repo=isaaclab,
             arena_repo=arena,
+            dependency_wheel_dir=_wheelhouse(tmp_path),
             generated_at="fixed",
             isaaclab_commit="0" * 40,
             isaaclab_tree=isaaclab_tree,
@@ -175,7 +200,10 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert result["status"] == "completed"
     assert result["all_sources_verified_before_install"] is True
     assert result["source_packages_made_importable"] is True
-    assert result["dependencies_installed"] is False
+    assert result["dependencies_installed"] is True
+    assert len(result["runtime_dependencies_installed"]) == len(
+        RUNTIME_DEPENDENCY_WHEELS
+    )
     assert len(observed) == 1
     assert observed[0][1:3] == ["-I", "-c"]
     assert "pip" not in observed[0]
@@ -183,7 +211,7 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert len(result["install_roots"]) == len(ISAACLAB_PACKAGE_NAMES) + 1
     assert Path(result["isaac_sim_link"]["path"]).readlink() == simulator
     path_lines = Path(result["path_file"]).read_text(encoding="utf-8").splitlines()
-    assert path_lines == result["install_roots"]
+    assert path_lines == [result["runtime_dependency_target"], *result["install_roots"]]
 
 
 def test_materialization_batches_each_repository_into_one_exact_git_archive(
@@ -205,6 +233,7 @@ def test_materialization_batches_each_repository_into_one_exact_git_archive(
         output_dir=tmp_path / "batched",
         isaaclab_repo=isaaclab,
         arena_repo=arena,
+        dependency_wheel_dir=_wheelhouse(tmp_path),
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,

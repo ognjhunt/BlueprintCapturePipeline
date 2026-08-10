@@ -27,6 +27,7 @@ from blueprint_pipeline.native_task_arena_construction_bundle import (
 from blueprint_pipeline.native_task_arena_vast import run_native_task_arena_vast
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_PACKAGE_NAMES,
+    RUNTIME_DEPENDENCY_WHEELS,
     materialize_native_task_runtime_source_packet,
 )
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
@@ -172,10 +173,22 @@ def _runtime_source_packet(root: Path) -> Path:
     arena, arena_commit, arena_tree = repository(
         root / "runtime-source-repos/arena", arena=True
     )
+    wheelhouse = root / "runtime-source-wheelhouse"
+    wheelhouse.mkdir()
+    for contract in RUNTIME_DEPENDENCY_WHEELS:
+        distribution = contract["filename"].split("-", 1)[0]
+        dist_info = f"{distribution}-{contract['version']}.dist-info"
+        with zipfile.ZipFile(wheelhouse / contract["filename"], "w") as archive:
+            archive.writestr(
+                f"{dist_info}/WHEEL",
+                "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+            )
+            archive.writestr(f"{distribution}/__init__.py", "FIXTURE = True\n")
     materialize_native_task_runtime_source_packet(
         output_dir=destination,
         isaaclab_repo=isaaclab,
         arena_repo=arena,
+        dependency_wheel_dir=wheelhouse,
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,
