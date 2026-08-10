@@ -211,6 +211,7 @@ def materialize_native_task_runtime_contract(
     scene_id: str,
     task_id: str,
     task_spec: Mapping[str, Any],
+    task_joint_bindings: Sequence[Mapping[str, Any]] | None = None,
     assets: Sequence[Mapping[str, Any]],
     robot_base_pose_world: Mapping[str, Any],
     cameras: Sequence[Mapping[str, Any]],
@@ -246,6 +247,7 @@ def materialize_native_task_runtime_contract(
         try:
             composition = plan_articulated_runtime_composition(
                 task_spec=task_spec,
+                task_joint_bindings=task_joint_bindings,
                 twin_usd_filename=str(by_asset_role["task_object"].get("filename") or ""),
                 scene_collision_filename=str(
                     by_asset_role["scene_collision"].get("filename") or ""

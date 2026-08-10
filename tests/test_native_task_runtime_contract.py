@@ -94,38 +94,44 @@ def _common(task_spec: dict, *, scene_id: str, task_id: str) -> dict:
 
 
 def _rigid_fixture() -> dict:
-    return _common(
+    fixture = _common(
         {
             "task_kind": "rigid_pick_place",
             "prompt": "Pick up the can and place it in the destination.",
-            "articulated_joints": [],
         },
         scene_id="840313",
         task_id="840313_canned_beverage_pick_place_v1",
     )
+    fixture["task_joint_bindings"] = []
+    return fixture
 
 
 def _articulated_fixture() -> dict:
-    return _common(
-        {
-            "task_kind": "articulated_open_close",
-            "prompt": "Open the upper refrigerator door, release it, and retreat.",
-            "articulated_joints": [
-                {
-                    "joint_id": "upper_door_hinge",
-                    "joint_prim_path": "/Asset/joints/upper_door_hinge",
-                    "role": "task_joint",
-                },
-                {
-                    "joint_id": "lower_door_hinge",
-                    "joint_prim_path": "/Asset/joints/lower_door_hinge",
-                    "role": "locked_joint",
-                },
-            ],
-        },
+    freeze = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/arm_decision_proof_v1/manifests"
+            / "second_scene_840796_scene_task_freeze.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    fixture = _common(
+        freeze["task_spec"],
         scene_id="840796",
         task_id="840796_refrigerator_upper_door_open_v1",
     )
+    fixture["task_joint_bindings"] = [
+        {
+            "joint_id": "refrigerator_upper_door_hinge",
+            "joint_prim_path": "/Asset/joints/upper_door_hinge",
+            "role": "task_joint",
+        },
+        {
+            "joint_id": "refrigerator_lower_door_hinge",
+            "joint_prim_path": "/Asset/joints/lower_door_hinge",
+            "role": "locked_joint",
+        },
+    ]
+    return fixture
 
 
 @pytest.mark.parametrize(
@@ -135,7 +141,10 @@ def _articulated_fixture() -> dict:
         (
             _articulated_fixture,
             "ARTICULATION",
-            ["lower_door_hinge", "upper_door_hinge"],
+            [
+                "refrigerator_lower_door_hinge",
+                "refrigerator_upper_door_hinge",
+            ],
         ),
     ],
 )
@@ -180,7 +189,7 @@ def test_runtime_contract_round_trip_and_tamper_rejection(tmp_path: Path) -> Non
 
 def test_articulated_task_without_joint_binding_fails_before_gpu() -> None:
     fixture = _articulated_fixture()
-    fixture["task_spec"]["articulated_joints"] = []
+    fixture["task_joint_bindings"] = []
 
     with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
         materialize_native_task_runtime_contract(**fixture)

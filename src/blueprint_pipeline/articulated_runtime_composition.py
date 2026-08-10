@@ -14,8 +14,10 @@ the spawn type, so if it is wrong here it is wrong everywhere and looks like a
 policy failure.
 
 The joint binding is the other. The scorer rejects a sample whose joint set
-differs at all from the spec's, and discovering that inside a paid run costs
-the run. Both sides are therefore derived from the same spec.
+differs at all from the spec's, while simulator prim paths are an asset/runtime
+property and do not belong in the scorer spec.  The planner therefore joins the
+exact scorer joint ids to an explicit runtime binding and rejects either a
+missing id or an extra prim before any paid run.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ class ArticulatedRuntimeCompositionError(ValueError):
 def plan_articulated_runtime_composition(
     *,
     task_spec: Mapping[str, Any],
+    task_joint_bindings: Sequence[Mapping[str, Any]] | None = None,
     twin_usd_filename: str,
     scene_collision_filename: str,
     appearance_filename: str | None = None,
@@ -66,7 +69,37 @@ def plan_articulated_runtime_composition(
             if len(position) != 3:
                 errors.append("articulated_runtime_composition_twin_position_invalid")
 
-    raw_joints = task_spec.get("articulated_joints") or []
+    articulated = task_kind == TASK_KIND_ARTICULATED
+    reset_positions = task_spec.get("joint_reset_positions_rad")
+    scorer_joint_ids: set[str] = set()
+    if reset_positions is not None:
+        if not isinstance(reset_positions, Mapping):
+            errors.append("articulated_runtime_composition_scorer_joints_invalid")
+        else:
+            scorer_joint_ids = {
+                str(joint_id).strip()
+                for joint_id in reset_positions
+                if str(joint_id).strip()
+            }
+            if len(scorer_joint_ids) != len(reset_positions):
+                errors.append("articulated_runtime_composition_scorer_joints_invalid")
+
+    # Compatibility is retained for the first fixture, whose early development
+    # spec carried runtime paths inline.  New contracts always pass the binding
+    # separately and record that source in the resulting plan.
+    binding_source = "runtime_contract"
+    if task_joint_bindings is None:
+        raw_joints = task_spec.get("articulated_joints") or []
+        binding_source = "legacy_task_spec"
+        if not scorer_joint_ids:
+            scorer_joint_ids = {
+                str(row.get("joint_id") or "").strip()
+                for row in raw_joints
+                if isinstance(row, Mapping) and str(row.get("joint_id") or "").strip()
+            }
+    else:
+        raw_joints = task_joint_bindings
+
     joints: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, row in enumerate(raw_joints):
@@ -94,9 +127,19 @@ def plan_articulated_runtime_composition(
             }
         )
 
-    articulated = task_kind == TASK_KIND_ARTICULATED
+    bound_joint_ids = {row["joint_id"] for row in joints}
+    if articulated and not scorer_joint_ids:
+        errors.append("articulated_runtime_composition_scorer_joints_missing")
     if articulated and not joints:
         errors.append("articulated_runtime_composition_joints_missing")
+    for joint_id in sorted(scorer_joint_ids - bound_joint_ids):
+        errors.append(
+            f"articulated_runtime_composition_joint_binding_missing:{joint_id}"
+        )
+    for joint_id in sorted(bound_joint_ids - scorer_joint_ids):
+        errors.append(
+            f"articulated_runtime_composition_joint_binding_unexpected:{joint_id}"
+        )
     if errors:
         raise ArticulatedRuntimeCompositionError(errors)
 
@@ -138,6 +181,7 @@ def plan_articulated_runtime_composition(
         "task_kind": task_kind,
         "objects": objects,
         "task_sample_binding": {
+            "binding_source": binding_source,
             "joint_ids": sorted(row["joint_id"] for row in joints),
             "joint_prim_paths": {
                 row["joint_id"]: row["joint_prim_path"] for row in joints
