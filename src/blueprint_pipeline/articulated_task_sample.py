@@ -64,6 +64,7 @@ def build_articulated_task_sample(
     read_robot_collision_failure: Callable[[], Any] | None = None,
     read_scene_collision_failure: Callable[[], Any] | None = None,
     read_retreat_completed: Callable[[], Any] | None = None,
+    read_contact_diagnostics: Callable[[], Any] | None = None,
     joint_limit_tolerance_rad: float = 0.0,
     step_index: int | None = None,
 ) -> dict[str, Any]:
@@ -170,6 +171,21 @@ def build_articulated_task_sample(
         "joint_limit_violation": limit_violation,
         **observed,
     }
+    if read_contact_diagnostics is not None:
+        # Raw magnitudes beside the booleans they explain. Optional and
+        # advisory: a diagnostics failure must not turn an observed sample
+        # into a refused one, so it degrades to a recorded cause instead.
+        try:
+            diagnostics = read_contact_diagnostics()
+            sample["contact_diagnostics"] = {
+                key: float(value) for key, value in dict(diagnostics).items()
+            }
+        except Exception as exc:  # noqa: BLE001 - advisory channel
+            sample["contact_diagnostics"] = {
+                "unavailable": f"{type(exc).__name__}:{exc}"[
+                    :MAXIMUM_CAUSE_CHARACTERS
+                ]
+            }
     if step_index is not None:
         sample["step_index"] = int(step_index)
     return sample

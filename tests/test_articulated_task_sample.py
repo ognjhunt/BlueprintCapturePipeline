@@ -399,3 +399,30 @@ def test_every_swallowed_cause_in_this_module_is_now_carried():
     ]
 
     assert not bare, f"exception causes discarded at: {bare}"
+
+
+def test_contact_diagnostics_travel_in_the_sample():
+    """The raw magnitudes ride beside the booleans they explain."""
+
+    from blueprint_pipeline.articulated_task_sample import (
+        build_articulated_task_sample,
+    )
+
+    sample = build_articulated_task_sample(
+        joint_ids=["hinge"],
+        read_joint_state=lambda _jid: (0.1, 0.0),
+        joint_hard_limits_rad={"hinge": [0.0, 1.57]},
+        read_task_contact_active=lambda: True,
+        read_containment_violation=lambda: False,
+        read_robot_collision_failure=lambda: False,
+        read_scene_collision_failure=lambda: False,
+        read_retreat_completed=lambda: False,
+        read_contact_diagnostics=lambda: {
+            "finger_filtered_force_n": 12.5,
+            "robot_net_force_n": 20.0,
+            "residual_scene_force_n": 0.5,
+        },
+    )
+
+    assert sample["contact_diagnostics"]["finger_filtered_force_n"] == 12.5
+    assert sample["task_contact_active"] is True

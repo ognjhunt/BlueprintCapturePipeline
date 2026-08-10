@@ -186,3 +186,22 @@ def test_an_empty_sensor_body_list_refuses():
 
     with pytest.raises(ArticulatedSceneObservationError):
         resolve_contact_sensor_rows(sensor_body_names=[], finger_body_names=("a",))
+
+
+def test_contact_diagnostics_report_the_three_magnitudes():
+    """rt56 scored 43 scene-collision samples and zero task contacts while
+    the door tracked the plan to 50.6 degrees - booleans alone cannot say
+    whether the filtered matrix was zero or the threshold was wrong. The
+    diagnostics carry the raw magnitudes so the next receipt answers it."""
+
+    observations = _sources(
+        read_task_contact_forces=lambda: [[[0.0, 18.0, 0.0]]],
+        read_robot_contact_forces=lambda: [[[0.0, 30.0, 0.0]]],
+        read_scene_contact_forces=lambda: [[[5.0, 0.0, 0.0]]],
+    )
+
+    diagnostics = observations["read_contact_diagnostics"]()
+
+    assert diagnostics["finger_filtered_force_n"] == pytest.approx(18.0)
+    assert diagnostics["robot_net_force_n"] == pytest.approx(30.0)
+    assert diagnostics["residual_scene_force_n"] == pytest.approx(5.0)

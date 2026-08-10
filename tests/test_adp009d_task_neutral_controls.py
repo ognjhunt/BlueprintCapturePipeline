@@ -223,3 +223,59 @@ def test_task_control_plan_rejects_unbound_or_over_budget_trajectory(
             gripper_open_command=0.0,
             output_dir=tmp_path,
         )
+
+
+def test_settle_steps_precede_the_first_task_neutral_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rt56 was this test's red run: the settle fix sat in run_control_episode
+    while this lane samples through _run_task_control_episode, so the first
+    scored sample still carried the scene's post-reset settle impulse. The
+    settle steps and their receipt field belong to THIS loop."""
+
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module, "_persist_observation",
+        lambda *a, **k: {"observation_index": 0, "kind": k["kind"], "views": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: (
+            {
+                "status": "complete",
+                "required_camera_ids": ["external", "wrist", "overview"],
+                "review_only_camera_ids": ["overview"],
+            },
+            [],
+        ),
+    )
+    task = _task("articulated_open_close")
+    environment = _Environment("articulated_open_close")
+    steps_before_first_sample = {"value": None}
+    original_read = environment.read_task_sample
+
+    def counting_read():
+        if steps_before_first_sample["value"] is None:
+            steps_before_first_sample["value"] = len(environment.steps)
+        return original_read()
+
+    environment.read_task_sample = counting_read
+
+    pair = run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=_plan(task),
+        gripper_open_command=0.0,
+        output_dir=tmp_path,
+    )
+
+    assert steps_before_first_sample["value"] == module.SETTLE_STEPS_AFTER_RESET
+    import json as _json
+
+    for control in pair["controls"]:
+        receipt = _json.loads(
+            (tmp_path / f"adp_task_control_episode.{control['control_id']}.json").read_text()
+        )
+        assert receipt["settle_steps_after_reset"] == module.SETTLE_STEPS_AFTER_RESET

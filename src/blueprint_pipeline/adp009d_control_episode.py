@@ -908,6 +908,14 @@ def _run_task_control_episode(
 ) -> dict[str, Any]:
     task_kind = str(task_spec["task_kind"])
     environment.reset()
+    # Same settle contract as run_control_episode, in the loop this lane
+    # actually runs: rt56 proved the fix is worthless in the other function.
+    # The scene's post-reset settle impulse is discarded unscored, and the
+    # receipt records the discard.
+    for _ in range(SETTLE_STEPS_AFTER_RESET):
+        environment.step(
+            environment.hold_action(gripper_command=float(gripper_open_command))
+        )
     samples = [
         _task_neutral_sample(environment, task_kind=task_kind, step_index=0)
     ]
@@ -1031,6 +1039,7 @@ def _run_task_control_episode(
         "observed_outcome": score.get("outcome"),
         "state_trace": samples,
         "state_trace_digest": canonical_digest({"samples": samples}),
+        "settle_steps_after_reset": SETTLE_STEPS_AFTER_RESET,
         "action_trace": actions,
         "action_trace_digest": canonical_digest({"actions": actions}),
         "visual_evidence": visual,

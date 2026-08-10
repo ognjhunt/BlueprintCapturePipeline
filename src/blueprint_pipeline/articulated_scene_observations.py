@@ -212,12 +212,31 @@ def build_scene_observations(
         )
         return _distance(end_effector, handle) > float(retreat_distance_m)
 
+    def contact_diagnostics() -> dict[str, float]:
+        # The raw magnitudes behind the three contact booleans. rt56 scored
+        # 43 scene-collision samples and zero task contacts while the door
+        # tracked the plan to 50.6 degrees; booleans alone cannot say whether
+        # the filtered matrix read zero or a threshold was wrong. Bounded on
+        # purpose: three floats per sample, not per-body arrays.
+        return {
+            "finger_filtered_force_n": max_contact_force_n(
+                read_task_contact_forces()
+            ),
+            "robot_net_force_n": max_contact_force_n(
+                read_robot_contact_forces()
+            ),
+            "residual_scene_force_n": max_contact_force_n(
+                read_scene_contact_forces()
+            ),
+        }
+
     return {
         "read_task_contact_active": task_contact_active,
         "read_robot_collision_failure": robot_collision_failure,
         "read_scene_collision_failure": scene_collision_failure,
         "read_containment_violation": containment_violation,
         "read_retreat_completed": retreat_completed,
+        "read_contact_diagnostics": contact_diagnostics,
     }
 
 

@@ -1077,7 +1077,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "delta_norm_mm": round(sum(d * d for d in delta) ** 0.5 * 1000, 2),
             }
             _phase(result, "grasp_correction_measured")
-            if any(abs(d) > 0.002 for d in delta):
+            delta_norm = sum(d * d for d in delta) ** 0.5
+            if delta_norm > 0.05:
+                # A plan whose every pinch verified under a millimetre cannot
+                # be 5+ centimetres off; a delta this large means the pad-mid
+                # MEASUREMENT is wrong (rt55b/rt56: an identical 117 mm both
+                # runs, while the door tracked the plan to the commanded
+                # angle). Correcting the plan toward a broken measurement
+                # would move a good grasp; refusing to correct keeps it.
+                result["measured_correction"]["correction_skipped"] = (
+                    f"delta_implausible_vs_verified_plan:{delta_norm:.3f}m"
+                )
+            elif any(abs(d) > 0.002 for d in delta):
                 try:
                     from franka_kinematics import (
                         forward_kinematics as _fk,
