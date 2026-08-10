@@ -20,7 +20,7 @@ scored.
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 ARTICULATED_TASK_SAMPLE_SCHEMA_VERSION = "articulated_task_sample.v1"
@@ -28,6 +28,20 @@ ARTICULATED_TASK_SAMPLE_SCHEMA_VERSION = "articulated_task_sample.v1"
 # anything past this is a unit slip rather than a pose.
 MAXIMUM_PLAUSIBLE_JOINT_RAD = 4.0 * math.pi
 MAXIMUM_PLAUSIBLE_JOINT_RATE_RAD_S = 50.0
+# The scorer requires every one of these on every sample. They are supplied,
+# never defaulted: False on a collision flag is not "we did not look", it is
+# the positive claim that the robot did not collide, and this program must
+# never make that claim by omission.
+REQUIRED_OBSERVATIONS = (
+    "task_contact_active",
+    "containment_violation",
+    "robot_collision_failure",
+    "scene_collision_failure",
+    "retreat_completed",
+)
+# Derived rather than observed: position against the authored limits needs no
+# sensor, and asking for it would invite a caller to assert it.
+DERIVED_OBSERVATIONS = ("joint_limit_violation",)
 
 
 class ArticulatedTaskSampleError(ValueError):
@@ -42,6 +56,13 @@ def build_articulated_task_sample(
     *,
     joint_ids: Sequence[str],
     read_joint_state: Callable[[str], Any],
+    joint_hard_limits_rad: Mapping[str, Sequence[float]],
+    read_task_contact_active: Callable[[], Any] | None = None,
+    read_containment_violation: Callable[[], Any] | None = None,
+    read_robot_collision_failure: Callable[[], Any] | None = None,
+    read_scene_collision_failure: Callable[[], Any] | None = None,
+    read_retreat_completed: Callable[[], Any] | None = None,
+    joint_limit_tolerance_rad: float = 0.0,
     step_index: int | None = None,
 ) -> dict[str, Any]:
     """Collect one articulated sample, refusing anything it cannot vouch for."""
@@ -86,10 +107,54 @@ def build_articulated_task_sample(
     if errors:
         raise ArticulatedTaskSampleError(errors)
 
+    limits = dict(joint_hard_limits_rad or {})
+    tolerance = abs(float(joint_limit_tolerance_rad))
+    limit_violation = False
+    for joint_id in sorted(positions):
+        bounds = limits.get(joint_id)
+        if not isinstance(bounds, Sequence) or len(bounds) != 2:
+            errors.append(
+                f"articulated_task_sample_joint_hard_limits_missing:{joint_id}"
+            )
+            continue
+        lower, upper = float(bounds[0]), float(bounds[1])
+        position = positions[joint_id]
+        # A hard stop settles a hair past itself under any solver; the
+        # tolerance absorbs that and nothing wider.
+        if position < lower - tolerance or position > upper + tolerance:
+            limit_violation = True
+
+    observed: dict[str, bool] = {}
+    readers = {
+        "task_contact_active": read_task_contact_active,
+        "containment_violation": read_containment_violation,
+        "robot_collision_failure": read_robot_collision_failure,
+        "scene_collision_failure": read_scene_collision_failure,
+        "retreat_completed": read_retreat_completed,
+    }
+    for field in REQUIRED_OBSERVATIONS:
+        reader = readers.get(field)
+        if reader is None:
+            errors.append(f"articulated_task_sample_observation_missing:{field}")
+            continue
+        try:
+            value = reader()
+        except Exception:  # noqa: BLE001 - any failure to observe is one fault
+            errors.append(f"articulated_task_sample_observation_failed:{field}")
+            continue
+        if not isinstance(value, bool):
+            errors.append(f"articulated_task_sample_observation_not_boolean:{field}")
+            continue
+        observed[field] = value
+    if errors:
+        raise ArticulatedTaskSampleError(errors)
+
     sample: dict[str, Any] = {
         "schema_version": ARTICULATED_TASK_SAMPLE_SCHEMA_VERSION,
         "joint_positions_rad": positions,
         "joint_velocities_rad_s": velocities,
+        "joint_limit_violation": limit_violation,
+        **observed,
     }
     if step_index is not None:
         sample["step_index"] = int(step_index)
@@ -98,6 +163,8 @@ def build_articulated_task_sample(
 
 __all__ = [
     "ARTICULATED_TASK_SAMPLE_SCHEMA_VERSION",
+    "DERIVED_OBSERVATIONS",
+    "REQUIRED_OBSERVATIONS",
     "MAXIMUM_PLAUSIBLE_JOINT_RAD",
     "MAXIMUM_PLAUSIBLE_JOINT_RATE_RAD_S",
     "ArticulatedTaskSampleError",
