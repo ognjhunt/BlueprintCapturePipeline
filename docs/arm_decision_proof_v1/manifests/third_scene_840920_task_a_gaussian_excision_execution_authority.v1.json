@@ -1,0 +1,21 @@
+{
+  "schema_version": "public_scene_gaussian_excision_execution_authority.v1",
+  "purpose": "released_code_gaussian_ownership_audit",
+  "publisher_scene_id": "840920",
+  "target_instance_id": "165",
+  "freeze_digest": "sha256:5aa65c7b2df5e2ed4d2784729e1893c27ecf5dc18f8986a68ee5719bfe70b48f",
+  "private_scene_derived_standard_splat_upload_authorized": true,
+  "raw_interiorgs_downloaded_bytes_upload_authorized": false,
+  "paid_compute_authorized": true,
+  "public_disclosure_authorized": false,
+  "model_training_authorized": false,
+  "automatic_paid_retry_authorized": false,
+  "provider_zero_required_before_and_after": true,
+  "teardown_required": true,
+  "retention_policy": "bounded_to_goal_then_provider_zero",
+  "hard_attempt_spend_cap_usd": 1.5,
+  "maximum_single_resource_ttl_seconds": 3600,
+  "maximum_paid_attempts": 1,
+  "maximum_automatic_retries": 0,
+  "authorization_digest": "sha256:3a98898d19a8762988016f68d46cad3fe32ebbeb7729e964e7da9db0ad85d7b9"
+}
