@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher_module
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     EXECUTE_ENV,
@@ -287,6 +288,47 @@ def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
     assert live["terminal_evidence"]["status"] == "passed"
     assert live["provider_mutation_attempted"] is True
     assert live["agent_operator_used"] is False
+
+
+def test_default_dispatch_uses_isolated_canonical_allocator_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+    calls: list[dict[str, object]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = '{"success":true}\n'
+        stderr = ""
+
+    def run(argv: list[str], **kwargs: object) -> Completed:
+        calls.append({"argv": argv, **kwargs})
+        return Completed()
+
+    monkeypatch.setattr(dispatcher_module.subprocess, "run", run)
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+    )
+
+    assert receipt["status"] == "dry_run_completed"
+    assert calls[0]["argv"][1:] == [
+        "-m",
+        "blueprint_pipeline.paid_resource_allocator",
+        "gpu-canary",
+        *profile["allocator"]["argv"],
+    ]
+    assert calls[0]["shell"] is False
+    run_root = tmp_path / "state" / request["launch_id"]
+    assert (run_root / "allocator.stdout.log").read_text(encoding="utf-8") == (
+        '{"success":true}\n'
+    )
 
 
 def test_live_dispatch_blocks_without_independent_execute_environment(

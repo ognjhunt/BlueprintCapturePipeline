@@ -14,6 +14,8 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -634,21 +636,55 @@ def dispatch_launch_request(
         if live_requested:
             argv.append("--execute")
         if allocator_runner is None:
-            from .paid_resource_allocator import main as allocator_runner
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        try:
-            with (
-                _scoped_runtime_environment(_mapping(profile.get("runtime_environment"))),
-                contextlib.redirect_stdout(stdout),
-                contextlib.redirect_stderr(stderr),
-            ):
-                allocator_exit_code = int(allocator_runner(argv))
-        finally:
-            stdout_text = stdout.getvalue()
-            stderr_text = stderr.getvalue()
-            (run_root / "allocator.stdout.log").write_text(stdout_text, encoding="utf-8")
-            (run_root / "allocator.stderr.log").write_text(stderr_text, encoding="utf-8")
+            try:
+                with _scoped_runtime_environment(
+                    _mapping(profile.get("runtime_environment"))
+                ):
+                    completed = subprocess.run(  # nosec B603 - fixed module plus validated profile argv
+                        [
+                            sys.executable,
+                            "-m",
+                            "blueprint_pipeline.paid_resource_allocator",
+                            *argv,
+                        ],
+                        shell=False,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=(
+                            int(
+                                _mapping(profile.get("allocator")).get(
+                                    "hard_ttl_seconds"
+                                )
+                                or 1
+                            )
+                            + 300
+                        ),
+                    )
+                allocator_exit_code = completed.returncode
+                stdout_text = completed.stdout
+                stderr_text = completed.stderr
+            except subprocess.TimeoutExpired as exc:
+                allocator_exit_code = 124
+                stdout_text = str(exc.stdout or "")
+                stderr_text = str(exc.stderr or "") + "\ncanonical_allocator_timeout\n"
+        else:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            try:
+                with (
+                    _scoped_runtime_environment(
+                        _mapping(profile.get("runtime_environment"))
+                    ),
+                    contextlib.redirect_stdout(stdout),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    allocator_exit_code = int(allocator_runner(argv))
+            finally:
+                stdout_text = stdout.getvalue()
+                stderr_text = stderr.getvalue()
+        (run_root / "allocator.stdout.log").write_text(stdout_text, encoding="utf-8")
+        (run_root / "allocator.stderr.log").write_text(stderr_text, encoding="utf-8")
         if allocator_exit_code != 0:
             blockers.append("canonical_allocator_nonzero_exit")
 
