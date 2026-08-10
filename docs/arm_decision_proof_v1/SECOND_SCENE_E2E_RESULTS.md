@@ -197,8 +197,9 @@ reported as a policy failure.
 | Joint Agent v21, Vast 47319708 | Reached released CLI inference validation; one `identify_asset.vlm` node remained NIM because backend rewriting named only three steps; recursive model-node and local evidence-closeout fixes landed | USD 0.052768 exact | Destroyed; staged objects absent; provider zero; local closeout recovered from bound receipts |
 | Joint Agent v22 local admission | Execute-mode admission correctly rejected a 60-minute funded window before staging or provider mutation; dry-run parity fix landed | USD 0.000000 exact | No provider mutation; provider remained zero |
 | Joint Agent v23, Vast 47321782 | Dependencies, capacity, optimizer, OvRTX construction/warm-up, and released CLI dry run passed. Execution exposed NVIDIA's implicit `identify_asset.vlm` NIM default because the BYOA YAML omits the node; pinned-schema default materialization fix landed | USD 0.077329 exact | Destroyed; staged objects absent; provider zero |
+| Joint Agent v24, Vast 47323204 | All eight released steps completed; 28/28 component predictions and 11 articulation candidates were retained. Blueprint then guessed the wrong released optimizer output directory and could not perform deterministic bounds review; strict output-role discovery fix landed | USD 0.101801 exact | Destroyed; staged objects absent; provider zero |
 
-Combined retained spend through Joint Agent v23 is **USD 5.973452**, below the USD 12 authority. Aura,
+Combined retained spend through Joint Agent v24 is **USD 6.075253**, below the USD 12 authority. Aura,
 Content Agents, and the native diagnostic expose estimates where the provider
 did not return a final billed line; those amounts are not relabeled as exact.
 No automatic paid retry was performed. The post-native read-only API call

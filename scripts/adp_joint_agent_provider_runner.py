@@ -241,6 +241,29 @@ def _candidate_bounds(stage_path: Path, document: Mapping[str, Any]) -> dict[str
     return result
 
 
+def resolve_joint_agent_output(
+    *, working_dir: Path, role: str, relative_glob: str
+) -> Path:
+    """Resolve one released-code output by role without guessing its filename."""
+
+    root = working_dir.resolve()
+    matches = []
+    for candidate in sorted(working_dir.glob(relative_glob)):
+        resolved = candidate.resolve()
+        if (
+            resolved.is_relative_to(root)
+            and not candidate.is_symlink()
+            and candidate.is_file()
+            and candidate.stat().st_size > 0
+        ):
+            matches.append(resolved)
+    if len(matches) != 1:
+        raise ValueError(
+            f"joint_agent_output_role_not_unique:{role}:observed={len(matches)}"
+        )
+    return matches[0]
+
+
 def _result(blockers: list[str], **values: Any) -> int:
     result = {
         "schema_version": SCHEMA_VERSION,
@@ -300,14 +323,34 @@ def main() -> int:
         if dry["returncode"] != 0:
             return _result(["joint_agent_released_cli_dry_run_failed"], dry_run=dry)
         inference = _run(cli, "joint_agent_inference.log")
-        candidates_path = ROOT / "runtime_output/joint_agent_work/articulation_candidates/articulation_candidates.json"
-        optimized_path = ROOT / "runtime_output/joint_agent_work/optimize_usd/articulated_source_optimized.usdc"
+        working_dir = ROOT / "runtime_output/joint_agent_work"
+        candidates_path = (
+            working_dir / "articulation_candidates/articulation_candidates.json"
+        )
         if inference["returncode"] != 0 or not candidates_path.is_file():
             return _result(
                 ["joint_agent_topology_inference_failed"],
                 dry_run=dry,
                 inference=inference,
                 joint_agent_inference_executed=False,
+            )
+        try:
+            optimized_path = resolve_joint_agent_output(
+                working_dir=working_dir,
+                role="optimized_source",
+                relative_glob="optimized/*_optimized.usd*",
+            )
+        except ValueError as exc:
+            return _result(
+                [str(exc)],
+                dry_run=dry,
+                inference=inference,
+                joint_agent_inference_executed=True,
+                candidates_sha256=_sha256(candidates_path),
+                retained_artifacts=retain_available_joint_agent_artifacts(
+                    output_root=OUTPUT,
+                    artifacts={"articulation_candidates": candidates_path},
+                ),
             )
         candidates = _load(candidates_path)
         partial_artifacts: dict[str, Path] = {

@@ -959,7 +959,7 @@ def test_provider_runner_review_failure_retains_topology_evidence(
         root / "runtime_output/joint_agent_work/articulation_candidates/articulation_candidates.json"
     )
     optimized_path = (
-        root / "runtime_output/joint_agent_work/optimize_usd/articulated_source_optimized.usdc"
+        root / "runtime_output/joint_agent_work/optimized/articulated_source_optimized.usdc"
     )
 
     def fake_run(command: list[str], log_name: str) -> dict:
@@ -1030,6 +1030,34 @@ def test_provider_runner_review_failure_retains_topology_evidence(
         retained = output / row["relative_path"]
         assert retained.is_file()
         assert row["sha256"] == runner._sha256(retained)
+
+
+def test_provider_runner_resolves_one_non_symlink_output_by_role(
+    tmp_path: Path,
+) -> None:
+    runner = _provider_runner_module()
+    working = tmp_path / "work"
+    optimized = working / "optimized/fixture_optimized.usdc"
+    optimized.parent.mkdir(parents=True)
+    optimized.write_bytes(b"usd")
+
+    assert runner.resolve_joint_agent_output(
+        working_dir=working,
+        role="optimized_source",
+        relative_glob="optimized/*_optimized.usd*",
+    ) == optimized.resolve()
+
+    second = optimized.with_name("other_optimized.usda")
+    second.write_bytes(b"usd")
+    with pytest.raises(
+        ValueError,
+        match="joint_agent_output_role_not_unique:optimized_source:observed=2",
+    ):
+        runner.resolve_joint_agent_output(
+            working_dir=working,
+            role="optimized_source",
+            relative_glob="optimized/*_optimized.usd*",
+        )
 
 
 @pytest.mark.parametrize(
