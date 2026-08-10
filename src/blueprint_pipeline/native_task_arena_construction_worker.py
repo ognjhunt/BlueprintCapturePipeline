@@ -131,11 +131,26 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def preflight_native_dependency_matrix() -> dict[str, Any]:
+def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
     """Probe all worker imports and media tools in one retained receipt."""
 
     imports = []
     blockers = []
+    try:
+        from blueprint_pipeline.native_task_arena_import_scope import (
+            install_scoped_arena_embodiment,
+        )
+
+        embodiment_scope = install_scoped_arena_embodiment(robot_id)
+    except Exception as exc:  # noqa: BLE001 - exact scope failure is evidence
+        embodiment_scope = {
+            "schema_version": "native_task_arena_embodiment_scope.v1",
+            "robot_id": str(robot_id),
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        blockers.append(f"native_task_arena_embodiment_scope_failed:{robot_id}")
     for name in DEPENDENCY_IMPORTS:
         try:
             module = importlib.import_module(name)
@@ -191,6 +206,7 @@ def preflight_native_dependency_matrix() -> dict[str, Any]:
             blockers.append(f"native_task_dependency_missing:{executable}")
     return {
         "schema_version": "native_task_dependency_matrix.v1",
+        "embodiment_scope": embodiment_scope,
         "imports": imports,
         "tools": tools,
         "all_required_available": not blockers,
@@ -387,7 +403,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _announce("simulation_app", "completed")
         _announce("dependency_matrix")
-        dependency_matrix = preflight_native_dependency_matrix()
+        dependency_matrix = preflight_native_dependency_matrix(
+            robot_id=str(plan["robot"]["robot_id"])
+        )
         result["dependency_matrix"] = dependency_matrix
         if not dependency_matrix["all_required_available"]:
             result["blockers"].extend(dependency_matrix["blockers"])

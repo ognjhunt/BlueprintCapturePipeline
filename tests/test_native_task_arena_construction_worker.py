@@ -9,6 +9,7 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
     _load_and_verify_manifest,
     _requested_arm_reset,
 )
+from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
 from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
 
 
@@ -25,6 +26,9 @@ def test_worker_source_contains_no_scene_or_task_object_identity() -> None:
 
 
 def test_dependency_matrix_is_declared_as_one_preflight() -> None:
+    assert ROBOT_EMBODIMENT_MODULES == {
+        "franka_panda": "isaaclab_arena.embodiments.droid.droid"
+    }
     assert {
         "torch",
         "pxr.UsdVol",

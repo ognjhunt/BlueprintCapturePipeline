@@ -263,6 +263,12 @@ def build_native_task_arena_environment(
     plan = _validated_plan(scene_plan)
     runtime_objects = _resolve_portable_assets(plan, bundle_root=bundle_root)
 
+    from blueprint_pipeline.native_task_arena_import_scope import (
+        install_scoped_arena_embodiment,
+    )
+
+    install_scoped_arena_embodiment(str(plan["robot"]["robot_id"]))
+
     import isaaclab.envs.mdp as mdp
     import isaaclab.sim as sim_utils
     from isaaclab.managers import EventTermCfg as EventTerm

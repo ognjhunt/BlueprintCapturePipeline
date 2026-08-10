@@ -308,6 +308,7 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     modules[
         "isaaclab_arena.embodiments.droid.droid"
     ].DroidAbsoluteJointPositionEmbodiment = _Embodiment
+    modules["isaaclab_arena.embodiments"].__blueprint_scoped__ = True
     modules[
         "isaaclab_arena.environments.arena_env_builder"
     ].ArenaEnvBuilder = _ArenaBuilder
@@ -359,6 +360,7 @@ def _sealed_scene_plan() -> dict:
             },
         ],
         "robot": {
+            "robot_id": "franka_panda",
             "base_pose_world": {
                 "position_world_m": [1.75, 1.99, 0.0],
                 "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],

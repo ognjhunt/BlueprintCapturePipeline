@@ -36,6 +36,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_franka_pose_servo.py",
     "native_pose_transforms.py",
     "native_task_arena_construction_worker.py",
+    "native_task_arena_import_scope.py",
     "native_task_arena_readback.py",
     "native_task_arena_runtime.py",
     "native_task_camera_observability.py",

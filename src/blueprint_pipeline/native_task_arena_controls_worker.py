@@ -194,7 +194,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         _announce("dependency_matrix")
-        dependency_matrix = preflight_native_dependency_matrix()
+        dependency_matrix = preflight_native_dependency_matrix(
+            robot_id=str(scene_plan["robot"]["robot_id"])
+        )
         result["dependency_matrix"] = dependency_matrix
         if not dependency_matrix["all_required_available"]:
             result["blockers"].extend(dependency_matrix["blockers"])

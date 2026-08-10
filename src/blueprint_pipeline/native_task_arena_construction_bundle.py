@@ -36,6 +36,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_franka_action_math.py",
     "native_pose_transforms.py",
     "native_task_arena_readback.py",
+    "native_task_arena_import_scope.py",
     "native_task_arena_runtime.py",
     "native_task_camera_observability.py",
     "native_task_runtime_source_packet.py",
