@@ -91,6 +91,7 @@ from .task_evaluation_run_webapp_sync import (
 )
 from .task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
+    load_public_launch_profile_catalog,
     stage_launch_request,
 )
 
@@ -117,6 +118,9 @@ INTAKE_NONCE_STORE_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_NONCE_STORE_DIR"
 INTAKE_TRIGGER_SYSTEMD_UNIT_ENV = "BLUEPRINT_LIVE_PIPELINE_TRIGGER_SYSTEMD_UNIT"
 TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT"
 TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
+TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"
+)
 TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT"
 )
@@ -1748,6 +1752,16 @@ def create_app() -> FastAPI:
     def health() -> Dict[str, Any]:
         manifest_path = _manifest_path()
         authentication_configured = bool(_string(os.getenv(INTAKE_TOKEN_ENV)) or _client_secrets())
+        public_catalog_value = _string(
+            os.getenv(TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV)
+        )
+        public_catalog_ready = False
+        if public_catalog_value:
+            try:
+                load_public_launch_profile_catalog(public_catalog_value)
+                public_catalog_ready = True
+            except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+                pass
         return {
             "ok": True,
             "schema_version": INTAKE_SCHEMA_VERSION,
@@ -1770,6 +1784,8 @@ def create_app() -> FastAPI:
                 "profile_registry_configured": bool(
                     _string(os.getenv(TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV))
                 ),
+                "public_catalog_configured": bool(public_catalog_value),
+                "public_catalog_ready": public_catalog_ready,
                 "asynchronous_dispatch_only": True,
                 "canonical_allocator_required": True,
             },
@@ -1781,6 +1797,43 @@ def create_app() -> FastAPI:
                 "rank_fidelity_result_proven": False,
             },
         }
+
+    @app.get("/api/live-pipeline/task-evaluation-launch-profiles")
+    def task_evaluation_launch_profiles() -> JSONResponse:
+        catalog_value = _string(
+            os.getenv(TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV)
+        )
+        if not catalog_value:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": "task_evaluation_launch_profile_catalog.v1",
+                    "status": "blocked",
+                    "profiles": [],
+                    "blockers": ["task_evaluation_launch_public_catalog_not_configured"],
+                },
+            )
+        try:
+            catalog = load_public_launch_profile_catalog(catalog_value)
+        except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": "task_evaluation_launch_profile_catalog.v1",
+                    "status": "blocked",
+                    "profiles": [],
+                    "blockers": ["task_evaluation_launch_public_catalog_invalid"],
+                },
+            )
+        return JSONResponse(
+            status_code=200,
+            content={
+                **catalog,
+                "status": "published",
+                "allocator_arguments_exposed": False,
+                "secret_values_exposed": False,
+            },
+        )
 
     @app.post(
         "/api/live-pipeline/capture-upload-intakes",

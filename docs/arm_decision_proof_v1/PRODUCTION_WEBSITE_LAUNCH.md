@@ -23,28 +23,47 @@ canonical paid-resource allocator used by the maintained CLI path.
 
 ## Publish an immutable profile
 
-Build the scene bundle and `EvaluationRunSpec` first. Their object-store URIs and
+Build the scene bundle and `EvaluationRunSpec` first. Their immutable URIs and
 SHA-256 digests, locally readable immutable manifest/spec files and their
 digests, the allocator input files, safe non-secret ADP runtime environment,
 terminal result path, required Vast inventory, spend ceiling, TTL, secret
 profile ID, execution-admission receipt, and control requirements must be
-frozen in one `task_evaluation_launch_profile.v1` JSON file. Validate and publish
-it with:
+frozen in one `task_evaluation_launch_profile.v1` JSON file. Every allocator
+output path must use the validated `{launch_run_root}` placeholder so separate
+website launches cannot overwrite one another's evidence.
+
+For the first frozen 840313 InteriorGS/SAGE dry route, build the exact profile
+only from the clean protected-main production checkout. The builder rehashes all
+five materialized scene files and emits immutable preflight and release inputs:
+
+```bash
+python scripts/build_adp009d_840313_launch_profile.py \
+  --source-commit "$(git rev-parse HEAD)" \
+  --repo-root /opt/blueprint/BlueprintCapturePipeline \
+  --production-input-root /var/lib/blueprint/task-evaluation-inputs/adp009d-840313-interiorgs-sage-v1 \
+  --provider-guard-path /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json \
+  --output-dir /var/lib/blueprint/pipeline-control-plane/task-evaluation-profile-releases/"$(git rev-parse HEAD)"
+```
+
+Then validate and publish it with:
 
 ```bash
 python scripts/publish_task_evaluation_launch_profiles.py \
-  --profile /secure/staging/interiorgs-sage-franka-001.json \
+  --profile /var/lib/blueprint/pipeline-control-plane/task-evaluation-profile-releases/<commit>/adp009d-840313-franka-dry-v1.json \
   --profile-dir /etc/blueprint/task-evaluation-launch-profiles \
-  --webapp-catalog-out /var/lib/blueprint/deploy/task-evaluation-launch-profiles.json
+  --webapp-catalog-out /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
 ```
 
 The command hashes every `immutable_inputs` file, fails on
 profile/digest/control errors, and refuses to overwrite a
 different profile with the same ID. The generated WebApp catalog deliberately
 omits allocator arguments and runtime environment, contains no secret values,
-and exposes only the safe execution-admission state and its typed blockers. Put
-its exact JSON in the WebApp's `TASK_EVALUATION_LAUNCH_PROFILES_JSON` deployment
-variable.
+and exposes only the safe execution-admission state and its typed blockers. The
+intake service validates that projection again and serves it from
+`GET /api/live-pipeline/task-evaluation-launch-profiles`; the WebApp discovers
+that endpoint from its canonical Pipeline forwarding URL. An inline
+`TASK_EVALUATION_LAUNCH_PROFILES_JSON` remains an optional emergency deployment
+override, not the normal production source.
 
 ## Required production configuration
 
@@ -54,13 +73,16 @@ Pipeline host:
 - enable the dispatcher path, GPU spend-guard timer, launch reconciler timer,
   and optional supervisor timer with `scripts/install_live_pipeline_control_plane.sh`;
 - configure canonical intake HMAC client secrets, provider secret files,
-  billing export, artifact storage, `PIPELINE_SYNC_TOKEN`, and
+  the read-only provider billing reconciler, artifact storage,
+  `PIPELINE_SYNC_TOKEN`, and
   `PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL`;
 - configure `PIPELINE_TASK_EVALUATION_LAUNCH_SUPERVISION_WEBAPP_URL` when the
   optional supervisor should publish recommendations and human-decision prompts
   into the same WebApp control room;
 - set `BLUEPRINT_TASK_EVALUATION_SECRET_PROFILE_ID` to the non-secret identity
   named in the immutable profile;
+- set `BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH` to the publisher's
+  generated catalog path;
 - set `BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER=true` to accept and
   dispatch signed dry routes. Keep `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE`
   unset for dry proof;
@@ -70,10 +92,10 @@ Pipeline host:
 
 WebApp:
 
-- configure `TASK_EVALUATION_LAUNCH_URL` to the Pipeline
-  `/api/live-pipeline/task-evaluation-launches` endpoint;
-- configure the matching `TASK_EVALUATION_RUN_FORWARD_TOKEN` and client ID;
-- configure the published profile catalog and the matching `PIPELINE_SYNC_TOKEN`;
+- configure the canonical `ROBOT_EVAL_JOB_REQUEST_FORWARD_URL` and
+  `ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN`; the Task Evaluation URL, public
+  catalog URL, and HMAC secret are derived from that existing integration;
+- configure the matching `PIPELINE_SYNC_TOKEN` for terminal callbacks;
 - use `/ops/task-evaluation-launches` as the authenticated admin/ops control
   surface.
 

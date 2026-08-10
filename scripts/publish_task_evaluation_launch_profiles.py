@@ -16,19 +16,9 @@ from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
+    public_launch_profile_descriptor,
     validate_launch_profile,
     verify_profile_immutable_inputs,
-)
-
-
-DESCRIPTOR_FIELDS = (
-    "profile_id",
-    "profile_digest",
-    "source_bundle",
-    "evaluation_run_spec",
-    "required_controls",
-    "execution_admission",
-    "claim_ceiling",
 )
 
 
@@ -83,7 +73,7 @@ def publish_profiles(
                 "created": created,
             }
         )
-        descriptors.append({field: profile[field] for field in DESCRIPTOR_FIELDS})
+        descriptors.append(public_launch_profile_descriptor(profile))
     catalog_payload = (
         json.dumps(
             sorted(descriptors, key=lambda row: str(row["profile_id"])),

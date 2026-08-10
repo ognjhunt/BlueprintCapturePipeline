@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh Blueprint provider billing evidence every ten minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitInactiveSec=10m
+AccuracySec=30s
+Persistent=true
+Unit=blueprint-provider-billing-reconciler.service
+
+[Install]
+WantedBy=timers.target
+

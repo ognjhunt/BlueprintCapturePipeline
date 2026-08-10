@@ -1,0 +1,46 @@
+[Unit]
+Description=Refresh Blueprint provider billing evidence from official read-only APIs
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+Before=blueprint-gpu-spend-guard.service
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+ReadOnlyPaths=/etc/blueprint/provider-secrets
+TasksMax=512
+LimitNOFILE=65536
+MemoryMax=8G
+CPUQuota=200%
+TimeoutStartSec=5m
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
+Environment=BLUEPRINT_GPU_BILLING_EXPORT=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/provider_billing_export.json
+Environment=BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit
+Environment=BLUEPRINT_PROVIDER_BILLING_COHORT_START_AT=2026-01-01T00:00:00Z
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && ARGS=(-m blueprint_pipeline.provider_billing_reconciler --secrets-dir "$${BLUEPRINT_GPU_PROVIDER_SECRETS_DIR}" --billing-export "$${BLUEPRINT_GPU_BILLING_EXPORT}" --audit-root "$${BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT}" --cohort-start-at "$${BLUEPRINT_PROVIDER_BILLING_COHORT_START_AT}") && if [ -x .venv/bin/python ]; then exec .venv/bin/python "$${ARGS[@]}"; fi; exec env PYTHONPATH=src python3 "$${ARGS[@]}"'
