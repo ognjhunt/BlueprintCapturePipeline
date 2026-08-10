@@ -4,8 +4,9 @@ The worker consumes only ``native_task_packet`` and its provider manifest.  It
 does not know a scene id, object class, task coordinate, or candidate outcome.
 It verifies the complete dependency matrix before scene construction, applies
 the exact Arena plan, measures reset/contact/camera state, and drives the
-Franka finger midpoint through the contact-clear phase plan using the same 8-D
-absolute action seam later used by controls and learned policies.
+Franka's authored tool-point midpoint through the contact-clear phase plan
+using the same 8-D absolute action seam later used by controls and learned
+policies.
 """
 
 from __future__ import annotations
@@ -323,11 +324,28 @@ def _load_and_verify_manifest(runtime: Path) -> dict[str, Any]:
     return manifest
 
 
-def _finger_separation(robot: Any, *, torch: Any) -> float:
+def _gripper_geometry(
+    robot: Any, *, torch: Any, grasp_frame: Mapping[str, Any]
+) -> dict[str, Any]:
+    from blueprint_pipeline.native_pose_transforms import (
+        body_local_point_midpoint_geometry,
+    )
+
     names = list(robot.data.body_names)
-    indices = [names.index(name) for name in ("left_inner_finger", "right_inner_finger")]
-    positions = torch.as_tensor(robot.data.body_pose_w)[0, indices, :3]
-    return float(torch.linalg.vector_norm(positions[0] - positions[1]))
+    frame_names = [str(value) for value in grasp_frame["body_names"]]
+    indices = [names.index(name) for name in frame_names]
+    poses = torch.as_tensor(robot.data.body_pose_w)[0, indices, :7]
+    geometry = body_local_point_midpoint_geometry(
+        grasp_frame=grasp_frame,
+        body_poses_world={
+            name: [float(value) for value in poses[index]]
+            for index, name in enumerate(frame_names)
+        },
+    )
+    geometry["body_origin_separation_m"] = float(
+        torch.linalg.vector_norm(poses[0, :3] - poses[1, :3])
+    )
+    return geometry
 
 
 def _requested_arm_reset(
@@ -337,9 +355,24 @@ def _requested_arm_reset(
     return [float(resets[name]) for name in servo_binding["arm_joint_names"]]
 
 
-def _gripper_convention_probe(*, env: Any, robot: Any, seed: int, torch: Any) -> dict[str, Any]:
+def _gripper_convention_probe(
+    *,
+    env: Any,
+    robot: Any,
+    seed: int,
+    torch: Any,
+    grasp_frame: Mapping[str, Any],
+    probe_commands: Sequence[float],
+) -> dict[str, Any]:
+    from blueprint_pipeline.native_franka_action_math import (
+        resolve_gripper_command_endpoints,
+    )
+
     separations: dict[str, float] = {}
-    for command in (0.0, 1.0):
+    body_origin_separations: dict[str, float] = {}
+    tool_points: dict[str, Any] = {}
+    for command in probe_commands:
+        command = float(command)
         env.reset(seed=seed)
         for _ in range(30):
             current = torch.as_tensor(robot.data.joint_pos)[0, :7]
@@ -349,23 +382,26 @@ def _gripper_convention_probe(*, env: Any, robot: Any, seed: int, torch: Any) ->
                 dtype=torch.float32,
             )
             env.step(action)
-        separations[str(command)] = _finger_separation(robot, torch=torch)
-    travel = abs(separations["0.0"] - separations["1.0"])
-    if travel < 1.0e-3:
-        return {
-            "status": "ambiguous",
-            "finger_separation_m": separations,
-            "separation_travel_m": travel,
-            "blockers": ["native_task_gripper_convention_travel_below_floor"],
-        }
-    closed = 1.0 if separations["1.0"] < separations["0.0"] else 0.0
+        geometry = _gripper_geometry(
+            robot, torch=torch, grasp_frame=grasp_frame
+        )
+        key = str(command)
+        separations[key] = float(geometry["separation_m"])
+        body_origin_separations[key] = float(
+            geometry["body_origin_separation_m"]
+        )
+        tool_points[key] = geometry["world_points_m"]
+    endpoints = resolve_gripper_command_endpoints(
+        tool_point_separations_m=separations
+    )
     return {
-        "status": "measured",
+        **endpoints,
+        "candidate_commands": [float(value) for value in probe_commands],
         "finger_separation_m": separations,
-        "separation_travel_m": travel,
-        "closed_command": closed,
-        "open_command": 1.0 - closed,
-        "blockers": [],
+        "finger_separation_measurement_frame": "authored_local_tool_points",
+        "tool_points_world_m": tool_points,
+        "body_origin_separation_m": body_origin_separations,
+        "raw_body_origins_used_for_endpoint_resolution": False,
     }
 
 
@@ -568,7 +604,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _announce("gripper_convention")
         gripper = _gripper_convention_probe(
-            env=env, robot=robot, seed=seed, torch=torch
+            env=env,
+            robot=robot,
+            seed=seed,
+            torch=torch,
+            grasp_frame=plan["robot"]["grasp_frame"],
+            probe_commands=plan["robot"]["action_seam"][
+                "gripper_probe_commands"
+            ],
         )
         result["gripper_convention"] = gripper
         result["blockers"].extend(gripper["blockers"])
@@ -578,7 +621,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "gripper_convention_measured"
         _announce("gripper_convention", "completed")
 
-        servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
+        servo = NativeFrankaDifferentialIkServo(
+            env=env,
+            robot=robot,
+            grasp_frame=plan["robot"]["grasp_frame"],
+        )
         result["franka_pose_binding"] = servo.binding
         reset_body_pose = servo.current_body_pose_world()
         phase_plan = materialize_articulated_construction_phase_plan(

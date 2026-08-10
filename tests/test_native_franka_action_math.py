@@ -12,6 +12,7 @@ from blueprint_pipeline.native_franka_action_math import (
     NativeFrankaActionMathError,
     bounded_absolute_joint_setpoint,
     controlled_body_pose_for_grasp_frame_target,
+    resolve_gripper_command_endpoints,
 )
 
 
@@ -53,3 +54,36 @@ def test_scene_neutral_action_math_fails_closed() -> None:
     assert excinfo.value.errors == (
         "native_franka_joint_setpoint_constraints_infeasible",
     )
+
+
+@pytest.mark.parametrize(
+    ("separations", "closed", "opened"),
+    [
+        # Original Arena DROID / Robotiq fixture: 0 and -1 open, 1 closes.
+        ({"-1.0": 0.0831, "0.0": 0.0832, "1.0": 0.001}, 1.0, 0.0),
+        # Generic Isaac binary action: -1 closes, 0 and 1 open.
+        ({"-1.0": 0.001, "0.0": 0.0831, "1.0": 0.0832}, -1.0, 0.0),
+    ],
+)
+def test_semantic_pad_travel_resolves_both_arena_binary_conventions(
+    separations: dict[str, float], closed: float, opened: float
+) -> None:
+    result = resolve_gripper_command_endpoints(
+        tool_point_separations_m=separations
+    )
+
+    assert result["status"] == "measured"
+    assert result["closed_command"] == closed
+    assert result["open_command"] == opened
+    assert result["separation_travel_m"] == pytest.approx(0.0822)
+
+
+def test_indistinguishable_gripper_commands_stay_ambiguous() -> None:
+    result = resolve_gripper_command_endpoints(
+        tool_point_separations_m={"-1.0": 0.08, "0.0": 0.0802, "1.0": 0.0801}
+    )
+
+    assert result["status"] == "ambiguous"
+    assert result["blockers"] == [
+        "native_task_gripper_convention_travel_below_floor"
+    ]

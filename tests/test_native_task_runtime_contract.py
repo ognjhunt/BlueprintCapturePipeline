@@ -7,6 +7,8 @@ import pytest
 
 from blueprint_pipeline.native_task_runtime_contract import (
     DROID_FRANKA_RESET_JOINT_NAMES,
+    DROID_GRIPPER_PROBE_COMMANDS,
+    DROID_ROBOT_GRASP_FRAME,
     FROZEN_CANDIDATES,
     NativeTaskRuntimeContractError,
     load_native_task_runtime_contract,
@@ -194,6 +196,13 @@ def test_original_and_second_scene_share_one_runtime_contract(
     assert contract["candidate_ids"] == list(FROZEN_CANDIDATES)
     assert contract["scenario"]["context_kind"] == "evaluation_cell"
     assert contract["robot"]["action_seam"]["action_dimension"] == 8
+    assert contract["robot"]["action_seam"]["gripper_probe_commands"] == list(
+        DROID_GRIPPER_PROBE_COMMANDS
+    )
+    assert contract["robot"]["grasp_frame"] == DROID_ROBOT_GRASP_FRAME
+    assert contract["robot"]["grasp_frame"]["kind"] == (
+        "body_local_point_midpoint"
+    )
     assert set(contract["robot"]["joint_reset_positions_rad"]) == set(
         DROID_FRANKA_RESET_JOINT_NAMES
     )

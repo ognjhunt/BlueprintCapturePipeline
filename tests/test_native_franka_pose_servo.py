@@ -18,11 +18,23 @@ def _bodies() -> list[str]:
     ]
 
 
+def _grasp_frame() -> dict:
+    return {
+        "kind": "body_local_point_midpoint",
+        "body_names": ["left_inner_finger", "right_inner_finger"],
+        "body_local_points_m": {
+            "left_inner_finger": [0.0, 0.0, 0.046],
+            "right_inner_finger": [0.0, 0.0, 0.046],
+        },
+    }
+
+
 def test_fixed_base_binding_uses_the_physx_jacobian_row_offset() -> None:
     result = resolve_native_franka_pose_binding(
         body_names=_bodies(),
         joint_names=[f"panda_joint{index}" for index in range(1, 8)],
         fixed_base=True,
+        grasp_frame=_grasp_frame(),
     )
 
     assert result["controlled_body_name"] == "panda_hand"
@@ -37,6 +49,7 @@ def test_missing_semantic_finger_fails_instead_of_guessing_last_bodies() -> None
             body_names=[name for name in _bodies() if name != "left_inner_finger"],
             joint_names=[f"panda_joint{index}" for index in range(1, 8)],
             fixed_base=True,
+            grasp_frame=_grasp_frame(),
         )
 
     assert excinfo.value.errors == (
@@ -50,8 +63,26 @@ def test_canned_beverage_joint_order_cannot_hide_a_wrong_robot_binding() -> None
             body_names=_bodies(),
             joint_names=["legacy_joint"] * 7,
             fixed_base=True,
+            grasp_frame=_grasp_frame(),
         )
 
     assert excinfo.value.errors == (
         "native_franka_pose_servo_arm_joint_binding_invalid",
+    )
+
+
+def test_raw_body_midpoint_cannot_bind_as_the_control_tool_frame() -> None:
+    with pytest.raises(NativeFrankaPoseServoError) as excinfo:
+        resolve_native_franka_pose_binding(
+            body_names=_bodies(),
+            joint_names=[f"panda_joint{index}" for index in range(1, 8)],
+            fixed_base=True,
+            grasp_frame={
+                "kind": "body_midpoint",
+                "body_names": ["left_inner_finger", "right_inner_finger"],
+            },
+        )
+
+    assert excinfo.value.errors == (
+        "native_franka_pose_servo_grasp_frame_invalid",
     )

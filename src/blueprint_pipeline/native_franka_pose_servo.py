@@ -12,7 +12,7 @@ contracts remain hermetically testable on a CPU host.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .native_franka_action_math import (
@@ -20,6 +20,8 @@ from .native_franka_action_math import (
     controlled_body_pose_for_grasp_frame_target,
 )
 from .native_pose_transforms import (
+    NativePoseTransformError,
+    body_local_point_midpoint_geometry,
     pose_world_to_base,
     world_to_base_rotation_row_major_xyzw,
 )
@@ -40,14 +42,30 @@ class NativeFrankaPoseServoError(RuntimeError):
 
 
 def resolve_native_franka_pose_binding(
-    *, body_names: Sequence[str], joint_names: Sequence[str], fixed_base: bool
+    *,
+    body_names: Sequence[str],
+    joint_names: Sequence[str],
+    fixed_base: bool,
+    grasp_frame: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Resolve semantic finger/body names and the fixed-base Jacobian row."""
 
     bodies = [str(value) for value in body_names]
     joints = [str(value) for value in joint_names]
     errors: list[str] = []
-    for name in FINGER_BODY_NAMES:
+    try:
+        frame_names = [str(value) for value in grasp_frame["body_names"]]
+        body_local_point_midpoint_geometry(
+            grasp_frame=grasp_frame,
+            body_poses_world={
+                name: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+                for name in frame_names
+            },
+        )
+    except (KeyError, TypeError, NativePoseTransformError):
+        frame_names = []
+        errors.append("native_franka_pose_servo_grasp_frame_invalid")
+    for name in frame_names:
         if name not in bodies:
             errors.append(f"native_franka_pose_servo_finger_body_missing:{name}")
     controlled = next(
@@ -70,8 +88,16 @@ def resolve_native_franka_pose_binding(
         "schema_version": SCHEMA_VERSION,
         "arm_joint_names": list(ARM_JOINT_NAMES),
         "arm_joint_ids": list(range(7)),
-        "finger_body_names": list(FINGER_BODY_NAMES),
-        "finger_body_indices": [bodies.index(name) for name in FINGER_BODY_NAMES],
+        "finger_body_names": frame_names,
+        "finger_body_indices": [bodies.index(name) for name in frame_names],
+        "grasp_frame": {
+            "kind": grasp_frame["kind"],
+            "body_names": frame_names,
+            "body_local_points_m": {
+                name: [float(value) for value in grasp_frame["body_local_points_m"][name]]
+                for name in frame_names
+            },
+        },
         "controlled_body_name": controlled,
         "controlled_body_index": body_index,
         "jacobian_body_index": jacobian_index,
@@ -82,7 +108,7 @@ def resolve_native_franka_pose_binding(
 class NativeFrankaDifferentialIkServo:
     """One deterministic native pose-servo action per control tick."""
 
-    def __init__(self, *, env: Any, robot: Any):
+    def __init__(self, *, env: Any, robot: Any, grasp_frame: Mapping[str, Any]):
         import torch
         from isaaclab.controllers import DifferentialIKController
         from isaaclab.controllers import DifferentialIKControllerCfg
@@ -99,6 +125,7 @@ class NativeFrankaDifferentialIkServo:
             body_names=list(robot.data.body_names),
             joint_names=list(robot.joint_names),
             fixed_base=bool(robot.is_fixed_base),
+            grasp_frame=grasp_frame,
         )
         self._controller = DifferentialIKController(
             DifferentialIKControllerCfg(
@@ -127,10 +154,16 @@ class NativeFrankaDifferentialIkServo:
 
     def current_grasp_frame_position_world(self) -> list[float]:
         poses = self._to_torch(self._robot.data.body_pose_w)[
-            0, self.binding["finger_body_indices"], :3
+            0, self.binding["finger_body_indices"], :7
         ]
-        midpoint = (poses[0] + poses[1]) / 2.0
-        return [float(value) for value in midpoint]
+        geometry = body_local_point_midpoint_geometry(
+            grasp_frame=self.binding["grasp_frame"],
+            body_poses_world={
+                name: [float(value) for value in poses[index]]
+                for index, name in enumerate(self.binding["finger_body_names"])
+            },
+        )
+        return geometry["midpoint_world_m"]
 
     def read_arm_joint_positions(self) -> list[float]:
         values = self._to_torch(self._robot.data.joint_pos)[0, :7]

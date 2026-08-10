@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 
 class NativeFrankaActionMathError(ValueError):
@@ -127,8 +127,95 @@ def controlled_body_pose_for_grasp_frame_target(
     return target_body, target_quaternion
 
 
+def resolve_gripper_command_endpoints(
+    *,
+    tool_point_separations_m: Mapping[str, float],
+    minimum_travel_m: float = 1.0e-3,
+    equivalent_endpoint_tolerance_m: float = 5.0e-4,
+) -> dict[str, object]:
+    """Resolve open/closed commands from measured semantic pad separation.
+
+    The Arena DROID action uses ``0``/``1`` while Isaac Lab's generic binary
+    action uses negative/positive values.  The caller therefore probes a
+    bounded candidate set and this function selects endpoints from measured
+    pad travel.  Equivalent open commands are resolved deterministically to
+    the smallest-magnitude value so a threshold boundary cannot vary with
+    sub-millimetre simulation noise.
+    """
+
+    try:
+        rows = sorted(
+            (
+                (float(command), float(separation))
+                for command, separation in tool_point_separations_m.items()
+            ),
+            key=lambda row: row[0],
+        )
+        minimum_travel = float(minimum_travel_m)
+        endpoint_tolerance = float(equivalent_endpoint_tolerance_m)
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaActionMathError(
+            ["native_franka_gripper_endpoint_measurement_invalid"]
+        ) from exc
+    if (
+        len(rows) < 2
+        or len({command for command, _ in rows}) != len(rows)
+        or not all(math.isfinite(value) for row in rows for value in row)
+        or not math.isfinite(minimum_travel)
+        or minimum_travel <= 0.0
+        or not math.isfinite(endpoint_tolerance)
+        or endpoint_tolerance < 0.0
+        or endpoint_tolerance >= minimum_travel
+    ):
+        raise NativeFrankaActionMathError(
+            ["native_franka_gripper_endpoint_measurement_invalid"]
+        )
+    minimum = min(separation for _, separation in rows)
+    maximum = max(separation for _, separation in rows)
+    travel = maximum - minimum
+    if travel < minimum_travel:
+        return {
+            "status": "ambiguous",
+            "closed_command": None,
+            "open_command": None,
+            "separation_travel_m": travel,
+            "minimum_travel_m": minimum_travel,
+            "equivalent_endpoint_tolerance_m": endpoint_tolerance,
+            "blockers": ["native_task_gripper_convention_travel_below_floor"],
+        }
+
+    closed_candidates = [
+        command
+        for command, separation in rows
+        if separation <= minimum + endpoint_tolerance
+    ]
+    open_candidates = [
+        command
+        for command, separation in rows
+        if separation >= maximum - endpoint_tolerance
+    ]
+
+    def preferred(commands: Sequence[float]) -> float:
+        return min(commands, key=lambda value: (abs(value), -value))
+
+    return {
+        "status": "measured",
+        "closed_command": preferred(closed_candidates),
+        "open_command": preferred(open_candidates),
+        "closed_command_candidates": closed_candidates,
+        "open_command_candidates": open_candidates,
+        "closed_tool_point_separation_m": minimum,
+        "open_tool_point_separation_m": maximum,
+        "separation_travel_m": travel,
+        "minimum_travel_m": minimum_travel,
+        "equivalent_endpoint_tolerance_m": endpoint_tolerance,
+        "blockers": [],
+    }
+
+
 __all__ = [
     "NativeFrankaActionMathError",
     "bounded_absolute_joint_setpoint",
     "controlled_body_pose_for_grasp_frame_target",
+    "resolve_gripper_command_endpoints",
 ]

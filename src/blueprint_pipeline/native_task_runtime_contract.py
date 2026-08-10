@@ -49,6 +49,24 @@ DROID_FRANKA_RESET_JOINT_NAMES = (
     "left_inner_finger_knuckle_joint",
     "left_inner_finger_joint",
 )
+DROID_ROBOT_GRASP_FRAME = {
+    "kind": "body_local_point_midpoint",
+    "profile_id": "arena_droid_franka_robotiq_2f85_tool_points.v1",
+    "body_names": ["left_inner_finger", "right_inner_finger"],
+    "body_local_points_m": {
+        "left_inner_finger": [0.0, 0.0, 0.046],
+        "right_inner_finger": [0.0, 0.0, 0.046],
+    },
+    "frame_names": ["tool_leftfinger", "tool_rightfinger"],
+    "source_contract": (
+        "isaaclab_arena.embodiments.droid.droid.DroidSceneCfg.ee_frame"
+    ),
+    "source_revision_bound_by_runtime_source_packet": True,
+    "measurement_authority": (
+        "native_robot_body_pose_readback_plus_pinned_body_local_tool_offsets"
+    ),
+}
+DROID_GRIPPER_PROBE_COMMANDS = (-1.0, 0.0, 1.0)
 
 
 class NativeTaskRuntimeContractError(ValueError):
@@ -500,16 +518,14 @@ def materialize_native_task_runtime_contract(
             "robot_id": "franka_panda",
             "base_pose_world": robot_pose,
             "joint_reset_positions_rad": robot_reset_positions,
-            "grasp_frame": {
-                "kind": "body_midpoint",
-                "body_names": ["left_inner_finger", "right_inner_finger"],
-                "measurement_authority": "native_robot_body_pose_readback",
-            },
+            "grasp_frame": json.loads(json.dumps(DROID_ROBOT_GRASP_FRAME)),
             "action_seam": {
                 "kind": "joint_position_with_gripper",
                 "arm_joint_count": 7,
                 "action_dimension": 8,
                 "gripper_command_source": "native_readback_resolved",
+                "gripper_probe_commands": list(DROID_GRIPPER_PROBE_COMMANDS),
+                "gripper_probe_measurement": "semantic_tool_point_separation",
             },
         },
         "cameras": camera_rows,
@@ -569,6 +585,8 @@ def load_native_task_runtime_contract(path: str | Path) -> dict[str, Any]:
 
 __all__ = [
     "DROID_FRANKA_RESET_JOINT_NAMES",
+    "DROID_GRIPPER_PROBE_COMMANDS",
+    "DROID_ROBOT_GRASP_FRAME",
     "FROZEN_CANDIDATES",
     "NativeTaskRuntimeContractError",
     "SCENARIO_CONTEXT_KINDS",

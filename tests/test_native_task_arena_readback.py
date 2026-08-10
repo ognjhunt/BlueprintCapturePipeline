@@ -89,8 +89,12 @@ def _built(*, include_forces: bool = True) -> NativeTaskArenaEnvironment:
         },
         "robot": {
             "grasp_frame": {
-                "kind": "body_midpoint",
+                "kind": "body_local_point_midpoint",
                 "body_names": ["left_inner_finger", "right_inner_finger"],
+                "body_local_points_m": {
+                    "left_inner_finger": [0.0, 0.0, 0.046],
+                    "right_inner_finger": [0.0, 0.0, 0.046],
+                },
             }
         },
         "articulation": {
@@ -135,6 +139,9 @@ def test_live_numeric_readback_compiles_the_exact_scorer_sample() -> None:
     assert sample["robot_collision_failure"] is False
     assert sample["scene_collision_failure"] is False
     assert sample["retreat_completed"] is True
+    assert sample["grasp_frame_position_world_m"] == pytest.approx(
+        [2.26, 2.25, 1.066]
+    )
     assert sample["native_readback"]["caller_asserted_booleans_used"] is False
 
 

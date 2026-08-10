@@ -260,14 +260,25 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _announce("gripper_convention")
         gripper = _gripper_convention_probe(
-            env=env, robot=robot, seed=seed, torch=torch
+            env=env,
+            robot=robot,
+            seed=seed,
+            torch=torch,
+            grasp_frame=scene_plan["robot"]["grasp_frame"],
+            probe_commands=scene_plan["robot"]["action_seam"][
+                "gripper_probe_commands"
+            ],
         )
         result["gripper_convention"] = gripper
         result["blockers"].extend(gripper["blockers"])
         if gripper["status"] != "measured":
             raise RuntimeError("native_task_controls_gripper_convention_unresolved")
         env.reset(seed=seed)
-        servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
+        servo = NativeFrankaDifferentialIkServo(
+            env=env,
+            robot=robot,
+            grasp_frame=scene_plan["robot"]["grasp_frame"],
+        )
         episode_environment, environment_receipt = (
             build_native_task_episode_environment(
                 built=built,

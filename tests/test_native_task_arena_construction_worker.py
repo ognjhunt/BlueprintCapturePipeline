@@ -4,9 +4,12 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_construction_worker import (
     DEPENDENCY_IMPORTS,
+    _gripper_geometry,
     _load_and_verify_manifest,
     _requested_arm_reset,
     preflight_native_dependency_matrix,
@@ -197,3 +200,43 @@ def test_reset_readback_uses_semantic_joint_order_not_json_key_order() -> None:
     )
 
     assert result == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+
+
+def test_worker_measures_authored_tool_points_and_retains_raw_origin_diagnostic() -> None:
+    import math
+
+    import numpy as np
+
+    half = math.sqrt(0.5)
+    robot = SimpleNamespace(
+        data=SimpleNamespace(
+            body_names=["left_inner_finger", "right_inner_finger"],
+            body_pose_w=[
+                [
+                    [-0.046, 0.0, 0.0, 0.0, half, 0.0, half],
+                    [0.046, 0.0, 0.0, 0.0, -half, 0.0, half],
+                ]
+            ],
+        )
+    )
+    result = _gripper_geometry(
+        robot,
+        torch=SimpleNamespace(
+            as_tensor=np.asarray,
+            linalg=SimpleNamespace(vector_norm=np.linalg.norm),
+        ),
+        grasp_frame={
+            "kind": "body_local_point_midpoint",
+            "body_names": ["left_inner_finger", "right_inner_finger"],
+            "body_local_points_m": {
+                "left_inner_finger": [0.0, 0.0, 0.046],
+                "right_inner_finger": [0.0, 0.0, 0.046],
+            },
+        },
+    )
+
+    assert result["separation_m"] == pytest.approx(0.0, abs=1.0e-8)
+    assert result["body_origin_separation_m"] == pytest.approx(0.092)
+    assert result["measurement_authority"] == (
+        "native_body_poses_plus_authored_local_tool_points"
+    )

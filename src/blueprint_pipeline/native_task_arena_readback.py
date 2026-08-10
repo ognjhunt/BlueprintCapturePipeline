@@ -6,6 +6,7 @@ import math
 from typing import Any, Sequence
 
 from .native_articulated_task_state import compile_native_articulated_task_sample
+from .native_pose_transforms import body_local_point_midpoint_geometry
 from .native_task_arena_runtime import NativeTaskArenaEnvironment
 
 
@@ -194,26 +195,23 @@ class NativeArticulatedTaskArenaReadback:
             sensor_forces[logical_sensor_id] = aggregate
 
         grasp_frame = self._built.plan["robot"]["grasp_frame"]
-        if grasp_frame.get("kind") != "body_midpoint":
+        if grasp_frame.get("kind") != "body_local_point_midpoint":
             raise NativeTaskArenaReadbackError(
                 ["native_task_arena_grasp_frame_invalid"]
             )
-        finger_positions = [
-            _body_position(
+        finger_poses: dict[str, list[float]] = {}
+        for body_name in grasp_frame["body_names"]:
+            position, quaternion = _body_position(
                 robot,
                 body_name=body_name,
                 error="native_task_arena_grasp_body_missing",
-            )[0]
-            for body_name in grasp_frame["body_names"]
-        ]
-        if len(finger_positions) != 2:
-            raise NativeTaskArenaReadbackError(
-                ["native_task_arena_grasp_frame_invalid"]
             )
-        grasp_position = [
-            (finger_positions[0][axis] + finger_positions[1][axis]) / 2.0
-            for axis in range(3)
-        ]
+            finger_poses[body_name] = [*position, *quaternion]
+        grasp_geometry = body_local_point_midpoint_geometry(
+            grasp_frame=grasp_frame,
+            body_poses_world=finger_poses,
+        )
+        grasp_position = grasp_geometry["midpoint_world_m"]
 
         articulation = self._built.plan["articulation"]
         link_position, link_quaternion = _body_position(

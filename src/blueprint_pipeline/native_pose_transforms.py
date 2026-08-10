@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 
 class NativePoseTransformError(ValueError):
@@ -90,8 +91,78 @@ def world_to_base_rotation_row_major_xyzw(
     return [columns[column][row] for row in range(3) for column in range(3)]
 
 
+def body_local_point_midpoint_geometry(
+    *,
+    grasp_frame: Mapping[str, Any],
+    body_poses_world: Mapping[str, Sequence[float]],
+) -> dict[str, Any]:
+    """Measure an authored two-point grasp frame from native body poses.
+
+    Articulated grippers can move link origins away from each other while their
+    contact pads move together.  Consequently, raw body-origin distance is not
+    a gripper aperture and the raw origin midpoint is not necessarily the
+    semantic tool midpoint.  This contract transforms one authored local point
+    per body into world space before measuring either quantity.
+    """
+
+    if grasp_frame.get("kind") != "body_local_point_midpoint":
+        raise NativePoseTransformError("native_grasp_frame_kind_invalid")
+    body_names = grasp_frame.get("body_names")
+    local_points = grasp_frame.get("body_local_points_m")
+    if (
+        not isinstance(body_names, Sequence)
+        or isinstance(body_names, (str, bytes))
+        or len(body_names) != 2
+        or len(set(str(name) for name in body_names)) != 2
+        or not isinstance(local_points, Mapping)
+    ):
+        raise NativePoseTransformError("native_grasp_frame_contract_invalid")
+
+    names = [str(name) for name in body_names]
+    world_points: list[list[float]] = []
+    normalized_local_points: dict[str, list[float]] = {}
+    for name in names:
+        try:
+            pose = [float(value) for value in body_poses_world[name]]
+            local = [float(value) for value in local_points[name]]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NativePoseTransformError(
+                f"native_grasp_frame_body_or_point_invalid:{name}"
+            ) from exc
+        if (
+            len(pose) < 7
+            or len(local) != 3
+            or not all(math.isfinite(value) for value in (*pose[:7], *local))
+        ):
+            raise NativePoseTransformError(
+                f"native_grasp_frame_body_or_point_invalid:{name}"
+            )
+        quaternion = _quaternion(pose[3:7])
+        rotated = _rotate(quaternion, local)
+        world_points.append(
+            [pose[axis] + rotated[axis] for axis in range(3)]
+        )
+        normalized_local_points[name] = local
+
+    midpoint = [
+        (world_points[0][axis] + world_points[1][axis]) / 2.0
+        for axis in range(3)
+    ]
+    separation = math.dist(world_points[0], world_points[1])
+    return {
+        "kind": "body_local_point_midpoint",
+        "body_names": names,
+        "body_local_points_m": normalized_local_points,
+        "world_points_m": world_points,
+        "midpoint_world_m": midpoint,
+        "separation_m": separation,
+        "measurement_authority": "native_body_poses_plus_authored_local_tool_points",
+    }
+
+
 __all__ = [
     "NativePoseTransformError",
+    "body_local_point_midpoint_geometry",
     "pose_world_to_base",
     "world_to_base_rotation_row_major_xyzw",
 ]
