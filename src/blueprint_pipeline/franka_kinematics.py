@@ -300,6 +300,164 @@ def _solve_3x3(matrix: list[list[float]], vector: list[float]) -> list[float] | 
     return [rows[index][3] / rows[index][index] for index in range(3)]
 
 
+
+# A radian of tool misalignment moves the fingertip by about the tool length,
+# so weighting axis error at 0.15 m/rad makes the two residuals commensurate.
+AXIS_ERROR_WEIGHT_M_PER_RAD = 0.15
+IK_AXIS_ALIGNMENT_MINIMUM_DOT = 0.996  # within ~5 degrees
+
+
+def solve_axis_aligned_ik(
+    *,
+    target_position_world_m: Sequence[float],
+    tool_axis_world: Sequence[float],
+    seed_joint_positions: Sequence[float] | None = None,
+) -> dict[str, Any]:
+    """Position IK plus tool-axis alignment; roll about the tool stays free.
+
+    Position-only IK leaves the wrist wherever the solver falls, and rt42
+    showed what that costs: the flange reached its waypoint with the tool
+    pointing +x while the handle lay -y, so the fingers closed on air 166 mm
+    from the bar and the door never learned the arm existed. A grasp is five
+    constraints, not three.
+
+    Same Levenberg-Marquardt shape as solve_position_ik and for the same
+    reason: only accepting steps that reduce the error keeps the joint-limit
+    clamp from turning an overshoot into a permanent detour. The residual is
+    six-dimensional - position, plus the cross product of the current tool
+    axis with the requested one, which vanishes exactly at alignment.
+    """
+
+    try:
+        target = [float(value) for value in target_position_world_m]
+        axis = [float(value) for value in tool_axis_world]
+    except (TypeError, ValueError) as exc:
+        raise FrankaKinematicsError(["franka_kinematics_target_invalid"]) from exc
+    if len(target) != 3 or not all(math.isfinite(value) for value in target):
+        raise FrankaKinematicsError(["franka_kinematics_target_invalid"])
+    norm = math.sqrt(sum(value * value for value in axis))
+    if len(axis) != 3 or not math.isfinite(norm) or norm <= 0.0:
+        raise FrankaKinematicsError(["franka_kinematics_tool_axis_invalid"])
+    axis = [value / norm for value in axis]
+
+    if seed_joint_positions is None:
+        joints = [0.0, -0.3, 0.0, -1.8, 0.0, 1.6, 0.785]
+    else:
+        joints = _checked(seed_joint_positions)
+
+    def _tool_z(candidate: Sequence[float]) -> list[float]:
+        _, rotation = forward_kinematics(candidate)
+        return [rotation[0][2], rotation[1][2], rotation[2][2]]
+
+    def _residual(candidate: Sequence[float]) -> list[float]:
+        position, rotation = forward_kinematics(candidate)
+        tool = [rotation[0][2], rotation[1][2], rotation[2][2]]
+        cross = [
+            tool[1] * axis[2] - tool[2] * axis[1],
+            tool[2] * axis[0] - tool[0] * axis[2],
+            tool[0] * axis[1] - tool[1] * axis[0],
+        ]
+        return [target[row] - position[row] for row in range(3)] + [
+            AXIS_ERROR_WEIGHT_M_PER_RAD * value for value in cross
+        ]
+
+    def _error(candidate: Sequence[float]) -> float:
+        return math.sqrt(sum(value * value for value in _residual(candidate)))
+
+    def _jacobian6(candidate: Sequence[float]) -> list[list[float]]:
+        rows: list[list[float]] = [[0.0] * ARM_JOINT_COUNT for _ in range(6)]
+        for index in range(ARM_JOINT_COUNT):
+            forward = list(candidate)
+            backward = list(candidate)
+            forward[index] += JACOBIAN_EPSILON_RAD
+            backward[index] -= JACOBIAN_EPSILON_RAD
+            rf = _residual(forward)
+            rb = _residual(backward)
+            for row in range(6):
+                # d(residual)/dq: residual already encodes target-minus-state.
+                rows[row][index] = (rf[row] - rb[row]) / (2.0 * JACOBIAN_EPSILON_RAD)
+        return rows
+
+    damping = IK_DAMPING
+    best = list(joints)
+    best_error = _error(best)
+    for _ in range(IK_MAX_ITERATIONS):
+        position, _ = forward_kinematics(best)
+        aligned = sum(_tool_z(best)[i] * axis[i] for i in range(3))
+        if (
+            math.dist(position, target) < IK_POSITION_TOLERANCE_M
+            and aligned >= IK_AXIS_ALIGNMENT_MINIMUM_DOT
+        ):
+            break
+        residual = _residual(best)
+        jacobian = _jacobian6(best)
+        # Solve (J J^T + damping^2 I) y = -r in residual space, step = -J^T y.
+        gram = [
+            [
+                sum(jacobian[row][k] * jacobian[column][k] for k in range(ARM_JOINT_COUNT))
+                + (damping**2 if row == column else 0.0)
+                for column in range(6)
+            ]
+            for row in range(6)
+        ]
+        solved = _solve_dense(gram, [-value for value in residual])
+        if solved is None:
+            damping = min(damping * 4.0, IK_MAX_DAMPING)
+            continue
+        candidate = list(best)
+        for index in range(ARM_JOINT_COUNT):
+            # solved = (J J^T + damping^2 I)^{-1} (-r) with J = d(residual)/dq,
+            # so the descent step is +J^T solved: the two negations cancel.
+            # The first version negated again and walked exactly backwards.
+            step = sum(jacobian[row][index] * solved[row] for row in range(6))
+            step = max(-IK_MAX_STEP_RAD, min(IK_MAX_STEP_RAD, step))
+            lo, hi = FRANKA_JOINT_LIMITS_RAD[index]
+            candidate[index] = max(lo, min(hi, candidate[index] + step))
+        candidate_error = _error(candidate)
+        if candidate_error < best_error:
+            best, best_error = candidate, candidate_error
+            damping = max(damping / 2.0, IK_DAMPING)
+        else:
+            damping = min(damping * 4.0, IK_MAX_DAMPING)
+
+    position, rotation = forward_kinematics(best)
+    tool = [rotation[0][2], rotation[1][2], rotation[2][2]]
+    alignment = sum(tool[i] * axis[i] for i in range(3))
+    position_error = math.dist(position, target)
+    return {
+        "schema_version": FRANKA_KINEMATICS_SCHEMA_VERSION,
+        "converged": (
+            position_error < IK_POSITION_TOLERANCE_M
+            and alignment >= IK_AXIS_ALIGNMENT_MINIMUM_DOT
+        ),
+        "joint_positions_rad": best,
+        "position_error_m": position_error,
+        "tool_axis_alignment_dot": alignment,
+        "claim_boundary": {
+            "roll_about_the_tool_axis_is_unconstrained": True,
+            "convergence_is_numeric_not_a_reachability_proof": True,
+        },
+    }
+
+
+def _solve_dense(matrix: list[list[float]], vector: list[float]) -> list[float] | None:
+    """Gaussian elimination with partial pivoting; None on a singular system."""
+
+    size = len(vector)
+    augmented = [list(matrix[row]) + [vector[row]] for row in range(size)]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(augmented[row][column]))
+        if abs(augmented[pivot][column]) < 1e-12:
+            return None
+        augmented[column], augmented[pivot] = augmented[pivot], augmented[column]
+        for row in range(size):
+            if row == column:
+                continue
+            factor = augmented[row][column] / augmented[column][column]
+            for k in range(column, size + 1):
+                augmented[row][k] -= factor * augmented[column][k]
+    return [augmented[row][size] / augmented[row][row] for row in range(size)]
+
 __all__ = [
     "ARM_JOINT_COUNT",
     "FRANKA_FLANGE_OFFSET_M",
@@ -313,4 +471,5 @@ __all__ = [
     "position_jacobian",
     "radial_force_capability_n",
     "solve_position_ik",
+    "solve_axis_aligned_ik",
 ]

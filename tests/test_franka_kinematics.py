@@ -129,3 +129,63 @@ def test_kinematics_are_deterministic() -> None:
         target_position_world_m=[0.45, 0.10, 0.60], seed_joint_positions=None
     )
     assert a == b
+
+
+def test_axis_aligned_ik_points_the_tool_at_the_target():
+    """Position-only IK leaves the wrist wherever the solver falls.
+
+    rt42: the flange reached its waypoint 89 mm from the handle - correct -
+    with the tool axis pointing +x while the handle lay -y. The fingers closed
+    on air 166 mm away, 0 contact in 91 samples, and the door never moved. The
+    grasp needs 5 constraints: where the flange is, and which way the tool
+    points. Roll stays free.
+    """
+
+    from blueprint_pipeline.franka_kinematics import (
+        forward_kinematics,
+        solve_axis_aligned_ik,
+    )
+
+    target = [0.45, -0.20, 0.55]
+    approach = [0.0, -1.0, 0.0]  # tool must point along -y
+
+    result = solve_axis_aligned_ik(
+        target_position_world_m=target,
+        tool_axis_world=approach,
+    )
+
+    assert result["converged"] is True
+    q = result["joint_positions_rad"]
+    position, rotation = forward_kinematics(q)
+    for axis in range(3):
+        assert abs(position[axis] - target[axis]) < 2e-3
+    tool_z = [rotation[0][2], rotation[1][2], rotation[2][2]]
+    dot = sum(tool_z[i] * approach[i] for i in range(3))
+    assert dot > 0.996  # within ~5 degrees
+
+
+def test_axis_aligned_ik_reports_both_errors_when_unreachable():
+    from blueprint_pipeline.franka_kinematics import solve_axis_aligned_ik
+
+    result = solve_axis_aligned_ik(
+        target_position_world_m=[2.5, 0.0, 0.3],  # far outside reach
+        tool_axis_world=[0.0, -1.0, 0.0],
+    )
+
+    assert result["converged"] is False
+    assert result["position_error_m"] > 0.01
+
+
+def test_axis_aligned_ik_respects_joint_limits():
+    from blueprint_pipeline.franka_kinematics import (
+        FRANKA_JOINT_LIMITS_RAD,
+        solve_axis_aligned_ik,
+    )
+
+    result = solve_axis_aligned_ik(
+        target_position_world_m=[0.4, 0.1, 0.5],
+        tool_axis_world=[0.0, 0.0, -1.0],
+    )
+
+    for value, (lo, hi) in zip(result["joint_positions_rad"], FRANKA_JOINT_LIMITS_RAD):
+        assert lo - 1e-9 <= value <= hi + 1e-9
