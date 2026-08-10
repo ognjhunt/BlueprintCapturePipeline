@@ -44,6 +44,7 @@ DEPENDENCY_IMPORTS = (
     "pxr.UsdPhysics",
     "pxr.UsdVol",
     "isaaclab",
+    "isaaclab_contrib",
     "isaaclab.controllers",
     "isaaclab.utils.math",
     "isaaclab_assets",

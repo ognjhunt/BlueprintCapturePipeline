@@ -35,6 +35,7 @@ ARENA_COMMIT = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
 ARENA_TREE = "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
 ISAACLAB_PACKAGE_NAMES = (
     "isaaclab",
+    "isaaclab_contrib",
     "isaaclab_physx",
     "isaaclab_assets",
     "isaaclab_tasks",

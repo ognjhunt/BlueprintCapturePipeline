@@ -35,6 +35,7 @@ TOP_LEVEL_PACKAGES = (
     "wcwidth",
     "h5py",
     "isaaclab",
+    "isaaclab_contrib",
     "isaaclab_physx",
     "isaaclab_assets",
     "isaaclab_tasks",

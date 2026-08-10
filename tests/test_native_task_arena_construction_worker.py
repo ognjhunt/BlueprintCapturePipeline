@@ -39,6 +39,7 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "h5py",
         "yaml",
         "toml",
+        "isaaclab_contrib",
         "isaaclab.controllers",
         "isaaclab_assets",
         "isaaclab_tasks",
@@ -46,6 +47,9 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "isaaclab_arena.environments.arena_env_builder",
     }.issubset(DEPENDENCY_IMPORTS)
     assert set(TOP_LEVEL_PACKAGES).issubset(DEPENDENCY_IMPORTS)
+    assert DEPENDENCY_IMPORTS.index("isaaclab_contrib") < DEPENDENCY_IMPORTS.index(
+        "isaaclab_arena.environments.arena_env_builder"
+    )
 
 
 def test_manifest_binding_rejects_tamper_before_isaac(tmp_path: Path) -> None:
