@@ -1157,6 +1157,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     gpu.add_argument(
+        "--adp009d-runtime-module-source",
+        default=None,
+        help=(
+            "Runtime module to run instead of adp009d_isaac_runtime.py. This is "
+            "the payload slot: the worker above it clones and installs "
+            "IsaacLab-Arena first, so a composition mounted here gets an "
+            "environment where isaaclab is importable."
+        ),
+    )
+    gpu.add_argument(
         "--adp009d-asset-bindings-json",
         default=None,
         help=(
@@ -2830,6 +2840,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         scenario_instance_path=args.adp009d_scenario_instance,
                         aura_particlefield_path=args.adp009d_aura_particlefield,
                         worker_source=args.adp009d_worker_source,
+                        runtime_module_source=args.adp009d_runtime_module_source,
                         extra_native_paths=args.adp009d_extra_native,
                         build_task_collision_derivative=(
                             not args.adp009d_skip_sage_derivatives
@@ -2953,7 +2964,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # validated against a different entry list.
                     provider_bundle_kind=(
                         "adp009d_articulated_arena"
-                        if args.adp009d_worker_source
+                        if (
+                            args.adp009d_worker_source
+                            or args.adp009d_runtime_module_source
+                        )
                         else "adp009d_isaac"
                     ),
                     allowed_active_instance_ids=(
