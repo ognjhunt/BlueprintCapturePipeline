@@ -399,6 +399,59 @@ def test_external_warp_is_probed_before_runtime_provisioning_can_complete(
     assert result["dependencies_installed"] is False
 
 
+def test_provisioner_uses_simulator_python_wrapper_for_all_runtime_probes(
+    tmp_path: Path,
+) -> None:
+    receipt = _packet(tmp_path)
+    simulator = tmp_path / "isaac-sim"
+    simulator.mkdir()
+    launcher = simulator / "python.sh"
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    observed: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        observed.append(command)
+        if "import_module" in command[-1]:
+            stdout = json.dumps(
+                [
+                    {
+                        "module": "warp",
+                        "available": True,
+                        "expected_version": "1.12.0",
+                        "observed_version": "1.12.0",
+                        "version_matches": True,
+                    }
+                ]
+            )
+        else:
+            stdout = "found"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    result = provision_native_task_runtime_sources(
+        source_receipt_path=tmp_path
+        / "packet/native_task_runtime_source_packet.v1.json",
+        source_packet_path=receipt["packet_path"],
+        extraction_dir=tmp_path / "wrapper-probe",
+        output_path=tmp_path / "wrapper-probe.json",
+        simulator_root=simulator,
+        site_packages_dir=tmp_path / "site-packages",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=(
+            "manylinux_2_28_x86_64",
+            "manylinux_2_26_x86_64",
+            "manylinux_2_17_x86_64",
+            "manylinux2014_x86_64",
+        ),
+        run_command=fake_run,
+    )
+
+    assert result["status"] == "completed"
+    assert result["python_executable"] == str(launcher)
+    assert result["python_executable_source"] == "simulator_python_launcher"
+    assert len(observed) == 2
+    assert all(command[0] == str(launcher) for command in observed)
+
+
 def test_binary_runtime_dependency_rejects_wrong_python_or_platform_before_probe(
     tmp_path: Path,
 ) -> None:

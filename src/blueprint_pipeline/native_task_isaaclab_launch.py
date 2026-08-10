@@ -83,6 +83,12 @@ def verify_native_task_isaaclab_launch_contract(
         != canonical_digest(provisioning, digest_field="receipt_digest")
     ):
         errors.append("native_task_isaaclab_provisioning_receipt_invalid")
+    if (
+        provisioning.get("python_executable") != "/isaac-sim/python.sh"
+        or provisioning.get("python_executable_source")
+        != "simulator_python_launcher"
+    ):
+        errors.append("native_task_isaaclab_runtime_launcher_invalid")
 
     experience = dict(provisioning.get("runtime_experience") or {})
     expected_identity = {

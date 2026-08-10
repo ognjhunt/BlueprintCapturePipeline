@@ -200,6 +200,22 @@ def provision_native_task_runtime_sources(
     packet_path = Path(source_packet_path).expanduser().resolve()
     destination = Path(extraction_dir).expanduser().resolve()
     result_path = Path(output_path).expanduser().resolve()
+    simulator = Path(simulator_root).expanduser().resolve()
+    simulator_launcher = simulator / "python.sh"
+    if python_executable is not None:
+        runtime_python = str(Path(python_executable).expanduser())
+        runtime_python_source = "explicit"
+    elif simulator_launcher.is_file():
+        # ``sys.executable`` is the underlying Kit binary even when this module
+        # was started through ``/isaac-sim/python.sh``.  Invoking that binary
+        # directly drops Isaac's library/PYTHONPATH environment, so binary
+        # packages such as Warp cannot import simulator-bundled NumPy.  Probe
+        # through the canonical wrapper to reproduce the worker environment.
+        runtime_python = str(simulator_launcher)
+        runtime_python_source = "simulator_python_launcher"
+    else:
+        runtime_python = sys.executable
+        runtime_python_source = "current_interpreter_fallback"
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "blocked",
@@ -207,7 +223,8 @@ def provision_native_task_runtime_sources(
         "source_packet_path": str(packet_path),
         "source_packet_sha256": _sha256(packet_path) if packet_path.is_file() else None,
         "extraction_dir": str(destination),
-        "python_executable": str(python_executable or sys.executable),
+        "python_executable": runtime_python,
+        "python_executable_source": runtime_python_source,
         "install_roots": [],
         "installation_method": "verified_source_roots_pth",
         "path_file": None,
@@ -269,7 +286,6 @@ def provision_native_task_runtime_sources(
             return _persist(result_path, result)
         isaaclab_root = destination / "runtime_sources/isaaclab"
         link = isaaclab_root / "_isaac_sim"
-        simulator = Path(simulator_root).expanduser().resolve()
         if os.path.lexists(link):
             if not link.is_symlink() or Path(os.readlink(link)).resolve() != simulator:
                 result["blockers"].append(
@@ -318,7 +334,7 @@ def provision_native_task_runtime_sources(
             "raise SystemExit(0 if all(found.values()) else 3)"
         )
         command = [
-            str(python_executable or sys.executable),
+            runtime_python,
             "-I",
             "-c",
             package_probe,
@@ -354,7 +370,7 @@ def provision_native_task_runtime_sources(
             "raise SystemExit(0 if all(row['version_matches'] for row in rows) else 4)"
         )
         import_command = [
-            str(python_executable or sys.executable),
+            runtime_python,
             "-I",
             "-c",
             import_probe,

@@ -56,6 +56,8 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
     result = {
         "schema_version": "native_task_runtime_source_provisioning.v1",
         "status": "completed",
+        "python_executable": "/isaac-sim/python.sh",
+        "python_executable_source": "simulator_python_launcher",
         "extraction_dir": str(extraction),
         "runtime_experience": {
             "relative_path": RUNTIME_EXPERIENCE_RELATIVE_PATH,
@@ -175,3 +177,20 @@ def test_missing_external_warp_fails_before_simulation_app_factory(
             receipt_path, simulation_app_factory=forbidden_factory
         )
     assert called is False
+
+
+def test_underlying_kit_python_binary_is_rejected_before_launch(
+    tmp_path: Path,
+) -> None:
+    receipt_path = _receipt(tmp_path)
+    value = json.loads(receipt_path.read_text(encoding="utf-8"))
+    value["python_executable"] = "/isaac-sim/kit/python/bin/python3"
+    value["python_executable_source"] = "current_interpreter_fallback"
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    receipt_path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_runtime_launcher_invalid",
+    ):
+        verify_native_task_isaaclab_launch_contract(receipt_path)
