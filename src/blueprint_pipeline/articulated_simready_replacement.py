@@ -21,6 +21,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .articulated_dynamics_profiles import (
+    ArticulatedDynamicsProfileError,
+    resolve_dynamics_profile,
+)
+from .articulated_dynamics_realism import (
+    ArticulatedDynamicsRealismError,
+    evaluate_articulated_dynamics_realism,
+)
 
 
 TOPOLOGY_SCHEMA_VERSION = "articulated_replacement_topology_validation.v1"
@@ -868,12 +876,58 @@ def validate_articulated_replacement_physics(
                     f"{task_joint_path}"
                 )
 
+    # A drive that exists is not a drive that is plausible. Declaring the
+    # object class is what turns the researched band into an obligation; an
+    # asset that declares nothing keeps the contract it already had.
+    realism_review: dict[str, Any] = {"required": False}
+    object_class = str(contract.get("dynamics_profile_object_class") or "").strip()
+    if object_class:
+        try:
+            profile = resolve_dynamics_profile(object_class)
+        except ArticulatedDynamicsProfileError as exc:
+            errors.extend(exc.errors)
+        else:
+            try:
+                realism_review = {
+                    "required": True,
+                    **evaluate_articulated_dynamics_realism(
+                        lever_arm_m=contract.get("dynamics_lever_arm_m"),
+                        joint_damping_n_m_s_per_rad=(
+                            drive_review.get("damping")
+                            if drive_review.get("present")
+                            else 0.0
+                        ),
+                        breakaway_torque_n_m=contract.get(
+                            "dynamics_breakaway_torque_n_m"
+                        ),
+                        breakaway_angular_width_degrees=contract.get(
+                            "dynamics_breakaway_angular_width_degrees"
+                        ),
+                        nominal_open_angle_degrees=contract.get(
+                            "dynamics_nominal_open_angle_degrees"
+                        ),
+                        nominal_sweep_duration_s=contract.get(
+                            "dynamics_nominal_sweep_duration_s"
+                        ),
+                        reference_profile=profile,
+                    ),
+                }
+            except ArticulatedDynamicsRealismError as exc:
+                errors.extend(exc.errors)
+            else:
+                if not realism_review["within_measured_band"]:
+                    errors.append(
+                        "articulated_replacement_dynamics_outside_measured_band:"
+                        + ",".join(realism_review["findings"])
+                    )
+
     if errors:
         raise ArticulatedSimReadyReplacementError(errors)
 
     receipt: dict[str, Any] = {
         "schema_version": PHYSICS_SCHEMA_VERSION,
         "status": "physics_statically_admitted",
+        "dynamics_realism": realism_review,
         "replacement_usd_path": str(path),
         "replacement_usd_sha256": _sha256(path),
         "link_review": link_rows,
