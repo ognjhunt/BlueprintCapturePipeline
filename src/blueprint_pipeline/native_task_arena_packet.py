@@ -24,6 +24,8 @@ from .native_task_runtime_contract import materialize_native_task_runtime_contra
 
 REQUEST_SCHEMA_VERSION = "native_task_arena_packet_request.v1"
 RECEIPT_SCHEMA_VERSION = "native_task_arena_packet_receipt.v1"
+CONSTRUCTION_CANARY_SCHEMA_VERSION = "native_task_construction_canary.v1"
+EVALUATION_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
 
 
 class NativeTaskArenaPacketError(ValueError):
@@ -119,6 +121,51 @@ def _asset_source(
     return resolved, digest, size
 
 
+def _validated_scenario_context(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise NativeTaskArenaPacketError(
+            ["native_task_arena_packet_scenario_invalid"]
+        )
+    scenario = json.loads(json.dumps(value))
+    kind = str(scenario.get("context_kind") or "")
+    expected_schema, digest_field = {
+        "construction_canary": (CONSTRUCTION_CANARY_SCHEMA_VERSION, "context_digest"),
+        "evaluation_cell": (EVALUATION_INSTANCE_SCHEMA_VERSION, "instance_digest"),
+    }.get(kind, (None, None))
+    document = scenario.get("context_document")
+    if not isinstance(document, Mapping) or expected_schema is None or digest_field is None:
+        raise NativeTaskArenaPacketError(
+            ["native_task_arena_packet_scenario_invalid"]
+        )
+    context = json.loads(json.dumps(document))
+    errors: list[str] = []
+    if context.get("schema_version") != expected_schema:
+        errors.append("native_task_arena_packet_scenario_schema_invalid")
+    if (
+        context.get("cell_id") != scenario.get("cell_id")
+        or context.get("seed") != scenario.get("seed")
+    ):
+        errors.append("native_task_arena_packet_scenario_binding_mismatch")
+    expected_digest = canonical_digest(context, digest_field=digest_field)
+    if (
+        context.get(digest_field) != expected_digest
+        or scenario.get("instance_digest") != expected_digest
+    ):
+        errors.append("native_task_arena_packet_scenario_digest_invalid")
+    if context.get("policy_neutral") is not True:
+        errors.append("native_task_arena_packet_scenario_policy_neutrality_invalid")
+    if context.get("caller_asserted_success") is not False:
+        errors.append("native_task_arena_packet_scenario_caller_success_invalid")
+    if (
+        kind == "construction_canary"
+        and context.get("learned_policy_outcomes_consulted") is not False
+    ):
+        errors.append("native_task_arena_packet_scenario_policy_leakage")
+    if errors:
+        raise NativeTaskArenaPacketError(errors)
+    return scenario
+
+
 def materialize_native_task_arena_packet(
     *,
     request: Mapping[str, Any],
@@ -197,11 +244,7 @@ def materialize_native_task_arena_packet(
                 }
             )
 
-        scenario = frozen.get("scenario")
-        if not isinstance(scenario, Mapping):
-            raise NativeTaskArenaPacketError(
-                ["native_task_arena_packet_scenario_invalid"]
-            )
+        scenario = _validated_scenario_context(frozen.get("scenario"))
         contract_path = output / "native_task_runtime_contract.v1.json"
         contract = materialize_native_task_runtime_contract(
             scene_id=str(frozen.get("scene_id") or ""),
@@ -284,6 +327,8 @@ def materialize_native_task_arena_packet(
 
 __all__ = [
     "NativeTaskArenaPacketError",
+    "CONSTRUCTION_CANARY_SCHEMA_VERSION",
+    "EVALUATION_INSTANCE_SCHEMA_VERSION",
     "RECEIPT_SCHEMA_VERSION",
     "REQUEST_SCHEMA_VERSION",
     "materialize_native_task_arena_packet",

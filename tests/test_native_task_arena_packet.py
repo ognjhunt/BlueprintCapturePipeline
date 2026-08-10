@@ -144,6 +144,27 @@ def _request(evidence: Path, *, articulated: bool) -> dict:
         }
         bindings = []
         state = None
+    context_kind = "construction_canary" if articulated else "evaluation_cell"
+    context_digest_field = (
+        "context_digest" if context_kind == "construction_canary" else "instance_digest"
+    )
+    context_document = {
+        "schema_version": (
+            "native_task_construction_canary.v1"
+            if context_kind == "construction_canary"
+            else "adp009d_scenario_instance.v1"
+        ),
+        "program_id": "arm-decision-proof-v1",
+        "cell_id": "canonical.seed_17",
+        "seed": 17,
+        "policy_neutral": True,
+        "caller_asserted_success": False,
+        "learned_policy_outcomes_consulted": False,
+        context_digest_field: "",
+    }
+    context_document[context_digest_field] = canonical_digest(
+        context_document, digest_field=context_digest_field
+    )
     request = {
         "schema_version": "native_task_arena_packet_request.v1",
         "scene_id": "840796" if articulated else "840313",
@@ -159,12 +180,11 @@ def _request(evidence: Path, *, articulated: bool) -> dict:
         },
         "cameras": [_camera(role) for role in ("external", "wrist", "overview")],
         "scenario": {
-            "context_kind": (
-                "construction_canary" if articulated else "evaluation_cell"
-            ),
+            "context_kind": context_kind,
             "cell_id": "canonical.seed_17",
-            "instance_digest": "sha256:" + "d" * 64,
+            "instance_digest": context_document[context_digest_field],
             "seed": 17,
+            "context_document": context_document,
         },
         "physics_frequency_hz": 120,
         "request_digest": "",
@@ -248,3 +268,62 @@ def test_existing_output_is_never_overwritten(tmp_path: Path) -> None:
         )
 
     assert sentinel.read_text(encoding="utf-8") == "preserve"
+
+
+def test_forged_construction_context_fails_before_copy(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=True)
+    request["scenario"]["context_document"]["seed"] += 1
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    output = tmp_path / "packet"
+
+    with pytest.raises(NativeTaskArenaPacketError) as excinfo:
+        materialize_native_task_arena_packet(
+            request=request, evidence_root=evidence, output_dir=output
+        )
+
+    assert excinfo.value.errors == (
+        "native_task_arena_packet_scenario_binding_mismatch",
+        "native_task_arena_packet_scenario_digest_invalid",
+    )
+    assert not output.exists()
+
+
+def test_checked_second_scene_request_and_receipt_are_self_consistent() -> None:
+    manifest_root = (
+        Path(__file__).parents[1] / "docs/arm_decision_proof_v1/manifests"
+    )
+    request = json.loads(
+        (
+            manifest_root
+            / "second_scene_840796_native_arena_packet_request.v1.json"
+        ).read_text()
+    )
+    receipt = json.loads(
+        (
+            manifest_root
+            / "second_scene_840796_native_arena_packet_receipt.v1.json"
+        ).read_text()
+    )
+    orientation = json.loads(
+        (
+            manifest_root
+            / "second_scene_840796_franka_base_orientation.v1.json"
+        ).read_text()
+    )
+
+    assert request["request_digest"] == canonical_digest(
+        request, digest_field="request_digest"
+    )
+    assert request["scenario"]["context_kind"] == "construction_canary"
+    assert request["robot_base_pose_world"]["orientation_xyzw"] == orientation[
+        "resolved_orientation_xyzw"
+    ]
+    assert receipt["request_digest"] == request["request_digest"]
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    assert receipt["native_application_claimed"] is False
