@@ -9,6 +9,7 @@ from pxr import Usd, UsdGeom
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.source_collider_subtree_removal import (
     SourceColliderSubtreeRemovalError,
+    materialize_source_collider_batch_removal,
     remove_source_collider_subtree,
 )
 
@@ -54,6 +55,7 @@ def test_exact_collider_subtree_removal_preserves_unrelated_prims(
     assert receipt["removed_prim_count"] == 2
     assert receipt["remaining_target_collision_prim_count"] == 0
     assert receipt["unrelated_prim_inventory_unchanged"] is True
+    assert receipt["source_bytes_unchanged"] is True
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
     )
@@ -81,4 +83,58 @@ def test_collider_removal_fails_closed_on_wrong_digest_or_missing_target(
             source_usd_path=source,
             target_prim_path="/Root/missing",
             output_usda_path=tmp_path / "missing.usda",
+        )
+
+
+def test_batch_removal_materializes_independent_receipts_and_shared_scene(
+    tmp_path: Path,
+) -> None:
+    source = _fixture(tmp_path / "dual_task.usda", "task_a")
+    stage = Usd.Stage.Open(str(source))
+    assert stage is not None
+    task_b = UsdGeom.Cube.Define(stage, "/Root/target_task_b")
+    task_b.CreateSizeAttr(0.25)
+    stage.GetRootLayer().Save()
+
+    receipt = materialize_source_collider_batch_removal(
+        source_usd_path=source,
+        targets=[
+            {"removal_id": "task_a", "target_prim_path": "/Root/target_task_a"},
+            {"removal_id": "task_b", "target_prim_path": "/Root/target_task_b"},
+        ],
+        output_root=tmp_path / "batch",
+        expected_source_sha256=_sha256(source),
+    )
+
+    assert receipt["target_count"] == 2
+    assert receipt["unrelated_prim_inventory_unchanged"] is True
+    assert receipt["source_bytes_unchanged"] is True
+    assert receipt["independent_receipts_share_exact_source_digest"] is True
+    assert receipt["independent_removed_scenes_are_distinct"] is True
+    assert len({row["receipt_digest"] for row in receipt["target_removals"]}) == 2
+    shared = Usd.Stage.Open(
+        str(tmp_path / "batch" / "scene_without_source_colliders.usda")
+    )
+    assert shared is not None
+    assert not shared.GetPrimAtPath("/Root/target_task_a").IsValid()
+    assert not shared.GetPrimAtPath("/Root/target_task_b").IsValid()
+    assert shared.GetPrimAtPath("/Root/protected_neighbor").IsValid()
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def test_batch_removal_rejects_duplicate_or_nested_targets(tmp_path: Path) -> None:
+    source = _fixture(tmp_path / "scene.usda", "task")
+    with pytest.raises(
+        SourceColliderSubtreeRemovalError,
+        match="source_collider_batch_target_paths_duplicate",
+    ):
+        materialize_source_collider_batch_removal(
+            source_usd_path=source,
+            targets=[
+                {"removal_id": "a", "target_prim_path": "/Root/target_task"},
+                {"removal_id": "b", "target_prim_path": "/Root/target_task"},
+            ],
+            output_root=tmp_path / "duplicate",
         )
