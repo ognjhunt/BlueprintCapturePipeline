@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import hashlib
 import math
 import sys
 import types
@@ -447,3 +448,47 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
     assert reset_owner.event_cfg.params["asset_cfg"].name == "task_object"
     assert reset_owner.event_cfg.params["position_range"] == (0.0, 0.0)
     assert _ArenaBuilder.last.args.device == "cuda:0"
+
+
+def test_portable_packet_assets_require_root_and_are_reverified(
+    monkeypatch, tmp_path
+) -> None:
+    _install_fake_native_runtime(monkeypatch)
+    root = tmp_path / "packet"
+    assets = root / "assets"
+    assets.mkdir(parents=True)
+    collision = assets / "collision.usd"
+    task = assets / "task.usda"
+    collision.write_bytes(b"collision")
+    task.write_bytes(b"task")
+    plan = _sealed_scene_plan()
+    plan["asset_directory"] = "assets"
+    for row, path in zip(plan["objects"], (collision, task), strict=True):
+        row["usd_path"] = f"assets/{path.name}"
+        row["size_bytes"] = path.stat().st_size
+        row["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    with pytest.raises(
+        NativeTaskArenaRuntimeError, match="bundle_root_required"
+    ):
+        build_native_task_arena_environment(plan)
+
+    built = build_native_task_arena_environment(plan, bundle_root=root)
+
+    assert built.plan == plan
+    staged = {
+        asset.name: asset.usd_path
+        for asset in _ArenaBuilder.last.arena_env.scene.assets
+        if isinstance(asset, _Object) and asset.usd_path is not None
+    }
+    assert staged == {
+        "scene_collision": str(collision),
+        "task_object": str(task),
+    }
+
+    task.write_bytes(b"tampered")
+    with pytest.raises(
+        NativeTaskArenaRuntimeError, match="asset_identity_mismatch:task_object"
+    ):
+        build_native_task_arena_environment(plan, bundle_root=root)

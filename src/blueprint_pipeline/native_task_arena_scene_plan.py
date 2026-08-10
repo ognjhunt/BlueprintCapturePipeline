@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .common import write_json
@@ -75,7 +75,10 @@ def _validate_contract(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _stage_assets(
-    objects: list[dict[str, Any]], *, provider_asset_directory: Path
+    objects: list[dict[str, Any]],
+    *,
+    provider_asset_directory: Path,
+    published_asset_directory: str | None,
 ) -> list[dict[str, Any]]:
     errors: list[str] = []
     if (
@@ -106,7 +109,11 @@ def _stage_assets(
                 "semantic_role": role,
                 "prim_path": f"{ENV_ROOT}/{role}",
                 "object_type": row["object_type"],
-                "usd_path": str(path),
+                "usd_path": (
+                    f"{published_asset_directory}/{row['filename']}"
+                    if published_asset_directory is not None
+                    else str(path)
+                ),
                 "sha256": observed,
                 "size_bytes": path.stat().st_size,
                 "visible": bool(row["visible"]),
@@ -241,6 +248,7 @@ def materialize_native_task_arena_scene_plan(
     runtime_contract: Mapping[str, Any],
     provider_asset_directory: str | Path,
     physics_frequency_hz: float,
+    published_asset_directory: str | None = None,
     destination: str | Path | None = None,
 ) -> dict[str, Any]:
     """Verify staged bytes and freeze one deterministic native scene plan."""
@@ -252,8 +260,22 @@ def materialize_native_task_arena_scene_plan(
             ["native_task_arena_asset_directory_invalid"]
         )
     asset_directory = raw_asset_directory.resolve()
+    if published_asset_directory is not None:
+        pure = PurePosixPath(published_asset_directory)
+        if (
+            not published_asset_directory
+            or pure.is_absolute()
+            or ".." in pure.parts
+            or pure.name in {"", ".", ".."}
+        ):
+            raise NativeTaskArenaScenePlanError(
+                ["native_task_arena_published_asset_directory_invalid"]
+            )
+        published_asset_directory = pure.as_posix().rstrip("/")
     objects = _stage_assets(
-        list(contract["objects"]), provider_asset_directory=asset_directory
+        list(contract["objects"]),
+        provider_asset_directory=asset_directory,
+        published_asset_directory=published_asset_directory,
     )
     articulation = _articulation_plan(contract)
     plan: dict[str, Any] = {
@@ -266,7 +288,7 @@ def materialize_native_task_arena_scene_plan(
         "task_sample_binding": contract["task_sample_binding"],
         "task_state_binding": contract["task_state_binding"],
         "scenario": contract["scenario"],
-        "asset_directory": str(asset_directory),
+        "asset_directory": published_asset_directory or str(asset_directory),
         "objects": objects,
         "robot": contract["robot"],
         "cameras": contract["cameras"],

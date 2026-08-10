@@ -10,9 +10,11 @@ scene id, object label, canned-beverage constant, or refrigerator coordinate.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
@@ -54,6 +56,79 @@ def _validated_plan(value: Mapping[str, Any]) -> dict[str, Any]:
             ["native_task_arena_runtime_plan_digest_invalid"]
         )
     return plan
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _has_symlink_component(path: Path, *, root: Path) -> bool:
+    current = root
+    for part in path.relative_to(root).parts:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def _resolve_portable_assets(
+    plan: Mapping[str, Any], *, bundle_root: str | Path | None
+) -> list[dict[str, Any]]:
+    """Resolve and reverify relative packet assets without changing the seal."""
+
+    objects = json.loads(json.dumps(plan["objects"]))
+    relative = [row for row in objects if not Path(str(row["usd_path"])).is_absolute()]
+    if not relative:
+        return objects
+    if bundle_root is None:
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_runtime_bundle_root_required"]
+        )
+    raw_root = Path(bundle_root).expanduser()
+    if raw_root.is_symlink():
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_runtime_bundle_root_invalid"]
+        )
+    root = raw_root.resolve()
+    if not root.is_dir():
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_runtime_bundle_root_invalid"]
+        )
+    errors: list[str] = []
+    for row in relative:
+        role = str(row.get("semantic_role") or "")
+        relative_path = str(row["usd_path"])
+        pure = PurePosixPath(relative_path)
+        if pure.is_absolute() or ".." in pure.parts or not pure.name:
+            errors.append(f"native_task_arena_runtime_asset_path_invalid:{role}")
+            continue
+        candidate = root.joinpath(*pure.parts)
+        resolved = candidate.resolve()
+        outside = resolved != root and root not in resolved.parents
+        try:
+            expected_size = int(row["size_bytes"])
+            expected_digest = str(row["sha256"])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"native_task_arena_runtime_asset_identity_invalid:{role}")
+            continue
+        if (
+            _has_symlink_component(candidate, root=root)
+            or outside
+            or not resolved.is_file()
+        ):
+            errors.append(f"native_task_arena_runtime_asset_missing:{role}")
+            continue
+        if resolved.stat().st_size != expected_size or _sha256(resolved) != expected_digest:
+            errors.append(f"native_task_arena_runtime_asset_identity_mismatch:{role}")
+            continue
+        row["usd_path"] = str(resolved)
+    if errors:
+        raise NativeTaskArenaRuntimeError(errors)
+    return objects
 
 
 def _rotation_matrix_to_xyzw(matrix: Sequence[Sequence[float]]) -> list[float]:
@@ -180,11 +255,15 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_native_task_arena_environment(
-    scene_plan: Mapping[str, Any], *, device: str = "cuda:0"
+    scene_plan: Mapping[str, Any],
+    *,
+    device: str = "cuda:0",
+    bundle_root: str | Path | None = None,
 ) -> NativeTaskArenaEnvironment:
     """Instantiate the pinned Arena environment from one immutable plan."""
 
     plan = _validated_plan(scene_plan)
+    runtime_objects = _resolve_portable_assets(plan, bundle_root=bundle_root)
 
     import isaaclab.envs.mdp as mdp
     import isaaclab.sim as sim_utils
@@ -280,7 +359,7 @@ def build_native_task_arena_environment(
     assets: list[Any] = []
     scene_asset_names: dict[str, str] = {}
     task_object: Any | None = None
-    for row in plan["objects"]:
+    for row in runtime_objects:
         role = row["semantic_role"]
         spawn_addon: dict[str, Any] = {"visible": bool(row["visible"])}
         if role == "task_object":
