@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import native_task_runtime_source_packet as source_packet
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_PACKAGE_NAMES,
     NativeTaskRuntimeSourcePacketError,
@@ -178,3 +179,33 @@ def test_relocated_packet_installs_all_sources_once_without_dependency_resolutio
     assert "--no-build-isolation" in observed[0]
     assert len(result["install_roots"]) == len(ISAACLAB_PACKAGE_NAMES) + 1
     assert Path(result["isaac_sim_link"]["path"]).readlink() == simulator
+
+
+def test_materialization_batches_each_repository_into_one_exact_git_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    isaaclab, isaaclab_commit, isaaclab_tree = _repository(
+        tmp_path / "lab", arena=False
+    )
+    arena, arena_commit, arena_tree = _repository(tmp_path / "arena", arena=True)
+    commands: list[list[str]] = []
+    real_run = subprocess.run
+
+    def recording_run(command, **kwargs):
+        commands.append([str(value) for value in command])
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(source_packet.subprocess, "run", recording_run)
+    materialize_native_task_runtime_source_packet(
+        output_dir=tmp_path / "batched",
+        isaaclab_repo=isaaclab,
+        arena_repo=arena,
+        generated_at="fixed",
+        isaaclab_commit=isaaclab_commit,
+        isaaclab_tree=isaaclab_tree,
+        arena_commit=arena_commit,
+        arena_tree=arena_tree,
+    )
+
+    assert sum("archive" in command for command in commands) == 2
+    assert not any("show" in command for command in commands)

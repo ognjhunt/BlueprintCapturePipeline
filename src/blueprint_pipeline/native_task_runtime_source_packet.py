@@ -10,9 +10,12 @@ license, file, and archive identities.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import io
 import json
 import subprocess
+import tarfile
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -99,6 +102,39 @@ def _tracked_paths(repo: Path, commit: str, prefixes: Sequence[str]) -> list[str
     return paths
 
 
+def _tracked_blobs(
+    repo: Path, commit: str, prefixes: Sequence[str]
+) -> dict[str, bytes]:
+    """Read the selected commit in one git process, never from the worktree."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo), "archive", "--format=tar", commit, "--", *prefixes],
+            check=True,
+            capture_output=True,
+        )
+        blobs: dict[str, bytes] = {}
+        with tarfile.open(fileobj=io.BytesIO(completed.stdout), mode="r:") as archive:
+            for member in archive.getmembers():
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    raise NativeTaskRuntimeSourcePacketError(
+                        ["native_task_runtime_source_nonregular_git_object"]
+                    )
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise NativeTaskRuntimeSourcePacketError(
+                        ["native_task_runtime_source_git_archive_invalid"]
+                    )
+                blobs[member.name] = stream.read()
+        return blobs
+    except (OSError, subprocess.CalledProcessError, tarfile.TarError) as exc:
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_source_git_archive_failed"]
+        ) from exc
+
+
 def _repository_rows(
     *,
     repo: Path,
@@ -129,11 +165,15 @@ def _repository_rows(
         raise NativeTaskRuntimeSourcePacketError(
             [f"native_task_runtime_source_license_missing:{archive_namespace}"]
         )
+    tracked_blobs = _tracked_blobs(repo, commit, prefixes)
+    if set(paths) != set(tracked_blobs):
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_source_git_archive_members_invalid"]
+        )
     blobs: list[tuple[str, bytes]] = []
     rows: list[dict[str, Any]] = []
     for source_path in paths:
-        data = _git(repo, "show", f"{commit}:{source_path}", binary=True)
-        assert isinstance(data, bytes)
+        data = tracked_blobs[source_path]
         archive_path = f"runtime_sources/{archive_namespace}/{source_path}"
         blobs.append((archive_path, data))
         rows.append(
@@ -345,6 +385,27 @@ def verify_native_task_runtime_source_packet(
     return verified
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--isaaclab-repo", required=True)
+    parser.add_argument("--arena-repo", required=True)
+    parser.add_argument("--generated-at")
+    args = parser.parse_args(argv)
+    receipt = materialize_native_task_runtime_source_packet(
+        output_dir=args.output_dir,
+        isaaclab_repo=args.isaaclab_repo,
+        arena_repo=args.arena_repo,
+        generated_at=args.generated_at,
+    )
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI seam
+    raise SystemExit(main())
+
+
 __all__ = [
     "ARENA_COMMIT",
     "ARENA_REPOSITORY",
@@ -358,5 +419,6 @@ __all__ = [
     "NativeTaskRuntimeSourcePacketError",
     "SCHEMA_VERSION",
     "materialize_native_task_runtime_source_packet",
+    "main",
     "verify_native_task_runtime_source_packet",
 ]
