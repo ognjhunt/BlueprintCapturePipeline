@@ -2528,7 +2528,7 @@ def _blueprint_bundle_preflight(
                     entry
                     for entry in zip_entries
                     if entry.startswith("provider_runtime/input/")
-                    and entry.endswith("_reference.png")
+                    and entry.endswith(".png")
                 ]
                 if len(input_usds) != 1 or len(input_references) != 1:
                     missing_entries = sorted(

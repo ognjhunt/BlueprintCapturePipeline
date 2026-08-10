@@ -118,7 +118,11 @@ def _resolve_input_variant(
             raise ValueError("adp_content_agents_reference_image_identity_mismatch")
         return {
             "usd_source": assets / "adp009a_840313_canned_beverage_control.usda",
-            "config_prefix": "adp009a_content_agents_",
+            "config_sources": {
+                f"{agent}_agent.yaml": assets
+                / f"adp009a_content_agents_{agent}.vast.yaml"
+                for agent in ("material", "texture", "physics")
+            },
             "reference_image_sha256": REFERENCE_IMAGE_SHA256,
             "reference_image_authority": "blueprint_cad_render_not_interiorgs_dataset_bytes",
             "variant": variant,
@@ -176,7 +180,11 @@ def _resolve_input_variant(
             )
         return {
             "usd_source": usd_source,
-            "config_prefix": "adp009d_content_agents_articulated_",
+            "config_sources": {
+                f"{agent}_agent.yaml": assets
+                / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
+                for agent in ("material", "texture", "physics")
+            },
             "reference_image_sha256": manifest["reference_image_sha256"],
             "reference_image_authority": (
                 "blueprint_render_of_sage_derived_articulated_candidate_not_"
@@ -268,7 +276,11 @@ def _resolve_input_variant(
         raise ValueError("adp_content_agents_match_v2_approval_chain_invalid")
     return {
         "usd_source": usd_source,
-        "config_prefix": "adp009a_content_agents_match_v2_",
+        "config_sources": {
+            f"{agent}_agent.yaml": assets
+            / f"adp009a_content_agents_{agent}.vast.yaml"
+            for agent in ("material", "texture", "physics")
+        },
         "reference_image_sha256": snapshot["sha256"],
         "reference_image_authority": (
             "blueprint_cad_snapshot_bound_to_human_approved_match_v2_not_"
@@ -545,10 +557,7 @@ def _materialize_remote_configs(
     for name, path in config_sources.items():
         target = destination / name
         if variant in {"control_v1", "articulated_v1"}:
-            # The articulated configs are authored per-variant and checked in
-            # already; copying them keeps the shipped bytes identical to the
-            # reviewed source instead of deriving a second representation.
-            shutil.copy2(path, target)
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
         else:
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
             project = payload["project"]
@@ -573,9 +582,14 @@ def _materialize_remote_configs(
                     "pale mint green clean non-branded beverage container surface, "
                     "subtle vertical shading, no text or logo"
                 )
-            target.write_text(
-                yaml.safe_dump(payload, sort_keys=False, width=100), encoding="utf-8"
-            )
+        input_config = payload.get("input") or {}
+        input_config["usd_path"] = "../input/source_asset.usda"
+        if "reference_images" in input_config:
+            input_config["reference_images"] = ["../input/reference.png"]
+        payload["input"] = input_config
+        target.write_text(
+            yaml.safe_dump(payload, sort_keys=False, width=100), encoding="utf-8"
+        )
         config_hashes[name] = _sha256(target)
     return config_hashes
 
@@ -673,19 +687,16 @@ def build_content_agents_vast_bundle(
             scripts / "run_ovphysx_preflight_worker.py",
             runtime / "native" / "run_ovphysx_preflight_worker.py",
         )
-    assets = repo / "docs" / "arm_decision_proof_v1" / "assets"
-    config_prefix = str(variant["config_prefix"])
-    if config_prefix == "adp009d_content_agents_articulated_":
-        config_sources = {
-            f"{agent}_agent.yaml": assets / f"{config_prefix}{agent}.vast.yaml"
-            for agent in ("material", "texture", "physics")
-        }
-    else:
-        config_sources = {
-            "material_agent.yaml": assets / "adp009a_content_agents_material.vast.yaml",
-            "texture_agent.yaml": assets / "adp009a_content_agents_texture.vast.yaml",
-            "physics_agent.yaml": assets / "adp009a_content_agents_physics.vast.yaml",
-        }
+    config_sources = {
+        str(name): Path(path)
+        for name, path in (variant.get("config_sources") or {}).items()
+    }
+    if set(config_sources) != {
+        "material_agent.yaml",
+        "texture_agent.yaml",
+        "physics_agent.yaml",
+    } or any(not path.is_file() for path in config_sources.values()):
+        raise ValueError("adp_content_agents_config_sources_invalid")
     config_hashes = _materialize_remote_configs(
         config_sources=config_sources,
         destination=runtime / "configs",
@@ -696,16 +707,8 @@ def build_content_agents_vast_bundle(
     }
     _validate_remote_configs(source=source, config_sources=runtime_configs)
     usd_source = Path(variant["usd_source"])
-    # Each variant's configs reference their own input filenames, so the
-    # runtime input names follow the variant rather than the 840313 control.
-    if variant["variant"] == "articulated_v1":
-        runtime_usd_name = "adp009d_840796_articulated_refrigerator_candidate.usda"
-        reference_name = (
-            "adp009d_840796_articulated_refrigerator_candidate_reference.png"
-        )
-    else:
-        runtime_usd_name = "adp009a_840313_canned_beverage_control.usda"
-        reference_name = "adp009a_840313_canned_beverage_control_reference.png"
+    runtime_usd_name = "source_asset.usda"
+    reference_name = "reference.png"
     input_normalization = _materialize_content_agents_input(
         usd_source,
         runtime / "input" / runtime_usd_name,
@@ -1068,7 +1071,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reference-image", required=True)
     parser.add_argument("--job-dir", required=True)
     parser.add_argument(
-        "--input-variant", choices=("control_v1", "match_v2"), default="control_v1"
+        "--input-variant",
+        choices=("control_v1", "match_v2", "articulated_v1"),
+        default="control_v1",
     )
     parser.add_argument("--evidence-root")
     args = parser.parse_args(argv)

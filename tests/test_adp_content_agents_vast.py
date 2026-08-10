@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from blueprint_pipeline import adp_content_agents_vast as content_agents
 from blueprint_pipeline import adp_content_agents_bundle_preflight as bundle_preflight
@@ -228,7 +229,7 @@ def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
     assert first["failure_blocks_native_simulator_qualification"] is False
     assert first["agent_output_is_simready_authority"] is False
     assert first["runtime_input_binding"]["relative_path"] == (
-        "input/adp009a_840313_canned_beverage_control.usda"
+        "input/source_asset.usda"
     )
     assert first["joint_agent_plan"] == {
         "planned": False,
@@ -907,7 +908,11 @@ def test_articulated_variant_binds_statically_admitted_candidate(tmp_path: Path)
 
     assert resolved["variant"] == "articulated_v1"
     assert resolved["usd_source"] == candidate
-    assert resolved["config_prefix"] == "adp009d_content_agents_articulated_"
+    assert set(resolved["config_sources"]) == {
+        "material_agent.yaml",
+        "texture_agent.yaml",
+        "physics_agent.yaml",
+    }
     assert resolved["candidate_receipt_digest"].startswith("sha256:")
     assert resolved["task_joint_prim_path"] == "/Asset/joints/upper_door_hinge"
     assert "interiorgs_dataset_bytes" in resolved["reference_image_authority"]
@@ -967,27 +972,34 @@ def test_articulated_configs_preserve_articulation() -> None:
     assert "mass_scale_policy: skip_mass" in physics
 
 
-def test_articulated_bundle_input_names_match_its_configs(tmp_path: Path) -> None:
-    """A variant's runtime input filenames must match what its configs load."""
+def test_articulated_bundle_normalizes_scene_neutral_runtime_input_names(
+    tmp_path: Path,
+) -> None:
+    """Scene-specific config inputs are normalized at the reusable seam."""
 
     assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
-    for name in ("material", "texture", "physics"):
-        text = (
-            assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
-        ).read_text(encoding="utf-8")
-        assert (
-            "../input/adp009d_840796_articulated_refrigerator_candidate.usda" in text
-        )
-    material = (
-        assets / "adp009d_content_agents_articulated_material.vast.yaml"
-    ).read_text(encoding="utf-8")
-    assert (
-        "../input/adp009d_840796_articulated_refrigerator_candidate_reference.png"
-        in material
+    sources = {
+        f"{agent}_agent.yaml": assets
+        / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
+        for agent in ("material", "texture", "physics")
+    }
+    destination = tmp_path / "configs"
+    destination.mkdir()
+    content_agents._materialize_remote_configs(
+        config_sources=sources,
+        destination=destination,
+        variant="articulated_v1",
     )
+    for name in sources:
+        payload = yaml.safe_load((destination / name).read_text(encoding="utf-8"))
+        assert payload["input"]["usd_path"] == "../input/source_asset.usda"
+        if "reference_images" in payload["input"]:
+            assert payload["input"]["reference_images"] == ["../input/reference.png"]
 
 
-def test_articulated_configs_ship_byte_identical(tmp_path: Path) -> None:
+def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
+    tmp_path: Path,
+) -> None:
     assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
     sources = {
         f"{agent}_agent.yaml": assets
@@ -1001,9 +1013,9 @@ def test_articulated_configs_ship_byte_identical(tmp_path: Path) -> None:
         config_sources=sources, destination=destination, variant="articulated_v1"
     )
 
-    for name, source in sources.items():
-        assert (destination / name).read_bytes() == source.read_bytes()
-        assert hashes[name] == content_agents._sha256(source)
+    for name in sources:
+        assert hashes[name] == content_agents._sha256(destination / name)
+        assert "apply_joint_rigger" not in (destination / name).read_text()
 
 
 def _articulated_runtime_configs(tmp_path: Path) -> dict:
