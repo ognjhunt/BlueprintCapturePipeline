@@ -24,9 +24,11 @@ from typing import Any, Callable, Mapping, Sequence
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
 LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
+LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION = "task_evaluation_launch_profile_catalog.v1"
 CANONICAL_ALLOCATOR_ENTRYPOINT = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
 EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
 SECRET_PROFILE_ID_ENV = "BLUEPRINT_TASK_EVALUATION_SECRET_PROFILE_ID"
+LAUNCH_RUN_ROOT_PLACEHOLDER = "{launch_run_root}"
 _DIGEST_PREFIX = "sha256:"
 _URI_SCHEMES = ("gs://", "s3://", "https://")
 _AUTHORITY_URI_SCHEMES = (*_URI_SCHEMES, "firestore://")
@@ -48,6 +50,15 @@ _ALLOWED_RUNTIME_ENV_KEYS = frozenset(
         "BLUEPRINT_ADP009D_PROVISION_TIMEOUT_SECONDS",
         "BLUEPRINT_ADP009D_STOP_AFTER_FRAMES",
     }
+)
+PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
+    "profile_id",
+    "profile_digest",
+    "source_bundle",
+    "evaluation_run_spec",
+    "required_controls",
+    "execution_admission",
+    "claim_ceiling",
 )
 
 
@@ -265,6 +276,8 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
         blockers.append("launch_profile_allocator_argv_invalid")
     elif "--execute" in argv:
         blockers.append("launch_profile_execute_flag_forbidden")
+    elif any(_has_unknown_placeholder(item) for item in argv):
+        blockers.append("launch_profile_allocator_argv_placeholder_invalid")
     max_spend = allocator.get("max_spend_usd")
     if not isinstance(max_spend, (int, float)) or isinstance(max_spend, bool) or max_spend <= 0:
         blockers.append("launch_profile_max_spend_invalid")
@@ -334,8 +347,11 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
     if not isinstance(max_guard_age, int) or isinstance(max_guard_age, bool) or max_guard_age <= 0:
         blockers.append("launch_profile_reconciliation_guard_age_invalid")
     terminal = _mapping(profile.get("terminal_contract"))
-    if not str(terminal.get("result_path") or "").strip():
+    terminal_result_path = str(terminal.get("result_path") or "").strip()
+    if not terminal_result_path:
         blockers.append("launch_profile_terminal_result_path_missing")
+    elif _has_unknown_placeholder(terminal_result_path):
+        blockers.append("launch_profile_terminal_result_path_placeholder_invalid")
     if not isinstance(terminal.get("success_statuses"), list) or not terminal.get(
         "success_statuses"
     ):
@@ -375,6 +391,128 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
     if _contains_secret_key(profile):
         blockers.append("launch_profile_secret_value_forbidden")
     return sorted(set(blockers))
+
+
+def _has_unknown_placeholder(value: str) -> bool:
+    remainder = value.replace(LAUNCH_RUN_ROOT_PLACEHOLDER, "")
+    return "{" in remainder or "}" in remainder
+
+
+def _render_launch_path(value: str, *, run_root: Path) -> str:
+    if _has_unknown_placeholder(value):
+        raise TaskEvaluationLaunchError("launch_profile_runtime_placeholder_invalid")
+    return value.replace(LAUNCH_RUN_ROOT_PLACEHOLDER, str(run_root))
+
+
+def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the only profile fields a public WebApp selector may observe."""
+
+    blockers = validate_launch_profile(profile)
+    if blockers:
+        raise TaskEvaluationLaunchError(",".join(blockers))
+    return {field: profile[field] for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS}
+
+
+def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[str]:
+    """Fail closed on a public projection that could smuggle execution details."""
+
+    descriptor = _mapping(value)
+    blockers: list[str] = []
+    if set(descriptor) != set(PUBLIC_PROFILE_DESCRIPTOR_FIELDS):
+        blockers.append("launch_profile_public_descriptor_fields_invalid")
+    if not _is_identifier(descriptor.get("profile_id")):
+        blockers.append("launch_profile_public_id_invalid")
+    if not _is_digest(descriptor.get("profile_digest")):
+        blockers.append("launch_profile_public_digest_invalid")
+    _validate_reference(
+        descriptor.get("source_bundle"), field="launch_profile_public_source", blockers=blockers
+    )
+    source = _mapping(descriptor.get("source_bundle"))
+    if not _is_identifier(source.get("bundle_id")) or source.get("source_kind") not in {
+        "interiorgs_sage",
+        "raw_v3_2_capture",
+        "scaniverse_derived",
+    }:
+        blockers.append("launch_profile_public_source_invalid")
+    _validate_reference(
+        descriptor.get("evaluation_run_spec"),
+        field="launch_profile_public_evaluation_run_spec",
+        blockers=blockers,
+    )
+    controls = _mapping(descriptor.get("required_controls"))
+    expected_controls = {
+        "canonical_allocator": CANONICAL_ALLOCATOR_ENTRYPOINT,
+        "watchdog_required": True,
+        "artifact_storage_required": True,
+        "teardown_required": True,
+        "provider_zero_required": True,
+        "webapp_status_sync_required": True,
+        "retry_cap": 0,
+    }
+    if set(controls) != {*expected_controls, "secret_profile_id"}:
+        blockers.append("launch_profile_public_controls_fields_invalid")
+    for field, expected in expected_controls.items():
+        if controls.get(field) != expected:
+            blockers.append(f"launch_profile_public_control_invalid:{field}")
+    if not _is_identifier(controls.get("secret_profile_id")):
+        blockers.append("launch_profile_public_secret_profile_invalid")
+    execution = _mapping(descriptor.get("execution_admission"))
+    if set(execution) != {"live_enabled", "readiness_receipt", "blockers"}:
+        blockers.append("launch_profile_public_execution_fields_invalid")
+    if not isinstance(execution.get("live_enabled"), bool):
+        blockers.append("launch_profile_public_live_enabled_invalid")
+    _validate_reference(
+        execution.get("readiness_receipt"),
+        field="launch_profile_public_readiness_receipt",
+        blockers=blockers,
+    )
+    readiness_blockers = execution.get("blockers")
+    if not isinstance(readiness_blockers, list) or any(
+        not isinstance(item, str) or not item.strip() for item in readiness_blockers
+    ):
+        blockers.append("launch_profile_public_blockers_invalid")
+    elif execution.get("live_enabled") is True and readiness_blockers:
+        blockers.append("launch_profile_public_live_enabled_with_blockers")
+    elif execution.get("live_enabled") is False and not readiness_blockers:
+        blockers.append("launch_profile_public_dry_without_blocker")
+    if descriptor.get("claim_ceiling") not in {
+        "development_only",
+        "partner_run_pending_physical_join",
+    }:
+        blockers.append("launch_profile_public_claim_ceiling_invalid")
+    if _contains_secret_key(descriptor):
+        blockers.append("launch_profile_public_secret_value_forbidden")
+    return sorted(set(blockers))
+
+
+def load_public_launch_profile_catalog(
+    path_value: str | Path, *, max_bytes: int = 512 * 1024, max_profiles: int = 100
+) -> dict[str, Any]:
+    """Load a publisher-generated catalog without exposing its filesystem path."""
+
+    source_input = Path(path_value).expanduser()
+    if source_input.is_symlink():
+        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
+    source = source_input.resolve()
+    if not source.is_file() or source.stat().st_size > max_bytes:
+        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
+    value = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(value, list) or len(value) > max_profiles:
+        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
+    profiles: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        descriptor = _mapping(item)
+        blockers = validate_public_launch_profile_descriptor(descriptor)
+        key = (str(descriptor.get("profile_id") or ""), str(descriptor.get("profile_digest") or ""))
+        if blockers or key in seen:
+            raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
+        seen.add(key)
+        profiles.append(descriptor)
+    return {
+        "schema_version": LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION,
+        "profiles": profiles,
+    }
 
 
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
@@ -475,9 +613,13 @@ def _scoped_runtime_environment(values: Mapping[str, Any]):
                 os.environ[key] = value
 
 
-def _terminal_evidence(profile: Mapping[str, Any], *, execute: bool) -> dict[str, Any]:
+def _terminal_evidence(
+    profile: Mapping[str, Any], *, execute: bool, run_root: Path
+) -> dict[str, Any]:
     terminal = _mapping(profile.get("terminal_contract"))
-    result_path = Path(str(terminal.get("result_path") or "")).expanduser().resolve()
+    result_path = Path(
+        _render_launch_path(str(terminal.get("result_path") or ""), run_root=run_root)
+    ).expanduser().resolve()
     if not execute:
         return {
             "status": "not_required_for_dry_run",
@@ -632,7 +774,13 @@ def dispatch_launch_request(
     stderr_text = ""
     if not blockers and profile:
         allocator = _mapping(profile.get("allocator"))
-        argv = ["gpu-canary", *list(allocator.get("argv") or [])]
+        argv = [
+            "gpu-canary",
+            *[
+                _render_launch_path(item, run_root=run_root)
+                for item in list(allocator.get("argv") or [])
+            ],
+        ]
         if live_requested:
             argv.append("--execute")
         if allocator_runner is None:
@@ -689,7 +837,7 @@ def dispatch_launch_request(
             blockers.append("canonical_allocator_nonzero_exit")
 
     terminal = (
-        _terminal_evidence(profile, execute=live_requested)
+        _terminal_evidence(profile, execute=live_requested, run_root=run_root)
         if profile
         else {
             "status": "blocked",

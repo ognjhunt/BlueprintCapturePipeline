@@ -9,10 +9,12 @@ import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher_module
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     EXECUTE_ENV,
+    LAUNCH_RUN_ROOT_PLACEHOLDER,
     SECRET_PROFILE_ID_ENV,
     TaskEvaluationLaunchError,
     canonical_digest,
     dispatch_launch_request,
+    load_public_launch_profile_catalog,
     process_launch_queue,
     stage_launch_request,
     validate_launch_profile,
@@ -288,6 +290,56 @@ def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
     assert live["terminal_evidence"]["status"] == "passed"
     assert live["provider_mutation_attempted"] is True
     assert live["agent_operator_used"] is False
+
+
+def test_dispatch_renders_all_output_paths_inside_the_launch_run_root(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    profile["allocator"]["argv"] = [
+        "--provider-launch-request",
+        f"{LAUNCH_RUN_ROOT_PLACEHOLDER}/provider-launch.json",
+        "--admission-out",
+        f"{LAUNCH_RUN_ROOT_PLACEHOLDER}/allocator/admission.json",
+        "--adapter-output",
+        f"{LAUNCH_RUN_ROOT_PLACEHOLDER}/allocator/result.json",
+    ]
+    profile["terminal_contract"]["result_path"] = (
+        f"{LAUNCH_RUN_ROOT_PLACEHOLDER}/allocator/result.json"
+    )
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+    calls: list[list[str]] = []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    run_root = (tmp_path / "state" / request["launch_id"]).resolve()
+    assert receipt["status"] == "dry_run_completed"
+    assert LAUNCH_RUN_ROOT_PLACEHOLDER not in " ".join(calls[0])
+    assert str(run_root / "provider-launch.json") in calls[0]
+    assert str(run_root / "allocator" / "admission.json") in calls[0]
+    assert str(run_root / "allocator" / "result.json") in calls[0]
+
+
+def test_profile_rejects_unknown_runtime_placeholders(tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    profile["allocator"]["argv"][-1] = "{other_run}/result.json"
+    profile["terminal_contract"]["result_path"] = "{unsafe}/terminal.json"
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+
+    blockers = validate_launch_profile(profile)
+
+    assert "launch_profile_allocator_argv_placeholder_invalid" in blockers
+    assert "launch_profile_terminal_result_path_placeholder_invalid" in blockers
 
 
 def test_default_dispatch_uses_isolated_canonical_allocator_process(
@@ -595,3 +647,35 @@ def test_profile_publisher_emits_webapp_descriptor_without_allocator_arguments(
         webapp_catalog_out=tmp_path / "catalog.json",
     )
     assert replay["profiles"][0]["created"] is False
+
+    wrapped = load_public_launch_profile_catalog(tmp_path / "catalog.json")
+    assert wrapped == {
+        "schema_version": "task_evaluation_launch_profile_catalog.v1",
+        "profiles": catalog,
+    }
+
+
+def test_public_catalog_rejects_execution_fields_symlinks_and_duplicates(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    source = tmp_path / "staging" / "profile.json"
+    _write(source, profile)
+    publish_profiles(
+        profile_paths=[source],
+        profile_dir=tmp_path / "published",
+        webapp_catalog_out=tmp_path / "catalog.json",
+    )
+    catalog = json.loads((tmp_path / "catalog.json").read_text())
+    catalog[0]["allocator"] = profile["allocator"]
+    _write(tmp_path / "unsafe.json", catalog)
+    with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
+        load_public_launch_profile_catalog(tmp_path / "unsafe.json")
+
+    _write(tmp_path / "duplicate.json", [catalog[0], catalog[0]])
+    with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
+        load_public_launch_profile_catalog(tmp_path / "duplicate.json")
+
+    (tmp_path / "catalog-link.json").symlink_to(tmp_path / "catalog.json")
+    with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
+        load_public_launch_profile_catalog(tmp_path / "catalog-link.json")

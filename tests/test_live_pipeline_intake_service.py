@@ -192,6 +192,26 @@ def _task_evaluation_launch_request() -> dict[str, object]:
     return request
 
 
+def _public_task_evaluation_launch_profile() -> dict[str, object]:
+    request = _task_evaluation_launch_request()
+    return {
+        "profile_id": request["launch_profile_id"],
+        "profile_digest": request["launch_profile_digest"],
+        "source_bundle": request["source_bundle"],
+        "evaluation_run_spec": request["evaluation_run_spec"],
+        "required_controls": request["required_controls"],
+        "execution_admission": {
+            "live_enabled": False,
+            "readiness_receipt": {
+                "uri": "https://github.com/ognjhunt/BlueprintCapturePipeline/blob/commit/readiness.json",
+                "digest": "sha256:" + "e" * 64,
+            },
+            "blockers": ["scripted_positive_control_not_passed"],
+        },
+        "claim_ceiling": request["claim_ceiling"],
+    }
+
+
 def _webapp_request(capture_root: Path, *, job_id: str = "webapp-job-1") -> dict[str, object]:
     buyer_request_id = "buyer-request-1"
     return {
@@ -1200,6 +1220,57 @@ def test_task_evaluation_launch_rejects_tampering_before_trigger(
     assert response.status_code == 422
     assert "launch_request_digest_mismatch" in response.text
     assert calls == []
+
+
+def test_public_task_evaluation_profile_catalog_is_validated_and_path_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog_path = tmp_path / "catalog.json"
+    _write_json(catalog_path, [_public_task_evaluation_launch_profile()])
+    monkeypatch.setenv(
+        service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV,
+        str(catalog_path),
+    )
+
+    client = TestClient(create_app())
+    response = client.get("/api/live-pipeline/task-evaluation-launch-profiles")
+    health = client.get("/health").json()["task_evaluation_launch_queue"]
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "schema_version": "task_evaluation_launch_profile_catalog.v1",
+        "status": "published",
+        "profiles": [_public_task_evaluation_launch_profile()],
+        "allocator_arguments_exposed": False,
+        "secret_values_exposed": False,
+    }
+    assert str(catalog_path) not in response.text
+    assert health["public_catalog_configured"] is True
+    assert health["public_catalog_ready"] is True
+
+
+def test_public_task_evaluation_profile_catalog_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog_path = tmp_path / "catalog.json"
+    unsafe = _public_task_evaluation_launch_profile()
+    unsafe["allocator"] = {"argv": ["--execute"]}
+    _write_json(catalog_path, [unsafe])
+    monkeypatch.setenv(
+        service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV,
+        str(catalog_path),
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/live-pipeline/task-evaluation-launch-profiles"
+    )
+
+    assert response.status_code == 503
+    assert response.json()["profiles"] == []
+    assert response.json()["blockers"] == [
+        "task_evaluation_launch_public_catalog_invalid"
+    ]
+    assert str(catalog_path) not in response.text
 
 
 def test_task_evaluation_launch_systemd_path_mode_never_shells_out(
