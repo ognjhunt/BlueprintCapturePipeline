@@ -393,8 +393,6 @@ def _camera_snapshot(
             rgb_array = rgb_array[..., :3]
         rgb_array = np.clip(rgb_array, 0, 255).astype(np.uint8)
         semantic = np.asarray(_jsonable(outputs["semantic_segmentation"])[0])
-        if semantic.ndim == 3 and semantic.shape[-1] == 1:
-            semantic = semantic[..., 0]
         info = _jsonable((camera.data.info or {}).get("semantic_segmentation") or {})
         labels = info.get("idToLabels") or {}
         thresholds = CAMERA_THRESHOLDS[role]

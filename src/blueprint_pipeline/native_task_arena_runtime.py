@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .native_task_camera_observability import configure_native_semantic_id_output
 from .native_task_usd_import_normalization import inspect_environment_import_usd
 PINHOLE_HORIZONTAL_APERTURE_MM = 20.955
 SCENE_PLAN_SCHEMA = "native_task_arena_scene_plan.v1"
@@ -368,7 +369,7 @@ def build_native_task_arena_environment(
         camera_cfg.width = parameters["width"]
         camera_cfg.height = parameters["height"]
         camera_cfg.data_types = list(parameters["data_types"])
-        camera_cfg.colorize_semantic_segmentation = False
+        configure_native_semantic_id_output(camera_cfg)
         camera_cfg.update_period = 0.0
         camera_cfg.update_latest_camera_pose = True
         camera_cfg.spawn.focal_length = parameters["focal_length_mm"]

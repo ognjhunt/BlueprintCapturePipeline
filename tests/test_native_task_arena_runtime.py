@@ -187,6 +187,8 @@ class _Pose:
 class _CameraCfg:
     def __init__(self):
         self.prim_path = ""
+        self.colorize_semantic_segmentation = True
+        self.renderer_cfg = SimpleNamespace(colorize_semantic_segmentation=True)
         self.offset = SimpleNamespace(pos=(), rot=(), convention="")
         self.spawn = SimpleNamespace(
             focal_length=0.0, horizontal_aperture=0.0, vertical_aperture=0.0
@@ -468,6 +470,13 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         "wrist": "wrist_camera",
         "overview": "external_camera_2",
     }
+    for camera_name in built.camera_scene_names.values():
+        camera_cfg = getattr(
+            _ArenaBuilder.last.arena_env.embodiment.camera_config,
+            camera_name,
+        )
+        assert camera_cfg.colorize_semantic_segmentation is False
+        assert camera_cfg.renderer_cfg.colorize_semantic_segmentation is False
     arena_env = _ArenaBuilder.last.arena_env
     task_object = next(
         asset for asset in arena_env.scene.assets if asset.name == "task_object"

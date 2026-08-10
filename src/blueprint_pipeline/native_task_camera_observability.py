@@ -8,6 +8,9 @@ from typing import Any
 
 
 SCHEMA_VERSION = "native_task_camera_observability.v1"
+SEMANTIC_OUTPUT_CONFIGURATION_SCHEMA_VERSION = (
+    "native_task_camera_semantic_output_configuration.v1"
+)
 
 
 class NativeTaskCameraObservabilityError(ValueError):
@@ -16,6 +19,90 @@ class NativeTaskCameraObservabilityError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def configure_native_semantic_id_output(camera_cfg: Any) -> dict[str, Any]:
+    """Require integer semantic IDs across legacy and renderer-owned configs.
+
+    Isaac Lab 4.x exposed ``colorize_semantic_segmentation`` directly on
+    ``CameraCfg``.  The pinned Arena/Isaac Lab stack retains that field only as
+    a deprecated forwarding shim and makes ``renderer_cfg`` authoritative.
+    Set every control that exists so config copies made by either API retain
+    the ID-valued AOV.  A four-channel colorized image is not interchangeable
+    with semantic IDs and is deliberately rejected by the measurement gate.
+    """
+
+    configured_controls: list[str] = []
+    if hasattr(camera_cfg, "colorize_semantic_segmentation"):
+        camera_cfg.colorize_semantic_segmentation = False
+        configured_controls.append("camera_cfg.colorize_semantic_segmentation")
+
+    renderer_cfg = getattr(camera_cfg, "renderer_cfg", None)
+    if renderer_cfg is not None and hasattr(
+        renderer_cfg, "colorize_semantic_segmentation"
+    ):
+        renderer_cfg.colorize_semantic_segmentation = False
+        configured_controls.append(
+            "camera_cfg.renderer_cfg.colorize_semantic_segmentation"
+        )
+
+    if not configured_controls:
+        raise NativeTaskCameraObservabilityError(
+            ["native_task_camera_semantic_id_configuration_control_missing"]
+        )
+
+    readback = {
+        control: bool(
+            getattr(
+                renderer_cfg
+                if control.startswith("camera_cfg.renderer_cfg")
+                else camera_cfg,
+                "colorize_semantic_segmentation",
+            )
+        )
+        for control in configured_controls
+    }
+    if any(readback.values()):
+        raise NativeTaskCameraObservabilityError(
+            ["native_task_camera_semantic_id_configuration_not_applied"]
+        )
+    return {
+        "schema_version": SEMANTIC_OUTPUT_CONFIGURATION_SCHEMA_VERSION,
+        "requested_representation": "integer_semantic_ids",
+        "configured_controls": configured_controls,
+        "control_readback": readback,
+        "colorized_output_allowed_for_scoring": False,
+        "passed": True,
+    }
+
+
+def _normalize_semantic_id_map(semantic_ids: Any) -> tuple[Any, dict[str, Any]]:
+    import numpy as np
+
+    semantic = np.asarray(semantic_ids)
+    input_shape = [int(value) for value in semantic.shape]
+    input_dtype = str(semantic.dtype)
+    if semantic.ndim == 3 and semantic.shape[-1] == 4:
+        raise NativeTaskCameraObservabilityError(
+            ["native_task_camera_semantic_output_colorized"]
+        )
+    representation = "integer_id_map_2d"
+    if semantic.ndim == 3 and semantic.shape[-1] == 1:
+        semantic = semantic[..., 0]
+        representation = "integer_id_map_single_channel"
+    if semantic.ndim != 2 or not semantic.size:
+        raise NativeTaskCameraObservabilityError(
+            ["native_task_camera_semantic_shape_invalid"]
+        )
+    if semantic.dtype.kind not in {"i", "u"}:
+        raise NativeTaskCameraObservabilityError(
+            ["native_task_camera_semantic_dtype_invalid"]
+        )
+    return semantic, {
+        "input_shape": input_shape,
+        "input_dtype": input_dtype,
+        "representation": representation,
+    }
 
 
 def measure_native_task_camera_observability(
@@ -31,13 +118,7 @@ def measure_native_task_camera_observability(
 
     import numpy as np
 
-    semantic = np.asarray(semantic_ids)
-    if semantic.ndim == 3 and semantic.shape[-1] == 1:
-        semantic = semantic[..., 0]
-    if semantic.ndim != 2 or not semantic.size:
-        raise NativeTaskCameraObservabilityError(
-            ["native_task_camera_semantic_shape_invalid"]
-        )
+    semantic, semantic_representation = _normalize_semantic_id_map(semantic_ids)
     if (
         isinstance(minimum_pixels, bool)
         or int(minimum_pixels) < 1
@@ -99,6 +180,7 @@ def measure_native_task_camera_observability(
         },
         "passed": passed,
         "measurement_authority": "native_semantic_segmentation_aov",
+        "semantic_input": semantic_representation,
         "rgb_or_model_label_used": False,
     }
 
@@ -106,5 +188,7 @@ def measure_native_task_camera_observability(
 __all__ = [
     "NativeTaskCameraObservabilityError",
     "SCHEMA_VERSION",
+    "SEMANTIC_OUTPUT_CONFIGURATION_SCHEMA_VERSION",
+    "configure_native_semantic_id_output",
     "measure_native_task_camera_observability",
 ]
