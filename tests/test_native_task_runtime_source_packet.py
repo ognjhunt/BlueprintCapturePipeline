@@ -139,7 +139,7 @@ def test_source_packet_rejects_revision_and_archive_tamper(tmp_path: Path) -> No
         )
 
 
-def test_relocated_packet_installs_all_sources_once_without_dependency_resolution(
+def test_relocated_packet_installs_all_sources_once_without_build_backend(
     tmp_path: Path,
 ) -> None:
     receipt = _packet(tmp_path)
@@ -167,18 +167,23 @@ def test_relocated_packet_installs_all_sources_once_without_dependency_resolutio
         extraction_dir=tmp_path / "extracted",
         output_path=tmp_path / "provisioning.json",
         simulator_root=simulator,
+        site_packages_dir=tmp_path / "site-packages",
         python_executable="/isaac-sim/python.sh",
         run_command=fake_run,
     )
 
     assert result["status"] == "completed"
     assert result["all_sources_verified_before_install"] is True
-    assert result["dependencies_installed"] is True
+    assert result["source_packages_made_importable"] is True
+    assert result["dependencies_installed"] is False
     assert len(observed) == 1
-    assert "--no-deps" in observed[0]
-    assert "--no-build-isolation" in observed[0]
+    assert observed[0][1:3] == ["-I", "-c"]
+    assert "pip" not in observed[0]
+    assert "setuptools" not in observed[0]
     assert len(result["install_roots"]) == len(ISAACLAB_PACKAGE_NAMES) + 1
     assert Path(result["isaac_sim_link"]["path"]).readlink() == simulator
+    path_lines = Path(result["path_file"]).read_text(encoding="utf-8").splitlines()
+    assert path_lines == result["install_roots"]
 
 
 def test_materialization_batches_each_repository_into_one_exact_git_archive(

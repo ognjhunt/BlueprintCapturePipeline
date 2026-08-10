@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import sysconfig
 import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -22,6 +23,14 @@ from .native_task_runtime_source_packet import (
 
 SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+TOP_LEVEL_PACKAGES = (
+    "isaaclab",
+    "isaaclab_physx",
+    "isaaclab_assets",
+    "isaaclab_tasks",
+    "isaaclab_teleop",
+    "isaaclab_arena",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -50,6 +59,7 @@ def provision_native_task_runtime_sources(
     extraction_dir: str | Path,
     output_path: str | Path,
     simulator_root: str | Path = "/isaac-sim",
+    site_packages_dir: str | Path | None = None,
     python_executable: str | Path | None = None,
     run_command: CommandRunner = subprocess.run,
 ) -> dict[str, Any]:
@@ -68,12 +78,16 @@ def provision_native_task_runtime_sources(
         "extraction_dir": str(destination),
         "python_executable": str(python_executable or sys.executable),
         "install_roots": [],
-        "pip_install_command": [],
-        "pip_returncode": None,
-        "pip_stdout_tail": "",
-        "pip_stderr_tail": "",
+        "installation_method": "verified_source_roots_pth",
+        "path_file": None,
+        "path_file_sha256": None,
+        "package_path_probe_command": [],
+        "package_path_probe_returncode": None,
+        "package_path_probe_stdout": "",
+        "package_path_probe_stderr": "",
         "isaac_sim_link": None,
         "all_sources_verified_before_install": False,
+        "source_packages_made_importable": False,
         "dependencies_installed": False,
         "candidate_policy_queried": False,
         "scene_bytes_processed": False,
@@ -108,32 +122,47 @@ def provision_native_task_runtime_sources(
         else:
             link.symlink_to(simulator, target_is_directory=True)
         result["isaac_sim_link"] = {"path": str(link), "target": str(simulator)}
+        site_packages = Path(
+            site_packages_dir or sysconfig.get_paths()["purelib"]
+        ).expanduser().resolve()
+        site_packages.mkdir(parents=True, exist_ok=True)
+        path_file = site_packages / "blueprint_native_task_runtime_sources.pth"
+        path_file.write_text(
+            "".join(f"{path}\n" for path in install_roots), encoding="utf-8"
+        )
+        result["path_file"] = str(path_file)
+        result["path_file_sha256"] = _sha256(path_file)
+        package_probe = (
+            "import importlib.util,json;"
+            f"names={list(TOP_LEVEL_PACKAGES)!r};"
+            "found={name:importlib.util.find_spec(name) is not None for name in names};"
+            "print(json.dumps(found,sort_keys=True));"
+            "raise SystemExit(0 if all(found.values()) else 3)"
+        )
         command = [
             str(python_executable or sys.executable),
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--no-deps",
-            "--no-build-isolation",
-            *[str(path) for path in install_roots],
+            "-I",
+            "-c",
+            package_probe,
         ]
         result["install_roots"] = [str(path) for path in install_roots]
-        result["pip_install_command"] = command
+        result["package_path_probe_command"] = command
         completed = run_command(
             command,
             check=False,
             capture_output=True,
             text=True,
         )
-        result["pip_returncode"] = completed.returncode
-        result["pip_stdout_tail"] = completed.stdout[-16_000:]
-        result["pip_stderr_tail"] = completed.stderr[-16_000:]
+        result["package_path_probe_returncode"] = completed.returncode
+        result["package_path_probe_stdout"] = completed.stdout[-16_000:]
+        result["package_path_probe_stderr"] = completed.stderr[-16_000:]
         if completed.returncode != 0:
-            result["blockers"].append("native_task_runtime_source_pip_install_failed")
+            result["blockers"].append(
+                "native_task_runtime_source_package_path_probe_failed"
+            )
             return _persist(result_path, result)
         result["status"] = "completed"
-        result["dependencies_installed"] = True
+        result["source_packages_made_importable"] = True
         return _persist(result_path, result)
     except NativeTaskRuntimeSourcePacketError as exc:
         result["blockers"].extend(exc.errors)
