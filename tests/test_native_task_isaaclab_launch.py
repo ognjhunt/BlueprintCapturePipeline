@@ -73,7 +73,11 @@ def _receipt(
     experience.write_text(
         '[dependencies]\n"isaaclab.python.headless" = {}\n'
         "[settings.isaaclab]\n"
-        f"cameras_enabled = {str(cameras_enabled).lower()}\n",
+        f"cameras_enabled = {str(cameras_enabled).lower()}\n"
+        "[settings.app.renderer]\n"
+        "resolution = [1280, 720]\n"
+        "[settings.app.renderer]\n"
+        "waitIdle = true\n",
         encoding="utf-8",
     )
     result = {

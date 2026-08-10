@@ -16,7 +16,6 @@ import importlib.metadata
 import importlib.util
 import json
 import sys
-import tomllib
 import traceback
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -155,6 +154,44 @@ def _runtime_owned_modules(names: set[str]) -> list[str]:
         for name in names
         if name.split(".", 1)[0] in SIMULATION_APP_OWNED_MODULE_ROOTS
     )
+
+
+def _read_kit_boolean_setting(
+    text: str,
+    *,
+    section: str,
+    key: str,
+) -> bool | None:
+    """Read one boolean from NVIDIA's Kit configuration dialect.
+
+    Kit experience files resemble TOML but may redeclare tables, which strict
+    TOML parsers reject.  This reader intentionally understands only the one
+    section/key/boolean grammar needed by the launch contract and rejects
+    missing, malformed, duplicate, or conflicting assignments.
+    """
+
+    current_section: str | None = None
+    values: list[bool] = []
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current_section = line[1:-1].strip()
+            continue
+        if current_section != section:
+            continue
+        raw_key, separator, raw_value = line.partition("=")
+        if not separator or raw_key.strip() != key:
+            continue
+        token = raw_value.strip()
+        if token == "true":
+            values.append(True)
+        elif token == "false":
+            values.append(False)
+        else:
+            return None
+    return values[0] if len(values) == 1 else None
 
 
 def preflight_native_task_pre_app_dependencies(
@@ -382,15 +419,11 @@ def verify_native_task_isaaclab_launch_contract(
         or BUNDLED_WARP_EXTENSION not in headless
     ):
         errors.append("native_task_isaaclab_experience_warp_contract_invalid")
-    try:
-        rendering_config = tomllib.loads(rendering)
-        rendering_cameras_enabled = (
-            rendering_config.get("settings", {})
-            .get("isaaclab", {})
-            .get("cameras_enabled")
-        )
-    except (tomllib.TOMLDecodeError, AttributeError):
-        rendering_cameras_enabled = None
+    rendering_cameras_enabled = _read_kit_boolean_setting(
+        rendering,
+        section="settings.isaaclab",
+        key="cameras_enabled",
+    )
     if rendering_cameras_enabled is not True:
         errors.append("native_task_isaaclab_rendering_experience_cameras_disabled")
     if (
