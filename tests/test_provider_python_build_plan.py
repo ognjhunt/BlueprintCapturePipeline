@@ -10,17 +10,24 @@ from blueprint_pipeline.provider_python_build_plan import (
 )
 
 
-def _project(root, name: str, requirements: list[str]) -> str:
+def _project(
+    root, name: str, requirements: list[str], *, editable_source: bool = False
+) -> str:
     path = root / name / "pyproject.toml"
     path.parent.mkdir(parents=True)
-    path.write_text(
+    source = (
         "[build-system]\n"
         + "requires = "
         + json.dumps(requirements)
         + "\n"
-        + 'build-backend = "hatchling.build"\n',
-        encoding="utf-8",
+        + 'build-backend = "hatchling.build"\n'
     )
+    if editable_source:
+        source += (
+            "\n[tool.uv.sources]\n"
+            'world-understanding = { path = "../..", editable = true }\n'
+        )
+    path.write_text(source, encoding="utf-8")
     return path.relative_to(root).as_posix()
 
 
@@ -30,7 +37,10 @@ def test_build_plan_preflights_all_local_project_build_requirements(tmp_path) ->
         source, "root", ["hatchling<1.27.0", "uv-dynamic-versioning"]
     )
     service_project = _project(
-        source, "service", ["setuptools>=68.0", "setuptools-scm>=8.0"]
+        source,
+        "service",
+        ["setuptools>=68.0", "setuptools-scm>=8.0"],
+        editable_source=True,
     )
 
     plan = materialize_python_build_plan(
@@ -40,11 +50,13 @@ def test_build_plan_preflights_all_local_project_build_requirements(tmp_path) ->
     )
 
     assert plan["requirements"] == [
+        "editables>=0.3",
         "hatchling<1.27.0",
         "setuptools-scm>=8.0",
         "setuptools>=68.0",
         "uv-dynamic-versioning",
     ]
+    assert plan["dynamic_backend_requirements"] == ["editables>=0.3"]
     assert plan["build_isolation_required"] is False
     assert validate_python_build_plan(
         plan_path=tmp_path / "plan.json", source_root=source

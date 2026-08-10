@@ -148,12 +148,17 @@ def _checkout(root: Path) -> Path:
     for relative, requirements in build_projects.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        source = (
             "[build-system]\n"
             f"requires = {json.dumps(requirements)}\n"
-            'build-backend = "hatchling.build"\n',
-            encoding="utf-8",
+            'build-backend = "hatchling.build"\n'
         )
+        if relative == "apps/joint_agent/pyproject.toml":
+            source += (
+                "\n[tool.uv.sources]\n"
+                'world-understanding = { path = "../..", editable = true }\n'
+            )
+        path.write_text(source, encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(
         ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"],
@@ -330,6 +335,7 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         "failure_blocker": "joint_agent_runtime_disk_headroom_insufficient",
     }
     assert receipt["python_build_dependency_plan"]["requirements"] == [
+        "editables>=0.3",
         "hatchling<1.27.0",
         "setuptools-scm>=8.0",
         "setuptools>=68.0",

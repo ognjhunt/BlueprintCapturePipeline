@@ -17,6 +17,16 @@ def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _dynamic_backend_requirements(document: Mapping[str, Any]) -> set[str]:
+    uv_sources = ((document.get("tool") or {}).get("uv") or {}).get("sources", {})
+    if isinstance(uv_sources, Mapping) and any(
+        isinstance(spec, Mapping) and spec.get("editable") is True
+        for spec in uv_sources.values()
+    ):
+        return {"editables>=0.3"}
+    return set()
+
+
 def materialize_python_build_plan(
     *,
     source_root: str | Path,
@@ -28,6 +38,7 @@ def materialize_python_build_plan(
     root = Path(source_root).expanduser().resolve()
     projects: list[dict[str, Any]] = []
     requirements: set[str] = set()
+    dynamic_backend_requirements: set[str] = set()
     for relative in sorted(set(project_relative_paths)):
         path = (root / relative).resolve()
         if root not in path.parents or path.name != "pyproject.toml" or not path.is_file():
@@ -44,6 +55,13 @@ def materialize_python_build_plan(
             raise ValueError("provider_python_build_requirements_invalid")
         normalized = sorted(set(item.strip() for item in declared))
         requirements.update(normalized)
+        inferred = _dynamic_backend_requirements(document)
+        if inferred:
+            # uv honors first-party editable path declarations even when the
+            # top-level provider install is non-editable. Hatchling's editable
+            # hook imports this package dynamically without declaring it in
+            # build-system.requires (observed in NVIDIA Content Agents v0.5.2).
+            dynamic_backend_requirements.update(inferred)
         projects.append(
             {
                 "relative_path": path.relative_to(root).as_posix(),
@@ -52,10 +70,12 @@ def materialize_python_build_plan(
                 "requires": normalized,
             }
         )
+    requirements.update(dynamic_backend_requirements)
     plan = {
         "schema_version": SCHEMA_VERSION,
         "projects": projects,
         "requirements": sorted(requirements),
+        "dynamic_backend_requirements": sorted(dynamic_backend_requirements),
         "build_isolation_required": False,
         "reason": "all_digest_bound_build_requirements_preinstalled_before_editable_install",
     }
@@ -84,16 +104,20 @@ def validate_python_build_plan(
     ):
         raise ValueError("provider_python_build_plan_invalid")
     observed: set[str] = set()
+    observed_dynamic: set[str] = set()
     for row in projects:
         if not isinstance(row, Mapping):
             raise ValueError("provider_python_build_plan_invalid")
         path = (root / str(row.get("relative_path") or "")).resolve()
         if root not in path.parents or not path.is_file() or _sha256(path) != row.get("sha256"):
             raise ValueError("provider_python_build_plan_source_drift")
-        declared = tomllib.loads(path.read_text(encoding="utf-8")).get(
-            "build-system", {}
-        ).get("requires", [])
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+        declared = document.get("build-system", {}).get("requires", [])
         observed.update(str(item).strip() for item in declared)
+        observed_dynamic.update(_dynamic_backend_requirements(document))
+    observed.update(observed_dynamic)
+    if sorted(observed_dynamic) != value.get("dynamic_backend_requirements"):
+        raise ValueError("provider_python_build_plan_requirement_drift")
     if sorted(observed) != requirements:
         raise ValueError("provider_python_build_plan_requirement_drift")
     return dict(value)
