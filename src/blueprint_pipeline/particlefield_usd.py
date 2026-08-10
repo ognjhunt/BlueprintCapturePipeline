@@ -33,6 +33,7 @@ from .gaussian_splat_decode import (
 )
 
 PARTICLEFIELD_SCHEMA = "ParticleField3DGaussianSplat"
+PARTICLEFIELD_RECEIPT_SCHEMA_VERSION = "particlefield_3dgs_authoring_receipt.v1"
 GAUSSIAN_SURFLET_SCHEMA = "ParticleField+ParticleFieldKernelGaussianSurfletAPI"
 GAUSSIAN_SURFLET_RECEIPT_SCHEMA_VERSION = "aura_ovrtx_particlefield_receipt.v1"
 
@@ -79,17 +80,30 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
     xyz = np.ascontiguousarray(splat.xyz, dtype=np.float32)
     if xyz.shape != (splat.count, 3):
         raise ValueError("particlefield_position_shape_invalid")
-    arrays = (xyz, splat.scales, splat.quats, splat.opacity, splat.f_dc)
+    arrays = (xyz, splat.scales, splat.quats, splat.f_dc)
     if any(not np.isfinite(np.asarray(value)).all() for value in arrays):
         raise ValueError("particlefield_nonfinite_input")
-    scales = np.exp(np.asarray(splat.scales, dtype=np.float32)).astype(np.float32)
+    raw_opacity = np.asarray(splat.opacity, dtype=np.float32)
+    # Standard 3DGS serializers commonly represent exact alpha endpoints as
+    # inverse-sigmoid logits: +inf is fully opaque and -inf fully transparent.
+    # The activation below handles both exactly.  NaN has no appearance
+    # meaning and remains forbidden, as do non-finite geometry/material fields.
+    if raw_opacity.shape != (splat.count,) or np.isnan(raw_opacity).any():
+        raise ValueError("particlefield_nonfinite_input")
+    with np.errstate(over="ignore", invalid="ignore"):
+        scales = np.exp(np.asarray(splat.scales, dtype=np.float32)).astype(
+            np.float32
+        )
+    if not np.isfinite(scales).all() or (scales <= 0.0).any():
+        raise ValueError("particlefield_activated_scale_invalid")
 
     q = np.asarray(splat.quats, dtype=np.float64)  # (N,4) = (w, x, y, z) INRIA order
     norm = np.linalg.norm(q, axis=1, keepdims=True)
-    norm[norm == 0.0] = 1.0
+    if (norm <= np.finfo(np.float32).eps).any():
+        raise ValueError("particlefield_zero_quaternion")
     quats = (q / norm).astype(np.float32)
 
-    opac = _sigmoid(np.asarray(splat.opacity, dtype=np.float32)).astype(np.float32)
+    opac = _sigmoid(raw_opacity).astype(np.float32)
 
     n = xyz.shape[0]
     dc = np.asarray(splat.f_dc, dtype=np.float32).reshape(n, 1, 3)  # coeff 0 (RGB)
@@ -125,6 +139,12 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         "sh_coefficients": sh,
         "sh_degree": degree,
         "extent": extent,
+        "positive_infinite_opacity_logit_count": int(
+            np.isposinf(raw_opacity).sum()
+        ),
+        "negative_infinite_opacity_logit_count": int(
+            np.isneginf(raw_opacity).sum()
+        ),
     }
 
 
@@ -420,6 +440,8 @@ def write_particlefield_usd(
     prim_path: str = "/World/CapturedScene/Gaussians",
     up_axis: str = "Z",
     sorting_mode: str = "zDepth",
+    expected_source_sha256: str | None = None,
+    receipt_path: str | Path | None = None,
 ) -> dict:
     """Author a ParticleField3DGaussianSplat USD from a standard 3DGS PLY (or SplatData).
 
@@ -436,7 +458,30 @@ def write_particlefield_usd(
             "remediation": "pip install usd-core (authoring runs where pxr exists: locally or the Isaac pod)",
             "error": repr(exc),
         }
-    splat = source if isinstance(source, SplatData) else read_standard_3dgs_ply(source)
+    source_path = None if isinstance(source, SplatData) else Path(source)
+    source_sha256 = None
+    if source_path is not None:
+        if not source_path.is_file():
+            return {
+                "status": "blocked",
+                "blockers": ["particlefield_3dgs_source_missing"],
+            }
+        source_sha256 = f"sha256:{sha256_file(source_path)}"
+        if (
+            expected_source_sha256 is not None
+            and source_sha256 != expected_source_sha256
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["particlefield_3dgs_source_sha256_mismatch"],
+                "expected_source_sha256": expected_source_sha256,
+                "observed_source_sha256": source_sha256,
+            }
+    splat = (
+        source
+        if isinstance(source, SplatData)
+        else read_standard_3dgs_ply(source_path)
+    )
     effective_sh_rest = sh_rest if sh_rest is not None else splat.sh_rest
     arr = build_particlefield_arrays(splat, sh_rest=effective_sh_rest)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -448,7 +493,10 @@ def write_particlefield_usd(
     # mis-correct anything referenced in from meter-authored assets (a G1 robot
     # referenced into a cm-declared stage renders at 1/100 scale).
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-    UsdGeom.Xform.Define(stage, "/World")
+    world = UsdGeom.Xform.Define(stage, "/World")
+    # Arena composes this file as a reference. A standalone stage without a
+    # default prim can open successfully yet contribute no referenced scene.
+    stage.SetDefaultPrim(world.GetPrim())
     prim = stage.DefinePrim(prim_path, PARTICLEFIELD_SCHEMA)
     if not prim or not prim.IsValid():
         return {"status": "blocked", "blockers": ["particlefield_schema_unavailable"],
@@ -479,13 +527,38 @@ def write_particlefield_usd(
         quat_attr.Set(Vt.QuatfArray([Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in q]))
 
     stage.GetRootLayer().Save()
-    return {
+    if source_path is not None and f"sha256:{sha256_file(source_path)}" != source_sha256:
+        return {
+            "status": "blocked",
+            "blockers": ["particlefield_3dgs_sealed_source_mutated"],
+        }
+    result = {
+        "schema_version": PARTICLEFIELD_RECEIPT_SCHEMA_VERSION,
         "status": "completed",
         "output": str(out_path),
         "output_bytes": out_path.stat().st_size if out_path.is_file() else 0,
+        "output_sha256": f"sha256:{sha256_file(out_path)}",
         "schema": PARTICLEFIELD_SCHEMA,
         "splat_count": arr["count"],
         "sh_degree": arr["sh_degree"],
         "prim_path": prim_path,
+        "default_prim": "/World",
+        "source_sha256": source_sha256,
+        "source_kind": (
+            "in_memory_splat_data" if source_path is None else "standard_3dgs_ply"
+        ),
+        "positive_infinite_opacity_logit_count": arr[
+            "positive_infinite_opacity_logit_count"
+        ],
+        "negative_infinite_opacity_logit_count": arr[
+            "negative_infinite_opacity_logit_count"
+        ],
+        "sealed_source_mutated": False,
         "proof_boundary": "ParticleField USD authoring only; Isaac RTX render is the GPU step.",
     }
+    result["receipt_digest"] = canonical_digest(
+        result, digest_field="receipt_digest"
+    )
+    if receipt_path is not None:
+        write_json(Path(receipt_path), result)
+    return result
