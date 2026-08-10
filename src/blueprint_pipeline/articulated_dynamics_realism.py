@@ -74,10 +74,33 @@ def _number(value: Any, name: str, errors: list[str], *, allow_none: bool = Fals
     return number
 
 
+DEGREES_PER_RADIAN = 180.0 / math.pi
+
+
+def usd_angular_damping_to_si(usd_value: float) -> float:
+    """Convert an authored angular drive damping into N*m*s/rad.
+
+    USD angular drives are specified per degree per second, not per radian per
+    second, and nothing in the schema says so. A paid run measured the factor
+    the hard way: 3.0 authored, 1.48 N*m commanded, radian arithmetic
+    predicting 154 degrees of travel and the door moving 2.72. The ratio came
+    back 56.8 against 180/pi = 57.2958.
+    """
+
+    return float(usd_value) * DEGREES_PER_RADIAN
+
+
+def si_angular_damping_to_usd(si_value: float) -> float:
+    """Inverse of :func:`usd_angular_damping_to_si`, for authoring."""
+
+    return float(si_value) / DEGREES_PER_RADIAN
+
+
 def evaluate_articulated_dynamics_realism(
     *,
     lever_arm_m: float,
-    joint_damping_n_m_s_per_rad: float,
+    joint_damping_n_m_s_per_rad: float | None = None,
+    joint_damping_usd_angular: float | None = None,
     breakaway_torque_n_m: float | None,
     breakaway_angular_width_degrees: float | None,
     nominal_open_angle_degrees: float,
@@ -102,7 +125,16 @@ def evaluate_articulated_dynamics_realism(
     bands = {field: _band(reference_profile, field, errors) for field in BAND_FIELDS}
 
     lever = _number(lever_arm_m, "lever_arm", errors)
-    damping = _number(joint_damping_n_m_s_per_rad, "joint_damping", errors)
+    if joint_damping_n_m_s_per_rad is not None and joint_damping_usd_angular is not None:
+        # Two sources for one number is exactly how a unit error survives the
+        # commit that was supposed to fix it.
+        errors.append("articulated_dynamics_damping_specified_twice")
+        damping = None
+    elif joint_damping_usd_angular is not None:
+        authored = _number(joint_damping_usd_angular, "joint_damping", errors)
+        damping = None if authored is None else usd_angular_damping_to_si(authored)
+    else:
+        damping = _number(joint_damping_n_m_s_per_rad, "joint_damping", errors)
     breakaway = _number(
         breakaway_torque_n_m, "breakaway_torque", errors, allow_none=True
     )
@@ -233,7 +265,10 @@ def seal_detent_torque(
 
 
 __all__ = [
+    "DEGREES_PER_RADIAN",
     "DYNAMICS_REALISM_SCHEMA_VERSION",
+    "si_angular_damping_to_usd",
+    "usd_angular_damping_to_si",
     "seal_detent_torque",
     "ArticulatedDynamicsRealismError",
     "evaluate_articulated_dynamics_realism",

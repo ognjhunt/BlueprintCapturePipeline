@@ -173,3 +173,54 @@ def test_a_zero_width_seal_fails_closed() -> None:
         )
 
     assert any("angular_width_invalid" in e for e in excinfo.value.errors)
+
+
+from blueprint_pipeline.articulated_dynamics_realism import (  # noqa: E402
+    usd_angular_damping_to_si,
+    si_angular_damping_to_usd,
+)
+
+
+def test_usd_angular_damping_is_per_degree_not_per_radian() -> None:
+    """Measured on hardware, not read off a spec.
+
+    A paid run authored 3.0 and commanded 1.48 N*m into it. Radian arithmetic
+    predicted 154 degrees of travel; the door moved 2.72. The ratio came back
+    56.8 against 180/pi = 57.30 - under one percent, which is the unit and not
+    a modelling error.
+    """
+
+    assert usd_angular_damping_to_si(3.0) == pytest.approx(171.9, abs=0.1)
+    assert si_angular_damping_to_usd(171.9) == pytest.approx(3.0, abs=0.01)
+
+
+def test_the_gate_judges_si_damping_however_the_asset_spells_it() -> None:
+    """The band is in N*m*s/rad; comparing a USD value to it is 57x wrong."""
+
+    receipt = _evaluate(joint_damping_n_m_s_per_rad=None, joint_damping_usd_angular=3.0)
+
+    assert receipt["observed"]["joint_damping_n_m_s_per_rad"] == pytest.approx(
+        171.9, abs=0.1
+    )
+    assert receipt["within_measured_band"] is False
+    assert any("sustained_torque_above_measured" in f for f in receipt["findings"])
+
+
+def test_the_value_that_actually_sits_in_the_band_is_authored_in_usd_units() -> None:
+    """0.05 in the asset, not 3.0 - the earlier "fix" was still 80x too stiff."""
+
+    receipt = _evaluate(
+        joint_damping_n_m_s_per_rad=None, joint_damping_usd_angular=0.05
+    )
+
+    assert receipt["within_measured_band"] is True
+    assert receipt["observed"]["sustained_torque_n_m"] == pytest.approx(1.25, abs=0.05)
+
+
+def test_supplying_both_spellings_fails_closed() -> None:
+    """Two sources for one number is how a unit error survives a fix."""
+
+    with pytest.raises(ArticulatedDynamicsRealismError) as excinfo:
+        _evaluate(joint_damping_n_m_s_per_rad=3.0, joint_damping_usd_angular=3.0)
+
+    assert any("damping_specified_twice" in e for e in excinfo.value.errors)
