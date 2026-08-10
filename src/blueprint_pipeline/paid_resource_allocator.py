@@ -966,6 +966,45 @@ def _run_reconstruction_gpu_canary(
     return result
 
 
+
+def _reap_finished_bundle(args: Any) -> dict[str, Any] | None:
+    """Reap the finished run's provider bundle, if it is safe to.
+
+    Every input the bundle was built from must still exist; those are exactly
+    the paths the caller passed in, so no guessing is involved. Any failure
+    here is reported and swallowed: reclaiming disk must never be able to fail
+    a run whose result is already written.
+    """
+
+    job_dir = getattr(args, "adp_job_dir", None)
+    if not job_dir:
+        return None
+    sources = [
+        value
+        for value in (
+            getattr(args, "adp009d_approved_can", None),
+            getattr(args, "adp009d_sage_collision", None),
+            getattr(args, "adp009d_harness_manifest", None),
+            getattr(args, "adp009d_worker_source", None),
+            getattr(args, "adp009d_runtime_module_source", None),
+            *(getattr(args, "adp009d_extra_native", None) or ()),
+        )
+        if value
+    ]
+    if not sources:
+        return None
+    try:
+        from .provider_bundle_reaper import reap_provider_bundle
+
+        return reap_provider_bundle(job_dir=job_dir, source_paths=sources)
+    except Exception as exc:  # noqa: BLE001 - never fail a completed run
+        return {
+            "schema_version": "provider_bundle_reaper.v1",
+            "reaped": False,
+            "retained_because": [f"provider_bundle_reaper_errored:{type(exc).__name__}"],
+        }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1679,6 +1718,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     machine_avoidlist_path=joint_avoidlist_path,
                 )
             write_json(Path(args.adapter_output), result)
+            # The run is over, so its bundle is dead weight - about 162 MB per
+            # launch, never reaped, until the laptop filled up and killed a run
+            # that had nothing wrong with it. Reaped only when every source is
+            # still on disk, because a bundle renames and derives its assets
+            # and is nobody's duplicate. Retention is the safe outcome and is
+            # never an error.
+            reap = _reap_finished_bundle(args)
+            if reap is not None:
+                result["provider_bundle_reap"] = reap
+                write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
