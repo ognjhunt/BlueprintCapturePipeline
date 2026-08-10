@@ -75,23 +75,60 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _articulation_stage(candidate_relative_path: str) -> str:
+def _articulation_stage(
+    candidate_relative_path: str,
+    default_prim_name: str,
+    probe_drive: Mapping[str, Any] | None,
+) -> str:
+    """Overlay a physics scene, and probe-time actuation the asset must not own.
+
+    The shipped asset gives its task joint friction, not a position servo, so
+    that a task scored on the door staying open after release measures the
+    robot rather than a stiffness constant. The probe still has to command that
+    joint, so the actuation it needs lives here - in the probe's own overlay,
+    digest-bound with the rest of the frozen spec and absent from the asset.
+    """
+
+    actuation = ""
+    if probe_drive:
+        joint_path = str(probe_drive["joint_prim_path"])
+        relative = joint_path.split(f"/{default_prim_name}/", 1)[-1]
+        segments = relative.split("/")
+        opening = "".join(
+            f'{"    " * (index + 1)}over "{segment}"\n{"    " * (index + 1)}{{\n'
+            for index, segment in enumerate(segments)
+        )
+        closing = "".join(
+            f'{"    " * (index + 1)}}}\n' for index in reversed(range(len(segments)))
+        )
+        depth = "    " * (len(segments) + 1)
+        body = (
+            f'{depth}uniform token[] apiSchemas = ["PhysicsDriveAPI:angular"]\n'
+            f'{depth}uniform token drive:angular:physics:type = "force"\n'
+            f"{depth}float drive:angular:physics:stiffness = "
+            f"{float(probe_drive['stiffness'])}\n"
+            f"{depth}float drive:angular:physics:damping = "
+            f"{float(probe_drive['damping'])}\n"
+            f"{depth}float drive:angular:physics:maxForce = "
+            f"{float(probe_drive['max_force'])}\n"
+        )
+        actuation = "\n" + opening + body + closing
     return f"""#usda 1.0
 (
     subLayers = [@{candidate_relative_path}@]
-    defaultPrim = "Asset"
+    defaultPrim = "{default_prim_name}"
     metersPerUnit = 1
     upAxis = "Z"
 )
 
-over "Asset"
+over "{default_prim_name}"
 {{
     def PhysicsScene "physics_scene"
     {{
         vector3f physics:gravityDirection = (0, 0, -1)
         float physics:gravityMagnitude = 9.81
     }}
-}}
+{actuation}}}
 """
 
 
@@ -106,6 +143,9 @@ def materialize_articulated_native_probe(
     locked_joint_motion_tolerance_rad: float,
     settle_samples: int,
     control_frequency_hz: float,
+    probe_drive_stiffness: float = 0.0,
+    probe_drive_damping: float = 0.0,
+    probe_drive_max_force: float = 0.0,
     fixed_step_seconds: float = 1.0 / 120.0,
 ) -> dict[str, Any]:
     """Write the frozen native probe stages and spec for one articulated asset."""
@@ -233,8 +273,21 @@ def materialize_articulated_native_probe(
     blank_path = output / "blank_physics_stage.usda"
     blank_path.write_text(_BLANK_STAGE, encoding="utf-8")
     articulation_path = output / "articulation_stage.usda"
+    probe_drive = (
+        {
+            "joint_prim_path": str(task_joint_prim_path),
+            "stiffness": float(probe_drive_stiffness),
+            "damping": float(probe_drive_damping),
+            "max_force": float(probe_drive_max_force),
+        }
+        if float(probe_drive_stiffness) > 0.0 or float(probe_drive_damping) > 0.0
+        else None
+    )
     articulation_path.write_text(
-        _articulation_stage(candidate.name), encoding="utf-8"
+        _articulation_stage(
+            candidate.name, stage.GetDefaultPrim().GetName(), probe_drive
+        ),
+        encoding="utf-8",
     )
 
     joint_types = {
@@ -296,6 +349,7 @@ def materialize_articulated_native_probe(
             "window_seconds": settle_samples / frequency,
             "fixed_step_seconds": step,
         },
+        "probe_drive": probe_drive,
         "required_readbacks": list(REQUIRED_READBACKS),
         "claim_boundary": {
             "frozen_before_execution": True,

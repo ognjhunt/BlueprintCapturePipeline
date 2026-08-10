@@ -191,3 +191,34 @@ def test_probe_spec_file_round_trips(tmp_path: Path) -> None:
     spec_path = Path(receipt["spec_path"])
     assert spec_path.is_file()
     assert json.loads(spec_path.read_text(encoding="utf-8")) == receipt
+
+
+def test_probe_time_actuation_lives_in_the_overlay_not_the_asset(
+    tmp_path: Path,
+) -> None:
+    """The asset must not carry a servo the task would then be scoring."""
+
+    receipt = _probe(
+        tmp_path,
+        probe_drive_stiffness=900.0,
+        probe_drive_damping=90.0,
+        probe_drive_max_force=400.0,
+    )
+
+    overlay = Path(receipt["stages"]["articulation_stage"]["path"]).read_text()
+    assert "PhysicsDriveAPI:angular" in overlay
+    assert "drive:angular:physics:stiffness = 900.0" in overlay
+    assert receipt["probe_drive"]["joint_prim_path"] == (
+        "/Asset/joints/upper_door_hinge"
+    )
+    # the candidate copy the overlay references is untouched by the actuation
+    candidate = Path(receipt["stages"]["candidate_copy"]["path"]).read_text()
+    assert "PhysicsDriveAPI" not in candidate
+
+
+def test_a_probe_without_actuation_writes_no_drive(tmp_path: Path) -> None:
+    receipt = _probe(tmp_path)
+
+    overlay = Path(receipt["stages"]["articulation_stage"]["path"]).read_text()
+    assert "PhysicsDriveAPI" not in overlay
+    assert receipt["probe_drive"] is None
