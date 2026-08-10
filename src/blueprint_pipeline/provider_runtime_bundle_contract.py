@@ -19,6 +19,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_arena",
     "adp009d_isaac",
     "adp009d_articulated_native",
+    "native_task_arena",
     "adp009d_ovrtx",
     "adp009d_aura_native",
     "adp_content_agents",
@@ -186,6 +187,25 @@ def provider_runtime_contract_blockers(
         runner_blocker = (
             "provider_runner_missing_adp009d_articulated_native_runtime_contract"
         )
+    elif provider_bundle_kind == "native_task_arena":
+        entrypoint_valid = (
+            "native_task_arena_worker_failed_without_runtime_result"
+            in entrypoint_text
+            and "native_task_arena_construction_result.v1.json" in entrypoint_text
+            and "native_task_arena_process_exited_without_result" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "native_task_arena_construction_result.v1.json",
+                "preflight_native_dependency_matrix",
+                "build_native_task_arena_environment",
+                "NativeFrankaDifferentialIkServo",
+                "candidate_policy_queried",
+                "provider_zero_required_after_return",
+            )
+        )
+        runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
     elif provider_bundle_kind == "adp009d_ovrtx":
         entrypoint_valid = (
             "adp009d_ovrtx_runner_failed_without_runtime_result" in entrypoint_text

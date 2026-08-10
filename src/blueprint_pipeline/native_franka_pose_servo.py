@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from .adp009d_isaac_episode_adapter import (
+from .native_franka_action_math import (
     bounded_absolute_joint_setpoint,
     controlled_body_pose_for_grasp_frame_target,
 )

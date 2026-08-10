@@ -18,10 +18,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_scene_plan import SCHEMA_VERSION as SCENE_PLAN_SCHEMA
-
-
 PINHOLE_HORIZONTAL_APERTURE_MM = 20.955
+SCENE_PLAN_SCHEMA = "native_task_arena_scene_plan.v1"
 
 
 class NativeTaskArenaRuntimeError(ValueError):

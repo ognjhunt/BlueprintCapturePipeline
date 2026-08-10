@@ -130,6 +130,11 @@ from .adp_isaac_lab_arena_vast import (
     run_arena_native_control_vast,
 )
 from .adp009d_franka_vast import run_adp009d_native_microcheck_vast
+from .native_task_arena_construction_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+    build_native_task_arena_construction_bundle,
+)
+from .native_task_arena_vast import run_native_task_arena_vast
 from .adp009d_gated_backbone import probe_gated_backbone_access
 from .adp009d_native_microcheck_bundle import (
     PROBE_KIND as ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
@@ -1041,6 +1046,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
+            NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1118,6 +1124,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-public-reference-manifest")
     gpu.add_argument("--adp-arena-approval")
     gpu.add_argument("--adp009d-approved-can")
+    gpu.add_argument(
+        "--native-task-arena-packet",
+        help="Exact sealed native_task_arena_packet directory for a task-neutral construction canary.",
+    )
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
     gpu.add_argument(
@@ -2953,6 +2963,172 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND:
+            missing = [
+                name
+                for name in ("native_task_arena_packet", "adp_job_dir")
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            blockers = [*missing, *control_blockers]
+            if args.provider != "vast":
+                blockers.append("native_task_arena_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("native_task_arena_budget_invalid")
+            if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
+                blockers.append("native_task_arena_hard_ttl_invalid")
+            if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
+                blockers.append("native_task_arena_allowed_active_instance_id_invalid")
+            avoidlist_digest = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                if not avoidlist_path.is_file():
+                    blockers.append("native_task_arena_machine_avoidlist_missing")
+                else:
+                    avoidlist_digest = (
+                        "sha256:"
+                        + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+                    )
+            prepared_bundle = None
+            if not blockers:
+                try:
+                    prepared_bundle = build_native_task_arena_construction_bundle(
+                        job_dir=Path(args.adp_job_dir) / "bundle",
+                        packet_dir=args.native_task_arena_packet,
+                        implementation_commit=control_identity[
+                            "orchestrator_source_commit"
+                        ],
+                    )
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    blockers.append(
+                        "native_task_arena_bundle_preparation_failed:"
+                        f"{type(exc).__name__}"
+                    )
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get(
+                    "orchestrator_source_commit"
+                ),
+                "bundle_sha256": (
+                    prepared_bundle.get("bundle_sha256")
+                    if prepared_bundle
+                    else None
+                ),
+                "input_digest": (
+                    prepared_bundle.get("input_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "packet_receipt_digest": (
+                    prepared_bundle.get("packet_receipt_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "arena_scene_plan_digest": (
+                    prepared_bundle.get("arena_scene_plan_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "runtime_contract_digest": (
+                    prepared_bundle.get("runtime_contract_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "scenario_instance_digest": (
+                    prepared_bundle.get("scenario_instance_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "execution_mode": "construction_canary",
+                "candidate_policy_queried": False,
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "retry_cap": 0,
+                "machine_avoidlist_digest": avoidlist_digest,
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
+            }
+            allocation_binding_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(
+                        allocation_binding,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+            )
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=blockers
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": (
+                        "user_authorized_private_scene_derived_upload_and_bounded_gpu_compute"
+                    ),
+                    "private_data_uploaded": True,
+                    "raw_dataset_bytes_uploaded": False,
+                    "candidate_policy_queried": False,
+                    "physical_outcome_values_uploaded": False,
+                    "explicit_concurrent_gpu_authority_bound": bool(
+                        args.adp_allowed_active_vast_instance_id
+                    ),
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if prepared_bundle is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": sorted(set(blockers)),
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_native_task_arena_vast(
+                    job_dir=args.adp_job_dir,
+                    prepared_bundle=prepared_bundle,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    machine_avoidlist_path=args.adp_machine_avoidlist,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    allowed_active_instance_ids=(
+                        args.adp_allowed_active_vast_instance_id
+                    ),
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

@@ -2,15 +2,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_bundle import (
     NativeTaskArenaBundleError,
     build_native_task_arena_bundle,
+)
+from blueprint_pipeline.native_task_arena_construction_bundle import (
+    CONSTRUCTION_RUNTIME_MODULE_NAMES,
+    PROBE_KIND,
+    build_native_task_arena_construction_bundle,
+)
+from blueprint_pipeline.native_task_arena_vast import run_native_task_arena_vast
+from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
+from blueprint_pipeline.vast_provider_adapter import (
+    _blueprint_bundle_preflight,
+    _probe_env,
+    _probe_shell_script,
+    _resolve_launch_mode,
+    _resolve_probe_image,
 )
 
 
@@ -170,4 +187,183 @@ def test_policy_mode_requires_an_exact_candidate_binding(tmp_path: Path) -> None
 
     assert excinfo.value.errors == (
         "native_task_arena_bundle_policy_binding_invalid",
+    )
+
+
+@pytest.mark.parametrize("scene_id", ["840313", "840796"])
+def test_construction_bundle_has_one_scene_neutral_import_closure(
+    tmp_path: Path, scene_id: str
+) -> None:
+    receipt = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / f"construction-{scene_id}",
+        packet_dir=_packet(tmp_path, scene_id=scene_id),
+        implementation_commit="e" * 40,
+        generated_at="fixed",
+    )
+    extracted = tmp_path / f"extracted-{scene_id}"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        archive.extractall(extracted)
+    package = extracted / "provider_runtime/blueprint_pipeline"
+    expected = {
+        f"provider_runtime/blueprint_pipeline/{name}"
+        for name in CONSTRUCTION_RUNTIME_MODULE_NAMES
+    }
+    assert expected.issubset(names)
+    assert "provider_runtime/blueprint_pipeline/native_task_arena_scene_plan.py" not in names
+    assert "provider_runtime/blueprint_pipeline/adp009d_approach_capture.py" not in names
+    assert not any(
+        name.startswith("provider_runtime/blueprint_pipeline/adp009d")
+        for name in names
+    )
+
+    modules = [Path(name).stem for name in CONSTRUCTION_RUNTIME_MODULE_NAMES]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                "import importlib,sys;"
+                f"sys.path.insert(0,{str(package.parent)!r});"
+                f"[importlib.import_module('blueprint_pipeline.'+name) for name in {modules!r}]"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    worker = (extracted / "provider_runtime/adp_arena_provider_runner.py").read_text()
+    assert "840313" not in worker
+    assert "840796" not in worker
+
+
+def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path) -> None:
+    receipt = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "bundle",
+        packet_dir=_packet(tmp_path, scene_id="840796"),
+        implementation_commit="f" * 40,
+        generated_at="fixed",
+    )
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="fixed",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="native_task_arena",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
+        provider_output_put_url="https://example.com/output.zip?sig=redacted",
+    )
+    assert preflight["status"] == "passed"
+    assert preflight["blockers"] == []
+    assert (
+        _resolve_probe_image(
+            public_image="public",
+            isaac_image="isaac",
+            enable_isaac_smoke=False,
+            enable_blueprint_bundle=True,
+            provider_bundle_kind="native_task_arena",
+        )
+        == "isaac"
+    )
+    assert (
+        _resolve_launch_mode(
+            requested="auto",
+            enable_isaac_smoke=True,
+            enable_blueprint_bundle=True,
+            provider_bundle_kind="native_task_arena",
+        )
+        == "ssh_direct"
+    )
+    env = _probe_env(
+        job_dir=tmp_path,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="native_task_arena",
+        forward_hf_token=False,
+    )
+    assert env["ACCEPT_EULA"] == "Y"
+    assert "run_adp_arena_provider_runtime.sh" in _probe_shell_script(
+        "https://example.com",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="native_task_arena",
+    )
+
+    dry_run = run_native_task_arena_vast(
+        job_dir=tmp_path / "dry-run",
+        prepared_bundle=receipt,
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+    assert dry_run["status"] == "dry_run_ready"
+    assert dry_run["provider_mutations_performed"] == 0
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_canonical_allocator_routes_sealed_native_task_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
+) -> None:
+    packet = _packet(tmp_path, scene_id="840796")
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_native_task_arena_vast", fake_run)
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "adapter.json"),
+        "--pod-name",
+        "native-task-arena",
+        "--native-task-arena-packet",
+        str(packet),
+        "--adp-job-dir",
+        str(tmp_path / "job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+    ]
+    if execute:
+        args.append("--execute")
+
+    assert allocator.main(args) == 0
+    assert observed["execute"] is execute
+    assert isinstance(
+        observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant
+    ) is execute
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["private_data_uploaded"] is True
+    assert admission["raw_dataset_bytes_uploaded"] is False
+    assert admission["retry_cap"] == 0
+    assert admission["allocation_binding"]["packet_receipt_digest"].startswith(
+        "sha256:"
     )

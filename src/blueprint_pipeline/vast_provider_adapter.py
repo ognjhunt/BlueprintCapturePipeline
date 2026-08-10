@@ -283,6 +283,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp_arena",
         "adp009d_isaac",
         "adp009d_articulated_native",
+        "native_task_arena",
     }
 
 
@@ -291,6 +292,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp_simready_isaac",
         "adp009d_isaac",
         "adp009d_articulated_native",
+        "native_task_arena",
     }:
         return 0
     if _is_isaac_provider_bundle(provider_bundle_kind):
@@ -2119,6 +2121,27 @@ def _blueprint_bundle_preflight(
         "provider_runtime/adp009d_franka_eval_harness_manifest.v1.json",
         "provider_runtime/assets/articulated_task_asset.usda",
     }
+    native_task_arena_required_entries = {
+        "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "provider_runtime/adp_arena_provider_runner.py",
+        "provider_runtime/adp_arena_provider_manifest.json",
+        "provider_runtime/native_task_packet/native_task_arena_packet_request.v1.json",
+        "provider_runtime/native_task_packet/native_task_runtime_contract.v1.json",
+        "provider_runtime/native_task_packet/native_task_arena_scene_plan.v1.json",
+        "provider_runtime/native_task_packet/native_task_arena_packet_receipt.v1.json",
+        "provider_runtime/blueprint_pipeline/__init__.py",
+        "provider_runtime/blueprint_pipeline/articulated_control_planner.py",
+        "provider_runtime/blueprint_pipeline/decision_evidence_contracts.py",
+        "provider_runtime/blueprint_pipeline/native_articulated_construction_plan.py",
+        "provider_runtime/blueprint_pipeline/native_articulated_motion_geometry.py",
+        "provider_runtime/blueprint_pipeline/native_articulated_task_state.py",
+        "provider_runtime/blueprint_pipeline/native_franka_pose_servo.py",
+        "provider_runtime/blueprint_pipeline/native_franka_action_math.py",
+        "provider_runtime/blueprint_pipeline/native_pose_transforms.py",
+        "provider_runtime/blueprint_pipeline/native_task_arena_readback.py",
+        "provider_runtime/blueprint_pipeline/native_task_arena_runtime.py",
+        "provider_runtime/blueprint_pipeline/native_task_camera_observability.py",
+    }
     adp009d_ovrtx_required_entries = {
         "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh",
         "provider_runtime/adp009d_ovrtx_provider_runner.py",
@@ -2221,6 +2244,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/articulated_native_diagnostic_runtime.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "native_task_arena":
+        required_entries = native_task_arena_required_entries
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_arena_provider_runner.py"
+        readiness_name = "adp_arena_provider_manifest.json"
     elif provider_bundle_kind == "adp009d_ovrtx":
         required_entries = adp009d_ovrtx_required_entries
         entrypoint_member = "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh"
@@ -2306,6 +2334,7 @@ def _blueprint_bundle_preflight(
             "adp_arena",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "native_task_arena",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -3005,6 +3034,7 @@ def _resolve_launch_mode(
             "adp_arena",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "native_task_arena",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -3061,6 +3091,7 @@ def _probe_env(
         "adp_arena",
         "adp009d_isaac",
         "adp009d_articulated_native",
+        "native_task_arena",
     }:
         env.update(
             {
@@ -3598,6 +3629,7 @@ def _probe_shell_script(
             "adp_arena",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "native_task_arena",
         }:
             script += (
                 common_start + "RUNTIME_PY=/isaac-sim/python.sh; "
@@ -4830,6 +4862,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp_arena",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "native_task_arena",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -5509,6 +5542,7 @@ def run_vast_provider_adapter(
             "adp_arena",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "native_task_arena",
             "adp009d_ovrtx",
             "adp009d_aura_native",
         }
