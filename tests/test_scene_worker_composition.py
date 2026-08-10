@@ -865,3 +865,89 @@ def test_the_task_object_is_arena_native_free_base_at_its_true_pose(
     assert tuple(task_object.initial_pose.position_xyz) == pytest.approx(
         (1.9742142, 1.4792181, 0.0)
     )
+
+
+def _spec_with_sealed_placement(runtime, sealed):
+    spec_path = runtime / "adp009d_articulated_scene_spec.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["sealed_placement_world_m"] = sealed
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    return spec_path
+
+
+def test_a_task_object_away_from_its_sealed_placement_refuses_to_run_controls(
+    stubbed_arena, tmp_path
+):
+    """rt51-rt53 read as grasp failures; they were placement failures.
+
+    The old containment check compared the measured base against a reference
+    DERIVED from the same initial_pose that was wrong, so it agreed with the
+    bug. This check compares against the join receipt's sealed placement -
+    a source the spec cannot drift from - and a mismatch is a named refusal,
+    not three paid runs of 'never_moved'.
+    """
+
+    runtime = _write_runtime(tmp_path)
+    spec_path = _spec_with_sealed_placement(runtime, [1.9742142, 1.4792181, 0.0])
+
+    output = tmp_path / "out" / "result.json"
+    _load_worker().main(
+        [
+            "--runtime-dir", str(runtime),
+            "--output-dir", str(output.parent),
+            "--spec", str(spec_path),
+            "--output", str(output),
+        ]
+    )
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    blockers = " ".join(result.get("blockers") or [])
+    assert "task_object_not_at_sealed_placement" in blockers
+    assert result.get("controls_qualified") is not True
+    check = result.get("sealed_placement_check") or {}
+    assert check.get("verified") is False
+    # The stub's cabinet sits at the origin; the distance names the 2.47 m gap.
+    assert check.get("distance_m", 0) > 2.0
+
+
+def test_a_task_object_at_its_sealed_placement_proceeds(stubbed_arena, tmp_path):
+    runtime = _write_runtime(tmp_path)
+    # The stub articulation reports its cabinet at the origin, so a sealed
+    # placement of zero is "standing exactly where the receipt says".
+    spec_path = _spec_with_sealed_placement(runtime, [0.0, 0.0, 0.0])
+
+    output = tmp_path / "out" / "result.json"
+    _load_worker().main(
+        [
+            "--runtime-dir", str(runtime),
+            "--output-dir", str(output.parent),
+            "--spec", str(spec_path),
+            "--output", str(output),
+        ]
+    )
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    check = result.get("sealed_placement_check") or {}
+    assert check.get("verified") is True
+    assert result["phase_reached"] == "grasp_correction_applied", result.get("blockers")
+
+
+def test_a_spec_without_a_sealed_placement_says_so_rather_than_pretending(
+    stubbed_arena, tmp_path
+):
+    """Absent is recorded, never silently equivalent to verified."""
+
+    runtime = _write_runtime(tmp_path)
+
+    output = tmp_path / "out" / "result.json"
+    _load_worker().main(
+        [
+            "--runtime-dir", str(runtime),
+            "--output-dir", str(output.parent),
+            "--spec", str(runtime / "adp009d_articulated_scene_spec.json"),
+            "--output", str(output),
+        ]
+    )
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert result.get("sealed_placement_check", {}).get("status") == "not_declared"

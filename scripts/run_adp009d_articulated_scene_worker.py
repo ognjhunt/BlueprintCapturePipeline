@@ -882,6 +882,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["reset_diagnostic"] = reset_diagnostic
         _phase(result, "adapter_wired")
 
+        # The one check rt51-rt53 lacked: is the twin standing where the join
+        # receipt sealed it? Measured AFTER reset, because Arena's
+        # set_object_pose event runs at reset and is the last pose writer -
+        # this reads the pose the episode will actually see. The reference is
+        # the spec's sealed placement, carried from the join receipt rather
+        # than derived from initial_pose: a reference derived from the channel
+        # under test agrees with the channel's bugs, which is how three runs
+        # of "fridge at the origin" scored as grasp failures.
+        sealed_placement = spec.get("sealed_placement_world_m")
+        if sealed_placement is None:
+            result["sealed_placement_check"] = {"status": "not_declared"}
+        else:
+            sealed = [float(value) for value in sealed_placement]
+            measured = _body_position(live, support_link_body)
+            if measured is None:
+                distance = None
+            else:
+                distance = sum(
+                    (measured[i] - sealed[i]) ** 2 for i in range(3)
+                ) ** 0.5
+            verified = distance is not None and distance <= 0.05
+            result["sealed_placement_check"] = {
+                "status": "verified" if verified else "failed",
+                "verified": verified,
+                "sealed_world_m": sealed,
+                "measured_world_m": measured,
+                "distance_m": distance,
+                "tolerance_m": 0.05,
+                "measured_after_reset": True,
+            }
+            if not verified:
+                # Controls against a mislocated twin score the wrong scene;
+                # any verdict they produce is about a task that does not
+                # exist. Raising rides the worker's normal refusal path, so
+                # the result file, traceback tail and app close all happen.
+                raise RuntimeError(
+                    "task_object_not_at_sealed_placement:"
+                    f"distance_{'unmeasured' if distance is None else f'{distance:.3f}m'}"
+                )
+
         # A real refrigerator door is held shut by its magnetic gasket, and
         # rt36 showed what happens without one: 0.8 mm of shell-on-shell
         # interference between the door and cabinet is enough to swing a free
