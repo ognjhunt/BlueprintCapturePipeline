@@ -24,9 +24,10 @@ BACKENDS = {
     },
     "nvidia_nim": {
         "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
-        "model": "google/gemma-4-31b-it",
+        "model": "meta/llama-3.2-11b-vision-instruct",
         "env": "NVIDIA_API_KEY",
-        "secret_file": "ngc_api_key",
+        "secret_file": "nvidia_nim_api_key",
+        "legacy_secret_file": "ngc_api_key",
     },
 }
 
@@ -37,9 +38,16 @@ def _secret(backend: str) -> tuple[str, str]:
     value = str(os.environ.get(env_name) or "").strip()
     if value:
         return value, env_name
-    path = Path("~/.blueprint-secrets").expanduser() / str(contract["secret_file"])
-    if path.is_file():
-        return path.read_text(encoding="utf-8").strip(), "canonical_secret_store"
+    root = Path("~/.blueprint-secrets").expanduser()
+    for field in ("secret_file", "legacy_secret_file"):
+        filename = str(contract.get(field) or "")
+        path = root / filename
+        if (
+            filename
+            and path.is_file()
+            and (secret := path.read_text(encoding="utf-8").strip())
+        ):
+            return secret, filename
     return "", "missing"
 
 

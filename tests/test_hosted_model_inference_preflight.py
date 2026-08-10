@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from blueprint_pipeline.hosted_model_inference_preflight import (
+    BACKENDS,
     materialize_hosted_model_inference_preflight,
 )
 
@@ -62,3 +63,10 @@ def test_missing_key_abstains_before_network(tmp_path: Path) -> None:
 
     assert result["status"] == "blocked"
     assert called is False
+
+
+def test_nim_backend_uses_served_vision_model_and_inference_key() -> None:
+    assert BACKENDS["nvidia_nim"]["model"] == (
+        "meta/llama-3.2-11b-vision-instruct"
+    )
+    assert BACKENDS["nvidia_nim"]["secret_file"] == "nvidia_nim_api_key"
