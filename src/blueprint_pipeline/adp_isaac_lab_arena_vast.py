@@ -17,7 +17,18 @@ from typing import Any, Mapping
 from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
 from .adp_isaac_lab_arena_request import build_arena_worker_request
 from .common import ensure_dir, utc_now_iso, write_json
+from .paid_local_evidence_capacity import (
+    DEFAULT_CLOSEOUT_RESERVE_BYTES,
+    DEFAULT_MINIMUM_FREE_BYTES,
+    materialize_local_closeout_reserve,
+    measure_paid_local_evidence_capacity,
+    release_local_closeout_reserve,
+)
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .vast_independent_watchdog_control import (
+    arm_independent_vast_watchdog,
+    close_independent_vast_watchdog,
+)
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
@@ -33,6 +44,8 @@ DEFAULT_IMAGE = (
     "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/arena-native-control"
+MINIMUM_LOCAL_EVIDENCE_FREE_BYTES = DEFAULT_MINIMUM_FREE_BYTES
+LOCAL_CLOSEOUT_RESERVE_BYTES = DEFAULT_CLOSEOUT_RESERVE_BYTES
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
@@ -149,6 +162,44 @@ def _remaining_session_live_minutes(
         max(0.0, hard_cap_usd - prior_cost) * 60.0 / max_hourly_rate_usd
     )
     return max(0, min(runtime_minutes, spend_minutes))
+
+
+def _local_evidence_capacity(
+    *, job: Path, bundle_path: Path, disk_usage=shutil.disk_usage
+) -> dict[str, Any]:
+    """Apply the shared paid-evidence storage gate to native Arena runs."""
+
+    receipt = measure_paid_local_evidence_capacity(
+        evidence_root=job,
+        immutable_input_paths=(bundle_path,),
+        blocker="adp_arena_local_evidence_headroom_insufficient",
+        minimum_free_bytes=MINIMUM_LOCAL_EVIDENCE_FREE_BYTES,
+        input_replica_multiplier=2,
+        closeout_reserve_bytes=LOCAL_CLOSEOUT_RESERVE_BYTES,
+        disk_usage=disk_usage,
+    )
+    receipt["bundle_size_bytes"] = bundle_path.stat().st_size
+    return receipt
+
+
+def _observed_instance_ids(
+    *, teardown: Mapping[str, Any], adapter: Mapping[str, Any], started_path: Path
+) -> list[int]:
+    """Resolve only retained provider-issued ids, never a caller assertion."""
+
+    values = teardown.get("vast_instance_ids") or adapter.get("vast_instance_ids") or []
+    resolved = {
+        int(value)
+        for value in values
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+    }
+    try:
+        started = int(started_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        started = 0
+    if started > 0:
+        resolved.add(started)
+    return sorted(resolved)
 
 
 @contextmanager
@@ -351,6 +402,21 @@ def run_arena_native_control_vast(
         or _file_sha256(bundle_path) != bundle.get("bundle_sha256")
     ):
         raise ValueError("adp_arena_prepared_bundle_binding_invalid")
+    local_capacity = _local_evidence_capacity(job=job, bundle_path=bundle_path)
+    write_json(job / "local_evidence_capacity.json", local_capacity)
+    if local_capacity["status"] != "passed":
+        result = {
+            "schema_version": result_schema_version,
+            "generated_at": generated,
+            "status": "blocked",
+            "bundle": bundle,
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "local_evidence_capacity": local_capacity,
+            "blockers": local_capacity["blockers"],
+        }
+        write_json(job / "adp_arena_vast_result.json", result)
+        return result
     if not execute:
         result = {
             "schema_version": result_schema_version,
@@ -359,6 +425,7 @@ def run_arena_native_control_vast(
             "bundle": bundle,
             "provider_mutations_performed": 0,
             "retry_cap": 0,
+            "local_evidence_capacity": local_capacity,
             "blockers": [],
         }
         write_json(job / "adp_arena_vast_result.json", result)
@@ -387,15 +454,13 @@ def run_arena_native_control_vast(
         }
         _write_run_result(job, attempt_root, result)
         return result
-    staging_dir = attempt_root / "object_store_staging"
-    staging = stage_wam_provider_bundle_object_store(
-        job_dir=staging_dir,
-        bundle_path=str(bundle_path),
-        key_prefix=os.getenv("BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", object_store_key_prefix),
-        expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
-        generated_at=generated,
-    )
-    if staging.get("status") != "completed":
+    closeout_reserve = attempt_root / ".local_closeout.reserve"
+    try:
+        materialize_local_closeout_reserve(
+            closeout_reserve,
+            size_bytes=LOCAL_CLOSEOUT_RESERVE_BYTES,
+        )
+    except OSError as exc:
         result = {
             "schema_version": result_schema_version,
             "generated_at": generated,
@@ -403,7 +468,62 @@ def run_arena_native_control_vast(
             "attempt_number": attempt_number,
             "attempt_root": str(attempt_root),
             "provider_mutations_performed": 0,
-            "blockers": staging.get("blockers") or ["adp_arena_object_store_staging_blocked"],
+            "local_evidence_capacity": local_capacity,
+            "blockers": [
+                f"adp_arena_local_closeout_reserve_failed:{type(exc).__name__}"
+            ],
+        }
+        _write_run_result(job, attempt_root, result)
+        return result
+
+    staging_dir = attempt_root / "object_store_staging"
+    try:
+        staging = stage_wam_provider_bundle_object_store(
+            job_dir=staging_dir,
+            bundle_path=str(bundle_path),
+            key_prefix=os.getenv(
+                "BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", object_store_key_prefix
+            ),
+            expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
+            generated_at=generated,
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve pre-allocation failure
+        staging = {
+            "status": "blocked",
+            "blockers": [
+                f"adp_arena_object_store_staging_failed:{type(exc).__name__}"
+            ],
+        }
+    if staging.get("status") != "completed":
+        release_local_closeout_reserve(closeout_reserve)
+        try:
+            cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        except Exception as exc:  # noqa: BLE001 - retained zero-evidence gap
+            cleanup = {
+                "status": "blocked",
+                "all_objects_absent": False,
+                "blockers": [
+                    f"adp_arena_object_store_cleanup_failed:{type(exc).__name__}"
+                ],
+            }
+        blockers = list(staging.get("blockers") or [])
+        if cleanup.get("all_objects_absent") is not True:
+            blockers.extend(
+                cleanup.get("blockers")
+                or ["adp_arena_object_store_provider_zero_not_proven"]
+            )
+        result = {
+            "schema_version": result_schema_version,
+            "generated_at": generated,
+            "status": "blocked",
+            "attempt_number": attempt_number,
+            "attempt_root": str(attempt_root),
+            "provider_mutations_performed": 0,
+            "local_evidence_capacity": local_capacity,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "blockers": sorted(
+                set(blockers or ["adp_arena_object_store_staging_blocked"])
+            ),
         }
         _write_run_result(job, attempt_root, result)
         return result
@@ -414,6 +534,43 @@ def run_arena_native_control_vast(
     provider_run = attempt_root / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     local_avoidlist = _stage_machine_avoidlist(job, machine_avoidlist_path)
+    watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
+        job_dir=attempt_root,
+        max_live_minutes=remaining_live_minutes,
+        generated_at=generated,
+        allowed_active_instance_ids=allowed_active_instance_ids,
+    )
+    if watchdog_handle is None:
+        release_local_closeout_reserve(closeout_reserve)
+        try:
+            cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        except Exception as exc:  # noqa: BLE001 - retain zero-evidence gap
+            cleanup = {
+                "all_objects_absent": False,
+                "blockers": [
+                    f"adp_arena_object_store_cleanup_failed:{type(exc).__name__}"
+                ],
+            }
+        watchdog_blockers = ["adp_arena_independent_watchdog_not_armed"]
+        if cleanup.get("all_objects_absent") is not True:
+            watchdog_blockers.extend(
+                cleanup.get("blockers")
+                or ["adp_arena_object_store_provider_zero_not_proven"]
+            )
+        result = {
+            "schema_version": result_schema_version,
+            "generated_at": generated,
+            "status": "blocked",
+            "attempt_number": attempt_number,
+            "attempt_root": str(attempt_root),
+            "provider_mutations_performed": 0,
+            "local_evidence_capacity": local_capacity,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "independent_watchdog": watchdog_handoff,
+            "blockers": sorted(set(watchdog_blockers)),
+        }
+        _write_run_result(job, attempt_root, result)
+        return result
     adapter: dict[str, Any] = {}
     try:
         with _vast_authority_environment(
@@ -462,10 +619,53 @@ def run_arena_native_control_vast(
                 forward_hf_token=forward_hf_token,
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 vast_launch_lock_file=vast_launch_lock_file,
+                started_instance_id_path=watchdog_handle.started_instance_id_path,
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
+    except Exception as exc:  # noqa: BLE001 - reserve makes this retainable
+        adapter = {
+            "status": "blocked",
+            "blockers": [f"adp_arena_vast_adapter_failed:{type(exc).__name__}"],
+            "raw_secret_values_recorded": False,
+        }
     finally:
-        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        release_local_closeout_reserve(closeout_reserve)
+        try:
+            cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        except Exception as exc:  # noqa: BLE001 - retained zero-evidence gap
+            cleanup = {
+                "status": "blocked",
+                "all_objects_absent": False,
+                "blockers": [
+                    f"adp_arena_object_store_cleanup_failed:{type(exc).__name__}"
+                ],
+            }
+    teardown = _read_json(provider_run / "vast_teardown_manifest.json")
+    instance_ids = _observed_instance_ids(
+        teardown=teardown,
+        adapter=adapter,
+        started_path=watchdog_handle.started_instance_id_path,
+    )
+    try:
+        watchdog_close = close_independent_vast_watchdog(
+            job_dir=attempt_root,
+            handle=watchdog_handle,
+            instance_ids=instance_ids,
+            provider_teardown_completed=(
+                teardown.get("continuing_spend_from_this_run") is False
+            ),
+            provider_allocation_impossible=(
+                not instance_ids and adapter.get("provider_create_attempted") is not True
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - watchdog remains fail-safe at TTL
+        watchdog_close = {
+            "status": "retained_until_hard_ttl",
+            "blockers": [
+                f"adp_arena_independent_watchdog_close_failed:{type(exc).__name__}"
+            ],
+            "raw_secret_values_recorded": False,
+        }
     extracted = _extract_provider_output(
         output_zip,
         attempt_root / "immutable_execution",
@@ -473,7 +673,6 @@ def run_arena_native_control_vast(
         blocker_prefix=blocker_prefix,
     )
     execution = dict(extracted.get("execution") or {})
-    teardown = _read_json(provider_run / "vast_teardown_manifest.json")
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
     if execution.get("status") != "completed":
         blockers.extend(execution.get("blockers") or [f"{blocker_prefix}_runtime_not_completed"])
@@ -487,7 +686,15 @@ def run_arena_native_control_vast(
     if teardown.get("continuing_spend_from_this_run") is not False:
         blockers.append(f"{blocker_prefix}_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
-        blockers.append(f"{blocker_prefix}_object_store_provider_zero_not_proven")
+        blockers.extend(
+            cleanup.get("blockers")
+            or [f"{blocker_prefix}_object_store_provider_zero_not_proven"]
+        )
+    if watchdog_close.get("status") not in {
+        "provider_terminal",
+        "cancelled_no_allocation",
+    }:
+        blockers.append(f"{blocker_prefix}_independent_watchdog_not_closed")
     result = {
         "schema_version": result_schema_version,
         "generated_at": generated,
@@ -504,6 +711,8 @@ def run_arena_native_control_vast(
         "hard_ttl_seconds": hard_ttl_seconds,
         "attempt_max_live_minutes": remaining_live_minutes,
         "retry_cap": 0,
+        "local_evidence_capacity": local_capacity,
+        "independent_watchdog": watchdog_close,
         "candidate_policy_query_expected": bool(candidate_policy_query_expected),
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),

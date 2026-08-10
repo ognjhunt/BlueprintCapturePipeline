@@ -36,6 +36,10 @@ from .nvidia_nim_model_preflight import (
     SCHEMA_VERSION as NIM_PREFLIGHT_SCHEMA_VERSION,
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .paid_local_evidence_capacity import (
+    materialize_local_closeout_reserve,
+    measure_paid_local_evidence_capacity,
+)
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .provider_python_build_plan import materialize_python_build_plan
 from .provider_bundle_rehearsal import (
@@ -722,32 +726,26 @@ def _remaining_minutes(
 def _local_evidence_capacity(
     *, job: Path, bundle_path: Path, disk_usage=shutil.disk_usage
 ) -> dict[str, Any]:
-    usage = disk_usage(job)
-    minimum = max(MINIMUM_LOCAL_EVIDENCE_FREE_BYTES, bundle_path.stat().st_size * 2)
-    return {
-        "schema_version": "adp_paid_local_evidence_capacity.v1",
-        "status": "passed" if usage.free >= minimum else "blocked",
-        "filesystem_path": str(job),
-        "observed_free_bytes": usage.free,
-        "minimum_free_bytes": minimum,
-        "bundle_size_bytes": bundle_path.stat().st_size,
-        "closeout_reserve_bytes": LOCAL_CLOSEOUT_RESERVE_BYTES,
-        "blockers": (
-            []
-            if usage.free >= minimum
-            else ["adp_joint_agent_local_evidence_headroom_insufficient"]
-        ),
-        "raw_secret_values_recorded": False,
-    }
+    receipt = measure_paid_local_evidence_capacity(
+        evidence_root=job,
+        immutable_input_paths=(bundle_path,),
+        blocker="adp_joint_agent_local_evidence_headroom_insufficient",
+        minimum_free_bytes=MINIMUM_LOCAL_EVIDENCE_FREE_BYTES,
+        input_replica_multiplier=2,
+        closeout_reserve_bytes=LOCAL_CLOSEOUT_RESERVE_BYTES,
+        disk_usage=disk_usage,
+    )
+    # Preserve the established consumer-facing field while the shared contract
+    # supports any number of immutable inputs.
+    receipt["bundle_size_bytes"] = bundle_path.stat().st_size
+    return receipt
 
 
 def _materialize_closeout_reserve(path: Path) -> None:
-    block = b"\0" * (1024 * 1024)
-    with path.open("wb") as stream:
-        for _ in range(LOCAL_CLOSEOUT_RESERVE_BYTES // len(block)):
-            stream.write(block)
-        stream.flush()
-        os.fsync(stream.fileno())
+    materialize_local_closeout_reserve(
+        path,
+        size_bytes=LOCAL_CLOSEOUT_RESERVE_BYTES,
+    )
 
 
 def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:

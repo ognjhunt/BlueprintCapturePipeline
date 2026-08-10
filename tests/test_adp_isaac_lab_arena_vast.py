@@ -4,6 +4,7 @@ import json
 import os
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,10 +17,13 @@ from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     DEFAULT_IMAGE,
     PROBE_KIND,
     _candidate_policy_query_blocker,
+    _local_evidence_capacity,
     _next_attempt_root,
+    _observed_instance_ids,
     _remaining_session_live_minutes,
     _vast_authority_environment,
     build_arena_native_control_bundle,
+    run_arena_native_control_vast,
 )
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
@@ -210,6 +214,161 @@ def test_paid_attempt_roots_are_fresh_and_preserve_prior_evidence(tmp_path: Path
     assert number == 3
     assert root == tmp_path / "attempts" / "attempt_003"
     assert (prior / "prior_evidence.txt").read_text(encoding="utf-8") == "preserve"
+
+
+def _prepared_bundle(tmp_path: Path) -> dict:
+    path = tmp_path / "bundle.zip"
+    path.write_bytes(b"immutable-native-task-bundle")
+    digest = "sha256:" + __import__("hashlib").sha256(path.read_bytes()).hexdigest()
+    return {
+        "status": "ready",
+        "bundle_path": str(path),
+        "bundle_sha256": digest,
+    }
+
+
+def test_native_arena_capacity_uses_shared_paid_evidence_contract(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle.zip"
+    bundle.write_bytes(b"bundle")
+    usage = SimpleNamespace(total=10_000, used=9_000, free=1_000)
+
+    result = _local_evidence_capacity(
+        job=tmp_path,
+        bundle_path=bundle,
+        disk_usage=lambda path: usage,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["minimum_free_bytes"] >= 2 * 1024**3
+    assert result["blockers"] == [
+        "adp_arena_local_evidence_headroom_insufficient"
+    ]
+
+
+def test_native_arena_headroom_blocks_before_object_or_compute_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast._local_evidence_capacity",
+        lambda **kwargs: {
+            "status": "blocked",
+            "blockers": ["adp_arena_local_evidence_headroom_insufficient"],
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast.stage_wam_provider_bundle_object_store",
+        lambda **kwargs: pytest.fail("object-store mutation must not be reached"),
+    )
+
+    result = run_arena_native_control_vast(
+        approval_path=tmp_path / "unused.json",
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=_prepared_bundle(tmp_path),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == [
+        "adp_arena_local_evidence_headroom_insufficient"
+    ]
+
+
+def test_native_arena_adapter_io_failure_is_retained_and_watchdog_stays_authoritative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    started = tmp_path / "started_instance_id.txt"
+
+    def fake_stage(**kwargs):
+        root = Path(kwargs["job_dir"])
+        root.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (root / name).write_text("https://example.com/private", encoding="utf-8")
+        return {"status": "completed"}
+
+    def fake_arm(**kwargs):
+        events.append("watchdog_armed")
+        return {"status": "armed"}, SimpleNamespace(started_instance_id_path=started)
+
+    def fake_adapter(**kwargs):
+        events.append("adapter")
+        assert kwargs["started_instance_id_path"] == started
+        raise OSError(28, "No space left on device")
+
+    def fake_cleanup(path):
+        events.append("objects_cleaned")
+        return {"all_objects_absent": True}
+
+    def fake_close(**kwargs):
+        events.append("watchdog_closed")
+        assert kwargs["provider_allocation_impossible"] is True
+        return {"status": "cancelled_no_allocation"}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast._local_evidence_capacity",
+        lambda **kwargs: {"status": "passed", "blockers": []},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast.stage_wam_provider_bundle_object_store",
+        fake_stage,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast.arm_independent_vast_watchdog",
+        fake_arm,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast.run_vast_provider_adapter",
+        fake_adapter,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast.cleanup_staged_wam_provider_objects",
+        fake_cleanup,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast.close_independent_vast_watchdog",
+        fake_close,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast.materialize_local_closeout_reserve",
+        lambda path, **kwargs: Path(path).write_bytes(b"reserve"),
+    )
+
+    result = run_arena_native_control_vast(
+        approval_path=tmp_path / "unused.json",
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=_prepared_bundle(tmp_path),
+    )
+
+    assert events == [
+        "watchdog_armed",
+        "adapter",
+        "objects_cleaned",
+        "watchdog_closed",
+    ]
+    assert result["status"] == "blocked"
+    assert "adp_arena_vast_adapter_failed:OSError" in result["blockers"]
+    assert result["all_staged_objects_absent"] is True
+    assert result["independent_watchdog"]["status"] == "cancelled_no_allocation"
+    assert not (Path(result["attempt_root"]) / ".local_closeout.reserve").exists()
+
+
+def test_observed_instance_ids_join_teardown_adapter_and_watchdog_file(tmp_path: Path) -> None:
+    started = tmp_path / "started.txt"
+    started.write_text("9\n", encoding="utf-8")
+
+    assert _observed_instance_ids(
+        teardown={"vast_instance_ids": [7]},
+        adapter={"vast_instance_ids": [8]},
+        started_path=started,
+    ) == [7, 9]
 
 
 def test_successor_ttl_reserves_only_remaining_cumulative_budget(tmp_path: Path) -> None:
