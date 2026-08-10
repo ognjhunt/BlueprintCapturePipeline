@@ -23,11 +23,14 @@ import hashlib
 import math
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .gaussian_splat_decode import find_splat_transform_cli, read_standard_3dgs_ply
 from .decision_evidence_contracts import canonical_digest
+from .scene_placement.perception_views import view_ring_for_bounds
+from .scene_placement.stance_cameras import to_splat_render_specs
 from .splat_scene_analysis import DEFAULT_CAMERA_IDS, analyze_scene, derive_eval_cameras
 
 RENDER_HARNESS_REL = "tools/splat_render/render_splat.mjs"
@@ -104,6 +107,252 @@ def _normalize_camera_specs(
             }
         )
     return (normalized if not errors else None), sorted(set(errors))
+
+
+def _derive_bounds_camera_specs(
+    focus_bounds: Sequence[Sequence[float]],
+    *,
+    margin: float,
+    n_azimuths: int,
+    elevations_deg: Sequence[float],
+    vfov_deg: float,
+    width: int,
+    height: int,
+    camera_id_prefix: str,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None, list[str]]:
+    """Derive a deterministic close-up ring from observed metric bounds.
+
+    This is the task-neutral reconnaissance seam for moving from a completed
+    whole-topology survey to target close-ups.  Bounds and every ring parameter
+    are retained in the render receipt; callers never need to hand-author a
+    scene-specific camera JSON file.
+    """
+
+    errors: list[str] = []
+    try:
+        if len(focus_bounds) != 2:
+            raise ValueError
+        bbox_min = tuple(float(value) for value in focus_bounds[0])
+        bbox_max = tuple(float(value) for value in focus_bounds[1])
+    except (TypeError, ValueError, IndexError):
+        return None, None, ["focus_bounds_invalid"]
+    values = [*bbox_min, *bbox_max]
+    if (
+        len(bbox_min) != 3
+        or len(bbox_max) != 3
+        or not all(math.isfinite(value) for value in values)
+        or any(bbox_max[index] <= bbox_min[index] for index in range(3))
+    ):
+        errors.append("focus_bounds_invalid")
+    try:
+        normalized_margin = float(margin)
+        normalized_azimuths = int(n_azimuths)
+        normalized_elevations = tuple(float(value) for value in elevations_deg)
+        normalized_vfov = float(vfov_deg)
+    except (TypeError, ValueError):
+        errors.append("bounds_view_ring_parameters_invalid")
+        normalized_margin = 0.0
+        normalized_azimuths = 0
+        normalized_elevations = ()
+        normalized_vfov = 0.0
+    prefix = str(camera_id_prefix or "")
+    if (
+        not prefix
+        or "/" in prefix
+        or ".." in prefix
+        or not math.isfinite(normalized_margin)
+        or normalized_margin <= 1.0
+        or normalized_azimuths < 2
+        or not normalized_elevations
+        or not all(math.isfinite(value) and -89.0 < value < 89.0 for value in normalized_elevations)
+        or not math.isfinite(normalized_vfov)
+        or not 1.0 <= normalized_vfov < 179.0
+        or isinstance(width, bool)
+        or isinstance(height, bool)
+        or int(width) <= 0
+        or int(height) <= 0
+    ):
+        errors.append("bounds_view_ring_parameters_invalid")
+    if errors:
+        return None, None, sorted(set(errors))
+
+    cameras = view_ring_for_bounds(
+        bbox_min,  # type: ignore[arg-type]
+        bbox_max,  # type: ignore[arg-type]
+        margin=normalized_margin,
+        n_azimuths=normalized_azimuths,
+        elevations_deg=normalized_elevations,
+        vfov_deg=normalized_vfov,
+        width=int(width),
+        height=int(height),
+    )
+    named = {
+        f"{prefix}_e{elevation_index:02d}_a{azimuth_index:02d}": cameras[
+            elevation_index * normalized_azimuths + azimuth_index
+        ]
+        for elevation_index in range(len(normalized_elevations))
+        for azimuth_index in range(normalized_azimuths)
+    }
+    specs = to_splat_render_specs(named)
+    plan = {
+        "planner": "scene_placement.perception_views.view_ring_for_bounds",
+        "focus_bounds": {
+            "min": list(bbox_min),
+            "max": list(bbox_max),
+        },
+        "margin": normalized_margin,
+        "n_azimuths": normalized_azimuths,
+        "elevations_deg": list(normalized_elevations),
+        "vfov_deg": normalized_vfov,
+        "width": int(width),
+        "height": int(height),
+        "camera_id_prefix": prefix,
+        "camera_count": len(specs),
+        "claim_boundary": "reconnaissance_camera_plan_not_source_observation_recovery",
+    }
+    return specs, plan, []
+
+
+def _derive_multi_bounds_camera_specs(
+    requests: Sequence[Mapping[str, Any]],
+    *,
+    width: int,
+    height: int,
+    max_total_cameras: int | None = None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None, list[str]]:
+    """Build one render camera set for several independently bounded entities."""
+
+    if not requests:
+        return None, None, ["focus_bounds_requests_missing"]
+    if (
+        max_total_cameras is not None
+        and (
+            isinstance(max_total_cameras, bool)
+            or not isinstance(max_total_cameras, int)
+            or max_total_cameras < 1
+        )
+    ):
+        return None, None, ["focus_bounds_camera_budget_invalid"]
+    all_specs: list[dict[str, Any]] = []
+    plans: list[dict[str, Any]] = []
+    errors: list[str] = []
+    target_ids: set[str] = set()
+    camera_ids: set[str] = set()
+    for index, request in enumerate(requests):
+        if not isinstance(request, Mapping):
+            errors.append(f"focus_bounds_request_invalid:{index}")
+            continue
+        target_id = str(request.get("target_id") or "")
+        if (
+            not target_id
+            or target_id in target_ids
+            or "/" in target_id
+            or ".." in target_id
+        ):
+            errors.append(f"focus_bounds_request_target_id_invalid:{index}")
+            continue
+        target_ids.add(target_id)
+        bounds = request.get("focus_bounds")
+        if not isinstance(bounds, Sequence) or isinstance(bounds, (str, bytes)):
+            errors.append(f"focus_bounds_request_invalid:{target_id}")
+            continue
+        specs, plan, request_errors = _derive_bounds_camera_specs(
+            bounds,
+            margin=request.get("margin", 3.0),
+            n_azimuths=request.get("n_azimuths", 8),
+            elevations_deg=request.get("elevations_deg", (10.0, 35.0, 60.0)),
+            vfov_deg=request.get("vfov_deg", 48.0),
+            width=width,
+            height=height,
+            camera_id_prefix=str(request.get("camera_id_prefix") or target_id),
+        )
+        if request_errors:
+            errors.extend(f"{code}:{target_id}" for code in request_errors)
+            continue
+        assert specs is not None and plan is not None
+        duplicate_camera_ids = [row["id"] for row in specs if row["id"] in camera_ids]
+        if duplicate_camera_ids:
+            errors.append(f"focus_bounds_request_camera_ids_duplicate:{target_id}")
+            continue
+        camera_ids.update(str(row["id"]) for row in specs)
+        plan["target_id"] = target_id
+        plan["semantic_role"] = str(request.get("semantic_role") or "inspection_target")
+        all_specs.extend(specs)
+        plans.append(plan)
+    if errors:
+        return None, None, sorted(set(errors))
+    if max_total_cameras is not None and len(all_specs) > max_total_cameras:
+        return None, None, ["focus_bounds_camera_budget_exceeded"]
+    return (
+        all_specs,
+        {
+            "planner": "multi_entity_bounds_view_ring",
+            "target_count": len(plans),
+            "camera_count": len(all_specs),
+            "max_total_cameras": max_total_cameras,
+            "targets": plans,
+            "claim_boundary": "reconnaissance_camera_plan_not_source_observation_recovery",
+        },
+        [],
+    )
+
+
+def _look_at_camera_calibration(camera: Mapping[str, Any], *, width: int, height: int) -> dict:
+    spec = camera["spec"]
+    vfov_deg = float(spec["fov"])
+    focal_pixels = 0.5 * float(height) / math.tan(math.radians(vfov_deg) / 2.0)
+    return {
+        "id": str(camera["id"]),
+        "pose_convention": "world_position_target_up_look_at_z_up",
+        "position_world_m": [float(value) for value in spec["pos"]],
+        "target_world_m": [float(value) for value in spec["target"]],
+        "up_world": [float(value) for value in spec["up"]],
+        "intrinsics": {
+            "model": "pinhole_centered_square_pixels",
+            "fx": focal_pixels,
+            "fy": focal_pixels,
+            "cx": float(width) / 2.0,
+            "cy": float(height) / 2.0,
+            "width": int(width),
+            "height": int(height),
+            "vertical_fov_deg": vfov_deg,
+        },
+    }
+
+
+def _renderer_dependency_identity(root: Path) -> dict[str, Any]:
+    lock_path = root / "tools/splat_render/package-lock.json"
+    versions: dict[str, str] = {}
+    if lock_path.is_file():
+        try:
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            packages = lock.get("packages", {})
+            for package_name in ("playwright", "playwright-core", "three", "@sparkjsdev/spark"):
+                row = packages.get(f"node_modules/{package_name}")
+                if isinstance(row, Mapping) and row.get("version"):
+                    versions[package_name] = str(row["version"])
+        except (OSError, ValueError, TypeError):
+            versions = {}
+    browser_registry = root / "tools/splat_render/node_modules/playwright-core/browsers.json"
+    try:
+        node_version = subprocess.run(
+            ["node", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        node_version = "unavailable"
+    return {
+        "node_version": node_version,
+        "package_lock_path": str(lock_path) if lock_path.is_file() else None,
+        "package_lock_sha256": _sha256_file(lock_path) if lock_path.is_file() else None,
+        "dependency_versions": versions,
+        "playwright_browser_registry_sha256": (
+            _sha256_file(browser_registry) if browser_registry.is_file() else None
+        ),
+    }
 
 
 def _repo_root(repo_root: str | Path | None) -> Path:
@@ -196,6 +445,14 @@ def render_splat_scene(
     *,
     camera_ids: Sequence[str] = DEFAULT_CAMERA_IDS,
     camera_specs: Sequence[Mapping[str, Any]] | None = None,
+    focus_bounds: Sequence[Sequence[float]] | None = None,
+    focus_bounds_requests: Sequence[Mapping[str, Any]] | None = None,
+    max_bounds_cameras: int | None = None,
+    view_ring_margin: float = 3.0,
+    view_ring_azimuths: int = 8,
+    view_ring_elevations_deg: Sequence[float] = (10.0, 35.0, 60.0),
+    view_ring_vfov_deg: float = 48.0,
+    camera_id_prefix: str = "bounds",
     width: int = 1280,
     height: int = 960,
     decimate: int = 0,
@@ -211,6 +468,7 @@ def render_splat_scene(
     decode_timeout: int = 900,
     render_timeout: int = 1800,
     encode_mp4: bool = True,
+    require_empty_output: bool = False,
 ) -> dict:
     """Decode -> analyze -> frame cameras -> headless-render -> MP4. Returns a manifest
     dict with ``status`` in {completed, blocked} and a fail-closed ``blockers`` list."""
@@ -226,6 +484,7 @@ def render_splat_scene(
         "output_dir": str(out_dir),
         "blockers": [],
         "graphics_backend": str(graphics_backend).strip().lower(),
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "appearance_fidelity": {
             "full_resolution_source_is_appearance_truth": True,
             "global_decimation_applied": bool(decimate and decimate > 0),
@@ -243,11 +502,55 @@ def render_splat_scene(
     if not source.is_file() or source.suffix.lower() not in _SPLAT_SUFFIXES:
         manifest["blockers"].append("splat_source_missing_or_unsupported")
         return manifest
+    if require_empty_output and any(out_dir.iterdir()):
+        manifest["blockers"].append("render_output_directory_not_empty")
+        return manifest
     manifest["source_digest"] = _sha256_file(source)
+    camera_plan_inputs = sum(
+        value is not None
+        for value in (camera_specs, focus_bounds, focus_bounds_requests, focus_point)
+    )
+    if camera_plan_inputs > 1:
+        manifest["blockers"].append("camera_planning_inputs_are_mutually_exclusive")
+        return manifest
     normalized_camera_specs, camera_errors = _normalize_camera_specs(camera_specs)
     if camera_errors:
         manifest["blockers"].extend(camera_errors)
         return manifest
+    bounds_camera_specs = None
+    bounds_camera_plan = None
+    if focus_bounds is not None:
+        bounds_camera_specs, bounds_camera_plan, bounds_camera_errors = (
+            _derive_bounds_camera_specs(
+                focus_bounds,
+                margin=view_ring_margin,
+                n_azimuths=view_ring_azimuths,
+                elevations_deg=view_ring_elevations_deg,
+                vfov_deg=view_ring_vfov_deg,
+                width=width,
+                height=height,
+                camera_id_prefix=camera_id_prefix,
+            )
+        )
+        if bounds_camera_errors:
+            manifest["blockers"].extend(bounds_camera_errors)
+            return manifest
+    multi_bounds_camera_specs = None
+    multi_bounds_camera_plan = None
+    if focus_bounds_requests is not None:
+        (
+            multi_bounds_camera_specs,
+            multi_bounds_camera_plan,
+            multi_bounds_camera_errors,
+        ) = _derive_multi_bounds_camera_specs(
+            focus_bounds_requests,
+            width=width,
+            height=height,
+            max_total_cameras=max_bounds_cameras,
+        )
+        if multi_bounds_camera_errors:
+            manifest["blockers"].extend(multi_bounds_camera_errors)
+            return manifest
     normalized_graphics_backend = str(graphics_backend).strip().lower()
     if normalized_graphics_backend not in {"swiftshader", "metal"}:
         manifest["blockers"].append("unsupported_graphics_backend")
@@ -307,21 +610,60 @@ def render_splat_scene(
     cameras = (
         normalized_camera_specs
         if normalized_camera_specs is not None
+        else bounds_camera_specs
+        if bounds_camera_specs is not None
+        else multi_bounds_camera_specs
+        if multi_bounds_camera_specs is not None
         else derive_eval_cameras(geom, camera_ids, focus_point=normalized_focus)
     )
     manifest["camera_focus_point"] = normalized_focus
     manifest["camera_set_origin"] = (
         "caller_supplied_native_spark_specs"
         if normalized_camera_specs is not None
+        else "derived_bounds_view_ring"
+        if bounds_camera_specs is not None
+        else "derived_multi_entity_bounds_view_ring"
+        if multi_bounds_camera_specs is not None
         else "derived_eval_cameras"
     )
+    manifest["camera_plan"] = bounds_camera_plan or multi_bounds_camera_plan
     manifest["camera_set_digest"] = canonical_digest({"cameras": cameras})
     cameras_json = out_dir / "cameras.json"
     cameras_json.write_text(json.dumps(cameras), encoding="utf-8")
+    manifest["camera_file"] = {
+        "path": str(cameras_json),
+        "size_bytes": cameras_json.stat().st_size,
+        "sha256": _sha256_file(cameras_json),
+    }
+    manifest["camera_calibration"] = [
+        _look_at_camera_calibration(camera, width=width, height=height)
+        for camera in cameras
+    ]
     harness = root / RENDER_HARNESS_REL
     if not harness.is_file():
         manifest["blockers"].append("render_harness_unavailable")
         return manifest
+    entry = root / "tools/splat_render/src/render_entry.mjs"
+    manifest["renderer_identity"] = {
+        "name": RENDERED_BY,
+        "harness_path": str(harness),
+        "harness_sha256": _sha256_file(harness),
+        "entry_path": str(entry) if entry.is_file() else None,
+        "entry_sha256": _sha256_file(entry) if entry.is_file() else None,
+        "width": int(width),
+        "height": int(height),
+        "pixel_ratio": 1,
+        "supersampling": 1,
+        "antialias": True,
+        "alpha": False,
+        "background_rgb_hex": "0x0b0b10",
+        "output_format": "lossless_png",
+        "color_space": "threejs_default_unqualified",
+        "warmup_ms": int(warmup_ms),
+        "settle_frames": int(settle_frames),
+        "settle_ms": int(settle_ms),
+        **_renderer_dependency_identity(root),
+    }
     frames_dir = out_dir / "frames"
     cmd = [
         node, str(harness),
@@ -492,6 +834,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="must remain 0; global decimation is forbidden for fidelity renders",
     )
     ap.add_argument("--settle-frames", type=int, default=6)
+    ap.add_argument("--settle-ms", type=int, default=100)
     ap.add_argument("--warmup-ms", type=int, default=2000)
     ap.add_argument(
         "--graphics-backend",
@@ -507,16 +850,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar=("X", "Y", "Z"),
         help="site-coordinate task focus used for wrist and task-focus framing",
     )
+    ap.add_argument(
+        "--focus-bounds",
+        type=float,
+        nargs=6,
+        metavar=("XMIN", "YMIN", "ZMIN", "XMAX", "YMAX", "ZMAX"),
+        help="derive a deterministic close-up camera ring around metric bounds",
+    )
+    ap.add_argument(
+        "--focus-bounds-request-json",
+        help="JSON object with a targets[] list of independently bounded entities",
+    )
+    ap.add_argument("--view-ring-margin", type=float, default=3.0)
+    ap.add_argument("--view-ring-azimuths", type=int, default=8)
+    ap.add_argument(
+        "--view-ring-elevations-deg",
+        type=float,
+        nargs="+",
+        default=(10.0, 35.0, 60.0),
+    )
+    ap.add_argument("--view-ring-vfov-deg", type=float, default=48.0)
+    ap.add_argument("--camera-id-prefix", default="bounds")
     ap.add_argument("--overlay", help="optional JSON box/cylinder preview overlay")
     ap.add_argument(
         "--cameras-json",
         help="optional native Spark camera list [{id,spec:{pos,target,fov,up}}]",
     )
     ap.add_argument("--no-mp4", action="store_true")
+    ap.add_argument(
+        "--require-empty-output",
+        action="store_true",
+        help="fail before decode rather than overwrite any retained attempt artifact",
+    )
     args = ap.parse_args(argv)
     camera_specs = None
     if args.cameras_json:
         camera_specs = json.loads(Path(args.cameras_json).read_text(encoding="utf-8"))
+    focus_bounds_requests = None
+    max_bounds_cameras = None
+    if args.focus_bounds_request_json:
+        request_payload = json.loads(
+            Path(args.focus_bounds_request_json).read_text(encoding="utf-8")
+        )
+        focus_bounds_requests = request_payload.get("targets")
+        max_bounds_cameras = request_payload.get("max_total_cameras")
     manifest = render_splat_scene(
         args.splat,
         args.out,
@@ -524,13 +901,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         height=args.height,
         decimate=args.decimate,
         settle_frames=args.settle_frames,
+        settle_ms=args.settle_ms,
         warmup_ms=args.warmup_ms,
         graphics_backend=args.graphics_backend,
         up_axis=args.up_axis,
         focus_point=args.focus_point,
+        focus_bounds=(
+            (args.focus_bounds[:3], args.focus_bounds[3:])
+            if args.focus_bounds is not None
+            else None
+        ),
+        focus_bounds_requests=focus_bounds_requests,
+        max_bounds_cameras=max_bounds_cameras,
+        view_ring_margin=args.view_ring_margin,
+        view_ring_azimuths=args.view_ring_azimuths,
+        view_ring_elevations_deg=args.view_ring_elevations_deg,
+        view_ring_vfov_deg=args.view_ring_vfov_deg,
+        camera_id_prefix=args.camera_id_prefix,
         camera_specs=camera_specs,
         overlay_json=args.overlay,
         encode_mp4=not args.no_mp4,
+        require_empty_output=args.require_empty_output,
     )
     manifest_path = Path(args.out).expanduser() / "splat_render_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

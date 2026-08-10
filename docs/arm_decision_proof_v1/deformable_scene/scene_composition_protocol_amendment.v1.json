@@ -1,0 +1,56 @@
+{
+  "schema_version": "adp_deformable_scene_composition_protocol_amendment.v1",
+  "program_id": "arm-decision-proof-v1",
+  "run_id": "adp-deformable-scene-e2e-v1",
+  "amends": "scene_selection_preregistration.v1.json",
+  "recorded_at": "2026-08-10T13:25:00Z",
+  "recorded_before_scene_freeze": true,
+  "recorded_before_learned_policy_outcome_inspection": true,
+  "learned_policy_outcomes_inspected": false,
+  "authority": "user_explicit_scope_amendment_in_active_goal_thread",
+  "authorized_composition": {
+    "operation": "retain_observed_source_receptacle_and_insert_one_separate_simready_rigid_receptacle_twin_at_a_composed_task_pose",
+    "purpose": "place_the_destination_closer_to_the_observed_deformable_task_area",
+    "source_receptacle_gaussians_removed": false,
+    "source_receptacle_collider_removed": false,
+    "source_receptacle_inpainted": false,
+    "inserted_receptacle_is_a_separate_task_entity": true,
+    "inserted_receptacle_role": "destination_receptacle",
+    "retained_source_receptacle_role": "observed_design_basis_and_scene_background_not_scored_destination"
+  },
+  "unchanged_hard_gates": [
+    "source_receptacle_is_observed_rigid_and_open",
+    "source_receptacle_interior_is_sufficiently_observed",
+    "source_receptacle_metric_bounds_are_bound_to_exact_dataset_observations",
+    "inserted_receptacle_has_independent_asset_provenance_and_digests",
+    "inserted_receptacle_has_open_interior_collision_and_native_simulator_qualification",
+    "composed_pose_is_on_an_observed_support_with_no_initial_penetration",
+    "composed_pose_is_frozen_before_learned_policy_outcomes",
+    "composed_pose_passes_franka_reachability_motion_clearance_and_camera_visibility_gates"
+  ],
+  "objective_source_receptacle_selection_order": [
+    "reject_occupied_or_unobserved_interiors",
+    "maximize_visible_open_interior_and_wall_floor_observation",
+    "maximize_metric_dimension_and_collision_component_support",
+    "minimize_unresolved_material_and_topology",
+    "break_remaining_tie_by_ascending_numeric_instance_id"
+  ],
+  "claim_separation": {
+    "observed": [
+      "source_receptacle_exterior_and_only_the_visible_interior_regions",
+      "source_receptacle_dataset_pose_and_bounds",
+      "destination_support_surface_geometry"
+    ],
+    "composed_not_observed": [
+      "inserted_receptacle_world_pose",
+      "inserted_receptacle_complete_hidden_geometry",
+      "inserted_receptacle_material_parameters"
+    ],
+    "prohibited_claims": [
+      "inserted_pose_was_present_in_the_public_scene",
+      "generated_hidden_interior_is_source_truth",
+      "simulated_receptacle_is_physically_equivalent_to_the_observed_source"
+    ]
+  },
+  "claim_ceiling": "development_only_public_dataset_simulator_composition_not_physical_or_site_truth"
+}

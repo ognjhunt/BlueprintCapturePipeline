@@ -1,0 +1,48 @@
+{
+  "schema_version": "adp_deformable_target_closeup_local_runs.v1",
+  "program_id": "arm-decision-proof-v1",
+  "run_id": "adp-deformable-scene-e2e-v1",
+  "scene_id": "840873",
+  "paid_cost_usd": 0.0,
+  "provider_instances_launched": 0,
+  "attempts": [
+    {
+      "attempt_id": "local_closeup_001",
+      "backend": "swiftshader",
+      "planned_camera_count": 112,
+      "status": "operator_terminated_local_diagnostic",
+      "exit_code": 130,
+      "termination_reason": "measured_two_frames_after_about_two_minutes_projected_beyond_bounded_render_window",
+      "partial_frame_count_observed_before_termination": 2,
+      "partial_frame_sizes_bytes": [945050, 886865],
+      "partial_frame_digests_retained": false,
+      "partial_output_gap": "the_following_successful_local_attempt_reused_the_directory_and_overwrote_the_two_partial_frames",
+      "selection_evidence_authorized": false,
+      "learned_policy_outcomes_inspected": false,
+      "paid_cost_usd": 0.0,
+      "generic_fix": "multi_entity_camera_budget_cap_and_empty_output_guard_with_hermetic_regressions"
+    },
+    {
+      "attempt_id": "local_closeup_002",
+      "backend": "metal",
+      "planned_camera_count": 56,
+      "camera_budget_cap": 56,
+      "status": "completed",
+      "exit_code": 0,
+      "nonblank_camera_count": 56,
+      "source_splat_count": 500460,
+      "retained_splat_count": 500460,
+      "request_sha256": "sha256:8a07e627e9db67ace9b2e5d1afab5d70a29c401615bc10cdea012976e21e97be",
+      "camera_file_sha256": "sha256:5ce4f9c66c46f97683de82792732c942121978f49ed35b0f578f137a75fe0611",
+      "render_manifest_digest": "sha256:911de7e0386757e0a89d4b8d36b38f3610bf012ecd81d6f0ca9997832ee5e376",
+      "render_manifest_file_sha256": "sha256:f2959fff4e3a7a55da4cdd33d8ed9a412617ad4883815ebe0842d3f75bdd1b76",
+      "artifact_root": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/deformable_scene_840873_e2e/selection_reconnaissance_v1/target_closeups_v1",
+      "selection_evidence_authorized": true,
+      "evaluation_policy_input_authorized": false,
+      "appearance_fidelity_qualified": false,
+      "learned_policy_outcomes_inspected": false,
+      "paid_cost_usd": 0.0
+    }
+  ],
+  "claim_boundary": "local_reconnaissance_only_not_native_simulation_or_policy_evidence"
+}

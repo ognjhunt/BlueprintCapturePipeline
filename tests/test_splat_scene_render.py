@@ -13,10 +13,133 @@ from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3
 from blueprint_pipeline.splat_scene_render import (
     RENDERED_BY,
     _decimate_to_standard_ply,
+    _derive_bounds_camera_specs,
+    _derive_multi_bounds_camera_specs,
     _encode_mp4,
     _normalize_camera_specs,
     render_splat_scene,
 )
+
+
+def test_bounds_camera_specs_are_task_neutral_deterministic_and_receipted() -> None:
+    specs, plan, errors = _derive_bounds_camera_specs(
+        ((-0.2, -0.3, 0.8), (0.2, 0.3, 1.1)),
+        margin=3.0,
+        n_azimuths=4,
+        elevations_deg=(15.0, 50.0),
+        vfov_deg=44.0,
+        width=1600,
+        height=1200,
+        camera_id_prefix="destination_candidate",
+    )
+
+    assert errors == []
+    assert plan == {
+        "planner": "scene_placement.perception_views.view_ring_for_bounds",
+        "focus_bounds": {"min": [-0.2, -0.3, 0.8], "max": [0.2, 0.3, 1.1]},
+        "margin": 3.0,
+        "n_azimuths": 4,
+        "elevations_deg": [15.0, 50.0],
+        "vfov_deg": 44.0,
+        "width": 1600,
+        "height": 1200,
+        "camera_id_prefix": "destination_candidate",
+        "camera_count": 8,
+        "claim_boundary": "reconnaissance_camera_plan_not_source_observation_recovery",
+    }
+    assert [row["id"] for row in specs or []] == [
+        "destination_candidate_e00_a00",
+        "destination_candidate_e00_a01",
+        "destination_candidate_e00_a02",
+        "destination_candidate_e00_a03",
+        "destination_candidate_e01_a00",
+        "destination_candidate_e01_a01",
+        "destination_candidate_e01_a02",
+        "destination_candidate_e01_a03",
+    ]
+    assert all(row["spec"]["fov"] == 44.0 for row in specs or [])
+
+
+def test_invalid_bounds_camera_specs_fail_closed() -> None:
+    specs, plan, errors = _derive_bounds_camera_specs(
+        ((0.0, 0.0, 1.0), (0.0, 0.5, 1.2)),
+        margin=1.0,
+        n_azimuths=1,
+        elevations_deg=(),
+        vfov_deg=180.0,
+        width=0,
+        height=960,
+        camera_id_prefix="../bad",
+    )
+
+    assert specs is None
+    assert plan is None
+    assert errors == ["bounds_view_ring_parameters_invalid", "focus_bounds_invalid"]
+
+
+def test_multi_entity_bounds_camera_specs_share_one_stable_render_plan() -> None:
+    specs, plan, errors = _derive_multi_bounds_camera_specs(
+        [
+            {
+                "target_id": "movable",
+                "semantic_role": "movable_deformable",
+                "focus_bounds": [[-0.2, -0.1, 0.8], [0.2, 0.1, 1.0]],
+                "n_azimuths": 4,
+                "elevations_deg": [20.0, 55.0],
+            },
+            {
+                "target_id": "destination",
+                "semantic_role": "destination_receptacle",
+                "focus_bounds": [[0.5, -0.3, 0.7], [0.9, 0.3, 1.1]],
+                "n_azimuths": 4,
+                "elevations_deg": [35.0, 65.0],
+                "vfov_deg": 45.0,
+            },
+        ],
+        width=1024,
+        height=768,
+        max_total_cameras=16,
+    )
+
+    assert errors == []
+    assert len(specs or []) == 16
+    assert plan is not None
+    assert plan["target_count"] == 2
+    assert plan["camera_count"] == 16
+    assert plan["max_total_cameras"] == 16
+    assert [row["target_id"] for row in plan["targets"]] == ["movable", "destination"]
+    assert len({row["id"] for row in specs or []}) == 16
+
+
+def test_multi_entity_bounds_camera_specs_reject_duplicate_targets() -> None:
+    specs, plan, errors = _derive_multi_bounds_camera_specs(
+        [
+            {"target_id": "same", "focus_bounds": [[0, 0, 0], [1, 1, 1]]},
+            {"target_id": "same", "focus_bounds": [[2, 2, 2], [3, 3, 3]]},
+        ],
+        width=1024,
+        height=768,
+    )
+
+    assert specs is None
+    assert plan is None
+    assert errors == ["focus_bounds_request_target_id_invalid:1"]
+
+
+def test_multi_entity_bounds_camera_specs_fail_before_over_budget_render() -> None:
+    specs, plan, errors = _derive_multi_bounds_camera_specs(
+        [
+            {"target_id": "one", "focus_bounds": [[0, 0, 0], [1, 1, 1]]},
+            {"target_id": "two", "focus_bounds": [[2, 2, 2], [3, 3, 3]]},
+        ],
+        width=1024,
+        height=768,
+        max_total_cameras=15,
+    )
+
+    assert specs is None
+    assert plan is None
+    assert errors == ["focus_bounds_camera_budget_exceeded"]
 
 
 def test_valid_standard_ply_needs_no_decoder_when_decimation_disabled(
@@ -70,6 +193,32 @@ def test_blocked_when_graphics_backend_is_unknown(tmp_path: Path) -> None:
     m = render_splat_scene(src, tmp_path / "out", graphics_backend="cloud_magic")
     assert m["status"] == "blocked"
     assert m["blockers"] == ["unsupported_graphics_backend"]
+
+
+def test_retained_attempt_output_can_be_guarded_before_decode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    src = tmp_path / "scene.ply"
+    src.write_bytes(b"placeholder")
+    out = tmp_path / "retained_attempt"
+    out.mkdir()
+    (out / "partial.png").write_bytes(b"retained")
+    decode_called = False
+
+    def unexpected_decode(*args, **kwargs):
+        nonlocal decode_called
+        decode_called = True
+        raise AssertionError("decode must not run")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.splat_scene_render._decimate_to_standard_ply",
+        unexpected_decode,
+    )
+    result = render_splat_scene(src, out, require_empty_output=True)
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["render_output_directory_not_empty"]
+    assert decode_called is False
 
 
 def test_blocked_when_cli_missing(tmp_path: Path) -> None:

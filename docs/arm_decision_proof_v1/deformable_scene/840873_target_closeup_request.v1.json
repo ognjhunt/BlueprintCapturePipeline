@@ -1,0 +1,79 @@
+{
+  "schema_version": "adp_deformable_target_closeup_request.v1",
+  "program_id": "arm-decision-proof-v1",
+  "run_id": "adp-deformable-scene-e2e-v1",
+  "scene_id": "840873",
+  "purpose": "selection_reconnaissance_only",
+  "whole_room_survey_completed_first": true,
+  "learned_policy_outcomes_inspected": false,
+  "source_appearance_sha256": "sha256:b2fba405065eb5f7c2c25af2e0d41042dd8dfd8b883702b7a670dbdc34d36c05",
+  "max_total_cameras": 56,
+  "targets": [
+    {
+      "target_id": "towel_79",
+      "publisher_instance_id": "79",
+      "semantic_role": "movable_deformable_candidate",
+      "focus_bounds": [
+        [-5.222948118963468, -4.549851952023365, 1.1229319635408],
+        [-4.8528914222860315, -4.431131452611673, 1.2360441572160001]
+      ],
+      "margin": 4.0,
+      "n_azimuths": 4,
+      "elevations_deg": [25.0, 55.0],
+      "vfov_deg": 50.0
+    },
+    {
+      "target_id": "basket_87",
+      "publisher_instance_id": "87",
+      "semantic_role": "destination_receptacle_candidate",
+      "focus_bounds": [
+        [-5.248418286796621, -3.6449357349206983, 1.6564635856319998],
+        [-4.964385391501974, -3.1787082831932274, 1.7803363515419999]
+      ],
+      "margin": 3.0,
+      "n_azimuths": 4,
+      "elevations_deg": [35.0, 60.0, 75.0],
+      "vfov_deg": 45.0
+    },
+    {
+      "target_id": "basket_108",
+      "publisher_instance_id": "108",
+      "semantic_role": "destination_receptacle_candidate",
+      "focus_bounds": [
+        [3.1989929843190863, 2.130564648529911, 0.0],
+        [3.524191619461094, 2.3632996976335336, 0.17100680000000001]
+      ],
+      "margin": 3.0,
+      "n_azimuths": 4,
+      "elevations_deg": [35.0, 60.0, 75.0],
+      "vfov_deg": 45.0
+    },
+    {
+      "target_id": "basket_212",
+      "publisher_instance_id": "212",
+      "semantic_role": "destination_receptacle_candidate",
+      "focus_bounds": [
+        [-1.3859827979683002, -0.13786801175855998, 0.06670000000000005],
+        [-1.0244553417203601, 0.142422126723987, 0.27617499999999995]
+      ],
+      "margin": 3.0,
+      "n_azimuths": 4,
+      "elevations_deg": [35.0, 60.0, 75.0],
+      "vfov_deg": 45.0
+    },
+    {
+      "target_id": "basket_213",
+      "publisher_instance_id": "213",
+      "semantic_role": "destination_receptacle_candidate",
+      "focus_bounds": [
+        [-1.3798818188141, -0.13902671464302, 1.463366],
+        [-1.01267794942948, 0.133352286164133, 1.6761300000000001]
+      ],
+      "margin": 3.0,
+      "n_azimuths": 4,
+      "elevations_deg": [35.0, 60.0, 75.0],
+      "vfov_deg": 45.0
+    }
+  ],
+  "claim_boundary": "virtual_closeups_cannot_recover_uncaptured_or_occluded_source_regions"
+}
