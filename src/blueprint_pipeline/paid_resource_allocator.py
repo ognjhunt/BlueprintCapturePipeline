@@ -73,6 +73,7 @@ from .paid_resource_admission import (
     require_paid_resource_admission,
 )
 from .paid_resource_cli_arguments import add_cpu_arguments as _add_cpu_arguments
+from .hosted_model_inference_preflight import BACKENDS as HOSTED_MODEL_BACKENDS
 from .openpi_policy_ranking_gpu_admission import (
     NEW_SITE_CANARY_PROBE_KIND,
     PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
@@ -1679,8 +1680,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 scope_digest = str(
                     prepared_bundle.get("scope_amendment_digest") or ""
                 )
-                nim_preflight_digest = str(
-                    prepared_bundle.get("nim_preflight_receipt_digest") or ""
+                model_preflight_digest = str(
+                    prepared_bundle.get("model_preflight_receipt_digest")
+                    or prepared_bundle.get("nim_preflight_receipt_digest")
+                    or ""
+                )
+                model = prepared_bundle.get("model") or {}
+                model_backend = str(model.get("backend") or "")
+                expected_model = (HOSTED_MODEL_BACKENDS.get(model_backend) or {}).get(
+                    "model"
+                )
+                legacy_nim_bundle = not prepared_bundle.get(
+                    "model_preflight_receipt_digest"
                 )
                 if (
                     prepared_bundle.get("status") != "ready"
@@ -1697,11 +1708,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or len(scope_digest) != 71
                     or not scope_digest.startswith("sha256:")
                     or any(character not in "0123456789abcdef" for character in scope_digest[7:])
-                    or len(nim_preflight_digest) != 71
-                    or not nim_preflight_digest.startswith("sha256:")
+                    or len(model_preflight_digest) != 71
+                    or not model_preflight_digest.startswith("sha256:")
                     or any(
                         character not in "0123456789abcdef"
-                        for character in nim_preflight_digest[7:]
+                        for character in model_preflight_digest[7:]
+                    )
+                    or (
+                        not legacy_nim_bundle
+                        and (
+                            model_backend not in HOSTED_MODEL_BACKENDS
+                            or model.get("id") != expected_model
+                        )
                     )
                     or not bundle_path.is_file()
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
@@ -1759,11 +1777,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if prepared_bundle
                     else None
                 ),
-                "nim_preflight_receipt_digest": (
-                    prepared_bundle.get("nim_preflight_receipt_digest")
+                "model_preflight_receipt_digest": (
+                    prepared_bundle.get("model_preflight_receipt_digest")
+                    or prepared_bundle.get("nim_preflight_receipt_digest")
                     if prepared_bundle
                     else None
                 ),
+                "model": prepared_bundle.get("model") if prepared_bundle else None,
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,

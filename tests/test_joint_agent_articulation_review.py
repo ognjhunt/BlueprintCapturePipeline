@@ -18,8 +18,13 @@ def _contract() -> dict:
         "target_joint_type": "revolute",
         "target_axis_world": [0.0, 0.0, 1.0],
         "target_axis_absolute_dot_minimum": 0.99,
-        "target_moving_z_interval_m": [0.94, 1.632],
-        "minimum_target_z_overlap_fraction": 0.85,
+        "target_member_projection_constraints": [
+            {
+                "axis_world": [0.0, 0.0, 1.0],
+                "interval_m": [0.94, 1.632],
+                "minimum_overlap_fraction": 0.85,
+            }
+        ],
     }
 
 
@@ -63,6 +68,40 @@ def test_review_admits_one_task_joint_inside_bounded_multi_joint_assembly() -> N
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
     )
+
+
+def test_review_supports_prismatic_task_selected_on_arbitrary_world_axis() -> None:
+    contract = _contract()
+    contract["target_joint_type"] = "prismatic"
+    contract["target_axis_world"] = [1.0, 0.0, 0.0]
+    contract["target_member_projection_constraints"] = [
+        {
+            "axis_world": [0.0, 1.0, 0.0],
+            "interval_m": [2.0, 2.4],
+            "minimum_overlap_fraction": 0.9,
+        }
+    ]
+    candidates = [
+        _candidate("left_drawer", axis=[1.0, 0.0, 0.0], kind="prismatic"),
+        _candidate("right_drawer", axis=[1.0, 0.0, 0.0], kind="prismatic"),
+    ]
+    document = {
+        "schema_version": "joint-agent-stage2-v0",
+        "summary": {"candidate_count": 2},
+        "candidates": candidates,
+    }
+    bounds = {
+        "left_drawer": {"aabb_min": [0.0, 2.0, 0.1], "aabb_max": [0.8, 2.4, 0.4]},
+        "right_drawer": {"aabb_min": [0.0, 3.0, 0.1], "aabb_max": [0.8, 3.4, 0.4]},
+    }
+
+    receipt = review_joint_agent_articulation(
+        candidates_document=document,
+        candidate_bounds=bounds,
+        review_contract=contract,
+    )
+
+    assert receipt["target_candidate_id"] == "left_drawer"
 
 
 @pytest.mark.parametrize(

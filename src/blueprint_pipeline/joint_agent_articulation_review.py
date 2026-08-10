@@ -125,18 +125,42 @@ def review_joint_agent_articulation(
     ):
         errors.append("joint_review_axis_threshold_invalid")
         axis_abs_dot_min = 2.0
-    target_interval = _finite_vector(contract.get("target_moving_z_interval_m"), length=2)
-    if target_interval is None or target_interval[0] >= target_interval[1]:
-        errors.append("joint_review_target_interval_invalid")
-        target_interval = (math.inf, -math.inf)
-    minimum_overlap = contract.get("minimum_target_z_overlap_fraction")
-    if (
-        isinstance(minimum_overlap, bool)
-        or not isinstance(minimum_overlap, (int, float))
-        or not 0.0 < float(minimum_overlap) <= 1.0
-    ):
-        errors.append("joint_review_overlap_threshold_invalid")
-        minimum_overlap = 2.0
+    projection_constraints = contract.get("target_member_projection_constraints")
+    if not isinstance(projection_constraints, list) or not projection_constraints:
+        errors.append("joint_review_projection_constraints_invalid")
+        projection_constraints = []
+    normalized_constraints: list[
+        tuple[tuple[float, float, float], tuple[float, float], float]
+    ] = []
+    for constraint_index, constraint in enumerate(projection_constraints):
+        axis = (
+            _normalized_axis(constraint.get("axis_world"))
+            if isinstance(constraint, Mapping)
+            else None
+        )
+        interval = (
+            _finite_vector(constraint.get("interval_m"), length=2)
+            if isinstance(constraint, Mapping)
+            else None
+        )
+        minimum_overlap = (
+            constraint.get("minimum_overlap_fraction")
+            if isinstance(constraint, Mapping)
+            else None
+        )
+        if (
+            axis is None
+            or interval is None
+            or interval[0] >= interval[1]
+            or isinstance(minimum_overlap, bool)
+            or not isinstance(minimum_overlap, (int, float))
+            or not 0.0 < float(minimum_overlap) <= 1.0
+        ):
+            errors.append(
+                f"joint_review_projection_constraint_invalid:{constraint_index}"
+            )
+            continue
+        normalized_constraints.append((axis, interval, float(minimum_overlap)))
 
     rows: list[dict[str, Any]] = []
     target_matches: list[str] = []
@@ -172,20 +196,47 @@ def review_joint_agent_articulation(
             or any(low > high for low, high in zip(bound_min, bound_max, strict=True))
         ):
             errors.append(f"joint_candidate_bounds_invalid:{candidate_id}")
-            overlap_fraction = None
+            overlap_fractions = None
         else:
-            overlap = max(
-                0.0,
-                min(bound_max[2], target_interval[1])
-                - max(bound_min[2], target_interval[0]),
+            overlap_fractions = []
+            center = tuple((low + high) * 0.5 for low, high in zip(bound_min, bound_max, strict=True))
+            half_extent = tuple((high - low) * 0.5 for low, high in zip(bound_min, bound_max, strict=True))
+            for selector_axis, target_interval, _threshold in normalized_constraints:
+                center_projection = sum(
+                    value * axis_component
+                    for value, axis_component in zip(center, selector_axis, strict=True)
+                )
+                radius = sum(
+                    extent * abs(axis_component)
+                    for extent, axis_component in zip(half_extent, selector_axis, strict=True)
+                )
+                candidate_interval = (
+                    center_projection - radius,
+                    center_projection + radius,
+                )
+                overlap = max(
+                    0.0,
+                    min(candidate_interval[1], target_interval[1])
+                    - max(candidate_interval[0], target_interval[0]),
+                )
+                overlap_fractions.append(
+                    overlap / (target_interval[1] - target_interval[0])
+                )
+        projection_match = (
+            overlap_fractions is not None
+            and len(overlap_fractions) == len(normalized_constraints)
+            and all(
+                overlap >= threshold
+                for overlap, (_axis, _interval, threshold) in zip(
+                    overlap_fractions, normalized_constraints, strict=True
+                )
             )
-            overlap_fraction = overlap / (target_interval[1] - target_interval[0])
+        )
         matches = (
             joint_type == target_type
             and axis_dot is not None
             and axis_dot >= float(axis_abs_dot_min)
-            and overlap_fraction is not None
-            and overlap_fraction >= float(minimum_overlap)
+            and projection_match
         )
         if matches:
             target_matches.append(candidate_id)
@@ -194,7 +245,7 @@ def review_joint_agent_articulation(
                 "candidate_id": candidate_id,
                 "joint_type": joint_type,
                 "axis_absolute_dot": axis_dot,
-                "target_z_overlap_fraction": overlap_fraction,
+                "target_projection_overlap_fractions": overlap_fractions,
                 "target_match": matches,
             }
         )

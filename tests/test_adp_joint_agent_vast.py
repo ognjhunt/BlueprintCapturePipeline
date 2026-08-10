@@ -492,8 +492,9 @@ def test_run_dry_run_is_zero_mutation_and_requires_bound_bundle(tmp_path: Path) 
 
 @pytest.mark.parametrize("execute", [False, True])
 @pytest.mark.parametrize("concurrent", [False, True])
+@pytest.mark.parametrize("model_backend", ["legacy_nim", "openai"])
 def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
-    monkeypatch, tmp_path: Path, execute: bool, concurrent: bool
+    monkeypatch, tmp_path: Path, execute: bool, concurrent: bool, model_backend: str
 ) -> None:
     bundle = tmp_path / "bundle.zip"
     bundle.write_bytes(b"immutable-joint-agent-runtime")
@@ -508,13 +509,17 @@ def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
         "automatic_paid_retry_allowed": False,
         "provider_zero_required_after_return": True,
         "scope_amendment_digest": "sha256:" + "1" * 64,
-        "nim_preflight_receipt_digest": "sha256:" + "2" * 64,
         "one_instance_at_a_time": not concurrent,
         "maximum_concurrent_paid_instances": 2 if concurrent else 1,
         "blockers": [],
         "bundle_path": str(bundle),
         "bundle_sha256": bundle_digest,
     }
+    if model_backend == "legacy_nim":
+        receipt["nim_preflight_receipt_digest"] = "sha256:" + "2" * 64
+    else:
+        receipt["model_preflight_receipt_digest"] = "sha256:" + "2" * 64
+        receipt["model"] = {"backend": "openai", "id": "gpt-4.1"}
     receipt_path = tmp_path / "receipt.json"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     monkeypatch.setattr(
@@ -576,6 +581,10 @@ def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["status"] == "admitted"
     assert admission["allocation_binding"]["bundle_sha256"] == bundle_digest
+    assert (
+        admission["allocation_binding"]["model_preflight_receipt_digest"]
+        == "sha256:" + "2" * 64
+    )
     assert admission["raw_interiorgs_downloaded_bytes_uploaded"] is False
     assert admission["explicit_concurrent_gpu_authority_bound"] is concurrent
     assert observed["execute"] is execute
@@ -793,7 +802,7 @@ def test_provider_runner_review_failure_retains_topology_evidence(
         json.dumps(manifest), encoding="utf-8"
     )
     contract = {
-        "schema_version": "joint_agent_task_topology_review_contract.v1",
+        "schema_version": "joint_agent_task_topology_review_contract.v2",
         "minimum_assembly_joint_count": 1,
         "maximum_assembly_joint_count": 4,
         "commanded_task_joint_count": 1,
@@ -804,8 +813,14 @@ def test_provider_runner_review_failure_retains_topology_evidence(
         "target_joint_type": "revolute",
         "target_axis_world": [0.0, 0.0, 1.0],
         "target_axis_absolute_dot_minimum": 0.99,
-        "target_moving_z_interval_m": [0.94, 1.632],
-        "minimum_target_z_overlap_fraction": 0.85,
+        "target_member_projection_constraints": [
+            {
+                "axis_world": [0.0, 0.0, 1.0],
+                "interval_m": [0.94, 1.632],
+                "minimum_overlap_fraction": 0.85,
+            }
+        ],
+        "compatibility_adapter": "legacy_rotation_observation_v1",
         "task_joint_id": "upper_hinge",
         "freeze_digest": "sha256:" + "2" * 64,
         "scope_amendment_digest": "sha256:" + "3" * 64,

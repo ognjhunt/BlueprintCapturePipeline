@@ -203,8 +203,32 @@ def _review_contract(
 ) -> dict[str, Any]:
     observation = freeze.get("member_geometry_observation") or {}
     scope = scope_amendment.get("joint_scope") or {}
+    task = freeze.get("task_spec") or {}
+    target_joint_type = task.get("target_joint_type") or observation.get(
+        "target_joint_type"
+    )
+    target_projection_constraints = observation.get(
+        "target_member_projection_constraints"
+    )
+    compatibility_adapter = None
+    if target_joint_type is None and "rotates" in str(
+        observation.get("positive_open_direction") or ""
+    ):
+        target_joint_type = "revolute"
+        compatibility_adapter = "legacy_rotation_observation_v1"
+    if target_projection_constraints is None and observation.get(
+        "upper_member_vertical_interval_m"
+    ):
+        target_projection_constraints = [
+            {
+                "axis_world": [0.0, 0.0, 1.0],
+                "interval_m": observation["upper_member_vertical_interval_m"],
+                "minimum_overlap_fraction": 0.85,
+            }
+        ]
+        compatibility_adapter = "legacy_rotation_observation_v1"
     return {
-        "schema_version": "joint_agent_task_topology_review_contract.v1",
+        "schema_version": "joint_agent_task_topology_review_contract.v2",
         "minimum_assembly_joint_count": scope.get("minimum_assembly_joint_count"),
         "maximum_assembly_joint_count": scope.get("maximum_assembly_joint_count"),
         "commanded_task_joint_count": scope.get("commanded_task_joint_count"),
@@ -212,12 +236,12 @@ def _review_contract(
         "non_task_joint_mode": scope.get("non_task_joint_mode"),
         "non_task_joint_motion_tolerance": scope.get("non_task_joint_motion_tolerance"),
         "allowed_joint_types": ["revolute", "prismatic"],
-        "target_joint_type": "revolute",
+        "target_joint_type": target_joint_type,
         "target_axis_world": observation.get("joint_axis_world"),
         "target_axis_absolute_dot_minimum": 0.99,
-        "target_moving_z_interval_m": observation.get("upper_member_vertical_interval_m"),
-        "minimum_target_z_overlap_fraction": 0.85,
-        "task_joint_id": (freeze.get("task_spec") or {}).get("target_joint_id"),
+        "target_member_projection_constraints": target_projection_constraints,
+        "task_joint_id": task.get("target_joint_id"),
+        "compatibility_adapter": compatibility_adapter,
         "freeze_digest": freeze.get("freeze_digest"),
         "scope_amendment_digest": scope_amendment.get("amendment_digest"),
         "contract_digest": "",
