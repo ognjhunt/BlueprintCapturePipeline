@@ -2863,3 +2863,57 @@ def test_the_derivative_is_still_built_by_default(tmp_path: Path) -> None:
     )
 
     assert receipt["task_collision_derivative"] is not None
+
+
+def test_skipping_the_derivative_also_skips_the_sage_audits(tmp_path: Path) -> None:
+    """They are one decision, not three.
+
+    The derivative, the source inspection and the collision overlay are all
+    keyed to the same two named collider prims in the same scene. Making only
+    the first optional meant a scene that is not that scene got past one gate
+    and failed at the next - adp009d_sage_target_collider_missing - which is
+    the same discovery arriving one function later.
+    """
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    other = tmp_path / "other_scene.usda"
+    other.write_text(
+        '#usda 1.0\n(\n    defaultPrim = "Asset"\n)\n\ndef Xform "Asset"\n{\n}\n',
+        encoding="utf-8",
+    )
+    worker = tmp_path / "w.py"
+    worker.write_text("PAYLOAD = 1\n", encoding="utf-8")
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "job",
+        approved_can_path=approved,
+        sage_collision_path=other,
+        harness_manifest_path=harness,
+        implementation_commit="3" * 40,
+        generated_at="fixed",
+        expected_asset_bindings={
+            "approved_can.usda": _digest(approved),
+            "sage_collision.usd": _digest(other),
+        },
+        worker_source=worker,
+        build_task_collision_derivative=False,
+    )
+
+    assert receipt["task_collision_derivative"] is None
+    assert receipt["sage_profile"] is None
+
+
+def test_the_sage_audits_still_run_by_default(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "job",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="4" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    assert receipt["sage_profile"] is not None

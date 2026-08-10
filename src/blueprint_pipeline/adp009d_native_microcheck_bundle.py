@@ -818,27 +818,36 @@ def build_native_microcheck_bundle(
     # million-face source twice in the opposite order leaves enough USD allocator
     # state resident to exhaust memory while the USDA layer is serialized on the
     # canonical macOS preflight host.
-    sage_profile = _inspect_sage_collision_source(
-        sources["sage_collision.usd"],
-        enforce_sealed_profile=(bindings["sage_collision.usd"] == ASSET_BINDINGS["sage_collision.usd"]),
-    )
+    # One decision, not three: the derivative, this source inspection and the
+    # overlay are all keyed to the same two named collider prims in the same
+    # scene. Gating only the first meant a different scene cleared one check
+    # and failed at the next, which is the same discovery arriving later.
+    sage_profile = None
     overlay_path = assets / "sage_collision_overlay.usda"
-    overlay_path.write_text(_overlay_text(sage_profile), encoding="utf-8")
-    asset_rows.append(
-        {
-            "filename": overlay_path.name,
-            "sha256": _sha256(overlay_path),
-            "size_bytes": overlay_path.stat().st_size,
-            "composition_only": True,
-            "sealed_source_mutated": False,
-            "deactivated_source_prim": TARGET_COLLIDER_PRIM,
-            "preserved_support_prim": SUPPORT_COLLIDER_PRIM,
-            "static_triangle_mesh_override_count": sage_profile["mesh_count"] - 1,
-            "source_collision_profile": {
-                key: value for key, value in sage_profile.items() if key != "mesh_prim_paths"
-            },
-        }
-    )
+    if build_task_collision_derivative:
+        sage_profile = _inspect_sage_collision_source(
+            sources["sage_collision.usd"],
+            enforce_sealed_profile=(
+                bindings["sage_collision.usd"] == ASSET_BINDINGS["sage_collision.usd"]
+            ),
+        )
+        overlay_path.write_text(_overlay_text(sage_profile), encoding="utf-8")
+    if sage_profile is not None:
+        asset_rows.append(
+            {
+                "filename": overlay_path.name,
+                "sha256": _sha256(overlay_path),
+                "size_bytes": overlay_path.stat().st_size,
+                "composition_only": True,
+                "sealed_source_mutated": False,
+                "deactivated_source_prim": TARGET_COLLIDER_PRIM,
+                "preserved_support_prim": SUPPORT_COLLIDER_PRIM,
+                "static_triangle_mesh_override_count": sage_profile["mesh_count"] - 1,
+                "source_collision_profile": {
+                    key: value for key, value in sage_profile.items() if key != "mesh_prim_paths"
+                },
+            }
+        )
     task_collision_manifest_path = assets / TASK_COLLISION_MANIFEST_FILENAME
     if task_collision is not None:
         write_json(task_collision_manifest_path, task_collision)
@@ -1090,6 +1099,7 @@ def build_native_microcheck_bundle(
         "runtime_module_sha256": _sha256(runtime_module_path),
         "worker_overridden": worker_source is not None,
         "task_collision_derivative": task_collision,
+        "sage_profile": sage_profile,
         "extra_native_files": native_payload,
         "extra_native_file_count": len(native_payload),
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
