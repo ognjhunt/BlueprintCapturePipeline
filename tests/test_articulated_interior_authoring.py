@@ -201,3 +201,40 @@ def test_door_bins_are_authored_on_the_task_door_when_requested(
     bins = [row for row in receipt["parts"] if row["role"] == "door_bin"]
     assert len(bins) == 2
     assert all(row["prim_path"].startswith("/Asset/upper_door/") for row in bins)
+
+
+def test_door_bins_embedded_in_the_door_slab_fail_closed(tmp_path: Path) -> None:
+    """A bin inside the door's own thickness is not a bin.
+
+    On 840796 the bins were authored at y 0.235-0.300 while the door slab spans
+    0.177-0.349: 65 mm of overlap, fully embedded. Nothing caught it, and it
+    surfaced only as flat polygons punching through the door in a render.
+    """
+
+    with pytest.raises(ArticulatedInteriorAuthoringError) as excinfo:
+        _author(
+            tmp_path,
+            door_bin_count=2,
+            door_link_path="/Asset/upper_door",
+            door_bin_y_interval_m=[0.31, 0.34],  # inside the panel at 0.30-0.35
+        )
+
+    assert any(
+        "door_bin_intersects_door" in error for error in excinfo.value.errors
+    )
+
+
+def test_door_bins_inboard_of_the_door_inner_face_are_accepted(
+    tmp_path: Path,
+) -> None:
+    receipt = _author(
+        tmp_path,
+        door_bin_count=2,
+        door_link_path="/Asset/upper_door",
+        door_bin_y_interval_m=[0.22, 0.29],  # clear of the panel's inner face
+    )
+
+    bins = [row for row in receipt["parts"] if row["role"] == "door_bin"]
+    assert len(bins) == 2
+    assert receipt["door_bins"]["door_inner_face_m"] == pytest.approx(0.30)
+    assert all(row["world_aabb_max_m"][1] <= 0.30 for row in bins)

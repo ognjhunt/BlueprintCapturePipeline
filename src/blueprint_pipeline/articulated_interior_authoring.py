@@ -160,6 +160,7 @@ def author_articulated_interior(
             removed.append(str(path))
 
     parts: list[dict[str, Any]] = []
+    door_inner_face: float | None = None
 
     def box(prim_path: str, role: str, xs, ys, zs) -> None:
         mesh = UsdGeom.Mesh.Define(stage, prim_path)
@@ -235,6 +236,28 @@ def author_articulated_interior(
         bin_y = _interval(
             door_bin_y_interval_m, "articulated_interior_door_bin_interval_invalid"
         )
+        # A bin inside the door's own thickness is not a bin. Measure the
+        # door's existing geometry and require the bins to sit inboard of its
+        # inner face, reaching into the cavity the way a real door pocket does.
+        cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        door_low, door_high = float("inf"), float("-inf")
+        for existing in Usd.PrimRange(stage.GetPrimAtPath(str(door_link_path))):
+            if not existing.IsA(UsdGeom.Mesh):
+                continue
+            bounds = cache.ComputeWorldBound(existing).ComputeAlignedRange()
+            door_low = min(door_low, float(bounds.GetMin()[1]))
+            door_high = max(door_high, float(bounds.GetMax()[1]))
+        door_inner_face = door_low if door_low <= door_high else None
+        if door_low <= door_high:
+            overlap = min(door_high, bin_y[1]) - max(door_low, bin_y[0])
+            if overlap > 1e-9:
+                output.unlink(missing_ok=True)
+                raise ArticulatedInteriorAuthoringError(
+                    [
+                        "articulated_interior_door_bin_intersects_door:"
+                        f"overlap_m={overlap:.4f}"
+                    ]
+                )
         bin_scope = f"{door_link_path}/generated_door_bins"
         UsdGeom.Xform.Define(stage, bin_scope)
         span = (z[1] - z[0]) / (door_bin_count + 1)
@@ -284,7 +307,10 @@ def author_articulated_interior(
             "thickness_m": shelf_t,
             "inset_m": float(shelf_inset_m),
         },
-        "door_bins": {"count": int(door_bin_count)},
+        "door_bins": {
+            "count": int(door_bin_count),
+            "door_inner_face_m": door_inner_face,
+        },
         "parts": parts,
         "free_volume_m3": round(float(free_volume), 6),
         "preserved": {
