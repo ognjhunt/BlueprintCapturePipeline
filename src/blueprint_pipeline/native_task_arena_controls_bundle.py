@@ -8,12 +8,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE
 from .decision_evidence_contracts import canonical_digest
 from .native_articulated_control_plan import (
     materialize_native_articulated_control_plan,
 )
-from .native_task_arena_bundle import build_native_task_arena_bundle
+from .native_task_arena_bundle import (
+    DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
+    build_native_task_arena_bundle,
+)
 
 
 PROBE_KIND = "native-task-arena-controls"
@@ -100,8 +102,7 @@ def build_native_task_arena_controls_bundle(
             packet_dir=packet,
             runtime_source_packet_receipt=runtime_source_packet_receipt,
             worker_source=(
-                Path(__file__).resolve().parent
-                / "native_task_arena_controls_worker.py"
+                Path(__file__).resolve().parent / "native_task_arena_controls_worker.py"
             ),
             runtime_module_sources=controls_runtime_sources(),
             implementation_commit=implementation_commit,
@@ -126,9 +127,7 @@ def load_verified_native_task_arena_controls_bundle(
     """Reverify the immutable controls bundle without rebuilding its bytes."""
 
     path = Path(receipt_path).expanduser().resolve()
-    receipt = _read_mapping(
-        path, error="native_task_arena_controls_bundle_receipt_invalid"
-    )
+    receipt = _read_mapping(path, error="native_task_arena_controls_bundle_receipt_invalid")
     bundle_path = Path(str(receipt.get("bundle_path") or "")).expanduser().resolve()
     digest = hashlib.sha256()
     try:
@@ -171,14 +170,15 @@ def load_verified_native_task_arena_controls_bundle(
     ):
         errors.append("native_task_arena_controls_bundle_packet_mismatch")
     source_packet = receipt.get("runtime_source_packet") or {}
+    if (source_packet.get("paired_stack") or {}).get("simulator_runtime_image") != receipt.get(
+        "container_image"
+    ):
+        errors.append("native_task_arena_controls_bundle_image_pair_mismatch")
     if expected_runtime_source_packet_digest and (
-        source_packet.get("receipt_digest")
-        != expected_runtime_source_packet_digest
+        source_packet.get("receipt_digest") != expected_runtime_source_packet_digest
     ):
         errors.append("native_task_arena_controls_bundle_sources_mismatch")
-    if receipt.get("input_digest") != canonical_digest(
-        manifest, digest_field="input_digest"
-    ):
+    if receipt.get("input_digest") != canonical_digest(manifest, digest_field="input_digest"):
         errors.append("native_task_arena_controls_bundle_input_digest_invalid")
     if (
         receipt.get("bundle_size_bytes") != bundle_path.stat().st_size

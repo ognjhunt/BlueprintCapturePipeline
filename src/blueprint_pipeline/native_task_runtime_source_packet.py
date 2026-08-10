@@ -41,18 +41,22 @@ ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES = (
     "ca84d35e009e93b03924073e468449c7977a9499",
 )
 RUNTIME_EXPERIENCE_RELATIVE_PATH = (
-    "runtime_sources/isaaclab/apps/"
-    "isaaclab.python.headless.rendering.kit"
+    "runtime_sources/isaaclab/apps/isaaclab.python.headless.rendering.kit"
 )
-RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH = (
-    "runtime_sources/isaaclab/source/isaaclab/setup.py"
-)
+RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH = "runtime_sources/isaaclab/source/isaaclab/setup.py"
 ARENA_REPOSITORY = "https://github.com/isaac-sim/IsaacLab-Arena.git"
 ARENA_COMMIT = "8b82dca224f2b5af08f339f987613c59ce9cdbaa"
 ARENA_TREE = "a52514015a8573ac03b6448688bfa61f9cea18a9"
 ARENA_ISAACLAB_SUBMODULE_PATH = "submodules/IsaacLab"
 ARENA_DOCKERFILE_PATH = "docker/Dockerfile.isaaclab_arena"
 ISAAC_SIM_BASE_IMAGE = "nvcr.io/nvidia/isaac-sim:6.0.1"
+# This digest is the independently startup-qualified linux/amd64 image for the
+# Arena Dockerfile's exact 6.0.1 base tag.  Keep it in this pairing contract so
+# the self-contained provider module does not acquire a hidden package import.
+ISAAC_SIM_RUNTIME_IMAGE = (
+    "nvcr.io/nvidia/isaac-sim:6.0.1@"
+    "sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9"
+)
 ISAACLAB_PACKAGE_NAMES = (
     "isaaclab",
     "isaaclab_assets",
@@ -125,10 +129,7 @@ RUNTIME_DEPENDENCY_WHEELS = (
         "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
     },
     {
-        "filename": (
-            "pyzmq-27.1.0-cp312-abi3-manylinux_2_26_x86_64."
-            "manylinux_2_28_x86_64.whl"
-        ),
+        "filename": ("pyzmq-27.1.0-cp312-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl"),
         "package": "pyzmq",
         "version": "27.1.0",
         "license_spdx": "BSD-3-Clause",
@@ -162,10 +163,7 @@ RUNTIME_DEPENDENCY_WHEELS = (
         "license_spdx": "MIT",
     },
     {
-        "filename": (
-            "orjson-3.11.9-cp312-cp312-manylinux_2_17_x86_64."
-            "manylinux2014_x86_64.whl"
-        ),
+        "filename": ("orjson-3.11.9-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"),
         "package": "orjson",
         "version": "3.11.9",
         "license_spdx": "Apache-2.0 OR MIT",
@@ -341,9 +339,7 @@ def _utc_now_iso() -> str:
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -384,9 +380,7 @@ def _tracked_paths(repo: Path, commit: str, prefixes: Sequence[str]) -> list[str
     return paths
 
 
-def _tracked_blobs(
-    repo: Path, commit: str, prefixes: Sequence[str]
-) -> dict[str, bytes]:
+def _tracked_blobs(repo: Path, commit: str, prefixes: Sequence[str]) -> dict[str, bytes]:
     """Read the selected commit in one git process, never from the worktree."""
 
     try:
@@ -487,22 +481,14 @@ def _repository_rows(
     )
 
 
-def _arena_pairing_contract(
-    *, repo: Path, commit: str, isaaclab_commit: str
-) -> dict[str, Any]:
+def _arena_pairing_contract(*, repo: Path, commit: str, isaaclab_commit: str) -> dict[str, Any]:
     """Prove Arena, Isaac Lab, and the simulator image are one upstream pair."""
 
     try:
-        submodule_row = _git(
-            repo, "ls-tree", commit, "--", ARENA_ISAACLAB_SUBMODULE_PATH
-        )
+        submodule_row = _git(repo, "ls-tree", commit, "--", ARENA_ISAACLAB_SUBMODULE_PATH)
         assert isinstance(submodule_row, str)
-        mode, object_type, observed_commit, observed_path = submodule_row.split(
-            None, 3
-        )
-        dockerfile_bytes = _git(
-            repo, "show", f"{commit}:{ARENA_DOCKERFILE_PATH}", binary=True
-        )
+        mode, object_type, observed_commit, observed_path = submodule_row.split(None, 3)
+        dockerfile_bytes = _git(repo, "show", f"{commit}:{ARENA_DOCKERFILE_PATH}", binary=True)
         gitmodules_bytes = _git(repo, "show", f"{commit}:.gitmodules", binary=True)
         assert isinstance(dockerfile_bytes, bytes)
         assert isinstance(gitmodules_bytes, bytes)
@@ -537,6 +523,7 @@ def _arena_pairing_contract(
         "isaaclab_revision": isaaclab_commit,
         "isaaclab_submodule_path": ARENA_ISAACLAB_SUBMODULE_PATH,
         "simulator_base_image": ISAAC_SIM_BASE_IMAGE,
+        "simulator_runtime_image": ISAAC_SIM_RUNTIME_IMAGE,
         "simulator_dockerfile_path": ARENA_DOCKERFILE_PATH,
         "dockerfile_sha256": _sha256_bytes(dockerfile_bytes),
         "gitmodules_sha256": _sha256_bytes(gitmodules_bytes),
@@ -559,7 +546,9 @@ def _runtime_dependency_rows(
         data = path.read_bytes()
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                wheel_members = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
+                wheel_members = [
+                    name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")
+                ]
                 if len(wheel_members) != 1:
                     raise NativeTaskRuntimeSourcePacketError(
                         ["native_task_runtime_dependency_wheel_metadata_invalid"]
@@ -603,9 +592,7 @@ def materialize_native_task_runtime_source_packet(
     isaaclab_commit: str = ISAACLAB_COMMIT,
     isaaclab_tree: str = ISAACLAB_TREE,
     isaaclab_runtime_compatibility_repo: str | Path | None = None,
-    isaaclab_runtime_compatibility_commit: str = (
-        ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT
-    ),
+    isaaclab_runtime_compatibility_commit: str = (ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT),
     isaaclab_runtime_compatibility_tree: str = ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
     arena_commit: str = ARENA_COMMIT,
     arena_tree: str = ARENA_TREE,
@@ -618,9 +605,7 @@ def materialize_native_task_runtime_source_packet(
     # root at import time.  They are runtime inputs, not optional developer
     # metadata, so keep the complete released ``apps`` directory in the exact
     # source closure alongside the Python packages.
-    isaaclab_prefixes = ["LICENSE", "apps"] + [
-        f"source/{name}" for name in ISAACLAB_PACKAGE_NAMES
-    ]
+    isaaclab_prefixes = ["LICENSE", "apps"] + [f"source/{name}" for name in ISAACLAB_PACKAGE_NAMES]
     isaaclab, isaaclab_blobs = _repository_rows(
         repo=Path(isaaclab_repo).expanduser().resolve(),
         repository=ISAACLAB_REPOSITORY,
@@ -653,9 +638,9 @@ def materialize_native_task_runtime_source_packet(
         "relative_path": RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH,
         "sha256": _sha256_bytes(dependency_manifest),
     }
-    compatibility_repo = Path(
-        isaaclab_runtime_compatibility_repo or isaaclab_repo
-    ).expanduser().resolve()
+    compatibility_repo = (
+        Path(isaaclab_runtime_compatibility_repo or isaaclab_repo).expanduser().resolve()
+    )
     if (
         compatibility_repo != Path(isaaclab_repo).expanduser().resolve()
         or isaaclab_runtime_compatibility_commit != isaaclab_commit
@@ -701,9 +686,7 @@ def materialize_native_task_runtime_source_packet(
             "repository": ISAACLAB_REPOSITORY,
             "source_revision": isaaclab_commit,
             "source_tree": isaaclab_tree,
-            "upstream_fix_revisions": list(
-                ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES
-            ),
+            "upstream_fix_revisions": list(ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES),
             "sha256": next(
                 row["sha256"]
                 for row in isaaclab["files"]
@@ -713,22 +696,15 @@ def materialize_native_task_runtime_source_packet(
         "install_roots": list(INSTALL_ROOTS),
         "runtime_dependency_wheels": dependency_rows,
         "runtime_dependency_basis": dependency_basis,
-        "source_file_count": (
-            isaaclab["file_count"]
-            + arena["file_count"]
-        ),
+        "source_file_count": (isaaclab["file_count"] + arena["file_count"]),
         "released_source_only": True,
         "scene_bytes_included": False,
         "policy_bytes_included": False,
         "redistribution_permitted": True,
         "manifest_digest": "",
     }
-    manifest["manifest_digest"] = canonical_digest(
-        manifest, digest_field="manifest_digest"
-    )
-    manifest_bytes = (
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
     packet_path = destination / "native_task_runtime_sources.zip"
     with zipfile.ZipFile(
         packet_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
@@ -772,9 +748,7 @@ def materialize_native_task_runtime_source_packet(
         "redistribution_permitted": True,
         "receipt_digest": "",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     _write_json(destination / "native_task_runtime_source_packet.v1.json", receipt)
     return receipt
 
@@ -796,21 +770,22 @@ def verify_native_task_runtime_source_packet(
     errors: list[str] = []
     if not isinstance(receipt, Mapping) or receipt.get("schema_version") != SCHEMA_VERSION:
         errors.append("native_task_runtime_source_receipt_invalid")
-    elif receipt.get("receipt_digest") != canonical_digest(
-        receipt, digest_field="receipt_digest"
-    ):
+    elif receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest"):
         errors.append("native_task_runtime_source_receipt_digest_invalid")
-    packet_path = Path(
-        packet_path_override
-        if packet_path_override is not None
-        else str(receipt.get("packet_path") or "")
-    ).expanduser().resolve()
+    packet_path = (
+        Path(
+            packet_path_override
+            if packet_path_override is not None
+            else str(receipt.get("packet_path") or "")
+        )
+        .expanduser()
+        .resolve()
+    )
     if not packet_path.is_file():
         errors.append("native_task_runtime_source_packet_missing")
-    elif (
-        receipt.get("packet_size_bytes") != packet_path.stat().st_size
-        or receipt.get("packet_sha256") != _sha256_file(packet_path)
-    ):
+    elif receipt.get("packet_size_bytes") != packet_path.stat().st_size or receipt.get(
+        "packet_sha256"
+    ) != _sha256_file(packet_path):
         errors.append("native_task_runtime_source_packet_identity_mismatch")
     if errors:
         raise NativeTaskRuntimeSourcePacketError(errors)
@@ -827,9 +802,8 @@ def verify_native_task_runtime_source_packet(
             if (
                 not isinstance(manifest, Mapping)
                 or manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION
-                or manifest.get("manifest_digest") != canonical_digest(
-                    manifest, digest_field="manifest_digest"
-                )
+                or manifest.get("manifest_digest")
+                != canonical_digest(manifest, digest_field="manifest_digest")
                 or manifest.get("manifest_digest") != receipt.get("manifest_digest")
             ):
                 errors.append("native_task_runtime_source_manifest_invalid")
@@ -843,7 +817,9 @@ def verify_native_task_runtime_source_packet(
                     except KeyError:
                         errors.append(f"native_task_runtime_source_member_missing:{name}")
                         continue
-                    if row.get("size_bytes") != len(data) or row.get("sha256") != _sha256_bytes(data):
+                    if row.get("size_bytes") != len(data) or row.get("sha256") != _sha256_bytes(
+                        data
+                    ):
                         errors.append(f"native_task_runtime_source_member_identity_mismatch:{name}")
             for row in manifest.get("runtime_dependency_wheels") or []:
                 name = str(row.get("archive_path") or "")
@@ -859,15 +835,9 @@ def verify_native_task_runtime_source_packet(
                 "runtime_dependency_wheels"
             ):
                 errors.append("native_task_runtime_dependency_receipt_manifest_mismatch")
-            if manifest.get("runtime_dependency_basis") != receipt.get(
-                "runtime_dependency_basis"
-            ):
-                errors.append(
-                    "native_task_runtime_dependency_basis_receipt_manifest_mismatch"
-                )
-            if manifest.get("runtime_experience") != receipt.get(
-                "runtime_experience"
-            ):
+            if manifest.get("runtime_dependency_basis") != receipt.get("runtime_dependency_basis"):
+                errors.append("native_task_runtime_dependency_basis_receipt_manifest_mismatch")
+            if manifest.get("runtime_experience") != receipt.get("runtime_experience"):
                 errors.append("native_task_runtime_experience_receipt_manifest_mismatch")
             if manifest.get("paired_stack") != receipt.get("paired_stack"):
                 errors.append("native_task_runtime_paired_stack_receipt_manifest_mismatch")
@@ -892,11 +862,10 @@ def verify_native_task_runtime_source_packet(
                 or paired.get("arena_revision") != arena.get("commit")
                 or paired.get("isaaclab_repository") != ISAACLAB_REPOSITORY
                 or paired.get("isaaclab_revision") != lab.get("commit")
-                or paired.get("isaaclab_submodule_path")
-                != ARENA_ISAACLAB_SUBMODULE_PATH
+                or paired.get("isaaclab_submodule_path") != ARENA_ISAACLAB_SUBMODULE_PATH
                 or paired.get("simulator_base_image") != ISAAC_SIM_BASE_IMAGE
-                or paired.get("simulator_dockerfile_path")
-                != ARENA_DOCKERFILE_PATH
+                or paired.get("simulator_runtime_image") != ISAAC_SIM_RUNTIME_IMAGE
+                or paired.get("simulator_dockerfile_path") != ARENA_DOCKERFILE_PATH
                 or paired.get("dockerfile_sha256")
                 != arena_files.get(ARENA_DOCKERFILE_PATH, {}).get("sha256")
                 or paired.get("gitmodules_sha256")

@@ -14,9 +14,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_bundle import build_native_task_arena_bundle
+from .native_task_arena_bundle import (
+    DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
+    build_native_task_arena_bundle,
+)
 
 
 PROBE_KIND = "native-task-arena-construction"
@@ -125,13 +127,15 @@ def load_verified_native_task_arena_construction_bundle(
     source_packet = receipt.get("runtime_source_packet") or {}
     if not source_packet or source_packet.get("redistribution_permitted") is not True:
         errors.append("native_task_arena_bundle_runtime_source_packet_missing")
+    if (source_packet.get("paired_stack") or {}).get("simulator_runtime_image") != receipt.get(
+        "container_image"
+    ):
+        errors.append("native_task_arena_bundle_container_image_runtime_pair_mismatch")
     if expected_runtime_source_packet_digest and (
         source_packet.get("receipt_digest") != expected_runtime_source_packet_digest
     ):
         errors.append("native_task_arena_bundle_runtime_source_packet_mismatch")
-    if receipt.get("input_digest") != canonical_digest(
-        manifest, digest_field="input_digest"
-    ):
+    if receipt.get("input_digest") != canonical_digest(manifest, digest_field="input_digest"):
         errors.append("native_task_arena_bundle_input_digest_invalid")
     if (
         receipt.get("bundle_size_bytes") != bundle_path.stat().st_size

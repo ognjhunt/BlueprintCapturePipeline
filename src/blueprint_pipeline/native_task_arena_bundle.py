@@ -23,17 +23,18 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .adp_isaac_lab_arena_vast import DEFAULT_IMAGE
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import RECEIPT_SCHEMA_VERSION
 from .native_task_runtime_source_packet import (
+    ISAAC_SIM_RUNTIME_IMAGE,
     verify_native_task_runtime_source_packet,
 )
 
 
 SCHEMA_VERSION = "native_task_arena_provider_bundle.v1"
 DEFAULT_EXPECTED_OUTPUT_FILENAME = "native_task_arena_construction_result.v1.json"
+DEFAULT_IMAGE = ISAAC_SIM_RUNTIME_IMAGE
 
 
 class NativeTaskArenaBundleError(ValueError):
@@ -79,15 +80,11 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
     if not root.is_dir():
         raise NativeTaskArenaBundleError(["native_task_arena_bundle_packet_invalid"])
     receipt_path = root / "native_task_arena_packet_receipt.v1.json"
-    receipt = _read_mapping(
-        receipt_path, error="native_task_arena_bundle_packet_receipt_invalid"
-    )
+    receipt = _read_mapping(receipt_path, error="native_task_arena_bundle_packet_receipt_invalid")
     errors: list[str] = []
     if receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
         errors.append("native_task_arena_bundle_packet_receipt_invalid")
-    if receipt.get("receipt_digest") != canonical_digest(
-        receipt, digest_field="receipt_digest"
-    ):
+    if receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest"):
         errors.append("native_task_arena_bundle_packet_receipt_digest_invalid")
 
     rows: list[dict[str, Any]] = []
@@ -96,9 +93,7 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
             continue
         relative = path.relative_to(root)
         if _has_symlink_component(path, root=root) or not path.is_file():
-            errors.append(
-                f"native_task_arena_bundle_packet_file_invalid:{relative.as_posix()}"
-            )
+            errors.append(f"native_task_arena_bundle_packet_file_invalid:{relative.as_posix()}")
             continue
         rows.append(
             {
@@ -135,10 +130,8 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
         if isinstance(row, Mapping)
     }
     if (
-        normalization.get("schema_version")
-        != "native_task_asset_import_normalizations.v1"
-        or normalization.get("environment_physics_scene_owner")
-        != "arena_environment"
+        normalization.get("schema_version") != "native_task_asset_import_normalizations.v1"
+        or normalization.get("environment_physics_scene_owner") != "arena_environment"
         or normalization.get("all_import_assets_scene_free") is not True
         or not isinstance(normalization_assets, list)
         or normalized_roles != bound_roles
@@ -160,9 +153,7 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
             or observed["sha256"] != artifact.get("sha256")
             or observed["size_bytes"] != artifact.get("size_bytes")
         ):
-            errors.append(
-                f"native_task_arena_bundle_packet_artifact_identity_mismatch:{relative}"
-            )
+            errors.append(f"native_task_arena_bundle_packet_artifact_identity_mismatch:{relative}")
     for binding in receipt.get("source_bindings") or []:
         if not isinstance(binding, Mapping):
             errors.append("native_task_arena_bundle_packet_source_binding_invalid")
@@ -185,12 +176,10 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
     return root, receipt, rows
 
 
-def _entrypoint(
-    *, expected_output_filename: str, runtime_source_packet_required: bool
-) -> str:
+def _entrypoint(*, expected_output_filename: str, runtime_source_packet_required: bool) -> str:
     quoted = json.dumps(str(expected_output_filename))
     source_required = "true" if runtime_source_packet_required else "false"
-    return f'''#!/usr/bin/env bash
+    return f"""#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${{BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}}"
@@ -269,7 +258,7 @@ name = {quoted}
 PY
 fi
 exit $runner_rc
-'''
+"""
 
 
 def build_native_task_arena_bundle(
@@ -292,25 +281,18 @@ def build_native_task_arena_bundle(
     if len(implementation_commit) != 40 or any(
         character not in "0123456789abcdef" for character in implementation_commit
     ):
-        raise NativeTaskArenaBundleError(
-            ["native_task_arena_bundle_implementation_commit_invalid"]
-        )
+        raise NativeTaskArenaBundleError(["native_task_arena_bundle_implementation_commit_invalid"])
     if execution_mode not in {"construction_canary", "controls", "policy"}:
-        raise NativeTaskArenaBundleError(
-            ["native_task_arena_bundle_execution_mode_invalid"]
-        )
+        raise NativeTaskArenaBundleError(["native_task_arena_bundle_execution_mode_invalid"])
     if (execution_mode == "policy") is not bool(str(policy_candidate_id or "").strip()):
-        raise NativeTaskArenaBundleError(
-            ["native_task_arena_bundle_policy_binding_invalid"]
-        )
+        raise NativeTaskArenaBundleError(["native_task_arena_bundle_policy_binding_invalid"])
     pure_output = PurePosixPath(str(expected_output_filename))
-    if (
-        pure_output.name != str(expected_output_filename)
-        or str(expected_output_filename) in {"", ".", ".."}
-    ):
-        raise NativeTaskArenaBundleError(
-            ["native_task_arena_bundle_output_filename_invalid"]
-        )
+    if pure_output.name != str(expected_output_filename) or str(expected_output_filename) in {
+        "",
+        ".",
+        "..",
+    }:
+        raise NativeTaskArenaBundleError(["native_task_arena_bundle_output_filename_invalid"])
     image = str(container_image).strip()
     if "@sha256:" not in image or len(image.rsplit("@sha256:", 1)[-1]) != 64:
         raise NativeTaskArenaBundleError(
@@ -323,6 +305,11 @@ def build_native_task_arena_bundle(
         runtime_source_receipt = verify_native_task_runtime_source_packet(
             runtime_source_packet_receipt
         )
+        paired_stack = runtime_source_receipt.get("paired_stack") or {}
+        if paired_stack.get("simulator_runtime_image") != image:
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_bundle_container_image_runtime_pair_mismatch"]
+            )
     worker = Path(worker_source).expanduser().resolve()
     if not worker.is_file():
         raise NativeTaskArenaBundleError(["native_task_arena_bundle_worker_missing"])
@@ -417,9 +404,7 @@ def build_native_task_arena_bundle(
         ),
         encoding="utf-8",
     )
-    entrypoint.chmod(
-        entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-    )
+    entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -444,12 +429,9 @@ def build_native_task_arena_bundle(
                 "packet_sha256": runtime_source_receipt["packet_sha256"],
                 "packet_size_bytes": runtime_source_receipt["packet_size_bytes"],
                 "install_roots": runtime_source_receipt["install_roots"],
-                "runtime_dependency_wheels": runtime_source_receipt[
-                    "runtime_dependency_wheels"
-                ],
-                "redistribution_permitted": runtime_source_receipt[
-                    "redistribution_permitted"
-                ],
+                "runtime_dependency_wheels": runtime_source_receipt["runtime_dependency_wheels"],
+                "paired_stack": runtime_source_receipt["paired_stack"],
+                "redistribution_permitted": runtime_source_receipt["redistribution_permitted"],
             }
             if runtime_source_receipt is not None
             else None
@@ -467,9 +449,7 @@ def build_native_task_arena_bundle(
         "blockers": [],
         "input_digest": "",
     }
-    manifest["input_digest"] = canonical_digest(
-        manifest, digest_field="input_digest"
-    )
+    manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
     write_json(runtime / "adp_arena_provider_manifest.json", manifest)
     bundle_path = job / "native_task_arena_provider_bundle.zip"
     with zipfile.ZipFile(bundle_path, "w", allowZip64=True) as archive:
@@ -493,6 +473,7 @@ def build_native_task_arena_bundle(
 
 
 __all__ = [
+    "DEFAULT_IMAGE",
     "DEFAULT_EXPECTED_OUTPUT_FILENAME",
     "NativeTaskArenaBundleError",
     "SCHEMA_VERSION",
