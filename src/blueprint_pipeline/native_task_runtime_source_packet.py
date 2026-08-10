@@ -30,6 +30,27 @@ MANIFEST_SCHEMA_VERSION = "native_task_runtime_source_manifest.v1"
 ISAACLAB_REPOSITORY = "https://github.com/isaac-sim/IsaacLab.git"
 ISAACLAB_COMMIT = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ISAACLAB_TREE = "454115265327a80acabd07cbd36e10071fc0c065"
+# Arena 0.2.1 pins the April Isaac Lab source tree above, but that tree's Kit
+# experiences still load Isaac Sim's bundled Warp extension.  Isaac Lab fixed
+# the resulting mixed-Warp tensor devices in the released upstream history by
+# removing those extensions and restoring the direct PhysX registration path.
+# Keep the Python/API source at Arena's exact submodule pin while binding the
+# later official experience files as a separately identified compatibility
+# component.  This is not a mutable local patch: every byte is read from the
+# exact upstream git object below and is independently digest-bound.
+ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT = (
+    "a4abce12625f2f1824bf847e9183c18d7eb8b793"
+)
+ISAACLAB_RUNTIME_COMPATIBILITY_TREE = "64e868800aacf68d497843cfefa2f37ae40433c8"
+ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES = (
+    "03904ab49152d1bae929513529913b9be2e06808",
+    "c4169b2f1c41117b67154c569668b8834519a5ee",
+    "a4abce12625f2f1824bf847e9183c18d7eb8b793",
+)
+RUNTIME_EXPERIENCE_RELATIVE_PATH = (
+    "runtime_sources/isaaclab_runtime_compatibility/apps/"
+    "isaaclab.python.headless.rendering.kit"
+)
 ARENA_REPOSITORY = "https://github.com/isaac-sim/IsaacLab-Arena.git"
 ARENA_COMMIT = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
 ARENA_TREE = "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
@@ -392,17 +413,18 @@ def _repository_rows(
     license_path: str,
     archive_namespace: str,
     prefixes: Sequence[str],
+    require_head: bool = True,
 ) -> tuple[dict[str, Any], list[tuple[str, bytes]]]:
     if not repo.is_dir():
         raise NativeTaskRuntimeSourcePacketError(
             [f"native_task_runtime_source_repository_missing:{archive_namespace}"]
         )
     observed_commit = _git(repo, "rev-parse", "HEAD")
-    observed_tree = _git(repo, "rev-parse", "HEAD^{tree}")
-    if observed_commit != commit:
+    if require_head and observed_commit != commit:
         raise NativeTaskRuntimeSourcePacketError(
             [f"native_task_runtime_source_commit_mismatch:{archive_namespace}"]
         )
+    observed_tree = _git(repo, "rev-parse", f"{commit}^{{tree}}")
     if observed_tree != expected_tree:
         raise NativeTaskRuntimeSourcePacketError(
             [f"native_task_runtime_source_tree_mismatch:{archive_namespace}"]
@@ -509,6 +531,11 @@ def materialize_native_task_runtime_source_packet(
     generated_at: str | None = None,
     isaaclab_commit: str = ISAACLAB_COMMIT,
     isaaclab_tree: str = ISAACLAB_TREE,
+    isaaclab_runtime_compatibility_repo: str | Path | None = None,
+    isaaclab_runtime_compatibility_commit: str = (
+        ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT
+    ),
+    isaaclab_runtime_compatibility_tree: str = ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
     arena_commit: str = ARENA_COMMIT,
     arena_tree: str = ARENA_TREE,
 ) -> dict[str, Any]:
@@ -533,6 +560,19 @@ def materialize_native_task_runtime_source_packet(
         archive_namespace="isaaclab",
         prefixes=isaaclab_prefixes,
     )
+    compatibility, compatibility_blobs = _repository_rows(
+        repo=Path(
+            isaaclab_runtime_compatibility_repo or isaaclab_repo
+        ).expanduser().resolve(),
+        repository=ISAACLAB_REPOSITORY,
+        commit=isaaclab_runtime_compatibility_commit,
+        expected_tree=isaaclab_runtime_compatibility_tree,
+        license_id="BSD-3-Clause",
+        license_path="LICENSE",
+        archive_namespace="isaaclab_runtime_compatibility",
+        prefixes=("LICENSE", "apps"),
+        require_head=False,
+    )
     arena, arena_blobs = _repository_rows(
         repo=Path(arena_repo).expanduser().resolve(),
         repository=ARENA_REPOSITORY,
@@ -550,10 +590,28 @@ def materialize_native_task_runtime_source_packet(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at or _utc_now_iso(),
         "status": "ready",
-        "repositories": [isaaclab, arena],
+        "repositories": [isaaclab, compatibility, arena],
+        "runtime_experience": {
+            "relative_path": RUNTIME_EXPERIENCE_RELATIVE_PATH,
+            "repository": ISAACLAB_REPOSITORY,
+            "source_revision": isaaclab_runtime_compatibility_commit,
+            "source_tree": isaaclab_runtime_compatibility_tree,
+            "upstream_fix_revisions": list(
+                ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES
+            ),
+            "sha256": next(
+                row["sha256"]
+                for row in compatibility["files"]
+                if row["archive_path"] == RUNTIME_EXPERIENCE_RELATIVE_PATH
+            ),
+        },
         "install_roots": list(INSTALL_ROOTS),
         "runtime_dependency_wheels": dependency_rows,
-        "source_file_count": isaaclab["file_count"] + arena["file_count"],
+        "source_file_count": (
+            isaaclab["file_count"]
+            + compatibility["file_count"]
+            + arena["file_count"]
+        ),
         "released_source_only": True,
         "scene_bytes_included": False,
         "policy_bytes_included": False,
@@ -573,6 +631,7 @@ def materialize_native_task_runtime_source_packet(
         entries = [
             ("native_task_runtime_source_manifest.v1.json", manifest_bytes),
             *isaaclab_blobs,
+            *compatibility_blobs,
             *arena_blobs,
             *dependency_blobs,
         ]
@@ -593,8 +652,9 @@ def materialize_native_task_runtime_source_packet(
                 "tree": row["tree"],
                 "license": row["license"],
             }
-            for row in (isaaclab, arena)
+            for row in (isaaclab, compatibility, arena)
         ],
+        "runtime_experience": manifest["runtime_experience"],
         "install_roots": list(INSTALL_ROOTS),
         "runtime_dependency_wheels": dependency_rows,
         "source_file_count": manifest["source_file_count"],
@@ -693,6 +753,10 @@ def verify_native_task_runtime_source_packet(
                 "runtime_dependency_wheels"
             ):
                 errors.append("native_task_runtime_dependency_receipt_manifest_mismatch")
+            if manifest.get("runtime_experience") != receipt.get(
+                "runtime_experience"
+            ):
+                errors.append("native_task_runtime_experience_receipt_manifest_mismatch")
             if set(names) != expected_names:
                 errors.append("native_task_runtime_source_archive_members_invalid")
     except (OSError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:

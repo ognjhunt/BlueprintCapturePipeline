@@ -142,7 +142,19 @@ def _runtime_source_packet(root: Path) -> Path:
         else:
             files = {
                 "LICENSE": "BSD fixture\n",
-                "apps/isaaclab.python.kit": "[settings]\nfixture = true\n",
+                "apps/isaaclab.python.kit": (
+                    "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                    "[settings.app.extensions]\n"
+                    "excluded = [\"omni.warp.core\"]\n"
+                ),
+                "apps/isaaclab.python.headless.kit": (
+                    "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                    "[settings]\n"
+                    "app.extensions.excluded = [\"omni.warp.core\"]\n"
+                ),
+                "apps/isaaclab.python.headless.rendering.kit": (
+                    "[dependencies]\n\"isaaclab.python.headless\" = {}\n"
+                ),
             }
             for name in ISAACLAB_PACKAGE_NAMES:
                 files[f"source/{name}/setup.py"] = (
@@ -205,6 +217,8 @@ def _runtime_source_packet(root: Path) -> Path:
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,
+        isaaclab_runtime_compatibility_commit=isaaclab_commit,
+        isaaclab_runtime_compatibility_tree=isaaclab_tree,
         arena_commit=arena_commit,
         arena_tree=arena_tree,
     )

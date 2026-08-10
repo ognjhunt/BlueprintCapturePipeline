@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -181,11 +182,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         _announce("input_verification", "completed")
 
         _announce("simulation_app")
-        from isaacsim.simulation_app import SimulationApp
-
-        simulation_app = SimulationApp(
-            {"headless": True, "renderer": "RayTracedLighting"}
+        from blueprint_pipeline.native_task_isaaclab_launch import (
+            launch_native_task_isaaclab,
         )
+
+        simulation_app, launch_receipt = launch_native_task_isaaclab(
+            output_root / "native_task_runtime_source_provisioning.v1.json"
+        )
+        result["isaaclab_launch"] = launch_receipt
         _announce("simulation_app", "completed")
 
         from blueprint_pipeline.native_task_arena_construction_worker import (
@@ -215,6 +219,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         from blueprint_pipeline.native_task_arena_readback import (
             NativeArticulatedTaskArenaReadback,
         )
+        from blueprint_pipeline.native_task_arena_device_readback import (
+            read_native_task_arena_device_binding,
+        )
         from blueprint_pipeline.native_task_arena_runtime import (
             build_native_task_arena_environment,
         )
@@ -226,6 +233,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         built = build_native_task_arena_environment(
             scene_plan, device="cuda:0", bundle_root=packet
         )
+        device_readback = read_native_task_arena_device_binding(
+            built, expected_device="cuda:0"
+        )
+        result["device_readback"] = device_readback
+        if not device_readback["passed"]:
+            result["blockers"].extend(device_readback["blockers"])
+            raise RuntimeError("native_task_arena_device_binding_failed")
         env = built.env
         seed = int(scene_plan["scenario"]["seed"])
         env.reset(seed=seed)
@@ -278,6 +292,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             "completed" if result["controls_qualified"] else "blocked",
         )
     except BaseException as exc:  # noqa: BLE001 - retain every paid failure
+        result["exception"] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "phase": result["phase_reached"],
+            "traceback": traceback.format_exc(),
+        }
         result["blockers"].append(
             f"native_task_controls_failed_at_{result['phase_reached']}:"
             f"{type(exc).__name__}:{exc}"

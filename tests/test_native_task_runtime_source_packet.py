@@ -48,7 +48,18 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
     else:
         files = {
             "LICENSE": "BSD-3-Clause fixture\n",
-            "apps/isaaclab.python.kit": "[settings]\nfixture = true\n",
+            "apps/isaaclab.python.kit": (
+                "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                "[settings.app.extensions]\n"
+                "excluded = [\"omni.warp.core\"]\n"
+            ),
+            "apps/isaaclab.python.headless.kit": (
+                "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                "[settings]\napp.extensions.excluded = [\"omni.warp.core\"]\n"
+            ),
+            "apps/isaaclab.python.headless.rendering.kit": (
+                "[dependencies]\n\"isaaclab.python.headless\" = {}\n"
+            ),
             "apps/rendering_modes/quality.kit": "[settings]\nquality = true\n",
             "ignored.txt": "omit\n",
         }
@@ -85,6 +96,8 @@ def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,
+        isaaclab_runtime_compatibility_commit=isaaclab_commit,
+        isaaclab_runtime_compatibility_tree=isaaclab_tree,
         arena_commit=arena_commit,
         arena_tree=arena_tree,
     )
@@ -202,6 +215,8 @@ def test_source_packet_rejects_revision_and_archive_tamper(tmp_path: Path) -> No
             generated_at="fixed",
             isaaclab_commit="0" * 40,
             isaaclab_tree=isaaclab_tree,
+            isaaclab_runtime_compatibility_commit="0" * 40,
+            isaaclab_runtime_compatibility_tree=isaaclab_tree,
             arena_commit=arena_commit,
             arena_tree=arena_tree,
         )
@@ -326,9 +341,11 @@ def test_materialization_batches_each_repository_into_one_exact_git_archive(
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,
+        isaaclab_runtime_compatibility_commit=isaaclab_commit,
+        isaaclab_runtime_compatibility_tree=isaaclab_tree,
         arena_commit=arena_commit,
         arena_tree=arena_tree,
     )
 
-    assert sum("archive" in command for command in commands) == 2
+    assert sum("archive" in command for command in commands) == 3
     assert not any("show" in command for command in commands)

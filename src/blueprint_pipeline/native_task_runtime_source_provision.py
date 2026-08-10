@@ -215,6 +215,7 @@ def provision_native_task_runtime_sources(
         "isaac_sim_link": None,
         "runtime_dependency_target": None,
         "runtime_dependencies_installed": [],
+        "runtime_experience": None,
         "all_sources_verified_before_install": False,
         "source_packages_made_importable": False,
         "dependencies_installed": False,
@@ -232,6 +233,24 @@ def provision_native_task_runtime_sources(
         destination.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(packet_path) as archive:
             archive.extractall(destination)
+        experience_contract = dict(verified.get("runtime_experience") or {})
+        experience_relative = str(experience_contract.get("relative_path") or "")
+        experience_path = destination / experience_relative
+        if (
+            not experience_relative
+            or Path(experience_relative).is_absolute()
+            or ".." in Path(experience_relative).parts
+            or not experience_path.is_file()
+            or _sha256(experience_path) != experience_contract.get("sha256")
+        ):
+            result["blockers"].append(
+                "native_task_runtime_experience_identity_mismatch"
+            )
+            return _persist(result_path, result)
+        result["runtime_experience"] = {
+            **experience_contract,
+            "path": str(experience_path.resolve()),
+        }
         install_roots = [destination / relative for relative in verified["install_roots"]]
         missing = [str(path) for path in install_roots if not path.is_dir()]
         if missing:
