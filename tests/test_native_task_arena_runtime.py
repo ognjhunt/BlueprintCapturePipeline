@@ -379,22 +379,36 @@ def _sealed_scene_plan() -> dict:
         "articulation": {
             "contact_sensors": [
                 {
-                    "sensor_id": "task_robot_contact",
-                    "prim_path": "{ENV_REGEX_NS}/task_object/upper_door",
-                    "filter_prim_paths_expr": ["{ENV_REGEX_NS}/Robot/gripper/.*"],
-                },
-                {
-                    "sensor_id": "task_scene_contact",
+                    "sensor_instance_id": "task_robot_contact__moving_link",
+                    "logical_sensor_id": "task_robot_contact",
                     "prim_path": "{ENV_REGEX_NS}/task_object/upper_door",
                     "filter_prim_paths_expr": [
-                        "{ENV_REGEX_NS}/scene_collision/.*"
+                        "{ENV_REGEX_NS}/Robot/gripper/left_finger",
+                        "{ENV_REGEX_NS}/Robot/gripper/right_finger",
                     ],
                 },
                 {
-                    "sensor_id": "robot_scene_contact",
-                    "prim_path": "{ENV_REGEX_NS}/Robot/.*",
+                    "sensor_instance_id": "task_scene_contact__moving_link",
+                    "logical_sensor_id": "task_scene_contact",
+                    "prim_path": "{ENV_REGEX_NS}/task_object/upper_door",
                     "filter_prim_paths_expr": [
-                        "{ENV_REGEX_NS}/scene_collision/.*"
+                        "{ENV_REGEX_NS}/scene_collision/floor"
+                    ],
+                },
+                {
+                    "sensor_instance_id": "robot_scene_contact__00",
+                    "logical_sensor_id": "robot_scene_contact",
+                    "prim_path": "{ENV_REGEX_NS}/Robot/panda_link0",
+                    "filter_prim_paths_expr": [
+                        "{ENV_REGEX_NS}/scene_collision/floor"
+                    ],
+                },
+                {
+                    "sensor_instance_id": "robot_scene_contact__01",
+                    "logical_sensor_id": "robot_scene_contact",
+                    "prim_path": "{ENV_REGEX_NS}/Robot/panda_link1",
+                    "filter_prim_paths_expr": [
+                        "{ENV_REGEX_NS}/scene_collision/floor"
                     ],
                 },
             ]
@@ -424,10 +438,13 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         "scene_collision": "scene_collision",
         "task_object": "task_object",
     }
-    assert set(built.contact_sensor_names) == {
-        "task_robot_contact",
-        "task_scene_contact",
-        "robot_scene_contact",
+    assert built.contact_sensor_names == {
+        "robot_scene_contact": (
+            "robot_scene_contact__00",
+            "robot_scene_contact__01",
+        ),
+        "task_robot_contact": ("task_robot_contact__moving_link",),
+        "task_scene_contact": ("task_scene_contact__moving_link",),
     }
     assert built.camera_scene_names == {
         "external": "external_camera",
@@ -444,12 +461,30 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         "lower_door_hinge": 0.0,
     }
     reset_owner = next(
-        asset for asset in arena_env.scene.assets if asset.name == "task_robot_contact"
+        asset
+        for asset in arena_env.scene.assets
+        if asset.name == "task_robot_contact__moving_link"
     )
     assert reset_owner.event_name == "reset_task_object_joints"
     assert reset_owner.event_cfg.params["asset_cfg"].name == "task_object"
     assert reset_owner.event_cfg.params["position_range"] == (0.0, 0.0)
     assert _ArenaBuilder.last.args.device == "cuda:0"
+
+
+def test_many_to_many_contact_patterns_fail_before_native_build(monkeypatch) -> None:
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    plan["articulation"]["contact_sensors"][0]["filter_prim_paths_expr"] = [
+        "{ENV_REGEX_NS}/Robot/gripper/.*"
+    ]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    with pytest.raises(NativeTaskArenaRuntimeError) as excinfo:
+        build_native_task_arena_environment(plan)
+
+    assert excinfo.value.errors == (
+        "native_task_arena_contact_sensor_contract_invalid:0",
+    )
 
 
 def test_portable_packet_assets_require_root_and_are_reverified(

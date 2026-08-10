@@ -74,10 +74,25 @@ def _request(evidence: Path, *, articulated: bool) -> dict:
 )
 def Xform "FixtureRoot"
 {
-    def Xform "cabinet" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "cabinet" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+    {
+        def Mesh "body" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "convexHull"
+            point3f[] points = [(-0.3, -0.2, 0), (0.3, 0.2, 1.6)]
+        }
+    }
     def Xform "door" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
     {
-        def Mesh "handle" {}
+        def Mesh "handle" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "convexHull"
+            point3f[] points = [(0, 0, 0), (0.1, 0.2, 0.3)]
+        }
     }
     def Xform "locked" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
     def "joints"
@@ -105,8 +120,22 @@ def Xform "FixtureRoot"
     }
 }
 '''
+    collision_asset = b'''#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Root"
+{
+    def Mesh "floor" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {}
+}
+'''
     files = {
-        "scene_collision": ("scene_collision.usda", b"collision"),
+        "scene_collision": (
+            "scene_collision.usda",
+            collision_asset if articulated else b"collision",
+        ),
         "scene_appearance": ("scene_appearance.usdc", b"appearance"),
         "task_object": (
             "task_object.usda",

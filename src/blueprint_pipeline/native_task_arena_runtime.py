@@ -36,7 +36,7 @@ class NativeTaskArenaEnvironment:
     cfg: Any
     plan: Mapping[str, Any]
     scene_asset_names: Mapping[str, str]
-    contact_sensor_names: Mapping[str, str]
+    contact_sensor_names: Mapping[str, tuple[str, ...]]
     camera_scene_names: Mapping[str, str]
 
 
@@ -387,8 +387,36 @@ def build_native_task_arena_environment(
         assets.append(obj)
         scene_asset_names[role] = role
 
-    contact_sensor_names: dict[str, str] = {}
+    def invalid_exact_contact_path(path: Any) -> bool:
+        value = str(path)
+        return not value.startswith("{ENV_REGEX_NS}/") or any(
+            token in value for token in ("*", ".*", "[", "]")
+        )
+
+    contact_sensor_names_mutable: dict[str, list[str]] = {}
+    seen_sensor_instances: set[str] = set()
     for index, sensor in enumerate(plan["articulation"]["contact_sensors"]):
+        logical_sensor_id = str(sensor.get("logical_sensor_id") or "")
+        sensor_instance_id = str(sensor.get("sensor_instance_id") or "")
+        prim_path = str(sensor.get("prim_path") or "")
+        filter_paths = list(sensor.get("filter_prim_paths_expr") or [])
+        if (
+            logical_sensor_id
+            not in {
+                "task_robot_contact",
+                "task_scene_contact",
+                "robot_scene_contact",
+            }
+            or not sensor_instance_id
+            or sensor_instance_id in seen_sensor_instances
+            or invalid_exact_contact_path(prim_path)
+            or not filter_paths
+            or any(invalid_exact_contact_path(path) for path in filter_paths)
+        ):
+            raise NativeTaskArenaRuntimeError(
+                [f"native_task_arena_contact_sensor_contract_invalid:{index}"]
+            )
+        seen_sensor_instances.add(sensor_instance_id)
         event_name = None
         event_cfg = None
         if index == 0:
@@ -408,16 +436,33 @@ def build_native_task_arena_environment(
             )
         assets.append(
             ConfigAsset(
-                name=sensor["sensor_id"],
+                name=sensor_instance_id,
                 object_cfg=ContactSensorCfg(
-                    prim_path=sensor["prim_path"],
-                    filter_prim_paths_expr=sensor["filter_prim_paths_expr"],
+                    prim_path=prim_path,
+                    filter_prim_paths_expr=filter_paths,
                 ),
                 event_name=event_name,
                 event_cfg=event_cfg,
             )
         )
-        contact_sensor_names[sensor["sensor_id"]] = sensor["sensor_id"]
+        contact_sensor_names_mutable.setdefault(logical_sensor_id, []).append(
+            sensor_instance_id
+        )
+    expected_contact_channels = {
+        "task_robot_contact",
+        "task_scene_contact",
+        "robot_scene_contact",
+    }
+    if plan["task_kind"] == "articulated_open_close" and (
+        set(contact_sensor_names_mutable) != expected_contact_channels
+    ):
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_contact_sensor_channels_incomplete"]
+        )
+    contact_sensor_names = {
+        logical_id: tuple(scene_names)
+        for logical_id, scene_names in sorted(contact_sensor_names_mutable.items())
+    }
 
     assets.append(
         SpawnerObject(

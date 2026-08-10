@@ -162,17 +162,36 @@ class NativeArticulatedTaskArenaReadback:
         )[:7]
 
         sensor_forces: dict[str, list[list[float]]] = {}
-        for sensor_id, scene_name in self._built.contact_sensor_names.items():
-            try:
-                sensor = scene[scene_name]
-            except (KeyError, TypeError) as exc:
+        for logical_sensor_id, scene_names in self._built.contact_sensor_names.items():
+            if isinstance(scene_names, str) or not scene_names:
                 raise NativeTaskArenaReadbackError(
-                    [f"native_task_arena_contact_sensor_missing:{sensor_id}"]
-                ) from exc
-            sensor_forces[sensor_id] = _force_vectors(
-                getattr(getattr(sensor, "data", None), "force_matrix_w", None),
-                sensor_id=sensor_id,
-            )
+                    [
+                        "native_task_arena_contact_sensor_instances_invalid:"
+                        f"{logical_sensor_id}"
+                    ]
+                )
+            aggregate: list[list[float]] = []
+            for scene_name in scene_names:
+                try:
+                    sensor = scene[scene_name]
+                except (KeyError, TypeError) as exc:
+                    raise NativeTaskArenaReadbackError(
+                        [
+                            "native_task_arena_contact_sensor_missing:"
+                            f"{logical_sensor_id}:{scene_name}"
+                        ]
+                    ) from exc
+                aggregate.extend(
+                    _force_vectors(
+                        getattr(
+                            getattr(sensor, "data", None),
+                            "force_matrix_w",
+                            None,
+                        ),
+                        sensor_id=f"{logical_sensor_id}:{scene_name}",
+                    )
+                )
+            sensor_forces[logical_sensor_id] = aggregate
 
         grasp_frame = self._built.plan["robot"]["grasp_frame"]
         if grasp_frame.get("kind") != "body_midpoint":

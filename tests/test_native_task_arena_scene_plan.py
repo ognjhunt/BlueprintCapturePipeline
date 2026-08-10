@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -79,7 +80,23 @@ def _contract(tmp_path: Path, *, articulated: bool) -> tuple[dict, Path]:
         ("task_object", ".usda"),
     ):
         path = asset_directory / f"{role}{suffix}"
-        if articulated and role == "task_object":
+        if articulated and role == "scene_collision":
+            path.write_text(
+                '''#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Root"
+{
+    def Mesh "floor" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {}
+    def Mesh "counter" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {}
+}
+''',
+                encoding="utf-8",
+            )
+        elif articulated and role == "task_object":
             path.write_text(
                 '''#usda 1.0
 (
@@ -89,12 +106,39 @@ def _contract(tmp_path: Path, *, articulated: bool) -> tuple[dict, Path]:
 )
 def Xform "Asset"
 {
-    def Xform "cabinet" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "cabinet" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+    {
+        def Mesh "body" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "convexHull"
+            point3f[] points = [(-0.3, -0.2, 0), (0.3, 0.2, 1.6)]
+        }
+    }
     def Xform "upper_door" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
     {
-        def Mesh "component_004" {}
-        def Mesh "handle_post_a" {}
-        def Mesh "handle_post_b" {}
+        def Mesh "component_004" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "convexHull"
+            point3f[] points = [(0, 0, 0), (0.24, 0.04, 0.04)]
+        }
+        def Mesh "handle_post_a" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "convexHull"
+            point3f[] points = [(0, 0, 0), (0.03, 0.03, 0.04)]
+        }
+        def Mesh "handle_post_b" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "convexHull"
+            point3f[] points = [(0, 0, 0), (0.03, 0.03, 0.04)]
+        }
     }
     def Xform "lower_door" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
     def "joints"
@@ -245,11 +289,24 @@ def test_original_and_second_scene_compile_through_one_arena_plan(
             "lower_door_hinge": 0.0,
             "upper_door_hinge": 0.0,
         }
-        assert [row["sensor_id"] for row in articulation["contact_sensors"]] == [
-            "task_robot_contact",
-            "task_scene_contact",
-            "robot_scene_contact",
+        channels = Counter(
+            row["logical_sensor_id"] for row in articulation["contact_sensors"]
+        )
+        assert channels == {
+            "task_robot_contact": 1,
+            "task_scene_contact": 1,
+            "robot_scene_contact": 18,
+        }
+        assert articulation["scene_contact_body_paths"] == [
+            "{ENV_REGEX_NS}/scene_collision/counter",
+            "{ENV_REGEX_NS}/scene_collision/floor",
         ]
+        assert articulation["robot_contact_topology"]["robot_id"] == (
+            "franka_panda"
+        )
+        for row in articulation["contact_sensors"]:
+            assert "*" not in row["prim_path"]
+            assert all("*" not in path for path in row["filter_prim_paths_expr"])
         assert articulation["task_joint_prim_paths"][
             "refrigerator_upper_door_hinge"
         ] == "{ENV_REGEX_NS}/task_object/joints/upper_door_hinge"

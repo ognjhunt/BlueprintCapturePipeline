@@ -22,6 +22,13 @@ from .native_articulated_motion_geometry import (
     derive_native_articulated_motion_geometry,
 )
 from .native_task_runtime_contract import SCHEMA_VERSION as RUNTIME_CONTRACT_SCHEMA
+from .native_task_gpu_collision_qualification import (
+    audit_native_task_gpu_collisions,
+)
+from .native_task_robot_contact_topology import (
+    NativeTaskRobotContactTopologyError,
+    resolve_native_task_robot_contact_topology,
+)
 
 
 SCHEMA_VERSION = "native_task_arena_scene_plan.v1"
@@ -56,6 +63,49 @@ def _source_to_spawned_prim(
             [f"native_task_arena_source_prim_invalid:{source_path}"]
         )
     return f"{ENV_ROOT}/{role}{suffix}"
+
+
+def _exact_scene_contact_body_paths(scene_collision_asset_path: Path) -> list[str]:
+    """Resolve every static or rigid collision actor to one exact spawned path."""
+
+    try:
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.Open(str(scene_collision_asset_path))
+    except (ImportError, RuntimeError) as exc:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_scene_collision_topology_unreadable"]
+        ) from exc
+    if stage is None:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_scene_collision_topology_unreadable"]
+        )
+    default_prim = stage.GetDefaultPrim()
+    if not default_prim.IsValid():
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_scene_collision_default_prim_missing"]
+        )
+    root = str(default_prim.GetPath())
+    paths = sorted(
+        {
+            _source_to_spawned_prim(
+                str(prim.GetPath()),
+                role="scene_collision",
+                source_root_prim_path=root,
+            )
+            for prim in stage.Traverse()
+            if prim.HasAPI(UsdPhysics.CollisionAPI)
+        }
+    )
+    if not paths:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_scene_collision_bodies_missing"]
+        )
+    if any(any(token in path for token in ("*", ".*", "[", "]")) for path in paths):
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_scene_collision_body_not_exact"]
+        )
+    return paths
 
 
 def _validate_contract(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -175,7 +225,10 @@ def _cadence(contract: Mapping[str, Any], *, physics_frequency_hz: float) -> dic
 
 
 def _articulation_plan(
-    contract: Mapping[str, Any], *, task_object_asset_path: Path | None
+    contract: Mapping[str, Any],
+    *,
+    task_object_asset_path: Path | None,
+    scene_collision_asset_path: Path | None,
 ) -> dict[str, Any]:
     task_kind = contract["task_kind"]
     if task_kind != "articulated_open_close":
@@ -184,6 +237,8 @@ def _articulation_plan(
             "task_joint_prim_paths": {},
             "task_joint_roles": {},
             "contact_sensors": [],
+            "robot_contact_topology": None,
+            "scene_contact_body_paths": [],
         }
     sample_binding = contract["task_sample_binding"]
     state_binding = contract["task_state_binding"]
@@ -201,6 +256,17 @@ def _articulation_plan(
     if task_object_asset_path is None:
         raise NativeTaskArenaScenePlanError(
             ["native_task_arena_task_object_asset_missing"]
+        )
+    if scene_collision_asset_path is None:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_scene_collision_asset_missing"]
+        )
+    gpu_collision_qualification = audit_native_task_gpu_collisions(
+        task_object_asset_path
+    )
+    if gpu_collision_qualification["status"] != "qualified":
+        raise NativeTaskArenaScenePlanError(
+            list(gpu_collision_qualification["blockers"])
         )
     target_joint_id = str(contract["task_spec"]["target_joint_id"])
     try:
@@ -244,7 +310,47 @@ def _articulation_plan(
         role="task_object",
         source_root_prim_path=source_root,
     )
-    scene_filter = f"{ENV_ROOT}/scene_collision/.*"
+    scene_contact_body_paths = _exact_scene_contact_body_paths(
+        scene_collision_asset_path
+    )
+    try:
+        robot_contact_topology = resolve_native_task_robot_contact_topology(
+            str(contract["robot"]["robot_id"])
+        )
+    except (KeyError, NativeTaskRobotContactTopologyError) as exc:
+        errors = (
+            list(exc.errors)
+            if isinstance(exc, NativeTaskRobotContactTopologyError)
+            else ["native_task_robot_contact_topology_unavailable"]
+        )
+        raise NativeTaskArenaScenePlanError(errors) from exc
+    contact_sensors = [
+        {
+            "sensor_instance_id": "task_robot_contact__moving_link",
+            "logical_sensor_id": "task_robot_contact",
+            "prim_path": moving_link,
+            "filter_prim_paths_expr": robot_contact_topology[
+                "task_contact_body_paths"
+            ],
+        },
+        {
+            "sensor_instance_id": "task_scene_contact__moving_link",
+            "logical_sensor_id": "task_scene_contact",
+            "prim_path": moving_link,
+            "filter_prim_paths_expr": scene_contact_body_paths,
+        },
+    ]
+    contact_sensors.extend(
+        {
+            "sensor_instance_id": f"robot_scene_contact__{index:02d}",
+            "logical_sensor_id": "robot_scene_contact",
+            "prim_path": body_path,
+            "filter_prim_paths_expr": scene_contact_body_paths,
+        }
+        for index, body_path in enumerate(
+            robot_contact_topology["protected_collision_body_paths"]
+        )
+    )
     return {
         "task_joint_reset_positions_rad": native_reset,
         "task_joint_prim_paths": {
@@ -271,25 +377,14 @@ def _articulation_plan(
         ],
         "handle_grasp_point_link_m": state_binding["handle_grasp_point_link_m"],
         "motion_geometry": motion_geometry,
-        "contact_sensors": [
-            {
-                "sensor_id": "task_robot_contact",
-                "prim_path": moving_link,
-                "filter_prim_paths_expr": [
-                    state_binding["robot_gripper_contact_prim_pattern"]
-                ],
-            },
-            {
-                "sensor_id": "task_scene_contact",
-                "prim_path": moving_link,
-                "filter_prim_paths_expr": [scene_filter],
-            },
-            {
-                "sensor_id": "robot_scene_contact",
-                "prim_path": state_binding["robot_collision_prim_pattern"],
-                "filter_prim_paths_expr": [scene_filter],
-            },
-        ],
+        "contact_sensors": contact_sensors,
+        "robot_contact_topology": robot_contact_topology,
+        "scene_contact_body_paths": scene_contact_body_paths,
+        "gpu_collision_qualification": {
+            key: value
+            for key, value in gpu_collision_qualification.items()
+            if key != "usd_path"
+        },
         "state_thresholds": {
             key: state_binding[key]
             for key in (
@@ -345,8 +440,18 @@ def materialize_native_task_arena_scene_plan(
         ),
         None,
     )
+    scene_collision_asset_path = next(
+        (
+            asset_directory / str(row["filename"])
+            for row in contract["objects"]
+            if row["semantic_role"] == "scene_collision"
+        ),
+        None,
+    )
     articulation = _articulation_plan(
-        contract, task_object_asset_path=task_object_asset_path
+        contract,
+        task_object_asset_path=task_object_asset_path,
+        scene_collision_asset_path=scene_collision_asset_path,
     )
     plan: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

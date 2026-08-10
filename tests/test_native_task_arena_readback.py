@@ -52,6 +52,9 @@ def _built(*, include_forces: bool = True) -> NativeTaskArenaEnvironment:
         "robot_scene_contact": SimpleNamespace(
             data=SimpleNamespace(force_matrix_w=force)
         ),
+        "robot_scene_contact_2": SimpleNamespace(
+            data=SimpleNamespace(force_matrix_w=force)
+        ),
     }
     task_spec = {
         "task_kind": "articulated_open_close",
@@ -110,12 +113,12 @@ def _built(*, include_forces: bool = True) -> NativeTaskArenaEnvironment:
         plan=plan,
         scene_asset_names={"task_object": "task_object"},
         contact_sensor_names={
-            sensor_id: sensor_id
-            for sensor_id in (
-                "task_robot_contact",
-                "task_scene_contact",
+            "task_robot_contact": ("task_robot_contact",),
+            "task_scene_contact": ("task_scene_contact",),
+            "robot_scene_contact": (
                 "robot_scene_contact",
-            )
+                "robot_scene_contact_2",
+            ),
         },
         camera_scene_names={},
     )
@@ -142,7 +145,21 @@ def test_missing_force_matrix_never_defaults_to_no_collision() -> None:
         ).read_task_sample()
 
     assert excinfo.value.errors == (
-        "native_task_arena_force_matrix_missing:task_robot_contact",
+        "native_task_arena_force_matrix_missing:task_robot_contact:task_robot_contact",
+    )
+
+
+def test_multiple_native_sensor_instances_aggregate_into_one_logical_channel() -> None:
+    built = _built()
+    built.env.unwrapped.scene["robot_scene_contact_2"].data.force_matrix_w = [
+        [[[2.0, 0.0, 0.0]]]
+    ]
+
+    sample = NativeArticulatedTaskArenaReadback(built).read_task_sample()
+
+    assert sample["robot_collision_failure"] is True
+    assert sample["native_readback"]["robot_scene_contact_peak_force_n"] == (
+        pytest.approx(2.0)
     )
 
 
