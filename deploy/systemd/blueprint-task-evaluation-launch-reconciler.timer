@@ -1,0 +1,13 @@
+[Unit]
+Description=Reconcile Blueprint Task Evaluation launches periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=20s
+Persistent=true
+Unit=blueprint-task-evaluation-launch-reconciler.service
+
+[Install]
+WantedBy=timers.target
+

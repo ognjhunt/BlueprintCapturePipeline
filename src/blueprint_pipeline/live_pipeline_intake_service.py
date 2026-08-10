@@ -5,8 +5,10 @@ accepts a WebApp ``robot_eval_job_request.v1`` payload or queue envelope, accept
 job-specific policy packages, real robot POV evidence, deployment outcomes, and live closure evidence,
 stages validated files into the configured control-plane paths, accepts
 short-lived grants for immutable capture intake, executes only explicitly
-authorized hermetic local methods, and optionally runs a configured trigger
-command. It does not execute paid providers or promote proof claims.
+authorized hermetic local methods, and optionally runs configured asynchronous
+trigger units. Paid launch requests are only durably queued here; the separate
+dispatcher is the sole bridge to the canonical allocator. This service never
+executes a paid provider in the HTTP request or promotes proof claims.
 """
 
 from __future__ import annotations
@@ -87,6 +89,10 @@ from .task_evaluation_supervisor import (
 from .task_evaluation_run_webapp_sync import (
     TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV,
 )
+from .task_evaluation_launch_dispatcher import (
+    TaskEvaluationLaunchError,
+    stage_launch_request,
+)
 
 
 DEFAULT_MANIFEST_PATH = (
@@ -109,6 +115,16 @@ INTAKE_CLIENT_SECRETS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_SECRETS_JSON"
 INTAKE_CLIENT_ROOTS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON"
 INTAKE_NONCE_STORE_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_NONCE_STORE_DIR"
 INTAKE_TRIGGER_SYSTEMD_UNIT_ENV = "BLUEPRINT_LIVE_PIPELINE_TRIGGER_SYSTEMD_UNIT"
+TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT"
+TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
+TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT"
+)
+TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV = (
+    "BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER"
+)
+TASK_EVALUATION_LAUNCH_EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
+TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_MODE"
 INTAKE_MAX_BODY_BYTES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_BODY_BYTES"
 INTAKE_MAX_JSON_DEPTH_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_JSON_DEPTH"
 INTAKE_MAX_JSON_ITEMS_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_JSON_ITEMS"
@@ -162,6 +178,13 @@ def _task_candidate_control_plane_root(manifest_path: Path) -> Path:
 
 def _task_evaluation_run_root(manifest_path: Path) -> Path:
     return _work_dir(manifest_path).expanduser().resolve() / "task_evaluation_runs"
+
+
+def _task_evaluation_launch_queue_root(manifest_path: Path) -> Path:
+    configured = _string(os.getenv(TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV))
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return _work_dir(manifest_path).expanduser().resolve() / "task_evaluation_launches"
 
 
 def _safe_stem(value: str) -> str:
@@ -1385,6 +1408,60 @@ def _trigger_control_plane() -> Dict[str, Any]:
     }
 
 
+def _trigger_task_evaluation_launch_dispatcher() -> Dict[str, Any]:
+    unit = _string(os.getenv(TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV))
+    mode = _string(os.getenv(TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV)) or "systemctl"
+    allowed = _truthy(os.getenv(TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV))
+    profile_dir = _string(os.getenv(TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV))
+    blockers: list[str] = []
+    if not profile_dir:
+        blockers.append(f"missing_env_{TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV}")
+    elif not Path(profile_dir).expanduser().resolve().is_dir():
+        blockers.append("task_evaluation_launch_profile_dir_missing")
+    if mode not in {"systemctl", "systemd_path"}:
+        blockers.append(f"invalid_env_{TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV}")
+    if mode == "systemctl" and not unit:
+        blockers.append(f"missing_env_{TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV}")
+    elif mode == "systemctl" and not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit):
+        blockers.append("task_evaluation_launch_trigger_systemd_unit_invalid")
+    if not allowed:
+        blockers.append(f"missing_env_{TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV}")
+    if blockers:
+        return {
+            "status": "blocked",
+            "performed": False,
+            "allowed": allowed,
+            "blockers": sorted(set(blockers)),
+        }
+    if mode == "systemd_path":
+        return {
+            "status": "armed_by_systemd_path",
+            "performed": True,
+            "allowed": True,
+            "trigger_mode": mode,
+            "provider_mutation_performed": False,
+        }
+    command_argv = ["systemctl", "start", "--no-block", unit]
+    completed = subprocess.run(  # nosec B603 - fixed executable plus strict unit allowlist
+        command_argv,
+        shell=False,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return {
+        "status": "triggered" if completed.returncode == 0 else "failed",
+        "performed": completed.returncode == 0,
+        "allowed": True,
+        "systemd_unit": unit,
+        "command_argv_count": len(command_argv),
+        "returncode": completed.returncode,
+        "stdout_tail": completed.stdout[-2000:],
+        "stderr_tail": completed.stderr[-2000:],
+    }
+
+
 async def _require_token(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -1688,9 +1765,18 @@ def create_app() -> FastAPI:
                 and _string(os.getenv(CAPTURE_MALWARE_SCANNER_ARGV_ENV))
             ),
             "task_evaluation_supervisor": capture_supervisor_health_status(),
+            "task_evaluation_launch_queue": {
+                "supported": True,
+                "profile_registry_configured": bool(
+                    _string(os.getenv(TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV))
+                ),
+                "asynchronous_dispatch_only": True,
+                "canonical_allocator_required": True,
+            },
             "proof_boundary": {
                 "authorized_hermetic_local_reconstruction_supported": True,
-                "paid_or_live_provider_execution_supported": False,
+                "paid_or_live_provider_execution_inside_http_request_supported": False,
+                "paid_launch_queue_supported": True,
                 "simulator_execution_proven": False,
                 "rank_fidelity_result_proven": False,
             },
@@ -1971,6 +2057,44 @@ def create_app() -> FastAPI:
         if intake.get("input_blockers"):
             return JSONResponse(status_code=202, content=response)
         return response
+
+    @app.post(
+        "/api/live-pipeline/task-evaluation-launches",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def intake_task_evaluation_launch(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        manifest_path = _manifest_path().resolve()
+        try:
+            queued = stage_launch_request(
+                value=payload,
+                queue_root=_task_evaluation_launch_queue_root(manifest_path),
+            )
+        except TaskEvaluationLaunchError as exc:
+            blockers = [item for item in str(exc).split(",") if item]
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "task_evaluation_launch_request_invalid",
+                    "blockers": blockers,
+                },
+            ) from exc
+        trigger = _trigger_task_evaluation_launch_dispatcher()
+        response = {
+            "schema_version": "task_evaluation_launch_intake_receipt.v1",
+            "status": "accepted" if trigger.get("performed") else "queued_dispatch_blocked",
+            "accepted": True,
+            "queue": queued,
+            "dispatcher_trigger": trigger,
+            "provider_mutation_performed_inside_http_request": False,
+            "canonical_allocator_required": True,
+        }
+        return JSONResponse(status_code=202, content=response)
 
     @app.post(
         "/api/live-pipeline/task-decisions",

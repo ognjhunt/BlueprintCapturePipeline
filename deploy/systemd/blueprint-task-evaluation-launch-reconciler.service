@@ -1,0 +1,45 @@
+[Unit]
+Description=Reconcile Blueprint Task Evaluation launch liveness and provider-zero
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target blueprint-gpu-spend-guard.service
+After=network-online.target blueprint-gpu-spend-guard.service
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+ReadOnlyPaths=/etc/blueprint/task-evaluation-launch-profiles
+TasksMax=512
+LimitNOFILE=4096
+MemoryMax=8G
+CPUQuota=200%
+TimeoutStartSec=2min
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
+Environment=BLUEPRINT_GPU_SPEND_GUARD_REPORT=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_RECONCILIATION_REPORT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-reconciliation/latest.json
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_reconciler --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --guard-report "$${BLUEPRINT_GPU_SPEND_GUARD_REPORT}" --report-out "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_RECONCILIATION_REPORT}") && if [ -x .venv/bin/python ]; then exec .venv/bin/python "$${ARGS[@]}"; fi; exec env PYTHONPATH=src python3 "$${ARGS[@]}"'
