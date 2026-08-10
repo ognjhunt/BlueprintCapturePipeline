@@ -644,21 +644,29 @@ def _retained_execution_artifact_blockers(
     return sorted(set(blockers))
 
 
-def _model_api_key(backend: str) -> tuple[str, str]:
+def _model_api_key(
+    backend: str, *, secret_root: str | Path = "~/.blueprint-secrets"
+) -> tuple[str, str]:
     if backend == "openai":
         env_name, filename = "OPENAI_API_KEY", "openai_api_key"
     elif backend == "nvidia_nim":
-        env_name, filename = "NVIDIA_API_KEY", "ngc_api_key"
+        env_name, filename = "NVIDIA_API_KEY", "nvidia_nim_api_key"
     else:
         raise ValueError("adp_joint_agent_model_backend_invalid")
     value = str(os.environ.get(env_name) or "").strip()
     if value:
         return value, env_name
-    path = Path("~/.blueprint-secrets").expanduser() / filename
-    return (
-        path.read_text(encoding="utf-8").strip() if path.is_file() else "",
-        env_name,
-    )
+    resolved_secret_root = Path(secret_root).expanduser()
+    candidates = [filename]
+    if backend == "nvidia_nim":
+        # Compatibility only: NGC registry credentials do not necessarily
+        # authorize NIM inference, so the inference-specific key wins.
+        candidates.append("ngc_api_key")
+    for candidate in candidates:
+        path = resolved_secret_root / candidate
+        if path.is_file() and (secret := path.read_text(encoding="utf-8").strip()):
+            return secret, env_name
+    return "", env_name
 
 
 @contextmanager

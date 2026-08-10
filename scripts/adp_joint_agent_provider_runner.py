@@ -25,6 +25,10 @@ from blueprint_pipeline.joint_agent_articulation_review import (
 SCHEMA_VERSION = "adp_joint_agent_result.v1"
 ROOT = Path(__file__).resolve().parent
 OUTPUT = Path(os.environ.get("BLUEPRINT_ADP_JOINT_AGENT_OUTPUT_DIR", ROOT / "../runtime_output")).resolve()
+MODEL_CREDENTIAL_ENV = {
+    "nvidia_nim": "NVIDIA_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -260,6 +264,19 @@ def _result(blockers: list[str], **values: Any) -> int:
     return 0 if not blockers else 2
 
 
+def model_credential_blockers(manifest: Mapping[str, Any]) -> list[str]:
+    """Bind the runtime credential requirement to the frozen model backend."""
+
+    model = manifest.get("model")
+    backend = str(model.get("backend") or "") if isinstance(model, Mapping) else ""
+    env_name = MODEL_CREDENTIAL_ENV.get(backend)
+    if env_name is None:
+        return ["joint_agent_model_backend_not_supported"]
+    if not str(os.environ.get(env_name) or "").strip():
+        return [f"joint_agent_model_api_key_missing:{backend}"]
+    return []
+
+
 def main() -> int:
     OUTPUT.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
@@ -267,11 +284,12 @@ def main() -> int:
         manifest = _load(ROOT / "adp_joint_agent_provider_manifest.json")
         contract = _load(ROOT / "joint_review_contract.json")
         if manifest.get("status") != "ready":
-            raise ValueError("joint_agent_provider_manifest_not_ready")
+            return _result(["joint_agent_provider_manifest_not_ready"])
         if canonical_digest(contract, digest_field="contract_digest") != contract.get("contract_digest"):
-            raise ValueError("joint_agent_review_contract_digest_invalid")
-        if not os.environ.get("NVIDIA_API_KEY"):
-            raise ValueError("joint_agent_nvidia_api_key_missing")
+            return _result(["joint_agent_review_contract_digest_invalid"])
+        credential_blockers = model_credential_blockers(manifest)
+        if credential_blockers:
+            return _result(credential_blockers)
         probe_blockers = scene_optimizer_probe(output_root=OUTPUT)
         if probe_blockers:
             return _result(probe_blockers)

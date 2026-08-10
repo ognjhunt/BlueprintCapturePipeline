@@ -797,7 +797,10 @@ def test_provider_runner_review_failure_retains_topology_evidence(
     root = tmp_path / "provider_runtime"
     output = tmp_path / "runtime_output"
     root.mkdir(parents=True)
-    manifest = {"status": "ready"}
+    manifest = {
+        "status": "ready",
+        "model": {"backend": "nvidia_nim", "id": NIM_MODEL},
+    }
     (root / "adp_joint_agent_provider_manifest.json").write_text(
         json.dumps(manifest), encoding="utf-8"
     )
@@ -907,6 +910,72 @@ def test_provider_runner_review_failure_retains_topology_evidence(
         retained = output / row["relative_path"]
         assert retained.is_file()
         assert row["sha256"] == runner._sha256(retained)
+
+
+@pytest.mark.parametrize(
+    ("backend", "present_env", "expected"),
+    [
+        ("openai", "OPENAI_API_KEY", []),
+        ("nvidia_nim", "NVIDIA_API_KEY", []),
+        ("unknown", "OPENAI_API_KEY", ["joint_agent_model_backend_not_supported"]),
+    ],
+)
+def test_provider_runner_binds_credentials_to_model_backend(
+    monkeypatch, backend: str, present_env: str, expected: list[str]
+) -> None:
+    runner = _provider_runner_module()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.setenv(present_env, "hermetic-test-placeholder")
+
+    assert runner.model_credential_blockers(
+        {"model": {"backend": backend, "id": "fixture-model"}}
+    ) == expected
+
+
+def test_provider_runner_reports_typed_openai_credential_gap_before_gpu_work(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runner = _provider_runner_module()
+    root = tmp_path / "provider_runtime"
+    output = tmp_path / "runtime_output"
+    root.mkdir()
+    manifest = {"status": "ready", "model": {"backend": "openai", "id": "gpt-4.1"}}
+    (root / "adp_joint_agent_provider_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    contract = {"contract_digest": ""}
+    contract["contract_digest"] = canonical_digest(
+        contract, digest_field="contract_digest"
+    )
+    (root / "joint_review_contract.json").write_text(
+        json.dumps(contract), encoding="utf-8"
+    )
+    monkeypatch.setattr(runner, "ROOT", root)
+    monkeypatch.setattr(runner, "OUTPUT", output)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        runner,
+        "scene_optimizer_probe",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("GPU work started")),
+    )
+
+    assert runner.main() == 2
+    result = json.loads((output / "adp_joint_agent_result.json").read_text())
+    assert result["blockers"] == ["joint_agent_model_api_key_missing:openai"]
+
+
+def test_nim_resolver_prefers_inference_key_over_registry_key(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    (tmp_path / "nvidia_nim_api_key").write_text("inference-key", encoding="utf-8")
+    (tmp_path / "ngc_api_key").write_text("registry-key", encoding="utf-8")
+
+    assert joint_vast._model_api_key("nvidia_nim", secret_root=tmp_path) == (
+        "inference-key",
+        "NVIDIA_API_KEY",
+    )
 
 
 def test_output_zip_inspection_recognizes_joint_agent_runtime_result(
