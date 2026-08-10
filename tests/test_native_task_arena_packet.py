@@ -14,6 +14,9 @@ from blueprint_pipeline.native_task_arena_packet import (
 from blueprint_pipeline.native_task_runtime_contract import (
     DROID_FRANKA_RESET_JOINT_NAMES,
 )
+from blueprint_pipeline.replacement_construction_bindings import (
+    seal_replacement_construction_bindings,
+)
 
 
 def _pose(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
@@ -343,6 +346,56 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
         }
     )
     articulated_request["task_spec"]["subject_asset_id"] = "articulated_a"
+    articulated_freeze_digest = "sha256:" + "1" * 64
+    rigid_freeze_digest = "sha256:" + "2" * 64
+    shared_construction = seal_replacement_construction_bindings(
+        scene_freeze_digest="sha256:" + "3" * 64,
+        task_freeze_join_digest="sha256:" + "4" * 64,
+        bindings=[
+            {
+                "task_id": "articulated_fixture",
+                "asset_id": "articulated_a",
+                "task_freeze_digest": articulated_freeze_digest,
+                "source_object_instance_id": "source_a",
+                "removal_id": "removal_a",
+                "mask_set_id": "masks_a",
+                "mask_set_receipt_digest": "sha256:" + "5" * 64,
+                "source_removal_receipt_digest": "sha256:" + "6" * 64,
+                "source_removal_qualified": True,
+                "collider_deletion_id": "collider_a",
+                "source_collider_prim_path": "/Root/source_a",
+                "collider_deletion_receipt_digest": "sha256:" + "7" * 64,
+                "collider_deletion_qualified": True,
+                "replacement_qualification_id": "qualification_a",
+                "replacement_qualification_receipt_digest": "sha256:" + "8" * 64,
+                "replacement_asset_sha256": task_asset["source"]["sha256"],
+                "replacement_simulator_import_qualified": True,
+            },
+            {
+                "task_id": "rigid_task_b",
+                "asset_id": "rigid_b",
+                "task_freeze_digest": rigid_freeze_digest,
+                "source_object_instance_id": "source_b",
+                "removal_id": "removal_b",
+                "mask_set_id": "masks_b",
+                "mask_set_receipt_digest": "sha256:" + "9" * 64,
+                "source_removal_receipt_digest": "sha256:" + "a" * 64,
+                "source_removal_qualified": True,
+                "collider_deletion_id": "collider_b",
+                "source_collider_prim_path": "/Root/source_b",
+                "collider_deletion_receipt_digest": "sha256:" + "b" * 64,
+                "collider_deletion_qualified": True,
+                "replacement_qualification_id": "qualification_b",
+                "replacement_qualification_receipt_digest": "sha256:" + "c" * 64,
+                "replacement_asset_sha256": articulated_request["assets"][-1][
+                    "source"
+                ]["sha256"],
+                "replacement_simulator_import_qualified": True,
+            },
+        ],
+    )
+    articulated_request["construction_bindings"] = shared_construction
+    articulated_request["task_freeze_digest"] = articulated_freeze_digest
     articulated_request["request_digest"] = canonical_digest(
         articulated_request, digest_field="request_digest"
     )
@@ -359,6 +412,7 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
         },
         task_joint_bindings=[],
         task_state_binding=None,
+        task_freeze_digest=rigid_freeze_digest,
     )
     rigid_request["request_digest"] = canonical_digest(
         rigid_request, digest_field="request_digest"
@@ -383,6 +437,13 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
     assert [contract["task_subject_asset_id"] for contract in contracts] == [
         "articulated_a",
         "rigid_b",
+    ]
+    assert {receipt["shared_construction_digest"] for receipt in receipts} == {
+        shared_construction["construction_digest"]
+    }
+    assert [receipt["task_freeze_digest"] for receipt in receipts] == [
+        articulated_freeze_digest,
+        rigid_freeze_digest,
     ]
     assert {
         row["asset_id"]

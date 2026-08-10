@@ -281,6 +281,8 @@ def materialize_native_task_arena_packet(
             scenario_context_kind=str(
                 scenario.get("context_kind") or "evaluation_cell"
             ),
+            construction_bindings=frozen.get("construction_bindings"),
+            task_freeze_digest=frozen.get("task_freeze_digest"),
             destination=contract_path,
         )
         plan_path = output / "native_task_arena_scene_plan.v1.json"
@@ -313,6 +315,12 @@ def materialize_native_task_arena_packet(
             "request_digest": frozen["request_digest"],
             "runtime_contract_digest": contract["contract_digest"],
             "arena_scene_plan_digest": plan["plan_digest"],
+            "task_freeze_digest": contract.get("task_freeze_digest"),
+            "shared_construction_digest": (
+                (contract.get("construction_bindings") or {}).get(
+                    "construction_digest"
+                )
+            ),
             "scenario_instance_digest": scenario["instance_digest"],
             "source_bindings": source_bindings,
             "artifacts": artifacts,

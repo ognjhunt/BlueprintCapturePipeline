@@ -467,6 +467,8 @@ def materialize_native_task_arena_scene_plan(
         "scene_id": contract["scene_id"],
         "task_id": contract["task_id"],
         "task_kind": contract["task_kind"],
+        "task_freeze_digest": contract.get("task_freeze_digest"),
+        "construction_bindings": contract.get("construction_bindings"),
         "task_spec": contract["task_spec"],
         "task_sample_binding": contract["task_sample_binding"],
         "task_state_binding": contract["task_state_binding"],

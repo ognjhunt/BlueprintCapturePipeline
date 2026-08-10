@@ -22,6 +22,10 @@ from typing import Any, Mapping, Sequence
 from .articulated_runtime_composition import plan_articulated_runtime_composition
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .replacement_construction_bindings import (
+    ReplacementConstructionBindingsError,
+    validate_replacement_construction_bindings,
+)
 
 
 SCHEMA_VERSION = "native_task_runtime_contract.v1"
@@ -520,6 +524,8 @@ def materialize_native_task_runtime_contract(
     scenario_instance_digest: str,
     seed: int,
     scenario_context_kind: str = "evaluation_cell",
+    construction_bindings: Mapping[str, Any] | None = None,
+    task_freeze_digest: str | None = None,
     destination: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate and freeze one native scene/task request before execution."""
@@ -554,6 +560,50 @@ def materialize_native_task_runtime_contract(
         ),
         errors=errors,
     )
+    replacement_rows = [
+        row
+        for row in asset_rows
+        if row.get("source_semantic_role") == REPEATABLE_REPLACEMENT_ROLE
+    ]
+    qualified_construction: dict[str, Any] | None = None
+    if replacement_rows:
+        if not isinstance(construction_bindings, Mapping):
+            errors.append("native_task_runtime_construction_bindings_missing")
+        else:
+            try:
+                qualified_construction = validate_replacement_construction_bindings(
+                    construction_bindings
+                )
+            except ReplacementConstructionBindingsError as exc:
+                errors.extend(exc.errors)
+        if not _digest(task_freeze_digest):
+            errors.append("native_task_runtime_task_freeze_digest_invalid")
+        if qualified_construction is not None:
+            binding_rows = qualified_construction["bindings"]
+            expected_asset_ids = {row["asset_id"] for row in replacement_rows}
+            observed_asset_ids = {row["asset_id"] for row in binding_rows}
+            if expected_asset_ids != observed_asset_ids:
+                errors.append("native_task_runtime_construction_asset_set_mismatch")
+            task_binding = [
+                row
+                for row in binding_rows
+                if row["task_id"] == task and row["asset_id"] == subject_asset_id
+            ]
+            if len(task_binding) != 1:
+                errors.append("native_task_runtime_construction_task_binding_missing")
+            elif task_binding[0]["task_freeze_digest"] != task_freeze_digest:
+                errors.append("native_task_runtime_task_freeze_binding_mismatch")
+            asset_digests = {
+                row["asset_id"]: row["sha256"] for row in replacement_rows
+            }
+            for row in binding_rows:
+                if asset_digests.get(row["asset_id"]) != row["replacement_asset_sha256"]:
+                    errors.append(
+                        "native_task_runtime_replacement_qualification_asset_mismatch:"
+                        + row["asset_id"]
+                    )
+    elif construction_bindings is not None or task_freeze_digest is not None:
+        errors.append("native_task_runtime_legacy_construction_bindings_unexpected")
     composition: dict[str, Any] = {}
     if {"scene_collision", "task_object"}.issubset(by_asset_role):
         try:
@@ -607,6 +657,8 @@ def materialize_native_task_runtime_contract(
         "task_subject_asset_id": next(
             row["asset_id"] for row in asset_rows if row["task_subject"]
         ),
+        "task_freeze_digest": task_freeze_digest,
+        "construction_bindings": qualified_construction,
         "task_spec": json.loads(json.dumps(task_spec, sort_keys=True)),
         "task_spec_digest": canonical_digest(dict(task_spec)),
         "scenario": {

@@ -5,12 +5,16 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_runtime_contract import (
     DROID_FRANKA_RESET_JOINT_NAMES,
     FROZEN_CANDIDATES,
     NativeTaskRuntimeContractError,
     load_native_task_runtime_contract,
     materialize_native_task_runtime_contract,
+)
+from blueprint_pipeline.replacement_construction_bindings import (
+    seal_replacement_construction_bindings,
 )
 
 
@@ -207,6 +211,53 @@ def _dual_replacement_assets() -> list[dict]:
     ]
 
 
+def _construction_bindings() -> dict:
+    return seal_replacement_construction_bindings(
+        scene_freeze_digest=_sha("1"),
+        task_freeze_join_digest=_sha("2"),
+        bindings=[
+            {
+                "task_id": "840796_refrigerator_upper_door_open_v1",
+                "asset_id": "articulated_a",
+                "task_freeze_digest": _sha("3"),
+                "source_object_instance_id": "source_a",
+                "removal_id": "removal_a",
+                "mask_set_id": "masks_a",
+                "mask_set_receipt_digest": _sha("4"),
+                "source_removal_receipt_digest": _sha("5"),
+                "source_removal_qualified": True,
+                "collider_deletion_id": "collider_delete_a",
+                "source_collider_prim_path": "/Root/source_a",
+                "collider_deletion_receipt_digest": _sha("6"),
+                "collider_deletion_qualified": True,
+                "replacement_qualification_id": "replacement_qualification_a",
+                "replacement_qualification_receipt_digest": _sha("7"),
+                "replacement_asset_sha256": _sha("c"),
+                "replacement_simulator_import_qualified": True,
+            },
+            {
+                "task_id": "840313_canned_beverage_pick_place_v1",
+                "asset_id": "rigid_b",
+                "task_freeze_digest": _sha("8"),
+                "source_object_instance_id": "source_b",
+                "removal_id": "removal_b",
+                "mask_set_id": "masks_b",
+                "mask_set_receipt_digest": _sha("9"),
+                "source_removal_receipt_digest": _sha("f"),
+                "source_removal_qualified": True,
+                "collider_deletion_id": "collider_delete_b",
+                "source_collider_prim_path": "/Root/source_b",
+                "collider_deletion_receipt_digest": _sha("0"),
+                "collider_deletion_qualified": True,
+                "replacement_qualification_id": "replacement_qualification_b",
+                "replacement_qualification_receipt_digest": _sha("b"),
+                "replacement_asset_sha256": _sha("e"),
+                "replacement_simulator_import_qualified": True,
+            },
+        ],
+    )
+
+
 @pytest.mark.parametrize(
     ("fixture", "expected_type", "expected_joints"),
     [
@@ -249,9 +300,13 @@ def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() ->
     articulated = _articulated_fixture()
     articulated["assets"] = _dual_replacement_assets()
     articulated["task_spec"]["subject_asset_id"] = "articulated_a"
+    articulated["construction_bindings"] = _construction_bindings()
+    articulated["task_freeze_digest"] = _sha("3")
     rigid = _rigid_fixture()
     rigid["assets"] = _dual_replacement_assets()
     rigid["task_spec"]["subject_asset_id"] = "rigid_b"
+    rigid["construction_bindings"] = _construction_bindings()
+    rigid["task_freeze_digest"] = _sha("8")
 
     contract_a = materialize_native_task_runtime_contract(**articulated)
     contract_b = materialize_native_task_runtime_contract(**rigid)
@@ -277,6 +332,56 @@ def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() ->
         "articulated_a",
         "rigid_b",
     }
+    assert (
+        contract_a["construction_bindings"]["construction_digest"]
+        == contract_b["construction_bindings"]["construction_digest"]
+    )
+
+
+def test_dual_replacement_contract_rejects_shared_mask_or_swapped_asset() -> None:
+    fixture = _articulated_fixture()
+    fixture["assets"] = _dual_replacement_assets()
+    fixture["task_spec"]["subject_asset_id"] = "articulated_a"
+    bindings = _construction_bindings()
+    bindings["bindings"][1]["mask_set_id"] = bindings["bindings"][0]["mask_set_id"]
+    bindings["construction_digest"] = canonical_digest(
+        bindings, digest_field="construction_digest"
+    )
+    fixture["construction_bindings"] = bindings
+    fixture["task_freeze_digest"] = _sha("3")
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert "replacement_construction_shared_identity:mask_set_id" in excinfo.value.errors
+
+    fixture["construction_bindings"] = _construction_bindings()
+    first, second = fixture["construction_bindings"]["bindings"]
+    first["replacement_asset_sha256"], second["replacement_asset_sha256"] = (
+        second["replacement_asset_sha256"],
+        first["replacement_asset_sha256"],
+    )
+    fixture["construction_bindings"]["construction_digest"] = canonical_digest(
+        fixture["construction_bindings"], digest_field="construction_digest"
+    )
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+    assert (
+        "native_task_runtime_replacement_qualification_asset_mismatch:articulated_a"
+        in excinfo.value.errors
+    )
+
+
+def test_repeatable_replacements_require_qualified_construction_bindings() -> None:
+    fixture = _rigid_fixture()
+    fixture["assets"] = _dual_replacement_assets()
+    fixture["task_spec"]["subject_asset_id"] = "rigid_b"
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert "native_task_runtime_construction_bindings_missing" in excinfo.value.errors
+    assert "native_task_runtime_task_freeze_digest_invalid" in excinfo.value.errors
 
 
 def test_shared_replacement_set_rejects_duplicate_or_missing_subject_identity() -> None:
@@ -284,6 +389,8 @@ def test_shared_replacement_set_rejects_duplicate_or_missing_subject_identity() 
     fixture["assets"] = _dual_replacement_assets()
     fixture["task_spec"]["subject_asset_id"] = "missing"
     fixture["assets"][3]["asset_id"] = "articulated_a"
+    fixture["construction_bindings"] = _construction_bindings()
+    fixture["task_freeze_digest"] = _sha("8")
 
     with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
         materialize_native_task_runtime_contract(**fixture)
