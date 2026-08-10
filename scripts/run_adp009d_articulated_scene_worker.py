@@ -59,6 +59,8 @@ try:  # flat provider bundle
         resolve_contact_sensor_rows,
     )
     from articulated_control_verdict import seal_detent_torque
+    from franka_kinematics import solve_axis_aligned_ik
+    from decision_evidence_contracts import canonical_digest
 except ModuleNotFoundError:  # repository checkout
     import sys as _sys
 
@@ -78,6 +80,8 @@ except ModuleNotFoundError:  # repository checkout
         resolve_contact_sensor_rows,
     )
     from blueprint_pipeline.articulated_control_verdict import seal_detent_torque
+    from blueprint_pipeline.franka_kinematics import solve_axis_aligned_ik
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 RESULT_SCHEMA_VERSION = "adp009d_articulated_scene_result.v1"
@@ -363,6 +367,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # ObjectType is resolved by name so a renamed or missing member reports
         # what the runtime actually offers instead of raising AttributeError.
+        # fix_root_link pins an articulation's base AT ITS SPAWNED POSE while
+        # leaving its joints free - the fixed-base fridge. The v16 attempt used
+        # a bare FixedJoint with no frame, and a frameless world joint means
+        # "world identity": at sim start it dragged the entire fridge to the
+        # origin, 2.4 m from its placement, and six runs measured an arm
+        # sweeping the empty air where the fridge used to be.
+        from isaaclab.sim import schemas as _schemas  # type: ignore
+
+        def _task_spawn_addon(kind: str, row: Mapping[str, Any]) -> dict[str, Any]:
+            addon = _spawn_cfg_addon(kind, row)
+            if str(row.get("semantic_role")) == "task_object":
+                addon["articulation_props"] = _schemas.ArticulationRootPropertiesCfg(
+                    fix_root_link=True
+                )
+            return addon
+
         available = {member.name for member in ObjectType}
         assets = []
         task_object = None
@@ -406,7 +426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         float(v) for v in (row.get("initial_position_world_m") or (0, 0, 0))
                     )
                 ),
-                spawn_cfg_addon=_spawn_cfg_addon(kind, row),
+                spawn_cfg_addon=_task_spawn_addon(kind, row),
             )
             assets.append(obj)
             if row.get("semantic_role") == "task_object":
@@ -966,6 +986,119 @@ def main(argv: Sequence[str] | None = None) -> int:
             def __getattr__(self, name):
                 return getattr(self._inner, name)
 
+        # ------------------------------------------------------------------
+        # Measured correction. Five runs of open-loop bracketing missed the
+        # bar because every model number - tool stack, pad reach, implicitly
+        # the base and even the fridge's placement - was an assumption. Arena
+        # publishes the pad tips themselves: ee_frame's tool_leftfinger /
+        # tool_rightfinger targets sit at inner_finger + 46 mm, tracked by
+        # the sim. Drive to the planned grasp pose, read where the pinch
+        # point actually is, shift the whole plan by the one world vector
+        # that puts it on the bar, and re-solve. Feedback absorbs what no
+        # calibration constant can.
+        ee = scene["ee_frame"]
+        ee_names = list(getattr(ee.data, "target_frame_names", []) or [])
+        if "tool_leftfinger" not in ee_names or "tool_rightfinger" not in ee_names:
+            raise RuntimeError(
+                f"articulated_scene_ee_frame_targets_missing:{ee_names}"
+            )
+        li_t = ee_names.index("tool_leftfinger")
+        ri_t = ee_names.index("tool_rightfinger")
+
+        def _pad_mid_world() -> list[float]:
+            targets = _to_torch(ee.data.target_pos_w)[0]
+            mid = (targets[li_t] + targets[ri_t]) / 2.0
+            return [float(v) for v in mid]
+
+        def _drive(q, gripper, steps):
+            action = torch.zeros((1, action_dim), device=env.unwrapped.device)
+            action[0, :7] = torch.tensor(q, device=env.unwrapped.device)
+            action[0, 7] = float(gripper)
+            for _ in range(steps):
+                env.step(action)
+
+        plan0 = spec["control_plan"]
+        corrected_plan = plan0
+        grasp_actions = [
+            a for a in plan0["scripted_positive_actions"] if a["phase_id"] == "grasp"
+        ]
+        if not grasp_actions:
+            # A plan with no grasp phase has nothing to correct against; say
+            # so rather than crash, and run it as planned.
+            result["measured_correction"] = {"skipped": "no_grasp_phase_in_plan"}
+        else:
+            q_grasp = grasp_actions[-1]["isaac_action"][:7]
+            env.reset(seed=int(spec.get("seed") or 20260810))
+            _drive(q_grasp, 0.0, 60)  # open hand, settled at planned grasp
+            pad_before = _pad_mid_world()
+            handle = [float(v) for v in spec["handle_position_world_m"]]
+            delta = [handle[i] - pad_before[i] for i in range(3)]
+            result["measured_correction"] = {
+                "pad_mid_at_planned_grasp": pad_before,
+                "handle_target": handle,
+                "delta_world_m": delta,
+                "delta_norm_mm": round(sum(d * d for d in delta) ** 0.5 * 1000, 2),
+            }
+            _phase(result, "grasp_correction_measured")
+            if any(abs(d) > 0.002 for d in delta):
+                try:
+                    from franka_kinematics import forward_kinematics as _fk
+                except ModuleNotFoundError:
+                    from blueprint_pipeline.franka_kinematics import (
+                        forward_kinematics as _fk,
+                    )
+                corrected_actions = []
+                solver_failures = 0
+                for a in plan0["scripted_positive_actions"]:
+                    q_old = a["isaac_action"][:7]
+                    pos_old, rot_old = _fk(q_old)
+                    tool_axis = [rot_old[0][2], rot_old[1][2], rot_old[2][2]]
+                    solved = solve_axis_aligned_ik(
+                        target_position_world_m=[
+                            pos_old[i] + delta[i] for i in range(3)
+                        ],
+                        tool_axis_world=tool_axis,
+                        seed_joint_positions=q_old,
+                    )
+                    joints = solved["joint_positions_rad"]
+                    if not solved["converged"]:
+                        solver_failures += 1
+                        joints = q_old
+                    corrected_actions.append(
+                        {
+                            "phase_id": a["phase_id"],
+                            "isaac_action": [float(v) for v in joints]
+                            + [float(a["isaac_action"][7])],
+                        }
+                    )
+                corrected_plan = {
+                    key: plan0[key]
+                    for key in plan0
+                    if key not in ("scripted_positive_actions", "plan_digest")
+                }
+                corrected_plan["scripted_positive_actions"] = corrected_actions
+                corrected_plan["plan_digest"] = ""
+                corrected_plan["plan_digest"] = canonical_digest(
+                    corrected_plan, digest_field="plan_digest"
+                )
+                result["measured_correction"]["solver_failures"] = solver_failures
+                result["measured_correction"]["corrected_plan_digest"] = (
+                    corrected_plan["plan_digest"]
+                )
+                # Prove the correction landed before spending the episode.
+                corrected_grasp = [
+                    a for a in corrected_actions if a["phase_id"] == "grasp"
+                ][-1]["isaac_action"][:7]
+                env.reset(seed=int(spec.get("seed") or 20260810))
+                _drive(corrected_grasp, 0.0, 60)
+                pad_after = _pad_mid_world()
+                residual = [handle[i] - pad_after[i] for i in range(3)]
+                result["measured_correction"]["pad_mid_after_correction"] = pad_after
+                result["measured_correction"]["residual_mm"] = [
+                    round(v * 1000, 1) for v in residual
+                ]
+        _phase(result, "grasp_correction_applied")
+
         sealed = _SealedEnvironment(adapter)
         # Recorded before the episode: these are configuration, and a run that
         # fails partway should still show what gasket it was carrying.
@@ -978,7 +1111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pair = run_task_neutral_controls(
             environment=sealed,
             task_spec=spec["task_spec"],
-            control_plan=spec["control_plan"],
+            control_plan=corrected_plan,
             # Not `or 1.0`: zero is a real command here - Arena's binary
             # gripper opens at 0.0 - and rt44 executed its zero-action hold
             # and settle with a closed fist because `0.0 or 1.0` is 1.0.

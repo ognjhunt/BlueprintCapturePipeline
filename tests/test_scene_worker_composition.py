@@ -174,6 +174,23 @@ class _FakeCameraData:
         )
 
 
+class _FakeEEFrameData:
+    def __init__(self):
+        import torch
+
+        self.target_frame_names = ["end_effector", "tool_rightfinger", "tool_leftfinger"]
+        # Pads exactly at the fake handle so the measured correction is a
+        # no-op in the stub; the real numbers only exist on hardware.
+        self.target_pos_w = torch.tensor(
+            [[[2.1117, 1.8218, 1.023]] * 3], dtype=torch.float32
+        )
+
+
+class _FakeEEFrame:
+    def __init__(self):
+        self.data = _FakeEEFrameData()
+
+
 class _FakeCameraSpawn:
     # Arena's own camera cfg carries this; the adapter reads it for the
     # calibration record and is right to refuse a camera without one.
@@ -245,6 +262,7 @@ class _FakeArenaEnvironment:
         # The adapter binds these three by name via EVALUATION_CAMERA_BINDING.
         for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
             runtime_scene[camera_name] = _FakeCamera()
+        runtime_scene["ee_frame"] = _FakeEEFrame()
         for embodiment in self.embodiments:
             runtime_scene[getattr(embodiment, "name", "robot")] = runtime_scene["robot"]
         self._env = _FakeEnv(runtime_scene)
@@ -331,6 +349,13 @@ def stubbed_arena(monkeypatch):
     modules = {
         "isaaclab": _module("isaaclab"),
         "isaaclab.app": _module("isaaclab.app", AppLauncher=_FakeAppLauncher),
+        "isaaclab.sim.schemas": _module(
+            "isaaclab.sim.schemas",
+            # fix_root_link pins the articulation base at its SPAWNED pose -
+            # the fix for v16's frameless world joint dragging the fridge to
+            # the origin.
+            ArticulationRootPropertiesCfg=lambda **kw: types.SimpleNamespace(**kw),
+        ),
         "isaaclab.sensors": _module(
             "isaaclab.sensors",
             # Declared before the env is built; the worker cannot attach a
@@ -534,11 +559,11 @@ def test_worker_reaches_the_adapter_with_measured_gripper_widths(
     )
 
     result = json.loads(output.read_text(encoding="utf-8"))
-    # adapter_wired is the end of the plumbing this stub can speak to. The
-    # control plan's own contract is validated by the control-episode suite
-    # against real plans; a synthetic one here would only test the synthetic.
+    # grasp_correction_applied is the end of the plumbing this stub can speak
+    # to. The control plan's own contract is validated by the control-episode
+    # suite against real plans; a synthetic one here only tests the synthetic.
     reached = result["phase_reached"]
-    assert reached == "adapter_wired", result.get("blockers")
+    assert reached == "grasp_correction_applied", result.get("blockers")
 
     probe = result.get("gripper_convention_probe") or {}
     assert probe, result.get("blockers")
@@ -689,7 +714,7 @@ def test_worker_composes_from_the_real_bundle_layout(stubbed_arena, tmp_path):
     assert set(by_role) == {"scene_collision", "task_object"}, result.get("blockers")
     for row in by_role.values():
         assert Path(row["resolved_path"]).parent == assets
-    assert result["phase_reached"] == "adapter_wired", result.get("blockers")
+    assert result["phase_reached"] == "grasp_correction_applied", result.get("blockers")
 
 
 def test_the_app_launcher_is_told_to_enable_cameras(stubbed_arena, tmp_path):
