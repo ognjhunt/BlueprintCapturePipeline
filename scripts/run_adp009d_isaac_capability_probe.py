@@ -103,7 +103,10 @@ def _robot_assets() -> dict[str, Any]:
                 if not name.endswith((".usd", ".usda", ".usdc", ".usdz")):
                     continue
                 candidate = f"{lowered}/{name.lower()}"
-                if any(hint in candidate for hint in ROBOT_NAME_HINTS):
+                if any(hint in candidate for hint in ROBOT_NAME_HINTS) and not any(
+                    marker in candidate
+                    for marker in ("/data/tests/", "/tests/", "/unittests/", "/extscache/")
+                ):
                     matches.append(str(Path(current) / name))
                     if len(matches) >= MAX_MATCHES:
                         truncated = True

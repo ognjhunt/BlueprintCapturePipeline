@@ -38,6 +38,24 @@ DEFAULT_SEARCH_ROOTS = (
 )
 
 
+# Trees that contain USDs for reasons other than shipping a robot.
+NON_ASSET_PATH_MARKERS = ("/data/tests/", "/tests/", "/unittests/", "/extscache/")
+
+
+def is_usable_robot_asset(path: str) -> bool:
+    """Whether a Franka-named USD is actually a robot rather than a test scene.
+
+    The capability probe found exactly one Franka-named USD on the bare image
+    and it was a viewport regression fixture - a bolt-tightening scene. Counting
+    it reported a route as viable on an image that cannot support it, which is
+    worse than reporting nothing, because it sends the next launch somewhere
+    there is nothing to find.
+    """
+
+    lowered = str(path).lower()
+    return not any(marker in lowered for marker in NON_ASSET_PATH_MARKERS)
+
+
 class RobotAssetDiscoveryError(ValueError):
     """Stable, sorted robot-asset discovery failures."""
 
@@ -65,7 +83,7 @@ def discover_robot_asset(
             checked.append(str(path))
             # A directory of that name is not the asset; accepting it would
             # fail later and less clearly.
-            if path.is_file():
+            if path.is_file() and is_usable_robot_asset(str(path)):
                 return {
                     "schema_version": ROBOT_ASSET_DISCOVERY_SCHEMA_VERSION,
                     "resolved_path": str(path),
@@ -85,6 +103,8 @@ def discover_robot_asset(
 
 __all__ = [
     "DEFAULT_SEARCH_ROOTS",
+    "NON_ASSET_PATH_MARKERS",
+    "is_usable_robot_asset",
     "FRANKA_CANDIDATE_RELATIVE_PATHS",
     "ROBOT_ASSET_DISCOVERY_SCHEMA_VERSION",
     "RobotAssetDiscoveryError",
