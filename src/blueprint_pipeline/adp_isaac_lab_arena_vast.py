@@ -323,6 +323,7 @@ def run_arena_native_control_vast(
     enable_isaac_smoke: bool = True,
     forward_hf_token: bool = False,
     allowed_active_instance_ids: Sequence[int] = (),
+    vast_launch_lock_file: str | Path | None = None,
     candidate_policy_query_expected: bool = False,
     preferred_gpu_keywords: tuple[str, ...] = (
         "RTX 4090",
@@ -460,6 +461,7 @@ def run_arena_native_control_vast(
                 instance_label_prefix=instance_label_prefix,
                 forward_hf_token=forward_hf_token,
                 allowed_active_instance_ids=allowed_active_instance_ids,
+                vast_launch_lock_file=vast_launch_lock_file,
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     finally:

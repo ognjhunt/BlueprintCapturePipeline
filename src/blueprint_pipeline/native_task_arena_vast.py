@@ -44,6 +44,8 @@ def run_native_task_arena_vast(
         != "native_task_arena_construction_result.v1.json"
     ):
         raise ValueError("native_task_arena_prepared_bundle_contract_invalid")
+    job = Path(job_dir).expanduser().resolve()
+    allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
     return run_arena_native_control_vast(
         approval_path=".",
         job_dir=job_dir,
@@ -62,7 +64,10 @@ def run_native_task_arena_vast(
         instance_label_prefix="blueprint-native-task-arena-",
         blocker_prefix="native_task_arena",
         min_gpu_ram_mb=46_000,
-        allowed_active_instance_ids=allowed_active_instance_ids,
+        allowed_active_instance_ids=allowed_ids,
+        vast_launch_lock_file=(
+            job / "native_task_arena_paid_launch.lock" if allowed_ids else None
+        ),
         candidate_policy_query_expected=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
         minimum_driver_version=MINIMUM_DRIVER_VERSION,

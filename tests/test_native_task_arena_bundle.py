@@ -447,6 +447,49 @@ def test_provider_output_recognizes_task_neutral_construction_result(
     ]
 
 
+def test_explicit_concurrent_authority_uses_a_scoped_launch_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    observed = []
+
+    def fake_run(**kwargs):
+        observed.append(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(module, "run_arena_native_control_vast", fake_run)
+    prepared = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": "construction_canary",
+        "policy_candidate_id": None,
+        "candidate_policy_queried": False,
+        "expected_output_filename": "native_task_arena_construction_result.v1.json",
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    module.run_native_task_arena_vast(
+        job_dir=tmp_path / "serialized",
+        prepared_bundle=prepared,
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+    module.run_native_task_arena_vast(
+        job_dir=tmp_path / "concurrent",
+        prepared_bundle=prepared,
+        paid_resource_admission_grant=None,
+        execute=False,
+        allowed_active_instance_ids=(47358598,),
+    )
+
+    assert observed[0]["vast_launch_lock_file"] is None
+    assert observed[1]["allowed_active_instance_ids"] == (47358598,)
+    assert observed[1]["vast_launch_lock_file"] == (
+        (tmp_path / "concurrent").resolve()
+        / "native_task_arena_paid_launch.lock"
+    )
+
+
 def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:
     packet = _packet(tmp_path, scene_id="840796")
     worker = tmp_path / "worker.py"
