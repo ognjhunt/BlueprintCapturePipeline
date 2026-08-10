@@ -367,21 +367,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # ObjectType is resolved by name so a renamed or missing member reports
         # what the runtime actually offers instead of raising AttributeError.
-        # fix_root_link pins an articulation's base AT ITS SPAWNED POSE while
-        # leaving its joints free - the fixed-base fridge. The v16 attempt used
-        # a bare FixedJoint with no frame, and a frameless world joint means
-        # "world identity": at sim start it dragged the entire fridge to the
-        # origin, 2.4 m from its placement, and six runs measured an arm
-        # sweeping the empty air where the fridge used to be.
-        from isaaclab.sim import schemas as _schemas  # type: ignore
-
+        # The task object spawns Arena-native: a free-base articulation whose
+        # placement comes from initial_pose. Arena registers a set_object_pose
+        # reset event carrying exactly that pose and writes it into the root
+        # at every reset - it is the last pose channel to run, so it always
+        # wins. rt51-rt53 measured the fridge at the origin because the spec
+        # said (0,0,0) here while the placement lived in USD, one channel too
+        # early; fix_root_link only added a third channel to lose with.
         def _task_spawn_addon(kind: str, row: Mapping[str, Any]) -> dict[str, Any]:
-            addon = _spawn_cfg_addon(kind, row)
-            if str(row.get("semantic_role")) == "task_object":
-                addon["articulation_props"] = _schemas.ArticulationRootPropertiesCfg(
-                    fix_root_link=True
-                )
-            return addon
+            return _spawn_cfg_addon(kind, row)
 
         available = {member.name for member in ObjectType}
         assets = []

@@ -807,3 +807,61 @@ def test_the_gasket_detent_is_carried_into_the_scene(stubbed_arena, tmp_path):
     assert seal is not None, result.get("blockers")
     assert seal["breakaway_torque_n_m"] == 12.0
     assert seal["angular_width_degrees"] == 5.0
+
+
+def test_the_task_object_is_arena_native_free_base_at_its_true_pose(
+    stubbed_arena, tmp_path
+):
+    """The reset event is the placement channel; nothing may fight it.
+
+    rt51-rt53 each measured the fridge at the world origin. The cause was
+    never USD composition: Arena registers a set_object_pose reset event
+    carrying the Object's initial_pose, and every spec since rt51 said
+    (0,0,0). fix_root_link was added while chasing that ghost and only adds
+    a second, weaker pose channel. Arena's own articulated tasks spawn
+    free-base and let the event place the object - so does this worker now,
+    with the one true pose flowing through initial_pose.
+    """
+
+    import sys
+
+    runtime = _write_runtime(tmp_path)
+    spec_path = runtime / "adp009d_articulated_scene_spec.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    for row in spec["composition"]["objects"]:
+        if row.get("semantic_role") == "task_object":
+            row["spawn_position_world_m"] = [1.9742142, 1.4792181, 0.0]
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    created = []
+    module = sys.modules["isaaclab_arena.assets.object"]
+    original = module.Object
+
+    class _Recording(original):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            created.append(self)
+
+    module.Object = _Recording
+    try:
+        output = tmp_path / "out" / "result.json"
+        _load_worker().main(
+            [
+                "--runtime-dir", str(runtime),
+                "--output-dir", str(output.parent),
+                "--spec", str(spec_path),
+                "--output", str(output),
+            ]
+        )
+    finally:
+        module.Object = original
+
+    task_objects = [obj for obj in created if obj.name == "task_object"]
+    assert task_objects, "task_object was never constructed"
+    task_object = task_objects[0]
+    # Free base: no articulation_props, so no fixed joint fights the event.
+    assert "articulation_props" not in task_object.spawn_cfg_addon
+    # The event places the object wherever initial_pose says - the true pose.
+    assert tuple(task_object.initial_pose.position_xyz) == pytest.approx(
+        (1.9742142, 1.4792181, 0.0)
+    )
