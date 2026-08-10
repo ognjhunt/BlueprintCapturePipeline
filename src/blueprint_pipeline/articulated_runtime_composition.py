@@ -115,7 +115,9 @@ def plan_articulated_runtime_composition(
             native_joint_name = PurePosixPath(prim_path).name
         if (
             not joint_id
-            or not prim_path.startswith("/Asset/")
+            or not PurePosixPath(prim_path).is_absolute()
+            or len(PurePosixPath(prim_path).parts) < 3
+            or ".." in PurePosixPath(prim_path).parts
             or not native_joint_name
             or PurePosixPath(native_joint_name).name != native_joint_name
         ):

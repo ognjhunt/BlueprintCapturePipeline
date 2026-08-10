@@ -44,11 +44,13 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _source_to_spawned_prim(source_path: str, *, role: str) -> str:
-    if source_path == "/Asset":
+def _source_to_spawned_prim(
+    source_path: str, *, role: str, source_root_prim_path: str
+) -> str:
+    if source_path == source_root_prim_path:
         suffix = ""
-    elif source_path.startswith("/Asset/"):
-        suffix = source_path[len("/Asset") :]
+    elif source_path.startswith(source_root_prim_path + "/"):
+        suffix = source_path[len(source_root_prim_path) :]
     else:
         raise NativeTaskArenaScenePlanError(
             [f"native_task_arena_source_prim_invalid:{source_path}"]
@@ -196,9 +198,6 @@ def _articulation_plan(
         raise NativeTaskArenaScenePlanError(
             ["native_task_arena_task_joint_reset_invalid"]
         ) from exc
-    moving_link = _source_to_spawned_prim(
-        str(state_binding["moving_link_prim_path"]), role="task_object"
-    )
     if task_object_asset_path is None:
         raise NativeTaskArenaScenePlanError(
             ["native_task_arena_task_object_asset_missing"]
@@ -239,11 +238,21 @@ def _articulation_plan(
             else ["native_task_arena_motion_geometry_binding_invalid"]
         )
         raise NativeTaskArenaScenePlanError(errors) from exc
+    source_root = motion_geometry["source_asset_root_prim_path"]
+    moving_link = _source_to_spawned_prim(
+        str(state_binding["moving_link_prim_path"]),
+        role="task_object",
+        source_root_prim_path=source_root,
+    )
     scene_filter = f"{ENV_ROOT}/scene_collision/.*"
     return {
         "task_joint_reset_positions_rad": native_reset,
         "task_joint_prim_paths": {
-            joint_id: _source_to_spawned_prim(path, role="task_object")
+            joint_id: _source_to_spawned_prim(
+                path,
+                role="task_object",
+                source_root_prim_path=source_root,
+            )
             for joint_id, path in sorted(
                 sample_binding["joint_prim_paths"].items()
             )
@@ -253,7 +262,11 @@ def _articulation_plan(
             "moving_link_native_body_name"
         ],
         "handle_prim_paths": [
-            _source_to_spawned_prim(path, role="task_object")
+            _source_to_spawned_prim(
+                path,
+                role="task_object",
+                source_root_prim_path=source_root,
+            )
             for path in state_binding["handle_prim_paths"]
         ],
         "handle_grasp_point_link_m": state_binding["handle_grasp_point_link_m"],

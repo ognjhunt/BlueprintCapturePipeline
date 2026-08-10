@@ -119,6 +119,20 @@ def derive_native_articulated_motion_geometry(
         raise NativeArticulatedMotionGeometryError(
             ["native_articulated_motion_task_object_unreadable"]
         )
+    default_prim = stage.GetDefaultPrim()
+    if not default_prim.IsValid():
+        raise NativeArticulatedMotionGeometryError(
+            ["native_articulated_motion_default_prim_missing"]
+        )
+    source_root = str(default_prim.GetPath())
+    for prim_path, error in (
+        (target_joint_prim_path, "native_articulated_motion_target_joint_outside_root"),
+        (moving_link_prim_path, "native_articulated_motion_moving_link_outside_root"),
+    ):
+        if str(prim_path) != source_root and not str(prim_path).startswith(
+            source_root + "/"
+        ):
+            raise NativeArticulatedMotionGeometryError([error])
     joint_prim = stage.GetPrimAtPath(str(target_joint_prim_path))
     if not joint_prim.IsValid() or not joint_prim.IsA(UsdPhysics.RevoluteJoint):
         raise NativeArticulatedMotionGeometryError(
@@ -231,6 +245,7 @@ def derive_native_articulated_motion_geometry(
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "target_joint_id": str(target_joint_id),
+        "source_asset_root_prim_path": source_root,
         "target_joint_prim_path": str(target_joint_prim_path),
         "body0_prim_path": str(body0.GetPath()),
         "body1_prim_path": str(body1.GetPath()),

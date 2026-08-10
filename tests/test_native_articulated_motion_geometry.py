@@ -55,6 +55,16 @@ def Xform "Asset"
     )
 
 
+def _renamed_root_asset(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace('defaultPrim = "Asset"', 'defaultPrim = "Appliance"')
+        .replace('def Xform "Asset"', 'def Xform "Appliance"')
+        .replace("</Asset/", "</Appliance/"),
+        encoding="utf-8",
+    )
+
+
 def test_joint_and_task_transforms_own_world_motion_geometry(tmp_path: Path) -> None:
     asset = tmp_path / "door.usda"
     _asset(asset)
@@ -107,3 +117,26 @@ def test_digest_mismatch_fails_before_geometry_is_used(tmp_path: Path) -> None:
     assert excinfo.value.errors == (
         "native_articulated_motion_task_object_digest_mismatch",
     )
+
+
+def test_default_prim_is_derived_instead_of_assumed(tmp_path: Path) -> None:
+    asset = tmp_path / "door.usda"
+    _asset(asset)
+    _renamed_root_asset(asset)
+
+    geometry = derive_native_articulated_motion_geometry(
+        task_object_usd_path=asset,
+        task_object_sha256=_sha(asset),
+        target_joint_id="door",
+        target_joint_prim_path="/Appliance/joints/door_hinge",
+        moving_link_prim_path="/Appliance/door",
+        handle_grasp_point_moving_link_m=[0.5, 0.0, 1.0],
+        task_object_pose_world={
+            "position_world_m": [0.0, 0.0, 0.0],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        reset_angle_rad=0.0,
+        scripted_target_angle_rad=math.radians(45.0),
+    )
+
+    assert geometry["source_asset_root_prim_path"] == "/Appliance"

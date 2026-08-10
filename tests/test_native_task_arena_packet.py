@@ -66,10 +66,52 @@ def _camera(role: str) -> dict:
 
 
 def _request(evidence: Path, *, articulated: bool) -> dict:
+    articulated_asset = b'''#usda 1.0
+(
+    defaultPrim = "FixtureRoot"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "FixtureRoot"
+{
+    def Xform "cabinet" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "door" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+    {
+        def Mesh "handle" {}
+    }
+    def Xform "locked" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def "joints"
+    {
+        def PhysicsRevoluteJoint "door_hinge"
+        {
+            uniform token physics:axis = "Z"
+            rel physics:body0 = </FixtureRoot/cabinet>
+            rel physics:body1 = </FixtureRoot/door>
+            point3f physics:localPos0 = (0, 0, 0.8)
+            point3f physics:localPos1 = (0, 0, 0.8)
+            float physics:lowerLimit = 0
+            float physics:upperLimit = 90
+        }
+        def PhysicsRevoluteJoint "locked_hinge"
+        {
+            uniform token physics:axis = "Z"
+            rel physics:body0 = </FixtureRoot/cabinet>
+            rel physics:body1 = </FixtureRoot/locked>
+            point3f physics:localPos0 = (0, 0, 0.2)
+            point3f physics:localPos1 = (0, 0, 0.2)
+            float physics:lowerLimit = 0
+            float physics:upperLimit = 90
+        }
+    }
+}
+'''
     files = {
         "scene_collision": ("scene_collision.usda", b"collision"),
         "scene_appearance": ("scene_appearance.usdc", b"appearance"),
-        "task_object": ("task_object.usda", b"articulation"),
+        "task_object": (
+            "task_object.usda",
+            articulated_asset if articulated else b"rigid",
+        ),
     }
     assets = []
     for role, (filename, content) in files.items():
@@ -110,21 +152,21 @@ def _request(evidence: Path, *, articulated: bool) -> dict:
     bindings = [
         {
             "joint_id": "door_hinge",
-            "joint_prim_path": "/Asset/joints/door_hinge",
+            "joint_prim_path": "/FixtureRoot/joints/door_hinge",
             "native_joint_name": "door_hinge",
             "role": "task_joint",
         },
         {
             "joint_id": "locked_hinge",
-            "joint_prim_path": "/Asset/joints/locked_hinge",
+            "joint_prim_path": "/FixtureRoot/joints/locked_hinge",
             "native_joint_name": "locked_hinge",
             "role": "locked_joint",
         },
     ]
     state = {
-        "moving_link_prim_path": "/Asset/door",
+        "moving_link_prim_path": "/FixtureRoot/door",
         "moving_link_native_body_name": "door",
-        "handle_prim_paths": ["/Asset/door/handle"],
+        "handle_prim_paths": ["/FixtureRoot/door/handle"],
         "handle_grasp_point_link_m": [0.1, 0.2, 0.3],
         "robot_gripper_contact_prim_pattern": "{ENV_REGEX_NS}/Robot/gripper/.*",
         "robot_collision_prim_pattern": "{ENV_REGEX_NS}/Robot/.*",

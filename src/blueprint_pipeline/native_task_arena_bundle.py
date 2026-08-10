@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE
+from .adp_isaac_lab_arena_vast import DEFAULT_IMAGE
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import RECEIPT_SCHEMA_VERSION
@@ -248,13 +248,16 @@ def build_native_task_arena_bundle(
     ensure_dir(runtime)
     shutil.copytree(packet_root, packet_destination, symlinks=False)
     shutil.copy2(worker, runtime / "adp_arena_provider_runner.py")
+    package = runtime / "blueprint_pipeline"
+    ensure_dir(package)
+    (package / "__init__.py").write_text("", encoding="utf-8")
     module_rows: list[dict[str, Any]] = []
     for module in sorted(modules, key=lambda path: path.name):
-        destination = runtime / module.name
+        destination = package / module.name
         shutil.copy2(module, destination)
         module_rows.append(
             {
-                "filename": module.name,
+                "relative_path": f"blueprint_pipeline/{module.name}",
                 "size_bytes": destination.stat().st_size,
                 "sha256": _sha256(destination),
             }

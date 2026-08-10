@@ -283,7 +283,12 @@ def _articulated_task_state_binding(
 
     def _source_prim(field: str) -> str:
         path = str(value.get(field) or "")
-        if not path.startswith("/Asset/") or ".." in PurePosixPath(path).parts:
+        pure = PurePosixPath(path)
+        if (
+            not pure.is_absolute()
+            or len(pure.parts) < 3
+            or ".." in pure.parts
+        ):
             errors.append(f"native_task_runtime_state_prim_invalid:{field}")
         return path
 
