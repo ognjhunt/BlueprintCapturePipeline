@@ -110,6 +110,23 @@ def _persist(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
 
 
+# Which object types already receive activate_contact_sensors from Arena's own
+# generator. Passing it again through spawn_cfg_addon is not additive - it is
+# splatted into the same UsdFileCfg call and raises "got multiple values".
+# BASE is the one that does not get it, and a contact sensor on geometry
+# without it reads false forever: a wrong answer rather than an error.
+ARENA_TYPES_WITH_CONTACT_SENSORS_ENABLED = frozenset({"ARTICULATION", "RIGID"})
+
+
+def _spawn_cfg_addon(object_type: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    """Extra UsdFileCfg keywords for one object, without colliding."""
+
+    addon: dict[str, Any] = {"visible": bool(row.get("visible", True))}
+    if str(object_type) not in ARENA_TYPES_WITH_CONTACT_SENSORS_ENABLED:
+        addon["activate_contact_sensors"] = True
+    return addon
+
+
 def _phase(result: dict[str, Any], name: str) -> None:
     """Record a phase and announce it, in that order.
 
@@ -332,14 +349,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         float(v) for v in (row.get("initial_position_world_m") or (0, 0, 0))
                     )
                 ),
-                spawn_cfg_addon={
-                    "visible": bool(row.get("visible", True)),
-                    # Arena's object cfgs do not set this; the DROID robot's
-                    # own spawn does. Without it a contact sensor on this prim
-                    # is attached to geometry that never reports, so every
-                    # contact reads false and the task looks untouched.
-                    "activate_contact_sensors": True,
-                },
+                spawn_cfg_addon=_spawn_cfg_addon(kind, row),
             )
             assets.append(obj)
             if row.get("semantic_role") == "task_object":

@@ -228,3 +228,55 @@ def test_contact_sensor_prim_paths_match_the_embodiment_source():
             f"worker uses {path!r}; embodiment declares roots {sorted(robot_roots)} "
             "(these differ by case, which matches nothing and raises IndexError)"
         )
+
+
+def test_spawn_cfg_addon_never_duplicates_what_arena_already_passes():
+    """spawn_cfg_addon is splatted into the same UsdFileCfg call.
+
+    It is not additive. Arena's _generate_articulation_cfg and
+    _generate_rigid_cfg already pass activate_contact_sensors; repeating it
+    raises "got multiple values for keyword argument". _generate_base_cfg does
+    not pass it, and a contact sensor on a BASE prim without it reads false
+    forever - a wrong answer rather than an error, which is worse.
+
+    So the safe set is per object type, and it is read from Arena's source
+    rather than remembered.
+    """
+
+    root = _arena_source()
+    src = (root / "isaaclab_arena/assets/object.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    generators = {
+        "_generate_articulation_cfg": "ARTICULATION",
+        "_generate_rigid_cfg": "RIGID",
+        "_generate_base_cfg": "BASE",
+    }
+    already: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name not in generators:
+            continue
+        keywords: set[str] = set()
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call) and getattr(inner.func, "id", "") == "UsdFileCfg":
+                keywords |= {k.arg for k in inner.keywords if k.arg}
+        already[generators[node.name]] = keywords
+
+    assert already.get("ARTICULATION"), "articulation generator not found"
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("scene_worker_addon", WORKER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    violations = []
+    for object_type, arena_keywords in already.items():
+        addon = set(module._spawn_cfg_addon(object_type, {"visible": True}))
+        clash = addon & arena_keywords
+        if clash:
+            violations.append(f"{object_type}: duplicates {sorted(clash)}")
+
+    assert not violations, "spawn_cfg_addon collisions:\n  " + "\n  ".join(violations)
+    # And the one type Arena leaves alone must actually get it.
+    assert "activate_contact_sensors" in module._spawn_cfg_addon("BASE", {})
