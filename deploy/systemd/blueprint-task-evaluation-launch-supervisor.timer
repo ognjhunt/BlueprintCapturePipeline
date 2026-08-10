@@ -1,0 +1,13 @@
+[Unit]
+Description=Optionally inspect Blueprint Task Evaluation launch state
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=blueprint-task-evaluation-launch-supervisor.service
+
+[Install]
+WantedBy=timers.target
+
