@@ -31,6 +31,8 @@ from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE
 
 ARTICULATED_ISAAC_BUNDLE_SCHEMA_VERSION = "adp009d_articulated_isaac_bundle.v1"
 PROBE_SPEC_FILENAME = "articulated_native_probe_spec.json"
+PROBE_SPEC_SCHEMA_VERSION = "articulated_native_probe_spec.v1"
+PRIMARY_STAGE_NAME = "articulation_stage"
 ENTRYPOINT = r'''#!/usr/bin/env bash
 set +e
 BUNDLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -86,6 +88,9 @@ def build_articulated_isaac_bundle(
     source_commit_sha: str,
     container_image: str = DEFAULT_IMAGE,
     generated_at: str | None = None,
+    probe_spec_filename: str = PROBE_SPEC_FILENAME,
+    probe_spec_schema_version: str = PROBE_SPEC_SCHEMA_VERSION,
+    primary_stage_name: str = PRIMARY_STAGE_NAME,
 ) -> dict[str, Any]:
     """Zip the frozen probe plus the articulated worker into a provider bundle."""
 
@@ -102,7 +107,10 @@ def build_articulated_isaac_bundle(
     if errors:
         raise ArticulatedIsaacBundleError(errors)
 
-    spec_path = root / PROBE_SPEC_FILENAME
+    # Probe kinds multiply; the transport does not. Forking this builder per
+    # kind would fork the slot layout, the image pin and the digest checks with
+    # it, and those are the parts whose drift costs a launch to discover.
+    spec_path = root / str(probe_spec_filename)
     if not spec_path.is_file():
         raise ArticulatedIsaacBundleError(["articulated_isaac_bundle_probe_spec_missing"])
     try:
@@ -113,7 +121,7 @@ def build_articulated_isaac_bundle(
         ) from exc
     if spec.get("status") != "frozen_not_executed":
         errors.append("articulated_isaac_bundle_probe_not_frozen")
-    if spec.get("schema_version") != "articulated_native_probe_spec.v1":
+    if spec.get("schema_version") != str(probe_spec_schema_version):
         errors.append("articulated_isaac_bundle_probe_schema_invalid")
 
     stages = spec.get("stages") or {}
@@ -137,7 +145,7 @@ def build_articulated_isaac_bundle(
     ensure_dir(native)
     for path in staged.values():
         shutil.copy2(path, native / path.name)
-    shutil.copy2(spec_path, native / PROBE_SPEC_FILENAME)
+    shutil.copy2(spec_path, native / spec_path.name)
     shutil.copy2(worker, runtime / "isaac_realistic_runtime_runner.py")
     entrypoint = runtime / "run_isaac_realistic_runtime.sh"
     entrypoint.write_text(ENTRYPOINT, encoding="utf-8")
@@ -148,7 +156,7 @@ def build_articulated_isaac_bundle(
     # articulation stage is the scene the runtime opens, and the three
     # manifests carry the same placeholder contract the rigid probe uses.
     articulation = native / Path(
-        str((stages.get("articulation_stage") or {}).get("path") or "")
+        str((stages.get(str(primary_stage_name)) or {}).get("path") or "")
     ).name
     for name in ("generated_site_scene.usda", "generated_site_scene.usd"):
         shutil.copy2(articulation, runtime / name)
@@ -179,7 +187,7 @@ def build_articulated_isaac_bundle(
                 "episode_spec_manifest": "episode_spec_manifest.json",
                 "runtime_runner": "isaac_realistic_runtime_runner.py",
                 "entrypoint": "run_isaac_realistic_runtime.sh",
-                "probe_spec": f"native/{PROBE_SPEC_FILENAME}",
+                "probe_spec": f"native/{spec_path.name}",
             },
             "proof_boundaries": {
                 "native_articulation_readback_only": True,
@@ -227,7 +235,7 @@ def build_articulated_isaac_bundle(
         "relative_paths": {
             "entrypoint": "provider_runtime/run_isaac_realistic_runtime.sh",
             "worker": "provider_runtime/isaac_realistic_runtime_runner.py",
-            "probe_spec": f"provider_runtime/native/{PROBE_SPEC_FILENAME}",
+            "probe_spec": f"provider_runtime/native/{spec_path.name}",
         },
         "proof_boundaries": {
             "native_readback_only": True,

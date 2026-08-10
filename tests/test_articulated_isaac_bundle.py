@@ -13,6 +13,18 @@ from blueprint_pipeline.articulated_isaac_bundle import (
 )
 
 
+def _worker(tmp_path: Path) -> Path:
+    return Path(__file__).resolve().parents[1] / (
+        "scripts/run_adp009d_articulated_isaac_worker.py"
+    )
+
+
+def _digest_of(path: Path) -> str:
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _probe_root(tmp_path: Path) -> Path:
     """A frozen native probe as materialize_articulated_native_probe writes it."""
 
@@ -254,3 +266,83 @@ def test_the_worker_result_attests_to_itself(tmp_path: Path) -> None:
     assert written["result_digest"] == canonical_digest(
         written, digest_field="result_digest"
     )
+
+
+def test_a_different_probe_kind_bundles_through_the_same_builder(tmp_path: Path) -> None:
+    """Probe kinds multiply; the transport does not.
+
+    Forking this builder per probe would fork the slot layout, the image pin
+    and the digest checks with it, and those are exactly the parts whose drift
+    costs a launch to discover.
+    """
+
+    root = tmp_path / "controls_probe"
+    root.mkdir()
+    stage = root / "controls_stage.usda"
+    stage.write_text("#usda 1.0\n", encoding="utf-8")
+    spec = {
+        "schema_version": "articulated_controls_probe_spec.v1",
+        "status": "frozen_not_executed",
+        "stages": {
+            "controls_stage": {
+                "path": str(stage),
+                "sha256": _digest_of(stage),
+            }
+        },
+        "required_readbacks": ["zero_action_door_stays_shut"],
+    }
+    (root / "articulated_controls_probe_spec.json").write_text(
+        json.dumps(spec), encoding="utf-8"
+    )
+
+    receipt = build_articulated_isaac_bundle(
+        probe_root=root,
+        job_dir=tmp_path / "job",
+        worker_source=_worker(tmp_path),
+        source_commit_sha="b" * 40,
+        probe_spec_filename="articulated_controls_probe_spec.json",
+        probe_spec_schema_version="articulated_controls_probe_spec.v1",
+        primary_stage_name="controls_stage",
+    )
+
+    assert receipt["probe_names"] == ["zero_action_door_stays_shut"]
+
+
+def test_a_spec_whose_schema_is_not_the_declared_one_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Bundling the wrong probe kind would run the wrong worker against it."""
+
+    root = tmp_path / "mismatched"
+    root.mkdir()
+    stage = root / "controls_stage.usda"
+    stage.write_text("#usda 1.0\n", encoding="utf-8")
+    (root / "articulated_controls_probe_spec.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "articulated_native_probe_spec.v1",
+                "status": "frozen_not_executed",
+                "stages": {
+                    "controls_stage": {
+                        "path": str(stage),
+                        "sha256": _digest_of(stage),
+                    }
+                },
+                "required_readbacks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ArticulatedIsaacBundleError) as excinfo:
+        build_articulated_isaac_bundle(
+            probe_root=root,
+            job_dir=tmp_path / "job2",
+            worker_source=_worker(tmp_path),
+            source_commit_sha="c" * 40,
+            probe_spec_filename="articulated_controls_probe_spec.json",
+            probe_spec_schema_version="articulated_controls_probe_spec.v1",
+            primary_stage_name="controls_stage",
+        )
+
+    assert any("probe_schema_invalid" in error for error in excinfo.value.errors)
