@@ -315,7 +315,11 @@ def materialize_native_task_runtime_source_packet(
 
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    isaaclab_prefixes = ["LICENSE"] + [
+    # Isaac Lab resolves its Kit experience files relative to the repository
+    # root at import time.  They are runtime inputs, not optional developer
+    # metadata, so keep the complete released ``apps`` directory in the exact
+    # source closure alongside the Python packages.
+    isaaclab_prefixes = ["LICENSE", "apps"] + [
         f"source/{name}" for name in ISAACLAB_PACKAGE_NAMES
     ]
     isaaclab, isaaclab_blobs = _repository_rows(

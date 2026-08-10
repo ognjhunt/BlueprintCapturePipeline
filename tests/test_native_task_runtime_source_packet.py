@@ -46,7 +46,12 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
             "ignored.txt": "must not be packaged\n",
         }
     else:
-        files = {"LICENSE": "BSD-3-Clause fixture\n", "ignored.txt": "omit\n"}
+        files = {
+            "LICENSE": "BSD-3-Clause fixture\n",
+            "apps/isaaclab.python.kit": "[settings]\nfixture = true\n",
+            "apps/rendering_modes/quality.kit": "[settings]\nquality = true\n",
+            "ignored.txt": "omit\n",
+        }
         for name in ISAACLAB_PACKAGE_NAMES:
             files[f"source/{name}/setup.py"] = (
                 "from setuptools import setup; " f"setup(name='{name}')\n"
@@ -124,6 +129,12 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         names = set(archive.namelist())
         assert "runtime_sources/isaaclab/ignored.txt" not in names
         assert "runtime_sources/arena/ignored.txt" not in names
+        assert (
+            "runtime_sources/isaaclab/apps/isaaclab.python.kit" in names
+        )
+        assert (
+            "runtime_sources/isaaclab/apps/rendering_modes/quality.kit" in names
+        )
         manifest = json.loads(
             archive.read("native_task_runtime_source_manifest.v1.json")
         )

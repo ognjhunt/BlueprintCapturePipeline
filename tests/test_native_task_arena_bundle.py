@@ -134,7 +134,10 @@ def _runtime_source_packet(root: Path) -> Path:
                 "isaaclab_arena/__init__.py": "VERSION='fixture'\n",
             }
         else:
-            files = {"LICENSE": "BSD fixture\n"}
+            files = {
+                "LICENSE": "BSD fixture\n",
+                "apps/isaaclab.python.kit": "[settings]\nfixture = true\n",
+            }
             for name in ISAACLAB_PACKAGE_NAMES:
                 files[f"source/{name}/setup.py"] = (
                     "from setuptools import setup; " f"setup(name='{name}')\n"
