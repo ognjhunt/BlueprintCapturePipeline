@@ -326,7 +326,11 @@ def build_native_task_arena_environment(
             super().__init__(
                 name=name,
                 prim_path=prim_path,
-                object_type=ObjectType.SPAWNER,
+                # Arena has no SPAWNER object kind.  A procedural spawner is
+                # still an AssetBaseCfg owner, represented by BASE plus the
+                # mutually exclusive spawner_cfg input.
+                object_type=ObjectType.BASE,
+                spawner_cfg=spawner_cfg,
             )
 
     robot = plan["robot"]

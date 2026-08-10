@@ -520,6 +520,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             build_native_task_arena_environment,
         )
 
+        result["phase_reached"] = "environment_build"
         _announce("environment_build")
         built = build_native_task_arena_environment(
             plan, device="cuda:0", bundle_root=packet

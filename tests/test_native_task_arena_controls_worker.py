@@ -38,6 +38,9 @@ def test_controls_worker_source_has_no_scene_task_or_policy_identity() -> None:
     assert source.index(
         "simulation_app, launch_receipt = launch_native_task_isaaclab("
     ) < source.index("dependency_matrix = preflight_native_dependency_matrix(")
+    assert source.index(
+        'result["phase_reached"] = "environment_build"'
+    ) < source.index("built = build_native_task_arena_environment(")
 
 
 def test_controls_manifest_rejects_policy_or_construction_mode(tmp_path: Path) -> None:

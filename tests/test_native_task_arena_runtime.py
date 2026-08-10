@@ -148,7 +148,6 @@ class _ObjectType(enum.Enum):
     BASE = "BASE"
     RIGID = "RIGID"
     ARTICULATION = "ARTICULATION"
-    SPAWNER = "SPAWNER"
 
 
 class _Asset:
@@ -166,6 +165,7 @@ class _Object(_Asset):
         usd_path=None,
         initial_pose=None,
         spawn_cfg_addon=None,
+        spawner_cfg=None,
         **_kwargs,
     ):
         super().__init__(name)
@@ -174,6 +174,7 @@ class _Object(_Asset):
         self.usd_path = usd_path
         self.initial_pose = initial_pose
         self.spawn_cfg_addon = spawn_cfg_addon or {}
+        self.spawner_cfg = spawner_cfg
         self.object_cfg = SimpleNamespace(init_state=_Replaceable(joint_pos={}))
 
 
@@ -487,6 +488,27 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
     assert _ArenaBuilder.last.cfg.device == "cuda:0"
     assert _ArenaBuilder.last.cfg.seed == 17
     assert _ArenaBuilder.last.cfg.resolve_on_reset is False
+
+
+@pytest.mark.parametrize("task_object_type", ["RIGID", "ARTICULATION"])
+def test_spawner_backed_light_uses_upstream_base_object_type(
+    monkeypatch, task_object_type: str
+) -> None:
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    plan["objects"][1]["object_type"] = task_object_type
+    if task_object_type == "RIGID":
+        plan["task_kind"] = "pick_and_place"
+        plan["articulation"]["contact_sensors"] = []
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    build_native_task_arena_environment(plan)
+
+    light = next(
+        asset for asset in _ArenaBuilder.last.arena_env.scene.assets if asset.name == "light"
+    )
+    assert light.object_type is _ObjectType.BASE
+    assert light.spawner_cfg.intensity == pytest.approx(1500.0)
 
 
 def test_many_to_many_contact_patterns_fail_before_native_build(monkeypatch) -> None:
