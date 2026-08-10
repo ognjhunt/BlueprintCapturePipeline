@@ -107,9 +107,7 @@ def _extract_result(source: Path, destination: Path) -> dict[str, Any]:
     execution = _read_json(result_path)
     if not execution:
         blockers.append("simready_isaac_runtime_result_missing")
-    elif canonical_digest(execution, digest_field="result_digest") != execution.get(
-        "result_digest"
-    ):
+    elif not _runtime_result_digest_valid(execution):
         blockers.append("simready_isaac_runtime_result_digest_invalid")
     return {
         "status": "completed" if not blockers else "blocked",
@@ -120,6 +118,38 @@ def _extract_result(source: Path, destination: Path) -> dict[str, Any]:
 
 
 RIGID_PROBE_NAMES = frozenset({"drop", "slide", "tip", "gripper"})
+
+
+def _runtime_result_digest_valid(execution: Mapping[str, Any]) -> bool:
+    """Verify the canonical result and one retained, verifiable legacy encoding.
+
+    One articulated-controls worker wrote the same digest into both
+    ``result_digest`` and ``_canonical_digest`` after calculating it over the
+    payload that contained neither field.  The values remain independently
+    verifiable, but the extra alias makes the normal single-field verifier
+    reject them.  Accept exactly that shape so a retained paid result can be
+    adjudicated without rewriting it or paying for a retry.  New workers emit
+    only ``result_digest``.
+    """
+
+    observed = execution.get("result_digest")
+    if not isinstance(observed, str):
+        return False
+    if canonical_digest(execution, digest_field="result_digest") == observed:
+        return True
+    legacy = execution.get("_canonical_digest")
+    if legacy != observed:
+        return False
+    payload = dict(execution)
+    payload.pop("result_digest", None)
+    payload.pop("_canonical_digest", None)
+    return canonical_digest(payload) == observed
+
+
+def _probe_name(row: Mapping[str, Any]) -> str:
+    """Read the current probe key, or the one retained legacy worker emitted."""
+
+    return str(row.get("probe") or row.get("name") or "")
 
 
 def _execution_blockers(
@@ -139,12 +169,86 @@ def _execution_blockers(
         blockers.append("simready_isaac_replacement_count_invalid")
     probes = execution.get("probe_results")
     if not isinstance(probes, list) or {
-        str(row.get("probe")) for row in probes if isinstance(row, Mapping)
+        _probe_name(row) for row in probes if isinstance(row, Mapping)
     } != set(expected_probe_names):
         blockers.append("simready_isaac_probe_set_invalid")
     elif any(not isinstance(row, Mapping) or row.get("passed") is not True for row in probes):
         blockers.append("simready_isaac_probe_failure")
     return blockers
+
+
+def adjudicate_retained_simready_isaac_execution(
+    *,
+    execution_path: str | Path,
+    bundle_receipt_path: str | Path,
+    destination: str | Path,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Independently adjudicate an immutable result the outer lane misread.
+
+    The source result is never changed.  This derives a new receipt that binds
+    its byte digest, verifies its self-attestation, and applies the exact probe
+    set frozen in the bundle receipt.  It is useful only for bookkeeping
+    failures after scientific execution; a missing or failed probe remains a
+    blocker and cannot be caller-overridden.
+    """
+
+    execution_file = Path(execution_path).expanduser().resolve()
+    bundle_file = Path(bundle_receipt_path).expanduser().resolve()
+    execution = _read_json(execution_file)
+    bundle = _read_json(bundle_file)
+    blockers: list[str] = []
+    if not execution:
+        blockers.append("simready_isaac_retained_execution_missing")
+    elif not _runtime_result_digest_valid(execution):
+        blockers.append("simready_isaac_runtime_result_digest_invalid")
+    if not bundle:
+        blockers.append("simready_isaac_bundle_receipt_missing")
+    elif bundle.get("receipt_digest") != canonical_digest(
+        bundle, digest_field="receipt_digest"
+    ):
+        blockers.append("simready_isaac_bundle_receipt_digest_invalid")
+    probe_names = frozenset(str(name) for name in (bundle.get("probe_names") or []))
+    if not probe_names:
+        blockers.append("simready_isaac_expected_probe_set_missing")
+    if execution and probe_names:
+        blockers.extend(_execution_blockers(execution, probe_names))
+
+    receipt: dict[str, Any] = {
+        "schema_version": "simready_isaac_retained_execution_adjudication.v1",
+        "generated_at": generated_at or utc_now_iso(),
+        "status": "passed" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "source_execution": {
+            "path": str(execution_file),
+            "sha256": _sha256(execution_file) if execution_file.is_file() else None,
+            "result_digest": execution.get("result_digest"),
+            "retained_legacy_encoding": "_canonical_digest" in execution,
+        },
+        "source_bundle_receipt": {
+            "path": str(bundle_file),
+            "sha256": _sha256(bundle_file) if bundle_file.is_file() else None,
+            "receipt_digest": bundle.get("receipt_digest"),
+            "bundle_sha256": bundle.get("bundle_sha256"),
+        },
+        "expected_probe_names": sorted(probe_names),
+        "observed_probe_results": list(execution.get("probe_results") or []),
+        "native_isaac_executed": execution.get("native_isaac_executed") is True,
+        "physical_success_established": False,
+        "claim_boundary": {
+            "derived_after_execution": True,
+            "source_result_bytes_unchanged": True,
+            "adjudication_is_not_a_paid_retry": True,
+            "adjudication_is_not_robot_task_success": True,
+            "simulator_execution_is_not_physical_truth": True,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    write_json(Path(destination), receipt)
+    return receipt
 
 
 def run_simready_isaac_vast(

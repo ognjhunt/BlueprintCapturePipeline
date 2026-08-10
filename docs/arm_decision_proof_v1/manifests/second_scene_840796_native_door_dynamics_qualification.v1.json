@@ -1,0 +1,96 @@
+{
+  "schema_version": "second_scene_840796_native_door_dynamics_qualification.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009D",
+  "publisher_scene_id": "840796",
+  "target_instance_id": "123",
+  "task_id": "840796_refrigerator_upper_door_open_v1",
+  "status": "native_door_dynamics_qualified_not_robot_control",
+  "immutable_execution_commit": "a560db5e973f41c7b5f9de26b512192e1af1f4fa",
+  "run": {
+    "provider": "vast",
+    "instance_id": 47332682,
+    "gpu": "RTX 4090",
+    "estimated_cost_usd": 0.159293,
+    "hard_cap_usd": 3.0,
+    "hard_ttl_seconds": 5400,
+    "automatic_retry_executed": false,
+    "teardown_completed": true,
+    "provider_zero_after_teardown": true
+  },
+  "outer_lane_receipt": {
+    "status": "blocked",
+    "blockers": [
+      "simready_isaac_probe_set_invalid",
+      "simready_isaac_runtime_result_digest_invalid"
+    ],
+    "reason": "the immutable worker emitted retained legacy result aliases that the outer lane did not recognize",
+    "scientific_execution_failed": false
+  },
+  "independent_adjudication": {
+    "status": "passed",
+    "receipt_digest": "sha256:0548943d5b8b5aa6cba71c27e7ae7c43ecc037f236eef7774cc417268b95369e",
+    "source_result_bytes_unchanged": true,
+    "expected_probe_count": 8,
+    "passed_probe_count": 8
+  },
+  "measurements": {
+    "zero_action_maximum_angle_degrees": 0.0000005421453010967525,
+    "zero_action_inside_success_window": false,
+    "forced_positive_angle_at_release_degrees": 30.651151657104492,
+    "forced_positive_settled_angle_degrees": 51.199275970458984,
+    "forced_positive_inside_success_window": true,
+    "forced_positive_motion_is_decaying": true,
+    "deterministic_replay_delta_degrees": 0.0
+  },
+  "passed_readbacks": [
+    "articulation_root_identity",
+    "task_joint_identity",
+    "zero_action_door_stays_shut",
+    "forced_positive_reaches_success_window",
+    "forced_positive_holds_after_release",
+    "seal_resists_before_breakaway",
+    "no_initial_penetration",
+    "deterministic_replay_within_tolerance"
+  ],
+  "evidence": {
+    "root": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_simready_v12_handle/controls_run_qualify",
+    "outer_lane_receipt": {
+      "relative_path": "adp009b_simready_isaac_vast_result.json",
+      "size_bytes": 1210,
+      "sha256": "sha256:d5637b18fbdea41f6474f696c4ceb3f64f3eb5c9eb84b81c31abcfd04f23e309"
+    },
+    "immutable_execution": {
+      "relative_path": "attempts/attempt_001/immutable_execution/isaac_runtime_result.json",
+      "size_bytes": 11376,
+      "sha256": "sha256:a76ab4321e8cbf9b4e9e88460970dee67f2a552de2a93d44e0644e90c434cdbf"
+    },
+    "teardown": {
+      "relative_path": "attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+      "size_bytes": 1358,
+      "sha256": "sha256:158ac47fd53d9c3db425896bdb478af6d7c834aa4e03dea899c6b335d8cd5121"
+    },
+    "derived_adjudication": {
+      "relative_path": "derived_adjudication_v1/retained_execution_adjudication.json",
+      "size_bytes": 2610,
+      "sha256": "sha256:7d57bd5979b973844c848ee91c445ddea291449c42a932fde9e64ac486e1cffc"
+    },
+    "provider_zero": {
+      "relative_path": "derived_adjudication_v1/provider_zero_after_teardown.json",
+      "size_bytes": 480,
+      "sha256": "sha256:04eb226ec9d43e29d4e0bb3f519ae23ddd7157bd3aabe1dc8a2a2f47c14284d3",
+      "provider_zero_digest": "sha256:1629ea4a755a5c914cd3c4e052412e744bdd89e633694aba274b93189ac803a6"
+    }
+  },
+  "claim_boundary": {
+    "torque_applied_directly_at_the_hinge": true,
+    "no_robot_or_grasp_in_this_probe": true,
+    "this_is_not_the_scripted_positive_task_control": true,
+    "this_is_not_a_learned_policy_episode": true,
+    "native_door_dynamics_only": true,
+    "simulator_execution_is_not_physical_truth": true,
+    "physical_equivalence_proven": false
+  },
+  "next_gate": "native Panda pose-IK action recording and exact reset replay through the shared action seam",
+  "receipt_digest": "sha256:96537228fb04a5e38939677794dd3b643ecf3c0dff1c3087578bdac1e9e87841"
+}

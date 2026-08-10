@@ -74,8 +74,8 @@ def test_a_close_that_fails_does_not_lose_an_already_written_result(tmp_path) ->
     assert json.loads(output.read_text(encoding="utf-8"))["status"] == "completed"
 
 
-def test_the_persisted_result_always_carries_both_digest_fields(tmp_path) -> None:
-    """The collector reads _canonical_digest; a result without it is discarded."""
+def test_the_persisted_result_carries_the_lanes_canonical_digest(tmp_path) -> None:
+    """The worker and collector must use the same one-field digest contract."""
 
     module = _worker()
     output = tmp_path / "result.json"
@@ -87,8 +87,14 @@ def test_the_persisted_result_always_carries_both_digest_fields(tmp_path) -> Non
     )
 
     stored = json.loads(output.read_text(encoding="utf-8"))
-    assert stored["result_digest"] == stored["_canonical_digest"]
     assert stored["result_digest"].startswith("sha256:")
+    assert "_canonical_digest" not in stored
+
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    assert stored["result_digest"] == canonical_digest(
+        stored, digest_field="result_digest"
+    )
 
 
 def test_the_angle_trace_survives_into_the_result_at_bounded_size() -> None:

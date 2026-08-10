@@ -51,9 +51,6 @@ def _canonical_digest(value: Mapping[str, Any], *, field: str) -> str:
 
 def _persist(path: Path, value: dict[str, Any]) -> None:
     value["result_digest"] = _canonical_digest(value, field="result_digest")
-    # The lane's collector reads _canonical_digest; keeping both means a result
-    # is never discarded for carrying the wrong field name.
-    value["_canonical_digest"] = value["result_digest"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -449,7 +446,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         required = list(spec.get("required_readbacks") or [])
         result["probe_results"] = [
             {
-                "name": name,
+                "probe": name,
                 "passed": bool((result["readbacks"].get(name) or {}).get("passed")),
             }
             for name in required

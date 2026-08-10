@@ -52,6 +52,94 @@ def _completed_execution() -> dict:
     return value
 
 
+def test_runtime_digest_accepts_only_verifiable_current_or_retained_encoding() -> None:
+    current = _completed_execution()
+    assert runtime._runtime_result_digest_valid(current) is True
+
+    retained = dict(current)
+    digest = retained.pop("result_digest")
+    retained["result_digest"] = digest
+    retained["_canonical_digest"] = digest
+    assert runtime._runtime_result_digest_valid(retained) is True
+
+    retained["replacement_count"] = 2
+    assert runtime._runtime_result_digest_valid(retained) is False
+
+
+def test_retained_articulated_probe_key_is_adjudicated_without_weakening_set() -> None:
+    expected = frozenset({"zero_action_door_stays_shut", "positive_holds"})
+    retained = {
+        "status": "completed",
+        "blockers": [],
+        "native_isaac_executed": True,
+        "physical_success_established": False,
+        "source_target_collider_active": False,
+        "replacement_count": 1,
+        "probe_results": [
+            {"name": "zero_action_door_stays_shut", "passed": True},
+            {"name": "positive_holds", "passed": True},
+        ],
+    }
+
+    assert runtime._execution_blockers(retained, expected) == []
+    assert "simready_isaac_probe_set_invalid" in runtime._execution_blockers(
+        retained, frozenset({"different_probe"})
+    )
+
+
+def test_retained_execution_adjudication_binds_bytes_and_cannot_override_failure(
+    tmp_path: Path,
+) -> None:
+    execution = _completed_execution()
+    execution["probe_results"] = [
+        {"name": row["probe"], "passed": row["passed"]}
+        for row in execution["probe_results"]
+    ]
+    execution.pop("result_digest")
+    digest = canonical_digest(execution)
+    execution["result_digest"] = digest
+    execution["_canonical_digest"] = digest
+    execution_path = tmp_path / "execution.json"
+    write_json(execution_path, execution)
+
+    bundle = {
+        "status": "ready",
+        "probe_names": ["drop", "slide", "tip", "gripper"],
+        "bundle_sha256": "sha256:" + "a" * 64,
+        "receipt_digest": "",
+    }
+    bundle["receipt_digest"] = canonical_digest(bundle, digest_field="receipt_digest")
+    bundle_path = tmp_path / "bundle.json"
+    write_json(bundle_path, bundle)
+
+    receipt = runtime.adjudicate_retained_simready_isaac_execution(
+        execution_path=execution_path,
+        bundle_receipt_path=bundle_path,
+        destination=tmp_path / "adjudication.json",
+        generated_at="2026-08-10T00:00:00+00:00",
+    )
+
+    assert receipt["status"] == "passed"
+    assert receipt["source_execution"]["retained_legacy_encoding"] is True
+    assert receipt["source_execution"]["sha256"] == _sha256(execution_path)
+
+    execution["probe_results"][0]["passed"] = False
+    execution.pop("result_digest")
+    execution.pop("_canonical_digest")
+    digest = canonical_digest(execution)
+    execution["result_digest"] = digest
+    execution["_canonical_digest"] = digest
+    write_json(execution_path, execution)
+    blocked = runtime.adjudicate_retained_simready_isaac_execution(
+        execution_path=execution_path,
+        bundle_receipt_path=bundle_path,
+        destination=tmp_path / "blocked.json",
+        generated_at="2026-08-10T00:00:01+00:00",
+    )
+    assert blocked["status"] == "blocked"
+    assert "simready_isaac_probe_failure" in blocked["blockers"]
+
+
 def test_dry_run_never_stages_or_mutates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         runtime,
