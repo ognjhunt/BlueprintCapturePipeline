@@ -32,11 +32,26 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+# The bundle does not keep the runtime module and the modules it imports in
+# one directory: this file is installed as provider_runtime/<runtime>.py while
+# extra natives land in provider_runtime/native/. Both are added before the
+# import so a flat bundle resolves without depending on the working directory,
+# and the repository src tree stays the last resort it is.
+for _candidate in (
+    Path(__file__).resolve().parent / "native",
+    Path(__file__).resolve().parent,
+):
+    import sys as _sys
+
+    if _candidate.is_dir() and str(_candidate) not in _sys.path:
+        _sys.path.insert(0, str(_candidate))
+
 try:  # flat provider bundle
     from runtime_asset_resolution import (
         RuntimeAssetResolutionError,
         resolve_runtime_asset,
     )
+    from gripper_convention_probe import measure_gripper_convention
 except ModuleNotFoundError:  # repository checkout
     import sys as _sys
 
@@ -44,6 +59,9 @@ except ModuleNotFoundError:  # repository checkout
     from blueprint_pipeline.runtime_asset_resolution import (
         RuntimeAssetResolutionError,
         resolve_runtime_asset,
+    )
+    from blueprint_pipeline.gripper_convention_probe import (
+        measure_gripper_convention,
     )
 
 
@@ -417,13 +435,53 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         robot = scene[embodiment.name] if hasattr(embodiment, "name") else scene["robot"]
+
+        def _to_torch(value):
+            return value.detach() if hasattr(value, "detach") else torch.as_tensor(value)
+
+        # Which command closes the fingers is a property of Arena's action
+        # convention, not of DROID's, and an inverted one turns every grasp
+        # into a release - a policy that reaches the handle and drops it.
+        # Measure it, and take the two widths the adapter needs from the same
+        # measurement instead of hardcoding them.
+        action_dim = int(env.unwrapped.action_manager.total_action_dim)
+        body_names = list(getattr(robot.data, "body_names", []) or [])
+        finger_indices = [
+            body_names.index(name)
+            for name in ("left_inner_finger", "right_inner_finger")
+            if name in body_names
+        ]
+
+        def _apply_gripper_command(command: float) -> None:
+            env.reset(seed=int(spec.get("seed") or 20260810))
+            probe_action = torch.zeros((1, action_dim))
+            probe_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
+            probe_action[:, 7] = float(command)
+            for _ in range(30):
+                env.step(probe_action)
+
+        def _read_finger_separation() -> float:
+            poses = _to_torch(robot.data.body_pose_w)[0, finger_indices, :3]
+            return float(torch.linalg.vector_norm(poses[0] - poses[1]))
+
+        gripper = measure_gripper_convention(
+            apply_command=_apply_gripper_command,
+            read_finger_separation_m=_read_finger_separation,
+            body_names=body_names,
+        )
+        result["gripper_convention_probe"] = gripper
+        _phase(result, "gripper_convention_measured")
+
         adapter = IsaacEpisodeAdapter(
             env=env,
             robot=robot,
             task_sample_callback=_task_sample,
-            action_dim=int(env.unwrapped.action_manager.total_action_dim),
+            action_dim=action_dim,
             reset_seed=int(spec.get("seed") or 20260810),
-            to_torch=lambda value: value.detach() if hasattr(value, "detach") else torch.as_tensor(value),
+            to_torch=_to_torch,
+            gripper_closed_width_m=float(gripper["gripper_closed_width_m"]),
+            gripper_open_width_m=float(gripper["gripper_open_width_m"]),
+            simulation_step_seconds=1.0 / 120.0 * 8,
         )
         _phase(result, "adapter_wired")
 
