@@ -34,6 +34,16 @@ from typing import Any, Mapping, Sequence
 
 
 RESULT_SCHEMA_VERSION = "adp009d_articulated_scene_result.v1"
+# The Arena lane reads a runner before it will launch it, and these are the
+# facts it insists a runner carry. None are arbitrary: the filename its
+# collector looks for, the two revisions whose provenance the receipt must
+# record, and whether a learned policy was consulted.
+RESULT_FILENAME = "adp009d_native_microcheck.json"
+ARENA_REVISION = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
+ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
+# Scripted controls only. This composition never consults a learned policy, and
+# saying otherwise would overclaim on the one axis the program cares most about.
+CANDIDATE_POLICY_QUERIED = False
 
 
 def _sha256(path: Path) -> str:
@@ -100,6 +110,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "controls_qualified": False,
         "physical_success_established": False,
         "provider_zero_required_after_return": True,
+        "candidate_policy_queried": CANDIDATE_POLICY_QUERIED,
+        "official_sources": {
+            "isaac_lab_arena_revision": ARENA_REVISION,
+            "isaac_lab_revision": ISAAC_LAB_REVISION,
+        },
         "phase_reached": "start",
         "probe_results": [],
     }
@@ -338,6 +353,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     _finalize(output=output, result=result, simulation_app=simulation_app)
+    # The collector looks for the lane's own filename; writing only to --output
+    # leaves a completed run looking like one that produced nothing.
+    if output.name != RESULT_FILENAME:
+        _persist(output.with_name(RESULT_FILENAME), dict(result))
     return 0 if result.get("native_isaac_executed") else 1
 
 

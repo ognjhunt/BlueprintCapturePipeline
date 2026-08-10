@@ -68,3 +68,35 @@ def test_every_phase_the_worker_reaches_is_announced() -> None:
         "controls_complete",
     ):
         assert f'"{phase}"' in source, phase
+
+
+def test_the_worker_satisfies_the_arena_lane_runner_contract() -> None:
+    """The transport reads the runner before it will launch it.
+
+    Five tokens, and none of them are arbitrary: the output filename the
+    collector looks for, the two revisions whose provenance the receipt has to
+    carry, the teardown obligation, and whether a policy was queried. A worker
+    missing any of them is refused at bundle-contract time with an empty
+    container log, which is a launch spent on a filename.
+    """
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp009d_articulated_scene_worker.py"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "adp009d_native_microcheck.json",
+        "ARENA_REVISION",
+        "ISAAC_LAB_REVISION",
+        "provider_zero_required_after_return",
+        "candidate_policy_queried",
+    ):
+        assert token in source, token
+
+
+def test_the_worker_reports_no_policy_was_queried() -> None:
+    """This composition runs scripted controls only; saying otherwise overclaims."""
+
+    module = _worker()
+    assert module.CANDIDATE_POLICY_QUERIED is False
