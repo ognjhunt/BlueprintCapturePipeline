@@ -37,8 +37,19 @@ def audit_texture_path_portability(
     *,
     asset_path: str | Path,
     resolve_as_if_layer_lived_in: str | Path | None = None,
+    provider_absolute_root: str | None = None,
+    provider_staged_basenames: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Prove every texture reference is relative and resolves after transport."""
+    """Prove every texture reference resolves after transport.
+
+    Two portable shapes exist. Relative references resolve beside the layer -
+    unless the spawner copies the layer (``copy_from_source``), which breaks
+    their anchor. Absolute references under the provider's deterministic
+    bundle mount survive the copy, and are portable exactly when every
+    referenced file is actually staged; ``provider_absolute_root`` declares
+    that mount and ``provider_staged_basenames`` the staged set. Any other
+    absolute path is a laptop path and refuses.
+    """
 
     layer = Path(asset_path).expanduser()
     if not layer.is_file():
@@ -50,6 +61,7 @@ def audit_texture_path_portability(
         if resolve_as_if_layer_lived_in is not None
         else layer.parent
     )
+    staged = {str(name) for name in (provider_staged_basenames or ())}
 
     references = [
         match.group(1).strip()
@@ -63,6 +75,19 @@ def audit_texture_path_portability(
     resolved: list[dict[str, Any]] = []
     for ref in textures:
         if Path(ref).is_absolute():
+            if provider_absolute_root and ref.startswith(
+                provider_absolute_root.rstrip("/") + "/"
+            ):
+                if Path(ref).name in staged:
+                    resolved.append(
+                        {"reference": ref, "resolved": "provider_staged"}
+                    )
+                else:
+                    errors.append(
+                        "texture_path_portability_provider_texture_not_staged:"
+                        f"{Path(ref).name}"
+                    )
+                continue
             errors.append(
                 f"texture_path_portability_absolute_texture_path:{Path(ref).name}"
             )

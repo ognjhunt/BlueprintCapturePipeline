@@ -117,3 +117,73 @@ def test_an_asset_with_no_textures_passes_trivially(tmp_path):
     receipt = audit_texture_path_portability(asset_path=asset)
 
     assert receipt["texture_count"] == 0
+
+
+def test_provider_absolute_references_pass_when_staged(tmp_path):
+    """copy_from_source breaks relative anchors; the deterministic bundle
+    mount path does not move. Absolute-under-the-declared-root is portable
+    exactly when every referenced file is actually staged."""
+
+    asset = _usda(
+        tmp_path,
+        """\
+        #usda 1.0
+        def Shader "albedo_texture"
+        {
+            asset inputs:file = @/workspace/adp_arena_provider_bundle/provider_runtime/native/albedo.png@
+        }
+        """,
+    )
+
+    receipt = audit_texture_path_portability(
+        asset_path=asset,
+        provider_absolute_root="/workspace/adp_arena_provider_bundle/provider_runtime",
+        provider_staged_basenames=["albedo.png"],
+    )
+
+    assert receipt["texture_count"] == 1
+    assert receipt["all_relative_and_resolvable"] is True
+
+
+def test_a_provider_absolute_reference_not_staged_is_refused(tmp_path):
+    asset = _usda(
+        tmp_path,
+        """\
+        #usda 1.0
+        def Shader "albedo_texture"
+        {
+            asset inputs:file = @/workspace/adp_arena_provider_bundle/provider_runtime/native/missing.png@
+        }
+        """,
+    )
+
+    with pytest.raises(TexturePathPortabilityError) as excinfo:
+        audit_texture_path_portability(
+            asset_path=asset,
+            provider_absolute_root="/workspace/adp_arena_provider_bundle/provider_runtime",
+            provider_staged_basenames=["albedo.png"],
+        )
+
+    assert any("not_staged" in e for e in excinfo.value.errors)
+
+
+def test_an_absolute_reference_outside_the_root_is_still_refused(tmp_path):
+    asset = _usda(
+        tmp_path,
+        """\
+        #usda 1.0
+        def Shader "albedo_texture"
+        {
+            asset inputs:file = @/Users/someone/albedo.png@
+        }
+        """,
+    )
+
+    with pytest.raises(TexturePathPortabilityError) as excinfo:
+        audit_texture_path_portability(
+            asset_path=asset,
+            provider_absolute_root="/workspace/adp_arena_provider_bundle/provider_runtime",
+            provider_staged_basenames=["albedo.png"],
+        )
+
+    assert any("absolute_texture_path" in e for e in excinfo.value.errors)
