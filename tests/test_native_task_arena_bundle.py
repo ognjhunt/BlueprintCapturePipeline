@@ -22,6 +22,7 @@ from blueprint_pipeline.native_task_arena_construction_bundle import (
     CONSTRUCTION_RUNTIME_MODULE_NAMES,
     PROBE_KIND,
     build_native_task_arena_construction_bundle,
+    load_verified_native_task_arena_construction_bundle,
 )
 from blueprint_pipeline.native_task_arena_vast import run_native_task_arena_vast
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
@@ -325,11 +326,44 @@ def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:
     )
 
 
+def test_dry_run_bundle_receipt_reloads_exact_bytes_and_rejects_tamper(
+    tmp_path: Path,
+) -> None:
+    receipt = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "bundle",
+        packet_dir=_packet(tmp_path, scene_id="840796"),
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
+    receipt_path = tmp_path / "bundle/native_task_arena_provider_bundle_receipt.v1.json"
+    loaded = load_verified_native_task_arena_construction_bundle(
+        receipt_path,
+        expected_implementation_commit="a" * 40,
+        expected_packet_receipt_digest=receipt["packet_receipt_digest"],
+    )
+    assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
+
+    Path(receipt["bundle_path"]).write_bytes(
+        Path(receipt["bundle_path"]).read_bytes() + b"tamper"
+    )
+    with pytest.raises(ValueError, match="native_task_arena_bundle_bytes_identity_mismatch"):
+        load_verified_native_task_arena_construction_bundle(
+            receipt_path,
+            expected_implementation_commit="a" * 40,
+        )
+
+
 @pytest.mark.parametrize("execute", [False, True])
 def test_canonical_allocator_routes_sealed_native_task_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
 ) -> None:
     packet = _packet(tmp_path, scene_id="840796")
+    frozen_bundle = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "frozen-bundle",
+        packet_dir=packet,
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
     observed: dict = {}
     monkeypatch.setattr(
         allocator,
@@ -376,13 +410,27 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         "5400",
     ]
     if execute:
-        args.append("--execute")
+        args.extend(
+            [
+                "--native-task-arena-bundle-receipt",
+                str(
+                    tmp_path
+                    / "frozen-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+                ),
+                "--execute",
+            ]
+        )
 
     assert allocator.main(args) == 0
     assert observed["execute"] is execute
     assert isinstance(
         observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant
     ) is execute
+    if execute:
+        assert (
+            observed["prepared_bundle"]["bundle_sha256"]
+            == frozen_bundle["bundle_sha256"]
+        )
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["private_data_uploaded"] is True
     assert admission["raw_dataset_bytes_uploaded"] is False

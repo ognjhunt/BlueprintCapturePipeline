@@ -133,6 +133,7 @@ from .adp009d_franka_vast import run_adp009d_native_microcheck_vast
 from .native_task_arena_construction_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
     build_native_task_arena_construction_bundle,
+    load_verified_native_task_arena_construction_bundle,
 )
 from .native_task_arena_vast import run_native_task_arena_vast
 from .adp009d_gated_backbone import probe_gated_backbone_access
@@ -1127,6 +1128,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument(
         "--native-task-arena-packet",
         help="Exact sealed native_task_arena_packet directory for a task-neutral construction canary.",
+    )
+    gpu.add_argument(
+        "--native-task-arena-bundle-receipt",
+        help=(
+            "Previously dry-run native task bundle receipt. Required for execute so "
+            "the paid launch cannot rebuild different bytes."
+        ),
     )
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
@@ -2976,6 +2984,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
+            if args.execute and not args.native_task_arena_bundle_receipt:
+                blockers.append(
+                    "native_task_arena_execute_requires_dry_run_bundle_receipt"
+                )
             if args.provider != "vast":
                 blockers.append("native_task_arena_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
@@ -2997,13 +3009,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared_bundle = None
             if not blockers:
                 try:
-                    prepared_bundle = build_native_task_arena_construction_bundle(
-                        job_dir=Path(args.adp_job_dir) / "bundle",
-                        packet_dir=args.native_task_arena_packet,
-                        implementation_commit=control_identity[
-                            "orchestrator_source_commit"
-                        ],
-                    )
+                    if args.native_task_arena_bundle_receipt:
+                        packet_receipt_path = (
+                            Path(args.native_task_arena_packet).expanduser().resolve()
+                            / "native_task_arena_packet_receipt.v1.json"
+                        )
+                        packet_receipt = json.loads(
+                            packet_receipt_path.read_text(encoding="utf-8")
+                        )
+                        prepared_bundle = (
+                            load_verified_native_task_arena_construction_bundle(
+                                args.native_task_arena_bundle_receipt,
+                                expected_implementation_commit=control_identity[
+                                    "orchestrator_source_commit"
+                                ],
+                                expected_packet_receipt_digest=packet_receipt.get(
+                                    "receipt_digest"
+                                ),
+                            )
+                        )
+                    else:
+                        prepared_bundle = build_native_task_arena_construction_bundle(
+                            job_dir=Path(args.adp_job_dir) / "bundle",
+                            packet_dir=args.native_task_arena_packet,
+                            implementation_commit=control_identity[
+                                "orchestrator_source_commit"
+                            ],
+                        )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(
                         "native_task_arena_bundle_preparation_failed:"
