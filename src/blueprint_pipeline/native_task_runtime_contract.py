@@ -32,6 +32,7 @@ CAMERA_ROLES = ("external", "wrist", "overview")
 CAMERA_OPTICAL_CONVENTIONS = ("opencv",)
 ENV_ROOT = "{ENV_REGEX_NS}"
 TASK_KINDS = ("rigid_pick_place", "articulated_open_close")
+SCENARIO_CONTEXT_KINDS = ("construction_canary", "evaluation_cell")
 TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
 DROID_FRANKA_RESET_JOINT_NAMES = (
     "panda_joint1",
@@ -403,6 +404,7 @@ def materialize_native_task_runtime_contract(
     scenario_cell_id: str,
     scenario_instance_digest: str,
     seed: int,
+    scenario_context_kind: str = "evaluation_cell",
     destination: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate and freeze one native scene/task request before execution."""
@@ -421,6 +423,9 @@ def materialize_native_task_runtime_contract(
         errors.append("native_task_runtime_task_kind_invalid")
     if not str(scenario_cell_id or "").strip():
         errors.append("native_task_runtime_scenario_cell_missing")
+    context_kind = str(scenario_context_kind or "").strip()
+    if context_kind not in SCENARIO_CONTEXT_KINDS:
+        errors.append("native_task_runtime_scenario_context_kind_invalid")
     if not _digest(scenario_instance_digest):
         errors.append("native_task_runtime_scenario_digest_invalid")
     if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
@@ -479,6 +484,7 @@ def materialize_native_task_runtime_contract(
         "task_spec": json.loads(json.dumps(task_spec, sort_keys=True)),
         "task_spec_digest": canonical_digest(dict(task_spec)),
         "scenario": {
+            "context_kind": context_kind,
             "cell_id": str(scenario_cell_id),
             "instance_digest": str(scenario_instance_digest),
             "seed": seed,
@@ -560,6 +566,7 @@ __all__ = [
     "DROID_FRANKA_RESET_JOINT_NAMES",
     "FROZEN_CANDIDATES",
     "NativeTaskRuntimeContractError",
+    "SCENARIO_CONTEXT_KINDS",
     "SCHEMA_VERSION",
     "TASK_STATE_BINDING_SCHEMA_VERSION",
     "load_native_task_runtime_contract",

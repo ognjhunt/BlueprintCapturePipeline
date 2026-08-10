@@ -159,6 +159,9 @@ def _request(evidence: Path, *, articulated: bool) -> dict:
         },
         "cameras": [_camera(role) for role in ("external", "wrist", "overview")],
         "scenario": {
+            "context_kind": (
+                "construction_canary" if articulated else "evaluation_cell"
+            ),
             "cell_id": "canonical.seed_17",
             "instance_digest": "sha256:" + "d" * 64,
             "seed": 17,
@@ -195,6 +198,9 @@ def test_original_and_second_scene_share_one_packet_materializer(
     assert persisted == receipt
     contract = json.loads(
         (output / "native_task_runtime_contract.v1.json").read_text()
+    )
+    assert contract["scenario"]["context_kind"] == (
+        "construction_canary" if articulated else "evaluation_cell"
     )
     task_object = next(
         row for row in contract["objects"] if row["semantic_role"] == "task_object"

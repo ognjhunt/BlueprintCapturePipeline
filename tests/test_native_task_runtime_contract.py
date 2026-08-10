@@ -100,6 +100,7 @@ def _common(task_spec: dict, *, scene_id: str, task_id: str) -> dict:
         "cameras": [_camera(role) for role in ("external", "wrist", "overview")],
         "scenario_cell_id": "canonical_seed_17",
         "scenario_instance_digest": _sha("d"),
+        "scenario_context_kind": "evaluation_cell",
         "seed": 17,
     }
 
@@ -191,6 +192,7 @@ def test_original_and_second_scene_share_one_runtime_contract(
     assert objects["scene_appearance"]["visible"] is True
     assert contract["task_sample_binding"]["joint_ids"] == expected_joints
     assert contract["candidate_ids"] == list(FROZEN_CANDIDATES)
+    assert contract["scenario"]["context_kind"] == "evaluation_cell"
     assert contract["robot"]["action_seam"]["action_dimension"] == 8
     assert set(contract["robot"]["joint_reset_positions_rad"]) == set(
         DROID_FRANKA_RESET_JOINT_NAMES
@@ -211,6 +213,22 @@ def test_policy_and_review_camera_roles_cannot_be_swapped() -> None:
         materialize_native_task_runtime_contract(**fixture)
 
     assert "native_task_runtime_camera_policy_role_invalid:overview" in excinfo.value.errors
+
+
+def test_runtime_contract_distinguishes_construction_canary_from_evaluation() -> None:
+    fixture = _articulated_fixture()
+    fixture["scenario_context_kind"] = "construction_canary"
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    assert contract["scenario"]["context_kind"] == "construction_canary"
+
+    fixture["scenario_context_kind"] = "caller_claimed_episode"
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+    assert excinfo.value.errors == (
+        "native_task_runtime_scenario_context_kind_invalid",
+    )
 
 
 def test_camera_pose_must_be_rigid_and_opencv_calibrated() -> None:

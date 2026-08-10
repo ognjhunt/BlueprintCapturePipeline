@@ -218,6 +218,9 @@ def materialize_native_task_arena_packet(
             scenario_cell_id=str(scenario.get("cell_id") or ""),
             scenario_instance_digest=str(scenario.get("instance_digest") or ""),
             seed=scenario.get("seed"),
+            scenario_context_kind=str(
+                scenario.get("context_kind") or "evaluation_cell"
+            ),
             destination=contract_path,
         )
         plan_path = output / "native_task_arena_scene_plan.v1.json"
