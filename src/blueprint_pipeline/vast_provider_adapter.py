@@ -35,6 +35,10 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .paid_lane_guard import (
+    bind_pending_teardown_instance,
+    open_pending_teardown,
+)
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
 from .isaac_driver_support import (
     driver_newer_branch_sort_rank as _driver_newer_branch_sort_rank,
@@ -5382,6 +5386,9 @@ def run_vast_provider_adapter(
         selected_offer=None,
     )
 
+    # Set before the create loop so the obligation can be opened on the first
+    # attempt and reused across offer-race retries: one instance, one record.
+    pending_teardown_record: dict[str, Any] | None = None
     base_result: dict[str, Any] = {
         "schema_version": VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -6386,6 +6393,36 @@ def run_vast_provider_adapter(
                             else "pre_provider_mutation_authorization_not_consumed"
                         )
                 base_result["provider_create_attempted"] = True
+                # Open the teardown obligation BEFORE the instance exists.
+                # After the create there is a window - small, and rt21 landed
+                # in it: the instance was made, the process died on a full
+                # disk, and nothing recorded that anything needed reaping. The
+                # orphan reaper found an empty registry and reported no risk,
+                # which was true of the registry and false of the account.
+                #
+                # Opening first inverts the failure: the worst case becomes a
+                # record for an instance that was never created, which the
+                # reaper resolves harmlessly. A record without an instance is
+                # noise; an instance without a record is a bill.
+                if pending_teardown_record is None:
+                    try:
+                        pending_teardown_record = open_pending_teardown(
+                            provider="vast",
+                            lane=str(provider_bundle_kind or "vast_provider_adapter"),
+                            run_id=str(resolved_job_dir.name),
+                            resource_name=str(create_payload.get("label") or ""),
+                            job_dir=resolved_job_dir,
+                            max_age_seconds=int(startup_timeout_seconds or 0) + 7200,
+                        )
+                        base_result["pending_teardown_record"] = str(
+                            pending_teardown_record.get("path") or ""
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        # A safety net that cannot be hung must not ground the
+                        # flight: that trades a small risk for a certain loss.
+                        base_result["pending_teardown_open_failed"] = (
+                            f"{type(exc).__name__}"
+                        )
                 create_status, create_response = _api_json(
                     method="PUT",
                     path=f"/asks/{selected_offer['ask_contract_id']}/",
@@ -6464,6 +6501,13 @@ def run_vast_provider_adapter(
             raise RuntimeError("vast_create_response_missing_instance_id")
         started_at_monotonic = time.monotonic()
         instance_ids.append(instance_id)
+        if pending_teardown_record is not None:
+            try:
+                bind_pending_teardown_instance(
+                    pending_teardown_record["path"], str(instance_id)
+                )
+            except Exception as exc:  # noqa: BLE001
+                base_result["pending_teardown_bind_failed"] = f"{type(exc).__name__}"
         if retain_instance_on_runtime_failure:
             record_initial_lifecycle(
                 resolved_job_dir,
