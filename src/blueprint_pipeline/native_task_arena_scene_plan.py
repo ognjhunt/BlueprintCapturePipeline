@@ -17,6 +17,10 @@ from typing import Any, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .native_articulated_motion_geometry import (
+    NativeArticulatedMotionGeometryError,
+    derive_native_articulated_motion_geometry,
+)
 from .native_task_runtime_contract import SCHEMA_VERSION as RUNTIME_CONTRACT_SCHEMA
 
 
@@ -168,7 +172,9 @@ def _cadence(contract: Mapping[str, Any], *, physics_frequency_hz: float) -> dic
     }
 
 
-def _articulation_plan(contract: Mapping[str, Any]) -> dict[str, Any]:
+def _articulation_plan(
+    contract: Mapping[str, Any], *, task_object_asset_path: Path | None
+) -> dict[str, Any]:
     task_kind = contract["task_kind"]
     if task_kind != "articulated_open_close":
         return {
@@ -193,6 +199,46 @@ def _articulation_plan(contract: Mapping[str, Any]) -> dict[str, Any]:
     moving_link = _source_to_spawned_prim(
         str(state_binding["moving_link_prim_path"]), role="task_object"
     )
+    if task_object_asset_path is None:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_task_object_asset_missing"]
+        )
+    target_joint_id = str(contract["task_spec"]["target_joint_id"])
+    try:
+        motion_geometry = derive_native_articulated_motion_geometry(
+            task_object_usd_path=task_object_asset_path,
+            task_object_sha256=next(
+                row["sha256"]
+                for row in contract["objects"]
+                if row["semantic_role"] == "task_object"
+            ),
+            target_joint_id=target_joint_id,
+            target_joint_prim_path=sample_binding["joint_prim_paths"][
+                target_joint_id
+            ],
+            moving_link_prim_path=state_binding["moving_link_prim_path"],
+            handle_grasp_point_moving_link_m=state_binding[
+                "handle_grasp_point_link_m"
+            ],
+            task_object_pose_world=next(
+                row["pose_world"]
+                for row in contract["objects"]
+                if row["semantic_role"] == "task_object"
+            ),
+            reset_angle_rad=contract["task_spec"]["joint_reset_positions_rad"][
+                target_joint_id
+            ],
+            scripted_target_angle_rad=contract["task_spec"][
+                "scripted_positive_target_rad"
+            ],
+        )
+    except (KeyError, StopIteration, NativeArticulatedMotionGeometryError) as exc:
+        errors = (
+            list(exc.errors)
+            if isinstance(exc, NativeArticulatedMotionGeometryError)
+            else ["native_task_arena_motion_geometry_binding_invalid"]
+        )
+        raise NativeTaskArenaScenePlanError(errors) from exc
     scene_filter = f"{ENV_ROOT}/scene_collision/.*"
     return {
         "task_joint_reset_positions_rad": native_reset,
@@ -211,6 +257,7 @@ def _articulation_plan(contract: Mapping[str, Any]) -> dict[str, Any]:
             for path in state_binding["handle_prim_paths"]
         ],
         "handle_grasp_point_link_m": state_binding["handle_grasp_point_link_m"],
+        "motion_geometry": motion_geometry,
         "contact_sensors": [
             {
                 "sensor_id": "task_robot_contact",
@@ -277,7 +324,17 @@ def materialize_native_task_arena_scene_plan(
         provider_asset_directory=asset_directory,
         published_asset_directory=published_asset_directory,
     )
-    articulation = _articulation_plan(contract)
+    task_object_asset_path = next(
+        (
+            asset_directory / str(row["filename"])
+            for row in contract["objects"]
+            if row["semantic_role"] == "task_object"
+        ),
+        None,
+    )
+    articulation = _articulation_plan(
+        contract, task_object_asset_path=task_object_asset_path
+    )
     plan: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "runtime_contract_digest": contract["contract_digest"],

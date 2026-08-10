@@ -79,7 +79,53 @@ def _contract(tmp_path: Path, *, articulated: bool) -> tuple[dict, Path]:
         ("task_object", ".usda"),
     ):
         path = asset_directory / f"{role}{suffix}"
-        path.write_bytes(f"fixture:{role}:{articulated}".encode())
+        if articulated and role == "task_object":
+            path.write_text(
+                '''#usda 1.0
+(
+    defaultPrim = "Asset"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Asset"
+{
+    def Xform "cabinet" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "upper_door" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+    {
+        def Mesh "component_004" {}
+        def Mesh "handle_post_a" {}
+        def Mesh "handle_post_b" {}
+    }
+    def Xform "lower_door" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def "joints"
+    {
+        def PhysicsRevoluteJoint "upper_door_hinge"
+        {
+            uniform token physics:axis = "Z"
+            rel physics:body0 = </Asset/cabinet>
+            rel physics:body1 = </Asset/upper_door>
+            point3f physics:localPos0 = (-0.35696605, 0.35000005, 1.276497)
+            point3f physics:localPos1 = (-0.35696605, 0.35000005, 1.276497)
+            float physics:lowerLimit = 0
+            float physics:upperLimit = 90
+        }
+        def PhysicsRevoluteJoint "lower_door_hinge"
+        {
+            uniform token physics:axis = "Z"
+            rel physics:body0 = </Asset/cabinet>
+            rel physics:body1 = </Asset/lower_door>
+            point3f physics:localPos0 = (-0.35696605, 0.35000005, 0.474997)
+            point3f physics:localPos1 = (-0.35696605, 0.35000005, 0.474997)
+            float physics:lowerLimit = 0
+            float physics:upperLimit = 90
+        }
+    }
+}
+''',
+                encoding="utf-8",
+            )
+        else:
+            path.write_bytes(f"fixture:{role}:{articulated}".encode())
         assets.append(
             {
                 "semantic_role": role,
@@ -207,6 +253,16 @@ def test_original_and_second_scene_compile_through_one_arena_plan(
         assert articulation["task_joint_prim_paths"][
             "refrigerator_upper_door_hinge"
         ] == "{ENV_REGEX_NS}/task_object/joints/upper_door_hinge"
+        motion = articulation["motion_geometry"]
+        assert motion["target_joint_id"] == "refrigerator_upper_door_hinge"
+        assert motion["hinge_point_world_m"] == pytest.approx(
+            [1.61703395, 1.82900005, 1.276497]
+        )
+        assert motion["hinge_axis_world_unit"] == pytest.approx([0.0, 0.0, 1.0])
+        assert motion["handle_grasp_point_closed_world_m"] == pytest.approx(
+            [2.093962, 1.806634, 1.022997]
+        )
+        assert motion["scripted_sweep_angle_degrees"] == pytest.approx(50.0)
     else:
         assert plan["articulation"]["contact_sensors"] == []
 
