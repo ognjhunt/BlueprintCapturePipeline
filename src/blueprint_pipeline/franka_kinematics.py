@@ -352,13 +352,13 @@ def solve_axis_aligned_ik(
     def _residual(candidate: Sequence[float]) -> list[float]:
         position, rotation = forward_kinematics(candidate)
         tool = [rotation[0][2], rotation[1][2], rotation[2][2]]
-        cross = [
-            tool[1] * axis[2] - tool[2] * axis[1],
-            tool[2] * axis[0] - tool[0] * axis[2],
-            tool[0] * axis[1] - tool[1] * axis[0],
-        ]
+        # The difference vector, NOT the cross product. cross(tool, axis)
+        # vanishes at anti-alignment as well as alignment, and the first
+        # version of this solver converged serenely to dot = -1.0000: position
+        # perfect, gripper pointing exactly away from the handle. tool - axis
+        # is zero only at true alignment and is maximal at anti-parallel.
         return [target[row] - position[row] for row in range(3)] + [
-            AXIS_ERROR_WEIGHT_M_PER_RAD * value for value in cross
+            AXIS_ERROR_WEIGHT_M_PER_RAD * (tool[row] - axis[row]) for row in range(3)
         ]
 
     def _error(candidate: Sequence[float]) -> float:
