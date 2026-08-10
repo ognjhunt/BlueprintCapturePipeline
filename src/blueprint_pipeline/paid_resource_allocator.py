@@ -1157,6 +1157,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     gpu.add_argument(
+        "--adp009d-asset-bindings-json",
+        default=None,
+        help=(
+            "Digests the caller expects for the supplied assets, as JSON. The "
+            "pin exists so a sealed asset cannot be swapped silently, not so "
+            "that only one asset may ever be used - a different scene declares "
+            "its own and is still held to it."
+        ),
+    )
+    gpu.add_argument(
         "--adp009d-skip-sage-derivatives",
         action="store_true",
         help=(
@@ -2823,6 +2833,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         extra_native_paths=args.adp009d_extra_native,
                         build_task_collision_derivative=(
                             not args.adp009d_skip_sage_derivatives
+                        ),
+                        expected_asset_bindings=(
+                            json.loads(args.adp009d_asset_bindings_json)
+                            if args.adp009d_asset_bindings_json
+                            else None
                         ),
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
