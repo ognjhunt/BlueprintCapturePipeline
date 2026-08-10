@@ -111,7 +111,6 @@ def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
         output_dir=tmp_path / output_name,
         isaaclab_repo=isaaclab,
         arena_repo=arena,
-        dependency_wheel_dir=_wheelhouse(tmp_path),
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,
@@ -192,20 +191,18 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
     )
     assert verified["paired_stack"]["runtime_image_base_layer_prefix_count"] == 19
     assert verified["paired_stack"]["runtime_image_layer_count"] == 40
-    assert {
-        ("antlr4-python3-runtime", "4.9.3"),
-        ("omegaconf", "2.3.0"),
-        ("hydra-core", "1.3.2"),
-        ("msgpack", "1.2.1"),
-        ("pyzmq", "27.1.0"),
-        ("rsl-rl-lib", "5.0.1"),
-        ("tensordict", "0.13.0"),
-        ("GitPython", "3.1.58"),
-        ("lightwheel-sdk", "1.0.3"),
-        ("requests", "2.34.2"),
-        ("PyYAML", "6.0.3"),
-        ("warp-lang", "1.13.0"),
-    }.issubset({(row["package"], row["version"]) for row in verified["runtime_dependency_wheels"]})
+    assert verified["runtime_dependency_wheels"] == []
+    assert verified["runtime_dependency_basis"]["runtime_owner"] == (
+        "official_isaac_lab_complete_runtime"
+    )
+    assert (
+        verified["runtime_dependency_basis"]["runtime_image"]
+        == (verified["paired_stack"]["simulator_runtime_image"])
+    )
+    assert verified["runtime_dependency_basis"]["packet_overlay_required"] is False
+    assert verified["runtime_dependency_basis"]["qualification_gate"] == (
+        "native_task_pre_app_dependency_matrix.v1"
+    )
     assert any(path.endswith("isaaclab_teleop") for path in verified["install_roots"])
     assert any(path.endswith("isaaclab_contrib") for path in verified["install_roots"])
     assert any(path.endswith("isaaclab_newton") for path in verified["install_roots"])
@@ -346,23 +343,6 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     def fake_run(command, **kwargs):
         assert kwargs == {"check": False, "capture_output": True, "text": True}
         observed.append(command)
-        if "import_module" in command[-1]:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=json.dumps(
-                    [
-                        {
-                            "module": "warp",
-                            "available": True,
-                            "expected_version": "1.13.0",
-                            "observed_version": "1.13.0",
-                            "version_matches": True,
-                        }
-                    ]
-                ),
-                stderr="",
-            )
         return subprocess.CompletedProcess(command, 0, stdout="installed", stderr="")
 
     simulator = tmp_path / "isaac-sim"
@@ -389,54 +369,43 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert result["all_sources_verified_before_install"] is True
     assert result["source_packages_made_importable"] is True
     assert result["dependencies_installed"] is True
-    assert len(result["runtime_dependencies_installed"]) == len(RUNTIME_DEPENDENCY_WHEELS)
-    assert (
-        next(row for row in result["runtime_dependencies_installed"] if row["package"] == "h5py")[
-            "pure_python"
-        ]
-        is False
-    )
-    assert len(observed) == 2
+    assert result["runtime_dependency_owner"] == "official_isaac_lab_complete_runtime"
+    assert result["runtime_dependency_overlay_required"] is False
+    assert result["runtime_dependencies_installed"] == []
+    assert result["runtime_dependency_target"] is None
+    assert len(observed) == 1
     assert observed[0][1:3] == ["-I", "-c"]
     assert "pip" not in observed[0]
     assert "setuptools" not in observed[0]
-    assert "import_module" in observed[1][-1]
-    assert result["runtime_import_probes"][0]["module"] == "warp"
-    assert result["runtime_import_probes"][0]["version_matches"] is True
+    assert "torch" not in observed[0][-1]
+    assert "packaging" not in observed[0][-1]
+    assert result["runtime_import_probe_returncode"] == 0
+    assert result["runtime_import_probes"] == []
     assert len(result["install_roots"]) == len(ISAACLAB_PACKAGE_NAMES) + 1
     assert Path(result["isaac_sim_link"]["path"]).readlink() == simulator
     path_lines = Path(result["path_file"]).read_text(encoding="utf-8").splitlines()
     assert len(path_lines) == 1
     assert path_lines[0].startswith("import sys;sys.path[:0]=[")
-    assert result["runtime_dependency_target"] in path_lines[0]
     assert all(path in path_lines[0] for path in result["install_roots"])
 
 
-def test_external_warp_is_probed_before_runtime_provisioning_can_complete(
+def test_dependency_imports_are_deferred_to_complete_pre_app_matrix(
     tmp_path: Path,
 ) -> None:
     receipt = _packet(tmp_path)
-    calls = 0
+    observed: list[list[str]] = []
 
-    def missing_warp(command, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return subprocess.CompletedProcess(command, 0, stdout="found", stderr="")
-        return subprocess.CompletedProcess(
-            command,
-            1,
-            stdout="",
-            stderr="ModuleNotFoundError: No module named 'warp'",
-        )
+    def source_probe(command, **kwargs):
+        observed.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="found", stderr="")
 
     simulator = tmp_path / "isaac-sim"
     simulator.mkdir()
     result = provision_native_task_runtime_sources(
         source_receipt_path=tmp_path / "packet/native_task_runtime_source_packet.v1.json",
         source_packet_path=receipt["packet_path"],
-        extraction_dir=tmp_path / "missing-warp",
-        output_path=tmp_path / "missing-warp.json",
+        extraction_dir=tmp_path / "image-owned-dependencies",
+        output_path=tmp_path / "image-owned-dependencies.json",
         simulator_root=simulator,
         site_packages_dir=tmp_path / "site-packages",
         python_executable="/isaac-sim/python.sh",
@@ -447,14 +416,13 @@ def test_external_warp_is_probed_before_runtime_provisioning_can_complete(
             "manylinux_2_17_x86_64",
             "manylinux2014_x86_64",
         ),
-        run_command=missing_warp,
+        run_command=source_probe,
     )
 
-    assert calls == 2
-    assert result["status"] == "blocked"
-    assert result["blockers"] == ["native_task_runtime_import_probe_failed:warp"]
-    assert result["source_packages_made_importable"] is False
-    assert result["dependencies_installed"] is False
+    assert result["status"] == "completed"
+    assert len(observed) == 1
+    assert all(name not in observed[0][-1] for name in ("torch", "warp", "packaging"))
+    assert result["runtime_import_probes"] == []
 
 
 def test_provisioner_uses_simulator_python_wrapper_for_all_runtime_probes(
@@ -469,21 +437,7 @@ def test_provisioner_uses_simulator_python_wrapper_for_all_runtime_probes(
 
     def fake_run(command, **kwargs):
         observed.append(command)
-        if "import_module" in command[-1]:
-            stdout = json.dumps(
-                [
-                    {
-                        "module": "warp",
-                        "available": True,
-                        "expected_version": "1.13.0",
-                        "observed_version": "1.13.0",
-                        "version_matches": True,
-                    }
-                ]
-            )
-        else:
-            stdout = "found"
-        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="found", stderr="")
 
     result = provision_native_task_runtime_sources(
         source_receipt_path=tmp_path / "packet/native_task_runtime_source_packet.v1.json",
@@ -507,7 +461,7 @@ def test_provisioner_uses_simulator_python_wrapper_for_all_runtime_probes(
     assert result["python_executable_source"] == "simulator_python_launcher"
     assert result["python_probe_flag"] == "-P"
     assert result["python_probe_mode"] == "simulator_wrapper_safe_path"
-    assert len(observed) == 2
+    assert len(observed) == 1
     assert all(command[0] == str(launcher) for command in observed)
     assert all(command[1:3] == ["-P", "-c"] for command in observed)
 
@@ -520,21 +474,7 @@ def test_explicit_interpreter_runtime_probes_remain_isolated(tmp_path: Path) -> 
 
     def fake_run(command, **kwargs):
         observed.append(command)
-        if "import_module" in command[-1]:
-            stdout = json.dumps(
-                [
-                    {
-                        "module": "warp",
-                        "available": True,
-                        "expected_version": "1.13.0",
-                        "observed_version": "1.13.0",
-                        "version_matches": True,
-                    }
-                ]
-            )
-        else:
-            stdout = "found"
-        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="found", stderr="")
 
     result = provision_native_task_runtime_sources(
         source_receipt_path=tmp_path / "packet/native_task_runtime_source_packet.v1.json",
@@ -560,16 +500,16 @@ def test_explicit_interpreter_runtime_probes_remain_isolated(tmp_path: Path) -> 
     assert all(command[1:3] == ["-I", "-c"] for command in observed)
 
 
-def test_binary_runtime_dependency_rejects_wrong_python_or_platform_before_probe(
+def test_empty_overlay_does_not_apply_binary_platform_gate(
     tmp_path: Path,
 ) -> None:
     receipt = _packet(tmp_path)
     probe_called = False
 
-    def forbidden_probe(*args, **kwargs):
+    def source_probe(command, **kwargs):
         nonlocal probe_called
         probe_called = True
-        raise AssertionError("runtime probe must not run after binary wheel mismatch")
+        return subprocess.CompletedProcess(command, 0, stdout="found", stderr="")
 
     simulator = tmp_path / "isaac-sim"
     simulator.mkdir()
@@ -582,12 +522,12 @@ def test_binary_runtime_dependency_rejects_wrong_python_or_platform_before_probe
         site_packages_dir=tmp_path / "site-packages",
         runtime_python_tag="cp311",
         runtime_platform_tags=("macosx_14_0_arm64",),
-        run_command=forbidden_probe,
+        run_command=source_probe,
     )
 
-    assert result["status"] == "blocked"
-    assert result["exception"] == ("native_task_runtime_dependency_binary_wheel_incompatible")
-    assert probe_called is False
+    assert result["status"] == "completed"
+    assert result["runtime_dependency_overlay_required"] is False
+    assert probe_called is True
 
 
 def test_materialization_batches_each_repository_into_one_exact_git_archive(

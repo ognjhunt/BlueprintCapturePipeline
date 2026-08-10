@@ -17,6 +17,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_runtime_source_packet import (
+    ISAACLAB_PACKAGE_NAMES,
     NativeTaskRuntimeSourcePacketError,
     verify_native_task_runtime_source_packet,
 )
@@ -24,56 +25,12 @@ from .native_task_runtime_source_packet import (
 
 SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
-TOP_LEVEL_PACKAGES = (
-    "warp",
-    "cloudpickle",
-    "farama_notifications",
-    "gymnasium",
-    "lazy_loader",
-    "packaging",
-    "prettytable",
-    "typing_extensions",
-    "wcwidth",
-    "h5py",
-    "msgpack",
-    "zmq",
-    "rsl_rl",
-    "tensordict",
-    "importlib_metadata",
-    "zipp",
-    "orjson",
-    "pyvers",
-    "git",
-    "gitdb",
-    "smmap",
-    "lightwheel_sdk",
-    "requests",
-    "charset_normalizer",
-    "idna",
-    "urllib3",
-    "certifi",
-    "tqdm",
-    "termcolor",
-    "yaml",
-    "click",
-    "isaaclab",
-    "isaaclab_assets",
-    "isaaclab_contrib",
-    "isaaclab_experimental",
-    "isaaclab_mimic",
-    "isaaclab_newton",
-    "isaaclab_ov",
-    "isaaclab_physx",
-    "isaaclab_rl",
-    "isaaclab_tasks",
-    "isaaclab_tasks_experimental",
-    "isaaclab_teleop",
-    "isaaclab_visualizers",
-    "isaaclab_arena",
-)
-RUNTIME_IMPORT_PROBES = (
-    {"module": "warp", "expected_version": "1.13.0"},
-)
+# Provisioning proves only that the exact released source roots are visible.
+# Runtime dependencies are owned by the paired image and are all imported by
+# ``native_task_pre_app_dependency_matrix.v1``.  Requiring them here would stop
+# at an earlier path probe and lose the one-pass inventory the paid gate needs.
+TOP_LEVEL_PACKAGES = (*ISAACLAB_PACKAGE_NAMES, "isaaclab_arena")
+RUNTIME_IMPORT_PROBES: tuple[dict[str, str], ...] = ()
 
 
 def _extract_runtime_dependency_wheels(
@@ -93,15 +50,11 @@ def _extract_runtime_dependency_wheels(
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
             if any(
-                Path(name).is_absolute()
-                or ".." in Path(name).parts
-                or ".data" in Path(name).parts
+                Path(name).is_absolute() or ".." in Path(name).parts or ".data" in Path(name).parts
                 for name in names
             ):
                 raise RuntimeError("native_task_runtime_dependency_wheel_layout_invalid")
-            wheel_metadata_names = [
-                name for name in names if name.endswith(".dist-info/WHEEL")
-            ]
+            wheel_metadata_names = [name for name in names if name.endswith(".dist-info/WHEEL")]
             if len(wheel_metadata_names) != 1:
                 raise RuntimeError("native_task_runtime_dependency_wheel_metadata_invalid")
             wheel_metadata = archive.read(wheel_metadata_names[0]).decode("utf-8")
@@ -125,9 +78,7 @@ def _extract_runtime_dependency_wheels(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 data = archive.read(name)
                 if target.exists() and target.read_bytes() != data:
-                    raise RuntimeError(
-                        "native_task_runtime_dependency_wheel_member_conflict"
-                    )
+                    raise RuntimeError("native_task_runtime_dependency_wheel_member_conflict")
                 target.write_bytes(data)
         installed.append(
             {
@@ -171,13 +122,9 @@ def _sha256(path: Path) -> str:
 
 
 def _persist(path: Path, result: dict[str, Any]) -> dict[str, Any]:
-    result["receipt_digest"] = canonical_digest(
-        result, digest_field="receipt_digest"
-    )
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
 
 
@@ -253,6 +200,8 @@ def provision_native_task_runtime_sources(
         "isaac_sim_link": None,
         "runtime_dependency_target": None,
         "runtime_dependencies_installed": [],
+        "runtime_dependency_owner": "official_isaac_lab_complete_runtime",
+        "runtime_dependency_overlay_required": None,
         "runtime_experience": None,
         "paired_stack": None,
         "all_sources_verified_before_install": False,
@@ -283,9 +232,7 @@ def provision_native_task_runtime_sources(
             or not experience_path.is_file()
             or _sha256(experience_path) != experience_contract.get("sha256")
         ):
-            result["blockers"].append(
-                "native_task_runtime_experience_identity_mismatch"
-            )
+            result["blockers"].append("native_task_runtime_experience_identity_mismatch")
             return _persist(result_path, result)
         result["runtime_experience"] = {
             **experience_contract,
@@ -302,38 +249,43 @@ def provision_native_task_runtime_sources(
         link = isaaclab_root / "_isaac_sim"
         if os.path.lexists(link):
             if not link.is_symlink() or Path(os.readlink(link)).resolve() != simulator:
-                result["blockers"].append(
-                    "native_task_runtime_source_isaac_sim_link_conflict"
-                )
+                result["blockers"].append("native_task_runtime_source_isaac_sim_link_conflict")
                 return _persist(result_path, result)
         else:
             link.symlink_to(simulator, target_is_directory=True)
         result["isaac_sim_link"] = {"path": str(link), "target": str(simulator)}
-        dependency_target = destination / "runtime_python_dependencies"
-        detected_python_tag, detected_platform_tags = _runtime_wheel_compatibility()
-        installed_dependencies = _extract_runtime_dependency_wheels(
-            extraction_root=destination,
-            wheel_rows=verified["runtime_dependency_wheels"],
-            destination=dependency_target,
-            runtime_python_tag=runtime_python_tag or detected_python_tag,
-            runtime_platform_tags=(
-                tuple(runtime_platform_tags)
-                if runtime_platform_tags is not None
-                else detected_platform_tags
-            ),
-        )
-        result["runtime_dependency_target"] = str(dependency_target)
+        wheel_rows = list(verified["runtime_dependency_wheels"])
+        installed_dependencies: list[dict[str, Any]] = []
+        dependency_target: Path | None = None
+        if wheel_rows:
+            dependency_target = destination / "runtime_python_dependencies"
+            detected_python_tag, detected_platform_tags = _runtime_wheel_compatibility()
+            installed_dependencies = _extract_runtime_dependency_wheels(
+                extraction_root=destination,
+                wheel_rows=wheel_rows,
+                destination=dependency_target,
+                runtime_python_tag=runtime_python_tag or detected_python_tag,
+                runtime_platform_tags=(
+                    tuple(runtime_platform_tags)
+                    if runtime_platform_tags is not None
+                    else detected_platform_tags
+                ),
+            )
+            result["runtime_dependency_target"] = str(dependency_target)
         result["runtime_dependencies_installed"] = installed_dependencies
-        site_packages = Path(
-            site_packages_dir or sysconfig.get_paths()["purelib"]
-        ).expanduser().resolve()
+        result["runtime_dependency_overlay_required"] = bool(wheel_rows)
+        site_packages = (
+            Path(site_packages_dir or sysconfig.get_paths()["purelib"]).expanduser().resolve()
+        )
         site_packages.mkdir(parents=True, exist_ok=True)
         path_file = site_packages / "blueprint_native_task_runtime_sources.pth"
         # Plain .pth path rows are appended after the simulator's existing
         # site-packages and can silently resolve a different preinstalled
         # version.  Put the verified closure first so the receipt's wheel
         # identities are the code that actually imports.
-        priority_paths = [str(path) for path in (dependency_target, *install_roots)]
+        priority_paths = [str(path) for path in install_roots]
+        if dependency_target is not None:
+            priority_paths.insert(0, str(dependency_target))
         path_file.write_text(
             f"import sys;sys.path[:0]={priority_paths!r}\n",
             encoding="utf-8",
@@ -365,53 +317,14 @@ def provision_native_task_runtime_sources(
         result["package_path_probe_stdout"] = completed.stdout[-16_000:]
         result["package_path_probe_stderr"] = completed.stderr[-16_000:]
         if completed.returncode != 0:
-            result["blockers"].append(
-                "native_task_runtime_source_package_path_probe_failed"
-            )
+            result["blockers"].append("native_task_runtime_source_package_path_probe_failed")
             return _persist(result_path, result)
-        import_probe = (
-            "import importlib,json;"
-            f"contracts={list(RUNTIME_IMPORT_PROBES)!r};"
-            "rows=[];"
-            "[(lambda module,contract: rows.append({"
-            "'module':contract['module'],'available':True,"
-            "'expected_version':contract['expected_version'],"
-            "'observed_version':str(getattr(module,'__version__','unreported')),"
-            "'version_matches':str(getattr(module,'__version__','unreported'))"
-            "==contract['expected_version']}))"
-            "(importlib.import_module(contract['module']),contract) for contract in contracts];"
-            "print(json.dumps(rows,sort_keys=True));"
-            "raise SystemExit(0 if all(row['version_matches'] for row in rows) else 4)"
-        )
-        import_command = [
-            runtime_python,
-            python_probe_flag,
-            "-c",
-            import_probe,
-        ]
-        result["runtime_import_probe_command"] = import_command
-        imported = run_command(
-            import_command,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        result["runtime_import_probe_returncode"] = imported.returncode
-        result["runtime_import_probe_stdout"] = imported.stdout[-16_000:]
-        result["runtime_import_probe_stderr"] = imported.stderr[-16_000:]
-        try:
-            import_rows = json.loads(imported.stdout)
-        except (json.JSONDecodeError, TypeError):
-            import_rows = []
-        result["runtime_import_probes"] = import_rows
-        if (
-            imported.returncode != 0
-            or not isinstance(import_rows, list)
-            or len(import_rows) != len(RUNTIME_IMPORT_PROBES)
-            or any(row.get("version_matches") is not True for row in import_rows)
-        ):
-            result["blockers"].append("native_task_runtime_import_probe_failed:warp")
-            return _persist(result_path, result)
+        # There are no dependency imports in this phase.  The launcher's
+        # pre-app matrix performs the complete import/version/CUDA inventory and
+        # persists every failure before SimulationApp can start.
+        result["runtime_import_probe_returncode"] = 0
+        result["runtime_import_probe_stdout"] = "[]"
+        result["runtime_import_probes"] = []
         result["status"] = "completed"
         result["source_packages_made_importable"] = True
         result["dependencies_installed"] = True

@@ -22,6 +22,7 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     ARENA_ISAACLAB_SUBMODULE_PATH,
     ARENA_REPOSITORY,
     ISAAC_SIM_BASE_IMAGE,
+    ISAAC_SIM_RUNTIME_IMAGE,
     ISAACLAB_REPOSITORY,
     ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
     ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
@@ -79,28 +80,16 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
             "isaaclab_revision": ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
             "isaaclab_submodule_path": ARENA_ISAACLAB_SUBMODULE_PATH,
             "simulator_base_image": ISAAC_SIM_BASE_IMAGE,
+            "simulator_runtime_image": ISAAC_SIM_RUNTIME_IMAGE,
             "simulator_dockerfile_path": "docker/Dockerfile.isaaclab_arena",
             "dockerfile_sha256": "sha256:" + "a" * 64,
             "gitmodules_sha256": "sha256:" + "b" * 64,
         },
-        "runtime_dependencies_installed": [
-            {
-                "package": "warp-lang",
-                "version": "1.13.0",
-                "pure_python": False,
-                "wheel_tag": "py3-none-manylinux_2_28_x86_64",
-            }
-        ],
+        "runtime_dependency_owner": "official_isaac_lab_complete_runtime",
+        "runtime_dependency_overlay_required": False,
+        "runtime_dependencies_installed": [],
         "runtime_import_probe_returncode": 0,
-        "runtime_import_probes": [
-            {
-                "module": "warp",
-                "available": True,
-                "expected_version": "1.13.0",
-                "observed_version": "1.13.0",
-                "version_matches": True,
-            }
-        ],
+        "runtime_import_probes": [],
         "receipt_digest": "",
     }
     result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
@@ -109,12 +98,38 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
     return path
 
 
-def _pre_app_result(*, blockers: list[str] | None = None) -> dict:
+def _pre_app_result(
+    *, blockers: list[str] | None = None, missing_modules: set[str] | None = None
+) -> dict:
     errors = list(blockers or [])
+    missing = set(missing_modules or ())
+    imports = []
+    for name in PRE_APP_DEPENDENCY_IMPORTS:
+        if name in missing:
+            imports.append(
+                {
+                    "module": name,
+                    "available": False,
+                    "error_type": "ModuleNotFoundError",
+                    "error": name,
+                }
+            )
+        elif name == "warp":
+            imports.append(
+                {
+                    "module": "warp",
+                    "available": True,
+                    "observed_version": "1.13.0",
+                    "version_constraint": "==1.13.0",
+                    "version_matches": True,
+                }
+            )
+        else:
+            imports.append({"module": name, "available": True})
     result = {
         "schema_version": PRE_APP_DEPENDENCY_SCHEMA_VERSION,
         "status": "qualified" if not errors else "blocked",
-        "imports": [{"module": name, "available": True} for name in PRE_APP_DEPENDENCY_IMPORTS],
+        "imports": imports,
         "import_count": len(PRE_APP_DEPENDENCY_IMPORTS),
         "all_declared_imports_attempted": True,
         "torch_cuda": {
@@ -272,15 +287,52 @@ def test_experience_byte_or_revision_drift_fails_closed(tmp_path: Path) -> None:
         verify_native_task_isaaclab_launch_contract(receipt_path)
 
 
-def test_missing_external_warp_fails_before_simulation_app_factory(
+def test_stale_dependency_overlay_is_rejected_before_pre_app_probe(
     tmp_path: Path,
 ) -> None:
     receipt_path = _receipt(tmp_path)
     value = json.loads(receipt_path.read_text(encoding="utf-8"))
-    value["runtime_import_probe_returncode"] = 1
-    value["runtime_import_probes"] = []
+    value["runtime_dependency_overlay_required"] = True
+    value["runtime_dependencies_installed"] = [{"package": "packaging", "version": "25.0"}]
     value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
     receipt_path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_runtime_dependency_ownership_invalid",
+    ):
+        verify_native_task_isaaclab_launch_contract(receipt_path)
+
+
+def test_pre_app_matrix_requires_each_declared_module_exactly_once(
+    tmp_path: Path,
+) -> None:
+    forged = _pre_app_result()
+    forged["imports"][-1] = dict(forged["imports"][0])
+    forged["matrix_digest"] = canonical_digest(forged, digest_field="matrix_digest")
+    called = False
+
+    def forbidden_factory(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("SimulationApp must not launch from an incomplete matrix")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_pre_app_dependency_matrix_invalid",
+    ):
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            simulation_app_factory=forbidden_factory,
+            pre_app_dependency_probe=lambda: forged,
+        )
+    assert called is False
+
+
+def test_missing_external_warp_fails_before_simulation_app_factory(
+    tmp_path: Path,
+) -> None:
+    receipt_path = _receipt(tmp_path)
     called = False
 
     def forbidden_factory(*args, **kwargs):
@@ -290,9 +342,16 @@ def test_missing_external_warp_fails_before_simulation_app_factory(
 
     with pytest.raises(
         NativeTaskIsaacLabLaunchError,
-        match="native_task_isaaclab_external_warp_import_unqualified",
+        match="native_task_pre_app_dependency_missing:warp",
     ):
-        launch_native_task_isaaclab(receipt_path, simulation_app_factory=forbidden_factory)
+        launch_native_task_isaaclab(
+            receipt_path,
+            simulation_app_factory=forbidden_factory,
+            pre_app_dependency_probe=lambda: _pre_app_result(
+                blockers=["native_task_pre_app_dependency_missing:warp"],
+                missing_modules={"warp"},
+            ),
+        )
     assert called is False
 
 

@@ -1,11 +1,13 @@
 """Package exact released Isaac Lab and Arena sources for paid native tasks.
 
-The qualified Isaac Sim image is intentionally treated as a simulator base, not
-as evidence that companion Python packages are installed.  This module exports
-the small, task-neutral source closure used by native Panda construction from
-exact git objects.  Reading blobs with ``git show`` prevents dirty working-copy
-bytes from entering a paid bundle while retaining repository, revision, tree,
-license, file, and archive identities.
+The digest-pinned Isaac Lab image owns the complete Python/CUDA dependency
+environment.  This module exports only the task-neutral released-source closure
+needed by native Panda construction.  Keeping dependencies owned by the paired
+image prevents a source packet from shadowing a mutually constrained runtime;
+the pre-app matrix independently imports and versions that environment before
+Kit starts.  Reading exact git objects prevents dirty working-copy bytes from
+entering a paid bundle while retaining repository, revision, tree, license,
+file, and archive identities.
 """
 
 from __future__ import annotations
@@ -95,254 +97,14 @@ ISAACLAB_PACKAGE_NAMES = (
 INSTALL_ROOTS = tuple(
     f"runtime_sources/isaaclab/source/{name}" for name in ISAACLAB_PACKAGE_NAMES
 ) + ("runtime_sources/arena",)
-RUNTIME_DEPENDENCY_WHEELS = (
-    # Arena's pinned Isaac Lab tree declares external Warp 1.13.0.  Its Kit
-    # experience intentionally excludes ``omni.warp.core``
-    # to prevent a second Warp runtime from moving PhysX tensors across CPU and
-    # CUDA devices.  Therefore the external wheel is a required runtime input,
-    # not an optional transitive dependency supplied by the simulator image.
-    {
-        "filename": "warp_lang-1.13.0-py3-none-manylinux_2_28_x86_64.whl",
-        "package": "warp-lang",
-        "version": "1.13.0",
-        "license_spdx": "Apache-2.0",
-        "pure_python": False,
-        "wheel_tag": "py3-none-manylinux_2_28_x86_64",
-        "import_module": "warp",
-        "import_version": "1.13.0",
-    },
-    # Arena imports Isaac Lab task configuration at builder import time.  That
-    # path requires Hydra and its complete pure-Python dependency closure;
-    # bundling only hydra-core would merely defer failure to OmegaConf or the
-    # generated ANTLR parser on the paid host.
-    {
-        "filename": "antlr4_python3_runtime-4.9.3-py3-none-any.whl",
-        "package": "antlr4-python3-runtime",
-        "version": "4.9.3",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "omegaconf-2.3.0-py3-none-any.whl",
-        "package": "omegaconf",
-        "version": "2.3.0",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "hydra_core-1.3.2-py3-none-any.whl",
-        "package": "hydra-core",
-        "version": "1.3.2",
-        "license_spdx": "MIT",
-    },
-    # Arena's registry imports every released policy adapter before the native
-    # builder is available.  Bind that complete import-time closure up front so
-    # a paid host cannot reveal msgpack, ZeroMQ, RSL-RL, or one of RSL-RL's
-    # import-only dependencies serially across multiple launches.
-    {
-        "filename": (
-            "msgpack-1.2.1-cp312-cp312-manylinux2014_x86_64."
-            "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
-        ),
-        "package": "msgpack",
-        "version": "1.2.1",
-        "license_spdx": "Apache-2.0",
-        "pure_python": False,
-        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
-    },
-    {
-        "filename": ("pyzmq-27.1.0-cp312-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl"),
-        "package": "pyzmq",
-        "version": "27.1.0",
-        "license_spdx": "BSD-3-Clause",
-        "pure_python": False,
-        "wheel_tag": "cp312-abi3-manylinux_2_28_x86_64",
-    },
-    {
-        "filename": "rsl_rl_lib-5.0.1-py3-none-any.whl",
-        "package": "rsl-rl-lib",
-        "version": "5.0.1",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "tensordict-0.13.0-cp312-cp312-manylinux_2_28_x86_64.whl",
-        "package": "tensordict",
-        "version": "0.13.0",
-        "license_spdx": "BSD-3-Clause",
-        "pure_python": False,
-        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
-    },
-    {
-        "filename": "importlib_metadata-9.0.0-py3-none-any.whl",
-        "package": "importlib-metadata",
-        "version": "9.0.0",
-        "license_spdx": "Apache-2.0",
-    },
-    {
-        "filename": "zipp-4.1.0-py3-none-any.whl",
-        "package": "zipp",
-        "version": "4.1.0",
-        "license_spdx": "MIT",
-    },
-    {
-        "filename": ("orjson-3.11.9-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"),
-        "package": "orjson",
-        "version": "3.11.9",
-        "license_spdx": "Apache-2.0 OR MIT",
-        "pure_python": False,
-        "wheel_tag": "cp312-cp312-manylinux_2_17_x86_64",
-    },
-    {
-        "filename": "pyvers-0.2.3-py3-none-any.whl",
-        "package": "pyvers",
-        "version": "0.2.3",
-        "license_spdx": "MIT",
-    },
-    {
-        "filename": "gitpython-3.1.58-py3-none-any.whl",
-        "package": "GitPython",
-        "version": "3.1.58",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "gitdb-4.0.12-py3-none-any.whl",
-        "package": "gitdb",
-        "version": "4.0.12",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "smmap-5.0.3-py3-none-any.whl",
-        "package": "smmap",
-        "version": "5.0.3",
-        "license_spdx": "BSD-3-Clause",
-    },
-    # Arena's asset registry imports the released Lightwheel-backed asset
-    # classes even when a task does not instantiate one.  Bind the SDK and its
-    # complete base dependency closure so registry import is deterministic and
-    # does not depend on whatever a paid image happens to contain.
-    {
-        "filename": "lightwheel_sdk-1.0.3-py3-none-any.whl",
-        "package": "lightwheel-sdk",
-        "version": "1.0.3",
-        "license_spdx": "Apache-2.0",
-    },
-    {
-        "filename": "requests-2.34.2-py3-none-any.whl",
-        "package": "requests",
-        "version": "2.34.2",
-        "license_spdx": "Apache-2.0",
-    },
-    {
-        "filename": (
-            "charset_normalizer-3.4.9-cp312-cp312-manylinux2014_x86_64."
-            "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
-        ),
-        "package": "charset-normalizer",
-        "version": "3.4.9",
-        "license_spdx": "MIT",
-        "pure_python": False,
-        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
-    },
-    {
-        "filename": "idna-3.18-py3-none-any.whl",
-        "package": "idna",
-        "version": "3.18",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "urllib3-2.7.0-py3-none-any.whl",
-        "package": "urllib3",
-        "version": "2.7.0",
-        "license_spdx": "MIT",
-    },
-    {
-        "filename": "certifi-2026.7.22-py3-none-any.whl",
-        "package": "certifi",
-        "version": "2026.7.22",
-        "license_spdx": "MPL-2.0",
-    },
-    {
-        "filename": "tqdm-4.70.0-py3-none-any.whl",
-        "package": "tqdm",
-        "version": "4.70.0",
-        "license_spdx": "MPL-2.0 AND MIT",
-    },
-    {
-        "filename": "termcolor-3.3.0-py3-none-any.whl",
-        "package": "termcolor",
-        "version": "3.3.0",
-        "license_spdx": "MIT",
-    },
-    {
-        "filename": "pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64."
-        "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
-        "package": "PyYAML",
-        "version": "6.0.3",
-        "license_spdx": "MIT",
-        "pure_python": False,
-        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
-    },
-    {
-        "filename": "click-8.4.2-py3-none-any.whl",
-        "package": "click",
-        "version": "8.4.2",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "gymnasium-1.2.1-py3-none-any.whl",
-        "package": "gymnasium",
-        "version": "1.2.1",
-        "license_spdx": "MIT",
-    },
-    {
-        "filename": "lazy_loader-0.4-py3-none-any.whl",
-        "package": "lazy_loader",
-        "version": "0.4",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "cloudpickle-3.1.1-py3-none-any.whl",
-        "package": "cloudpickle",
-        "version": "3.1.1",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "Farama_Notifications-0.0.4-py3-none-any.whl",
-        "package": "farama-notifications",
-        "version": "0.0.4",
-        "license_spdx": "MIT",
-    },
-    {
-        "filename": "packaging-25.0-py3-none-any.whl",
-        "package": "packaging",
-        "version": "25.0",
-        "license_spdx": "Apache-2.0 OR BSD-2-Clause",
-    },
-    {
-        "filename": "typing_extensions-4.15.0-py3-none-any.whl",
-        "package": "typing-extensions",
-        "version": "4.15.0",
-        "license_spdx": "PSF-2.0",
-    },
-    {
-        "filename": "prettytable-3.3.0-py3-none-any.whl",
-        "package": "prettytable",
-        "version": "3.3.0",
-        "license_spdx": "BSD-3-Clause",
-    },
-    {
-        "filename": "wcwidth-0.2.13-py2.py3-none-any.whl",
-        "package": "wcwidth",
-        "version": "0.2.13",
-        "license_spdx": "MIT",
-    },
-    {
-        "filename": "h5py-3.16.0-cp312-cp312-manylinux_2_28_x86_64.whl",
-        "package": "h5py",
-        "version": "3.16.0",
-        "license_spdx": "BSD-3-Clause",
-        "pure_python": False,
-        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
-    },
-)
+# This tuple is deliberately empty for the complete, digest-pinned Isaac Lab
+# runtime image.  The image owns its Python/CUDA dependency environment; adding
+# ad-hoc wheels ahead of it can silently replace mutually constrained packages
+# (Torch, packaging, typing-extensions, tqdm, and others).  The full pre-app
+# dependency matrix imports and versions every required module in one pass.  A
+# future overlay is admissible only from that retained image-specific evidence,
+# with its complete dependency closure and a hermetic collision test.
+RUNTIME_DEPENDENCY_WHEELS: tuple[dict[str, Any], ...] = ()
 
 
 class NativeTaskRuntimeSourcePacketError(ValueError):
@@ -558,10 +320,14 @@ def _arena_pairing_contract(*, repo: Path, commit: str, isaaclab_commit: str) ->
 
 
 def _runtime_dependency_rows(
-    wheel_dir: Path,
+    wheel_dir: Path | None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, bytes]]]:
     expected = {row["filename"] for row in RUNTIME_DEPENDENCY_WHEELS}
-    observed = {path.name for path in wheel_dir.glob("*.whl")} if wheel_dir.is_dir() else set()
+    observed = (
+        {path.name for path in wheel_dir.glob("*.whl")}
+        if wheel_dir is not None and wheel_dir.is_dir()
+        else set()
+    )
     if observed != expected:
         raise NativeTaskRuntimeSourcePacketError(
             ["native_task_runtime_dependency_wheel_set_mismatch"]
@@ -569,6 +335,7 @@ def _runtime_dependency_rows(
     rows: list[dict[str, Any]] = []
     blobs: list[tuple[str, bytes]] = []
     for contract in RUNTIME_DEPENDENCY_WHEELS:
+        assert wheel_dir is not None
         path = wheel_dir / contract["filename"]
         data = path.read_bytes()
         try:
@@ -614,7 +381,7 @@ def materialize_native_task_runtime_source_packet(
     output_dir: str | Path,
     isaaclab_repo: str | Path,
     arena_repo: str | Path,
-    dependency_wheel_dir: str | Path,
+    dependency_wheel_dir: str | Path | None = None,
     generated_at: str | None = None,
     isaaclab_commit: str = ISAACLAB_COMMIT,
     isaaclab_tree: str = ISAACLAB_TREE,
@@ -659,6 +426,10 @@ def materialize_native_task_runtime_source_packet(
         "package": "warp-lang",
         "version": "1.13.0",
         "requirement": "warp-lang==1.13.0",
+        "runtime_owner": "official_isaac_lab_complete_runtime",
+        "runtime_image": ISAACLAB_RUNTIME_IMAGE,
+        "packet_overlay_required": False,
+        "qualification_gate": "native_task_pre_app_dependency_matrix.v1",
         "source_repository": ISAACLAB_REPOSITORY,
         "source_revision": isaaclab_commit,
         "source_tree": isaaclab_tree,
@@ -700,7 +471,11 @@ def materialize_native_task_runtime_source_packet(
         isaaclab_commit=isaaclab_commit,
     )
     dependency_rows, dependency_blobs = _runtime_dependency_rows(
-        Path(dependency_wheel_dir).expanduser().resolve()
+        (
+            Path(dependency_wheel_dir).expanduser().resolve()
+            if dependency_wheel_dir is not None
+            else None
+        )
     )
     manifest: dict[str, Any] = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -930,7 +705,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--isaaclab-repo", required=True)
     parser.add_argument("--arena-repo", required=True)
-    parser.add_argument("--dependency-wheel-dir", required=True)
+    parser.add_argument("--dependency-wheel-dir")
     parser.add_argument("--generated-at")
     args = parser.parse_args(argv)
     receipt = materialize_native_task_runtime_source_packet(

@@ -29,6 +29,7 @@ from .native_task_runtime_source_packet import (
     ARENA_ISAACLAB_SUBMODULE_PATH,
     ARENA_REPOSITORY,
     ISAAC_SIM_BASE_IMAGE,
+    ISAAC_SIM_RUNTIME_IMAGE,
     ISAACLAB_REPOSITORY,
     ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
     ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
@@ -359,6 +360,7 @@ def verify_native_task_isaaclab_launch_contract(
         "isaaclab_revision": ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
         "isaaclab_submodule_path": ARENA_ISAACLAB_SUBMODULE_PATH,
         "simulator_base_image": ISAAC_SIM_BASE_IMAGE,
+        "simulator_runtime_image": ISAAC_SIM_RUNTIME_IMAGE,
     }
     paired_stack = dict(provisioning.get("paired_stack") or {})
     if any(paired_stack.get(key) != value for key, value in expected_pair.items()):
@@ -411,32 +413,17 @@ def verify_native_task_isaaclab_launch_contract(
         or BUNDLED_WARP_EXTENSION not in headless
     ):
         errors.append("native_task_isaaclab_experience_warp_contract_invalid")
-    installed_warp = [
-        row
-        for row in provisioning.get("runtime_dependencies_installed") or []
-        if isinstance(row, Mapping) and row.get("package") == "warp-lang"
-    ]
-    import_warp = [
-        row
-        for row in provisioning.get("runtime_import_probes") or []
-        if isinstance(row, Mapping) and row.get("module") == "warp"
-    ]
     if (
-        len(installed_warp) != 1
-        or installed_warp[0].get("version") != "1.13.0"
-        or installed_warp[0].get("pure_python") is not False
-        or installed_warp[0].get("wheel_tag") != "py3-none-manylinux_2_28_x86_64"
+        provisioning.get("runtime_dependency_owner") != "official_isaac_lab_complete_runtime"
+        or provisioning.get("runtime_dependency_overlay_required") is not False
+        or provisioning.get("runtime_dependencies_installed") != []
     ):
-        errors.append("native_task_isaaclab_external_warp_identity_invalid")
+        errors.append("native_task_isaaclab_runtime_dependency_ownership_invalid")
     if (
         provisioning.get("runtime_import_probe_returncode") != 0
-        or len(import_warp) != 1
-        or import_warp[0].get("available") is not True
-        or import_warp[0].get("expected_version") != "1.13.0"
-        or import_warp[0].get("observed_version") != "1.13.0"
-        or import_warp[0].get("version_matches") is not True
+        or provisioning.get("runtime_import_probes") != []
     ):
-        errors.append("native_task_isaaclab_external_warp_import_unqualified")
+        errors.append("native_task_isaaclab_early_dependency_probe_invalid")
     if errors:
         raise NativeTaskIsaacLabLaunchError(errors)
     return {
@@ -455,10 +442,11 @@ def verify_native_task_isaaclab_launch_contract(
         "bundled_isaac_sim_warp_extension_loaded": None,
         "external_warp": {
             "package": "warp-lang",
-            "version": "1.13.0",
-            "wheel_tag": "py3-none-manylinux_2_28_x86_64",
+            "version_requirement": "==1.13.0",
+            "runtime_owner": "official_isaac_lab_complete_runtime",
+            "runtime_image": ISAAC_SIM_RUNTIME_IMAGE,
             "import_module": "warp",
-            "import_qualified_before_simulation_app": True,
+            "import_qualified_before_simulation_app": False,
         },
         "direct_physx_registration_required": True,
         "device_coherence_still_requires_native_readback": True,
@@ -512,10 +500,16 @@ def launch_native_task_isaaclab(
         provisioning_receipt_path,
         pre_app,
     )
+    pre_app_imports = [row for row in pre_app.get("imports") or [] if isinstance(row, Mapping)]
+    pre_app_modules = [str(row.get("module") or "") for row in pre_app_imports]
     pre_app_valid = bool(
         pre_app.get("schema_version") == PRE_APP_DEPENDENCY_SCHEMA_VERSION
         and pre_app.get("matrix_digest") == canonical_digest(pre_app, digest_field="matrix_digest")
         and pre_app.get("all_declared_imports_attempted") is True
+        and pre_app.get("import_count") == len(PRE_APP_DEPENDENCY_IMPORTS)
+        and len(pre_app_imports) == len(PRE_APP_DEPENDENCY_IMPORTS)
+        and len(set(pre_app_modules)) == len(PRE_APP_DEPENDENCY_IMPORTS)
+        and set(pre_app_modules) == set(PRE_APP_DEPENDENCY_IMPORTS)
         and pre_app.get("simulation_app_started") is False
         and pre_app.get("candidate_policy_queried") is False
     )
@@ -528,6 +522,24 @@ def launch_native_task_isaaclab(
         **pre_app,
         "path": str(pre_app_path),
     }
+    warp_rows = [row for row in pre_app_imports if row.get("module") == "warp"]
+    if (
+        len(warp_rows) != 1
+        or warp_rows[0].get("available") is not True
+        or warp_rows[0].get("observed_version") != "1.13.0"
+        or warp_rows[0].get("version_constraint") != "==1.13.0"
+        or warp_rows[0].get("version_matches") is not True
+    ):
+        raise NativeTaskIsaacLabLaunchError(
+            ["native_task_isaaclab_external_warp_import_unqualified"]
+        )
+    receipt["external_warp"].update(
+        {
+            "observed_version": warp_rows[0]["observed_version"],
+            "import_qualified_before_simulation_app": True,
+            "qualification_matrix_digest": pre_app["matrix_digest"],
+        }
+    )
     if simulation_app_factory is None:
         from isaacsim.simulation_app import SimulationApp
 
