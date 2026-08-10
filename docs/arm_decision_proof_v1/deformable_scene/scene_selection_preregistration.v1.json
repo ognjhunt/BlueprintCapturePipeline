@@ -1,0 +1,129 @@
+{
+  "schema_version": "adp_deformable_scene_selection_preregistration.v1",
+  "program_id": "arm-decision-proof-v1",
+  "run_id": "adp-deformable-scene-e2e-v1",
+  "development_only": true,
+  "created_at": "2026-08-10T12:35:09Z",
+  "selection_authority": "public_dataset_observation_and_digest_bound_runtime_gates",
+  "selection_is_outcome_blind": true,
+  "learned_policy_outcomes_inspected": false,
+  "frozen_candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "candidate_replacement_policy": "typed_admission_blocker_only_no_silent_replacement",
+  "scene_discovery": {
+    "dataset_pair": {
+      "appearance": "InteriorGS",
+      "collision": "SAGE-3D Collision Mesh"
+    },
+    "known_catalog_roots": [
+      "/Users/nijelhunt_1/workspace/BlueprintValidation/data/interiorgs",
+      "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/shortlist/InteriorGS"
+    ],
+    "scene_identity_rule": "numeric_scene_id_suffix_of_interiorgs_directory",
+    "complete_known_topology_rule": "inventory_every_scene_directory_with_dataset_author_labels.json_and_structure.json_before_any_target_closeup",
+    "required_scene_pairing": "exact_scene_id_must_bind_local_interiorgs_appearance_bytes_and_local_sage_collision_bytes_before_admission",
+    "previously_used_scene_ids": [
+      "840313",
+      "840796"
+    ],
+    "previous_scene_reuse_prohibited": [
+      "geometry",
+      "placement",
+      "transforms",
+      "masks",
+      "destinations",
+      "camera_assumptions",
+      "task_object_assumptions",
+      "source_colliders"
+    ]
+  },
+  "task_family_priority": [
+    {
+      "rank": 1,
+      "task_family": "deformable_transfer",
+      "movable_material": "observed_towel_or_cloth",
+      "destination": "observed_rigid_open_bin_or_basket",
+      "prompt_template": "Pick up the towel/cloth, place it inside the open bin/basket, release it, and retreat."
+    },
+    {
+      "rank": 2,
+      "task_family": "deformable_transfer",
+      "movable_material": "observed_compressible_sponge",
+      "destination": "observed_open_sink_basin_or_rigid_tray",
+      "prompt_template": "Pick up the sponge, place it inside the open sink basin/rigid tray, release it, and retreat."
+    },
+    {
+      "rank": 3,
+      "task_family": "deformable_transfer",
+      "movable_material": "observed_flexible_cable_or_hose",
+      "destination": "observed_rigid_tray_or_exactly_one_observed_guide",
+      "prompt_template": "Pick up the cable/hose, place it inside the rigid tray or around the one observed guide, release it, and retreat."
+    }
+  ],
+  "hard_admission_gates": [
+    "scene_is_previously_unused",
+    "exact_interiorgs_appearance_identity_available",
+    "exact_sage_collision_identity_available",
+    "rights_and_disclosure_routes_are_admissible",
+    "shared_coordinates_scale_axes_and_registration_proven_or_typed_abstention",
+    "task_area_sufficiently_observed",
+    "deformable_object_material_class_supported_by_observation",
+    "deformable_rest_state_and_metric_dimensions_bounded_by_observation",
+    "support_surface_observed",
+    "destination_open_rigid_and_interior_sufficiently_observed",
+    "franka_base_placement_and_motion_clearance_plausible_without_moving_unadmitted_obstacles",
+    "external_wrist_and_overview_camera_coverage_plausible",
+    "deterministic_scripted_positive_plausible_through_native_action_seam_and_genuine_contacts"
+  ],
+  "hard_rejections": [
+    "full_folding",
+    "knot_tying_or_untying",
+    "dressing",
+    "bag_with_unknown_contents",
+    "liquid_food_granular_or_mixed_deformable_contents",
+    "multi_stage_cable_routing",
+    "hidden_state_task",
+    "unsupported_material_class",
+    "unobserved_destination_interior",
+    "scripted_positive_requires_object_teleport_or_direct_state_write_after_episode_start"
+  ],
+  "selection_order": [
+    "apply_all_hard_admission_gates",
+    "choose_lowest_available_task_family_rank",
+    "maximize_observation_coverage_for_deformable_rest_state_and_destination_interior",
+    "maximize_independent_appearance_collision_registration_evidence",
+    "maximize_collision_free_franka_reachability_margin_across_pregrasp_grasp_lift_transport_deposit_release_retreat",
+    "maximize_preregistered_external_wrist_overview_visibility_margin",
+    "minimize_required_gaussian_and_collider_replacement_scope",
+    "break_any_remaining_tie_by_ascending_numeric_scene_id"
+  ],
+  "survey_order": [
+    "dataset_author_labels_and_structure_for_every_known_scene",
+    "whole_room_reconnaissance_for_every_scene_with_complete_appearance_collision_pair",
+    "target_closeups_only_for_semantically_admissible_shortlist",
+    "registration_reachability_and_camera_gates",
+    "single_scene_freeze"
+  ],
+  "reconnaissance_boundary": {
+    "previews_are_evaluation_authorized_renders": false,
+    "virtual_camera_recovers_missing_observations": false,
+    "model_derived_boxes_are_candidate_only": true,
+    "unseen_uncaptured_occluded_or_unrenderable_regions_must_be_reported": true
+  },
+  "freeze_required_before_learned_outcomes": [
+    "scene",
+    "task_family",
+    "task_entities",
+    "prompt",
+    "start_state",
+    "destination",
+    "success_predicates",
+    "controls",
+    "seeds",
+    "powered_matrix_subset",
+    "candidate_ids"
+  ],
+  "claim_ceiling": "public_dataset_simulator_rehearsal_not_partner_capture_real_site_fidelity_deployment_readiness_physical_material_fidelity_real_franka_performance_or_customer_value"
+}
