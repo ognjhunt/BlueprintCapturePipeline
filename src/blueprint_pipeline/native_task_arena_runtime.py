@@ -39,6 +39,7 @@ class NativeTaskArenaEnvironment:
     contact_sensor_names: Mapping[str, tuple[str, ...]]
     camera_scene_names: Mapping[str, str]
     preconstruction_device_binding: Mapping[str, Any] | None = None
+    native_configuration_readback: Mapping[str, Any] | None = None
 
 
 def _validated_plan(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -403,6 +404,7 @@ def build_native_task_arena_environment(
     embodiment.scene_config.robot.spawn.semantic_tags = [("class", "robot")]
 
     camera_names: dict[str, str] = {}
+    camera_configuration_readback: dict[str, dict[str, Any]] = {}
     for camera in plan["cameras"]:
         parameters = camera_runtime_parameters(camera)
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
@@ -420,6 +422,12 @@ def build_native_task_arena_environment(
         camera_cfg.spawn.horizontal_aperture = parameters["horizontal_aperture_mm"]
         camera_cfg.spawn.vertical_aperture = parameters["vertical_aperture_mm"]
         camera_names[parameters["role"]] = parameters["runtime_name"]
+        camera_configuration_readback[parameters["role"]] = {
+            "runtime_name": parameters["runtime_name"],
+            "offset_position_m": list(camera_cfg.offset.pos),
+            "offset_rotation_xyzw": list(camera_cfg.offset.rot),
+            "focal_length_mm": float(camera_cfg.spawn.focal_length),
+        }
 
     assets: list[Any] = []
     scene_asset_names: dict[str, str] = {}
@@ -598,6 +606,9 @@ def build_native_task_arena_environment(
         contact_sensor_names=contact_sensor_names,
         camera_scene_names=camera_names,
         preconstruction_device_binding=preconstruction,
+        native_configuration_readback={
+            "cameras": camera_configuration_readback,
+        },
     )
 
 

@@ -428,6 +428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from blueprint_pipeline.native_task_arena_readback import (
             NativeArticulatedTaskArenaReadback,
             read_native_task_arena_object_reset_state,
+            read_native_task_arena_scenario_parameters,
         )
         from blueprint_pipeline.native_task_arena_device_readback import (
             read_native_task_arena_device_binding,
@@ -475,6 +476,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         _announce("environment_build", "completed")
 
         initial_sample = readback.read_task_sample()
+        scenario_parameter_readback = read_native_task_arena_scenario_parameters(built)
+        result["scenario_parameter_readback"] = scenario_parameter_readback
+        if not scenario_parameter_readback["passed"]:
+            result["blockers"].append(
+                "native_task_scenario_parameter_readback_mismatch"
+            )
         result["initial_readback"] = {
             "robot_root_pose_world": _jsonable(robot.data.root_pose_w)[0],
             "robot_joint_names": list(robot.joint_names),

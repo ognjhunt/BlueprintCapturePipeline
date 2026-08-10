@@ -1435,6 +1435,31 @@ def _factor_allowed(factor: Mapping[str, Any], value: Any) -> bool:
     return number is not None and lower is not None and upper is not None and lower <= number <= upper
 
 
+def _scenario_application_tolerance(factor: Mapping[str, Any]) -> float:
+    """Return a native-readback tolerance, adapting the frozen legacy suite."""
+
+    explicit = factor.get("application_tolerance")
+    if explicit is not None:
+        value = float(explicit)
+        if math.isfinite(value) and value > 0.0:
+            return value
+        raise Adp009dHarnessError(["scenario_factor_application_tolerance_invalid"])
+    unit = str(factor.get("unit") or "")
+    try:
+        return {
+            "m": 1.0e-4,
+            "degrees": 1.0e-3,
+            "ratio": 1.0e-6,
+            "K": 0.5,
+            "kg": 1.0e-4,
+            "coefficient": 1.0e-6,
+        }[unit]
+    except KeyError as exc:
+        raise Adp009dHarnessError(
+            [f"scenario_factor_application_tolerance_missing:{unit}"]
+        ) from exc
+
+
 def _sample_factor(
     factor: Mapping[str, Any], *, suite_digest: str, cell_id: str, seed: int
 ) -> tuple[Any, str]:
@@ -1913,6 +1938,14 @@ def materialize_scenario_suite(
                     "seed": cell["seed"],
                     "resolved_seed_digest": seed_digest,
                     "resolved_value": resolved_value,
+                    "application_tolerance": _scenario_application_tolerance(
+                        factor
+                    ),
+                    "application_tolerance_source": (
+                        "factor"
+                        if factor.get("application_tolerance") is not None
+                        else "legacy_unit_adapter"
+                    ),
                     "source": factor["source"],
                     "reason": factor["reason"],
                     "runtime_target": factor["runtime_target"],

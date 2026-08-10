@@ -286,6 +286,79 @@ def read_native_task_arena_object_reset_state(
     }
 
 
+def read_native_task_arena_scenario_parameters(
+    built: NativeTaskArenaEnvironment,
+) -> dict[str, Any]:
+    """Compare every requested perturbation with native object/config state."""
+
+    applications = list(
+        (built.plan.get("scenario") or {}).get("parameter_applications") or []
+    )
+    env = getattr(built.env, "unwrapped", built.env)
+    scene = getattr(env, "scene", None)
+    configuration = built.native_configuration_readback or {}
+    rows: list[dict[str, Any]] = []
+    for application in applications:
+        kind = application["readback_kind"]
+        tolerance = float(application["application_tolerance"])
+        expected = application["expected_native_value"]
+        if kind.startswith("task_subject_root_"):
+            if scene is None:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_scene_readback_missing"]
+                )
+            runtime_name = application["runtime_name"]
+            try:
+                asset = scene[built.scene_asset_names[runtime_name]]
+            except (KeyError, TypeError) as exc:
+                raise NativeTaskArenaReadbackError(
+                    [f"native_task_arena_scenario_asset_missing:{runtime_name}"]
+                ) from exc
+            pose = _first_environment(
+                getattr(getattr(asset, "data", None), "root_pose_w", None),
+                error=f"native_task_arena_scenario_root_pose_missing:{runtime_name}",
+            )
+            if kind == "task_subject_root_position_y_m":
+                observed: Any = float(pose[1])
+                error = abs(observed - float(expected))
+            else:
+                observed = _native_wxyz_to_xyzw(pose[3:7])
+                error = _quaternion_angle_xyzw(observed, expected)
+                tolerance = math.radians(tolerance)
+        elif kind == "camera_offset_position_x_m":
+            role = application["camera_role"]
+            try:
+                observed = float(configuration["cameras"][role]["offset_position_m"][0])
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                raise NativeTaskArenaReadbackError(
+                    [f"native_task_arena_scenario_camera_readback_missing:{role}"]
+                ) from exc
+            error = abs(observed - float(expected))
+        else:
+            raise NativeTaskArenaReadbackError(
+                [f"native_task_arena_scenario_readback_kind_invalid:{kind}"]
+            )
+        rows.append(
+            {
+                "parameter_id": application["parameter_id"],
+                "runtime_target": application["runtime_target"],
+                "unit": application["unit"],
+                "requested_resolved_value": application["resolved_value"],
+                "expected_native_value": expected,
+                "observed_native_value": observed,
+                "absolute_error_native_unit": error,
+                "application_tolerance_native_unit": tolerance,
+                "passed": error <= tolerance,
+            }
+        )
+    return {
+        "passed": all(row["passed"] for row in rows),
+        "requested_parameter_count": len(applications),
+        "parameters": rows,
+        "native_readback_required": True,
+    }
+
+
 class NativeArticulatedTaskArenaReadback:
     """Compile task samples from the exact scene handles returned by the builder."""
 
@@ -431,4 +504,5 @@ __all__ = [
     "NativeArticulatedTaskArenaReadback",
     "NativeTaskArenaReadbackError",
     "read_native_task_arena_object_reset_state",
+    "read_native_task_arena_scenario_parameters",
 ]

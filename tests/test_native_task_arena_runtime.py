@@ -494,6 +494,9 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
     assert reset_owner.reset_event_cfg.params["reset_joints"] is True
     assert _ArenaBuilder.last.args.device == "cuda:0"
     assert built.preconstruction_device_binding["passed"] is True
+    assert built.native_configuration_readback["cameras"]["external"][
+        "offset_position_m"
+    ] == [1.0, 2.0, 3.0]
 
 
 def test_builder_keeps_inactive_articulated_replacement_and_its_reset(

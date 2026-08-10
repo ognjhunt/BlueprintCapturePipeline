@@ -39,6 +39,14 @@ CAMERA_OPTICAL_CONVENTIONS = ("opencv",)
 ENV_ROOT = "{ENV_REGEX_NS}"
 TASK_KINDS = ("rigid_pick_place", "articulated_open_close")
 SCENARIO_CONTEXT_KINDS = ("construction_canary", "evaluation_cell")
+SUPPORTED_SCENARIO_RUNTIME_TARGETS = frozenset(
+    {
+        "EventManager.reset.object_start_position_m.y",
+        "EventManager.reset.object_orientation.yaw",
+        "EventManager.reset.external_camera.pose.position.x",
+        "EventManager.reset.wrist_camera.pose.position.x",
+    }
+)
 TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
 DROID_FRANKA_RESET_JOINT_NAMES = (
     "panda_joint1",
@@ -509,6 +517,51 @@ def _robot_joint_reset_positions(
     return resolved
 
 
+def _scenario_parameter_rows(
+    value: Sequence[Mapping[str, Any]] | None, *, errors: list[str]
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value or []):
+        if not isinstance(raw, Mapping):
+            errors.append(f"native_task_runtime_scenario_parameter_invalid:{index}")
+            continue
+        parameter_id = str(raw.get("parameter_id") or "")
+        target = str(raw.get("runtime_target") or "")
+        unit = str(raw.get("unit") or "")
+        try:
+            nominal = float(raw["nominal_value"])
+            resolved = float(raw["resolved_value"])
+            tolerance = float(raw["application_tolerance"])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"native_task_runtime_scenario_parameter_invalid:{index}")
+            continue
+        if target not in SUPPORTED_SCENARIO_RUNTIME_TARGETS:
+            errors.append(f"native_task_runtime_scenario_target_unsupported:{target}")
+            continue
+        if (
+            not parameter_id
+            or parameter_id in seen
+            or unit not in {"m", "degrees"}
+            or not all(math.isfinite(item) for item in (nominal, resolved, tolerance))
+            or tolerance <= 0.0
+        ):
+            errors.append(f"native_task_runtime_scenario_parameter_invalid:{index}")
+            continue
+        seen.add(parameter_id)
+        rows.append(
+            {
+                "parameter_id": parameter_id,
+                "runtime_target": target,
+                "unit": unit,
+                "nominal_value": nominal,
+                "resolved_value": resolved,
+                "application_tolerance": tolerance,
+            }
+        )
+    return rows
+
+
 def materialize_native_task_runtime_contract(
     *,
     scene_id: str,
@@ -524,6 +577,7 @@ def materialize_native_task_runtime_contract(
     scenario_instance_digest: str,
     seed: int,
     scenario_context_kind: str = "evaluation_cell",
+    scenario_parameter_bindings: Sequence[Mapping[str, Any]] | None = None,
     construction_bindings: Mapping[str, Any] | None = None,
     task_freeze_digest: str | None = None,
     destination: str | Path | None = None,
@@ -642,6 +696,9 @@ def materialize_native_task_runtime_contract(
         robot_joint_reset_positions_rad, errors=errors
     )
     camera_rows = _camera_rows(cameras, errors=errors)
+    scenario_parameters = _scenario_parameter_rows(
+        scenario_parameter_bindings, errors=errors
+    )
     state_binding = _articulated_task_state_binding(
         task_state_binding, task_kind=task_kind, errors=errors
     )
@@ -666,6 +723,7 @@ def materialize_native_task_runtime_contract(
             "cell_id": str(scenario_cell_id),
             "instance_digest": str(scenario_instance_digest),
             "seed": seed,
+            "parameter_bindings": scenario_parameters,
         },
         "candidate_ids": list(FROZEN_CANDIDATES),
         "objects": asset_rows,

@@ -232,6 +232,108 @@ def _cadence(contract: Mapping[str, Any], *, physics_frequency_hz: float) -> dic
     }
 
 
+def _yaw_quaternion_xyzw(degrees: float) -> list[float]:
+    half = math.radians(degrees) / 2.0
+    return [0.0, 0.0, math.sin(half), math.cos(half)]
+
+
+def _quaternion_product_xyzw(a: list[float], b: list[float]) -> list[float]:
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+
+
+def _yaw_degrees_xyzw(value: list[float]) -> float:
+    x, y, z, w = value
+    return math.degrees(
+        math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    )
+
+
+def _apply_scenario_parameters(
+    *,
+    objects: list[dict[str, Any]],
+    cameras: list[dict[str, Any]],
+    bindings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    applications: list[dict[str, Any]] = []
+    subject = next(row for row in objects if row.get("task_subject") is True)
+    camera_by_role = {row["role"]: row for row in cameras}
+    for binding in bindings:
+        target = binding["runtime_target"]
+        delta = float(binding["resolved_value"]) - float(binding["nominal_value"])
+        application = dict(binding)
+        application["delta_from_nominal"] = delta
+        if target == "EventManager.reset.object_start_position_m.y":
+            base = float(subject["pose_world"]["position_world_m"][1])
+            if abs(base - float(binding["nominal_value"])) > float(
+                binding["application_tolerance"]
+            ):
+                raise NativeTaskArenaScenePlanError(
+                    [f"native_task_arena_scenario_nominal_mismatch:{target}"]
+                )
+            subject["pose_world"]["position_world_m"][1] += delta
+            subject["reset_state"]["root_pose_world"]["position_world_m"][1] += delta
+            application.update(
+                readback_kind="task_subject_root_position_y_m",
+                expected_native_value=subject["pose_world"]["position_world_m"][1],
+                runtime_name=subject["name"],
+            )
+        elif target == "EventManager.reset.object_orientation.yaw":
+            base_yaw = _yaw_degrees_xyzw(
+                subject["pose_world"]["orientation_xyzw"]
+            )
+            if abs(base_yaw - float(binding["nominal_value"])) > float(
+                binding["application_tolerance"]
+            ):
+                raise NativeTaskArenaScenePlanError(
+                    [f"native_task_arena_scenario_nominal_mismatch:{target}"]
+                )
+            yaw = _yaw_quaternion_xyzw(delta)
+            effective = _quaternion_product_xyzw(
+                yaw, subject["pose_world"]["orientation_xyzw"]
+            )
+            subject["pose_world"]["orientation_xyzw"] = effective
+            subject["reset_state"]["root_pose_world"]["orientation_xyzw"] = list(
+                effective
+            )
+            application.update(
+                readback_kind="task_subject_root_orientation_xyzw",
+                expected_native_value=effective,
+                runtime_name=subject["name"],
+            )
+        elif target in {
+            "EventManager.reset.external_camera.pose.position.x",
+            "EventManager.reset.wrist_camera.pose.position.x",
+        }:
+            role = "external" if ".external_camera." in target else "wrist"
+            camera = camera_by_role[role]
+            base = float(camera["frame_from_camera_matrix"][3])
+            if abs(base - float(binding["nominal_value"])) > float(
+                binding["application_tolerance"]
+            ):
+                raise NativeTaskArenaScenePlanError(
+                    [f"native_task_arena_scenario_nominal_mismatch:{target}"]
+                )
+            camera["frame_from_camera_matrix"][3] += delta
+            application.update(
+                readback_kind="camera_offset_position_x_m",
+                expected_native_value=camera["frame_from_camera_matrix"][3],
+                camera_role=role,
+            )
+        else:  # Contract validation owns the supported-target allowlist.
+            raise NativeTaskArenaScenePlanError(
+                [f"native_task_arena_scenario_target_unsupported:{target}"]
+            )
+        applications.append(application)
+    return applications
+
+
 def _articulation_plan(
     contract: Mapping[str, Any],
     *,
@@ -440,6 +542,18 @@ def materialize_native_task_arena_scene_plan(
         provider_asset_directory=asset_directory,
         published_asset_directory=published_asset_directory,
     )
+    cameras = json.loads(json.dumps(contract["cameras"]))
+    scenario_parameter_applications = _apply_scenario_parameters(
+        objects=objects,
+        cameras=cameras,
+        bindings=list(contract["scenario"].get("parameter_bindings") or []),
+    )
+    effective_contract = json.loads(json.dumps(contract))
+    staged_by_asset_id = {row["asset_id"]: row for row in objects}
+    for row in effective_contract["objects"]:
+        staged = staged_by_asset_id[row["asset_id"]]
+        row["pose_world"] = staged["pose_world"]
+        row["reset_state"] = staged["reset_state"]
     task_object_asset_path = next(
         (
             asset_directory / str(row["filename"])
@@ -457,7 +571,7 @@ def materialize_native_task_arena_scene_plan(
         None,
     )
     articulation = _articulation_plan(
-        contract,
+        effective_contract,
         task_object_asset_path=task_object_asset_path,
         scene_collision_asset_path=scene_collision_asset_path,
     )
@@ -472,11 +586,14 @@ def materialize_native_task_arena_scene_plan(
         "task_spec": contract["task_spec"],
         "task_sample_binding": contract["task_sample_binding"],
         "task_state_binding": contract["task_state_binding"],
-        "scenario": contract["scenario"],
+        "scenario": {
+            **contract["scenario"],
+            "parameter_applications": scenario_parameter_applications,
+        },
         "asset_directory": published_asset_directory or str(asset_directory),
         "objects": objects,
         "robot": contract["robot"],
-        "cameras": contract["cameras"],
+        "cameras": cameras,
         "cadence": _cadence(contract, physics_frequency_hz=physics_frequency_hz),
         "articulation": articulation,
         "reset": {

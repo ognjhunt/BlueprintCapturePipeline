@@ -13,6 +13,7 @@ from blueprint_pipeline.native_task_arena_packet import (
 )
 from blueprint_pipeline.native_task_runtime_contract import (
     DROID_FRANKA_RESET_JOINT_NAMES,
+    NativeTaskRuntimeContractError,
 )
 from blueprint_pipeline.replacement_construction_bindings import (
     seal_replacement_construction_bindings,
@@ -454,6 +455,85 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
         for row in contracts[1]["objects"]
         if row["source_semantic_role"] == "replacement"
     } == {"articulated_a", "rigid_b"}
+
+
+def test_resolved_scenario_parameter_reaches_native_scene_plan(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=False)
+    context = request["scenario"]["context_document"]
+    context["resolved_parameters"] = {"external_camera_extrinsic_dx_m": 0.02}
+    context["factor_records"] = [
+        {
+            "parameter_id": "external_camera_extrinsic_dx_m",
+            "runtime_target": "EventManager.reset.external_camera.pose.position.x",
+            "unit": "m",
+            "nominal_value": 0.0,
+            "resolved_value": 0.02,
+            "application_tolerance": 1.0e-4,
+        }
+    ]
+    context["instance_digest"] = canonical_digest(
+        context, digest_field="instance_digest"
+    )
+    request["scenario"]["instance_digest"] = context["instance_digest"]
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    output = tmp_path / "packet"
+
+    materialize_native_task_arena_packet(
+        request=request, evidence_root=evidence, output_dir=output
+    )
+
+    contract = json.loads(
+        (output / "native_task_runtime_contract.v1.json").read_text()
+    )
+    plan = json.loads((output / "native_task_arena_scene_plan.v1.json").read_text())
+    assert contract["scenario"]["parameter_bindings"][0]["resolved_value"] == 0.02
+    application = plan["scenario"]["parameter_applications"][0]
+    assert application["expected_native_value"] == pytest.approx(0.02)
+    external = next(camera for camera in plan["cameras"] if camera["role"] == "external")
+    assert external["frame_from_camera_matrix"][3] == pytest.approx(0.02)
+
+
+def test_unsupported_scenario_target_fails_before_packet_copy_is_admitted(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=False)
+    context = request["scenario"]["context_document"]
+    context["resolved_parameters"] = {"object_mass_kg": 0.4}
+    context["factor_records"] = [
+        {
+            "parameter_id": "object_mass_kg",
+            "runtime_target": "EventManager.reset.object_rigid_body.mass_kg",
+            "unit": "kg",
+            "nominal_value": 0.355,
+            "resolved_value": 0.4,
+            "application_tolerance": 1.0e-4,
+        }
+    ]
+    context["instance_digest"] = canonical_digest(
+        context, digest_field="instance_digest"
+    )
+    request["scenario"]["instance_digest"] = context["instance_digest"]
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    output = tmp_path / "packet"
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_arena_packet(
+            request=request, evidence_root=evidence, output_dir=output
+        )
+
+    assert excinfo.value.errors == (
+        "native_task_runtime_scenario_target_unsupported:"
+        "EventManager.reset.object_rigid_body.mass_kg",
+    )
+    assert not output.exists()
 
 
 def test_tampered_source_fails_and_removes_partial_packet(tmp_path: Path) -> None:

@@ -638,6 +638,13 @@ def test_checked_in_scenario_suite_is_frozen_bounded_and_materializable(
         for factor in instance["factor_records"]
     )
     assert all(
+        factor["application_tolerance"] > 0
+        and factor["application_tolerance_source"]
+        in {"factor", "legacy_unit_adapter"}
+        for instance in materialized.instances
+        for factor in instance["factor_records"]
+    )
+    assert all(
         instance["resolved_parameters"]["target_x_m"] == 3.750152333333333
         and instance["resolved_parameters"]["target_y_m"] == -3.4074919
         for instance in materialized.instances

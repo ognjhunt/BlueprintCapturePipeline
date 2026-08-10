@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
@@ -166,6 +167,71 @@ def _validated_scenario_context(value: Any) -> dict[str, Any]:
     return scenario
 
 
+def _scenario_parameter_bindings(scenario: Mapping[str, Any]) -> list[dict[str, Any]]:
+    context = scenario["context_document"]
+    records = context.get("factor_records") or []
+    resolved = context.get("resolved_parameters") or {}
+    if not isinstance(records, list) or not isinstance(resolved, Mapping):
+        raise NativeTaskArenaPacketError(
+            ["native_task_arena_scenario_parameters_invalid"]
+        )
+    rows: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping):
+            raise NativeTaskArenaPacketError(
+                [f"native_task_arena_scenario_parameter_invalid:{index}"]
+            )
+        parameter_id = str(record.get("parameter_id") or "")
+        target = str(record.get("runtime_target") or "")
+        unit = str(record.get("unit") or "")
+        try:
+            nominal = float(record["nominal_value"])
+            value = float(record["resolved_value"])
+            tolerance = float(record.get("application_tolerance"))
+        except (KeyError, TypeError, ValueError):
+            tolerance = {
+                "m": 1.0e-4,
+                "degrees": 1.0e-3,
+                "ratio": 1.0e-6,
+                "K": 0.5,
+                "kg": 1.0e-4,
+                "coefficient": 1.0e-6,
+            }.get(unit, float("nan"))
+            try:
+                nominal = float(record["nominal_value"])
+                value = float(record["resolved_value"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise NativeTaskArenaPacketError(
+                    [f"native_task_arena_scenario_parameter_invalid:{index}"]
+                ) from exc
+        try:
+            context_value = float(resolved[parameter_id])
+        except (KeyError, TypeError, ValueError):
+            context_value = float("nan")
+        if (
+            not parameter_id
+            or not target
+            or not unit
+            or not all(math.isfinite(item) for item in (nominal, value, tolerance))
+            or tolerance <= 0.0
+            or context_value != value
+        ):
+            raise NativeTaskArenaPacketError(
+                [f"native_task_arena_scenario_parameter_invalid:{index}"]
+            )
+        rows.append(
+            {
+                "parameter_id": parameter_id,
+                "runtime_target": target,
+                "unit": unit,
+                "nominal_value": nominal,
+                "resolved_value": value,
+                "application_tolerance": tolerance,
+            }
+        )
+    return rows
+
+
 def materialize_native_task_arena_packet(
     *,
     request: Mapping[str, Any],
@@ -262,6 +328,7 @@ def materialize_native_task_arena_packet(
             )
 
         scenario = _validated_scenario_context(frozen.get("scenario"))
+        scenario_parameter_bindings = _scenario_parameter_bindings(scenario)
         contract_path = output / "native_task_runtime_contract.v1.json"
         contract = materialize_native_task_runtime_contract(
             scene_id=str(frozen.get("scene_id") or ""),
@@ -283,6 +350,7 @@ def materialize_native_task_arena_packet(
             ),
             construction_bindings=frozen.get("construction_bindings"),
             task_freeze_digest=frozen.get("task_freeze_digest"),
+            scenario_parameter_bindings=scenario_parameter_bindings,
             destination=contract_path,
         )
         plan_path = output / "native_task_arena_scene_plan.v1.json"

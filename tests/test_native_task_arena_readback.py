@@ -8,6 +8,7 @@ from blueprint_pipeline.native_task_arena_readback import (
     NativeArticulatedTaskArenaReadback,
     NativeTaskArenaReadbackError,
     read_native_task_arena_object_reset_state,
+    read_native_task_arena_scenario_parameters,
 )
 from blueprint_pipeline.native_task_arena_runtime import NativeTaskArenaEnvironment
 
@@ -271,3 +272,55 @@ def test_inactive_replacement_mutation_fails_reset_replay() -> None:
     assert inactive["asset_id"] == "inactive_rigid"
     assert inactive["root_translation_error_m"] == pytest.approx(0.02)
     assert inactive["passed"] is False
+
+
+def test_native_scenario_parameter_readback_uses_live_object_and_camera_state() -> None:
+    built = _built()
+    built.plan["scenario"] = {
+        "parameter_applications": [
+            {
+                "parameter_id": "object_start_y_m",
+                "runtime_target": "EventManager.reset.object_start_position_m.y",
+                "unit": "m",
+                "resolved_value": 1.4792181,
+                "application_tolerance": 1.0e-4,
+                "readback_kind": "task_subject_root_position_y_m",
+                "expected_native_value": 1.4792181,
+                "runtime_name": "task_object",
+            },
+            {
+                "parameter_id": "external_camera_extrinsic_dx_m",
+                "runtime_target": "EventManager.reset.external_camera.pose.position.x",
+                "unit": "m",
+                "resolved_value": 0.02,
+                "application_tolerance": 1.0e-4,
+                "readback_kind": "camera_offset_position_x_m",
+                "expected_native_value": 0.02,
+                "camera_role": "external",
+            },
+        ]
+    }
+    object.__setattr__(
+        built,
+        "native_configuration_readback",
+        {
+            "cameras": {
+                "external": {"offset_position_m": [0.02, 0.0, 0.0]},
+            }
+        },
+    )
+
+    report = read_native_task_arena_scenario_parameters(built)
+
+    assert report["passed"] is True
+    assert report["requested_parameter_count"] == 2
+    assert all(row["passed"] for row in report["parameters"])
+
+    built.native_configuration_readback["cameras"]["external"][
+        "offset_position_m"
+    ][0] = 0.03
+    report = read_native_task_arena_scenario_parameters(built)
+    assert report["passed"] is False
+    assert report["parameters"][1]["absolute_error_native_unit"] == pytest.approx(
+        0.01
+    )
