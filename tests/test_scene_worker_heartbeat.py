@@ -154,3 +154,23 @@ def test_a_missing_spec_with_no_arguments_fails_by_name(tmp_path, monkeypatch) -
     resolved = module._resolve_paths([])
 
     assert resolved["spec"] is None
+
+
+def test_the_worker_starts_isaac_the_way_the_proven_runtime_does() -> None:
+    """AppLauncher, not raw SimulationApp.
+
+    isaaclab.app.AppLauncher is Isaac Lab's own entry point and it wires the
+    extension paths that make isaaclab and isaaclab_arena importable. Raw
+    SimulationApp starts Kit and leaves those packages invisible, which is what
+    ModuleNotFoundError: No module named 'isaaclab' meant after the worker had
+    otherwise reached the host and run.
+    """
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp009d_articulated_scene_worker.py"
+    ).read_text(encoding="utf-8")
+
+    assert "from isaaclab.app import AppLauncher" in source
+    assert "AppLauncher(" in source
+    assert "from isaacsim.simulation_app import SimulationApp" not in source

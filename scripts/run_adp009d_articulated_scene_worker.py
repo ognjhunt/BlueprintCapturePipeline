@@ -175,14 +175,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     try:
-        from isaacsim.simulation_app import SimulationApp  # type: ignore
+        # Isaac Lab's own launcher, as the proven rigid runtime uses. It wires
+        # the extension paths that make isaaclab and isaaclab_arena importable;
+        # raw SimulationApp starts Kit and leaves those packages invisible,
+        # which is what "No module named 'isaaclab'" meant on a host where the
+        # worker had otherwise started cleanly.
+        from isaaclab.app import AppLauncher  # type: ignore
 
-        simulation_app = SimulationApp(
-            {"headless": True, "renderer": "RayTracedLighting"}
-        )
+        launcher_parser = argparse.ArgumentParser(add_help=False)
+        AppLauncher.add_app_launcher_args(launcher_parser)
+        launcher_args = launcher_parser.parse_args([])
+        launcher_args.headless = True
+        app_launcher = AppLauncher(launcher_args)
+        simulation_app = app_launcher.app
     except Exception as exc:  # noqa: BLE001
         result["blockers"].append(
-            f"articulated_scene_simulation_app_failed:{type(exc).__name__}"
+            f"articulated_scene_app_launcher_failed:{type(exc).__name__}:{exc}"
         )
         _persist(output, result)
         return 1
