@@ -30,6 +30,7 @@ FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
 ASSET_ROLES = ("scene_collision", "scene_appearance", "task_object")
 CAMERA_ROLES = ("external", "wrist", "overview")
 TASK_KINDS = ("rigid_pick_place", "articulated_open_close")
+TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
 
 
 class NativeTaskRuntimeContractError(ValueError):
@@ -206,12 +207,99 @@ def _camera_rows(
     return rows
 
 
+def _articulated_task_state_binding(
+    value: Any, *, task_kind: str, errors: list[str]
+) -> dict[str, Any] | None:
+    if task_kind != "articulated_open_close":
+        if value not in (None, {}):
+            errors.append("native_task_runtime_state_binding_unexpected")
+        return None
+    if not isinstance(value, Mapping):
+        errors.append("native_task_runtime_state_binding_missing")
+        return None
+
+    def _source_prim(field: str) -> str:
+        path = str(value.get(field) or "")
+        if not path.startswith("/Asset/") or ".." in PurePosixPath(path).parts:
+            errors.append(f"native_task_runtime_state_prim_invalid:{field}")
+        return path
+
+    moving_link = _source_prim("moving_link_prim_path")
+    handle_paths_raw = value.get("handle_prim_paths")
+    handle_paths: list[str] = []
+    if not isinstance(handle_paths_raw, Sequence) or isinstance(
+        handle_paths_raw, (str, bytes)
+    ):
+        errors.append("native_task_runtime_handle_prims_invalid")
+    else:
+        for index, raw in enumerate(handle_paths_raw):
+            path = str(raw or "")
+            if (
+                not path.startswith(moving_link + "/")
+                or ".." in PurePosixPath(path).parts
+                or path in handle_paths
+            ):
+                errors.append(f"native_task_runtime_handle_prim_invalid:{index}")
+            handle_paths.append(path)
+        if not handle_paths:
+            errors.append("native_task_runtime_handle_prims_invalid")
+
+    gripper_pattern = str(value.get("robot_gripper_contact_prim_pattern") or "")
+    robot_pattern = str(value.get("robot_collision_prim_pattern") or "")
+    for field, pattern in (
+        ("robot_gripper_contact_prim_pattern", gripper_pattern),
+        ("robot_collision_prim_pattern", robot_pattern),
+    ):
+        if not pattern.startswith("{ENV_REGEX_NS}/Robot/"):
+            errors.append(f"native_task_runtime_robot_contact_pattern_invalid:{field}")
+
+    thresholds: dict[str, float] = {}
+    for field in (
+        "task_contact_minimum_force_n",
+        "collision_failure_minimum_force_n",
+        "retreat_minimum_separation_m",
+        "root_translation_tolerance_m",
+        "root_orientation_tolerance_rad",
+    ):
+        try:
+            number = float(value[field])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
+            continue
+        if not math.isfinite(number) or number <= 0.0:
+            errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
+        thresholds[field] = number
+
+    return {
+        "schema_version": TASK_STATE_BINDING_SCHEMA_VERSION,
+        "moving_link_prim_path": moving_link,
+        "handle_prim_paths": handle_paths,
+        "handle_grasp_point_link_m": _finite_vector(
+            value.get("handle_grasp_point_link_m"),
+            length=3,
+            error="native_task_runtime_handle_grasp_point_invalid",
+            errors=errors,
+        ),
+        "robot_gripper_contact_prim_pattern": gripper_pattern,
+        "robot_collision_prim_pattern": robot_pattern,
+        **thresholds,
+        "measurement_authority": {
+            "joint_state": "native_articulation_readback",
+            "contact_and_collision": "native_filtered_contact_sensor_force",
+            "containment": "native_task_root_pose_delta",
+            "retreat": "native_grasp_frame_to_handle_distance_after_release",
+            "caller_asserted_booleans_forbidden": True,
+        },
+    }
+
+
 def materialize_native_task_runtime_contract(
     *,
     scene_id: str,
     task_id: str,
     task_spec: Mapping[str, Any],
     task_joint_bindings: Sequence[Mapping[str, Any]] | None = None,
+    task_state_binding: Mapping[str, Any] | None = None,
     assets: Sequence[Mapping[str, Any]],
     robot_base_pose_world: Mapping[str, Any],
     cameras: Sequence[Mapping[str, Any]],
@@ -276,6 +364,9 @@ def materialize_native_task_runtime_contract(
         errors=errors,
     )
     camera_rows = _camera_rows(cameras, errors=errors)
+    state_binding = _articulated_task_state_binding(
+        task_state_binding, task_kind=task_kind, errors=errors
+    )
     if errors:
         raise NativeTaskRuntimeContractError(errors)
 
@@ -306,6 +397,7 @@ def materialize_native_task_runtime_contract(
         },
         "cameras": camera_rows,
         "task_sample_binding": composition["task_sample_binding"],
+        "task_state_binding": state_binding,
         "reset_contract": {
             "same_scene_bytes": True,
             "same_object_bytes": True,
@@ -362,6 +454,7 @@ __all__ = [
     "FROZEN_CANDIDATES",
     "NativeTaskRuntimeContractError",
     "SCHEMA_VERSION",
+    "TASK_STATE_BINDING_SCHEMA_VERSION",
     "load_native_task_runtime_contract",
     "materialize_native_task_runtime_contract",
 ]

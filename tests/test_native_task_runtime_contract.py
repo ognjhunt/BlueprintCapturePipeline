@@ -131,6 +131,24 @@ def _articulated_fixture() -> dict:
             "role": "locked_joint",
         },
     ]
+    fixture["task_state_binding"] = {
+        "moving_link_prim_path": "/Asset/upper_door",
+        "handle_prim_paths": [
+            "/Asset/upper_door/component_004",
+            "/Asset/upper_door/handle_post_a",
+            "/Asset/upper_door/handle_post_b",
+        ],
+        "handle_grasp_point_link_m": [0.119962, 0.327634, 1.022997],
+        "robot_gripper_contact_prim_pattern": (
+            "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/.*"
+        ),
+        "robot_collision_prim_pattern": "{ENV_REGEX_NS}/Robot/.*",
+        "task_contact_minimum_force_n": 0.5,
+        "collision_failure_minimum_force_n": 1.0,
+        "retreat_minimum_separation_m": 0.10,
+        "root_translation_tolerance_m": 0.002,
+        "root_orientation_tolerance_rad": 0.01,
+    }
     return fixture
 
 
@@ -160,6 +178,12 @@ def test_original_and_second_scene_share_one_runtime_contract(
     assert contract["task_sample_binding"]["joint_ids"] == expected_joints
     assert contract["candidate_ids"] == list(FROZEN_CANDIDATES)
     assert contract["robot"]["action_seam"]["action_dimension"] == 8
+    if expected_type == "ARTICULATION":
+        assert contract["task_state_binding"]["measurement_authority"][
+            "caller_asserted_booleans_forbidden"
+        ] is True
+    else:
+        assert contract["task_state_binding"] is None
 
 
 def test_policy_and_review_camera_roles_cannot_be_swapped() -> None:
@@ -195,6 +219,28 @@ def test_articulated_task_without_joint_binding_fails_before_gpu() -> None:
         materialize_native_task_runtime_contract(**fixture)
 
     assert any("composition_invalid" in error for error in excinfo.value.errors)
+
+
+def test_articulated_task_without_native_state_binding_fails_before_gpu() -> None:
+    fixture = _articulated_fixture()
+    fixture["task_state_binding"] = None
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert "native_task_runtime_state_binding_missing" in excinfo.value.errors
+
+
+def test_state_binding_rejects_handle_outside_the_moving_link() -> None:
+    fixture = _articulated_fixture()
+    fixture["task_state_binding"]["handle_prim_paths"] = [
+        "/Asset/lower_door/component_005"
+    ]
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert "native_task_runtime_handle_prim_invalid:0" in excinfo.value.errors
 
 
 def test_task_asset_path_cannot_escape_the_provider_asset_directory() -> None:
