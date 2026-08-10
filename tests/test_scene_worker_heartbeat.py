@@ -100,3 +100,57 @@ def test_the_worker_reports_no_policy_was_queried() -> None:
 
     module = _worker()
     assert module.CANDIDATE_POLICY_QUERIED is False
+
+
+def test_the_worker_runs_with_no_arguments_like_the_lane_invokes_it(
+    tmp_path, monkeypatch
+) -> None:
+    """The Arena entrypoint calls its runner bare; config comes from the env.
+
+    Requiring --spec and --output meant the entrypoint reached the worker,
+    argparse rejected the empty command line, and the run died with
+    adp009d_worker_failed_without_runtime_result - after downloading the
+    bundle, booting Isaac and clearing every other gate.
+    """
+
+    module = _worker()
+    spec = tmp_path / "native" / "adp009d_articulated_scene_spec.json"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("{}", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setenv("BLUEPRINT_ADP009D_OUTPUT_DIR", str(out))
+    monkeypatch.chdir(tmp_path)
+
+    resolved = module._resolve_paths([])
+
+    assert resolved["spec"] == spec.resolve()
+    assert resolved["output"].name == "adp009d_native_microcheck.json"
+    assert resolved["output"].parent == out.resolve()
+
+
+def test_explicit_arguments_still_win(tmp_path) -> None:
+    """Local debugging invokes it directly; that must keep working."""
+
+    module = _worker()
+    spec = tmp_path / "s.json"
+    spec.write_text("{}", encoding="utf-8")
+
+    resolved = module._resolve_paths(
+        ["--spec", str(spec), "--output", str(tmp_path / "r.json")]
+    )
+
+    assert resolved["spec"] == spec.resolve()
+    assert resolved["output"].name == "r.json"
+
+
+def test_a_missing_spec_with_no_arguments_fails_by_name(tmp_path, monkeypatch) -> None:
+    """Silently inventing a spec path would hide a packaging mistake."""
+
+    module = _worker()
+    monkeypatch.setenv("BLUEPRINT_ADP009D_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    resolved = module._resolve_paths([])
+
+    assert resolved["spec"] is None

@@ -93,14 +93,61 @@ def _finalize(*, output: Path, result: dict[str, Any], simulation_app: Any) -> N
         pass
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _resolve_paths(argv: Sequence[str] | None) -> dict[str, Any]:
+    """Work out the spec and output whether or not anyone passed arguments.
+
+    The Arena entrypoint calls its runner bare and configures it through the
+    environment; the rigid worker was written for that. Requiring --spec and
+    --output meant the entrypoint reached this worker, argparse rejected the
+    empty command line, and the run died having already downloaded the bundle
+    and booted Isaac. Explicit arguments still win, because local debugging
+    passes them.
+    """
+
+    import os
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--spec", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--spec", default=None)
+    parser.add_argument("--output", default=None)
     arguments = parser.parse_args(list(argv) if argv is not None else None)
 
-    spec_path = Path(arguments.spec).expanduser().resolve()
-    output = Path(arguments.output).expanduser().resolve()
+    if arguments.spec:
+        spec = Path(arguments.spec).expanduser().resolve()
+    else:
+        # Beside the runner, where the bundle stages a worker's payload.
+        candidates = [
+            Path("native") / "adp009d_articulated_scene_spec.json",
+            Path(__file__).resolve().parent / "native"
+            / "adp009d_articulated_scene_spec.json",
+        ]
+        spec = next((c.resolve() for c in candidates if c.is_file()), None)
+
+    if arguments.output:
+        output = Path(arguments.output).expanduser().resolve()
+    else:
+        base = os.environ.get("BLUEPRINT_ADP009D_OUTPUT_DIR") or "."
+        output = (Path(base).expanduser() / RESULT_FILENAME).resolve()
+    return {"spec": spec, "output": output}
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    resolved = _resolve_paths(argv)
+    output = resolved["output"]
+    if resolved["spec"] is None:
+        _persist(
+            output,
+            {
+                "schema_version": RESULT_SCHEMA_VERSION,
+                "status": "blocked",
+                "blockers": ["articulated_scene_spec_not_found_beside_runner"],
+                "native_isaac_executed": False,
+                "candidate_policy_queried": CANDIDATE_POLICY_QUERIED,
+                "provider_zero_required_after_return": True,
+                "probe_results": [],
+            },
+        )
+        return 1
+    spec_path = resolved["spec"]
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "blocked",
