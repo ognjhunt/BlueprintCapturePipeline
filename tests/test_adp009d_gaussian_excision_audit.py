@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import importlib.util
+from collections.abc import Mapping
 from pathlib import Path
 import zipfile
 from types import SimpleNamespace
@@ -431,6 +432,11 @@ def _prepared_excision_bundle(tmp_path: Path) -> dict[str, object]:
         "provider_bundle_kind": excision_vast.PROVIDER_BUNDLE_KIND,
         "bundle_path": str(path),
         "bundle_sha256": digest,
+        "blueprint_commit": "a" * 40,
+        "execution_authority_digest": "sha256:" + "2" * 64,
+        "freeze_digest": "sha256:" + "1" * 64,
+        "hard_cap_usd": 1.5,
+        "hard_ttl_seconds": 3600,
         "dependency_wheelhouse_manifest_digest": "sha256:" + "3" * 64,
         "provider_network_dependency_install_required": False,
         "exact_bundle_entrypoint_rehearsal": {
@@ -447,6 +453,39 @@ def _prepared_excision_bundle(tmp_path: Path) -> dict[str, object]:
     }
 
 
+def _paid_attempt_authority(
+    bundle: Mapping[str, object],
+    *,
+    ordinal: int = 1,
+    previous_attempt_receipt_digest: str | None = None,
+) -> dict[str, object]:
+    authority: dict[str, object] = {
+        "schema_version": excision_vast.PAID_ATTEMPT_AUTHORITY_SCHEMA,
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "authority_reference": "fixture-explicit-user-authority",
+        "authorized_by": "fixture-user",
+        "authorized_on": "2026-08-10",
+        "purpose": "released_code_gaussian_ownership_audit",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "parent_execution_authority_digest": bundle["execution_authority_digest"],
+        "freeze_digest": bundle["freeze_digest"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "corrective_blueprint_commit": bundle["blueprint_commit"],
+        "paid_attempt_ordinal": ordinal,
+        "previous_attempt_receipt_digest": previous_attempt_receipt_digest,
+        "maximum_paid_attempts": 1,
+        "maximum_automatic_retries": 0,
+        "automatic_paid_retry_authorized": False,
+        "hard_attempt_spend_cap_usd": bundle["hard_cap_usd"],
+        "maximum_single_resource_ttl_seconds": bundle["hard_ttl_seconds"],
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    return authority
+
+
 def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None:
     result = excision_vast.run_gaussian_excision_vast(
         job_dir=tmp_path / "job",
@@ -458,6 +497,82 @@ def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None
     assert result["status"] == "dry_run_ready"
     assert result["provider_mutations_performed"] == 0
     assert result["retry_cap"] == 0
+
+
+def test_corrected_paid_attempt_authority_binds_legacy_terminal_receipt(
+    tmp_path: Path,
+) -> None:
+    bundle = _prepared_excision_bundle(tmp_path)
+    previous: dict[str, object] = {
+        "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
+        "status": "sealed_blocked_attempt",
+        "freeze_digest": bundle["freeze_digest"],
+        "retry_cap": 0,
+        "continuing_spend": False,
+        "provider_absence_confirmed": True,
+    }
+    previous["receipt_digest"] = canonical_digest(
+        previous, digest_field="receipt_digest"
+    )
+    authority = _paid_attempt_authority(
+        bundle,
+        ordinal=2,
+        previous_attempt_receipt_digest=str(previous["receipt_digest"]),
+    )
+
+    validated = excision_vast.validate_gaussian_excision_paid_attempt_authority(
+        authority,
+        prepared_bundle=bundle,
+        previous_attempt_receipt=previous,
+    )
+
+    assert validated["paid_attempt_ordinal"] == 2
+    with pytest.raises(ValueError, match="previous_attempt_receipt_missing"):
+        excision_vast.validate_gaussian_excision_paid_attempt_authority(
+            authority,
+            prepared_bundle=bundle,
+            previous_attempt_receipt=None,
+        )
+
+    invalid_schema = dict(previous)
+    invalid_schema["schema_version"] = "unrelated_terminal_receipt.v1"
+    invalid_schema["receipt_digest"] = canonical_digest(
+        invalid_schema, digest_field="receipt_digest"
+    )
+    invalid_authority = _paid_attempt_authority(
+        bundle,
+        ordinal=2,
+        previous_attempt_receipt_digest=str(invalid_schema["receipt_digest"]),
+    )
+    with pytest.raises(ValueError, match="previous_attempt_receipt_schema_invalid"):
+        excision_vast.validate_gaussian_excision_paid_attempt_authority(
+            invalid_authority,
+            prepared_bundle=bundle,
+            previous_attempt_receipt=invalid_schema,
+        )
+
+
+def test_paid_attempt_authority_consumption_is_single_use(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bundle = _prepared_excision_bundle(tmp_path)
+    authority = _paid_attempt_authority(bundle)
+    monkeypatch.setattr(
+        excision_vast, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
+    )
+
+    first = excision_vast.consume_gaussian_excision_paid_attempt_authority_once(
+        authority, blueprint_commit=str(bundle["blueprint_commit"])
+    )
+    second = excision_vast.consume_gaussian_excision_paid_attempt_authority_once(
+        authority, blueprint_commit=str(bundle["blueprint_commit"])
+    )
+
+    assert first["status"] == "consumed"
+    assert second == {
+        "status": "blocked",
+        "blockers": ["gaussian_excision_paid_attempt_authority_consumed"],
+    }
 
 
 def test_attempt_and_recovery_receipts_join_files_without_upgrading_claims(
@@ -474,6 +589,13 @@ def test_attempt_and_recovery_receipts_join_files_without_upgrading_claims(
         "bundle_sha256": bundle["bundle_sha256"],
         "estimated_cost_usd": 0.01,
         "retry_cap": 0,
+        "paid_attempt_ordinal": 1,
+        "attempt_authority_digest": "sha256:" + "4" * 64,
+        "previous_attempt_receipt_digest": None,
+        "authorization_consumption": {
+            "status": "consumed",
+            "authorization_digest": "sha256:" + "4" * 64,
+        },
     }
     execution = {
         "status": "blocked",
@@ -515,6 +637,8 @@ def test_attempt_and_recovery_receipts_join_files_without_upgrading_claims(
     )
 
     assert attempt["status"] == "sealed_blocked_attempt"
+    assert attempt["paid_attempt_ordinal"] == 1
+    assert attempt["authorization_consumption"]["status"] == "consumed"
     assert attempt["provider_absence_confirmed"] is True
     assert attempt["proof_boundaries"]["gaussian_ownership_qualified"] is False
     assert attempt["proof_boundaries"]["policy_outcome_available"] is False
@@ -741,6 +865,34 @@ def test_canonical_allocator_binds_gaussian_excision_bundle(monkeypatch, tmp_pat
     assert observed["execute"] is False
     assert observed["machine_avoidlist_path"] == avoidlist_path
 
+    assert allocator.main([*arguments, "--execute"]) == 2
+    blocked = json.loads((tmp_path / "adapter.json").read_text())
+    blocked_admission = json.loads((tmp_path / "admission.json").read_text())
+    assert "gaussian_excision_paid_attempt_authority_missing" in blocked_admission[
+        "blockers"
+    ]
+    assert blocked["provider_mutations_performed"] == 0
+
+    attempt_authority = _paid_attempt_authority(receipt)
+    attempt_authority_path = tmp_path / "attempt-authority.json"
+    attempt_authority_path.write_text(
+        json.dumps(attempt_authority), encoding="utf-8"
+    )
+    assert (
+        allocator.main(
+            [
+                *arguments,
+                "--execute",
+                "--adp-gaussian-excision-attempt-authority",
+                str(attempt_authority_path),
+            ]
+        )
+        == 0
+    )
+    assert observed["execute"] is True
+    assert observed["paid_attempt_authority"] == attempt_authority
+    assert observed["previous_attempt_receipt"] is None
+
 
 def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
     monkeypatch, tmp_path: Path
@@ -750,6 +902,8 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
     staging = tmp_path / "job/object_store_staging"
 
     def fake_stage(**kwargs):
+        assert list((tmp_path / "consumed").glob("gaussian-excision-*.json"))
+        events.append("stage")
         staging.mkdir(parents=True)
         for name in (
             "provider_bundle_url.txt",
@@ -791,6 +945,9 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
         return {"status": "completed", "blockers": [], "estimated_cost_usd": 0.2}
 
     monkeypatch.setattr(excision_vast, "_remaining_minutes", lambda **kwargs: 60)
+    monkeypatch.setattr(
+        excision_vast, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
+    )
     monkeypatch.setattr(excision_vast, "stage_wam_provider_bundle_object_store", fake_stage)
     monkeypatch.setattr(excision_vast, "arm_independent_vast_watchdog", fake_arm)
     monkeypatch.setattr(excision_vast, "run_vast_provider_adapter", fake_adapter)
@@ -805,17 +962,35 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
         lambda **kwargs: {"status": "provider_terminal"},
     )
 
+    bundle = _prepared_excision_bundle(tmp_path)
+    authority = _paid_attempt_authority(bundle)
     result = excision_vast.run_gaussian_excision_vast(
         job_dir=tmp_path / "job",
         paid_resource_admission_grant=object(),  # type: ignore[arg-type]
         execute=True,
-        prepared_bundle=_prepared_excision_bundle(tmp_path),
+        prepared_bundle=bundle,
+        paid_attempt_authority=authority,
         machine_avoidlist_path=tmp_path / "avoidlist.json",
     )
 
-    assert events == ["watchdog", "adapter"]
+    assert events == ["stage", "watchdog", "adapter"]
     assert result["status"] == "completed"
     assert result["continuing_spend_from_this_run"] is False
+    assert result["authorization_consumption"]["status"] == "consumed"
+
+    repeated = excision_vast.run_gaussian_excision_vast(
+        job_dir=tmp_path / "second-job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=bundle,
+        paid_attempt_authority=authority,
+    )
+    assert repeated["status"] == "blocked"
+    assert repeated["provider_mutations_performed"] == 0
+    assert repeated["blockers"] == [
+        "gaussian_excision_paid_attempt_authority_consumed"
+    ]
+    assert events == ["stage", "watchdog", "adapter"]
 
 
 def test_vast_adapter_preflights_and_routes_gaussian_excision_root_bundle(

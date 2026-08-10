@@ -152,6 +152,14 @@ provider-network dependency
 installation is forbidden at admission. Attempt receipt:
 [`gaussian_excision_attempt.v1.json`](third_scene_dual_task_evidence/task_b/gaussian_excision_attempt.v1.json).
 
+Those two codes are immutable historical attempt outcomes, not current
+capability blockers. The generally materialized current abstentions join each
+failed attempt to its independently frozen task, removal binding, and locally
+rehearsed repair. Both now identify
+`fresh_paid_authority_for_qualified_gaussian_contribution_missing` as the
+smallest current blocker while retaining the old code under
+`historical_attempt_blockers`.
+
 No shared mask, removal ID, replacement ID, or task-specific assumption was
 reused. Neither contribution attempt produced ownership evidence, so no
 Gaussians were deleted and no held-out deletion proof or replacement-depth sweep
@@ -275,6 +283,11 @@ scenario, scoring, and evidence contracts.
 
 Portable evidence index:
 [`third_scene_dual_task_evidence/index.html`](third_scene_dual_task_evidence/index.html).
+Each task index links its attempt and recovery receipts plus a digest-verified
+supporting-evidence inventory. Those inventories cover all eight source masks,
+the authorized render/mask receipt, excision freeze, exact collider removal,
+authored replacement, paid run/teardown/watchdog evidence, and repaired-bundle
+closure without embedding rights-bounded dataset-derived bytes.
 
 ## Verification
 

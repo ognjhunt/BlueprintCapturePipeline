@@ -133,6 +133,28 @@ def test_target_joint_may_not_be_position_servoed() -> None:
     )
 
 
+def test_none_drive_allows_passive_damping_but_forbids_actuation() -> None:
+    graph = complete_graph()
+    passive = graph["joints"][2]
+    passive["drive"] = {
+        "drive_type": "none",
+        "stiffness": 0.0,
+        "damping": 0.25,
+        "maximum_force": 0.0,
+    }
+
+    normalized = validate_articulation_graph(graph)
+    assert normalized["joints"][2]["drive"]["damping"] == 0.25
+
+    passive["drive"]["stiffness"] = 1.0
+    with pytest.raises(ArticulationGraphContractError) as caught:
+        validate_articulation_graph(graph)
+    assert (
+        "articulation_graph_none_drive_actuation_nonzero:drum_bearing"
+        in caught.value.errors
+    )
+
+
 def test_rigid_task_subject_may_bind_an_all_locked_articulation_graph() -> None:
     graph = complete_graph()
     graph["links"] = graph["links"][:2]

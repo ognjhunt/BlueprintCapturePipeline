@@ -199,6 +199,16 @@ def validate_articulation_graph(
                 "damping": float(damping or 0.0),
                 "maximum_force": float(maximum_force or 0.0),
             }
+            # ``none`` means no commanded actuation.  Passive damping remains
+            # representable, but stiffness or a positive actuation ceiling
+            # would contradict the declared type.
+            if drive_type == "none" and (
+                float(stiffness or 0.0) > 0.0
+                or float(maximum_force or 0.0) > 0.0
+            ):
+                errors.append(
+                    f"articulation_graph_none_drive_actuation_nonzero:{joint_id}"
+                )
             if role == "target" and float(stiffness or 0.0) > 0.0:
                 errors.append(
                     f"articulation_graph_target_joint_position_servo_forbidden:{joint_id}"

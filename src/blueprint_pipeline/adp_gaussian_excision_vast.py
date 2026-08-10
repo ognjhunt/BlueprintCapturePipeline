@@ -44,6 +44,9 @@ PROVIDER_BUNDLE_KIND = "adp_gaussian_excision"
 SCHEMA_VERSION = "adp009b_gaussian_excision_vast_bundle.v1"
 RESULT_SCHEMA_VERSION = "adp009b_gaussian_excision_vast_run.v1"
 AUTHORITY_SCHEMA = "public_scene_gaussian_excision_execution_authority.v1"
+PAID_ATTEMPT_AUTHORITY_SCHEMA = (
+    "public_scene_gaussian_excision_paid_attempt_authority.v1"
+)
 SOURCE_REPOSITORY = "https://github.com/florinshen/FlashSplat"
 SOURCE_COMMIT = "3e3b14786333bf0163ba1b8541e86a3765112d7d"
 SOURCE_TREE = "a5b5d91656a17df12e9c12db240cea15062e5f43"
@@ -86,6 +89,9 @@ _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
+AUTHORIZATION_CONSUMPTION_ROOT = (
+    Path.home() / ".blueprint-spend-authority" / "consumed"
+)
 
 
 def gaussian_excision_lane_identity(freeze: Mapping[str, Any]) -> dict[str, str]:
@@ -133,6 +139,194 @@ def _read_canonical(path: Path, *, field: str, code: str) -> dict[str, Any]:
     ):
         raise ValueError(code)
     return value
+
+
+def validate_gaussian_excision_paid_attempt_authority(
+    authority: Mapping[str, Any],
+    *,
+    prepared_bundle: Mapping[str, Any],
+    previous_attempt_receipt: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Bind one explicit paid-attempt grant to its bundle and prior receipt.
+
+    Bundle construction and dry-run admission intentionally do not require this
+    grant.  The grant is an execution-only, single-use capability layered over
+    the broader scene/upload authority embedded in the immutable bundle.
+    """
+
+    value = dict(authority)
+    ordinal = value.get("paid_attempt_ordinal")
+    prior_digest = value.get("previous_attempt_receipt_digest")
+    reference = value.get("authority_reference")
+    authorized_by = value.get("authorized_by")
+    authorized_on = value.get("authorized_on")
+    errors: list[str] = []
+    if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA:
+        errors.append("schema_invalid")
+    if value.get("authority_kind") != "explicit_user_direction_in_current_goal":
+        errors.append("authority_kind_invalid")
+    if not isinstance(reference, str) or not reference.strip():
+        errors.append("authority_reference_invalid")
+    if not isinstance(authorized_by, str) or not authorized_by.strip():
+        errors.append("authorized_by_invalid")
+    if not isinstance(authorized_on, str) or not authorized_on.strip():
+        errors.append("authorized_on_invalid")
+    if value.get("purpose") != "released_code_gaussian_ownership_audit":
+        errors.append("purpose_invalid")
+    if value.get("provider") != "vast":
+        errors.append("provider_invalid")
+    if value.get("paid_compute_authorized") is not True:
+        errors.append("paid_compute_not_authorized")
+    if value.get("parent_execution_authority_digest") != prepared_bundle.get(
+        "execution_authority_digest"
+    ):
+        errors.append("parent_execution_authority_digest_mismatch")
+    if value.get("freeze_digest") != prepared_bundle.get("freeze_digest"):
+        errors.append("freeze_digest_mismatch")
+    if value.get("bundle_sha256") != prepared_bundle.get("bundle_sha256"):
+        errors.append("bundle_sha256_mismatch")
+    if value.get("corrective_blueprint_commit") != prepared_bundle.get(
+        "blueprint_commit"
+    ):
+        errors.append("corrective_blueprint_commit_mismatch")
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1:
+        errors.append("paid_attempt_ordinal_invalid")
+    if value.get("maximum_paid_attempts") != 1:
+        errors.append("maximum_paid_attempts_invalid")
+    if value.get("maximum_automatic_retries") != 0:
+        errors.append("maximum_automatic_retries_invalid")
+    if value.get("automatic_paid_retry_authorized") is not False:
+        errors.append("automatic_paid_retry_authorized_invalid")
+    if value.get("hard_attempt_spend_cap_usd") != prepared_bundle.get(
+        "hard_cap_usd"
+    ):
+        errors.append("hard_attempt_spend_cap_mismatch")
+    if value.get("maximum_single_resource_ttl_seconds") != prepared_bundle.get(
+        "hard_ttl_seconds"
+    ):
+        errors.append("maximum_single_resource_ttl_mismatch")
+    if value.get("authorization_digest") != canonical_digest(
+        value, digest_field="authorization_digest"
+    ):
+        errors.append("authorization_digest_invalid")
+
+    if ordinal == 1:
+        if prior_digest is not None or previous_attempt_receipt is not None:
+            errors.append("unexpected_previous_attempt_receipt")
+    elif isinstance(ordinal, int) and ordinal > 1:
+        prior = (
+            dict(previous_attempt_receipt)
+            if isinstance(previous_attempt_receipt, Mapping)
+            else None
+        )
+        if prior is None:
+            errors.append("previous_attempt_receipt_missing")
+        else:
+            if prior.get("receipt_digest") != canonical_digest(
+                prior, digest_field="receipt_digest"
+            ):
+                errors.append("previous_attempt_receipt_digest_invalid")
+            if prior.get("schema_version") != "adp_gaussian_excision_attempt_receipt.v1":
+                errors.append("previous_attempt_receipt_schema_invalid")
+            if prior_digest != prior.get("receipt_digest"):
+                errors.append("previous_attempt_receipt_digest_mismatch")
+            if prior.get("freeze_digest") != prepared_bundle.get("freeze_digest"):
+                errors.append("previous_attempt_freeze_digest_mismatch")
+            if prior.get("status") not in {
+                "sealed_blocked_attempt",
+                "sealed_completed_attempt",
+            }:
+                errors.append("previous_attempt_status_invalid")
+            if (
+                prior.get("retry_cap") != 0
+                or prior.get("continuing_spend") is not False
+                or prior.get("provider_absence_confirmed") is not True
+            ):
+                errors.append("previous_attempt_closeout_invalid")
+            prior_ordinal = prior.get("paid_attempt_ordinal")
+            if prior_ordinal is None:
+                if ordinal != 2:
+                    errors.append("legacy_previous_attempt_ordinal_ambiguous")
+            elif prior_ordinal != ordinal - 1:
+                errors.append("previous_attempt_ordinal_mismatch")
+    if errors:
+        raise ValueError(
+            "gaussian_excision_paid_attempt_authority_invalid:"
+            + ",".join(sorted(set(errors)))
+        )
+    return value
+
+
+def consume_gaussian_excision_paid_attempt_authority_once(
+    authority: Mapping[str, Any], *, blueprint_commit: str
+) -> dict[str, Any]:
+    """Atomically consume a validated paid-attempt grant before provider mutation."""
+
+    authorization_digest = str(authority.get("authorization_digest") or "")
+    if not authorization_digest.startswith("sha256:") or len(authorization_digest) != 71:
+        return {
+            "status": "blocked",
+            "blockers": ["gaussian_excision_paid_attempt_authority_identity_invalid"],
+        }
+    root = AUTHORIZATION_CONSUMPTION_ROOT
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_stat = root.stat()
+        if (
+            root.is_symlink()
+            or root_stat.st_uid != os.getuid()
+            or root_stat.st_mode & 0o077
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["gaussian_excision_authority_consumption_root_insecure"],
+            }
+        identity = authorization_digest.removeprefix("sha256:")
+        destination = root / f"gaussian-excision-{identity}.json"
+        record = {
+            "schema_version": "gaussian_excision_paid_attempt_consumption.v1",
+            "authorization_digest": authorization_digest,
+            "paid_attempt_ordinal": authority.get("paid_attempt_ordinal"),
+            "bundle_sha256": authority.get("bundle_sha256"),
+            "freeze_digest": authority.get("freeze_digest"),
+            "blueprint_commit": blueprint_commit,
+            "consumed_at": utc_now_iso(),
+            "maximum_provider_allocations": 1,
+        }
+        raw = (
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        temporary = root / f".{identity}.{os.getpid()}.tmp"
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temporary, destination)
+            directory_descriptor = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except FileExistsError:
+        return {
+            "status": "blocked",
+            "blockers": ["gaussian_excision_paid_attempt_authority_consumed"],
+        }
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["gaussian_excision_authority_consumption_write_failed"],
+        }
+    return {
+        "status": "consumed",
+        "authorization_digest": authorization_digest,
+        "consumption_record_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "record_location_disclosed": False,
+    }
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -386,6 +580,10 @@ def materialize_gaussian_excision_attempt_receipt(
     watchdog_instance = (watchdog.get("recorded_vast_instance_teardown") or {}).get(
         "instance_id"
     )
+    attempt_authority_digest = run.get("attempt_authority_digest")
+    paid_attempt_ordinal = run.get("paid_attempt_ordinal")
+    authorization_consumption = run.get("authorization_consumption")
+    attempt_binding_present = attempt_authority_digest is not None
     if (
         bundle.get("provider_bundle_kind") != PROVIDER_BUNDLE_KIND
         or bundle.get("bundle_sha256") != run.get("bundle_sha256")
@@ -403,6 +601,19 @@ def materialize_gaussian_excision_attempt_receipt(
         )
         is not True
         or run.get("retry_cap") != 0
+        or (
+            attempt_binding_present
+            and (
+                not isinstance(paid_attempt_ordinal, int)
+                or isinstance(paid_attempt_ordinal, bool)
+                or paid_attempt_ordinal < 1
+                or not str(attempt_authority_digest).startswith("sha256:")
+                or not isinstance(authorization_consumption, Mapping)
+                or authorization_consumption.get("status") != "consumed"
+                or authorization_consumption.get("authorization_digest")
+                != attempt_authority_digest
+            )
+        )
     ):
         raise ValueError("gaussian_excision_attempt_join_invalid")
     output = Path(output_path).expanduser().resolve()
@@ -444,6 +655,17 @@ def materialize_gaussian_excision_attempt_receipt(
         },
         "raw_secret_values_recorded": False,
     }
+    if attempt_binding_present:
+        receipt.update(
+            {
+                "paid_attempt_ordinal": paid_attempt_ordinal,
+                "attempt_authority_digest": attempt_authority_digest,
+                "previous_attempt_receipt_digest": run.get(
+                    "previous_attempt_receipt_digest"
+                ),
+                "authorization_consumption": authorization_consumption,
+            }
+        )
     receipt["receipt_digest"] = canonical_digest(
         receipt, digest_field="receipt_digest"
     )
@@ -964,6 +1186,8 @@ def run_gaussian_excision_vast(
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
     prepared_bundle: Mapping[str, Any],
+    paid_attempt_authority: Mapping[str, Any] | None = None,
+    previous_attempt_receipt: Mapping[str, Any] | None = None,
     max_hourly_rate_usd: float = 0.60,
     hard_cap_usd: float = 1.50,
     hard_ttl_seconds: int = 3600,
@@ -1009,6 +1233,13 @@ def run_gaussian_excision_vast(
         return result
     if paid_resource_admission_grant is None:
         raise ValueError("gaussian_excision_paid_resource_admission_grant_missing")
+    if paid_attempt_authority is None:
+        raise ValueError("gaussian_excision_paid_attempt_authority_missing")
+    validated_attempt_authority = validate_gaussian_excision_paid_attempt_authority(
+        paid_attempt_authority,
+        prepared_bundle=bundle,
+        previous_attempt_receipt=previous_attempt_receipt,
+    )
     remaining_minutes = _remaining_minutes(
         job=job,
         hard_cap_usd=hard_cap_usd,
@@ -1023,6 +1254,29 @@ def run_gaussian_excision_vast(
             "provider_mutations_performed": 0,
             "blockers": ["gaussian_excision_budget_below_minimum_live_window"],
         }
+    authorization_consumption = consume_gaussian_excision_paid_attempt_authority_once(
+        validated_attempt_authority,
+        blueprint_commit=str(bundle.get("blueprint_commit") or ""),
+    )
+    if authorization_consumption.get("status") != "consumed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "authorization_consumption": authorization_consumption,
+            "blockers": list(authorization_consumption.get("blockers") or []),
+        }
+    paid_attempt_binding = {
+        "paid_attempt_ordinal": validated_attempt_authority["paid_attempt_ordinal"],
+        "attempt_authority_digest": validated_attempt_authority[
+            "authorization_digest"
+        ],
+        "previous_attempt_receipt_digest": validated_attempt_authority.get(
+            "previous_attempt_receipt_digest"
+        ),
+        "authorization_consumption": authorization_consumption,
+    }
     staging_dir = job / "object_store_staging"
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
@@ -1036,6 +1290,7 @@ def run_gaussian_excision_vast(
             "generated_at": utc_now_iso(),
             "status": "blocked",
             "provider_mutations_performed": 0,
+            **paid_attempt_binding,
             "blockers": staging.get("blockers")
             or ["gaussian_excision_object_store_staging_blocked"],
         }
@@ -1054,6 +1309,7 @@ def run_gaussian_excision_vast(
             "generated_at": utc_now_iso(),
             "status": "blocked",
             "provider_mutations_performed": 0,
+            **paid_attempt_binding,
             "all_staged_objects_absent": cleanup.get("all_objects_absent"),
             "independent_watchdog": watchdog_handoff,
             "blockers": ["gaussian_excision_independent_watchdog_not_armed"],
@@ -1194,6 +1450,7 @@ def run_gaussian_excision_vast(
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": 0,
+        **paid_attempt_binding,
         "continuing_spend_from_this_run": teardown.get(
             "continuing_spend_from_this_run"
         ),
@@ -1208,12 +1465,16 @@ def run_gaussian_excision_vast(
 
 __all__: Sequence[str] = (
     "AUTHORITY_SCHEMA",
+    "AUTHORIZATION_CONSUMPTION_ROOT",
     "DEFAULT_IMAGE",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
+    "PAID_ATTEMPT_AUTHORITY_SCHEMA",
     "SOURCE_COMMIT",
     "SOURCE_TREE",
     "build_gaussian_excision_vast_bundle",
+    "consume_gaussian_excision_paid_attempt_authority_once",
     "gaussian_excision_lane_identity",
     "run_gaussian_excision_vast",
+    "validate_gaussian_excision_paid_attempt_authority",
 )

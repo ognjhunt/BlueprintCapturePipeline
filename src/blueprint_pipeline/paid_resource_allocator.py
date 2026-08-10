@@ -198,6 +198,7 @@ from .adp_gaussian_excision_vast import (
     PROVIDER_BUNDLE_KIND as ADP_GAUSSIAN_EXCISION_PROVIDER_BUNDLE_KIND,
     SOURCE_TREE as ADP_GAUSSIAN_EXCISION_SOURCE_TREE,
     run_gaussian_excision_vast,
+    validate_gaussian_excision_paid_attempt_authority,
 )
 from .adp_aura_author_smoke_vast import (
     DEFAULT_IMAGE as ADP_AURA_SMOKE_IMAGE,
@@ -1246,6 +1247,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-content-agents-config-preflight-receipt")
     gpu.add_argument("--adp-joint-agent-bundle-receipt")
     gpu.add_argument("--adp-gaussian-excision-bundle-receipt")
+    gpu.add_argument("--adp-gaussian-excision-attempt-authority")
+    gpu.add_argument("--adp-gaussian-excision-previous-attempt-receipt")
     gpu.add_argument("--adp-aura-bundle-receipt")
     gpu.add_argument("--adp-aura-interiorgs-bundle-receipt")
     gpu.add_argument("--adp-aura-attempt-authority")
@@ -1597,6 +1600,37 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if receipt_path and receipt_path.is_file()
                 else None
             )
+            paid_attempt_authority: dict[str, Any] | None = None
+            previous_attempt_receipt: dict[str, Any] | None = None
+            if args.adp_gaussian_excision_attempt_authority:
+                try:
+                    paid_attempt_authority = _load(
+                        Path(args.adp_gaussian_excision_attempt_authority)
+                        .expanduser()
+                        .resolve()
+                    )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("gaussian_excision_paid_attempt_authority_invalid")
+            elif args.execute:
+                blockers.append("gaussian_excision_paid_attempt_authority_missing")
+            if args.adp_gaussian_excision_previous_attempt_receipt:
+                try:
+                    previous_attempt_receipt = _load(
+                        Path(args.adp_gaussian_excision_previous_attempt_receipt)
+                        .expanduser()
+                        .resolve()
+                    )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("gaussian_excision_previous_attempt_receipt_invalid")
+            if paid_attempt_authority is not None and prepared_bundle is not None:
+                try:
+                    validate_gaussian_excision_paid_attempt_authority(
+                        paid_attempt_authority,
+                        prepared_bundle=prepared_bundle,
+                        previous_attempt_receipt=previous_attempt_receipt,
+                    )
+                except ValueError as exc:
+                    blockers.append(str(exc))
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_GAUSSIAN_EXCISION_PROBE_KIND,
@@ -1618,6 +1652,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "execution_authority_digest": (
                     prepared_bundle.get("execution_authority_digest")
                     if prepared_bundle
+                    else None
+                ),
+                "paid_attempt_authority_digest": (
+                    paid_attempt_authority.get("authorization_digest")
+                    if paid_attempt_authority
+                    else None
+                ),
+                "previous_attempt_receipt_digest": (
+                    previous_attempt_receipt.get("receipt_digest")
+                    if previous_attempt_receipt
                     else None
                 ),
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
@@ -1688,6 +1732,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     paid_resource_admission_grant=grant,
                     execute=args.execute,
                     prepared_bundle=prepared_bundle,
+                    paid_attempt_authority=paid_attempt_authority,
+                    previous_attempt_receipt=previous_attempt_receipt,
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,

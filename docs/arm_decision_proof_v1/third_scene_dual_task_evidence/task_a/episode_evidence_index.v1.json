@@ -1,7 +1,7 @@
 {
   "episode_count": 0,
   "episodes": [],
-  "index_digest": "sha256:5c887a5c14c5ee45553f5a941d35b8f46d2f96ef1e1eb3dc4f68cbfb2f462815",
+  "index_digest": "sha256:a26c46c115d10145d49a9b2461fe9e6a88e6b46047facfb928ad6233cd86e521",
   "overview_is_review_only": true,
   "required_camera_ids": [
     "external",
@@ -16,30 +16,73 @@
   },
   "schema_version": "adp_manipulation_episode_evidence_index.v1",
   "scores_are_deterministic_simulator_state": true,
+  "supporting_evidence": [
+    {
+      "portable_link_available": true,
+      "receipt_digest": "sha256:5fb14dff7ecb7a44eebf8a69e94717e7ad27493c0430fcd54767841aae26afe2",
+      "relative_path": "gaussian_excision_attempt.v1.json",
+      "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
+      "sha256": "sha256:41a7f83806130171c7185d3a34080fc26a7ff26597966d6f10b64c7a4acbefd5",
+      "size_bytes": 2409
+    },
+    {
+      "portable_link_available": true,
+      "receipt_digest": "sha256:081fca829535789d7023d1cdda05345bbc54cec296acbb812e7e0eef2055db43",
+      "relative_path": "gaussian_excision_recovery_readiness.v1.json",
+      "schema_version": "adp_gaussian_excision_recovery_readiness.v1",
+      "sha256": "sha256:b82d508b602b97e8d25969357ab282dc54c7afe9358b339a5cce8db98928e6b0",
+      "size_bytes": 2121
+    },
+    {
+      "portable_link_available": true,
+      "receipt_digest": "sha256:815f0d7bbbeb3e579fac89f2bc38255b2cb6b98f175f62fcc9b2147e342314bf",
+      "relative_path": "supporting_evidence_inventory.v1.json",
+      "schema_version": "adp_supporting_evidence_inventory.v1",
+      "sha256": "sha256:bf98114b87f067a1f3e9f0fc65c357947be739b907fe1be23ace78426cdbd9ce",
+      "size_bytes": 11214
+    }
+  ],
   "typed_abstention": {
     "all_terminal_blockers": [
-      "gaussian_excision_runtime_failed:ValueError"
+      "fresh_paid_authority_for_qualified_gaussian_contribution_missing"
     ],
     "automatic_paid_retry_executed": false,
     "candidate_ids": [
       "pi05_droid",
       "groot_n17_droid"
     ],
-    "claim_ceiling": "public_dataset_simulator_construction_rehearsal_only; no physical, deployment, customer_value, or learned_policy claim",
+    "claim_ceiling": "public_dataset_simulator_construction_rehearsal_only; no physical, deployment, customer_value, Gaussian_ownership, or learned_policy claim",
     "comparison_exists": false,
     "controls_executed": false,
     "episode_media_exists": false,
+    "gaussian_contribution_evidence_completed": false,
     "gaussian_excision_attempt_receipt_digest": "sha256:5fb14dff7ecb7a44eebf8a69e94717e7ad27493c0430fcd54767841aae26afe2",
     "gaussian_excision_freeze_digest": "sha256:5aa65c7b2df5e2ed4d2784729e1893c27ecf5dc18f8986a68ee5719bfe70b48f",
+    "gaussian_ownership_qualified": false,
+    "historical_attempt_blockers": [
+      "gaussian_excision_runtime_failed:ValueError"
+    ],
     "learned_candidate_episodes_executed": false,
-    "next_action": "obtain new explicit one-attempt zero-retry authority for the sealed repaired contribution bundle",
-    "receipt_digest": "sha256:f9270c18e8c65b2491bb1554ea7474599f9593da7c9d6a2dfd794d2cb3e335cb",
+    "next_action": "obtain fresh explicit one-attempt zero-retry authority for the exact repaired bundle and require qualified Gaussian contribution output",
+    "program_id": "arm-decision-proof-v1",
+    "receipt_digest": "sha256:ac544631c6ab7be78d6b69992a01579ee01520696c9ca550825e19ae29aa6a08",
     "recovery_readiness_receipt_digest": "sha256:081fca829535789d7023d1cdda05345bbc54cec296acbb812e7e0eef2055db43",
+    "removal_binding_digest": "sha256:825c70cd5b4e7a9590facedfbd45cf5af24e0e968ef9a2c58c8e728bd3497f37",
+    "repaired_bundle": {
+      "blueprint_commit": "dd893aaed0adb3ecc5c58e558a7cf639fca09a7c",
+      "bundle_sha256": "sha256:80d8620a2ec89ba2f60e59c2f000b0cc5849a99bb11798ef449977dee9eb5e17",
+      "canonical_paid_admission_dry_run_passed": true,
+      "container_image": "docker.io/pytorch/pytorch@sha256:14611869895df612b7b07227d5925f30ec3cd6673bad58ce3d84ed107950e014",
+      "dependency_wheelhouse_manifest_digest": "sha256:e96bc10993da4644d5f320059151e0f267e3307daa013a1dd501bedfc52849dd",
+      "exact_bundle_rehearsal_passed": true,
+      "gpu_runtime_executed": false
+    },
     "scene_id": "840920",
     "schema_version": "adp_task_evaluation_run_abstention.v1",
-    "smallest_missing_capability": "gaussian_excision_runtime_failed:ValueError",
+    "smallest_missing_capability": "fresh_paid_authority_for_qualified_gaussian_contribution_missing",
     "status": "typed_evidence_backed_abstention",
     "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
-    "task_id": "task_a_washer_door_open"
+    "task_id": "task_a_washer_door_open",
+    "terminal_gate_schema_version": "adp_gaussian_contribution_authority_gate.v1"
   }
 }

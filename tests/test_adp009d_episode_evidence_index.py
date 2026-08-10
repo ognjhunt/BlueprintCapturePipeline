@@ -11,6 +11,7 @@ from blueprint_pipeline.adp_episode_evidence_index import (
     HTML_FILENAME,
     INDEX_FILENAME,
     materialize_episode_evidence_index,
+    materialize_supporting_evidence_inventory,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -218,3 +219,154 @@ def test_portable_index_represents_terminal_abstention_without_fake_episodes(
     html = (tmp_path / HTML_FILENAME).read_text(encoding="utf-8")
     assert "No control or learned-policy episode exists" in html
     assert "joint_agent_local_ovrtx_renderer_not_ready" in html
+
+
+def test_abstention_index_verifies_and_links_supporting_receipts(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "external"
+    package_root = tmp_path / "package"
+    external_root.mkdir()
+    package_root.mkdir()
+    mask = _artifact(external_root, "removal/masks/front.png", b"mask")
+    teardown = _artifact(
+        external_root,
+        "removal/run/teardown.json",
+        b'{"schema_version":"vast_teardown_manifest.v1"}\n',
+    )
+    inventory = materialize_supporting_evidence_inventory(
+        source_root=external_root,
+        output_root=package_root,
+        output_relative_path="supporting_evidence_inventory.v1.json",
+        source_root_id="rights_bounded_construction_root",
+        artifacts=[
+            {"role": "source_mask", **mask},
+            {"role": "paid_teardown", **teardown},
+        ],
+        disclosure_class="digest_receipt_only",
+    )
+    recovery = {
+        "schema_version": "adp_gaussian_excision_recovery_readiness.v1",
+        "status": "ready_for_new_authority_not_executed",
+        "receipt_digest": "",
+    }
+    recovery["receipt_digest"] = canonical_digest(
+        recovery, digest_field="receipt_digest"
+    )
+    recovery_path = package_root / "recovery.json"
+    recovery_path.write_text(json.dumps(recovery), encoding="utf-8")
+    abstention = {
+        "schema_version": "adp_task_evaluation_run_abstention.v1",
+        "status": "typed_evidence_backed_abstention",
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "smallest_missing_capability": (
+            "fresh_paid_authority_for_qualified_gaussian_contribution_missing"
+        ),
+        "controls_executed": False,
+        "learned_candidate_episodes_executed": False,
+        "receipt_digest": "",
+    }
+    abstention["receipt_digest"] = canonical_digest(
+        abstention, digest_field="receipt_digest"
+    )
+
+    result = materialize_episode_evidence_index(
+        run_root=package_root,
+        episode_receipt_paths=[],
+        run_identity={
+            "scene_id": "fixture_scene",
+            "task_id": "fixture_task",
+            "scenario_suite_digest": "sha256:frozen-suite",
+        },
+        abstention_receipt=abstention,
+        supporting_receipt_paths=[
+            "supporting_evidence_inventory.v1.json",
+            "recovery.json",
+        ],
+    )
+
+    assert inventory["artifact_count"] == 2
+    assert len(result["index"]["supporting_evidence"]) == 2
+    html = (package_root / HTML_FILENAME).read_text(encoding="utf-8")
+    assert "Supporting construction evidence" in html
+    assert "supporting_evidence_inventory.v1.json" in html
+
+
+def test_supporting_inventory_rejects_tampered_external_artifact(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "external"
+    package_root = tmp_path / "package"
+    external_root.mkdir()
+    package_root.mkdir()
+    artifact = _artifact(external_root, "mask.png", b"mask")
+    (external_root / "mask.png").write_bytes(b"tampered")
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="supporting_evidence_artifact_(digest|size)_mismatch:source_mask",
+    ):
+        materialize_supporting_evidence_inventory(
+            source_root=external_root,
+            output_root=package_root,
+            output_relative_path="supporting_evidence_inventory.v1.json",
+            source_root_id="rights_bounded_construction_root",
+            artifacts=[{"role": "source_mask", **artifact}],
+            disclosure_class="digest_receipt_only",
+        )
+
+
+def test_supporting_inventory_and_index_reject_symlinks(tmp_path: Path) -> None:
+    external_root = tmp_path / "external"
+    package_root = tmp_path / "package"
+    external_root.mkdir()
+    package_root.mkdir()
+    target = external_root / "target.json"
+    target.write_text("{}\n", encoding="utf-8")
+    link = external_root / "linked.json"
+    link.symlink_to(target)
+    record = {
+        "role": "linked_receipt",
+        "relative_path": "linked.json",
+        "sha256": "sha256:" + _sha256(target),
+        "size_bytes": target.stat().st_size,
+    }
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError, match="episode_artifact_symlink_forbidden"
+    ):
+        materialize_supporting_evidence_inventory(
+            source_root=external_root,
+            output_root=package_root,
+            output_relative_path="inventory.json",
+            source_root_id="fixture_root",
+            artifacts=[record],
+            disclosure_class="digest_receipt_only",
+        )
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError, match="supporting_receipt_symlink_forbidden"
+    ):
+        abstention = {
+            "schema_version": "adp_task_evaluation_run_abstention.v1",
+            "status": "typed_evidence_backed_abstention",
+            "smallest_missing_capability": "fixture_blocker",
+            "controls_executed": False,
+            "learned_candidate_episodes_executed": False,
+            "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+            "receipt_digest": "",
+        }
+        abstention["receipt_digest"] = canonical_digest(
+            abstention, digest_field="receipt_digest"
+        )
+        materialize_episode_evidence_index(
+            run_root=external_root,
+            episode_receipt_paths=[],
+            run_identity={
+                "scene_id": "fixture_scene",
+                "task_id": "fixture_task",
+                "scenario_suite_digest": "sha256:frozen-suite",
+            },
+            abstention_receipt=abstention,
+            supporting_receipt_paths=["linked.json"],
+        )

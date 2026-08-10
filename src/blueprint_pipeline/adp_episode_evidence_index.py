@@ -30,6 +30,7 @@ INDEX_FILENAME = "episode_evidence_index.v1.json"
 HTML_FILENAME = "OPEN_ME_episode_evidence_index.html"
 REQUIRED_CAMERA_IDS = ("external", "wrist", "overview")
 ABSTENTION_SCHEMA_VERSION = "adp_task_evaluation_run_abstention.v1"
+SUPPORTING_INVENTORY_SCHEMA_VERSION = "adp_supporting_evidence_inventory.v1"
 ALLOWED_RECEIPT_SCHEMAS = {
     "adp009d_control_episode.v2",
     "adp_task_control_episode.v1",
@@ -61,7 +62,10 @@ def _sha256(path: Path) -> str:
 
 
 def _inside(root: Path, relative_path: str, *, role: str) -> Path:
-    candidate = (root / relative_path).resolve()
+    unresolved = root / relative_path
+    if unresolved.is_symlink():
+        raise EpisodeEvidenceIndexError(f"episode_artifact_symlink_forbidden:{role}")
+    candidate = unresolved.resolve()
     try:
         candidate.relative_to(root)
     except ValueError as exc:
@@ -87,6 +91,138 @@ def _verify_artifact(
         "relative_path": relative_path,
         "sha256": expected_sha256,
         "size_bytes": path.stat().st_size,
+    }
+
+
+def _prefixed_sha256(path: Path) -> str:
+    return "sha256:" + _sha256(path)
+
+
+def materialize_supporting_evidence_inventory(
+    *,
+    source_root: str | Path,
+    output_root: str | Path,
+    output_relative_path: str,
+    source_root_id: str,
+    artifacts: Sequence[Mapping[str, Any]],
+    disclosure_class: str,
+) -> dict[str, Any]:
+    """Verify external construction bytes and emit a portable receipt inventory.
+
+    Dataset-derived bytes can remain in their rights-bounded evidence root while
+    the portable package carries exact, locally verified path/size/digest records.
+    This deliberately does not turn a digest binding into publication authority.
+    """
+
+    source = Path(source_root).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if not source.is_dir():
+        raise EpisodeEvidenceIndexError("supporting_evidence_source_root_missing")
+    if not output.is_dir():
+        raise EpisodeEvidenceIndexError("supporting_evidence_output_root_missing")
+    if not source_root_id or not disclosure_class or not artifacts:
+        raise EpisodeEvidenceIndexError("supporting_evidence_inventory_invalid")
+
+    rows: list[dict[str, Any]] = []
+    for index, artifact in enumerate(artifacts):
+        role = str(artifact.get("role") or "")
+        relative_path = str(artifact.get("relative_path") or "")
+        if not role or not relative_path:
+            raise EpisodeEvidenceIndexError(
+                f"supporting_evidence_artifact_invalid:{index}"
+            )
+        path = _inside(source, relative_path, role=role)
+        if path.is_symlink() or not path.is_file():
+            raise EpisodeEvidenceIndexError(
+                f"supporting_evidence_artifact_missing:{role}"
+            )
+        expected = str(artifact.get("sha256") or "")
+        expected = expected.removeprefix("sha256:")
+        if len(expected) != 64 or _sha256(path) != expected:
+            raise EpisodeEvidenceIndexError(
+                f"supporting_evidence_artifact_digest_mismatch:{role}"
+            )
+        if int(artifact.get("size_bytes", -1)) != path.stat().st_size:
+            raise EpisodeEvidenceIndexError(
+                f"supporting_evidence_artifact_size_mismatch:{role}"
+            )
+        rows.append(
+            {
+                "role": role,
+                "source_root_id": source_root_id,
+                "relative_path": relative_path,
+                "sha256": "sha256:" + expected,
+                "size_bytes": path.stat().st_size,
+                "portable_link_available": False,
+                "disclosure_class": disclosure_class,
+            }
+        )
+    if len({(row["role"], row["relative_path"]) for row in rows}) != len(rows):
+        raise EpisodeEvidenceIndexError("supporting_evidence_artifact_duplicate")
+
+    receipt: dict[str, Any] = {
+        "schema_version": SUPPORTING_INVENTORY_SCHEMA_VERSION,
+        "status": "digest_verified_external_evidence_inventory",
+        "source_root_id": source_root_id,
+        "disclosure_class": disclosure_class,
+        "artifacts": sorted(rows, key=lambda row: (row["role"], row["relative_path"])),
+        "artifact_count": len(rows),
+        "source_root_absolute_path_recorded": False,
+        "artifact_bytes_embedded": False,
+        "publication_authority_inferred": False,
+        "inventory_digest": "",
+    }
+    receipt["inventory_digest"] = canonical_digest(
+        receipt, digest_field="inventory_digest"
+    )
+    destination = _inside(output, output_relative_path, role="supporting_inventory")
+    if destination.exists() or destination.is_symlink():
+        raise EpisodeEvidenceIndexError("supporting_evidence_inventory_overwrite_forbidden")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return receipt
+
+
+_SUPPORTING_RECEIPT_DIGEST_FIELDS = {
+    "adp_gaussian_excision_attempt_receipt.v1": "receipt_digest",
+    "adp_gaussian_excision_recovery_readiness.v1": "receipt_digest",
+    SUPPORTING_INVENTORY_SCHEMA_VERSION: "inventory_digest",
+}
+
+
+def _supporting_receipt_row(root: Path, raw_path: str | Path) -> dict[str, Any]:
+    path = Path(raw_path).expanduser()
+    unresolved = path if path.is_absolute() else root / path
+    if unresolved.is_symlink():
+        raise EpisodeEvidenceIndexError("supporting_receipt_symlink_forbidden")
+    path = unresolved.resolve()
+    try:
+        relative_path = path.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise EpisodeEvidenceIndexError(
+            "supporting_receipt_path_outside_root"
+        ) from exc
+    if path.is_symlink() or not path.is_file():
+        raise EpisodeEvidenceIndexError("supporting_receipt_missing")
+    receipt = _load_json(path)
+    schema_version = str(receipt.get("schema_version") or "")
+    digest_field = _SUPPORTING_RECEIPT_DIGEST_FIELDS.get(schema_version)
+    if digest_field is None:
+        raise EpisodeEvidenceIndexError(
+            f"supporting_receipt_schema_not_admitted:{schema_version or 'missing'}"
+        )
+    digest = str(receipt.get(digest_field) or "")
+    if digest != canonical_digest(receipt, digest_field=digest_field):
+        raise EpisodeEvidenceIndexError("supporting_receipt_digest_mismatch")
+    return {
+        "schema_version": schema_version,
+        "relative_path": relative_path,
+        "sha256": _prefixed_sha256(path),
+        "size_bytes": path.stat().st_size,
+        "receipt_digest": digest,
+        "portable_link_available": True,
     }
 
 
@@ -208,6 +344,27 @@ def _render_html(payload: Mapping[str, Any]) -> str:
         if isinstance(abstention, Mapping)
         else ""
     )
+    supporting_rows = [
+        "<tr>"
+        f"<td>{html.escape(str(row['schema_version']))}</td>"
+        f'<td><a href="{quote(str(row["relative_path"]))}">'
+        f"{html.escape(str(row['relative_path']))}</a></td>"
+        f"<td>{html.escape(str(row['size_bytes']))}</td>"
+        f"<td><code>{html.escape(str(row['sha256']))}</code></td>"
+        "</tr>"
+        for row in payload.get("supporting_evidence", [])
+    ]
+    supporting_html = (
+        "<h2>Supporting construction evidence</h2>"
+        "<p>These portable receipts were digest-verified when this index was built. "
+        "External dataset-derived bytes remain in their rights-bounded evidence root.</p>"
+        "<table><thead><tr><th>Schema</th><th>Receipt</th><th>Bytes</th>"
+        "<th>SHA-256</th></tr></thead><tbody>"
+        + "".join(supporting_rows)
+        + "</tbody></table>"
+        if supporting_rows
+        else ""
+    )
     return "".join(
         [
             "<!doctype html>\n<html><head><meta charset=\"utf-8\">",
@@ -221,6 +378,7 @@ def _render_html(payload: Mapping[str, Any]) -> str:
             "<p>Videos are derived review media. Scores come only from deterministic ",
             "simulator state. Overview is review-only and was not a policy input.</p>",
             abstention_html,
+            supporting_html,
             "<table><thead><tr><th>Episode</th><th>Kind</th><th>Subject</th>",
             "<th>Outcome</th><th>Success</th><th>Videos</th><th>Frames</th>",
             "<th>Receipt</th></tr></thead><tbody>",
@@ -239,6 +397,7 @@ def materialize_episode_evidence_index(
     episode_receipt_paths: Sequence[str | Path],
     run_identity: Mapping[str, Any],
     abstention_receipt: Mapping[str, Any] | None = None,
+    supporting_receipt_paths: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """Verify episode evidence and emit portable JSON plus HTML navigation."""
 
@@ -292,6 +451,12 @@ def materialize_episode_evidence_index(
     if len(set(episode_ids)) != len(episode_ids):
         raise EpisodeEvidenceIndexError("episode_index_duplicate_episode_id")
 
+    supporting = [
+        _supporting_receipt_row(root, path) for path in supporting_receipt_paths
+    ]
+    if len({row["relative_path"] for row in supporting}) != len(supporting):
+        raise EpisodeEvidenceIndexError("supporting_receipt_duplicate")
+
     payload: dict[str, Any] = {
         "schema_version": INDEX_SCHEMA_VERSION,
         "run_identity": identity,
@@ -302,6 +467,9 @@ def materialize_episode_evidence_index(
         "scores_are_deterministic_simulator_state": True,
         "review_videos_are_not_physical_truth": True,
         "typed_abstention": abstention,
+        "supporting_evidence": sorted(
+            supporting, key=lambda row: row["relative_path"]
+        ),
         "index_digest": "",
     }
     payload["index_digest"] = canonical_digest(payload, digest_field="index_digest")
@@ -340,4 +508,5 @@ __all__ = [
     "INDEX_FILENAME",
     "INDEX_SCHEMA_VERSION",
     "materialize_episode_evidence_index",
+    "materialize_supporting_evidence_inventory",
 ]

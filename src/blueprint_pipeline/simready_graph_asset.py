@@ -458,14 +458,19 @@ def author_simready_graph_asset(
             if geometry["kind"] == "box":
                 primitive = UsdGeom.Cube.Define(stage, geometry_path)
                 primitive.CreateSizeAttr(1.0)
-                primitive.AddScaleOp().Set(Gf.Vec3f(*geometry["size_m"]))
             else:
                 primitive = UsdGeom.Cylinder.Define(stage, geometry_path)
                 primitive.CreateAxisAttr("X")
                 primitive.CreateRadiusAttr(float(geometry["radius_m"]))
                 primitive.CreateHeightAttr(float(geometry["height_m"]))
+            # Keep the conventional translate/orient/scale order.  Authoring a
+            # box scale first makes the later translation part of the scaled
+            # coordinate system, silently moving off-origin geometry (and its
+            # collider) by a dimension-dependent amount.
             primitive.AddTranslateOp().Set(Gf.Vec3f(*geometry["translation_m"]))
             primitive.AddOrientOp().Set(_gf_quat(geometry["orientation_xyzw"]))
+            if geometry["kind"] == "box":
+                primitive.AddScaleOp().Set(Gf.Vec3f(*geometry["size_m"]))
             primitive.CreateDisplayColorAttr(
                 [Gf.Vec3f(*geometry["display_color_rgb"])]
             )
@@ -480,6 +485,7 @@ def author_simready_graph_asset(
     frame_by_id = {row["joint_id"]: row for row in admitted["joint_frames"]}
     joint_paths: dict[str, str] = {}
     dependencies: list[dict[str, Any]] = []
+    joint_drive_implementations: dict[str, dict[str, Any]] = {}
     for joint in admitted["articulation_graph"]["joints"]:
         joint_id = joint["joint_id"]
         path = f"/Asset/joints/{joint_id}"
@@ -513,12 +519,36 @@ def author_simready_graph_asset(
         prim.SetCustomDataByKey("blueprint:graphAxis", Gf.Vec3d(*joint["axis"]))
         prim.SetCustomDataByKey("blueprint:resetPosition", joint["reset_position"])
         drive = joint["drive"]
+        prim.SetCustomDataByKey(
+            "blueprint:declaredDriveType", drive["drive_type"]
+        )
+        drive_implementation = "none"
+        usd_drive_type: str | None = None
         if joint["joint_type"] != "fixed" and (
             drive["stiffness"] > 0.0 or drive["damping"] > 0.0
         ):
             name = "linear" if joint["joint_type"] == "prismatic" else "angular"
             authored = UsdPhysics.DriveAPI.Apply(prim, name)
-            authored.CreateTypeAttr().Set("force")
+            # USD has no "none" drive token.  A graph-declared non-actuated
+            # joint may still carry passive damping, represented as a
+            # zero-stiffness force damper.  Retain that translation explicitly
+            # instead of silently rewriting the declared drive type.
+            authored_type = (
+                drive["drive_type"]
+                if drive["drive_type"] in {"force", "acceleration"}
+                else "force"
+            )
+            authored.CreateTypeAttr().Set(authored_type)
+            usd_drive_type = authored_type
+            drive_implementation = (
+                "passive_force_damper"
+                if drive["drive_type"] == "none"
+                else f"usd_{authored_type}_drive"
+            )
+            prim.SetCustomDataByKey(
+                "blueprint:driveImplementation",
+                drive_implementation,
+            )
             authored.CreateStiffnessAttr().Set(float(drive["stiffness"]))
             authored.CreateDampingAttr().Set(float(drive["damping"]))
             target = joint["reset_position"]
@@ -527,6 +557,12 @@ def author_simready_graph_asset(
             authored.CreateTargetPositionAttr().Set(float(target))
             if drive["maximum_force"] > 0.0:
                 authored.CreateMaxForceAttr().Set(float(drive["maximum_force"]))
+        joint_drive_implementations[joint_id] = {
+            "declared_drive_type": drive["drive_type"],
+            "usd_drive_authored": usd_drive_type is not None,
+            "usd_drive_type": usd_drive_type,
+            "implementation": drive_implementation,
+        }
         if joint["dependency"] is not None:
             dependencies.append(
                 {
@@ -580,6 +616,7 @@ def author_simready_graph_asset(
             admitted["articulation_graph"], digest_field="graph_digest"
         ),
         "dependencies": dependencies,
+        "joint_drive_implementations": joint_drive_implementations,
         "provenance_counts": {
             label: sum(
                 geometry["provenance"] == label

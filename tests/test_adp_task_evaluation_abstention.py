@@ -10,6 +10,7 @@ import pytest
 from blueprint_pipeline.adp_task_evaluation_abstention import (
     TaskEvaluationAbstentionError,
     collect_vast_provider_zero_receipt,
+    materialize_gaussian_contribution_authority_abstention,
     materialize_native_gate_task_evaluation_abstention,
     materialize_task_evaluation_abstention,
 )
@@ -27,6 +28,89 @@ def _freeze() -> dict:
             / "second_scene_840796_scene_task_freeze.v1.json"
         ).read_text(encoding="utf-8")
     )
+
+
+def _gaussian_authority_inputs() -> tuple[dict, dict, dict, dict]:
+    evidence = REPO_ROOT / "docs/arm_decision_proof_v1/third_scene_dual_task_evidence"
+    manifests = REPO_ROOT / "docs/arm_decision_proof_v1/manifests"
+    attempt = json.loads(
+        (evidence / "task_a/gaussian_excision_attempt.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    recovery = json.loads(
+        (evidence / "task_a/gaussian_excision_recovery_readiness.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    task_freeze = json.loads(
+        (manifests / "third_scene_840920_task_a_freeze.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    removal_binding = json.loads(
+        (manifests / "third_scene_840920_task_a_removal_local_binding.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return attempt, recovery, task_freeze, removal_binding
+
+
+def test_repaired_gaussian_attempt_seals_current_authority_gap_not_old_failure() -> None:
+    attempt, recovery, task_freeze, removal_binding = _gaussian_authority_inputs()
+    receipt = materialize_gaussian_contribution_authority_abstention(
+        gaussian_excision_attempt=attempt,
+        recovery_readiness=recovery,
+        task_freeze=task_freeze,
+        removal_binding=removal_binding,
+        scene_id="840920",
+    )
+
+    assert receipt["smallest_missing_capability"] == (
+        "fresh_paid_authority_for_qualified_gaussian_contribution_missing"
+    )
+    assert receipt["historical_attempt_blockers"] == attempt["execution_blockers"]
+    assert attempt["execution_blockers"][0] not in receipt["all_terminal_blockers"]
+    assert receipt["repaired_bundle"]["gpu_runtime_executed"] is False
+    assert receipt["gaussian_ownership_qualified"] is False
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda attempt, recovery: recovery.update(
+            {"canonical_paid_admission_dry_run_passed": False}
+        ),
+        lambda attempt, recovery: recovery["proof_boundaries"].update(
+            {"gpu_runtime_executed": True}
+        ),
+        lambda attempt, recovery: attempt.update({"provider_absence_confirmed": False}),
+    ],
+)
+def test_gaussian_authority_abstention_refuses_unready_or_live_attempt(
+    mutation,
+) -> None:
+    attempt, recovery, task_freeze, removal_binding = _gaussian_authority_inputs()
+    mutation(attempt, recovery)
+    if "receipt_digest" in attempt:
+        attempt["receipt_digest"] = canonical_digest(
+            attempt, digest_field="receipt_digest"
+        )
+    recovery["receipt_digest"] = canonical_digest(
+        recovery, digest_field="receipt_digest"
+    )
+
+    with pytest.raises(TaskEvaluationAbstentionError):
+        materialize_gaussian_contribution_authority_abstention(
+            gaussian_excision_attempt=attempt,
+            recovery_readiness=recovery,
+            task_freeze=task_freeze,
+            removal_binding=removal_binding,
+            scene_id="840920",
+        )
 
 
 def _run(freeze: dict) -> dict:

@@ -18,6 +18,12 @@ CONSTRUCTION_SCHEMA_VERSION = "articulated_public_scene_construction_run.v2"
 FREEZE_SCHEMA_VERSION = "second_scene_scene_task_freeze.v1"
 NATIVE_GATE_ABSTENTION_SCHEMA_VERSION = "adp_native_gate_abstention.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
+GAUSSIAN_ATTEMPT_SCHEMA_VERSION = "adp_gaussian_excision_attempt_receipt.v1"
+GAUSSIAN_RECOVERY_SCHEMA_VERSION = "adp_gaussian_excision_recovery_readiness.v1"
+DUAL_TASK_FREEZE_SCHEMA_VERSION = "dual_task_task_freeze.v1"
+GAUSSIAN_AUTHORITY_BLOCKER = (
+    "fresh_paid_authority_for_qualified_gaussian_contribution_missing"
+)
 
 
 class TaskEvaluationAbstentionError(ValueError):
@@ -284,6 +290,158 @@ def _clone(value: Mapping[str, Any], *, code: str) -> dict[str, Any]:
     return result
 
 
+def materialize_gaussian_contribution_authority_abstention(
+    *,
+    gaussian_excision_attempt: Mapping[str, Any],
+    recovery_readiness: Mapping[str, Any],
+    task_freeze: Mapping[str, Any],
+    removal_binding: Mapping[str, Any],
+    scene_id: str,
+    output_path: str | Path | None = None,
+    repo_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Seal the current gate after a failed attempt has been repaired locally.
+
+    Historical worker failures remain immutable attempt evidence.  Once an exact
+    repaired bundle passes its hermetic rehearsal and paid-admission dry-run,
+    those failures are no longer the current smallest blocker.  This seam makes
+    that distinction explicit and refuses to imply that the unexecuted repair
+    produced Gaussian ownership evidence.
+    """
+
+    attempt = _clone(
+        gaussian_excision_attempt, code="gaussian_authority_attempt_invalid"
+    )
+    recovery = _clone(
+        recovery_readiness, code="gaussian_authority_recovery_invalid"
+    )
+    freeze = _clone(task_freeze, code="gaussian_authority_task_freeze_invalid")
+    binding = _clone(
+        removal_binding, code="gaussian_authority_removal_binding_invalid"
+    )
+    errors: list[str] = []
+    historical_blockers = attempt.get("execution_blockers")
+    proof_boundaries = attempt.get("proof_boundaries") or {}
+    if (
+        attempt.get("schema_version") != GAUSSIAN_ATTEMPT_SCHEMA_VERSION
+        or attempt.get("receipt_digest")
+        != canonical_digest(attempt, digest_field="receipt_digest")
+        or attempt.get("status") != "sealed_blocked_attempt"
+        or attempt.get("execution_status") != "blocked"
+        or not isinstance(historical_blockers, list)
+        or not historical_blockers
+        or attempt.get("released_code_executed") is not False
+        or attempt.get("heldout_cameras_accessed_for_classification") is not False
+        or attempt.get("continuing_spend") is not False
+        or attempt.get("provider_absence_confirmed") is not True
+        or proof_boundaries.get("gaussian_contribution_evidence_completed") is not False
+        or proof_boundaries.get("gaussian_ownership_qualified") is not False
+        or proof_boundaries.get("source_removal_qualified") is not False
+    ):
+        errors.append("gaussian_authority_attempt_invalid")
+    recovery_boundaries = recovery.get("proof_boundaries") or {}
+    if (
+        recovery.get("schema_version") != GAUSSIAN_RECOVERY_SCHEMA_VERSION
+        or recovery.get("receipt_digest")
+        != canonical_digest(recovery, digest_field="receipt_digest")
+        or recovery.get("status") != "ready_for_new_authority_not_executed"
+        or recovery.get("exact_bundle_rehearsal_passed") is not True
+        or recovery.get("canonical_paid_admission_dry_run_passed") is not True
+        or recovery.get("provider_mutations_performed") != 0
+        or recovery.get("automatic_retry_authorized") is not False
+        or recovery_boundaries.get("gpu_runtime_executed") is not False
+        or recovery_boundaries.get("gaussian_ownership_qualified") is not False
+        or recovery_boundaries.get("new_paid_authority_required") is not True
+    ):
+        errors.append("gaussian_authority_recovery_invalid")
+    if (
+        freeze.get("schema_version") != DUAL_TASK_FREEZE_SCHEMA_VERSION
+        or freeze.get("task_freeze_digest")
+        != canonical_digest(freeze, digest_field="task_freeze_digest")
+        or freeze.get("candidate_ids") != ["pi05_droid", "groot_n17_droid"]
+        or freeze.get("learned_policy_outcomes_accessed") is not False
+    ):
+        errors.append("gaussian_authority_task_freeze_invalid")
+    freeze_digest = freeze.get("task_freeze_digest")
+    excision_freeze_digest = (binding.get("excision_freeze") or {}).get(
+        "freeze_digest"
+    )
+    if (
+        not str(binding.get("schema_version") or "")
+        or binding.get("binding_digest")
+        != canonical_digest(binding, digest_field="binding_digest")
+        or binding.get("task_id") != freeze.get("task_id")
+        or binding.get("task_freeze_digest") != freeze_digest
+        or attempt.get("freeze_digest") != recovery.get("freeze_digest")
+        or attempt.get("freeze_digest") != excision_freeze_digest
+    ):
+        errors.append("gaussian_authority_removal_binding_invalid")
+    if not scene_id or not str(freeze.get("task_id") or ""):
+        errors.append("gaussian_authority_identity_invalid")
+    if errors:
+        raise TaskEvaluationAbstentionError(";".join(sorted(set(errors))))
+
+    receipt: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "terminal_gate_schema_version": "adp_gaussian_contribution_authority_gate.v1",
+        "program_id": "arm-decision-proof-v1",
+        "status": "typed_evidence_backed_abstention",
+        "scene_id": scene_id,
+        "task_id": freeze["task_id"],
+        "task_freeze_digest": freeze_digest,
+        "gaussian_excision_freeze_digest": excision_freeze_digest,
+        "removal_binding_digest": binding["binding_digest"],
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "smallest_missing_capability": GAUSSIAN_AUTHORITY_BLOCKER,
+        "all_terminal_blockers": [GAUSSIAN_AUTHORITY_BLOCKER],
+        "historical_attempt_blockers": list(historical_blockers),
+        "gaussian_excision_attempt_receipt_digest": attempt["receipt_digest"],
+        "recovery_readiness_receipt_digest": recovery["receipt_digest"],
+        "repaired_bundle": {
+            "blueprint_commit": recovery["blueprint_commit"],
+            "bundle_sha256": recovery["bundle_sha256"],
+            "container_image": recovery["container_image"],
+            "dependency_wheelhouse_manifest_digest": recovery[
+                "dependency_wheelhouse_manifest_digest"
+            ],
+            "exact_bundle_rehearsal_passed": True,
+            "canonical_paid_admission_dry_run_passed": True,
+            "gpu_runtime_executed": False,
+        },
+        "gaussian_contribution_evidence_completed": False,
+        "gaussian_ownership_qualified": False,
+        "controls_executed": False,
+        "learned_candidate_episodes_executed": False,
+        "episode_media_exists": False,
+        "comparison_exists": False,
+        "automatic_paid_retry_executed": False,
+        "next_action": (
+            "obtain fresh explicit one-attempt zero-retry authority for the exact "
+            "repaired bundle and require qualified Gaussian contribution output"
+        ),
+        "claim_ceiling": (
+            "public_dataset_simulator_construction_rehearsal_only; no physical, "
+            "deployment, customer_value, Gaussian_ownership, or learned_policy claim"
+        ),
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    if output_path is not None:
+        if repo_root is None:
+            raise TaskEvaluationAbstentionError("task_evaluation_repo_root_missing")
+        repo = Path(repo_root).expanduser().resolve()
+        output = Path(output_path).expanduser().resolve()
+        if not output.is_relative_to(repo) or output.is_symlink():
+            raise TaskEvaluationAbstentionError(
+                "task_evaluation_abstention_output_outside_repo"
+            )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
 def materialize_task_evaluation_abstention(
     *,
     construction_run: Mapping[str, Any],
@@ -395,6 +553,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "TaskEvaluationAbstentionError",
     "collect_vast_provider_zero_receipt",
+    "materialize_gaussian_contribution_authority_abstention",
     "materialize_task_evaluation_abstention",
     "materialize_native_gate_task_evaluation_abstention",
 ]

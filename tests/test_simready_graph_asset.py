@@ -4,13 +4,16 @@ import json
 from pathlib import Path
 
 import pytest
-from pxr import Usd, UsdPhysics
+from pxr import Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.simready_graph_asset import (
     SimReadyGraphAssetError,
     author_simready_graph_asset,
     validate_simready_graph_asset_spec,
+)
+from blueprint_pipeline.simready_graph_asset_static_qualification import (
+    qualify_simready_graph_asset_static,
 )
 
 
@@ -179,6 +182,102 @@ def test_general_graph_compiler_authors_articulated_and_rigid_subjects(
     assert set(receipt["link_paths"]) == {"root", "child"}
     assert receipt["claim_boundary"]["native_simulator_import_qualified"] is False
     assert receipt["claim_boundary"]["generated_geometry_is_observed_truth"] is False
+
+
+def test_static_readback_qualifies_authored_structure_but_retains_claim_blockers(
+    tmp_path: Path,
+) -> None:
+    source = _source_receipt(tmp_path)
+    spec = _spec(source)
+    task_freeze = _task_freeze(tmp_path, spec)
+    receipt_path = tmp_path / "asset.receipt.json"
+    author_simready_graph_asset(
+        spec=spec,
+        task_freeze_receipt_path=task_freeze,
+        source_asset_receipt_path=source,
+        destination=tmp_path / "asset.usda",
+        receipt_path=receipt_path,
+    )
+
+    qualification = qualify_simready_graph_asset_static(
+        spec=spec,
+        authoring_receipt_path=receipt_path,
+        output_path=tmp_path / "static_qualification.json",
+    )
+
+    assert qualification["status"] == "authored_structure_statically_qualified"
+    assert qualification["authored_structure_statically_qualified"] is True
+    assert qualification["structural_findings"] == []
+    assert set(qualification["contract_blockers"]) >= {
+        "visual_material_artifact_unbound",
+        "texture_artifact_unbound",
+        "collision_approximation_contract_unbound",
+        "native_simulator_import_unexecuted",
+        "joint_physics_behavior_unexecuted",
+    }
+    assert qualification["claim_boundary"]["native_simulator_import_qualified"] is False
+    assert (tmp_path / "static_qualification.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("declared_type", "expected_usd_type", "expected_implementation"),
+    [
+        ("acceleration", "acceleration", "usd_acceleration_drive"),
+        ("none", "force", "passive_force_damper"),
+    ],
+)
+def test_compiler_retains_declared_drive_semantics_and_box_xform_order(
+    tmp_path: Path,
+    declared_type: str,
+    expected_usd_type: str,
+    expected_implementation: str,
+) -> None:
+    source = _source_receipt(tmp_path)
+    spec = _spec(source, target=False)
+    spec.pop("spec_digest")
+    drive = spec["articulation_graph"]["joints"][0]["drive"]
+    drive["drive_type"] = declared_type
+    if declared_type == "none":
+        drive.update({"stiffness": 0.0, "damping": 0.25, "maximum_force": 0.0})
+    spec["links"][0]["geometry"][0]["translation_m"] = [0.1, 0.2, 0.3]
+    spec["links"][0]["center_of_mass_m"] = [0.1, 0.2, 0.3]
+    spec = validate_simready_graph_asset_spec(spec)
+    task_freeze = _task_freeze(tmp_path, spec)
+    receipt_path = tmp_path / "asset.receipt.json"
+    receipt = author_simready_graph_asset(
+        spec=spec,
+        task_freeze_receipt_path=task_freeze,
+        source_asset_receipt_path=source,
+        destination=tmp_path / "asset.usda",
+        receipt_path=receipt_path,
+    )
+
+    stage = Usd.Stage.Open(receipt["output_usd"]["path"])
+    joint = stage.GetPrimAtPath("/Asset/joints/hinge")
+    drive_api = UsdPhysics.DriveAPI.Get(joint, "angular")
+    assert drive_api.GetTypeAttr().Get() == expected_usd_type
+    assert joint.GetCustomDataByKey("blueprint:declaredDriveType") == declared_type
+    assert (
+        joint.GetCustomDataByKey("blueprint:driveImplementation")
+        == expected_implementation
+    )
+    assert receipt["joint_drive_implementations"]["hinge"] == {
+        "declared_drive_type": declared_type,
+        "usd_drive_authored": True,
+        "usd_drive_type": expected_usd_type,
+        "implementation": expected_implementation,
+    }
+    cube = stage.GetPrimAtPath("/Asset/links/root/geometry/root_shape")
+    assert [str(op.GetOpName()) for op in UsdGeom.Xformable(cube).GetOrderedXformOps()] == [
+        "xformOp:translate",
+        "xformOp:orient",
+        "xformOp:scale",
+    ]
+    qualification = qualify_simready_graph_asset_static(
+        spec=spec,
+        authoring_receipt_path=receipt_path,
+    )
+    assert qualification["authored_structure_statically_qualified"] is True
 
 
 def test_source_receipt_and_asset_bytes_are_verified(tmp_path: Path) -> None:
