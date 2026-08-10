@@ -72,6 +72,140 @@ ARTICULATED_AGGREGATE_SEMANTICS: frozenset[str] = frozenset(
     }
 )
 
+# Dataset-author labels are an efficient first-pass survey authority, but they
+# do not prove material behavior, an open receptacle interior, support contact,
+# or native manipulation.  Keep these exact vocabularies deliberately narrow:
+# anything outside them remains visible in the full label inventory and must be
+# admitted through observation rather than a fuzzy semantic guess.
+DEFORMABLE_TRANSFER_MOVABLE_SEMANTICS: tuple[tuple[int, str, frozenset[str]], ...] = (
+    (
+        1,
+        "towel_or_cloth",
+        frozenset(
+            {
+                "bath_towel",
+                "cloth",
+                "cleaning_cloth",
+                "dishcloth",
+                "hand_towel",
+                "rag",
+                "towel",
+                "towels",
+                "washcloth",
+            }
+        ),
+    ),
+    (
+        2,
+        "compressible_sponge",
+        frozenset({"bath_sponge", "cleaning_sponge", "sponge", "sponges"}),
+    ),
+    (
+        3,
+        "flexible_cable_or_hose",
+        frozenset(
+            {
+                "cable",
+                "cables",
+                "cord",
+                "cords",
+                "hose",
+                "hoses",
+                "power_cable",
+                "power_cord",
+                "water_hose",
+                "wire",
+                "wires",
+            }
+        ),
+    ),
+)
+
+DEFORMABLE_TRANSFER_DESTINATION_SEMANTICS: tuple[
+    tuple[frozenset[int], str, frozenset[str]], ...
+] = (
+    (
+        frozenset({1}),
+        "rigid_open_bin_or_basket",
+        frozenset(
+            {
+                "basket",
+                "baskets",
+                "bin",
+                "bins",
+                "laundry_basket",
+                "laundry_hamper",
+                "storage_basket",
+                "storage_bin",
+                "trash_bin",
+                "waste_bin",
+            }
+        ),
+    ),
+    (
+        frozenset({2}),
+        "open_sink_basin_or_rigid_tray",
+        frozenset(
+            {
+                "basin",
+                "bathroom_sink",
+                "kitchen_sink",
+                "sink",
+                "sinks",
+                "tray",
+                "trays",
+                "washbasin",
+            }
+        ),
+    ),
+    (
+        frozenset({3}),
+        "rigid_tray_or_single_guide",
+        frozenset(
+            {
+                "cable_guide",
+                "guide",
+                "hose_guide",
+                "tray",
+                "trays",
+            }
+        ),
+    ),
+)
+
+DEFORMABLE_TRANSFER_SUPPORT_SEMANTICS: frozenset[str] = frozenset(
+    {
+        "bench",
+        "cabinet",
+        "coffee_table",
+        "counter",
+        "countertop",
+        "desk",
+        "floor",
+        "rack",
+        "shelf",
+        "sideboard",
+        "sideboards",
+        "table",
+        "tables",
+        "workbench",
+    }
+)
+
+DEFORMABLE_TRANSFER_REJECTED_SEMANTICS: dict[str, str] = {
+    "backpack": "bag_with_unknown_contents",
+    "bag": "bag_with_unknown_contents",
+    "blanket": "full_folding_or_unbounded_large_cloth",
+    "carpet": "fixed_or_large_floor_covering",
+    "clothes": "dressing_or_unbounded_garment",
+    "clothing": "dressing_or_unbounded_garment",
+    "curtain": "fixed_or_large_hanging_cloth",
+    "food": "food_or_mixed_contents",
+    "garment": "dressing_or_unbounded_garment",
+    "liquid": "liquid",
+    "rug": "fixed_or_large_floor_covering",
+}
+
 
 # ----------------------------- labels.json -----------------------------
 
@@ -239,6 +373,155 @@ def inventory_articulated_open_close_candidates(
             "fixed_and_moving_links_separated": False,
             "collision_identity_established": False,
             "reachability_established": False,
+            "task_selected": False,
+        },
+    }
+
+
+def inventory_deformable_transfer_candidates(
+    objects: Sequence[SceneObject],
+) -> dict[str, Any]:
+    """Inventory bounded deformable-transfer semantics without selecting a task.
+
+    This is a topology-survey filter over exact dataset-author labels.  It may
+    nominate a towel, sponge, cable, receptacle, or support for visual closeup;
+    it cannot establish material class, openness, receptacle interior, contact,
+    registration, reachability, or a simulator-qualified asset.
+    """
+
+    movable_lookup = {
+        semantic: (rank, material_candidate)
+        for rank, material_candidate, semantics in DEFORMABLE_TRANSFER_MOVABLE_SEMANTICS
+        for semantic in semantics
+    }
+    destination_lookup: dict[str, list[tuple[frozenset[int], str]]] = {}
+    for ranks, destination_candidate, semantics in (
+        DEFORMABLE_TRANSFER_DESTINATION_SEMANTICS
+    ):
+        for semantic in semantics:
+            destination_lookup.setdefault(semantic, []).append(
+                (ranks, destination_candidate)
+            )
+
+    movable: list[dict[str, Any]] = []
+    destinations: list[dict[str, Any]] = []
+    supports: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for item in objects:
+        semantic = _normalize_label(item.extra.get("raw_label", item.label))
+        base = {
+            "ins_id": item.id,
+            "semantic_label": semantic,
+            "raw_label": item.extra.get("raw_label", item.label),
+            "centroid_world_m": [round(float(value), 9) for value in item.centroid],
+            "aabb_size_m": [round(float(value), 9) for value in item.size()],
+            "oriented_bounding_box": item.extra.get("oriented_bounding_box"),
+        }
+        if semantic in movable_lookup:
+            rank, material_candidate = movable_lookup[semantic]
+            movable.append(
+                {
+                    **base,
+                    "task_family_rank": rank,
+                    "material_candidate": material_candidate,
+                    "closeup_admission": "pending_observed_material_rest_state_and_dimensions",
+                    "material_class_observed": False,
+                    "deformable_physics_qualified": False,
+                }
+            )
+        for ranks, destination_candidate in destination_lookup.get(semantic, []):
+            destinations.append(
+                {
+                    **base,
+                    "compatible_task_family_ranks": sorted(ranks),
+                    "destination_candidate": destination_candidate,
+                    "closeup_admission": "pending_observed_rigidity_openness_and_interior",
+                    "rigid_open_interior_observed": False,
+                    "collision_interior_qualified": False,
+                }
+            )
+        if semantic in DEFORMABLE_TRANSFER_SUPPORT_SEMANTICS:
+            supports.append(
+                {
+                    **base,
+                    "closeup_admission": "pending_observed_support_relation_and_clearance",
+                    "support_relation_observed": False,
+                }
+            )
+        if semantic in DEFORMABLE_TRANSFER_REJECTED_SEMANTICS:
+            rejected.append(
+                {
+                    **base,
+                    "rejection_reason": DEFORMABLE_TRANSFER_REJECTED_SEMANTICS[
+                        semantic
+                    ],
+                }
+            )
+
+    movable.sort(
+        key=lambda row: (
+            int(row["task_family_rank"]),
+            str(row["semantic_label"]),
+            len(str(row["ins_id"])),
+            str(row["ins_id"]),
+        )
+    )
+    destinations.sort(
+        key=lambda row: (
+            min(row["compatible_task_family_ranks"]),
+            str(row["semantic_label"]),
+            len(str(row["ins_id"])),
+            str(row["ins_id"]),
+        )
+    )
+    supports.sort(
+        key=lambda row: (
+            str(row["semantic_label"]),
+            len(str(row["ins_id"])),
+            str(row["ins_id"]),
+        )
+    )
+    rejected.sort(
+        key=lambda row: (
+            str(row["semantic_label"]),
+            len(str(row["ins_id"])),
+            str(row["ins_id"]),
+        )
+    )
+    pairs = [
+        {
+            "task_family_rank": int(movable_row["task_family_rank"]),
+            "movable_ins_id": movable_row["ins_id"],
+            "destination_ins_id": destination_row["ins_id"],
+            "pair_admission": "pending_same_task_area_observation_and_native_gates",
+        }
+        for movable_row in movable
+        for destination_row in destinations
+        if movable_row["task_family_rank"]
+        in destination_row["compatible_task_family_ranks"]
+        and movable_row["ins_id"] != destination_row["ins_id"]
+    ]
+    return {
+        "schema_version": "interiorgs_deformable_transfer_inventory.v1",
+        "movable_deformable_count": len(movable),
+        "movable_deformable_candidates": movable,
+        "destination_receptacle_count": len(destinations),
+        "destination_receptacle_candidates": destinations,
+        "support_surface_count": len(supports),
+        "support_surface_candidates": supports,
+        "compatible_pair_count": len(pairs),
+        "compatible_pairs": pairs,
+        "scope_rejected_semantic_count": len(rejected),
+        "scope_rejected_semantics": rejected,
+        "selection_authority": "publisher_semantic_labels_and_bounds_only",
+        "claim_boundary": {
+            "material_class_observed": False,
+            "deformable_rest_state_observed": False,
+            "destination_rigid_open_interior_observed": False,
+            "support_relation_observed": False,
+            "appearance_collision_registration_established": False,
+            "reachability_established": False,
+            "native_contacts_established": False,
             "task_selected": False,
         },
     }
@@ -754,6 +1037,10 @@ def supporting_fixtures_for(
 __all__ = [
     "ARTICULATED_AGGREGATE_SEMANTICS",
     "ARTICULATED_OPEN_CLOSE_SEMANTICS",
+    "DEFORMABLE_TRANSFER_DESTINATION_SEMANTICS",
+    "DEFORMABLE_TRANSFER_MOVABLE_SEMANTICS",
+    "DEFORMABLE_TRANSFER_REJECTED_SEMANTICS",
+    "DEFORMABLE_TRANSFER_SUPPORT_SEMANTICS",
     "DEFAULT_ANKLE_CLEARANCE_M",
     "INTERIORGS_LABELS_SOURCE",
     "INTERIORGS_STRUCTURE_SOURCE",
@@ -762,6 +1049,7 @@ __all__ = [
     "build_interiorgs_probe",
     "estimate_labels_floor_z",
     "inventory_articulated_open_close_candidates",
+    "inventory_deformable_transfer_candidates",
     "load_interiorgs_labels",
     "load_interiorgs_structure",
     "point_in_polygon",

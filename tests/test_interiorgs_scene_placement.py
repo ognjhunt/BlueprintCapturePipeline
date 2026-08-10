@@ -25,6 +25,7 @@ from blueprint_pipeline.scene_placement import (
     load_interiorgs_labels,
     load_interiorgs_structure,
     inventory_articulated_open_close_candidates,
+    inventory_deformable_transfer_candidates,
     link_mounted_camera_spec,
     point_in_polygon,
     resolve_target_by_instance,
@@ -266,6 +267,125 @@ class TestArticulatedOpenCloseInventory:
         assert observed["candidates"][0]["articulation_qualified"] is False
         assert observed["aggregate_only"][0]["ins_id"] == "84"
         assert observed["claim_boundary"]["joint_or_articulation_inferred"] is False
+
+
+class TestDeformableTransferInventory:
+    def test_original_rigid_fixture_does_not_become_deformable_transfer(self, tmp_path):
+        labels = tmp_path / "labels.json"
+        labels.write_text(
+            json.dumps(
+                [
+                    {
+                        "ins_id": "160",
+                        "label": "canned beverage",
+                        "bounding_box": _box_corners(0, 0, 0.8, 0.07, 0.07, 0.97),
+                    },
+                    {
+                        "ins_id": "299",
+                        "label": "sideboard",
+                        "bounding_box": _box_corners(-1, -1, 0, 1, 1, 0.8),
+                    },
+                ]
+            )
+        )
+
+        observed = inventory_deformable_transfer_candidates(
+            load_interiorgs_labels(labels)
+        )
+
+        assert observed["movable_deformable_count"] == 0
+        assert observed["destination_receptacle_count"] == 0
+        assert observed["compatible_pair_count"] == 0
+        assert observed["support_surface_count"] == 1
+        assert observed["claim_boundary"]["task_selected"] is False
+
+    def test_articulated_refrigerator_fixture_does_not_become_deformable_transfer(
+        self, tmp_path
+    ):
+        labels = tmp_path / "labels.json"
+        labels.write_text(
+            json.dumps(
+                [
+                    {
+                        "ins_id": "123",
+                        "label": "refrigerator",
+                        "bounding_box": _box_corners(0, 0, 0, 1, 0.8, 2),
+                    },
+                    {
+                        "ins_id": "124",
+                        "label": "countertop",
+                        "bounding_box": _box_corners(1, 0, 0.8, 2, 0.8, 0.9),
+                    },
+                ]
+            )
+        )
+
+        observed = inventory_deformable_transfer_candidates(
+            load_interiorgs_labels(labels)
+        )
+
+        assert observed["movable_deformable_count"] == 0
+        assert observed["destination_receptacle_count"] == 0
+        assert observed["compatible_pair_count"] == 0
+        assert observed["support_surface_candidates"][0]["ins_id"] == "124"
+
+    def test_deformable_fixture_prioritizes_towel_basket_without_claiming_observation(
+        self, tmp_path
+    ):
+        labels = tmp_path / "labels.json"
+        labels.write_text(
+            json.dumps(
+                [
+                    {
+                        "ins_id": "7",
+                        "label": "bath towel",
+                        "bounding_box": _box_corners(0, 0, 0.8, 0.5, 0.4, 0.83),
+                    },
+                    {
+                        "ins_id": "8",
+                        "label": "laundry basket",
+                        "bounding_box": _box_corners(0.7, 0, 0, 1.2, 0.5, 0.6),
+                    },
+                    {
+                        "ins_id": "9",
+                        "label": "table",
+                        "bounding_box": _box_corners(-0.1, -0.1, 0, 0.6, 0.5, 0.8),
+                    },
+                    {
+                        "ins_id": "10",
+                        "label": "blanket",
+                        "bounding_box": _box_corners(2, 2, 0.4, 4, 4, 0.5),
+                    },
+                ]
+            )
+        )
+
+        observed = inventory_deformable_transfer_candidates(
+            load_interiorgs_labels(labels)
+        )
+
+        assert observed["compatible_pairs"] == [
+            {
+                "task_family_rank": 1,
+                "movable_ins_id": "7",
+                "destination_ins_id": "8",
+                "pair_admission": (
+                    "pending_same_task_area_observation_and_native_gates"
+                ),
+            }
+        ]
+        assert observed["support_surface_candidates"][0]["ins_id"] == "9"
+        assert observed["scope_rejected_semantics"][0]["ins_id"] == "10"
+        assert observed["claim_boundary"] == {
+            "material_class_observed": False,
+            "deformable_rest_state_observed": False,
+            "destination_rigid_open_interior_observed": False,
+            "support_relation_observed": False,
+            "appearance_collision_registration_established": False,
+            "reachability_established": False,
+            "native_contacts_established": False,
+            "task_selected": False,
+        }
 
 
 # ----------------------------- structure -----------------------------
