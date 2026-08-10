@@ -10,12 +10,25 @@ from PIL import Image
 
 from blueprint_pipeline.sealed_camera_render import (
     SealedCameraRenderError,
+    _render_harness_failure_codes,
     render_splat_at_exact_cameras,
     transform_camera_into_provider_frame,
 )
 
 
 DIGEST = "sha256:" + "a" * 64
+
+
+def test_render_harness_failure_classifies_missing_playwright_browser() -> None:
+    codes = _render_harness_failure_codes(
+        stderr=(
+            "browserType.launch: Executable doesn't exist at /cache/chromium "
+            "Looks like Playwright was just installed. Run playwright install."
+        ),
+        stdout="",
+        harness_output={},
+    )
+    assert codes == ["render_harness_failed", "render_playwright_browser_missing"]
 
 
 def _write_standard_3dgs_ply(path: Path, rows: list[tuple[float, float, float, float, float, float]]) -> None:

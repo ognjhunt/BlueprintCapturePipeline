@@ -60,6 +60,31 @@ class SealedCameraRenderError(ValueError):
         super().__init__("; ".join(self.codes))
 
 
+def _render_harness_failure_codes(
+    *, stderr: str, stdout: str, harness_output: Mapping[str, Any]
+) -> list[str]:
+    """Classify common renderer dependency/runtime failures without scene logic."""
+
+    combined = f"{stderr}\n{stdout}".lower()
+    codes = ["render_harness_failed"]
+    if (
+        "playwright" in combined
+        and "executable doesn't exist" in combined
+        and "install" in combined
+    ):
+        codes.append("render_playwright_browser_missing")
+    if "cannot find module" in combined or "err_module_not_found" in combined:
+        codes.append("render_node_dependency_missing")
+    if "out of memory" in combined or "allocation failed" in combined:
+        codes.append("render_runtime_out_of_memory")
+    codes.extend(
+        f"render_blocker:{blocker}"
+        for blocker in harness_output.get("blockers", [])
+        if str(blocker).strip()
+    )
+    return codes
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -421,13 +446,11 @@ def render_splat_at_exact_cameras(
             harness_output = {}
     if process.returncode != 0 or harness_output.get("status") != "completed":
         raise SealedCameraRenderError(
-            [
-                "render_harness_failed",
-                *[
-                    f"render_blocker:{blocker}"
-                    for blocker in harness_output.get("blockers", [])
-                ],
-            ]
+            _render_harness_failure_codes(
+                stderr=process.stderr or "",
+                stdout=process.stdout or "",
+                harness_output=harness_output,
+            )
         )
     node_version = subprocess.run(
         [node, "--version"], capture_output=True, text=True
