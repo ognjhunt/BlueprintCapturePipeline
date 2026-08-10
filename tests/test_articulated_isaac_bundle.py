@@ -222,3 +222,35 @@ def test_bundle_fills_every_transport_slot_the_lane_requires(tmp_path: Path) -> 
     assert manifest["relative_paths"]["probe_spec"].endswith(
         "articulated_native_probe_spec.json"
     )
+
+
+def test_the_worker_result_attests_to_itself(tmp_path: Path) -> None:
+    """The lane refuses a result that carries no self-consistent digest.
+
+    Isaac v5 passed all eleven readbacks and was still recorded blocked,
+    because the worker wrote no result_digest. The worker runs inside Isaac's
+    interpreter without the package, so the digest definition is mirrored
+    there; this pins the two to the same bytes.
+    """
+
+    import importlib.util
+
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    worker_path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp009d_articulated_isaac_worker.py"
+    )
+    spec = importlib.util.spec_from_file_location("articulated_worker", worker_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    payload = {"schema_version": "x", "status": "completed", "readbacks": {"a": 1}}
+    output = tmp_path / "result.json"
+    module._persist(output, payload)
+
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written["result_digest"].startswith("sha256:")
+    assert written["result_digest"] == canonical_digest(
+        written, digest_field="result_digest"
+    )

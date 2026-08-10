@@ -36,9 +36,28 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _canonical_digest(value: Mapping[str, Any], *, field: str) -> str:
+    """Match blueprint_pipeline.decision_evidence_contracts.canonical_digest.
+
+    The lane refuses a result that does not attest to itself, so a hand-edited
+    result is detectable. This worker runs inside Isaac's interpreter with no
+    access to the package, so the definition is mirrored rather than imported -
+    it must stay byte-compatible with the in-repo one.
+    """
+
+    normalized = dict(value)
+    normalized.pop(field, None)
+    payload = json.dumps(
+        normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _persist(path: Path, value: Mapping[str, Any]) -> None:
+    payload = dict(value)
+    payload["result_digest"] = _canonical_digest(payload, field="result_digest")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _blocked(reason: str, **extra: Any) -> dict[str, Any]:
