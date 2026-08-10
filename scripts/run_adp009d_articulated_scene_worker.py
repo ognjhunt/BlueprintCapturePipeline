@@ -260,7 +260,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     try:
-        import isaaclab.sim as sim_utils  # type: ignore
         from isaaclab_arena.assets.object import Object  # type: ignore
         from isaaclab_arena.assets.object_base import ObjectType  # type: ignore
         from isaaclab_arena.embodiments.droid.droid import (  # type: ignore
@@ -275,6 +274,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         from isaaclab_arena.scene.scene import Scene  # type: ignore
         from isaaclab_arena.tasks.no_task import NoTask  # type: ignore
         from isaaclab_arena.utils.pose import Pose  # type: ignore
+        from isaaclab_arena.assets.asset_registry import AssetRegistry  # type: ignore
+
+        asset_registry = AssetRegistry()
 
         _phase(result, "arena_imported")
 
@@ -388,24 +390,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _phase(result, "embodiment_configured")
 
-        assets.append(
-            type(
-                "SpawnerObject",
-                (Object,),
-                {
-                    "__init__": lambda self, **kw: (
-                        setattr(self, "spawner_cfg", kw.pop("spawner_cfg")),
-                        Object.__init__(self, object_type=ObjectType.SPAWNER, **kw),
-                    )[1]
-                },
-            )(
-                name="light",
-                prim_path="/World/Light",
-                spawner_cfg=sim_utils.DomeLightCfg(
-                    color=(0.75, 0.75, 0.75), intensity=1500.0
-                ),
-            )
-        )
+        # Arena ships a DomeLight asset (name "light", /World/Light, its own
+        # spawner cfg). The first version of this hand-rolled an Object
+        # subclass with type() to inject spawner_cfg, which is a guess at what
+        # a spawner needs; the registry is what Arena's own scenes use.
+        assets.append(asset_registry.get_asset_by_name("light")())
 
         def configure(cfg):
             from isaaclab_physx.physics import PhysxCfg  # type: ignore
@@ -677,6 +666,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "success_is_scored_by_the_task_neutral_scorer": True,
         }
     except BaseException as exc:  # noqa: BLE001 - one launch, one retained result
+        import traceback
+
+        # The type and message alone are not always enough to locate a fault:
+        # rt16 returned "IndexError: list index out of range" from inside
+        # Arena, which names neither the file nor the frame. Retained in the
+        # result and echoed to stdout so it also lands in the container log.
+        formatted = traceback.format_exc()
+        result["failure_traceback"] = formatted.splitlines()[-40:]
+        print(formatted, flush=True)
         result["blockers"].append(
             f"articulated_scene_failed_at_{result['phase_reached']}:"
             f"{type(exc).__name__}:{exc}"

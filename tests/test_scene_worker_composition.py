@@ -325,6 +325,16 @@ def stubbed_arena(monkeypatch):
         "isaaclab_arena.assets.object": _module(
             "isaaclab_arena.assets.object", Object=_FakeObject
         ),
+        "isaaclab_arena.assets.asset_registry": _module(
+            "isaaclab_arena.assets.asset_registry",
+            # Arena's own scenes get their light from here rather than
+            # hand-rolling an Object subclass, so the fake mirrors that.
+            AssetRegistry=lambda: types.SimpleNamespace(
+                get_asset_by_name=lambda name: (
+                    lambda **kw: _FakeObject(name=name, object_type=_FakeObjectType.SPAWNER)
+                )
+            ),
+        ),
         "isaaclab_arena.assets.object_base": _module(
             "isaaclab_arena.assets.object_base", ObjectType=_FakeObjectType
         ),
