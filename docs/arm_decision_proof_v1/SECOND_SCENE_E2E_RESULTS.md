@@ -194,8 +194,9 @@ reported as a policy failure.
 | Native articulated v1/v2 | Local preflight/launch-lock nulls; no provider mutation | USD 0 | Teardown not required |
 | Native articulated v3, Vast 47294329 | `vast_heartbeat_container_missing`; Isaac never opened asset | USD 0.007044 estimate, USD 0.80 cap | Destroy 200; objects absent; no continuing spend |
 | Joint Agent v19, Vast 47318232 | OpenAI-bound bundle passed dependency/capacity/OVRTX gates; runner rejected the non-NVIDIA backend before inference due to a hard-coded credential check; generic fix landed | USD 0.081835 exact | Destroyed; staged objects absent; provider zero |
+| Joint Agent v21, Vast 47319708 | Reached released CLI inference validation; one `identify_asset.vlm` node remained NIM because backend rewriting named only three steps; recursive model-node and local evidence-closeout fixes landed | USD 0.052768 exact | Destroyed; staged objects absent; provider zero; local closeout recovered from bound receipts |
 
-Combined retained spend through Joint Agent v19 is **USD 5.843355**, below the USD 12 authority. Aura,
+Combined retained spend through Joint Agent v21 is **USD 5.896123**, below the USD 12 authority. Aura,
 Content Agents, and the native diagnostic expose estimates where the provider
 did not return a final billed line; those amounts are not relabeled as exact.
 No automatic paid retry was performed. The post-native read-only API call

@@ -21,6 +21,7 @@ from blueprint_pipeline.adp_joint_agent_vast import (
 )
 from blueprint_pipeline.adp_joint_agent_vast import (
     build_joint_agent_vast_bundle,
+    recover_joint_agent_local_closeout,
     run_joint_agent_vast,
 )
 from blueprint_pipeline.common import write_json
@@ -180,13 +181,24 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         "input": {"usd_path": str(source)},
         "steps": {
             "optimize_usd": {"enabled": True},
-            "identify_asset": {"enabled": True, "renderer": {"backend": "remote"}},
-            "analyze_structure": {"enabled": True},
+            "identify_asset": {
+                "enabled": True,
+                "renderer": {"backend": "remote"},
+                "vlm": {"backend": "nim"},
+            },
+            "analyze_structure": {"enabled": True, "llm": {"backend": "nim"}},
             "build_dataset_usd": {"enabled": True, "renderer": {"backend": "remote"}},
             "build_dataset_prepare_dataset": {"enabled": True},
-            "predict": {"enabled": True, "completion_retries": 0},
+            "predict": {
+                "enabled": True,
+                "completion_retries": 0,
+                "vlm": {"backend": "nim"},
+            },
             "consistency_pass": {"enabled": True},
-            "infer_articulation_candidates": {"enabled": True},
+            "infer_articulation_candidates": {
+                "enabled": True,
+                "vlm": {"backend": "nim"},
+            },
             "apply_joint_rigger": {"enabled": False},
             "author_physics_schemas": {"enabled": False},
         },
@@ -427,12 +439,15 @@ def test_provider_config_routes_replaceable_hosted_model_backend(
         "project": {"working_dir": "old"},
         "input": {"usd_path": "old"},
         "steps": {
-            "analyze_structure": {},
-            "predict": {},
-            "infer_articulation_candidates": {},
-            "identify_asset": {},
+            "analyze_structure": {"llm": {"backend": "nim", "temperature": 0}},
+            "predict": {"vlm": {"backend": "nim"}},
+            "infer_articulation_candidates": {"vlm": {"backend": "nim"}},
+            "identify_asset": {"vlm": {"backend": "nim"}},
             "build_dataset_usd": {},
             "apply_joint_rigger": {},
+            "future_nested_step": {
+                "workers": [{"vlm": {"backend": "nim", "custom": "retained"}}]
+            },
         },
     }
     path = tmp_path / "joint.yaml"
@@ -447,11 +462,16 @@ def test_provider_config_routes_replaceable_hosted_model_backend(
         ("analyze_structure", "llm"),
         ("predict", "vlm"),
         ("infer_articulation_candidates", "vlm"),
+        ("identify_asset", "vlm"),
     ):
-        assert config["steps"][step][key] == {
-            "backend": "openai",
-            "model": "gpt-4.1",
-        }
+        assert config["steps"][step][key]["backend"] == "openai"
+        assert config["steps"][step][key]["model"] == "gpt-4.1"
+    assert config["steps"]["analyze_structure"]["llm"]["temperature"] == 0
+    assert config["steps"]["future_nested_step"]["workers"][0]["vlm"] == {
+        "backend": "openai",
+        "model": "gpt-4.1",
+        "custom": "retained",
+    }
 
 
 def _prepared_bundle(tmp_path: Path) -> dict:
@@ -657,6 +677,10 @@ def test_live_run_arms_watchdog_before_adapter_and_forwards_only_nvidia_key(
         return {"status": "completed", "blockers": [], "estimated_cost_usd": 0.5}
 
     monkeypatch.setattr("blueprint_pipeline.adp_joint_agent_vast._remaining_minutes", lambda **kwargs: 100)
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast._local_evidence_capacity",
+        lambda **kwargs: {"status": "passed", "blockers": []},
+    )
     monkeypatch.setattr("blueprint_pipeline.adp_joint_agent_vast.stage_wam_provider_bundle_object_store", fake_stage)
     monkeypatch.setattr("blueprint_pipeline.adp_joint_agent_vast.arm_independent_vast_watchdog", fake_arm)
     monkeypatch.setattr("blueprint_pipeline.adp_joint_agent_vast.run_vast_provider_adapter", fake_adapter)
@@ -682,6 +706,78 @@ def test_live_run_arms_watchdog_before_adapter_and_forwards_only_nvidia_key(
     assert result["status"] == "completed"
     assert result["continuing_spend_from_this_run"] is False
     assert result["retry_cap"] == 0
+
+
+def test_local_evidence_capacity_blocks_before_paid_mutation(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    bundle.write_bytes(b"bundle")
+    usage = SimpleNamespace(total=10_000, used=9_000, free=1_000)
+
+    receipt = joint_vast._local_evidence_capacity(
+        job=tmp_path,
+        bundle_path=bundle,
+        disk_usage=lambda path: usage,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["blockers"] == [
+        "adp_joint_agent_local_evidence_headroom_insufficient"
+    ]
+    assert receipt["minimum_free_bytes"] >= 2 * 1024**3
+
+
+def test_local_closeout_recovery_requires_provider_and_object_store_zero(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    provider = job / "vast_provider_run"
+    object_store = job / "object_store_staging"
+    watchdog = job / "independent_vast_watchdog"
+    execution = job / "immutable_execution"
+    for path in (provider, object_store, watchdog, execution):
+        path.mkdir(parents=True)
+    write_json(
+        provider / "vast_teardown_manifest.json",
+        {"vast_instance_ids": [7], "continuing_spend_from_this_run": False},
+    )
+    write_json(
+        provider / "vast_provider_adapter_result.json",
+        {"status": "completed", "blockers": [], "estimated_cost_usd": 0.25},
+    )
+    write_json(
+        object_store / "wam_provider_object_store_cleanup.json",
+        {"all_objects_absent": True},
+    )
+    write_json(
+        watchdog / "groot_oscar_runpod_canary_watchdog_cancel.json",
+        {"instance_id": "7", "provider_absence_confirmed": True},
+    )
+    write_json(
+        execution / "adp_joint_agent_result.json",
+        {"status": "blocked", "blockers": ["scientific_null"]},
+    )
+    zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "provider_zero": True,
+        "global_live_resource_count": 0,
+        "provider_zero_digest": "",
+    }
+    zero["provider_zero_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_digest"
+    )
+
+    result = recover_joint_agent_local_closeout(
+        job_dir=job, provider_zero_receipt=zero
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["scientific_null"]
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["independent_watchdog"]["status"] == "provider_terminal"
+    assert result["local_receipt_recovered_after_provider_teardown"] is True
 
 
 def test_builder_preflight_failure_leaves_no_partial_output(

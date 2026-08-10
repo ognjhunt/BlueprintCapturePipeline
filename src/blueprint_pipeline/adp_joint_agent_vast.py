@@ -66,6 +66,8 @@ RUNTIME_DISK_GB = 96
 # free and failed partway through installation, so capacity is an admission
 # input rather than something discovered one missing file at a time.
 MINIMUM_FREE_BYTES_BEFORE_DEPENDENCY_INSTALL = 32 * 1024**3
+MINIMUM_LOCAL_EVIDENCE_FREE_BYTES = 2 * 1024**3
+LOCAL_CLOSEOUT_RESERVE_BYTES = 16 * 1024**2
 # Exact public Scene Optimizer Core package the released optimize_usd step
 # requires for its local backend. v8 proved the released CLI fails closed
 # without it ("local backend unavailable"), so the bundle ships the pinned
@@ -162,15 +164,11 @@ def _provider_config(
     config["project"]["working_dir"] = "runtime_output/joint_agent_work"
     config["input"]["usd_path"] = "input/articulated_source.usda"
     steps = config["steps"]
-    steps["analyze_structure"]["llm"] = {
-        "backend": model_backend,
-        "model": model_id,
-    }
-    steps["predict"]["vlm"] = {"backend": model_backend, "model": model_id}
-    steps["infer_articulation_candidates"]["vlm"] = {
-        "backend": model_backend,
-        "model": model_id,
-    }
+    model_node_count = _rewrite_model_nodes(
+        steps, model_backend=model_backend, model_id=model_id
+    )
+    if model_node_count < 1:
+        raise ValueError("adp_joint_agent_config_model_nodes_missing")
     steps["identify_asset"]["renderer"] = {"backend": "remote"}
     steps["build_dataset_usd"]["renderer"] = {"backend": "remote"}
     apply = steps["apply_joint_rigger"]
@@ -196,6 +194,29 @@ def _provider_config(
         }
     )
     return config
+
+
+def _rewrite_model_nodes(
+    value: Any, *, model_backend: str, model_id: str
+) -> int:
+    """Rewrite every released-code LLM/VLM node, including future steps."""
+
+    rewritten = 0
+    if isinstance(value, dict):
+        for key, child in list(value.items()):
+            if key in {"llm", "vlm"} and isinstance(child, Mapping):
+                value[key] = {**child, "backend": model_backend, "model": model_id}
+                rewritten += 1
+            else:
+                rewritten += _rewrite_model_nodes(
+                    child, model_backend=model_backend, model_id=model_id
+                )
+    elif isinstance(value, list):
+        for child in value:
+            rewritten += _rewrite_model_nodes(
+                child, model_backend=model_backend, model_id=model_id
+            )
+    return rewritten
 
 
 def _review_contract(
@@ -572,6 +593,37 @@ def _remaining_minutes(
     )
 
 
+def _local_evidence_capacity(
+    *, job: Path, bundle_path: Path, disk_usage=shutil.disk_usage
+) -> dict[str, Any]:
+    usage = disk_usage(job)
+    minimum = max(MINIMUM_LOCAL_EVIDENCE_FREE_BYTES, bundle_path.stat().st_size * 2)
+    return {
+        "schema_version": "adp_paid_local_evidence_capacity.v1",
+        "status": "passed" if usage.free >= minimum else "blocked",
+        "filesystem_path": str(job),
+        "observed_free_bytes": usage.free,
+        "minimum_free_bytes": minimum,
+        "bundle_size_bytes": bundle_path.stat().st_size,
+        "closeout_reserve_bytes": LOCAL_CLOSEOUT_RESERVE_BYTES,
+        "blockers": (
+            []
+            if usage.free >= minimum
+            else ["adp_joint_agent_local_evidence_headroom_insufficient"]
+        ),
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _materialize_closeout_reserve(path: Path) -> None:
+    block = b"\0" * (1024 * 1024)
+    with path.open("wb") as stream:
+        for _ in range(LOCAL_CLOSEOUT_RESERVE_BYTES // len(block)):
+            stream.write(block)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
     blockers: list[str] = []
     result_path = destination / "adp_joint_agent_result.json"
@@ -642,6 +694,88 @@ def _retained_execution_artifact_blockers(
         ):
             blockers.append(f"joint_agent_retained_artifact_invalid:{role}")
     return sorted(set(blockers))
+
+
+def recover_joint_agent_local_closeout(
+    *, job_dir: str | Path, provider_zero_receipt: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Recover only local receipts after provider teardown was already proven."""
+
+    job = Path(job_dir).expanduser().resolve()
+    zero = dict(provider_zero_receipt)
+    if (
+        zero.get("schema_version") != "adp_paid_provider_zero.v1"
+        or zero.get("provider") != "vast"
+        or zero.get("provider_zero") is not True
+        or zero.get("global_live_resource_count") != 0
+        or zero.get("provider_zero_digest")
+        != canonical_digest(zero, digest_field="provider_zero_digest")
+    ):
+        raise ValueError("adp_joint_agent_recovery_provider_zero_invalid")
+    provider_run = job / "vast_provider_run"
+    teardown = _read_json(
+        provider_run / "vast_teardown_manifest.json",
+        error="adp_joint_agent_recovery_teardown_invalid",
+    )
+    adapter = _read_json(
+        provider_run / "vast_provider_adapter_result.json",
+        error="adp_joint_agent_recovery_adapter_invalid",
+    )
+    cleanup = _read_json(
+        job / "object_store_staging/wam_provider_object_store_cleanup.json",
+        error="adp_joint_agent_recovery_cleanup_invalid",
+    )
+    cancel = _read_json(
+        job
+        / "independent_vast_watchdog/groot_oscar_runpod_canary_watchdog_cancel.json",
+        error="adp_joint_agent_recovery_watchdog_cancel_invalid",
+    )
+    execution_path = job / "immutable_execution/adp_joint_agent_result.json"
+    execution = _read_json(
+        execution_path, error="adp_joint_agent_recovery_execution_invalid"
+    )
+    instance_ids = teardown.get("vast_instance_ids") or []
+    if (
+        teardown.get("continuing_spend_from_this_run") is not False
+        or cleanup.get("all_objects_absent") is not True
+        or cancel.get("provider_absence_confirmed") is not True
+        or [str(value) for value in instance_ids] != [str(cancel.get("instance_id"))]
+    ):
+        raise ValueError("adp_joint_agent_recovery_teardown_join_invalid")
+    watchdog = {
+        "schema_version": "vast_independent_watchdog_handoff.v1",
+        "generated_at": utc_now_iso(),
+        "status": "provider_terminal",
+        "watchdog_armed_before_allocation": True,
+        "instance_ids": instance_ids,
+        "provider_absence_confirmed": True,
+        "local_receipt_recovered_after_provider_teardown": True,
+        "provider_zero_digest": zero["provider_zero_digest"],
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+    }
+    write_json(job / "vast_independent_watchdog_handoff.json", watchdog)
+    blockers = list(adapter.get("blockers") or [])
+    if execution.get("status") != "completed":
+        blockers.extend(execution.get("blockers") or ["joint_agent_execution_not_completed"])
+    result = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "completed" if not blockers else "blocked",
+        "execution_result_path": str(execution_path),
+        "adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
+        "teardown_manifest_path": str(provider_run / "vast_teardown_manifest.json"),
+        "estimated_cost_usd": adapter.get("estimated_cost_usd"),
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "independent_watchdog": watchdog,
+        "local_receipt_recovered_after_provider_teardown": True,
+        "blockers": sorted(set(str(item) for item in blockers if str(item))),
+        "raw_secret_values_recorded": False,
+    }
+    write_json(job / "adp_joint_agent_vast_result.json", result)
+    return result
 
 
 def _model_api_key(
@@ -744,6 +878,17 @@ def run_joint_agent_vast(
         return result
     if paid_resource_admission_grant is None:
         raise ValueError("adp_joint_agent_paid_resource_admission_grant_missing")
+    local_capacity = _local_evidence_capacity(job=job, bundle_path=bundle_path)
+    write_json(job / "local_evidence_capacity.json", local_capacity)
+    if local_capacity["status"] != "passed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "local_evidence_capacity": local_capacity,
+            "blockers": local_capacity["blockers"],
+        }
     remaining_minutes = _remaining_minutes(
         job=job,
         hard_cap_usd=hard_cap_usd,
@@ -792,6 +937,8 @@ def run_joint_agent_vast(
             "independent_watchdog": watchdog_handoff,
             "blockers": ["joint_agent_independent_watchdog_not_armed"],
         }
+    closeout_reserve = job / ".local_closeout.reserve"
+    _materialize_closeout_reserve(closeout_reserve)
     adapter: dict[str, Any] = {}
     try:
         with _authority_environment(
@@ -845,9 +992,8 @@ def run_joint_agent_vast(
             "raw_secret_values_recorded": False,
         }
     finally:
+        closeout_reserve.unlink(missing_ok=True)
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
-    extracted = _extract_provider_output(output_zip, job / "immutable_execution")
-    execution = dict(extracted.get("execution") or {})
     teardown_path = provider_run / "vast_teardown_manifest.json"
     teardown = _read_json(teardown_path, error="joint_agent_teardown_manifest_invalid") if teardown_path.is_file() else {}
     instance_ids = [
@@ -864,6 +1010,8 @@ def run_joint_agent_vast(
             not instance_ids and adapter.get("provider_create_attempted") is not True
         ),
     )
+    extracted = _extract_provider_output(output_zip, job / "immutable_execution")
+    execution = dict(extracted.get("execution") or {})
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
     if execution.get("status") != "completed":
         blockers.extend(execution.get("blockers") or ["joint_agent_execution_not_completed"])
@@ -943,5 +1091,6 @@ __all__ = [
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
     "build_joint_agent_vast_bundle",
+    "recover_joint_agent_local_closeout",
     "run_joint_agent_vast",
 ]
