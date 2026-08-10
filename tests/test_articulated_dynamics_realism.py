@@ -116,3 +116,60 @@ def test_the_receipt_carries_the_citation_it_judged_against() -> None:
 
 def test_evaluation_is_deterministic() -> None:
     assert _evaluate() == _evaluate()
+
+
+from blueprint_pipeline.articulated_dynamics_realism import seal_detent_torque  # noqa: E402
+
+
+def test_the_seal_resists_hardest_at_fully_closed() -> None:
+    assert seal_detent_torque(
+        joint_angle_degrees=0.0, breakaway_torque_n_m=12.0, angular_width_degrees=5.0
+    ) == pytest.approx(12.0)
+
+
+def test_the_seal_is_gone_once_the_door_is_off_the_gasket() -> None:
+    """Measured traces fall to the sustained level by roughly ten degrees.
+
+    A seal that kept pulling through the whole sweep would be a spring, and
+    would make the door close itself from any angle.
+    """
+
+    assert seal_detent_torque(
+        joint_angle_degrees=12.0, breakaway_torque_n_m=12.0, angular_width_degrees=5.0
+    ) == 0.0
+
+
+def test_the_seal_decays_monotonically_across_its_width() -> None:
+    previous = None
+    for angle in (0.0, 1.0, 2.0, 3.0, 4.0, 5.0):
+        torque = seal_detent_torque(
+            joint_angle_degrees=angle,
+            breakaway_torque_n_m=12.0,
+            angular_width_degrees=5.0,
+        )
+        if previous is not None:
+            assert torque < previous
+        previous = torque
+
+
+def test_the_seal_opposes_opening_in_both_directions() -> None:
+    """A door hung the other way swings to negative angles and seals the same."""
+
+    opening = seal_detent_torque(
+        joint_angle_degrees=2.0, breakaway_torque_n_m=12.0, angular_width_degrees=5.0
+    )
+    mirrored = seal_detent_torque(
+        joint_angle_degrees=-2.0, breakaway_torque_n_m=12.0, angular_width_degrees=5.0
+    )
+    assert mirrored == pytest.approx(-opening)
+
+
+def test_a_zero_width_seal_fails_closed() -> None:
+    with pytest.raises(ArticulatedDynamicsRealismError) as excinfo:
+        seal_detent_torque(
+            joint_angle_degrees=0.0,
+            breakaway_torque_n_m=12.0,
+            angular_width_degrees=0.0,
+        )
+
+    assert any("angular_width_invalid" in e for e in excinfo.value.errors)

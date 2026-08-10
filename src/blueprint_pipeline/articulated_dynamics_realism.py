@@ -195,8 +195,46 @@ def evaluate_articulated_dynamics_realism(
     }
 
 
+def seal_detent_torque(
+    *,
+    joint_angle_degrees: float,
+    breakaway_torque_n_m: float,
+    angular_width_degrees: float,
+) -> float:
+    """Resistance a gasket seal adds near closed, decaying to nothing.
+
+    USD's physics schema has no way to say this. A drive is a spring or a
+    damper, and both grow with displacement, which is the opposite shape: the
+    seal is strongest at zero and gone within a few degrees. So it is a torque
+    the runtime applies per step rather than a constant baked into the asset,
+    and the receipt has to say which.
+
+    The profile is cosine-tapered rather than linear only because a hard corner
+    at the far edge rings the solver; nothing in the measured traces argues for
+    one shape over the other, and the integral is what matters.
+    """
+
+    errors: list[str] = []
+    peak = _number(breakaway_torque_n_m, "breakaway_torque", errors)
+    width = _number(angular_width_degrees, "angular_width", errors)
+    angle = _number(joint_angle_degrees, "joint_angle", errors)
+    if width is not None and width <= 0.0:
+        errors.append("articulated_dynamics_angular_width_invalid")
+    if errors:
+        raise ArticulatedDynamicsRealismError(errors)
+
+    magnitude = abs(angle)
+    if magnitude >= width:
+        return 0.0
+    taper = 0.5 * (1.0 + math.cos(math.pi * magnitude / width))
+    resistance = peak * taper
+    # Opposes opening whichever way the door is hung.
+    return resistance if angle >= 0.0 else -resistance
+
+
 __all__ = [
     "DYNAMICS_REALISM_SCHEMA_VERSION",
+    "seal_detent_torque",
     "ArticulatedDynamicsRealismError",
     "evaluate_articulated_dynamics_realism",
 ]
