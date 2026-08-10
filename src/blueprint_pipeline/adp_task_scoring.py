@@ -40,6 +40,7 @@ _DEFORMABLE_TASK_SPEC_FIELDS = frozenset(
         "settle_window_samples",
         "maximum_node_speed_mps",
         "maximum_principal_strain",
+        "minimum_grasp_contact_force_n",
         "maximum_release_contact_force_n",
         "minimum_robot_clearance_m",
         "maximum_receptacle_translation_drift_m",

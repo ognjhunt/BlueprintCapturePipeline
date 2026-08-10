@@ -39,6 +39,7 @@ def _task_spec() -> dict:
         "settle_window_samples": 3,
         "maximum_node_speed_mps": 0.02,
         "maximum_principal_strain": 0.25,
+        "minimum_grasp_contact_force_n": 0.1,
         "maximum_release_contact_force_n": 0.0,
         "minimum_robot_clearance_m": 0.15,
         "maximum_receptacle_translation_drift_m": 0.01,
@@ -101,7 +102,11 @@ def _sample(sample_index: int, *, contained: bool = True) -> dict:
 
 
 def _samples(*, contained: bool = True) -> list[dict]:
-    return [_sample(index, contained=contained) for index in range(3)]
+    samples = [_sample(index, contained=contained) for index in range(4)]
+    robot = samples[0]["entities"][ROBOT_ID]
+    robot["gripper_contact_pair_count_by_entity_id"][DEFORMABLE_ID] = 1
+    robot["gripper_contact_normal_force_n_by_entity_id"][DEFORMABLE_ID] = 0.2
+    return samples
 
 
 def _dispatch(samples: list[dict]) -> dict:
@@ -109,7 +114,11 @@ def _dispatch(samples: list[dict]) -> dict:
 
 
 def test_deformable_zero_action_is_a_scored_deterministic_negative() -> None:
-    report = _dispatch(_samples(contained=False))
+    samples = _samples(contained=False)
+    robot = samples[0]["entities"][ROBOT_ID]
+    robot["gripper_contact_pair_count_by_entity_id"][DEFORMABLE_ID] = 0
+    robot["gripper_contact_normal_force_n_by_entity_id"][DEFORMABLE_ID] = 0.0
+    report = _dispatch(samples)
 
     assert report["status"] == "scored"
     assert report["task_succeeded"] is False
@@ -124,7 +133,7 @@ def test_deformable_scripted_positive_uses_the_common_result_contract() -> None:
     assert report["task_kind"] == TASK_KIND_DEFORMABLE_TRANSFER
     assert report["task_succeeded"] is True
     assert report["outcome"] == "succeeded"
-    assert report["outcome_rank"] == 9
+    assert report["outcome_rank"] == 10
     assert report["result_digest"] == canonical_digest(
         report, digest_field="result_digest"
     )

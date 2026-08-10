@@ -39,6 +39,7 @@ def _task_spec() -> dict:
         "settle_window_samples": 3,
         "maximum_node_speed_mps": 0.02,
         "maximum_principal_strain": 0.25,
+        "minimum_grasp_contact_force_n": 0.1,
         "maximum_release_contact_force_n": 0.0,
         "minimum_robot_clearance_m": 0.15,
         "maximum_receptacle_translation_drift_m": 0.01,
@@ -90,7 +91,11 @@ def _sample(sample_index: int) -> dict:
 
 
 def _samples() -> list[dict]:
-    return [_sample(index) for index in range(3)]
+    samples = [_sample(index) for index in range(4)]
+    grasp_robot = samples[0]["entities"][ROBOT_ID]
+    grasp_robot["gripper_contact_pair_count_by_entity_id"][DEFORMABLE_ID] = 2
+    grasp_robot["gripper_contact_normal_force_n_by_entity_id"][DEFORMABLE_ID] = 0.2
+    return samples
 
 
 def _score(samples: list[dict], *, task_spec: dict | None = None) -> dict:
@@ -110,6 +115,8 @@ def test_positive_uses_raw_entity_state_and_reaches_terminal_ladder_rung() -> No
     assert result["failure_reasons"] == []
     assert result["measurements"]["particle_fraction_inside"] == 1.0
     assert result["measurements"]["centroid_inside"] is True
+    assert result["measurements"]["maximum_grasp_contact_pair_count"] == 2
+    assert result["predicates"]["grasp_contact_observed"] is True
     assert result["result_digest"].startswith("sha256:")
 
 
@@ -282,6 +289,22 @@ def test_release_requires_zero_gripper_pairs_and_force_throughout_settle() -> No
     assert result["measurements"]["maximum_release_contact_force_n"] == 0.2
     assert result["predicates"]["released"] is False
     assert "gripper_contact_not_released" in result["failure_reasons"]
+
+
+def test_success_requires_prior_qualified_gripper_contact() -> None:
+    samples = _samples()
+    robot = samples[0]["entities"][ROBOT_ID]
+    robot["gripper_contact_pair_count_by_entity_id"][DEFORMABLE_ID] = 0
+    robot["gripper_contact_normal_force_n_by_entity_id"][DEFORMABLE_ID] = 0.0
+
+    result = _score(samples)
+
+    assert result["deterministic_success"] is False
+    assert result["predicates"]["grasp_contact_observed"] is False
+    assert result["ladder_truncated_at"] == "grasp_contact_observed"
+    assert "qualified_gripper_deformable_contact_not_observed" in result[
+        "failure_reasons"
+    ]
 
 
 def test_robot_retreat_is_computed_from_clearance_points_and_geometry() -> None:

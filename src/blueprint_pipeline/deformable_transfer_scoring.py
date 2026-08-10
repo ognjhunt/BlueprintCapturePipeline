@@ -36,6 +36,7 @@ OUTCOME_LADDER = (
     "native_state_observed",
     "integrity_preserved",
     "finite_without_divergence",
+    "grasp_contact_observed",
     "contained",
     "released",
     "settled",
@@ -276,6 +277,12 @@ def _normalized_spec(task_spec: Mapping[str, Any]) -> dict[str, Any]:
             source.get("maximum_principal_strain"),
             error="deformable_transfer_maximum_principal_strain_invalid",
             minimum=0.0,
+        ),
+        "minimum_grasp_contact_force_n": _finite_number(
+            source.get("minimum_grasp_contact_force_n"),
+            error="deformable_transfer_grasp_contact_force_invalid",
+            minimum=0.0,
+            minimum_inclusive=False,
         ),
         "maximum_release_contact_force_n": _finite_number(
             source.get("maximum_release_contact_force_n"),
@@ -674,6 +681,8 @@ def score_deformable_transfer(
     window_count = int(spec["settle_window_samples"])
     settle_window_available = len(state_samples) >= window_count
     settle_samples = state_samples[-window_count:] if settle_window_available else state_samples
+    grasp_samples = state_samples[:-window_count] if settle_window_available else []
+    grasp_window_available = bool(grasp_samples)
 
     obb = spec["destination_interior_obb"]
     obb_center = np.asarray(obb["center_world_m"], dtype=np.float64)
@@ -743,6 +752,21 @@ def score_deformable_transfer(
     else:
         release_contact_force_n = None
 
+    maximum_grasp_contact_pair_count = (
+        max(sample["contact_pairs"] for sample in grasp_samples)
+        if grasp_window_available
+        else 0
+    )
+    maximum_grasp_contact_force_n: float | None
+    if grasp_window_available and all(
+        math.isfinite(sample["contact_force"]) for sample in grasp_samples
+    ):
+        maximum_grasp_contact_force_n = max(
+            sample["contact_force"] for sample in grasp_samples
+        )
+    else:
+        maximum_grasp_contact_force_n = None
+
     maximum_principal_strain = _maximum_principal_strain(state_samples)
     minimum_robot_clearance_m = _minimum_robot_clearance(
         settle_samples,
@@ -799,6 +823,12 @@ def score_deformable_transfer(
     finite_without_divergence = bool(
         all_numeric_finite and native_values_valid and divergence_count == 0
     )
+    grasp_contact_observed = bool(
+        grasp_window_available
+        and maximum_grasp_contact_pair_count > 0
+        and maximum_grasp_contact_force_n is not None
+        and maximum_grasp_contact_force_n >= spec["minimum_grasp_contact_force_n"]
+    )
     contained = bool(
         particle_fraction_inside is not None
         and particle_fraction_inside >= spec["minimum_particle_fraction_inside"]
@@ -844,6 +874,7 @@ def score_deformable_transfer(
         no_post_start_direct_writes
         and no_kinematic_attachment
         and finite_without_divergence
+        and grasp_contact_observed
         and contained
         and released
         and settled
@@ -856,6 +887,7 @@ def score_deformable_transfer(
         "integrity_preserved": no_post_start_direct_writes
         and no_kinematic_attachment,
         "finite_without_divergence": finite_without_divergence,
+        "grasp_contact_observed": grasp_contact_observed,
         "contained": contained,
         "released": released,
         "settled": settled,
@@ -874,6 +906,8 @@ def score_deformable_transfer(
         failure_reasons.append("non_finite_or_invalid_native_state")
     if divergence_count > 0:
         failure_reasons.append("solver_divergence_observed")
+    if not grasp_contact_observed:
+        failure_reasons.append("qualified_gripper_deformable_contact_not_observed")
     if particle_fraction_inside is None or (
         particle_fraction_inside < spec["minimum_particle_fraction_inside"]
     ):
@@ -897,6 +931,10 @@ def score_deformable_transfer(
         "sample_count": len(state_samples),
         "settle_window_available": settle_window_available,
         "settle_window_samples_used": len(settle_samples),
+        "grasp_window_available": grasp_window_available,
+        "grasp_window_samples_used": len(grasp_samples),
+        "maximum_grasp_contact_pair_count": maximum_grasp_contact_pair_count,
+        "maximum_grasp_contact_force_n": maximum_grasp_contact_force_n,
         "particle_count": int(final_positions.shape[0]),
         "particle_fraction_inside": particle_fraction_inside,
         "centroid_world_m": centroid_world_m,
