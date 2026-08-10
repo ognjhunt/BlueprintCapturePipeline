@@ -1,0 +1,137 @@
+{
+  "schema_version": "simready_graph_asset_spec.v1",
+  "asset_id": "840920_simready_washer_candidate",
+  "task_id": "task_a_washer_door_open",
+  "source_object_instance_id": "165",
+  "task_kind": "articulated_interaction",
+  "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+  "source_asset_receipt_digest": "sha256:218a5dedb95cb11bfa790beaac10cc0c3d35f5f28dfaaa06271661a69b71bb48",
+  "root_body_mode": "fixed",
+  "world_pose": {"translation_m": [3.5154863, 9.758716, -0.000000013], "orientation_xyzw": [0, 0, 0, 1]},
+  "articulation_graph": {
+    "schema_version": "adp_articulation_graph.v1",
+    "links": [
+      {"link_id": "body", "is_root": true, "semantic_role": "fixed_body_generated_candidate"},
+      {"link_id": "door", "is_root": false, "semantic_role": "target_door_observed_exterior_generated_mechanism"},
+      {"link_id": "latch", "is_root": false, "semantic_role": "dependent_latch_generated_candidate"},
+      {"link_id": "drum", "is_root": false, "semantic_role": "passive_drum_generated_candidate"},
+      {"link_id": "selector", "is_root": false, "semantic_role": "locked_selector_observed_exterior"},
+      {"link_id": "drawer", "is_root": false, "semantic_role": "locked_detergent_drawer_observed_exterior"}
+    ],
+    "joints": [
+      {
+        "joint_id": "door_hinge", "parent_link_id": "body", "child_link_id": "door",
+        "joint_type": "revolute", "role": "target", "axis": [0, 0, 1], "limits": [0, 1.2],
+        "reset_position": 0, "reset_tolerance": 0.001,
+        "drive": {"drive_type": "force", "stiffness": 0, "damping": 2, "maximum_force": 80},
+        "dependency": null
+      },
+      {
+        "joint_id": "latch_coupler", "parent_link_id": "door", "child_link_id": "latch",
+        "joint_type": "revolute", "role": "dependent", "axis": [0, 0, 1], "limits": [-0.1, 0.1],
+        "reset_position": 0, "reset_tolerance": 0.001,
+        "drive": {"drive_type": "force", "stiffness": 4, "damping": 1, "maximum_force": 20},
+        "dependency": {"driver_joint_id": "door_hinge", "multiplier": 0.05, "offset": 0, "tolerance": 0.002}
+      },
+      {
+        "joint_id": "drum_bearing", "parent_link_id": "body", "child_link_id": "drum",
+        "joint_type": "continuous", "role": "passive", "axis": [0, 1, 0], "limits": [-100, 100],
+        "reset_position": 0, "reset_tolerance": 0.01,
+        "drive": {"drive_type": "none", "stiffness": 0, "damping": 0.2, "maximum_force": 0},
+        "dependency": null
+      },
+      {
+        "joint_id": "selector_axis", "parent_link_id": "body", "child_link_id": "selector",
+        "joint_type": "revolute", "role": "locked", "axis": [0, 1, 0], "limits": [-3.2, 3.2],
+        "reset_position": 0, "reset_tolerance": 0.001,
+        "drive": {"drive_type": "force", "stiffness": 100, "damping": 10, "maximum_force": 20},
+        "dependency": null
+      },
+      {
+        "joint_id": "drawer_slide", "parent_link_id": "body", "child_link_id": "drawer",
+        "joint_type": "prismatic", "role": "locked", "axis": [0, 1, 0], "limits": [0, 0.2],
+        "reset_position": 0, "reset_tolerance": 0.001,
+        "drive": {"drive_type": "force", "stiffness": 100, "damping": 10, "maximum_force": 100},
+        "dependency": null
+      }
+    ],
+    "collision_pairs": [
+      {"link_a": "body", "link_b": "door", "collision_enabled": true},
+      {"link_a": "door", "link_b": "latch", "collision_enabled": false},
+      {"link_a": "body", "link_b": "drum", "collision_enabled": true},
+      {"link_a": "body", "link_b": "selector", "collision_enabled": true},
+      {"link_a": "body", "link_b": "drawer", "collision_enabled": true}
+    ],
+    "success_predicate": {"combination": "all", "joint_intervals": {"door_hinge": [0.7, 0.95]}}
+  },
+  "links": [
+    {
+      "link_id": "body", "mass_kg": 55, "center_of_mass_m": [0, 0.04, 0.41],
+      "diagonal_inertia_kg_m2": [5.1, 5.0, 3.2], "friction": 0.65, "restitution": 0.02,
+      "physics_provenance": "authored_estimate_unqualified",
+      "rest_pose": {"translation_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0, 1]},
+      "geometry": [
+        {"geometry_id": "left_shell", "kind": "box", "size_m": [0.08, 0.54, 0.82], "translation_m": [-0.26, 0.03, 0.423782], "orientation_xyzw": [0, 0, 0, 1], "display_color_rgb": [0.08, 0.08, 0.09], "provenance": "observed_bounds_derived_candidate"},
+        {"geometry_id": "right_shell", "kind": "box", "size_m": [0.08, 0.54, 0.82], "translation_m": [0.26, 0.03, 0.423782], "orientation_xyzw": [0, 0, 0, 1], "display_color_rgb": [0.08, 0.08, 0.09], "provenance": "observed_bounds_derived_candidate"},
+        {"geometry_id": "top_shell", "kind": "box", "size_m": [0.44, 0.54, 0.08], "translation_m": [0, 0.03, 0.807564], "orientation_xyzw": [0, 0, 0, 1], "display_color_rgb": [0.08, 0.08, 0.09], "provenance": "observed_bounds_derived_candidate"},
+        {"geometry_id": "bottom_shell", "kind": "box", "size_m": [0.44, 0.54, 0.08], "translation_m": [0, 0.03, 0.04], "orientation_xyzw": [0, 0, 0, 1], "display_color_rgb": [0.08, 0.08, 0.09], "provenance": "observed_bounds_derived_candidate"},
+        {"geometry_id": "back_shell", "kind": "box", "size_m": [0.44, 0.08, 0.68], "translation_m": [0, 0.26, 0.423782], "orientation_xyzw": [0, 0, 0, 1], "display_color_rgb": [0.08, 0.08, 0.09], "provenance": "generated_candidate"}
+      ]
+    },
+    {
+      "link_id": "door", "mass_kg": 3, "center_of_mass_m": [0, 0, 0],
+      "diagonal_inertia_kg_m2": [0.09, 0.09, 0.18], "friction": 0.5, "restitution": 0.02,
+      "physics_provenance": "authored_estimate_unqualified",
+      "rest_pose": {"translation_m": [0, -0.302, 0.43], "orientation_xyzw": [0, 0, 0, 1]},
+      "geometry": [
+        {"geometry_id": "door_disc", "kind": "cylinder", "radius_m": 0.245, "height_m": 0.05, "translation_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0.707106781187, 0.707106781187], "display_color_rgb": [0.22, 0.22, 0.24], "provenance": "observed_exterior_derived_candidate"}
+      ]
+    },
+    {
+      "link_id": "latch", "mass_kg": 0.1, "center_of_mass_m": [0, 0, 0],
+      "diagonal_inertia_kg_m2": [0.0001, 0.0001, 0.0001], "friction": 0.5, "restitution": 0.01,
+      "physics_provenance": "authored_estimate_unqualified",
+      "rest_pose": {"translation_m": [0, -0.302, 0.43], "orientation_xyzw": [0, 0, 0, 1]},
+      "geometry": [
+        {"geometry_id": "latch_block", "kind": "box", "size_m": [0.04, 0.025, 0.08], "translation_m": [0.23, 0, 0], "orientation_xyzw": [0, 0, 0, 1], "display_color_rgb": [0.3, 0.3, 0.32], "provenance": "generated_candidate"}
+      ]
+    },
+    {
+      "link_id": "drum", "mass_kg": 9, "center_of_mass_m": [0, 0, 0],
+      "diagonal_inertia_kg_m2": [0.24, 0.24, 0.42], "friction": 0.4, "restitution": 0.01,
+      "physics_provenance": "authored_estimate_unqualified",
+      "rest_pose": {"translation_m": [0, -0.02, 0.43], "orientation_xyzw": [0, 0, 0, 1]},
+      "geometry": [
+        {"geometry_id": "drum_shell", "kind": "cylinder", "radius_m": 0.21, "height_m": 0.38, "translation_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0.707106781187, 0.707106781187], "display_color_rgb": [0.35, 0.35, 0.37], "provenance": "generated_candidate"}
+      ]
+    },
+    {
+      "link_id": "selector", "mass_kg": 0.12, "center_of_mass_m": [0, 0, 0],
+      "diagonal_inertia_kg_m2": [0.0001, 0.0001, 0.0001], "friction": 0.45, "restitution": 0.01,
+      "physics_provenance": "authored_estimate_unqualified",
+      "rest_pose": {"translation_m": [-0.08, -0.295, 0.75], "orientation_xyzw": [0, 0, 0, 1]},
+      "geometry": [
+        {"geometry_id": "selector_knob", "kind": "cylinder", "radius_m": 0.034, "height_m": 0.03, "translation_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0.707106781187, 0.707106781187], "display_color_rgb": [0.7, 0.7, 0.72], "provenance": "observed_exterior_derived_candidate"}
+      ]
+    },
+    {
+      "link_id": "drawer", "mass_kg": 0.4, "center_of_mass_m": [0, 0, 0],
+      "diagonal_inertia_kg_m2": [0.001, 0.002, 0.002], "friction": 0.5, "restitution": 0.01,
+      "physics_provenance": "authored_estimate_unqualified",
+      "rest_pose": {"translation_m": [0.15, -0.295, 0.75], "orientation_xyzw": [0, 0, 0, 1]},
+      "geometry": [
+        {"geometry_id": "drawer_front", "kind": "box", "size_m": [0.22, 0.035, 0.065], "translation_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0, 1], "display_color_rgb": [0.05, 0.05, 0.06], "provenance": "observed_exterior_derived_candidate"}
+      ]
+    }
+  ],
+  "joint_frames": [
+    {"joint_id": "door_hinge", "parent_position_m": [-0.245, -0.302, 0.43], "child_position_m": [-0.245, 0, 0], "parent_orientation_xyzw": [0, -0.707106781187, 0, 0.707106781187], "child_orientation_xyzw": [0, -0.707106781187, 0, 0.707106781187]},
+    {"joint_id": "latch_coupler", "parent_position_m": [0.23, 0, 0], "child_position_m": [0.23, 0, 0], "parent_orientation_xyzw": [0, -0.707106781187, 0, 0.707106781187], "child_orientation_xyzw": [0, -0.707106781187, 0, 0.707106781187]},
+    {"joint_id": "drum_bearing", "parent_position_m": [0, -0.02, 0.43], "child_position_m": [0, 0, 0], "parent_orientation_xyzw": [0, 0, 0.707106781187, 0.707106781187], "child_orientation_xyzw": [0, 0, 0.707106781187, 0.707106781187]},
+    {"joint_id": "selector_axis", "parent_position_m": [-0.08, -0.295, 0.75], "child_position_m": [0, 0, 0], "parent_orientation_xyzw": [0, 0, 0.707106781187, 0.707106781187], "child_orientation_xyzw": [0, 0, 0.707106781187, 0.707106781187]},
+    {"joint_id": "drawer_slide", "parent_position_m": [0.15, -0.295, 0.75], "child_position_m": [0, 0, 0], "parent_orientation_xyzw": [0, 0, 0.707106781187, 0.707106781187], "child_orientation_xyzw": [0, 0, 0.707106781187, 0.707106781187]}
+  ],
+  "appearance_materially_qualified": false,
+  "physical_equivalence_claimed": false,
+  "spec_digest": "sha256:0825c5a13fefeb9de42dacb3de4d29667319c5b62596b813ee6a4e7cf7e45b98"
+}

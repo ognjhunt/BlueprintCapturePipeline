@@ -1,18 +1,19 @@
 # Third-Scene Dual-Task Generalization Rehearsal Results
 
-Status: **typed evidence-backed abstention (completion condition B)**.
+Status: **in progress; construction evidence is not yet sufficient for controls**.
 
-The reusable harness work is implemented and locally qualified. Scene `840920`
-and both tasks are preregistered, but neither source-object removal nor either
-replacement asset exists as a qualified exact packet. Therefore no native
-construction control, learned-policy episode, render-authorized evaluation
-frame, or paid third-scene run was executed. This is not a policy result.
+The reusable harness work is locally qualified and both replacement candidates
+are authored. Scene `840920` and both tasks are preregistered, both exact source
+collider deletions are materialized, and the appearance source is converted
+locally to standard 3DGS without changing its Gaussian count. The two Gaussian
+removals and native replacement qualifications remain open, so no control or
+learned-policy episode is admitted. This is not a policy result.
 
 ## Identity and isolation
 
 - Backlog/gate: `ADP-009D`, public-scene day-28 rehearsal, Gate 7.
 - Starting commit: `229b785f69617be543cfc76dcd6944ee3b9f2e49`.
-- Landed reusable implementation commit: `bcabc56c0` on
+- Latest pushed reusable implementation commit: `3475aaa25` on
   `codex/adp-third-scene-dual-task-20260810` (preceded by the pushed commits
   listed below).
 - Starting worktree: clean; work took place in the dedicated third-scene
@@ -68,6 +69,13 @@ The appearance contains `509,477` Gaussian records. No raw dataset byte was
 uploaded. Any future upload is limited to minimal goal-authorized derived bytes,
 bounded retention, provider zero, and a disclosure receipt.
 
+Local standard-format conversion retained all `509,477` records. Output:
+`120,238,049` bytes, SHA-256
+`07a94f9f48e0936cdf888b58e98533eec854d16b9b625aa0d4f33af3b5149e98`;
+conversion receipt digest
+`sha256:dbf105306d75aa840c19b73d6162a666ad7bff13db4332a3ac9e3c855192d060`.
+This is format evidence only, not Gaussian ownership or render qualification.
+
 Topology receipt:
 `sha256:87ec314cf6947fa51ac7dc819f618cfc779e2cebaafd6c74cf357d93148728a9`.
 Reconnaissance-only render manifest:
@@ -101,22 +109,49 @@ native applied-parameter readback. No learned outcome influenced either freeze.
 
 ## Construction and evaluation outcomes
 
-Task A removal: **blocked/not executed**. No calibrated mask set, Gaussian
-ownership receipt, held-out deletion proof, collider-deletion receipt, or
-replacement-depth sweep exists. Task B removal: **blocked/not executed** for the
-same independently identified evidence fields. No shared mask, collider receipt,
-replacement ID, or task-specific assumption was reused.
+Task A Gaussian removal: **blocked/not executed**. No calibrated mask set,
+contribution/ownership receipt, held-out deletion proof, or replacement-depth
+sweep exists. Task B Gaussian removal: **blocked/not executed** for the same
+independently identified evidence fields. No shared mask, replacement ID, or
+task-specific assumption was reused.
 
-Task A inpainting decision: **not yet decidable**. The complete washer
-replacement and articulated sweep do not exist, so replacement occlusion cannot
-be measured. Task B inpainting decision: **not yet decidable**. The notebook pose
-range and replacement-depth coverage do not exist. Neither task is labeled
+Both source collider deletions are materialized independently from the same
+immutable SAGE source, plus one shared stage with both exact subtrees absent.
+The batch receipt digest is
+`sha256:17e4d236ea2bfa847b5aadfb9b9dc347aeea673dcb8a7a5bf1a1dc3319116c74`;
+the washer and notebook child receipt digests are respectively
+`sha256:a52aebfef5e3eba57ce2c04046d20ba3f5335b7649311e415e489a2872439a64`
+and `sha256:edd05b4c240cb83108a484b9005a16136eaf88c799cfe037dc65262b3534036b`.
+The shared collider stage is `61,346,958` bytes with SHA-256
+`36bc6e6800f59c92b4f655ca7900e1041a5714447b82d4b7b7102d45ed4fa883`.
+Source bytes and all unrelated composed prims are unchanged.
+
+Task A inpainting decision: **not yet decidable**. The authored washer candidate
+has not passed native import or the complete articulated depth sweep, so
+replacement occlusion cannot be measured. Task B inpainting decision: **not yet
+decidable**. The authored notebook candidate has not passed the rigid pose range
+or replacement-depth coverage. Neither task is labeled
 `inpainting_not_required`, and no image edit was used as evidence.
 
-Task A SimReady asset: **not authored or simulator-qualified**. Task B SimReady
-asset: **not authored or simulator-qualified**. Consequently native import,
-joint/physics behavior, appearance, placement, reach/contact, cameras, reset,
-zero-action, scripted-positive, and policy execution all remain blocked.
+Task A SimReady candidate: **authored, not simulator-qualified**. Its general
+graph compiler emitted six links, five joints, ten primitive colliders, complete
+mass/COM/inertia and material parameters, joint limits/drives/reset metadata,
+and an explicit runtime dependency-controller requirement. USD SHA-256:
+`9c52d9fa3e9e52b1ce2bf8c166f7f65aaf325113ee41fcadeb5e72280c249c3a`;
+authoring receipt digest:
+`sha256:82397cc60d1c1f9375ed0e133967477f10b14498425643a2caab9c321f79453a`.
+
+Task B SimReady candidate: **authored, not simulator-qualified**. It contains a
+dynamic two-link body with a locked-open hinge and explicit rest frames. USD
+SHA-256:
+`21bb119a4ef2ec63741f7deaedece9ccff3312c0fc6da4cf57de61f23337c12a`;
+authoring receipt digest:
+`sha256:ee9673d9482f1c5a1cd2c7d8142e20d07ccf88dbdd1fdd01baed6492473c7f99`.
+All dimensions derive from observed bounds or exterior evidence; hidden
+mechanisms and all physics values remain labeled generated/authored estimates.
+Native import, joint/physics behavior, appearance, placement, reach/contact,
+cameras, reset, zero-action, scripted-positive, and policy execution remain
+blocked.
 
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
@@ -145,6 +180,13 @@ forks:
 - `1984fc8b5`: native task-neutral policy bundle, worker, and Vast adapter.
 - `bcabc56c0`: shared-scene-bound task scenario suites and legacy adapter
   scene-neutrality cleanup.
+- `6441ffe30`: independent source-collider batch removal with immutable OpenUSD
+  working stages.
+- `7fc382cd3` and `d2ae6d9d1`: rights-bound local standard-splat conversion and
+  the exact 840920 conversion receipt.
+- `3475aaa25`: variable-camera registered excision evidence, authorized-render
+  bindings, file-backed construction joins, general graph USD authoring, and
+  fail-closed non-servo task-joint semantics.
 
 Hermetic regressions preserve the 840313 rigid fixture, 840796 articulated
 fixture, and dual-task shared-asset fixture. Scene-specific values remain in
@@ -182,9 +224,9 @@ Before the final reusable-code commit:
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs; multi-replacement shared scenes; per-object resets; independent construction bindings; typed scenario application/readback; generic rigid scoring/state; task-neutral native policy lane; portable typed-abstention evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; generic rigid scoring/state; task-neutral native policy lane; portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
-| Blocked/abstained | Two exact Gaussian removals, source-collider deletions, replacement assets, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
+| Blocked/abstained | Two exact Gaussian removals, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
 
 ## Remaining ambiguity and single next action
@@ -193,8 +235,7 @@ Independent metric/handedness qualification, evaluation-authorized rendering,
 native reach/contact, asset dynamics/appearance, and all episode evidence remain
 unknown.
 
-**Single next action:** materialize both exact replacement USD candidates and the
-two independent calibrated removal/collider receipt sets, bind them into one
-shared construction digest through the generalized replacement-construction
-contract, and pass the scene-specific local packet dry-run. Do not launch paid
-compute before that gate passes.
+**Single next action:** materialize the two evaluation-authorized calibrated mask
+sets and contribution/ownership receipts, then use the authored USD candidates
+for complete joint-state/rigid-pose depth coverage. Do not launch native controls
+or learned policies before both per-task construction joins pass.

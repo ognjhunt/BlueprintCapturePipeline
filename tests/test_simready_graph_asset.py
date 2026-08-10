@@ -110,6 +110,10 @@ def _spec(source_receipt: Path, *, target: bool = True) -> dict:
             "friction": 0.6,
             "restitution": 0.05,
             "physics_provenance": "authored_estimate_unqualified",
+            "rest_pose": {
+                "translation_m": [0.0, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
             "geometry": [
                 {
                     "geometry_id": f"{link_id}_shape",

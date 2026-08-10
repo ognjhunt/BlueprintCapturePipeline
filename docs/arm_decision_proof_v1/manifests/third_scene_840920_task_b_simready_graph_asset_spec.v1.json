@@ -1,0 +1,96 @@
+{
+  "schema_version": "simready_graph_asset_spec.v1",
+  "asset_id": "840920_simready_notebook_candidate",
+  "task_id": "task_b_notebook_relocation",
+  "source_object_instance_id": "385",
+  "task_kind": "rigid_object_manipulation",
+  "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+  "source_asset_receipt_digest": "sha256:05ddc20c0bcc8180e36c6c6fe3917630a251e1fc058df08819407f993ae997ce",
+  "root_body_mode": "dynamic",
+  "world_pose": {
+    "translation_m": [13.580546, 7.17201, 0.824999996],
+    "orientation_xyzw": [0, 0, 0, 1]
+  },
+  "articulation_graph": {
+    "schema_version": "adp_articulation_graph.v1",
+    "links": [
+      {"link_id": "base", "is_root": true, "semantic_role": "rigid_task_body_observed_exterior"},
+      {"link_id": "display", "is_root": false, "semantic_role": "locked_display_observed_exterior_generated_hinge"}
+    ],
+    "joints": [
+      {
+        "joint_id": "display_hinge",
+        "parent_link_id": "base",
+        "child_link_id": "display",
+        "joint_type": "revolute",
+        "role": "locked",
+        "axis": [1, 0, 0],
+        "limits": [0, 2.2],
+        "reset_position": 1.745329252,
+        "reset_tolerance": 0.001,
+        "drive": {"drive_type": "force", "stiffness": 200, "damping": 20, "maximum_force": 100},
+        "dependency": null
+      }
+    ],
+    "collision_pairs": [
+      {"link_a": "base", "link_b": "display", "collision_enabled": true}
+    ],
+    "success_predicate": {"combination": "all", "joint_intervals": {}}
+  },
+  "links": [
+    {
+      "link_id": "base",
+      "mass_kg": 1.2,
+      "center_of_mass_m": [0, 0.04, 0.012],
+      "diagonal_inertia_kg_m2": [0.0101, 0.0128, 0.0228],
+      "friction": 0.55,
+      "restitution": 0.02,
+      "physics_provenance": "authored_estimate_unqualified",
+      "rest_pose": {"translation_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0, 1]},
+      "geometry": [
+        {
+          "geometry_id": "base_shell",
+          "kind": "box",
+          "size_m": [0.356260028, 0.3, 0.024],
+          "translation_m": [0, 0.045, 0.012],
+          "orientation_xyzw": [0, 0, 0, 1],
+          "display_color_rgb": [0.28, 0.28, 0.3],
+          "provenance": "observed_bounds_derived_candidate"
+        }
+      ]
+    },
+    {
+      "link_id": "display",
+      "mass_kg": 0.45,
+      "center_of_mass_m": [0, 0, 0.112],
+      "diagonal_inertia_kg_m2": [0.0019, 0.006, 0.0042],
+      "friction": 0.45,
+      "restitution": 0.02,
+      "physics_provenance": "authored_estimate_unqualified",
+      "rest_pose": {"translation_m": [0, 0.13, 0.03], "orientation_xyzw": [0, 0, 0, 1]},
+      "geometry": [
+        {
+          "geometry_id": "display_shell",
+          "kind": "box",
+          "size_m": [0.34, 0.018, 0.224],
+          "translation_m": [0, 0, 0.112],
+          "orientation_xyzw": [0, 0, 0, 1],
+          "display_color_rgb": [0.08, 0.08, 0.09],
+          "provenance": "observed_bounds_derived_candidate"
+        }
+      ]
+    }
+  ],
+  "joint_frames": [
+    {
+      "joint_id": "display_hinge",
+      "parent_position_m": [0, 0.13, 0.03],
+      "child_position_m": [0, 0, 0],
+      "parent_orientation_xyzw": [0, 0, 0, 1],
+      "child_orientation_xyzw": [-0.766044443119, 0, 0, 0.642787609687]
+    }
+  ],
+  "appearance_materially_qualified": false,
+  "physical_equivalence_claimed": false,
+  "spec_digest": "sha256:db3f07dccef96433340a6b2ebd84c9cc832cc7400dc8bb7b3a991ddb5ccf2f0f"
+}

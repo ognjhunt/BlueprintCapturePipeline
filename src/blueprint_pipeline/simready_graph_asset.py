@@ -165,6 +165,17 @@ def validate_simready_graph_asset_spec(value: Mapping[str, Any]) -> dict[str, An
         friction = _number(raw.get("friction"), nonnegative=True)
         restitution = _number(raw.get("restitution"), nonnegative=True)
         physics_provenance = str(raw.get("physics_provenance") or "")
+        rest_pose = raw.get("rest_pose")
+        rest_translation = (
+            _vector(rest_pose.get("translation_m"), 3)
+            if isinstance(rest_pose, Mapping)
+            else None
+        )
+        rest_orientation = (
+            _quaternion(rest_pose.get("orientation_xyzw"))
+            if isinstance(rest_pose, Mapping)
+            else None
+        )
         if (
             mass is None
             or com is None
@@ -174,6 +185,8 @@ def validate_simready_graph_asset_spec(value: Mapping[str, Any]) -> dict[str, An
             or restitution > 1.0
             or physics_provenance
             not in {"authored_estimate_unqualified", "measured", "provider_declared"}
+            or rest_translation is None
+            or rest_orientation is None
         ):
             errors.append(f"graph_asset_link_physics_invalid:{link_id}")
         geometry = raw.get("geometry")
@@ -237,6 +250,10 @@ def validate_simready_graph_asset_spec(value: Mapping[str, Any]) -> dict[str, An
                 "friction": friction or 0.0,
                 "restitution": restitution or 0.0,
                 "physics_provenance": physics_provenance,
+                "rest_pose": {
+                    "translation_m": rest_translation or [0.0, 0.0, 0.0],
+                    "orientation_xyzw": rest_orientation or [0.0, 0.0, 0.0, 1.0],
+                },
                 "geometry": normalized_geometry,
             }
         )
@@ -338,6 +355,13 @@ def _verify_task_freeze(
     receipt = _load_json(receipt_path, "graph_asset_task_freeze_unreadable")
     digest = admitted["task_freeze_digest"]
     graph = receipt.get("articulation_graph") or {}
+    try:
+        normalized_graph = validate_articulation_graph(
+            graph,
+            require_target_joint=admitted["task_kind"] == "articulated_interaction",
+        )
+    except ValueError:
+        normalized_graph = {}
     removal = receipt.get("removal_plan") or {}
     if (
         receipt.get("schema_version") != "dual_task_task_freeze.v1"
@@ -348,7 +372,8 @@ def _verify_task_freeze(
         or str((receipt.get("source_object") or {}).get("instance_id") or "")
         != admitted["source_object_instance_id"]
         or removal.get("replacement_asset_id") != admitted["asset_id"]
-        or canonical_json(graph) != canonical_json(admitted["articulation_graph"])
+        or canonical_json(normalized_graph)
+        != canonical_json(admitted["articulation_graph"])
     ):
         raise SimReadyGraphAssetError(["graph_asset_task_freeze_invalid"])
     return receipt
@@ -411,6 +436,8 @@ def author_simready_graph_asset(
         path = f"/Asset/links/{link_id}"
         link_paths[link_id] = path
         xform = UsdGeom.Xform.Define(stage, path)
+        xform.AddTranslateOp().Set(Gf.Vec3d(*link["rest_pose"]["translation_m"]))
+        xform.AddOrientOp().Set(_gf_quat(link["rest_pose"]["orientation_xyzw"]))
         body = UsdPhysics.RigidBodyAPI.Apply(xform.GetPrim())
         if graph_links[link_id]["is_root"] and admitted["root_body_mode"] == "fixed":
             body.CreateKinematicEnabledAttr(True)
