@@ -141,9 +141,6 @@ from .adp009d_aura_native_vast import (
     run_aura_native_live_camera_vast,
 )
 from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE as ADP_SIMREADY_ISAAC_IMAGE
-from .adp009d_native_microcheck_bundle import (
-    DEFAULT_IMAGE as ADP_ISAAC_ARENA_IMAGE,
-)
 from .public_scene_simready_isaac_vast import (
     PROBE_KIND as ADP_SIMREADY_ISAAC_PROBE_KIND,
     run_simready_isaac_vast,
@@ -215,15 +212,16 @@ DETACHED_GPU_CANARY_MANIFEST = "detached_gpu_canary_supervisor.json"
 DETACHED_GPU_CANARY_LOG = "detached_gpu_canary_supervisor.log"
 DETACHED_GPU_CANARY_LOCK = "detached_gpu_canary_supervisor.lock"
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
-# An allowlist rather than a single pin. A raw PhysX probe wants the bare
-# image; an Arena composition cannot run on it at all and needs the one with
-# isaaclab baked in. Both are digest-pinned NVIDIA images already carried by
-# lanes here, so widening to two does not widen to anything - an unpinned tag
-# or an unrelated image is still refused.
-ADP_SIMREADY_ISAAC_ADMITTED_IMAGES = (
-    ADP_SIMREADY_ISAAC_IMAGE,
-    ADP_ISAAC_ARENA_IMAGE,
-)
+# What this transport can actually run, which is not the same as what is a
+# valid Isaac image. Admitting the Arena image here let three launches through
+# that produced 0, 1 and 0 lines of container log - nothing ever started. The
+# same transport on the bare image produces 870 lines and the Arena transport
+# on the Arena image produces 1000, so neither the image nor the transport is
+# broken; this pairing is. An Arena payload belongs to the Arena transport.
+#
+# Admitting a combination that cannot run is worse than refusing it: the guard
+# stops meaning anything and the failures arrive as silence.
+ADP_SIMREADY_ISAAC_ADMITTED_IMAGES = (ADP_SIMREADY_ISAAC_IMAGE,)
 
 
 def admit_openai_api_candidate(**kwargs: Any) -> AdmissionResult:

@@ -11,16 +11,22 @@ from blueprint_pipeline.public_scene_simready_isaac_bundle import (
 )
 
 
-def test_both_pinned_isaac_images_are_admitted() -> None:
-    """An Arena payload needs the image that has Arena on it.
+def test_the_simready_lane_admits_only_the_image_it_can_actually_run() -> None:
+    """Measured, after admitting one it could not.
 
-    The bare image carries isaacsim alone, which is right for a raw PhysX
-    probe and cannot run an Arena composition at all. Both are digest-pinned
-    NVIDIA images already used by lanes in this repository.
+    Widening this allowlist to include the Arena image let three launches
+    through that produced 0, 1 and 0 lines of container log respectively -
+    nothing ever started. The same transport on the bare image produces 870
+    lines, and the Arena transport on the Arena image produces 1000. The image
+    is fine and the bare image is fine here; this transport and that image
+    together are not.
+
+    Admitting a combination that cannot run is worse than refusing it: the
+    guard stops meaning anything and the failures arrive as silence.
     """
 
     assert BARE_IMAGE in ADP_SIMREADY_ISAAC_ADMITTED_IMAGES
-    assert ARENA_IMAGE in ADP_SIMREADY_ISAAC_ADMITTED_IMAGES
+    assert ARENA_IMAGE not in ADP_SIMREADY_ISAAC_ADMITTED_IMAGES
 
 
 def test_every_admitted_image_is_digest_pinned() -> None:
@@ -31,8 +37,6 @@ def test_every_admitted_image_is_digest_pinned() -> None:
 
 
 def test_an_unpinned_or_unknown_image_is_not_admitted() -> None:
-    """Widening from one image to two must not widen to anything."""
-
     for image in (
         "nvcr.io/nvidia/isaac-sim:6.0.1",
         "nvcr.io/nvidia/isaac-sim:latest",
@@ -42,7 +46,8 @@ def test_an_unpinned_or_unknown_image_is_not_admitted() -> None:
         assert image not in ADP_SIMREADY_ISAAC_ADMITTED_IMAGES
 
 
-def test_the_admitted_set_is_small_and_explicit() -> None:
-    """This is an allowlist; it should be readable at a glance."""
+def test_the_admitted_set_stays_an_allowlist() -> None:
+    """Kept as a tuple so adding an image is a deliberate, reviewable edit."""
 
-    assert len(ADP_SIMREADY_ISAAC_ADMITTED_IMAGES) == 2
+    assert isinstance(ADP_SIMREADY_ISAAC_ADMITTED_IMAGES, tuple)
+    assert len(ADP_SIMREADY_ISAAC_ADMITTED_IMAGES) == 1
