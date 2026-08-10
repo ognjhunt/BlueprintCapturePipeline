@@ -130,6 +130,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
     assert verified["install_roots"][-1] == "runtime_sources/arena"
     assert any(path.endswith("isaaclab_teleop") for path in verified["install_roots"])
     assert any(path.endswith("isaaclab_contrib") for path in verified["install_roots"])
+    assert any(path.endswith("isaaclab_newton") for path in verified["install_roots"])
     with zipfile.ZipFile(verified["packet_path"]) as archive:
         names = set(archive.namelist())
         assert "runtime_sources/isaaclab/ignored.txt" not in names
@@ -143,6 +144,10 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         assert (
             "runtime_sources/isaaclab/source/isaaclab_contrib/"
             "isaaclab_contrib/__init__.py" in names
+        )
+        assert (
+            "runtime_sources/isaaclab/source/isaaclab_newton/"
+            "isaaclab_newton/__init__.py" in names
         )
         manifest = json.loads(
             archive.read("native_task_runtime_source_manifest.v1.json")

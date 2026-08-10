@@ -40,6 +40,7 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "yaml",
         "toml",
         "isaaclab_contrib",
+        "isaaclab_newton",
         "isaaclab.controllers",
         "isaaclab_assets",
         "isaaclab_tasks",
@@ -48,6 +49,9 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
     }.issubset(DEPENDENCY_IMPORTS)
     assert set(TOP_LEVEL_PACKAGES).issubset(DEPENDENCY_IMPORTS)
     assert DEPENDENCY_IMPORTS.index("isaaclab_contrib") < DEPENDENCY_IMPORTS.index(
+        "isaaclab_arena.environments.arena_env_builder"
+    )
+    assert DEPENDENCY_IMPORTS.index("isaaclab_newton") < DEPENDENCY_IMPORTS.index(
         "isaaclab_arena.environments.arena_env_builder"
     )
 
