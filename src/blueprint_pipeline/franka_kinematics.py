@@ -440,6 +440,164 @@ def solve_axis_aligned_ik(
     }
 
 
+def solve_oriented_ik(
+    *,
+    target_position_world_m: Sequence[float],
+    tool_axis_world: Sequence[float],
+    finger_axis_world: Sequence[float],
+    seed_joint_positions: Sequence[float] | None = None,
+) -> dict[str, Any]:
+    """Position plus tool axis plus finger-opening axis: the full grasp frame.
+
+    solve_axis_aligned_ik leaves roll about the tool free, and rt54 showed
+    what that freedom costs on a horizontal bar: the solver's arbitrary roll
+    put the finger plane sideways, the lower finger jammed against the door
+    132 mm below the bar, and the "grasp" became a shove. A bar pinch needs
+    the fingers to straddle the bar, so the finger-opening axis (tool Y) is
+    constrained perpendicular to the bar as well.
+
+    The finger axis is sign-symmetric - straddling a bar works with tool Y up
+    or down - so the residual targets whichever sign is currently nearer.
+    Nine-dimensional residual, same Levenberg-Marquardt shape and the same
+    difference-not-cross form as the six-dimensional solver, for the same
+    anti-alignment reason.
+    """
+
+    try:
+        target = [float(value) for value in target_position_world_m]
+        axis = [float(value) for value in tool_axis_world]
+        finger = [float(value) for value in finger_axis_world]
+    except (TypeError, ValueError) as exc:
+        raise FrankaKinematicsError(["franka_kinematics_target_invalid"]) from exc
+    if len(target) != 3 or not all(math.isfinite(value) for value in target):
+        raise FrankaKinematicsError(["franka_kinematics_target_invalid"])
+    for name, vector in (("tool_axis", axis), ("finger_axis", finger)):
+        norm = math.sqrt(sum(value * value for value in vector))
+        if len(vector) != 3 or not math.isfinite(norm) or norm <= 0.0:
+            raise FrankaKinematicsError([f"franka_kinematics_{name}_invalid"])
+        for index in range(3):
+            vector[index] /= norm
+    if abs(sum(axis[i] * finger[i] for i in range(3))) > 0.9:
+        # Tool Z and tool Y are orthogonal by construction; asking for them
+        # to be parallel is not a hard pose, it is a contradiction.
+        raise FrankaKinematicsError(
+            ["franka_kinematics_finger_axis_parallel_to_tool_axis"]
+        )
+
+    if seed_joint_positions is None:
+        joints = [0.0, -0.3, 0.0, -1.8, 0.0, 1.6, 0.785]
+    else:
+        joints = _checked(seed_joint_positions)
+
+    def _axes(candidate: Sequence[float]) -> tuple[list[float], list[float], list[float]]:
+        position, rotation = forward_kinematics(candidate)
+        tool_z = [rotation[row][2] for row in range(3)]
+        tool_y = [rotation[row][1] for row in range(3)]
+        return position, tool_z, tool_y
+
+    def _finger_sign(tool_y: Sequence[float]) -> float:
+        return 1.0 if sum(tool_y[i] * finger[i] for i in range(3)) >= 0.0 else -1.0
+
+    def _residual(candidate: Sequence[float]) -> list[float]:
+        position, tool_z, tool_y = _axes(candidate)
+        sign = _finger_sign(tool_y)
+        return (
+            [target[row] - position[row] for row in range(3)]
+            + [
+                AXIS_ERROR_WEIGHT_M_PER_RAD * (tool_z[row] - axis[row])
+                for row in range(3)
+            ]
+            + [
+                AXIS_ERROR_WEIGHT_M_PER_RAD * (tool_y[row] - sign * finger[row])
+                for row in range(3)
+            ]
+        )
+
+    def _error(candidate: Sequence[float]) -> float:
+        return math.sqrt(sum(value * value for value in _residual(candidate)))
+
+    rows_total = 9
+
+    def _jacobian9(candidate: Sequence[float]) -> list[list[float]]:
+        rows: list[list[float]] = [[0.0] * ARM_JOINT_COUNT for _ in range(rows_total)]
+        for index in range(ARM_JOINT_COUNT):
+            forward = list(candidate)
+            backward = list(candidate)
+            forward[index] += JACOBIAN_EPSILON_RAD
+            backward[index] -= JACOBIAN_EPSILON_RAD
+            rf = _residual(forward)
+            rb = _residual(backward)
+            for row in range(rows_total):
+                rows[row][index] = (rf[row] - rb[row]) / (2.0 * JACOBIAN_EPSILON_RAD)
+        return rows
+
+    def _converged(candidate: Sequence[float]) -> tuple[bool, float, float, float]:
+        position, tool_z, tool_y = _axes(candidate)
+        position_error = math.dist(position, target)
+        tool_dot = sum(tool_z[i] * axis[i] for i in range(3))
+        finger_dot = abs(sum(tool_y[i] * finger[i] for i in range(3)))
+        return (
+            position_error < IK_POSITION_TOLERANCE_M
+            and tool_dot >= IK_AXIS_ALIGNMENT_MINIMUM_DOT
+            and finger_dot >= IK_AXIS_ALIGNMENT_MINIMUM_DOT,
+            position_error,
+            tool_dot,
+            finger_dot,
+        )
+
+    damping = IK_DAMPING
+    best = list(joints)
+    best_error = _error(best)
+    for _ in range(IK_MAX_ITERATIONS):
+        if _converged(best)[0]:
+            break
+        residual = _residual(best)
+        jacobian = _jacobian9(best)
+        gram = [
+            [
+                sum(
+                    jacobian[row][k] * jacobian[column][k]
+                    for k in range(ARM_JOINT_COUNT)
+                )
+                + (damping**2 if row == column else 0.0)
+                for column in range(rows_total)
+            ]
+            for row in range(rows_total)
+        ]
+        solved = _solve_dense(gram, [-value for value in residual])
+        if solved is None:
+            damping = min(damping * 4.0, IK_MAX_DAMPING)
+            continue
+        candidate = list(best)
+        for index in range(ARM_JOINT_COUNT):
+            step = sum(
+                jacobian[row][index] * solved[row] for row in range(rows_total)
+            )
+            step = max(-IK_MAX_STEP_RAD, min(IK_MAX_STEP_RAD, step))
+            lo, hi = FRANKA_JOINT_LIMITS_RAD[index]
+            candidate[index] = max(lo, min(hi, candidate[index] + step))
+        candidate_error = _error(candidate)
+        if candidate_error < best_error:
+            best, best_error = candidate, candidate_error
+            damping = max(damping / 2.0, IK_DAMPING)
+        else:
+            damping = min(damping * 4.0, IK_MAX_DAMPING)
+
+    converged, position_error, tool_dot, finger_dot = _converged(best)
+    return {
+        "schema_version": FRANKA_KINEMATICS_SCHEMA_VERSION,
+        "converged": converged,
+        "joint_positions_rad": best,
+        "position_error_m": position_error,
+        "tool_axis_alignment_dot": tool_dot,
+        "finger_axis_alignment_dot": finger_dot,
+        "claim_boundary": {
+            "finger_axis_is_sign_symmetric_for_a_pinch": True,
+            "convergence_is_numeric_not_a_reachability_proof": True,
+        },
+    }
+
+
 def _solve_dense(matrix: list[list[float]], vector: list[float]) -> list[float] | None:
     """Gaussian elimination with partial pivoting; None on a singular system."""
 

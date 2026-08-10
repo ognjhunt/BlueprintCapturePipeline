@@ -95,6 +95,9 @@ MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
 MAX_JOINT_SETPOINT_LEAD_RAD = 0.20
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
 MOTION_PHASE_MINIMUM_STEPS = 1
+# Post-reset physics steps run and discarded before the first scored sample.
+# The scene's settle impulse is not evidence about the task.
+SETTLE_STEPS_AFTER_RESET = 5
 MOTION_PHASE_MAXIMUM_STEPS = 240
 GRIPPER_DWELL_MINIMUM_STEPS = 30
 GRIPPER_DWELL_MAXIMUM_STEPS = 120
@@ -460,6 +463,14 @@ def run_control_episode(
         raise ControlEpisodeError(["control_episode_id_missing"])
 
     environment.reset()
+    # The scene's first physics steps are its settle: a freshly placed
+    # free-base appliance absorbing its spawn impulse, contacts finding their
+    # rest depths. rt54's zero-action failed on a scene-collision spike in a
+    # sample taken zero steps after reset. Those steps are run and discarded
+    # here - unscored by design, and recorded in the receipt so the discard
+    # is a stated contract rather than a silent one.
+    for _ in range(SETTLE_STEPS_AFTER_RESET):
+        environment.step(environment.hold_action(gripper_command=float(gripper_open_command)))
     samples = [_sample(environment, 0)]
     actions: list[dict[str, Any]] = []
     policy_inputs: list[dict[str, Any]] = [
@@ -668,6 +679,7 @@ def run_control_episode(
         ),
         "state_trace": samples,
         "state_trace_digest": canonical_digest({"samples": samples}),
+        "settle_steps_after_reset": SETTLE_STEPS_AFTER_RESET,
         "action_trace": actions,
         "action_trace_digest": canonical_digest({"actions": actions}),
         "phase_arrivals": phase_arrivals,

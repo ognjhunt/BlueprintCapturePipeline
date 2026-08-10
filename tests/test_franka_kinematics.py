@@ -189,3 +189,72 @@ def test_axis_aligned_ik_respects_joint_limits():
 
     for value, (lo, hi) in zip(result["joint_positions_rad"], FRANKA_JOINT_LIMITS_RAD):
         assert lo - 1e-9 <= value <= hi + 1e-9
+
+
+class TestOrientedIk:
+    """Position plus tool axis plus finger axis: the full grasp frame.
+
+    rt54's pads arrived at the door with the roll wherever the solver fell,
+    and a horizontal bar cannot be pinched by fingers straddling it
+    sideways: the lower finger jammed against the door 132 mm below the
+    bar. A bar grasp is eight constraints; leaving roll free is a coin
+    flip on every waypoint.
+    """
+
+    HANDLE_BASE_FRAME = (0.3617, -0.1531, 1.023)  # world handle minus robot base
+    DOOR_NORMAL = (0.0, 1.0, 0.0)
+
+    def test_solves_position_and_both_axes(self):
+        from blueprint_pipeline.franka_kinematics import (
+            forward_kinematics,
+            solve_oriented_ik,
+        )
+
+        result = solve_oriented_ik(
+            target_position_world_m=self.HANDLE_BASE_FRAME,
+            tool_axis_world=[-v for v in self.DOOR_NORMAL],
+            finger_axis_world=(0.0, 0.0, 1.0),
+        )
+
+        assert result["converged"] is True
+        assert result["position_error_m"] < 0.001
+        _, rotation = forward_kinematics(result["joint_positions_rad"])
+        tool_z = [rotation[row][2] for row in range(3)]
+        tool_y = [rotation[row][1] for row in range(3)]
+        assert sum(a * b for a, b in zip(tool_z, [0, -1, 0])) >= 0.996
+        assert abs(sum(a * b for a, b in zip(tool_y, [0, 0, 1]))) >= 0.996
+
+    def test_both_roll_signs_are_reachable(self):
+        from blueprint_pipeline.franka_kinematics import solve_oriented_ik
+
+        for sign in (1.0, -1.0):
+            result = solve_oriented_ik(
+                target_position_world_m=self.HANDLE_BASE_FRAME,
+                tool_axis_world=[-v for v in self.DOOR_NORMAL],
+                finger_axis_world=(0.0, 0.0, sign),
+            )
+            assert result["converged"] is True, sign
+
+    def test_a_finger_axis_parallel_to_the_tool_axis_is_refused(self):
+        from blueprint_pipeline.franka_kinematics import (
+            FrankaKinematicsError,
+            solve_oriented_ik,
+        )
+
+        with pytest.raises(FrankaKinematicsError):
+            solve_oriented_ik(
+                target_position_world_m=self.HANDLE_BASE_FRAME,
+                tool_axis_world=(0.0, -1.0, 0.0),
+                finger_axis_world=(0.0, -1.0, 0.0),
+            )
+
+    def test_an_unreachable_target_reports_rather_than_pretending(self):
+        from blueprint_pipeline.franka_kinematics import solve_oriented_ik
+
+        result = solve_oriented_ik(
+            target_position_world_m=(2.5, 0.0, 0.2),
+            tool_axis_world=(0.0, -1.0, 0.0),
+            finger_axis_world=(0.0, 0.0, 1.0),
+        )
+
+        assert result["converged"] is False

@@ -222,11 +222,19 @@ class _ControlEnvironment:
 
 
 class _TransientArrivalEnvironment(_ControlEnvironment):
+    """A transient at the third PHASE step - counted from the drive's start,
+    not from reset, so the pre-scoring settle steps cannot absorb it."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.phase_steps = 0
+
     def step(self, isaac_action):
         super().step(isaac_action)
         if self.pending_target is None:
             return
-        if self.step_index == 2:
+        self.phase_steps += 1
+        if self.phase_steps == 2:
             self.grasp_frame = list(START)
 
 
@@ -495,3 +503,46 @@ def test_control_episode_rejects_legacy_plan_schema(tmp_path: Path) -> None:
         )
 
     assert "control_episode_plan_schema_invalid" in excinfo.value.errors
+
+
+class _SettleTransientEnvironment(_ControlEnvironment):
+    """Reports a violating force for the first steps after reset, then clean.
+
+    rt54's zero-action failed on exactly this: a scene-collision spike on the
+    very first physics sample, taken zero steps after reset while the freshly
+    placed scene was still absorbing its settle impulse.
+    """
+
+    TRANSIENT_STEPS = 3
+
+    def read_object_sample(self):
+        sample = super().read_object_sample()
+        sample["scene_collision_failure"] = self.step_index < self.TRANSIENT_STEPS
+        return sample
+
+
+def test_settle_steps_run_before_the_first_scored_sample(tmp_path: Path) -> None:
+    """The first scored sample must describe the settled scene, not the bang."""
+
+    from blueprint_pipeline.adp009d_control_episode import (
+        SETTLE_STEPS_AFTER_RESET,
+        ZERO_ACTION_NEGATIVE,
+    )
+
+    plan = materialize_control_plan(_instance())
+    environment = _SettleTransientEnvironment()
+
+    receipt = run_control_episode(
+        environment=environment,
+        plan=plan,
+        control_id=ZERO_ACTION_NEGATIVE,
+        gripper_open_command=1.0,
+        gripper_closed_command=0.0,
+        media_output_dir=tmp_path,
+        episode_id="settle-before-scoring",
+    )
+
+    assert SETTLE_STEPS_AFTER_RESET >= _SettleTransientEnvironment.TRANSIENT_STEPS
+    assert receipt["settle_steps_after_reset"] == SETTLE_STEPS_AFTER_RESET
+    first = receipt["state_trace"][0]
+    assert first.get("scene_collision_failure") is False
