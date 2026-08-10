@@ -173,10 +173,25 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
     )
     assert verified["paired_stack"]["isaaclab_revision"] == (verified["repositories"][0]["commit"])
     assert verified["paired_stack"]["simulator_base_image"] == ("nvcr.io/nvidia/isaac-sim:6.0.1")
-    assert verified["paired_stack"]["simulator_runtime_image"] == (
+    assert verified["paired_stack"]["simulator_base_runtime_image"] == (
         "nvcr.io/nvidia/isaac-sim:6.0.1@"
         "sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9"
     )
+    assert verified["paired_stack"]["simulator_base_amd64_manifest_digest"] == (
+        "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
+    )
+    assert verified["paired_stack"]["simulator_runtime_image"] == (
+        "nvcr.io/nvidia/isaac-lab:3.0.0-beta2-post1@"
+        "sha256:ae9c938a16df856effad6dab92115ee0dce2a8813f56847eeeccbebc008d02c4"
+    )
+    assert verified["paired_stack"]["runtime_image_amd64_manifest_digest"] == (
+        "sha256:ef451c70084abdf17af3e65fafbb2a8eae1c25d356b418efa285b942f783703f"
+    )
+    assert verified["paired_stack"]["runtime_image_config_digest"] == (
+        "sha256:663d4a37ac3019ae3b19418df062a72032db9ce4c6dfb82e894c0f0931807978"
+    )
+    assert verified["paired_stack"]["runtime_image_base_layer_prefix_count"] == 19
+    assert verified["paired_stack"]["runtime_image_layer_count"] == 40
     assert {
         ("antlr4-python3-runtime", "4.9.3"),
         ("omegaconf", "2.3.0"),

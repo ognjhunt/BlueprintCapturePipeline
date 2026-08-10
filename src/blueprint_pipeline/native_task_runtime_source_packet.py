@@ -50,13 +50,33 @@ ARENA_TREE = "a52514015a8573ac03b6448688bfa61f9cea18a9"
 ARENA_ISAACLAB_SUBMODULE_PATH = "submodules/IsaacLab"
 ARENA_DOCKERFILE_PATH = "docker/Dockerfile.isaaclab_arena"
 ISAAC_SIM_BASE_IMAGE = "nvcr.io/nvidia/isaac-sim:6.0.1"
-# This digest is the independently startup-qualified linux/amd64 image for the
-# Arena Dockerfile's exact 6.0.1 base tag.  Keep it in this pairing contract so
-# the self-contained provider module does not acquire a hidden package import.
-ISAAC_SIM_RUNTIME_IMAGE = (
+# The official Isaac Lab beta-2 image contains the complete Python/CUDA runtime
+# installed by ``isaaclab.sh --install``.  Its OCI rootfs begins with all 19
+# layers of the exact qualified Isaac Sim 6.0.1 linux/amd64 manifest below.
+# Shipping only the simulator base caused paid hosts to discover core packages
+# (first Torch) one at a time before Kit could start.  Bind both the multi-arch
+# index and resolved linux/amd64 manifests so provider selection cannot change
+# the stack behind a stable tag.
+ISAAC_SIM_BASE_RUNTIME_IMAGE = (
     "nvcr.io/nvidia/isaac-sim:6.0.1@"
     "sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9"
 )
+ISAAC_SIM_BASE_AMD64_MANIFEST_DIGEST = (
+    "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
+)
+ISAACLAB_RUNTIME_IMAGE = (
+    "nvcr.io/nvidia/isaac-lab:3.0.0-beta2-post1@"
+    "sha256:ae9c938a16df856effad6dab92115ee0dce2a8813f56847eeeccbebc008d02c4"
+)
+ISAACLAB_RUNTIME_AMD64_MANIFEST_DIGEST = (
+    "sha256:ef451c70084abdf17af3e65fafbb2a8eae1c25d356b418efa285b942f783703f"
+)
+ISAACLAB_RUNTIME_CONFIG_DIGEST = (
+    "sha256:663d4a37ac3019ae3b19418df062a72032db9ce4c6dfb82e894c0f0931807978"
+)
+# Backward-compatible name used by the generic native-task bundle contract.
+# It now means the complete paired runtime, not a bare simulator image.
+ISAAC_SIM_RUNTIME_IMAGE = ISAACLAB_RUNTIME_IMAGE
 ISAACLAB_PACKAGE_NAMES = (
     "isaaclab",
     "isaaclab_assets",
@@ -523,7 +543,14 @@ def _arena_pairing_contract(*, repo: Path, commit: str, isaaclab_commit: str) ->
         "isaaclab_revision": isaaclab_commit,
         "isaaclab_submodule_path": ARENA_ISAACLAB_SUBMODULE_PATH,
         "simulator_base_image": ISAAC_SIM_BASE_IMAGE,
+        "simulator_base_runtime_image": ISAAC_SIM_BASE_RUNTIME_IMAGE,
+        "simulator_base_amd64_manifest_digest": (ISAAC_SIM_BASE_AMD64_MANIFEST_DIGEST),
         "simulator_runtime_image": ISAAC_SIM_RUNTIME_IMAGE,
+        "runtime_image_kind": "official_isaac_lab_complete_runtime",
+        "runtime_image_amd64_manifest_digest": (ISAACLAB_RUNTIME_AMD64_MANIFEST_DIGEST),
+        "runtime_image_config_digest": ISAACLAB_RUNTIME_CONFIG_DIGEST,
+        "runtime_image_base_layer_prefix_count": 19,
+        "runtime_image_layer_count": 40,
         "simulator_dockerfile_path": ARENA_DOCKERFILE_PATH,
         "dockerfile_sha256": _sha256_bytes(dockerfile_bytes),
         "gitmodules_sha256": _sha256_bytes(gitmodules_bytes),
@@ -864,7 +891,16 @@ def verify_native_task_runtime_source_packet(
                 or paired.get("isaaclab_revision") != lab.get("commit")
                 or paired.get("isaaclab_submodule_path") != ARENA_ISAACLAB_SUBMODULE_PATH
                 or paired.get("simulator_base_image") != ISAAC_SIM_BASE_IMAGE
+                or paired.get("simulator_base_runtime_image") != ISAAC_SIM_BASE_RUNTIME_IMAGE
+                or paired.get("simulator_base_amd64_manifest_digest")
+                != ISAAC_SIM_BASE_AMD64_MANIFEST_DIGEST
                 or paired.get("simulator_runtime_image") != ISAAC_SIM_RUNTIME_IMAGE
+                or paired.get("runtime_image_kind") != "official_isaac_lab_complete_runtime"
+                or paired.get("runtime_image_amd64_manifest_digest")
+                != ISAACLAB_RUNTIME_AMD64_MANIFEST_DIGEST
+                or paired.get("runtime_image_config_digest") != ISAACLAB_RUNTIME_CONFIG_DIGEST
+                or paired.get("runtime_image_base_layer_prefix_count") != 19
+                or paired.get("runtime_image_layer_count") != 40
                 or paired.get("simulator_dockerfile_path") != ARENA_DOCKERFILE_PATH
                 or paired.get("dockerfile_sha256")
                 != arena_files.get(ARENA_DOCKERFILE_PATH, {}).get("sha256")
