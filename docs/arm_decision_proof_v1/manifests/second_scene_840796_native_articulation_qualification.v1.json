@@ -1,0 +1,76 @@
+{
+  "adp_item": "ADP-009D",
+  "asset": {
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/simready_candidate/840796_simready_v7_driven/simready_refrigerator_840796_driven.usda",
+    "sha256": "sha256:f50e51a77575103b1033a760ce0c98a3de3a272f5c8975f667d4802f04e77752"
+  },
+  "claim_boundary": {
+    "articulation_qualification_is_not_task_success": true,
+    "drive_constants_are_authored_not_measured": true,
+    "interior_and_textures_are_generated_candidate_not_observed": true,
+    "learned_policy_evaluated": false,
+    "native_articulation_qualified": true,
+    "no_robot_involved": true,
+    "physical_equivalence_proven": false
+  },
+  "drives": {
+    "locked_hinge": "held_closed_stiffness_5000",
+    "probe_actuation_in_overlay_not_asset": true,
+    "task_hinge": "damping_only_14_no_position_stiffness"
+  },
+  "measurements": {
+    "commanded_sweep_reached_degrees": [
+      8.6417230009663e-14,
+      4.993610639464737,
+      9.993603236935204,
+      14.99360394525531,
+      19.993602946028126,
+      24.99360365434823,
+      29.993594117384582,
+      34.9935931181574,
+      39.99359211893021,
+      44.99359453479761,
+      49.993586705381254,
+      54.99358229105948
+    ],
+    "locked_joint_max_drift_rad": 1.273623134040447e-12,
+    "reset_positions_rad": [
+      1.9317616395397863e-09,
+      9.442209384161182e-13
+    ],
+    "settled_max_velocity_rad_s": 0.001121446373872459
+  },
+  "prior_attempt": {
+    "cause": "joints carried no DriveAPI",
+    "failure": "commanded_sweep_reaches_maximum stayed at 0.0 deg",
+    "job": "840796_v4_execute",
+    "result": "10_of_11_passed"
+  },
+  "program_id": "arm-decision-proof-v1",
+  "publisher_scene_id": "840796",
+  "readbacks_passed": [
+    "articulation_root_identity",
+    "commanded_sweep_reaches_maximum",
+    "contact_stability",
+    "deterministic_final_state",
+    "joint_axis_and_limits",
+    "joint_count_and_types",
+    "locked_joint_identity",
+    "locked_joint_motion_within_tolerance",
+    "no_initial_penetration",
+    "reset_replay_within_tolerance",
+    "task_joint_identity"
+  ],
+  "receipt_digest": "sha256:b2d321fc952302b22fdd53c344f1bfa525403b9cfe14d9ed880aacef044eb23a",
+  "run": {
+    "estimated_cost_usd": 0.092444,
+    "isaac_image": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:783444c7",
+    "job": "840796_v5_execute",
+    "provider_zero_after_teardown": true,
+    "retry_cap": 0,
+    "staged_objects_absent": true
+  },
+  "schema_version": "second_scene_840796_native_articulation_qualification.v1",
+  "status": "native_simulator_qualified",
+  "target_instance_id": "123"
+}
