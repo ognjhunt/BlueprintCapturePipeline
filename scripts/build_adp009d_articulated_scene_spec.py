@@ -56,6 +56,7 @@ def build_articulated_scene_spec(
     control_plan: dict[str, Any],
     robot_base: dict[str, Any],
     articulated_joints: Sequence[dict[str, Any]],
+    support_link_body: str,
     twin_usd_filename: str,
     scene_collision_filename: str,
     seed: int,
@@ -83,6 +84,12 @@ def build_articulated_scene_spec(
     )
     spec: dict[str, Any] = {
         "schema_version": SPEC_SCHEMA_VERSION,
+        # Which rigid link is the appliance body. The containment predicate
+        # reads its world position, so naming the wrong one silently scores the
+        # wrong thing. Kept beside task_spec rather than inside it: the control
+        # plan is digest-bound to the task spec, and a scene-composition field
+        # added there invalidates every sealed plan.
+        "support_link_body": str(support_link_body),
         "composition": composition,
         "control_plan": control_plan,
         "robot_base": robot_base,
@@ -119,6 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             for joint_id in binding.get("joint_ids") or []
         ],
+        support_link_body=str(source.get("support_link_body") or "cabinet"),
         task_spec=source["task_spec"],
         control_plan=source["control_plan"],
         robot_base=source["robot_base"],

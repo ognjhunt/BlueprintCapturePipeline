@@ -136,6 +136,19 @@ ROBOT_JOINT_NAMES = [f"panda_joint{index}" for index in range(1, 8)] + [
 ]
 
 
+class _FakeContactSensorData:
+    def __init__(self):
+        import torch
+
+        # Resting contact, below the force threshold: present but not a grasp.
+        self.net_forces_w = torch.zeros((1, 3, 3))
+
+
+class _FakeContactSensor:
+    def __init__(self):
+        self.data = _FakeContactSensorData()
+
+
 class _FakeCameraData:
     def __init__(self):
         import torch
@@ -192,7 +205,15 @@ class _FakeArenaEnvironment:
         if env_cfg_callback is not None:
             env_cfg_callback(_FakeEnvCfg())
         runtime_scene = _FakeScene()
-        runtime_scene["task_object"] = _FakeArticulation()
+        for sensor_name in (
+            "robot_contact_sensor",
+            "task_object_contact_sensor",
+            "scene_collision_contact_sensor",
+        ):
+            runtime_scene[sensor_name] = _FakeContactSensor()
+        runtime_scene["task_object"] = _FakeArticulation(
+            body_names=["cabinet", "upper_door", "lower_door"]
+        )
         runtime_scene["robot"] = _FakeArticulation(joint_names=ROBOT_JOINT_NAMES)
         # The adapter binds these three by name via EVALUATION_CAMERA_BINDING.
         for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
@@ -220,9 +241,14 @@ class _FakeSimCfg:
     physics = None
 
 
+class _FakeSceneCfg:
+    """Where declared sensors land; the worker sets attributes on this."""
+
+
 class _FakeEnvCfg:
     def __init__(self):
         self.sim = _FakeSimCfg()
+        self.scene = _FakeSceneCfg()
         self.seed = 0
         self.decimation = 1
         self.episode_length_s = 0.0
@@ -278,6 +304,13 @@ def stubbed_arena(monkeypatch):
     modules = {
         "isaaclab": _module("isaaclab"),
         "isaaclab.app": _module("isaaclab.app", AppLauncher=_FakeAppLauncher),
+        "isaaclab.sensors": _module(
+            "isaaclab.sensors",
+            # Declared before the env is built; the worker cannot attach a
+            # sensor to a constructed scene, so the fake has to exist at cfg
+            # time too or the contact path is never exercised here.
+            ContactSensorCfg=lambda **kw: types.SimpleNamespace(**kw),
+        ),
         "isaaclab.sim": _module(
             "isaaclab.sim",
             DomeLightCfg=lambda **kw: types.SimpleNamespace(**kw),
@@ -363,6 +396,7 @@ def _write_runtime(tmp_path: Path) -> Path:
         "seed": 20260810,
         "episode_length_s": 12.0,
         "gripper_open_command": 1.0,
+        "support_link_body": "cabinet",
         "robot_base": {
             "position_xyz": [1.75, 1.99, 0.0],
             "rotation_xyzw": [0, 0, 0, 1],

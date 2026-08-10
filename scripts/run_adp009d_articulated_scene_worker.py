@@ -52,6 +52,7 @@ try:  # flat provider bundle
         resolve_runtime_asset,
     )
     from gripper_convention_probe import measure_gripper_convention
+    from articulated_scene_observations import build_scene_observations
 except ModuleNotFoundError:  # repository checkout
     import sys as _sys
 
@@ -62,6 +63,9 @@ except ModuleNotFoundError:  # repository checkout
     )
     from blueprint_pipeline.gripper_convention_probe import (
         measure_gripper_convention,
+    )
+    from blueprint_pipeline.articulated_scene_observations import (
+        build_scene_observations,
     )
 
 
@@ -399,6 +403,28 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         def configure(cfg):
             from isaaclab_physx.physics import PhysxCfg  # type: ignore
+            from isaaclab.sensors import ContactSensorCfg  # type: ignore
+
+            # The scorer needs contact, and contact needs sensors declared
+            # before construction - there is no way to attach one to a built
+            # scene. Three separate sensors rather than one, because "the
+            # gripper is holding the handle" and "the elbow hit the cabinet"
+            # are opposite verdicts read off the same forces.
+            cfg.scene.robot_contact_sensor = ContactSensorCfg(
+                prim_path="{ENV_REGEX_NS}/robot/.*",
+                history_length=1,
+                track_air_time=False,
+            )
+            cfg.scene.task_object_contact_sensor = ContactSensorCfg(
+                prim_path="{ENV_REGEX_NS}/task_object/.*",
+                history_length=1,
+                track_air_time=False,
+            )
+            cfg.scene.scene_collision_contact_sensor = ContactSensorCfg(
+                prim_path="{ENV_REGEX_NS}/scene_collision/.*",
+                history_length=1,
+                track_air_time=False,
+            )
 
             cfg.sim.dt = 1.0 / 120.0
             cfg.seed = int(spec.get("seed") or 20260810)
@@ -485,12 +511,58 @@ def main(argv: Sequence[str] | None = None) -> int:
         # callback is built before the adapter that owns the count.
         adapter_holder: dict[str, Any] = {}
 
+        def _sensor_forces(sensor_name: str):
+            """Net contact forces, or None so the predicate refuses loudly."""
+
+            try:
+                return scene[sensor_name].data.net_forces_w
+            except (KeyError, AttributeError, TypeError):
+                return None
+
+        def _body_position(articulation, body_name: str):
+            names = list(getattr(articulation.data, "body_names", []) or [])
+            if body_name not in names:
+                return None
+            return [
+                float(value)
+                for value in articulation.data.body_pose_w[0, names.index(body_name), :3]
+            ]
+
+        task_spec_row = spec.get("task_spec") or {}
+        # Top level, NOT inside task_spec: the control plan is digest-bound to
+        # the task spec, so adding a scene-composition field there invalidates
+        # a sealed plan. The contract caught this immediately, which is what
+        # the binding is for.
+        support_link_body = str(spec.get("support_link_body") or "")
+        if not support_link_body:
+            raise RuntimeError("articulated_scene_support_link_body_missing")
+        authored_base = [
+            float(value)
+            for value in (task_object.initial_pose.position_xyz or (0.0, 0.0, 0.0))
+        ]
+        handle_position = [
+            float(value)
+            for value in (spec.get("handle_position_world_m") or authored_base)
+        ]
+        # Built after the gripper probe, which is where body_names and the
+        # finger indices come from; the readers below close over `robot` and
+        # `scene`, so only the index arguments need to wait.
+        observation_holder: dict[str, Any] = {}
+
         def _task_sample():
             bound = adapter_holder.get("adapter")
+            readers = observation_holder.get("readers")
+            if readers is None:
+                raise RuntimeError("articulated_scene_observation_readers_unbound")
             return build_articulated_task_sample(
                 joint_ids=joint_ids,
                 read_joint_state=_read_joint_state,
+                joint_hard_limits_rad=task_spec_row.get("joint_hard_limits_rad") or {},
+                joint_limit_tolerance_rad=float(
+                    task_spec_row.get("reset_tolerance_rad") or 0.005
+                ),
                 step_index=int(bound.control_step_index) if bound is not None else 0,
+                **readers,
             )
 
         robot = scene[embodiment.name] if hasattr(embodiment, "name") else scene["robot"]
@@ -530,6 +602,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         result["gripper_convention_probe"] = gripper
         _phase(result, "gripper_convention_measured")
+
+        observation_holder["readers"] = build_scene_observations(
+            read_task_contact_forces=lambda: _sensor_forces(
+                "task_object_contact_sensor"
+            ),
+            read_robot_contact_forces=lambda: _sensor_forces("robot_contact_sensor"),
+            read_scene_contact_forces=lambda: _sensor_forces(
+                "scene_collision_contact_sensor"
+            ),
+            # Named by the spec, never defaulted to a literal. A guessed body
+            # name that happens not to exist refuses (which is fine), but one
+            # that happens to exist and is the wrong link reads a containment
+            # verdict off whatever that link did.
+            read_task_object_base_position_m=lambda: _body_position(
+                live, support_link_body
+            ),
+            authored_task_object_base_position_m=authored_base,
+            read_end_effector_position_m=lambda: _body_position(robot, "panda_hand"),
+            read_handle_position_m=lambda: handle_position,
+            finger_body_indices=finger_indices,
+            non_finger_body_indices=[
+                index
+                for index in range(len(body_names))
+                if index not in set(finger_indices)
+            ],
+        )
+
+        _phase(result, "observations_bound")
 
         adapter = IsaacEpisodeAdapter(
             env=env,
