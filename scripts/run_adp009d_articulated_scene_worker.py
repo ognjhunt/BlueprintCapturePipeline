@@ -76,6 +76,10 @@ ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 # Scripted controls only. This composition never consults a learned policy, and
 # saying otherwise would overclaim on the one axis the program cares most about.
 CANDIDATE_POLICY_QUERIED = False
+# What the policies actually consume. Rendering above this is the dominant
+# cost in an episode and is discarded downstream.
+CAMERA_WIDTH = 320
+CAMERA_HEIGHT = 180
 
 
 def _sha256(path: Path) -> str:
@@ -341,6 +345,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             initial_joint_pose=[float(v) for v in (base.get("reset_joints") or [])] or None,
         )
+        # The adapter binds three cameras by name and refuses without them.
+        # Arena supplies the configs on the embodiment; what it does not supply
+        # is the resolution and data types this lane needs, and a camera left
+        # at Arena's defaults does not carry the pose metadata the policy-input
+        # contract requires. Mirrors the rigid lane rather than inventing a
+        # second convention.
+        for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
+            camera_cfg = getattr(
+                getattr(embodiment, "camera_config", None), camera_name, None
+            )
+            if camera_cfg is None:
+                raise RuntimeError(
+                    f"articulated_scene_required_camera_config_missing:{camera_name}"
+                )
+            camera_cfg.data_types = ["rgb", "semantic_segmentation"]
+            if camera_name != "external_camera_2":
+                camera_cfg.data_types.insert(1, "distance_to_camera")
+            camera_cfg.colorize_semantic_segmentation = False
+            camera_cfg.update_period = 0.0
+            # Arena leaves this false, which freezes camera.data.pos_w at
+            # initialisation even while the parented view moves.
+            camera_cfg.update_latest_camera_pose = True
+            camera_cfg.width = CAMERA_WIDTH
+            camera_cfg.height = CAMERA_HEIGHT
+        result["camera_resolution"] = [CAMERA_WIDTH, CAMERA_HEIGHT]
+        _phase(result, "cameras_configured")
+
         _phase(result, "embodiment_configured")
 
         assets.append(
@@ -425,13 +456,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter  # type: ignore
         from adp009d_control_episode import run_task_neutral_controls  # type: ignore
 
-        step_counter = {"value": 0}
+        # The step index must be the adapter's, not a second counter kept
+        # beside it: the control episode compares the sample's step to its own
+        # and a private tally never advances, so every step after the first
+        # fails task_control_sample_step_mismatch. Late-bound because the
+        # callback is built before the adapter that owns the count.
+        adapter_holder: dict[str, Any] = {}
 
         def _task_sample():
+            bound = adapter_holder.get("adapter")
             return build_articulated_task_sample(
                 joint_ids=joint_ids,
                 read_joint_state=_read_joint_state,
-                step_index=step_counter["value"],
+                step_index=int(bound.control_step_index) if bound is not None else 0,
             )
 
         robot = scene[embodiment.name] if hasattr(embodiment, "name") else scene["robot"]
@@ -483,6 +520,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             gripper_open_width_m=float(gripper["gripper_open_width_m"]),
             simulation_step_seconds=1.0 / 120.0 * 8,
         )
+        adapter_holder["adapter"] = adapter
         _phase(result, "adapter_wired")
 
         pair = run_task_neutral_controls(

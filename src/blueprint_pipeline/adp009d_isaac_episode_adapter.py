@@ -582,6 +582,18 @@ class IsaacEpisodeAdapter:
         ]
         return sample
 
+    @property
+    def control_step_index(self) -> int:
+        """Steps taken since the last reset.
+
+        A task-sample callback has to report the same step the control episode
+        thinks it is on, and the adapter is the only thing that knows. A worker
+        keeping its own counter beside this one drifts from the first step and
+        fails every comparison after it.
+        """
+
+        return int(self._control_step_index)
+
     def read_task_sample(self) -> dict[str, Any]:
         """Read non-rigid task state through the runtime's native-state seam.
 

@@ -98,6 +98,8 @@ class _FakeUnwrapped:
     def __init__(self, scene):
         self.scene = scene
         self.action_manager = _FakeActionManager()
+        self.device = "cpu"
+        self.num_envs = 1
 
 
 class _FakeEnv:
@@ -134,6 +136,40 @@ ROBOT_JOINT_NAMES = [f"panda_joint{index}" for index in range(1, 8)] + [
 ]
 
 
+class _FakeCameraData:
+    def __init__(self):
+        import torch
+
+        self.output = {"rgb": torch.zeros((1, 180, 320, 3), dtype=torch.uint8)}
+        self.pos_w = torch.tensor([[1.2, 0.9, 1.4]])
+        # An all-zero quaternion is not a rotation, and the adapter is right to
+        # reject one; identity keeps the fake honest without faking a pose.
+        identity = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+        self.quat_w_world = identity.clone()
+        self.quat_w_ros = identity.clone()
+        self.quat_w_opengl = identity.clone()
+        self.intrinsic_matrices = torch.tensor(
+            [[[200.0, 0.0, 160.0], [0.0, 200.0, 90.0], [0.0, 0.0, 1.0]]]
+        )
+
+
+class _FakeCameraSpawn:
+    # Arena's own camera cfg carries this; the adapter reads it for the
+    # calibration record and is right to refuse a camera without one.
+    clipping_range = (0.01, 1000.0)
+
+
+class _FakeCameraRuntimeCfg:
+    def __init__(self):
+        self.spawn = _FakeCameraSpawn()
+
+
+class _FakeCamera:
+    def __init__(self):
+        self.data = _FakeCameraData()
+        self.cfg = _FakeCameraRuntimeCfg()
+
+
 class _FakeArticulation:
     def __init__(self, joint_names=None, body_names=None):
         self.data = _FakeArticulationData(joint_names, body_names)
@@ -149,6 +185,9 @@ class _FakeArenaEnvironment:
         runtime_scene = _FakeScene()
         runtime_scene["task_object"] = _FakeArticulation()
         runtime_scene["robot"] = _FakeArticulation(joint_names=ROBOT_JOINT_NAMES)
+        # The adapter binds these three by name via EVALUATION_CAMERA_BINDING.
+        for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
+            runtime_scene[camera_name] = _FakeCamera()
         for embodiment in self.embodiments:
             runtime_scene[getattr(embodiment, "name", "robot")] = runtime_scene["robot"]
         self._env = _FakeEnv(runtime_scene)
@@ -171,11 +210,31 @@ class _FakeEnvCfg:
         self.episode_length_s = 0.0
 
 
+class _FakeCameraCfg:
+    """Arena hands these out on the embodiment; the worker configures them."""
+
+    def __init__(self):
+        self.data_types = []
+        self.colorize_semantic_segmentation = True
+        self.update_period = 1.0
+        self.update_latest_camera_pose = False
+        self.width = 0
+        self.height = 0
+
+
+class _FakeCameraConfig:
+    def __init__(self):
+        self.external_camera = _FakeCameraCfg()
+        self.wrist_camera = _FakeCameraCfg()
+        self.external_camera_2 = _FakeCameraCfg()
+
+
 class _FakeEmbodiment:
     name = "robot"
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
+        self.camera_config = _FakeCameraConfig()
 
 
 class _FakeAppLauncher:
